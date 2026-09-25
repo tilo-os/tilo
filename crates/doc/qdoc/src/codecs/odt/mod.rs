@@ -35,43 +35,45 @@ impl FormatProvider for OdtCodec {
     }
 
     fn import(&self, bytes: &[u8], doc: &mut DocMut) -> Result<(), CodecError> {
-        let container = container::OdtContainer::read(bytes)?;
-        let content = container
-            .get("content.xml")
-            .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?
-            .to_vec();
-        // Build the style registry from styles.xml (named) + content.xml (automatic); later styles win, so content overrides styles.xml.
-        let mut reg = styles::StyleRegistry::default();
-        if let Some(styles_xml) = container.get("styles.xml") {
-            styles::parse_styles(styles_xml, &mut reg, true);
-        }
-        // content.xml holds automatic (anonymous) styles, named only if they carry an explicit display-name (e.g. styles this codec itself exports).
-        styles::parse_styles(&content, &mut reg, false);
-        // The container is threaded through so `draw:frame`/`draw:image` can read the
-        // referenced `Pictures/*` bytes and so named paragraph styles are lifted into the qdoc styles container.
-        content::parse_body(&content, &reg, &container, doc)?;
-        if let Some(meta_xml) = container.get("meta.xml") {
-            meta::import_meta(meta_xml, doc);
-        }
-        // Page header/footer: parse the master-page `style:header`/`style:footer` paragraphs (incl. `text:page-number` fields) from `styles.xml`.
-        if let Some(styles_xml) = container.get("styles.xml") {
-            headers::import_master_headers(styles_xml, doc);
-        }
-        if let Some(styles_xml) = container.get("styles.xml") {
-            columns::import_page_layout_columns(styles_xml, doc);
-        }
-        // Document default language: parse the paragraph-family `style:default-style`'s `fo:language`/`fo:country` from `styles.xml`.
-        if let Some(styles_xml) = container.get("styles.xml") {
-            language::import_default_language(styles_xml, doc);
-        }
-        // Preservation layer: stash every part except the (regenerated) content.xml verbatim so
-        // export round-trips them losslessly; meta.xml is included so its unmodeled fields survive.
-        for (name, part) in &container.parts {
-            if name != "content.xml" {
-                doc.set_preserved(&format!("odt/part/{name}"), part);
+        doc.bulk(|doc| {
+            let container = container::OdtContainer::read(bytes)?;
+            let content = container
+                .get("content.xml")
+                .ok_or_else(|| CodecError::Parse("odt: missing content.xml".into()))?
+                .to_vec();
+            // Build the style registry from styles.xml (named) + content.xml (automatic); later styles win, so content overrides styles.xml.
+            let mut reg = styles::StyleRegistry::default();
+            if let Some(styles_xml) = container.get("styles.xml") {
+                styles::parse_styles(styles_xml, &mut reg, true);
             }
-        }
-        Ok(())
+            // content.xml holds automatic (anonymous) styles, named only if they carry an explicit display-name (e.g. styles this codec itself exports).
+            styles::parse_styles(&content, &mut reg, false);
+            // The container is threaded through so `draw:frame`/`draw:image` can read the
+            // referenced `Pictures/*` bytes and so named paragraph styles are lifted into the qdoc styles container.
+            content::parse_body(&content, &reg, &container, doc)?;
+            if let Some(meta_xml) = container.get("meta.xml") {
+                meta::import_meta(meta_xml, doc);
+            }
+            // Page header/footer: parse the master-page `style:header`/`style:footer` paragraphs (incl. `text:page-number` fields) from `styles.xml`.
+            if let Some(styles_xml) = container.get("styles.xml") {
+                headers::import_master_headers(styles_xml, doc);
+            }
+            if let Some(styles_xml) = container.get("styles.xml") {
+                columns::import_page_layout_columns(styles_xml, doc);
+            }
+            // Document default language: parse the paragraph-family `style:default-style`'s `fo:language`/`fo:country` from `styles.xml`.
+            if let Some(styles_xml) = container.get("styles.xml") {
+                language::import_default_language(styles_xml, doc);
+            }
+            // Preservation layer: stash every part except the (regenerated) content.xml verbatim so
+            // export round-trips them losslessly; meta.xml is included so its unmodeled fields survive.
+            for (name, part) in &container.parts {
+                if name != "content.xml" {
+                    doc.set_preserved(&format!("odt/part/{name}"), part);
+                }
+            }
+            Ok(())
+        })
     }
 
     fn export(&self, doc: DocRef) -> Result<Vec<u8>, CodecError> {

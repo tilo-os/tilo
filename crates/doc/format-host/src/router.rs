@@ -1,4 +1,4 @@
-//! The format-router. Owns the loaded set of WASM components and routes
+//! The format-router. Owns the loaded set of provider modules and routes
 //! detect / importAs / exportAs calls onto them. Shared by the Cap'n Proto
 //! service and the in-process test harness.
 
@@ -6,17 +6,17 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-use format_provider_wit::CodecError;
-use wasmtime::Engine;
+use format_provider_abi::{CodecError, Detected};
+use wasmi::Engine;
 
 use crate::registry::{ProviderEntry, Registry};
-use crate::runner::LoadedComponent;
+use crate::runner::LoadedProvider;
 
-/// A provider as held by the router: the registry entry + its loaded component.
+/// A provider as held by the router: the registry entry + its loaded module.
 #[derive(Clone)]
 pub struct ActiveProvider {
     pub entry: ProviderEntry,
-    pub component: LoadedComponent,
+    pub provider: LoadedProvider,
 }
 
 /// The in-memory provider catalogue. Cheap to clone; concurrent calls take
@@ -53,38 +53,40 @@ impl Router {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Replace the current provider set with `reg` — loads new components,
-    /// drops removed ones, reuses unchanged ones (matched by package + wasm
-    /// path). Used both on initial startup and on every inotify hot-reload.
+    /// Replace the current provider set with `reg` — loads new modules,
+    /// drops removed ones, reuses unchanged ones (matched by package, wasm
+    /// path and limits). Used both on initial startup and on every inotify
+    /// hot-reload.
     ///
     /// # Errors
     ///
-    /// Returns an error if loading a component from its WASM path fails.
+    /// Returns an error if loading a provider from its WASM path fails.
     pub fn apply_registry(&self, reg: &Registry) -> anyhow::Result<()> {
         let mut next: HashMap<String, ActiveProvider> = HashMap::new();
         let current = self.providers_read().clone();
         for entry in &reg.providers {
             if let Some(existing) = current.get(&entry.package)
                 && existing.entry.wasm == entry.wasm
+                && existing.provider.limits() == reg.limits
             {
-                // Same wasm file → reuse the loaded component, refresh
-                // the registry metadata.
+                // Same wasm file and budget → reuse the loaded module,
+                // refresh the registry metadata.
                 next.insert(
                     entry.package.clone(),
                     ActiveProvider {
                         entry: entry.clone(),
-                        component: existing.component.clone(),
+                        provider: existing.provider.clone(),
                     },
                 );
                 continue;
             }
-            let comp = LoadedComponent::from_path(&self.engine, &entry.wasm)
+            let provider = LoadedProvider::from_path(&self.engine, &entry.wasm, reg.limits)
                 .map_err(|e| anyhow::anyhow!("loading provider {}: {e:#}", entry.package))?;
             next.insert(
                 entry.package.clone(),
                 ActiveProvider {
                     entry: entry.clone(),
-                    component: comp,
+                    provider,
                 },
             );
         }
@@ -131,58 +133,42 @@ impl Router {
     /// loaded provider in package-id order and take the highest-scoring
     /// result. Returns `(detected, provider_id)` so the client knows which
     /// provider to route subsequent importAs calls to.
-    pub fn detect(&self, head: &[u8], hint: &str) -> (format_provider_wit::Detected, String) {
+    pub fn detect(&self, head: &[u8], hint: &str) -> (Detected, String) {
         if !hint.is_empty()
             && let Some(p) = self.best_for_mime(hint)
-            && let Ok(d) = p.component.detect(head)
+            && let Ok(d) = p.provider.detect(head)
         {
-            return (
-                format_provider_wit::Detected {
-                    confidence: format_provider_wit::Confidence {
-                        tier: d.confidence.tier,
-                        score: d.confidence.score,
-                    },
-                    mime: d.mime,
-                },
-                p.entry.package,
-            );
+            return (d, p.entry.package);
         }
         let providers = self.providers_read().clone();
         let mut keys: Vec<&String> = providers.keys().collect();
         keys.sort();
-        let mut best: Option<(format_provider_wit::Detected, String, f32)> = None;
+        let mut best: Option<(Detected, String)> = None;
         for k in keys {
             // `k` came from `providers.keys()` just above, so it's always present.
             let Some(p) = providers.get(k) else {
                 continue;
             };
-            if let Ok(d) = p.component.detect(head) {
-                let score = d.confidence.score;
-                let detected = format_provider_wit::Detected {
-                    confidence: format_provider_wit::Confidence {
-                        tier: d.confidence.tier,
-                        score: d.confidence.score,
-                    },
-                    mime: d.mime,
-                };
-                if best.as_ref().is_none_or(|(_, _, s)| score > *s) {
-                    best = Some((detected, p.entry.package.clone(), score));
-                }
+            if let Ok(d) = p.provider.detect(head)
+                && best
+                    .as_ref()
+                    .is_none_or(|(b, _)| d.confidence.score > b.confidence.score)
+            {
+                best = Some((d, p.entry.package.clone()));
             }
         }
-        match best {
-            Some((d, id, _)) => (d, id),
-            None => (
-                format_provider_wit::Detected {
-                    confidence: format_provider_wit::Confidence {
+        best.unwrap_or_else(|| {
+            (
+                Detected {
+                    confidence: format_provider_abi::Confidence {
                         tier: 0,
                         score: 0.0,
                     },
                     mime: None,
                 },
                 String::new(),
-            ),
-        }
+            )
+        })
     }
 
     /// Import a document in a provider's native format and return canonical CRDT bytes.
@@ -194,7 +180,7 @@ impl Router {
         let p = self
             .get(provider_id)
             .ok_or_else(|| CodecError::unsupported(format!("no provider: {provider_id}")))?;
-        p.component.import_doc(bytes)
+        p.provider.import_doc(bytes)
     }
 
     /// Export canonical CRDT bytes to a provider's native format.
@@ -206,7 +192,7 @@ impl Router {
         let p = self
             .get(provider_id)
             .ok_or_else(|| CodecError::unsupported(format!("no provider: {provider_id}")))?;
-        p.component.export_doc(canonical)
+        p.provider.export_doc(canonical)
     }
 }
 

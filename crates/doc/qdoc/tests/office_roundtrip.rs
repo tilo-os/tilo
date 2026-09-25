@@ -408,13 +408,12 @@ fn large_document_parse_and_serialize_is_fast() {
     let built = d.materialize();
     assert_eq!(built.blocks.len(), N, "built N blocks");
 
-    // Guard #2 (mode-independent): the truncating fractional key keeps
-    // order keys bounded (~32 bytes for 4000 sequential appends) instead
-    // of growing a byte per insert, which makes comparison O(n) and
-    // building/sorting O(n^2).
+    // Guard #2 (mode-independent): appended order keys grow logarithmically
+    // (three bytes cover millions of sequential appends) instead of linearly,
+    // which would make comparison O(n) and building/sorting O(n^2).
     let max_key_len = d.block_order_key_lengths().into_iter().max().unwrap_or(0);
     assert!(
-        max_key_len <= 64,
+        max_key_len <= 3,
         "max block order-key length is {max_key_len} bytes for {N} blocks — key_between must keep \
          it bounded; linear growth is O(n^2) (holds in debug and release)"
     );
@@ -464,8 +463,10 @@ fn large_document_parse_and_serialize_is_fast() {
                 "{name}: bold runs preserved"
             );
 
-            // Display-only byte count; a test fixture is nowhere near f64's exact-integer range.
-            #[allow(clippy::cast_precision_loss)]
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "display-only byte count; a test fixture is nowhere near f64's exact-integer range"
+            )]
             let kib = bytes.len() as f64 / 1024.0;
             let _ = writeln!(
                 report,

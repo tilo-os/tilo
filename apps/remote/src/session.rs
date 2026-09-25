@@ -171,7 +171,7 @@ mod tests {
         Connection {
             id: Uuid::new_v4(),
             name: "Saved machine".into(),
-            host: iroh::SecretKey::generate().public().to_string(),
+            host: iroh_base::SecretKey::generate().public().to_string(),
             port: kind.default_port(),
             user: String::new(),
             kind,

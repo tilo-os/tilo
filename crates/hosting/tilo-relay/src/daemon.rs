@@ -27,6 +27,7 @@ use crate::compute_session::ComputeProtocol;
 use crate::compute_transport::COMPUTE_ALPN;
 use crate::compute_worker::{ProductionComputeWorkerConfig, run_production_compute_worker};
 use crate::config::{PeerRelayConfig, RelayConfig};
+use crate::frame::{read_frame, write_frame};
 use crate::metrics::Metrics;
 use crate::peer::{
     PeerContext, WorkspaceAutobind, WorkspaceRegistry, get_or_autobind_workspace, now_ns, run_peer,
@@ -1609,53 +1610,6 @@ async fn handle_conn(
         tracing::debug!("peer session ended with error: {e}");
     }
     connection.close(0u32.into(), b"relay session ended");
-    Ok(())
-}
-
-/// Read a 4-byte-LE-prefix framed message from `recv`.
-///
-/// # Errors
-///
-/// Returns an error if the stream closes or errors mid-read, or if the
-/// decoded length prefix is `0` or exceeds `max` — the latter guards
-/// against a peer claiming an unbounded frame.
-pub async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Vec<u8>, std::io::Error> {
-    let mut prefix = [0u8; 4];
-    recv.read_exact(&mut prefix)
-        .await
-        .map_err(std::io::Error::other)?;
-    let n = u32::from_le_bytes(prefix) as usize;
-    if n == 0 || n > max {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("frame size {n} out of range"),
-        ));
-    }
-    let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(std::io::Error::other)?;
-    Ok(buf)
-}
-
-/// Write a 4-byte-LE-prefix framed message to `send`.
-///
-/// # Errors
-///
-/// Returns an error if the stream write fails, or if `data` is longer
-/// than `u32::MAX` bytes and so cannot be represented in the length
-/// prefix.
-pub async fn write_frame(send: &mut SendStream, data: &[u8]) -> Result<(), std::io::Error> {
-    let len = u32::try_from(data.len()).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "frame too large to encode a u32 length prefix",
-        )
-    })?;
-    send.write_all(&len.to_le_bytes()).await?;
-    if !data.is_empty() {
-        send.write_all(data).await?;
-    }
     Ok(())
 }
 

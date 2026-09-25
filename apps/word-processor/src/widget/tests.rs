@@ -3439,6 +3439,9 @@ fn toolbar_swatches_never_overlap_the_buttons() {
 fn misspelled_word_yields_a_squiggle_span_at_its_x_range() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
+    // The expected spans are English misspellings; pin the spelling language so the
+    // test does not follow the host's `LANG` (the widget defaults to the locale's).
+    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     // "teh" is a classic misspelling flagged by the builtin dictionary; the
     // surrounding words are valid, so exactly one span is expected.
@@ -3508,6 +3511,9 @@ fn spellcheck_toggle_off_suppresses_the_squiggle_pass() {
 fn document_autocorrect_is_reversible_at_a_space_boundary() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
+    // The expected spans are English misspellings; pin the spelling language so the
+    // test does not follow the host's `LANG` (the widget defaults to the locale's).
+    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "teh");
 
@@ -3798,6 +3804,9 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
 
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
+    // The expected spans are English misspellings; pin the spelling language so the
+    // test does not follow the host's `LANG` (the widget defaults to the locale's).
+    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     // "qwordz" is not a real word → flagged. Followed by a valid word.
     wp.model_mut().insert_str(&mut state.doc, "qwordz quick");
@@ -3852,6 +3861,9 @@ fn right_click_on_misspelled_word_offers_add_to_dictionary_and_clears_squiggle()
 fn right_click_suggestion_replaces_the_word() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
+    // The expected spans are English misspellings; pin the spelling language so the
+    // test does not follow the host's `LANG` (the widget defaults to the locale's).
+    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     // "teh" suggests "the".
     wp.model_mut().insert_str(&mut state.doc, "teh end");
@@ -3931,6 +3943,9 @@ fn right_click_with_no_selection_selects_word_and_menu_has_copy() {
 fn spell_cache_reuses_unchanged_blocks_and_rechecks_after_edit() {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
+    // The expected spans are English misspellings; pin the spelling language so the
+    // test does not follow the host's `LANG` (the widget defaults to the locale's).
+    wp.set_spell_language("en_US");
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "wrold");
     let id = wp.blocks[0].id.clone();
@@ -6772,6 +6787,63 @@ fn failed_save_is_visible_and_keeps_the_document_modified() {
         matches!(wp.toast.as_ref(), Some((_, ToastKind::Error))),
         "the user sees an error toast instead of an stderr-only failure"
     );
+}
+
+/// Each body block's text and marks, what a reader sees of the document.
+fn body_content(doc: &automerge::AutoCommit) -> Vec<(String, Vec<qdoc::MarkSpan>)> {
+    let c = qdoc::model::open(doc, &automerge::ROOT).expect("qdoc schema");
+    qdoc::model::materialize(doc, &c)
+        .blocks
+        .into_iter()
+        .map(|b| (b.text, b.marks))
+        .collect()
+}
+
+#[test]
+fn undo_after_opening_a_file_takes_back_the_edit_and_never_the_file() {
+    let dir = temp_dir("open-then-undo");
+    std::fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("source.rtf");
+    std::fs::write(
+        &source,
+        br"{\rtf1\ansi Plain {\b bold} and {\i italic} words\par A {\ul second} paragraph\par}",
+    )
+    .unwrap();
+    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    // Opening leaves nothing pending: the file is the document's committed starting point.
+    assert_eq!(state.doc.pending_ops(), 0);
+    let opened = body_content(&state.doc);
+    assert!(
+        opened
+            .iter()
+            .any(|(_, marks)| marks.iter().any(|m| m.name == "strong")),
+        "the file's formatting came through: {opened:?}"
+    );
+
+    wp.sync(&mut state.doc, &state.root);
+    wp.model_mut().insert_str(&mut state.doc, "edited ");
+    state.commit_action(None, None);
+    let edited = body_content(&state.doc);
+    assert_ne!(edited, opened);
+
+    assert!(state.undo(None, None).is_some(), "the edit is undoable");
+    assert_eq!(
+        body_content(&state.doc),
+        opened,
+        "undo restores the file as opened"
+    );
+    assert!(
+        state.undo(None, None).is_none(),
+        "there is nothing before the file to undo"
+    );
+    assert_eq!(body_content(&state.doc), opened);
+    assert!(state.redo(None, None).is_some());
+    assert_eq!(
+        body_content(&state.doc),
+        edited,
+        "redo brings the edit back"
+    );
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
