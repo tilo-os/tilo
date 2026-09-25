@@ -327,7 +327,7 @@ done
 %{_userunitdir}/tilo-ush.socket
 %{_prefix}/lib/user-tmpfiles.d/tilo-model-manager.conf
 %config %{_sysconfdir}/profile.d/tilo-apps.sh
-%config(noreplace) %{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
+%{_sysconfdir}/tilo/runtime-bundle-trusted-publishers.txt
 %{_datadir}/tilo-apps
 %{_prefix}/lib/tilo-apps
 %{_prefix}/lib/tilo-runtime
