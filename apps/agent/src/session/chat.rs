@@ -1,6 +1,17 @@
 //! Canonical package-primary Chat orchestration. Work is a threaded Chat
-//! record; it is never a shell TaskRun or a grant of authority.
-use super::*;
+//! record; it is never a shell `TaskRun` or a grant of authority.
+use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
+
+use anyhow::Result;
+use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload, RouteSpec};
+use ui::presence::PresenceKey;
+
+use super::{ActiveRun, Session, arguments_for_step, is_chat_app_id};
+use crate::apply::Editor;
+use crate::model::Route;
+use crate::plan::{self, Instruction};
+use crate::surface::{self, AppContract};
 use ::chat::doc::ChatDoc;
 use ::chat::model::{
     AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
@@ -141,8 +152,7 @@ impl Session {
                     Some(peer) if peer.route_app_id() == route_app_id => {
                         peer.merge_incremental(&data)
                     }
-                    Some(_) => Ok(false),
-                    None => Ok(false),
+                    Some(_) | None => Ok(false),
                 },
             }?;
             if changed && let Some(peer) = self.peers.get("chat") {
@@ -195,8 +205,7 @@ impl Session {
                     Some(peer) if peer.route_app_id() == route_app_id => {
                         peer.merge_incremental(&data)
                     }
-                    Some(_) => Ok(false),
-                    None => Ok(false),
+                    Some(_) | None => Ok(false),
                 },
             };
         }

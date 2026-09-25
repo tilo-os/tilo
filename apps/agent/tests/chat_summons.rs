@@ -16,6 +16,7 @@ use chat::{
 use std::time::{Duration, Instant};
 use tilo_actions::Action;
 use tilo_agent::{Config, Session};
+use tilo_automerge::ApplyIncoming as _;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 mod typed_peer;
 use typed_peer::{TypedPeer, send};
@@ -306,15 +307,14 @@ fn scenario_outcome(
                     _ => {}
                 }
             }
-            if let Some(event) = chat_peer.recv().unwrap() {
-                if let Some(DocumentMutation::Incremental(data)) =
+            if let Some(event) = chat_peer.recv().unwrap()
+                && let Some(DocumentMutation::Incremental(data)) =
                     typed_peer::document_mutation(&event)
-                {
-                    chat.load_incremental(&data).unwrap();
-                    for m in ChatDoc::list_messages(&chat, "c_general") {
-                        if let Some(w) = m.work {
-                            observed.push(w);
-                        }
+            {
+                chat.load_incoming(&data).unwrap();
+                for m in ChatDoc::list_messages(&chat, "c_general") {
+                    if let Some(w) = m.work {
+                        observed.push(w);
                     }
                 }
             }
@@ -346,15 +346,14 @@ fn scenario_outcome(
         let expected_requests = requests.max(1);
         let mut durable_reply = false;
         while Instant::now() < drain {
-            if let Some(event) = chat_peer.recv().unwrap() {
-                if let Some(DocumentMutation::Incremental(data)) =
+            if let Some(event) = chat_peer.recv().unwrap()
+                && let Some(DocumentMutation::Incremental(data)) =
                     typed_peer::document_mutation(&event)
-                {
-                    chat.load_incremental(&data).unwrap();
-                    for message in ChatDoc::list_messages(&chat, "c_general") {
-                        if let Some(work) = message.work {
-                            observed.push(work);
-                        }
+            {
+                chat.load_incoming(&data).unwrap();
+                for message in ChatDoc::list_messages(&chat, "c_general") {
+                    if let Some(work) = message.work {
+                        observed.push(work);
                     }
                 }
             }

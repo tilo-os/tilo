@@ -736,11 +736,12 @@ pub fn catalogue_summary(catalogue: &Catalogue, revealed: &mut Revealed, most: u
         _ if opened_app(offer).is_some() => 0,
         tilo_actions::OperationKind::Document => 1,
         tilo_actions::OperationKind::View => 2,
-        _ => 3,
+        tilo_actions::OperationKind::Effect => 3,
     };
     // Per application, best first; then round-robin so a large application
     // cannot crowd the others (or the opens) out of the summary.
-    let mut per_app: std::collections::BTreeMap<&str, Vec<&Offer>> = Default::default();
+    let mut per_app: std::collections::BTreeMap<&str, Vec<&Offer>> =
+        std::collections::BTreeMap::default();
     for offer in &catalogue.offers {
         per_app.entry(offer.app.as_str()).or_default().push(offer);
     }

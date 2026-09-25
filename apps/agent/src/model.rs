@@ -166,10 +166,9 @@ impl Chooser {
         turns: Arc<dyn TurnTransport>,
     ) -> Self {
         let mut profile = agent_provider_config::ProviderProfile::hosted(protocol);
-        profile
-            .models
-            .push(agent_provider_config::ModelDescriptor::new("scripted"));
-        let selection = ProviderSelection::from_profile(&profile, profile.models[0].clone());
+        let model = agent_provider_config::ModelDescriptor::new("scripted");
+        profile.models.push(model.clone());
+        let selection = ProviderSelection::from_profile(&profile, model);
         Self {
             provider: Some(ProviderConnection { selection }),
             timeout,
@@ -223,17 +222,16 @@ impl Chooser {
             id: self.trace.load(Ordering::Relaxed),
             turn: u32::try_from(turn).unwrap_or(u32::MAX),
         };
-        match &self.turns {
-            Some(turns) => turns.start(TurnRequest {
+        if let Some(turns) = &self.turns {
+            turns.start(TurnRequest {
                 body,
                 timeout,
                 trace: Some(trace),
-            }),
-            None => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let _ = tx.send(TurnEvent::Finished(Err("no model transport".into())));
-                rx
-            }
+            })
+        } else {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let _ = tx.send(TurnEvent::Finished(Err("no model transport".into())));
+            rx
         }
     }
 
@@ -382,7 +380,7 @@ impl Chooser {
                     for call in calls {
                         let answer =
                             tools::answer(&call.name, &call.input, catalogue, &mut revealed);
-                        messages.push(dialect.tool_result(&call.id, answer));
+                        messages.push(dialect.tool_result(&call.id, &answer));
                     }
                     if dialect == Dialect::Anthropic {
                         fold_anthropic_results(&mut messages);
@@ -422,7 +420,7 @@ enum Dialect {
     /// Anthropic Messages: `system` key, `input_schema` tools, `tool_use`
     /// blocks, `tool_result` blocks in one user turn.
     Anthropic,
-    /// OpenAI Chat Completions: a system message, `function` tools,
+    /// `OpenAI` Chat Completions: a system message, `function` tools,
     /// `message.tool_calls` with JSON-string arguments, `role: "tool"` replies.
     OpenAi,
 }
@@ -465,7 +463,7 @@ impl Dialect {
         }
     }
 
-    fn tool_result(self, id: &str, answer: String) -> Value {
+    fn tool_result(self, id: &str, answer: &str) -> Value {
         match self {
             Self::Anthropic => {
                 serde_json::json!({ "type": "tool_result", "tool_use_id": id, "content": answer })
@@ -503,7 +501,7 @@ fn action_request_body_for(
     })
 }
 
-/// The OpenAI Chat Completions request for one discovery turn. The tool
+/// The `OpenAI` Chat Completions request for one discovery turn. The tool
 /// definitions are the same ones the Anthropic dialect sends, re-enveloped;
 /// `tool_choice: "required"` keeps the model inside the tool conversation
 /// (an answer that neither discovers nor plans is an error in both dialects).
@@ -716,7 +714,7 @@ fn post_provider(
     .map_err(|error| AskError::Failed(error.to_string()))
 }
 
-/// Send one action-discovery turn. The OpenAI dialect streams: the gateway
+/// Send one action-discovery turn. The `OpenAI` dialect streams: the gateway
 /// reports each tool call the moment it is complete (logged here), then the
 /// assembled body, so the loop itself is identical for both dialects.
 fn post_action_turn(
@@ -948,13 +946,13 @@ impl Conversation {
         }
     }
 
-    /// Whether the provider streams argument deltas (OpenAI dialect).
+    /// Whether the provider streams argument deltas (`OpenAI` dialect).
     pub fn streams(&self) -> bool {
         self.dialect == Dialect::OpenAi
     }
 
     /// The request for the next turn, offering `tools` (Anthropic-shaped
-    /// definitions, re-enveloped for the OpenAI dialect).
+    /// definitions, re-enveloped for the `OpenAI` dialect).
     pub fn body(&self, tools: &Value) -> Value {
         match self.dialect {
             Dialect::Anthropic => serde_json::json!({
@@ -994,7 +992,7 @@ impl Conversation {
     pub fn push(&mut self, assistant: Value, results: Vec<(String, String)>) {
         self.messages.push(assistant);
         for (id, answer) in results {
-            self.messages.push(self.dialect.tool_result(&id, answer));
+            self.messages.push(self.dialect.tool_result(&id, &answer));
         }
         if self.dialect == Dialect::Anthropic {
             fold_anthropic_results(&mut self.messages);
@@ -1285,7 +1283,7 @@ mod tests {
         assert_eq!(assistant["tool_calls"][1]["id"], "call_2");
         messages.push(assistant);
         for call in &calls {
-            messages.push(dialect.tool_result(&call.id, "listed".into()));
+            messages.push(dialect.tool_result(&call.id, "listed"));
         }
         assert_eq!(messages[3]["role"], "tool");
         assert_eq!(messages[3]["tool_call_id"], "call_1");
@@ -1305,7 +1303,7 @@ mod tests {
         assert_eq!(input["why"], "x");
     }
 
-    /// With `TILO_AGENT_DUMP_OPENAI_BODY=<path>`, write the first OpenAI
+    /// With `TILO_AGENT_DUMP_OPENAI_BODY=<path>`, write the first `OpenAI`
     /// discovery request (real tool schemas) for a live provider check.
     #[test]
     fn openai_first_turn_body_can_be_dumped_for_a_live_check() {
@@ -1380,8 +1378,8 @@ mod tests {
         assert_eq!(body["messages"].as_array().unwrap().len(), 1);
         assert!(body["tools"][0].get("input_schema").is_some());
         messages.push(serde_json::json!({"role": "assistant", "content": []}));
-        messages.push(dialect.tool_result("t1", "a".into()));
-        messages.push(dialect.tool_result("t2", "b".into()));
+        messages.push(dialect.tool_result("t1", "a"));
+        messages.push(dialect.tool_result("t2", "b"));
         fold_anthropic_results(&mut messages);
         assert_eq!(messages.len(), 3);
         assert_eq!(messages[2]["role"], "user");
@@ -1391,6 +1389,11 @@ mod tests {
 
 /// Decode only the launcher's explicit nonsecret profile/model/protocol tuple.
 /// Endpoint, bearer credentials and vault references never enter this contract.
+///
+/// # Errors
+///
+/// Returns a description of the first violation when `value` is not exactly
+/// that tuple or names an unknown protocol or model.
 pub fn managed_provider_selection(value: &Value) -> Result<ProviderSelection, String> {
     let object = value
         .as_object()
@@ -1715,17 +1718,19 @@ pub mod plan_stream {
                     _ => self.fail(),
                 },
                 '}' => match self.stack.last() {
-                    Some(Frame::Object { state, .. })
-                        if matches!(state, Obj::KeyOrEnd | Obj::CommaOrEnd) =>
-                    {
+                    Some(Frame::Object {
+                        state: Obj::KeyOrEnd | Obj::CommaOrEnd,
+                        ..
+                    }) => {
                         self.stack.pop();
                     }
                     _ => self.fail(),
                 },
                 ']' => match self.stack.last() {
-                    Some(Frame::Array { state, .. })
-                        if matches!(state, Arr::ValueOrEnd | Arr::CommaOrEnd) =>
-                    {
+                    Some(Frame::Array {
+                        state: Arr::ValueOrEnd | Arr::CommaOrEnd,
+                        ..
+                    }) => {
                         self.stack.pop();
                     }
                     _ => self.fail(),
@@ -1740,6 +1745,10 @@ pub mod plan_stream {
             }
         }
 
+        #[allow(
+            clippy::too_many_lines,
+            reason = "one lexer state transition per escape and character class; splitting it scatters the JSON string grammar"
+        )]
         fn text_char(&mut self, c: char, out: &mut dyn FnMut(&Field, &str, bool)) {
             let Lex::Text(text) = &mut self.lex else {
                 return;
@@ -1872,13 +1881,13 @@ pub mod plan_stream {
 
         /// Split `text` at pseudo-random character boundaries.
         fn random_split(text: &str, seed: u64) -> Vec<&str> {
-            let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let mut state = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
             let mut pieces = Vec::new();
             let mut start = 0;
             while start < text.len() {
                 state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
                 let want = 1 + (state >> 33) as usize % 7;
                 let mut end = (start + want).min(text.len());
                 while !text.is_char_boundary(end) {
@@ -1955,7 +1964,7 @@ pub mod plan_stream {
 
         #[test]
         fn a_partial_escape_is_withheld_until_complete() {
-            let seen = scan(&[r#"{"reply":"a\"#, r#"u00"#, r#"e9b\ud83c"#, r#"\udf0a"#]);
+            let seen = scan(&[r#"{"reply":"a\"#, r"u00", r"e9b\ud83c", r"\udf0a"]);
             let values: Vec<&str> = seen.iter().map(|(_, v, _)| v.as_str()).collect();
             assert_eq!(values, ["a", "a\u{e9}b", "a\u{e9}b\u{1f30a}"]);
             assert!(seen.iter().all(|(_, _, done)| !done), "still unterminated");

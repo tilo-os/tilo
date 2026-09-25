@@ -14,6 +14,7 @@
 //! input only: it names what happened, it grants nothing.
 
 use std::collections::VecDeque;
+use std::fmt::Write as _;
 
 /// Most exchanges kept from this process's own tasks.
 pub const MEMORY_EXCHANGES: usize = 8;
@@ -103,18 +104,18 @@ impl Memory {
                                 let mut line = format!("{} ", text(step, "app"));
                                 let record = text(step, "record");
                                 if !record.is_empty() {
-                                    line.push_str(&format!("({record}) "));
+                                    let _ = write!(line, "({record}) ");
                                 }
                                 line.push_str(&text(step, "action"));
                                 let resource = text(step, "resource");
                                 if !resource.is_empty() {
-                                    line.push_str(&format!(" on {resource}"));
+                                    let _ = write!(line, " on {resource}");
                                 }
                                 let args = text(step, "args");
                                 if !args.is_empty() && args != "{}" {
-                                    line.push_str(&format!(" {args}"));
+                                    let _ = write!(line, " {args}");
                                 }
-                                line.push_str(&format!(" → {}", text(step, "outcome")));
+                                let _ = write!(line, " → {}", text(step, "outcome"));
                                 clip(&line, 600)
                             })
                             .collect()
@@ -186,10 +187,11 @@ impl Memory {
     fn render_from(&self, skip: usize) -> String {
         let mut s = String::new();
         if !self.people.is_empty() {
-            s.push_str(&format!(
-                "People in this workspace (write @Name to mention someone): {}\n\n",
+            let _ = writeln!(
+                s,
+                "People in this workspace (write @Name to mention someone): {}\n",
                 self.people.join(", ")
-            ));
+            );
         }
         let kept: Vec<&Exchange> = self.exchanges.iter().skip(skip).collect();
         if kept.is_empty() {
@@ -201,13 +203,13 @@ impl Memory {
         );
         let omitted = self.omitted + skip;
         if omitted > 0 {
-            s.push_str(&format!("({omitted} older exchange(s) not shown)\n"));
+            let _ = writeln!(s, "({omitted} older exchange(s) not shown)");
         }
         let full_from = kept.len().saturating_sub(FULL_EXCHANGES);
         for (index, exchange) in kept.iter().enumerate() {
             let full = index >= full_from;
             let most = if full { 1_200 } else { 160 };
-            s.push_str(&format!("- Person: {}\n", clip(&exchange.request, most)));
+            let _ = writeln!(s, "- Person: {}", clip(&exchange.request, most));
             let shown = if full { exchange.actions.len() } else { 3 };
             for action in exchange.actions.iter().take(shown) {
                 let action = if full {
@@ -215,13 +217,13 @@ impl Memory {
                 } else {
                     clip(action, 140)
                 };
-                s.push_str(&format!("  You did: {action}\n"));
+                let _ = writeln!(s, "  You did: {action}");
             }
             let more = exchange.more_actions + exchange.actions.len().saturating_sub(shown);
             if more > 0 {
-                s.push_str(&format!("  (and {more} more operation(s))\n"));
+                let _ = writeln!(s, "  (and {more} more operation(s))");
             }
-            s.push_str(&format!("  You replied: {}\n", clip(&exchange.reply, most)));
+            let _ = writeln!(s, "  You replied: {}", clip(&exchange.reply, most));
         }
         s.push('\n');
         s

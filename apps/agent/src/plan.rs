@@ -256,7 +256,7 @@ impl Step {
             Instruction::Perform { id, .. } => {
                 surface::find(offers, id).is_some_and(Offer::wants_content)
             }
-            _ => false,
+            Instruction::Unknown(_) => false,
         };
         Step {
             instruction,
@@ -275,7 +275,7 @@ impl Step {
                 .as_ref()
                 .and_then(surface::opens)
                 .is_some(),
-            _ => false,
+            Instruction::Unknown(_) => false,
         }
     }
 

@@ -25,13 +25,21 @@
 //! Every bound is enforced here, not asked for: model turns, wall-clock time
 //! and the host's durable step budget.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::time::{Duration, Instant};
 
+use anyhow::Result;
 use serde_json::Value;
+use ui::collaboration::CollabEvent;
 
-use super::*;
+use super::{
+    ChunkedParagraph, Handoff, MAX_TASK_STEPS, Session, TaskAction, TaskActionStop,
+    arguments_for_step, task_action_from_offer, with_param,
+};
 use crate::model::{Conversation, StreamSignal, TurnEvent, plan_stream::PlanArgumentsScanner};
+use crate::plan::{self, ConfirmationEvidence, Instruction};
+use crate::surface;
 use crate::tools::{self, InvokeReport, Revealed};
 
 /// Most model turns one task may take. Turns are cheap (well under two
@@ -835,6 +843,10 @@ impl Session {
 
     /// One model turn: stream it, execute its calls as they complete, record
     /// the results. `Some` ends the loop.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one model turn keeps streaming, call execution, timeouts and result recording in a single auditable sequence"
+    )]
     fn run_turn(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -920,7 +932,7 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_gateway::TraceEvent::PlanFailed, turn);
-                if let Some(end) = state.finished_despite_failed_plan(&error.to_string()) {
+                if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
                 let written = state
@@ -955,7 +967,7 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_gateway::TraceEvent::PlanFailed, turn);
-                if let Some(end) = state.finished_despite_failed_plan(&error.to_string()) {
+                if let Some(end) = state.finished_despite_failed_plan(&error) {
                     return Ok(Some(end));
                 }
                 return Ok(Some(LoopEnd::Failed(format!(
@@ -1017,7 +1029,8 @@ impl Session {
                 if *by_plan || entry.is_empty() {
                     *entry = note;
                 } else {
-                    entry.push_str(&format!("\n{note}"));
+                    entry.push('\n');
+                    entry.push_str(&note);
                 }
                 finish = None;
             }
@@ -1061,6 +1074,10 @@ impl Session {
 
     /// Handle one completed call. `failed` records that an `invoke` of this
     /// turn did not succeed; the rest of the turn's invokes are then not run.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one completed call is checked, resolved, performed and recorded in a single auditable sequence"
+    )]
     fn handle_call(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1084,8 +1101,9 @@ impl Session {
                     .get("operation")
                     .and_then(Value::as_str)
                     .map(|operation| state.revealed.resolve(operation))
+                    && let Some(object) = input.as_object_mut()
                 {
-                    input["operation"] = Value::String(id);
+                    object.insert("operation".into(), Value::String(id));
                 }
                 self.name_part_applications(&mut input);
                 let call = &StreamedCall {
@@ -1218,6 +1236,10 @@ impl Session {
 
     /// Check and perform one `invoke`. The second value is set when the task
     /// was cancelled and the loop must stop.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one invoke keeps its permission check, dispatch, streaming and outcome reporting together"
+    )]
     fn invoke_from_loop(
         &mut self,
         run: &runtime_collab::TaskRunEnvelope,
@@ -1302,40 +1324,37 @@ impl Session {
             .collect();
         let index = state.completed;
         self.set_executing(true);
-        let result = match self.chunkable(&action, &arguments) {
-            Some((param, text, next)) => {
-                let budget = MAX_TASK_STEPS
-                    .saturating_sub(state.step_index)
-                    .clamp(1, crate::live::MAX_CHUNKS);
-                let paragraph = ChunkedParagraph {
-                    first: &action,
-                    next: &next,
-                    param: &param,
-                    arguments: &arguments,
-                    text: &text,
-                    budget,
-                };
-                self.run_chunked_paragraph(
-                    run,
-                    index,
-                    &mut state.step_index,
-                    &paragraph,
-                    &mut state.stepped,
-                )
-            }
-            None => {
-                self.live_applying(&action, &arguments, None);
-                let result = self.run_task_step(
-                    run,
-                    index,
-                    state.step_index,
-                    &action,
-                    &arguments,
-                    &mut state.stepped,
-                );
-                state.step_index += 1;
-                result
-            }
+        let result = if let Some((param, text, next)) = self.chunkable(&action, &arguments) {
+            let budget = MAX_TASK_STEPS
+                .saturating_sub(state.step_index)
+                .clamp(1, crate::live::MAX_CHUNKS);
+            let paragraph = ChunkedParagraph {
+                first: &action,
+                next: &next,
+                param: &param,
+                arguments: &arguments,
+                text: &text,
+                budget,
+            };
+            self.run_chunked_paragraph(
+                run,
+                index,
+                &mut state.step_index,
+                &paragraph,
+                &mut state.stepped,
+            )
+        } else {
+            self.live_applying(&action, &arguments, None);
+            let result = self.run_task_step(
+                run,
+                index,
+                state.step_index,
+                &action,
+                &arguments,
+                &mut state.stepped,
+            );
+            state.step_index += 1;
+            result
         };
         self.set_executing(false);
         match result? {
@@ -1505,37 +1524,35 @@ impl Session {
                 state.streaming = Some(streaming);
                 return Ok(None);
             }
-            let (text, done) = match complete {
-                Some(text) => (text.to_owned(), true),
-                None => {
-                    let Some(meta) = self
-                        .turn
-                        .as_ref()
-                        .and_then(|turn| turn.metas.get(&streaming.index))
-                    else {
+            let (text, done) = if let Some(text) = complete {
+                (text.to_owned(), true)
+            } else {
+                let Some(meta) = self
+                    .turn
+                    .as_ref()
+                    .and_then(|turn| turn.metas.get(&streaming.index))
+                else {
+                    state.streaming = Some(streaming);
+                    return Ok(None);
+                };
+                if meta
+                    .args
+                    .iter()
+                    .any(|(name, _, _)| *name != streaming.param)
+                {
+                    // Another argument: this call is not only its text.
+                    if streaming.chunks > 0 {
+                        streaming.failed =
+                            Some("the call carried an argument its streamed text did not".into());
                         state.streaming = Some(streaming);
-                        return Ok(None);
-                    };
-                    if meta
-                        .args
-                        .iter()
-                        .any(|(name, _, _)| *name != streaming.param)
-                    {
-                        // Another argument: this call is not only its text.
-                        if streaming.chunks > 0 {
-                            streaming.failed = Some(
-                                "the call carried an argument its streamed text did not".into(),
-                            );
-                            state.streaming = Some(streaming);
-                        }
-                        return Ok(None);
                     }
-                    let Some((_, text, done)) = meta.args.first().cloned() else {
-                        state.streaming = Some(streaming);
-                        return Ok(None);
-                    };
-                    (text, done)
+                    return Ok(None);
                 }
+                let Some((_, text, done)) = meta.args.first().cloned() else {
+                    state.streaming = Some(streaming);
+                    return Ok(None);
+                };
+                (text, done)
             };
             let Some(pending) = text.strip_prefix(streaming.committed.as_str()) else {
                 streaming.failed = Some("the final text differs from what was streamed".into());
@@ -1548,7 +1565,10 @@ impl Session {
                 state.streaming = Some(streaming);
                 return Ok(None);
             };
-            let chunk = pending[..len].to_owned();
+            let Some(chunk) = pending.get(..len).map(str::to_owned) else {
+                state.streaming = Some(streaming);
+                return Ok(None);
+            };
             let pending = pending.to_owned();
             let action = if streaming.chunks == 0 {
                 streaming.first.clone()
@@ -1833,7 +1853,7 @@ fn newly_available(
     ordered.sort_by_key(|offer| match offer.descriptor.kind {
         tilo_actions::OperationKind::Document => 0,
         tilo_actions::OperationKind::View => 1,
-        _ => 2,
+        tilo_actions::OperationKind::Effect => 2,
     });
     for offer in ordered {
         let id = offer.id();
@@ -1862,11 +1882,16 @@ fn newly_available(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{TurnRequest, TurnTransport};
+    use crate::model::{Chooser, TurnRequest, TurnTransport};
+    use crate::plan::Block;
+    use crate::session::Config;
     use std::sync::{Arc, Mutex};
     use std::{cell::RefCell, rc::Rc};
     use tilo_actions::{ActionContract, ActionParam, Availability, ParamType};
+    use ui::collaboration::CollabRequest;
     use ui::collaboration::{BrokerActionDescriptor, BrokerActionInput, BrokerActionSurface};
+    use ui::permissions::PermissionContext;
+    use uuid::Uuid;
 
     // -- A scripted model ------------------------------------------------
 
@@ -2019,6 +2044,10 @@ mod tests {
     }
 
     impl World {
+        #[allow(
+            clippy::too_many_lines,
+            reason = "the fixture world declares every published operation in one place"
+        )]
         fn surfaces(&self) -> Vec<BrokerActionSurface> {
             let text = |name: &'static str| {
                 ActionParam::required(name, ParamType::Text, "The text to write")
@@ -2358,6 +2387,10 @@ mod tests {
         paced_fixture(title, world, turns, None)
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one fixture wires the scripted model, the fake broker peer and the real Session"
+    )]
     fn paced_fixture(
         title: &str,
         world: World,
@@ -2475,7 +2508,7 @@ mod tests {
         format!("broker:{PEER}:{DOC}#{action}")
     }
 
-    fn invoke(action: &str, arguments: Value) -> (&'static str, Value) {
+    fn invoke(action: &str, arguments: &Value) -> (&'static str, Value) {
         (
             tools::INVOKE,
             serde_json::json!({"operation": op(action), "parameters": arguments}),
@@ -2542,14 +2575,14 @@ mod tests {
             "make the second paragraph bold",
             world,
             vec![
-                turn(&[invoke("read-text", serde_json::json!({}))], 16),
+                turn(&[invoke("read-text", &serde_json::json!({}))], 16),
                 turn(
-                    &[invoke("select-block", serde_json::json!({"block": "p2"}))],
+                    &[invoke("select-block", &serde_json::json!({"block": "p2"}))],
                     16,
                 ),
                 turn(
                     &[
-                        invoke("toggle-mark", serde_json::json!({"mark": "strong"})),
+                        invoke("toggle-mark", &serde_json::json!({"mark": "strong"})),
                         finish("Done: the second paragraph is bold now.", true),
                     ],
                     16,
@@ -2584,13 +2617,13 @@ mod tests {
             }
         );
 
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(
             bodies.len(),
             3,
             "three turns: read, select, toggle + finish"
         );
-        for body in bodies.iter() {
+        for body in &bodies {
             assert_eq!(
                 tool_names(body),
                 [
@@ -2642,7 +2675,7 @@ mod tests {
             World::default(),
             vec![turn(
                 &[
-                    invoke("append-paragraph", serde_json::json!({"text": text})),
+                    invoke("append-paragraph", &serde_json::json!({"text": text})),
                     finish("Here you go: a paragraph about the ocean.", true),
                 ],
                 24,
@@ -2709,8 +2742,8 @@ mod tests {
             vec![
                 turn(
                     &[
-                        invoke("append-paragraph", serde_json::json!({"text": "hi"})),
-                        invoke("read-text", serde_json::json!({})),
+                        invoke("append-paragraph", &serde_json::json!({"text": "hi"})),
+                        invoke("read-text", &serde_json::json!({})),
                         finish("Written.", true),
                     ],
                     64,
@@ -2729,7 +2762,7 @@ mod tests {
             ["append-paragraph"],
             "the step after the failure did not run"
         );
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 2);
         let second = bodies[1]["messages"].to_string();
         assert!(second.contains("append-paragraph was refused"), "{second}");
@@ -2765,7 +2798,7 @@ mod tests {
         );
         f.session.run_task(&f.run).unwrap();
         assert!(f.world.borrow().steps.is_empty());
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert!(
             bodies[1]["messages"]
                 .to_string()
@@ -2820,7 +2853,7 @@ mod tests {
     fn streamed_text_is_written_before_its_call_completes() {
         let events = turn(
             &[
-                invoke("type-text", serde_json::json!({"text": LONG})),
+                invoke("type-text", &serde_json::json!({"text": LONG})),
                 finish("Written.", true),
             ],
             6,
@@ -2888,7 +2921,7 @@ mod tests {
         };
         let events = turn(
             &[
-                invoke("type-text", serde_json::json!({"text": LONG})),
+                invoke("type-text", &serde_json::json!({"text": LONG})),
                 finish("Written.", true),
             ],
             6,
@@ -2904,7 +2937,7 @@ mod tests {
         );
         f.session.run_task(&f.run).unwrap();
         assert_eq!(f.world.borrow().steps.len(), 2, "nothing after the refusal");
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 2);
         let second = bodies[1]["messages"].to_string();
         assert!(second.contains("type-text was refused"), "{second}");
@@ -2920,7 +2953,10 @@ mod tests {
     /// says how much was already written.
     #[test]
     fn a_model_error_mid_stream_stops_writing() {
-        let mut events = turn(&[invoke("type-text", serde_json::json!({"text": LONG}))], 6);
+        let mut events = turn(
+            &[invoke("type-text", &serde_json::json!({"text": LONG}))],
+            6,
+        );
         let cut = frame_position(&events, 0) - 4;
         events.truncate(cut);
         events.push(TurnEvent::Finished(Err("provider stream reset".into())));
@@ -2985,7 +3021,7 @@ mod tests {
             vec![
                 turn(
                     &[
-                        invoke("type-text", serde_json::json!({"text": "First."})),
+                        invoke("type-text", &serde_json::json!({"text": "First."})),
                         finish("Wrote the first line.", true),
                     ],
                     64,
@@ -3075,7 +3111,7 @@ mod tests {
         assert_eq!(accepted, 3);
     }
 
-    fn invoke_replying(action: &str, arguments: Value, reply: &str) -> (&'static str, Value) {
+    fn invoke_replying(action: &str, arguments: &Value, reply: &str) -> (&'static str, Value) {
         (
             tools::INVOKE,
             serde_json::json!({"operation": op(action), "parameters": arguments, "reply": reply}),
@@ -3092,7 +3128,7 @@ mod tests {
             vec![turn(
                 &[invoke_replying(
                     "type-text",
-                    serde_json::json!({"text": "Hi."}),
+                    &serde_json::json!({"text": "Hi."}),
                     "Wrote hi.",
                 )],
                 64,
@@ -3123,7 +3159,7 @@ mod tests {
                 turn(
                     &[invoke_replying(
                         "type-text",
-                        serde_json::json!({"text": "Hi."}),
+                        &serde_json::json!({"text": "Hi."}),
                         "Wrote hi.",
                     )],
                     64,
@@ -3154,7 +3190,7 @@ mod tests {
                 turn(
                     &[invoke_replying(
                         "type-text",
-                        serde_json::json!({"text": "Hello chat."}),
+                        &serde_json::json!({"text": "Hello chat."}),
                         "Posted hello.",
                     )],
                     64,
@@ -3171,7 +3207,7 @@ mod tests {
             run.title = title.into();
             f.session.run_task(&run).unwrap();
         }
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 3);
         let user = |body: &Value| body["messages"][1]["content"].as_str().unwrap().to_owned();
         let first = user(&bodies[0]);
@@ -3185,7 +3221,7 @@ mod tests {
         assert!(second.ends_with("what did you just do?"), "{second}");
         // Stable prefix: same system and tools on every turn of every task,
         // and the catalogue opens both tasks' first message byte-identically.
-        for body in bodies.iter() {
+        for body in &bodies {
             assert_eq!(body["tools"], bodies[0]["tools"]);
             assert_eq!(body["messages"][0], bodies[0]["messages"][0]);
         }
@@ -3204,6 +3240,10 @@ mod tests {
     /// its own paragraph backwards from its caret — and the question about
     /// its earlier work is answered from the same log.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario follows the agent's writing through history restore end to end"
+    )]
     fn undo_finds_the_agents_own_writing_in_the_restored_history() {
         let written = "Thunderstorms build on hot afternoons.";
         let history = serde_json::json!({
@@ -3250,7 +3290,7 @@ mod tests {
                 turn(
                     &[invoke_replying(
                         "erase-text",
-                        serde_json::json!({"direction": "backward", "count": count}),
+                        &serde_json::json!({"direction": "backward", "count": count}),
                         "Removed the thunderstorm paragraph I wrote.",
                     )],
                     64,
@@ -3309,7 +3349,7 @@ mod tests {
         let world = f.world.borrow();
         assert_eq!(world.blocks.len(), 1, "{:?}", world.blocks);
         assert_eq!(world.blocks[0].1, "Existing text.");
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         let first = bodies[0]["messages"][1]["content"].as_str().unwrap();
         assert!(
             first.contains(written),
@@ -3347,7 +3387,7 @@ mod tests {
                 turn(
                     &[invoke_replying(
                         "type-text",
-                        serde_json::json!({"text": "Hello."}),
+                        &serde_json::json!({"text": "Hello."}),
                         "Wrote hello, and pinging you now!",
                     )],
                     64,
@@ -3362,7 +3402,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 2, "the premature finish cost one more turn");
         assert!(bodies[1]["messages"].to_string().contains("Not finished"));
         assert_eq!(f.world.borrow().posts, ["Done writing hello in Writer."]);
@@ -3382,7 +3422,7 @@ mod tests {
             {"part": "write hello", "app": "so.tilo.word-processor"},
             {"part": "add a note", "app": "so.tilo.notes"}
         ]);
-        let mut first = invoke("type-text", serde_json::json!({"text": "Hello."}));
+        let mut first = invoke("type-text", &serde_json::json!({"text": "Hello."}));
         first.1["parts"] = parts;
         let mut f = fixture(
             "write hello and add a note",
@@ -3403,7 +3443,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 2);
         let second = bodies[1]["messages"].to_string();
         assert!(second.contains("add a note (in so.tilo.notes)"), "{second}");
@@ -3429,7 +3469,7 @@ mod tests {
             World::default(),
             vec![
                 turn(
-                    &[invoke("type-text", serde_json::json!({"text": "Hello."}))],
+                    &[invoke("type-text", &serde_json::json!({"text": "Hello."}))],
                     64,
                 ),
                 turn(&[post("Hello is in Writer.")], 64),
@@ -3446,7 +3486,7 @@ mod tests {
             "write hello in Writer, then ping me in Chat",
             World::default(),
             vec![turn(
-                &[invoke("type-text", serde_json::json!({"text": "Hello."}))],
+                &[invoke("type-text", &serde_json::json!({"text": "Hello."}))],
                 64,
             )],
         );
@@ -3522,7 +3562,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         let first = bodies[0]["messages"].to_string();
         assert!(first.contains(&open_writer), "the open is in the summary");
         assert!(!first.contains("#append-paragraph"), "Writer is closed");
@@ -3582,7 +3622,7 @@ mod tests {
                 turn(
                     &[invoke_replying(
                         "type-text",
-                        serde_json::json!({"text": "Rain falls."}),
+                        &serde_json::json!({"text": "Rain falls."}),
                         "Wrote the essay.",
                     )],
                     64,
@@ -3590,7 +3630,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 3);
         let second = bodies[1]["messages"].to_string();
         assert!(second.contains("does not finish a task"), "{second}");
@@ -3625,7 +3665,7 @@ mod tests {
                 turn(&[first], 64),
                 turn(
                     &[
-                        invoke("type-text", serde_json::json!({"text": "A note."})),
+                        invoke("type-text", &serde_json::json!({"text": "A note."})),
                         finish("Done.", true),
                     ],
                     64,
@@ -3634,7 +3674,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert_eq!(bodies.len(), 3);
         assert!(bodies[2]["messages"].to_string().contains("ping when done"));
         assert_eq!(f.world.borrow().posts, ["Starting now.", "Done!"]);
@@ -3649,11 +3689,11 @@ mod tests {
             "append a paragraph saying hi",
             World::default(),
             vec![
-                turn(&[invoke("append-paragraph", serde_json::json!({}))], 64),
+                turn(&[invoke("append-paragraph", &serde_json::json!({}))], 64),
                 turn(
                     &[invoke_replying(
                         "append-paragraph",
-                        serde_json::json!({"text": "hi"}),
+                        &serde_json::json!({"text": "hi"}),
                         "Done.",
                     )],
                     64,
@@ -3661,7 +3701,7 @@ mod tests {
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         let second = bodies[1]["messages"].to_string();
         assert!(second.contains("required argument `text`"), "{second}");
         assert!(second.contains("`text`: text (required)"), "{second}");
@@ -3683,13 +3723,13 @@ mod tests {
             "append a paragraph",
             World::default(),
             vec![
-                turn(&[invoke("append-paragraph", serde_json::json!({}))], 64),
-                turn(&[invoke("append-paragraph", serde_json::json!({}))], 64),
+                turn(&[invoke("append-paragraph", &serde_json::json!({}))], 64),
+                turn(&[invoke("append-paragraph", &serde_json::json!({}))], 64),
                 turn(&[finish("I could not.", false)], 64),
             ],
         );
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         assert!(
             !bodies[1]["messages"]
                 .to_string()
@@ -3706,13 +3746,13 @@ mod tests {
     /// answer says how many turns are left and asks the model to act.
     #[test]
     fn repeated_discovery_is_nudged_toward_acting() {
-        let mut turns: Vec<Vec<TurnEvent>> = (0..DISCOVERY_NUDGE + 1)
+        let mut turns: Vec<Vec<TurnEvent>> = (0..=DISCOVERY_NUDGE)
             .map(|_| turn(&[(tools::LIST_OPERATIONS, serde_json::json!({}))], 64))
             .collect();
         turns.push(turn(&[finish("Nothing to do.", true)], 64));
         let mut f = fixture("look around", World::default(), turns);
         f.session.run_task(&f.run).unwrap();
-        let bodies = f.script.bodies.lock().unwrap();
+        let bodies = f.script.bodies.lock().unwrap().clone();
         let before = bodies[DISCOVERY_NUDGE]["messages"].to_string();
         assert!(!before.contains("only looking things up"), "{before}");
         let after = bodies[DISCOVERY_NUDGE + 1]["messages"].to_string();

@@ -13,6 +13,7 @@
 //! the bound the reply tail (then the preview tail) is shortened further.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use crate::model::StreamSignal;
@@ -119,7 +120,7 @@ pub fn tail(text: &str, max: usize) -> &str {
     while !text.is_char_boundary(start) {
         start += 1;
     }
-    &text[start..]
+    text.get(start..).unwrap_or_default()
 }
 
 /// The first at most `max` bytes of `text`, ending on a char boundary.
@@ -131,7 +132,7 @@ pub fn head(text: &str, max: usize) -> &str {
     while !text.is_char_boundary(end) {
         end -= 1;
     }
-    &text[..end]
+    text.get(..end).unwrap_or_default()
 }
 
 impl AgentLiveUpdate {
@@ -182,22 +183,24 @@ impl AgentLiveUpdate {
             quote(&self.label)
         );
         if let Some(tool) = &self.tool {
-            json.push_str(&format!(",\"tool\":{}", quote(tool)));
+            let _ = write!(json, ",\"tool\":{}", quote(tool));
         }
         if let Some(reply) = &self.reply {
-            json.push_str(&format!(
+            let _ = write!(
+                json,
                 ",\"reply\":{{\"text\":{},\"done\":{}}}",
                 quote(&reply.text),
                 reply.done
-            ));
+            );
         }
         if let Some(preview) = &self.preview {
-            json.push_str(&format!(
+            let _ = write!(
+                json,
                 ",\"preview\":{{\"app\":{},\"record\":{},\"text\":{}}}",
                 quote(&preview.app),
                 quote(&preview.record),
                 quote(&preview.text)
-            ));
+            );
         }
         json.push('}');
         json
@@ -321,7 +324,7 @@ impl LivePublisher {
             }
         }
         self.view.state = Some(state);
-        self.view.label = head(label, MAX_LABEL_BYTES).to_owned();
+        head(label, MAX_LABEL_BYTES).clone_into(&mut self.view.label);
         self.view.tool = tool.map(|tool| head(tool, MAX_TOOL_BYTES).to_owned());
     }
 
@@ -667,7 +670,7 @@ mod tests {
             adapt_chunk_target(4000, Duration::from_secs(2)),
             MAX_CHUNK_TARGET
         );
-        let rest = &OCEAN[..];
+        let rest = OCEAN;
         let small = next_chunk_len(rest, 60, MAX_CHUNKS);
         let large = next_chunk_len(rest, 120, MAX_CHUNKS);
         assert!(

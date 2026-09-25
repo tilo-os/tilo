@@ -263,6 +263,15 @@ impl AdmittedJoinIdentity {
         }
     }
 
+    /// The caller this admitted connection is, confined to its room.
+    fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+        match &self.agent_id {
+            Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
+            None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
+        }
+        .in_room(room)
+    }
+
     fn policy_actor(&self, room: &str) -> Actor {
         match &self.agent_id {
             Some(agent) => Actor::agent(agent),
@@ -5538,6 +5547,60 @@ fn delegate_realtime_command(
 }
 
 impl channel_handle::Server for CapnpChannelHandle {
+    /// The caller-side door to published actions: one remote-action request
+    /// frame in, one answer out, as the caller this channel was admitted as.
+    fn remote_action(
+        self: Rc<Self>,
+        params: channel_handle::RemoteActionParams,
+        mut results: channel_handle::RemoteActionResults,
+    ) -> Promise<(), capnp::Error> {
+        use tilo_actions::remote::{RemoteActionFrame, serve};
+        let current = match self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            Ok(current) => current,
+            Err(error) => return Promise::err(error),
+        };
+        let frame = match params
+            .get()
+            .and_then(channel_handle::remote_action_params::Reader::get_frame)
+        {
+            Ok(frame) => frame,
+            Err(error) => return Promise::err(error),
+        };
+        let request = match RemoteActionFrame::decode(frame) {
+            Ok(request) => request,
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let caller = current.caller(&self.route().cluster_id);
+        let host = action_host::ConnectionActionHost {
+            state: Arc::clone(&self.state),
+            own_peer: self.peer_id,
+            origin: InvocationCaller::Local {
+                route: self.route(),
+                admitted: Box::new(current),
+            },
+        };
+        let Some(answer) = serve(&host, &caller, request.message) else {
+            return Promise::err(capnp::Error::failed(
+                "only remote-action requests are answered".into(),
+            ));
+        };
+        // Awaited on this local set, which is also where an application's
+        // directory answers; the connection's other calls keep flowing.
+        Promise::from_future(async move {
+            let answer = answer.await.ok_or_else(|| {
+                capnp::Error::failed("the action host dropped the request".into())
+            })?;
+            let bytes = RemoteActionFrame::new(answer)
+                .encode()
+                .map_err(|error| capnp::Error::failed(error.to_string()))?;
+            results.get().set_frame(&bytes);
+            Ok(())
+        })
+    }
+
     fn committed_document(
         self: Rc<Self>,
         params: channel_handle::CommittedDocumentParams,

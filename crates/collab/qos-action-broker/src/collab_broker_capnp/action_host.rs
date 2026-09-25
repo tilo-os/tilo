@@ -42,6 +42,55 @@ impl BrokerActor {
     }
 }
 
+/// The broker as the [`ActionHost`](tilo_actions::remote::ActionHost) an
+/// admitted application or agent connection reaches over its channel's
+/// `remoteAction` door. [`OWN_PROVIDER`] names that connection itself.
+pub(super) struct ConnectionActionHost {
+    pub(super) state: Arc<CapnpBrokerState>,
+    pub(super) own_peer: u64,
+    /// The connection's revalidated admission: an application's own effect,
+    /// directed back to it, runs under this original caller's custody.
+    pub(super) origin: super::published_invocation::InvocationCaller,
+}
+
+impl tilo_actions::remote::ActionHost for ConnectionActionHost {
+    fn query(
+        &self,
+        caller: &Caller,
+        query: CatalogueQuery,
+    ) -> Pending<Result<CataloguePage, ActionHostError>> {
+        self.state.action_query(caller, &query)
+    }
+
+    fn invoke(
+        &self,
+        caller: &Caller,
+        request: InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        // A channel connection carries no launcher-authenticated scope, so a
+        // content launch by hash is refused rather than widened.
+        self.state.action_invoke_with_origin(
+            caller,
+            Some(self.own_peer),
+            None,
+            Some(&self.origin),
+            &request,
+        )
+    }
+
+    fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
+        self.state.action_observe(caller, id)
+    }
+
+    fn cancel(
+        &self,
+        caller: &Caller,
+        id: &tilo_actions::InvocationId,
+    ) -> Result<(), ActionHostError> {
+        self.state.action_cancel(caller, id)
+    }
+}
+
 fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     ActionDescriptor {
         address: ActionAddress::new(&action.resource, &action.action),
@@ -428,10 +477,25 @@ impl CapnpBrokerState {
         launch: Option<&LaunchScope>,
         request: &InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
+        self.action_invoke_with_origin(caller, own_peer, launch, None, request)
+    }
+
+    /// [`Self::action_invoke`] for a caller whose original invocation custody
+    /// the broker holds (an admitted local connection): an application
+    /// action it starts carries that custody to the application, so a scoped
+    /// effect runs under its original caller rather than without one.
+    pub(super) fn action_invoke_with_origin(
+        self: &Arc<Self>,
+        caller: &Caller,
+        own_peer: Option<u64>,
+        launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+    ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
         if let Some(root) = self.directory_target(caller, request) {
             return self.invoke_directory(caller, root, request);
         }
-        Pending::ready(self.invoke_eager(caller, own_peer, launch, request))
+        Pending::ready(self.invoke_eager(caller, own_peer, launch, origin, request))
     }
 
     fn invoke_eager(
@@ -439,6 +503,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<InvocationReceipt, ActionHostError> {
         let mut ledger =
@@ -448,7 +513,7 @@ impl CapnpBrokerState {
                     reason: "the invocation ledger is unavailable".into(),
                 })?;
         let (job, _) = ledger.admit(caller, request, || {
-            self.start_for(caller, own_peer, launch, request)
+            self.start_for(caller, own_peer, launch, origin, request)
         })?;
         let job = *job;
         drop(ledger);
@@ -655,6 +720,7 @@ impl CapnpBrokerState {
         caller: &Caller,
         own_peer: Option<u64>,
         launch: Option<&LaunchScope>,
+        origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
         let actor = BrokerActor::for_caller(caller);
@@ -714,7 +780,7 @@ impl CapnpBrokerState {
             &actor.id,
             request.confirmation.as_ref(),
         )?;
-        self.start_invocation_confirmed_for(
+        self.start_invocation_confirmed_for_origin(
             peer_id,
             &address.resource,
             &address.action,
@@ -722,6 +788,8 @@ impl CapnpBrokerState {
             &actor,
             token.as_deref(),
             request.context.clone(),
+            None,
+            origin.cloned(),
         )
         .map(|job| job.id)
         .map_err(refusal)

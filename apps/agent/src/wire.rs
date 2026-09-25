@@ -391,6 +391,11 @@ fn complete_managed_handshake(stream: &mut UnixStream) -> Result<()> {
 
 impl Link {
     /// Queueing is not acceptance. Wait for the actual correlated RPC result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the broker refuses the request, the link fails,
+    /// or no correlated reply arrives before the deadline.
     pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();

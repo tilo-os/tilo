@@ -14,7 +14,7 @@
 //! With `app_id = "so.tilo.chat"` and no record, the same Session reads the
 //! canonical package-primary Chat document. Structured mentions target the
 //! stable admitted `agent_id`; name addressing uses the display name. Replies
-//! and AgentWork live in that document and conservatively prevent repeats
+//! and `AgentWork` live in that document and conservatively prevent repeats
 //! after restart, including an unfinished dispatch. This bounded mode only
 //! executes broker-published document actions. External effects, pause/resume,
 //! authenticated agent roster projection, and durable delegated effect
@@ -53,6 +53,7 @@
         clippy::indexing_slicing,
         clippy::string_slice,
         clippy::panic,
+        clippy::panic_in_result_fn,
         clippy::unreachable,
         reason = "in a test these are the assertion, not a hazard"
     )

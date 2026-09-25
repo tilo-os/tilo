@@ -662,13 +662,17 @@ impl Session {
                 Some(CollabEvent::EnrolledTask(run)) => self.run_enrolled_task(&run)?,
                 Some(CollabEvent::EnrolledTaskDisconnected { detail }) => anyhow::bail!(detail),
                 Some(CollabEvent::TaskRun(run)) if self.enrolled_custody.is_none() => {
-                    self.run_task(&run)?
+                    self.run_task(&run)?;
                 }
                 Some(_) | None => {}
             }
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one task run keeps planning, per-step reporting, chunked writing and the terminal update in a single auditable sequence"
+    )]
     fn run_task(&mut self, run: &runtime_collab::TaskRunEnvelope) -> Result<()> {
         let validation = if self.enrolled_active.is_some() {
             validate_enrolled_context(run)
@@ -775,42 +779,27 @@ impl Session {
                     message: format!("Running {}/{} · {}", index + 1, actions.len(), action.label),
                 },
             )?;
-            let result = match self.chunkable(action, &arguments) {
-                Some((param, text, next)) => {
-                    // Steps still needed after this action, one each.
-                    let later = actions.len() - index - 1;
-                    let budget = MAX_TASK_STEPS
-                        .saturating_sub(step_index + later)
-                        .clamp(1, crate::live::MAX_CHUNKS);
-                    let paragraph = ChunkedParagraph {
-                        first: action,
-                        next: &next,
-                        param: &param,
-                        arguments: &arguments,
-                        text: &text,
-                        budget,
-                    };
-                    self.run_chunked_paragraph(
-                        run,
-                        index,
-                        &mut step_index,
-                        &paragraph,
-                        &mut stepped,
-                    )?
-                }
-                None => {
-                    self.live_applying(action, &arguments, None);
-                    let result = self.run_task_step(
-                        run,
-                        index,
-                        step_index,
-                        action,
-                        &arguments,
-                        &mut stepped,
-                    )?;
-                    step_index += 1;
-                    result
-                }
+            let result = if let Some((param, text, next)) = self.chunkable(action, &arguments) {
+                // Steps still needed after this action, one each.
+                let later = actions.len() - index - 1;
+                let budget = MAX_TASK_STEPS
+                    .saturating_sub(step_index + later)
+                    .clamp(1, crate::live::MAX_CHUNKS);
+                let paragraph = ChunkedParagraph {
+                    first: action,
+                    next: &next,
+                    param: &param,
+                    arguments: &arguments,
+                    text: &text,
+                    budget,
+                };
+                self.run_chunked_paragraph(run, index, &mut step_index, &paragraph, &mut stepped)?
+            } else {
+                self.live_applying(action, &arguments, None);
+                let result =
+                    self.run_task_step(run, index, step_index, action, &arguments, &mut stepped)?;
+                step_index += 1;
+                result
             };
             match result {
                 Ok(next) => {
@@ -1164,7 +1153,7 @@ impl Session {
                     return result.map_err(anyhow::Error::msg);
                 }
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces)
+                    self.set_broker_surfaces(surfaces);
                 }
                 Some(event) => deferred.push(event),
                 None => {}
@@ -1523,9 +1512,9 @@ impl Session {
                 }
                 // Only one task action is outstanding at a time; a late
                 // reply to an earlier request has no reader left.
-                Some(CollabEvent::TaskActionInvocationResult { .. }) => {}
+                Some(CollabEvent::TaskActionInvocationResult { .. }) | None => {}
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
-                    self.set_broker_surfaces(surfaces)
+                    self.set_broker_surfaces(surfaces);
                 }
                 Some(event @ CollabEvent::Document { .. }) => {
                     match event
@@ -1542,7 +1531,6 @@ impl Session {
                     }
                 }
                 Some(event) => deferred.push(event),
-                None => {}
             }
         }
     }
@@ -2059,6 +2047,10 @@ impl Session {
         )
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one broker invocation keeps admission, content handoff, observation and the replica check together"
+    )]
     fn perform_broker(
         &mut self,
         id: &str,
@@ -2827,9 +2819,9 @@ fn word_action_anchor(
                 ids: blocks.clone(),
             }
         }
-        WordProcessorAction::SetPageMargins { .. } | WordProcessorAction::GenerateToc { .. } => {
-            tilo_actions::InteractionAnchor::Resource
-        }
+        WordProcessorAction::SetPageMargins { .. }
+        | WordProcessorAction::GenerateToc { .. }
+        | WordProcessorAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
         WordProcessorAction::SetStyleProperty { style, .. }
         | WordProcessorAction::DeleteStyle { style, .. } => object_anchor(style),
         WordProcessorAction::EditTable { table, .. } => object_anchor(table),
@@ -2844,7 +2836,6 @@ fn word_action_anchor(
         | WordProcessorAction::InsertField { block, at, .. } => {
             comment_text_anchor(block, *at, *at)
         }
-        WordProcessorAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
         WordProcessorAction::AcceptChanges { id } | WordProcessorAction::RejectChanges { id } => id
             .as_ref()
             .map_or(tilo_actions::InteractionAnchor::Resource, |id| {
@@ -2883,6 +2874,123 @@ fn describe(action: &WordProcessorAction) -> String {
         WordProcessorAction::RemoveBlocks { blocks } => format!("remove {} block(s)", blocks.len()),
         WordProcessorAction::SetParagraphStyle { kind, .. } => format!("set style {kind}"),
         other => format!("{other:?}"),
+    }
+}
+
+fn managed_context(
+    cfg: &Config,
+) -> Result<
+    Option<(
+        crate::providers::ProviderSelection,
+        runtime_collab::EnrolledRecipientCustody,
+    )>,
+> {
+    let Some(raw) = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT") else {
+        return Ok(None);
+    };
+    let raw = raw
+        .into_string()
+        .map_err(|_| anyhow::anyhow!("invalid managed context encoding"))?;
+    anyhow::ensure!(raw.len() <= 4096, "managed context too large");
+    let value: serde_json::Value = serde_json::from_str(&raw)?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("invalid managed context"))?;
+    // Explicit field count prevents credentials or ambient endpoints being smuggled in.
+    anyhow::ensure!(
+        object.len() == 7
+            && object.keys().all(|key| matches!(
+                key.as_str(),
+                "version"
+                    | "room"
+                    | "agent"
+                    | "launch"
+                    | "runtime_epoch"
+                    | "channel_id"
+                    | "provider"
+            )),
+        "unsupported managed context fields"
+    );
+    let text = |key: &str| {
+        object
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow::anyhow!("missing managed context field {key}"))
+    };
+    anyhow::ensure!(
+        value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
+            && text("room")? == cfg.cluster.to_string()
+            && text("agent")? == cfg.agent_id
+            && cfg.app_id == "so.tilo.agent"
+            && cfg.model
+            && cfg.endpoint.is_none()
+            && cfg.record.is_none(),
+        "managed context does not bind this invocation"
+    );
+    let selection = crate::model::managed_provider_selection(
+        value
+            .get("provider")
+            .ok_or_else(|| anyhow::anyhow!("managed selection missing"))?,
+    )
+    .map_err(anyhow::Error::msg)?;
+    let custody = runtime_collab::EnrolledRecipientCustody::new(
+        text("agent")?,
+        text("launch")?,
+        text("runtime_epoch")?,
+        text("channel_id")?,
+    )
+    .map_err(anyhow::Error::msg)?;
+    Ok(Some((selection, custody)))
+}
+fn validate_enrolled_context(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
+    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
+        .map_err(|_| "invalid enrolled context")?;
+    if context.purpose.is_some()
+        || !context.group.as_ref().is_some_and(|group| {
+            group.id == run.task_id && group.label == run.task_id && group.kind == "task"
+        })
+    {
+        return Err("enrolled context must carry opaque task identity only".into());
+    }
+    Ok(())
+}
+impl Session {
+    fn next_enrolled_request(&mut self) -> Result<u64> {
+        let id = self.next_broker_request;
+        self.next_broker_request = id
+            .checked_add(1)
+            .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
+        Ok(id)
+    }
+    fn run_enrolled_task(&mut self, run: &runtime_collab::EnrolledTaskEnvelope) -> Result<()> {
+        validate_enrolled_context(&run.task).map_err(anyhow::Error::msg)?;
+        let custody = self
+            .enrolled_custody
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("enrolled task sent to legacy agent"))?;
+        let decision = custody.accept(run).map_err(anyhow::Error::msg)?;
+        let request_id = self.next_enrolled_request()?;
+        self.link.send(&CollabRequest::AcceptEnrolledTask {
+            request_id,
+            acceptance: decision.acceptance.clone(),
+        })?;
+        self.link.wait_enrolled_reply(request_id)?;
+        if !decision.execute {
+            return Ok(());
+        }
+        self.enrolled_active = Some(decision.acceptance);
+        self.enrolled_sequence = 0;
+        // The host's durable record of this agent's earlier tasks replaces
+        // what this process remembers: it survives restarts and holds the
+        // exact operations each step ran.
+        if let Some(history) = &run.history
+            && !self.memory.restore(history)
+        {
+            tracing::warn!("ignored an unreadable agent history");
+        }
+        let result = self.run_task(&run.task);
+        self.enrolled_active = None;
+        result
     }
 }
 
@@ -2990,6 +3098,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario drives every invocation update through the private diagnostic path"
+    )]
     fn managed_action_diagnostics_stay_private_through_invocation_updates() {
         use std::{cell::RefCell, collections::VecDeque, rc::Rc};
         struct Peer {
@@ -4384,122 +4496,5 @@ mod tests {
             seen + Duration::from_secs(5),
             settle
         ));
-    }
-}
-
-fn managed_context(
-    cfg: &Config,
-) -> Result<
-    Option<(
-        crate::providers::ProviderSelection,
-        runtime_collab::EnrolledRecipientCustody,
-    )>,
-> {
-    let Some(raw) = std::env::var_os("TILO_MANAGED_AGENT_CONTEXT") else {
-        return Ok(None);
-    };
-    let raw = raw
-        .into_string()
-        .map_err(|_| anyhow::anyhow!("invalid managed context encoding"))?;
-    anyhow::ensure!(raw.len() <= 4096, "managed context too large");
-    let value: serde_json::Value = serde_json::from_str(&raw)?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| anyhow::anyhow!("invalid managed context"))?;
-    // Explicit field count prevents credentials or ambient endpoints being smuggled in.
-    anyhow::ensure!(
-        object.len() == 7
-            && object.keys().all(|key| matches!(
-                key.as_str(),
-                "version"
-                    | "room"
-                    | "agent"
-                    | "launch"
-                    | "runtime_epoch"
-                    | "channel_id"
-                    | "provider"
-            )),
-        "unsupported managed context fields"
-    );
-    let text = |key: &str| {
-        object
-            .get(key)
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("missing managed context field {key}"))
-    };
-    anyhow::ensure!(
-        value.get("version").and_then(serde_json::Value::as_u64) == Some(1)
-            && text("room")? == cfg.cluster.to_string()
-            && text("agent")? == cfg.agent_id
-            && cfg.app_id == "so.tilo.agent"
-            && cfg.model
-            && cfg.endpoint.is_none()
-            && cfg.record.is_none(),
-        "managed context does not bind this invocation"
-    );
-    let selection = crate::model::managed_provider_selection(
-        value
-            .get("provider")
-            .ok_or_else(|| anyhow::anyhow!("managed selection missing"))?,
-    )
-    .map_err(anyhow::Error::msg)?;
-    let custody = runtime_collab::EnrolledRecipientCustody::new(
-        text("agent")?,
-        text("launch")?,
-        text("runtime_epoch")?,
-        text("channel_id")?,
-    )
-    .map_err(anyhow::Error::msg)?;
-    Ok(Some((selection, custody)))
-}
-fn validate_enrolled_context(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
-    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
-        .map_err(|_| "invalid enrolled context")?;
-    if context.purpose.is_some()
-        || !context.group.as_ref().is_some_and(|group| {
-            group.id == run.task_id && group.label == run.task_id && group.kind == "task"
-        })
-    {
-        return Err("enrolled context must carry opaque task identity only".into());
-    }
-    Ok(())
-}
-impl Session {
-    fn next_enrolled_request(&mut self) -> Result<u64> {
-        let id = self.next_broker_request;
-        self.next_broker_request = id
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("request sequence exhausted"))?;
-        Ok(id)
-    }
-    fn run_enrolled_task(&mut self, run: &runtime_collab::EnrolledTaskEnvelope) -> Result<()> {
-        validate_enrolled_context(&run.task).map_err(anyhow::Error::msg)?;
-        let custody = self
-            .enrolled_custody
-            .as_mut()
-            .ok_or_else(|| anyhow::anyhow!("enrolled task sent to legacy agent"))?;
-        let decision = custody.accept(run).map_err(anyhow::Error::msg)?;
-        let request_id = self.next_enrolled_request()?;
-        self.link.send(&CollabRequest::AcceptEnrolledTask {
-            request_id,
-            acceptance: decision.acceptance.clone(),
-        })?;
-        self.link.wait_enrolled_reply(request_id)?;
-        if !decision.execute {
-            return Ok(());
-        }
-        self.enrolled_active = Some(decision.acceptance);
-        self.enrolled_sequence = 0;
-        // The host's durable record of this agent's earlier tasks replaces
-        // what this process remembers: it survives restarts and holds the
-        // exact operations each step ran.
-        if let Some(history) = &run.history
-            && !self.memory.restore(history)
-        {
-            tracing::warn!("ignored an unreadable agent history");
-        }
-        let result = self.run_task(&run.task);
-        self.enrolled_active = None;
-        result
     }
 }

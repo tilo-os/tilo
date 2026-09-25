@@ -224,6 +224,11 @@ impl Editor {
 
     /// Build a peer replica while retaining the exact authenticated route
     /// that delivered it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` is not a loadable snapshot of the
+    /// contract's document.
     pub fn peer_from_snapshot_on_route(
         contract: &'static AppContract,
         route_app_id: &str,
