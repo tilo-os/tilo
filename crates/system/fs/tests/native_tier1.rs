@@ -1305,10 +1305,17 @@ fn sqlite_opened_read_write_on_the_device_without_the_lease_reads_and_refuses_wr
         "CREATE TABLE t(v INTEGER); INSERT INTO t VALUES (1), (2), (3);",
     )
     .unwrap();
+    // sqlite3 creates a database it cannot find, and an empty file made on
+    // the peer would be a concurrent creation of the path: ask only once
+    // the host's file is there.
     wait_for(
         &mut [&mut pair.host, &mut pair.peer],
         "the database on the peer",
-        || (sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3").then_some(()),
+        || {
+            (std::fs::metadata(&db2).ok()?.len() > 0
+                && sqlite(&db2, "SELECT count(*) FROM t").ok()? == "3")
+                .then_some(())
+        },
     );
     // An update writes pages in place: the database becomes lease-class.
     sqlite(&db1, "UPDATE t SET v = v + 10;").unwrap();
