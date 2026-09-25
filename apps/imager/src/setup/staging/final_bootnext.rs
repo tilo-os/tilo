@@ -91,10 +91,14 @@ fn checked_esp<'a>(
         || !valid_hash(&receipt.loader_sha256)
         || !valid_hash(&receipt.installed_uki_sha256)
         || !valid_hash(&receipt.vm_proof_checked_sha256)
-        || !receipt.ci_index_digest.starts_with("sha256:")
-        || !receipt.ci_child_digest.starts_with("sha256:")
-        || !valid_hash(&receipt.ci_index_digest[7..])
-        || !valid_hash(&receipt.ci_child_digest[7..])
+        || !receipt
+            .ci_index_digest
+            .strip_prefix("sha256:")
+            .is_some_and(valid_hash)
+        || !receipt
+            .ci_child_digest
+            .strip_prefix("sha256:")
+            .is_some_and(valid_hash)
     {
         return Err("final readback is missing verified CI image evidence".into());
     }
