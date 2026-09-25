@@ -103,7 +103,9 @@ diff/merge tool, text-snippet tool, hex editor.
 - **Backups / snapshots** manager.
 - **ISO / installation creator** — install arbitrary .isos; install Tilo (to USB or
   disk; option to make a USB a permanent install); customizable install options
-  (user creation etc.) incl. fully headless install.
+  (user creation etc.) for a nearly headless install. The prepared choices are
+  applied from the installation medium; disk selection, destructive consent,
+  device-local secrets and recovery-key acknowledgement remain on the target.
 - **Activity monitor**.
 - **Disk utility**.
 - **Log viewer** — graphical, systemd logs etc.

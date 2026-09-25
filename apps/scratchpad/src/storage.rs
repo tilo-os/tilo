@@ -3,7 +3,6 @@
 use anyhow::{Context, Result};
 use automerge::AutoCommit;
 use fs::store::ContentStore;
-use iroh_blobs::Hash;
 use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use tokio::runtime::Runtime;
@@ -39,18 +38,12 @@ impl NoteStore {
         };
         let doc = match std::fs::read_to_string(&storage.current) {
             Ok(reference) => {
-                // The app writes 32-byte hashes in hex. Reject every other
-                // format before the dependency's permissive base32 parser,
-                // which can panic on malformed input of a different length.
-                let reference = reference.trim();
-                anyhow::ensure!(
-                    reference.len() == 64 && reference.bytes().all(|byte| byte.is_ascii_hexdigit()),
-                    "invalid saved note reference"
-                );
-                let hash: Hash = reference.parse().context("invalid saved note reference")?;
+                // The app writes the content store's BLAKE3 hash in hex.
+                let hash = blake3::Hash::from_hex(reference.trim())
+                    .context("invalid saved note reference")?;
                 let bytes = storage
                     .runtime
-                    .block_on(storage.store.local(hash))
+                    .block_on(storage.store.local(hash.into()))
                     .context("saved note content is unavailable")?;
                 AutoCommit::load(&bytes).context("saved note content is corrupt")?
             }

@@ -21,23 +21,18 @@ def pixel(x, y):
     glow = max(0.0, 1.0 - math.hypot(x - WIDTH / 2, y - HEIGHT * 0.44) / 430.0)
     color = mix(background, (25, 25, 44), glow * glow * 0.72)
 
-    cx, cy, radius = WIDTH / 2, HEIGHT * 0.43, 72.0
-    angle = (math.atan2(y - cy, x - cx) + math.pi) / (2.0 * math.pi)
-    accent = mix((124, 92, 255), (49, 198, 181), angle)
-    ring_distance = abs(math.hypot(x - cx, y - cy) - radius) - 8.0
-    color = mix(color, accent, coverage(ring_distance, 1.7))
-
-    # A short diagonal turns the ring into a quiet, recognisable q without
-    # relying on a font in the initramfs/UKI build environment.
-    ax, ay, bx, by = cx + 43, cy + 47, cx + 86, cy + 91
-    dx, dy = bx - ax, by - ay
-    t = max(0.0, min(1.0, ((x - ax) * dx + (y - ay) * dy) / (dx * dx + dy * dy)))
-    tail_distance = math.hypot(x - (ax + t * dx), y - (ay + t * dy)) - 8.0
-    color = mix(color, (49, 198, 181), coverage(tail_distance, 1.7))
+    cx, cy = WIDTH / 2, HEIGHT * 0.43
+    # Tilo's three-dot mark matches the public site favicon and avoids carrying
+    # the retired qOS “q” into the first frame of the renamed product. It is
+    # geometric so the UKI build remains independent of fonts and SVG tools.
+    for index, dot_x in enumerate((cx - 54, cx, cx + 54)):
+        distance = math.hypot(x - dot_x, y - cy) - 16.0
+        accent = mix((124, 92, 255), (49, 198, 181), index / 2)
+        color = mix(color, accent, coverage(distance, 1.7))
 
     # One calm baseline under the mark prevents the frame reading as an
     # application icon floating in empty space.
-    if abs(y - (cy + 142)) < 1.2 and abs(x - cx) < 54:
+    if abs(y - (cy + 92)) < 1.2 and abs(x - cx) < 54:
         color = mix(color, (103, 108, 129), 0.65)
     return color
 

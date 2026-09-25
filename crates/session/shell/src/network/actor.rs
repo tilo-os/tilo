@@ -17,7 +17,7 @@ use iroh::{Endpoint, EndpointAddr, EndpointId};
 use iroh_gossip::api::{Event as GossipEvent, GossipSender};
 use iroh_gossip::net::{GOSSIP_ALPN, Gossip};
 use iroh_gossip::proto::TopicId;
-use tilo_relay::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
+use tilo_relay_client::{Inbound as HostInbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use tokio::sync::mpsc;
 
@@ -2959,7 +2959,7 @@ fn schedule_host_topic(
     clippy::items_after_statements,
     reason = "the async write extension is local to the detached filesystem-registration worker and kept beside its only use"
 )]
-async fn register_content_peer(registration: tilo_relay::ContentPeerRegistration) -> bool {
+async fn register_content_peer(registration: tilo_relay_client::ContentPeerRegistration) -> bool {
     if cfg!(test) && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none() {
         return true;
     }

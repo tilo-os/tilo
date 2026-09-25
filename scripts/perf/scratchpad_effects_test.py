@@ -77,3 +77,7 @@ class ScratchpadEffectsTests(unittest.TestCase):
         frames.pop()
         with self.assertRaises(ValueError):
             validate_scratchpad_frame_states(scenario,lines())
+
+
+if __name__ == "__main__":
+    unittest.main()

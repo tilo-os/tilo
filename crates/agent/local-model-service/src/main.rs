@@ -100,7 +100,8 @@ enum Action {
 
 const MODELS_SERVICE_FD: &str = "TILO_SVC_MODELS_FD";
 const RPC_VERSION: u16 = 1;
-const MAX_RPC_FRAME: usize = 1024 * 1024;
+/// Every RPC request and response: a big-endian `u32` length, then JSON.
+const RPC_FRAMING: wire_frame::Framing = wire_frame::Framing::big_endian(1024 * 1024);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -911,14 +912,12 @@ fn rpc_action(command: &Action) -> Result<RpcAction, String> {
 
 fn write_rpc<T: Serialize>(stream: &mut UnixStream, value: &T) -> Result<(), String> {
     let body = serde_json::to_vec(value).map_err(|error| error.to_string())?;
-    if body.len() > MAX_RPC_FRAME {
-        return Err("model service RPC frame is too large".into());
-    }
-    let size = u32::try_from(body.len()).map_err(|_| "model service RPC frame is too large")?;
-    stream
-        .write_all(&size.to_be_bytes())
-        .map_err(|error| error.to_string())?;
-    stream.write_all(&body).map_err(|error| error.to_string())
+    RPC_FRAMING
+        .write(stream, &body)
+        .map_err(|error| match error {
+            wire_frame::FrameError::Io(error) => error.to_string(),
+            _ => "model service RPC frame is too large".into(),
+        })
 }
 
 enum RpcReadError {
@@ -927,25 +926,16 @@ enum RpcReadError {
 }
 
 fn read_rpc<T: for<'de> Deserialize<'de>>(stream: &mut UnixStream) -> Result<T, RpcReadError> {
-    let mut size = [0_u8; 4];
-    match stream.read_exact(&mut size) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-            return Err(RpcReadError::Closed);
+    let body = match RPC_FRAMING.read(stream) {
+        Ok(Some(body)) => body,
+        Ok(None) => return Err(RpcReadError::Closed),
+        Err(wire_frame::FrameError::TooLarge(_)) => {
+            return Err(RpcReadError::Invalid(
+                "model service RPC frame is too large".into(),
+            ));
         }
         Err(error) => return Err(RpcReadError::Invalid(error.to_string())),
-    }
-    let size = usize::try_from(u32::from_be_bytes(size))
-        .map_err(|_| RpcReadError::Invalid("invalid model service RPC frame".into()))?;
-    if size > MAX_RPC_FRAME {
-        return Err(RpcReadError::Invalid(
-            "model service RPC frame is too large".into(),
-        ));
-    }
-    let mut body = vec![0_u8; size];
-    stream
-        .read_exact(&mut body)
-        .map_err(|error| RpcReadError::Invalid(error.to_string()))?;
+    };
     serde_json::from_slice(&body)
         .map_err(|_| RpcReadError::Invalid("invalid model service RPC payload".into()))
 }
@@ -1528,6 +1518,25 @@ fn enqueue_start_worker(
 mod tests {
     use super::*;
     use agent_provider_config::local::RuntimeKind;
+
+    /// The model service RPC bytes: a big-endian `u32` length, then JSON. A
+    /// close before the length is a clean end of the connection.
+    #[test]
+    fn rpc_wire_bytes_are_pinned() {
+        let (mut client, mut server) = UnixStream::pair().unwrap();
+        write_rpc(&mut client, &serde_json::json!({"k": 1})).unwrap();
+        let mut sent = [0_u8; 11];
+        server.read_exact(&mut sent).unwrap();
+        assert_eq!(sent, *b"\0\0\0\x07{\"k\":1}");
+        server.write_all(b"\0\0\0\x07{\"k\":2}").unwrap();
+        let value: serde_json::Value = read_rpc(&mut client).unwrap_or_else(|_| panic!("read"));
+        assert_eq!(value["k"], 2);
+        drop(server);
+        assert!(matches!(
+            read_rpc::<serde_json::Value>(&mut client),
+            Err(RpcReadError::Closed)
+        ));
+    }
 
     #[test]
     fn service_connection_serves_two_sequential_requests() {

@@ -9,14 +9,16 @@ use std::os::fd::{BorrowedFd, RawFd};
 
 #[cfg(unix)]
 use collab_types::{
-    MAX_RECIPIENT_CONTROL_FRAME_BYTES, RECIPIENT_CONTROL_VERSION, RecipientControlRequestV1,
+    RECIPIENT_CONTROL_FRAMING, RECIPIENT_CONTROL_VERSION, RecipientControlRequestV1,
 };
 use collab_types::{
     RecipientControlOperationV1, RecipientControlResponseV1, RecipientControlResultV1,
     RecipientSubscriptionStatusV1,
 };
 #[cfg(unix)]
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+#[cfg(unix)]
+use wire_frame::FrameError;
 
 use crate::i18n::{arg, t, t_args};
 
@@ -73,44 +75,43 @@ fn transact(operation: RecipientControlOperationV1) -> Result<RecipientControlRe
         })?;
     runtime.block_on(async move {
         let mut stream = connected_service_stream()?;
-        let request = RecipientControlRequestV1 {
-            protocol_version: RECIPIENT_CONTROL_VERSION,
-            operation,
-        };
-        let bytes = collab_types::canonical_bytes(&request)
-            .map_err(|_| t("files-received-encode-failed"))?;
-        if bytes.is_empty() || bytes.len() > MAX_RECIPIENT_CONTROL_FRAME_BYTES {
-            return Err(t("files-received-request-too-large"));
-        }
-        stream
-            .write_all(&(bytes.len() as u32).to_be_bytes())
-            .await
-            .map_err(|_| t("files-received-unavailable"))?;
-        stream
-            .write_all(&bytes)
-            .await
-            .map_err(|_| t("files-received-unavailable"))?;
-        stream
-            .flush()
-            .await
-            .map_err(|_| t("files-received-unavailable"))?;
-        let mut prefix = [0u8; 4];
-        stream
-            .read_exact(&mut prefix)
-            .await
-            .map_err(|_| t("files-received-no-response"))?;
-        let length = u32::from_be_bytes(prefix) as usize;
-        if length == 0 || length > MAX_RECIPIENT_CONTROL_FRAME_BYTES {
+        exchange(&mut stream, operation).await
+    })
+}
+
+/// One request and its response on the recipient-control socket.
+#[cfg(unix)]
+async fn exchange<S: AsyncRead + AsyncWrite + Unpin>(
+    stream: &mut S,
+    operation: RecipientControlOperationV1,
+) -> Result<RecipientControlResponseV1, String> {
+    let request = RecipientControlRequestV1 {
+        protocol_version: RECIPIENT_CONTROL_VERSION,
+        operation,
+    };
+    let bytes =
+        collab_types::canonical_bytes(&request).map_err(|_| t("files-received-encode-failed"))?;
+    let frame = RECIPIENT_CONTROL_FRAMING
+        .encode(&bytes)
+        .map_err(|_| t("files-received-request-too-large"))?;
+    stream
+        .write_all(&frame)
+        .await
+        .map_err(|_| t("files-received-unavailable"))?;
+    stream
+        .flush()
+        .await
+        .map_err(|_| t("files-received-unavailable"))?;
+    let response = match RECIPIENT_CONTROL_FRAMING.read_async(stream).await {
+        Ok(Some(response)) => response,
+        Err(FrameError::TooLarge(_) | FrameError::EmptyFrame) => {
             return Err(t("files-received-response-too-large"));
         }
-        let mut response = vec![0u8; length];
-        stream
-            .read_exact(&mut response)
-            .await
-            .map_err(|_| t("files-received-response-truncated"))?;
-        collab_types::canonical::from_canonical_bytes(&response)
-            .map_err(|_| t("files-received-response-invalid"))
-    })
+        Err(FrameError::Truncated) => return Err(t("files-received-response-truncated")),
+        Ok(None) | Err(_) => return Err(t("files-received-no-response")),
+    };
+    collab_types::canonical::from_canonical_bytes(&response)
+        .map_err(|_| t("files-received-response-invalid"))
 }
 
 #[cfg(unix)]
@@ -139,4 +140,57 @@ fn service_fd() -> Option<RawFd> {
 #[cfg(not(unix))]
 fn transact(_operation: RecipientControlOperationV1) -> Result<RecipientControlResponseV1, String> {
     Err(t("files-received-not-available"))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncReadExt;
+
+    /// The recipient-control socket bytes: a big-endian `u32` length, then the
+    /// canonical request or response. Empty frames are refused.
+    #[test]
+    fn recipient_control_wire_bytes_are_pinned() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_io()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let (mut client, mut service) = tokio::io::duplex(64 * 1024);
+            let operation = RecipientControlOperationV1::AdmitV2 { uri: "u".into() };
+            let body = collab_types::canonical_bytes(&RecipientControlRequestV1 {
+                protocol_version: RECIPIENT_CONTROL_VERSION,
+                operation: operation.clone(),
+            })
+            .unwrap();
+            let response = collab_types::canonical_bytes(&RecipientControlResponseV1 {
+                protocol_version: RECIPIENT_CONTROL_VERSION,
+                result: RecipientControlResultV1::Error {
+                    code: collab_types::RecipientControlErrorCode::NotFound,
+                },
+            })
+            .unwrap();
+            let mut reply = u32::try_from(response.len())
+                .unwrap()
+                .to_be_bytes()
+                .to_vec();
+            reply.extend_from_slice(&response);
+            service.write_all(&reply).await.unwrap();
+
+            let decoded = exchange(&mut client, operation.clone()).await.unwrap();
+            assert!(matches!(
+                decoded.result,
+                RecipientControlResultV1::Error {
+                    code: collab_types::RecipientControlErrorCode::NotFound
+                }
+            ));
+            let mut sent = vec![0_u8; 4 + body.len()];
+            service.read_exact(&mut sent).await.unwrap();
+            assert_eq!(sent[..4], u32::try_from(body.len()).unwrap().to_be_bytes());
+            assert_eq!(sent[4..], body);
+
+            service.write_all(&[0, 0, 0, 0]).await.unwrap();
+            assert!(exchange(&mut client, operation).await.is_err());
+        });
+    }
 }

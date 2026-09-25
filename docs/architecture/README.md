@@ -7,7 +7,7 @@ That cannot live inside an application — it has to work in the ebook reader, t
 manager and the terminal, not just the document editor. So it lives underneath them, on
 CRDT state the system owns.
 
-## Resources and actions
+## Resources, views and actions
 
 **Applications own neither their pixels nor their persistent storage.**
 
@@ -15,6 +15,13 @@ An app exports **resources** — a video, an ebook, a note, a file. Resources ne
 contains annotations and bookmarks. For each it exports **actions**: CRUD on an
 annotation, turn-page on a book, seek on a video. Files are resources on their own; where
 the format-aware filesystem already understands a type, the app does not handle it.
+
+A resource separately exports **views**: editor, reader, map, grid, calendar, timeline.
+A view has its own stable identity and human label, and names the actions that open or
+mount it. This is an explicit catalogue rather than a convention around an action called
+`open`: ordinary presentation actions such as toggling a sidebar never become composable
+views by accident. The same resource can therefore appear in several honest forms without
+being copied into several app-owned documents.
 
 UI is a suggestion for presenting resources and actions, not the interface itself. An app
 can open a resource it never defined and it opens in the right application: URLs or
@@ -60,7 +67,9 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `compositor.md` | strips, window model, input |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
+| `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
+| `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |

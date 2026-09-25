@@ -2698,6 +2698,7 @@ mod tests {
             contract: tilo_actions::ActionContract::view(),
             input: tilo_actions::InputSpec::None,
             params: Vec::new(),
+            view: None,
         }
     }
 
@@ -2733,6 +2734,7 @@ mod tests {
             operation_kind: tilo_actions::OperationKind::View,
             params: Vec::new(),
             contract: tilo_actions::ActionContract::view(),
+            view: None,
             input: PublishedInput::None,
         }
     }

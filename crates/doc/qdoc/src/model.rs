@@ -18,10 +18,17 @@ use crate::schema::{
 use crate::snapshot::{AttrVal, BlockView, DocSnapshot};
 use automerge::marks::{ExpandMark, Mark};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use automerge::{
+    AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, ScalarValueRef, Value, ValueRef,
+};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ops::Bound;
+use std::sync::Arc;
+
+mod bulk;
+#[cfg(test)]
+pub(crate) use bulk::{change_writes, op_by_op};
 
 /// Resolved object ids for the canonical container maps under a document root.
 #[derive(Clone, Debug)]
@@ -90,10 +97,11 @@ impl NoteKind {
 
 /// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders blocks
 /// (fractional key via [`crate::order::cmp_keys`], then id as a tiebreak). Used as the in-memory order index's key type.
+/// Key and id are shared with the `id → key` map, so the index holds each only once.
 #[derive(Clone, PartialEq, Eq)]
 struct OrderKey {
-    key: Vec<u8>,
-    id: String,
+    key: Arc<[u8]>,
+    id: Arc<str>,
 }
 
 impl Ord for OrderKey {
@@ -112,7 +120,22 @@ impl PartialOrd for OrderKey {
 #[derive(Default)]
 struct ContainerOrder {
     entries: BTreeSet<OrderKey>,
-    by_id: HashMap<String, Vec<u8>>,
+    by_id: HashMap<Arc<str>, Arc<[u8]>>,
+}
+
+impl ContainerOrder {
+    /// Set `id`'s key, replacing any it had.
+    fn insert(&mut self, id: Arc<str>, key: Arc<[u8]>) {
+        self.remove(&id);
+        self.by_id.insert(Arc::clone(&id), Arc::clone(&key));
+        self.entries.insert(OrderKey { key, id });
+    }
+
+    fn remove(&mut self, id: &str) {
+        if let Some((id, key)) = self.by_id.remove_entry(id) {
+            self.entries.remove(&OrderKey { key, id });
+        }
+    }
 }
 
 /// A lazily-built, incrementally-maintained index of every touched block container's order.
@@ -132,6 +155,13 @@ pub struct IdGen {
     next: Option<u64>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
+    /// Blocks and marks buffered by an open [`DocMut::bulk`] scope.
+    bulk: bulk::Bulk,
+    /// Bulk writes may commit (see [`Self::allow_commits`]).
+    commits_allowed: bool,
+    /// Made by [`Self::new`] rather than seeded from a document: its caller is creating content,
+    /// not editing a document it read ids from. See [`DocMut::bulk`].
+    unseeded: bool,
 }
 
 /// Clone for transactional staging against a cloned document, with a fresh
@@ -149,6 +179,9 @@ impl Clone for IdGen {
             // inherit the counter rather than reseeding from visible objects.
             next: self.next,
             order: OrderIndex::default(),
+            bulk: bulk::Bulk::default(),
+            commits_allowed: false,
+            unseeded: false,
         }
     }
 }
@@ -170,6 +203,9 @@ impl IdGen {
             actor_hex,
             next: Some(0),
             order: OrderIndex::default(),
+            bulk: bulk::Bulk::default(),
+            commits_allowed: false,
+            unseeded: true,
         }
     }
     /// Start the counter at `next` — used to seed past ids that already exist in a loaded/opened
@@ -179,7 +215,20 @@ impl IdGen {
             actor_hex,
             next: Some(next),
             order: OrderIndex::default(),
+            bulk: bulk::Bulk::default(),
+            commits_allowed: false,
+            unseeded: false,
         }
+    }
+
+    /// Declare that the document this generator serves may be committed by bulk writes: a
+    /// [`DocMut::bulk`] scope then commits whatever is pending and writes its blocks and marks as
+    /// new changes, which is several times faster for mark-heavy imports. [`crate::Document`]
+    /// sets this. A document being created — nothing but the schema in it, written through a
+    /// generator from [`Self::new`] — gets the same treatment without it (see [`DocMut::bulk`]),
+    /// so a host opening a file into a fresh document need not set it.
+    pub fn allow_commits(&mut self) {
+        self.commits_allowed = true;
     }
     /// Mint a durable identifier, failing closed once this actor has used all
     /// `u64` counter values.
@@ -240,14 +289,18 @@ pub fn next_counter_for(
             };
         }
     };
-    for id in blocks_in_order(doc, c) {
+    // Every block object counts, ordered or not: seeding only has to stay clear of minted ids, and
+    // listing keys skips reading each block's fields.
+    for id in block_ids(doc, &c.blocks) {
         bump(&id);
     }
     // Header/footer blocks, note ids, and note-body blocks draw from the same per-replica
     // generator, so a seeded generator must scan them too or it could re-mint an existing one.
     for region in [Region::Header, Region::Footer] {
-        for id in region_blocks_in_order(doc, c, region) {
-            bump(&id);
+        if let Some(container) = region_obj(doc, c, region) {
+            for id in block_ids(doc, &container) {
+                bump(&id);
+            }
         }
     }
     for nid in note_ids(doc, c) {
@@ -257,12 +310,13 @@ pub fn next_counter_for(
         }
     }
     // Comment ids + comment-body block ids draw from the same generator too, for the same reason.
+    let mut replies = comment_replies_by_parent(doc, c);
     for cid in comment_ids(doc, c) {
         bump(&cid);
         for bid in comment_blocks_in_order(doc, c, &cid) {
             bump(&bid);
         }
-        for rid in comment_reply_ids(doc, c, &cid) {
+        for rid in replies.remove(&cid).unwrap_or_default() {
             bump(&rid);
             for bid in comment_reply_blocks_in_order(doc, c, &cid, &rid) {
                 bump(&bid);
@@ -276,6 +330,14 @@ pub fn next_counter_for(
     next.ok_or_else(|| IdGenError::Exhausted {
         actor_hex: actor_hex.to_owned(),
     })
+}
+
+/// The keys of every block object (map-valued entry) in a block container, unordered.
+fn block_ids(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
+    doc.map_range(container, ..)
+        .filter(|item| matches!(item.value, ValueRef::Object(ObjType::Map)))
+        .map(|item| item.key.into_owned())
+        .collect()
 }
 
 /// Try to construct an [`IdGen`] for `doc`'s current actor, seeded past
@@ -329,6 +391,21 @@ pub fn seeded_id_gen(doc: &AutoCommit, c: &Containers) -> IdGen {
 /// it, and `root.blocks` has one candidate however many participants there are
 /// and whoever imported first.
 const GENESIS_ACTOR: &[u8] = b"qdoc.schema.genesis.v1";
+
+/// Whether `doc` has no committed history beyond the schema [`init`] adopts: nothing written to it
+/// yet that anything could have seen or bracketed an undo step against.
+pub(crate) fn holds_only_schema(doc: &AutoCommit) -> bool {
+    static GENESIS_HEADS: std::sync::OnceLock<Vec<automerge::ChangeHash>> =
+        std::sync::OnceLock::new();
+    let heads = doc.base_heads();
+    heads.is_empty()
+        || heads
+            == *GENESIS_HEADS.get_or_init(|| {
+                AutoCommit::load(genesis())
+                    .map(|mut d| d.get_heads())
+                    .unwrap_or_default()
+            })
+}
 
 /// The canonical schema change, built once per process.
 ///
@@ -554,10 +631,7 @@ pub fn region_blocks_in_order(doc: &AutoCommit, c: &Containers, region: Region) 
 /// Materialize a region's blocks into [`BlockView`]s (empty when absent).
 pub fn materialize_region(doc: &AutoCommit, c: &Containers, region: Region) -> Vec<BlockView> {
     match region_obj(doc, c, region) {
-        Some(obj) => ordered_keys(doc, &obj)
-            .into_iter()
-            .map(|id| materialize_block(doc, &obj, &id))
-            .collect(),
+        Some(obj) => ordered_views(doc, &obj),
         None => Vec::new(),
     }
 }
@@ -620,10 +694,7 @@ pub fn note_kind(doc: &AutoCommit, c: &Containers, id: &str) -> Option<NoteKind>
 /// Materialize a note's block sequence (empty if the note has no blocks / is unknown).
 pub fn materialize_note_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
     match note_blocks_obj(doc, c, id) {
-        Some(obj) => ordered_keys(doc, &obj)
-            .into_iter()
-            .map(|bid| materialize_block(doc, &obj, &bid))
-            .collect(),
+        Some(obj) => ordered_views(doc, &obj),
         None => Vec::new(),
     }
 }
@@ -769,32 +840,46 @@ pub fn comment_blocks_in_order(doc: &AutoCommit, c: &Containers, id: &str) -> Ve
 /// Materialize a comment's block sequence (empty if the comment has no blocks / is unknown).
 pub fn materialize_comment_blocks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<BlockView> {
     match comment_blocks_obj(doc, c, id) {
-        Some(obj) => ordered_keys(doc, &obj)
-            .into_iter()
-            .map(|bid| materialize_block(doc, &obj, &bid))
-            .collect(),
+        Some(obj) => ordered_views(doc, &obj),
         None => Vec::new(),
     }
 }
 
 /// Stable ids of every reply belonging to a comment. Missing thread maps are
 /// treated as empty to keep old documents readable without migration writes.
+///
+/// Replies are records in the shared comments map, so this reads the whole map; to list the
+/// replies of every comment, use [`comment_replies_by_parent`] once instead.
 pub fn comment_reply_ids(doc: &AutoCommit, c: &Containers, comment_id: &str) -> Vec<String> {
-    let Some(replies) = comments_obj(doc, c) else {
-        return Vec::new();
+    comment_replies_by_parent(doc, c)
+        .remove(comment_id)
+        .unwrap_or_default()
+}
+
+/// Every reply id in the comments map, grouped by the comment it answers, each group sorted: the
+/// answer [`comment_reply_ids`] gives for every comment, from one pass over the map.
+pub fn comment_replies_by_parent(doc: &AutoCommit, c: &Containers) -> HashMap<String, Vec<String>> {
+    let mut by_parent: HashMap<String, Vec<String>> = HashMap::new();
+    let Some(comments) = comments_obj(doc, c) else {
+        return by_parent;
     };
-    let mut ids: Vec<String> = doc
-        .keys(&replies)
-        .filter(|id| {
-            matches!(
-                doc.get(&replies, id),
-                Ok(Some((Value::Object(ObjType::Map), reply)))
-                    if matches!(doc.get(&reply, COMMENT_REPLY_PARENT), Ok(Some((parent, _))) if parent.as_str() == Some(comment_id))
-            )
-        })
-        .collect();
-    ids.sort();
-    ids
+    for item in doc.map_range(&comments, ..) {
+        if !matches!(item.value, ValueRef::Object(ObjType::Map)) {
+            continue;
+        }
+        if let Ok(Some((parent, _))) = doc.get(item.id(), COMMENT_REPLY_PARENT)
+            && let Some(parent) = parent.as_str()
+        {
+            by_parent
+                .entry(parent.to_owned())
+                .or_default()
+                .push(item.key.into_owned());
+        }
+    }
+    for ids in by_parent.values_mut() {
+        ids.sort();
+    }
+    by_parent
 }
 
 pub fn comment_reply_author(
@@ -842,10 +927,7 @@ pub fn materialize_comment_reply_blocks(
     let Some(blocks) = comment_reply_blocks_obj(doc, c, comment_id, reply_id) else {
         return Vec::new();
     };
-    ordered_keys(doc, &blocks)
-        .into_iter()
-        .map(|id| materialize_block(doc, &blocks, &id))
-        .collect()
+    ordered_views(doc, &blocks)
 }
 
 pub fn materialize_comment_replies(
@@ -853,7 +935,16 @@ pub fn materialize_comment_replies(
     c: &Containers,
     comment_id: &str,
 ) -> Vec<crate::snapshot::CommentReplyView> {
-    comment_reply_ids(doc, c, comment_id)
+    reply_views(doc, c, comment_id, comment_reply_ids(doc, c, comment_id))
+}
+
+fn reply_views(
+    doc: &AutoCommit,
+    c: &Containers,
+    comment_id: &str,
+    reply_ids: Vec<String>,
+) -> Vec<crate::snapshot::CommentReplyView> {
+    reply_ids
         .into_iter()
         .map(|id| crate::snapshot::CommentReplyView {
             author: comment_reply_author(doc, c, comment_id, &id).unwrap_or_default(),
@@ -880,31 +971,74 @@ pub fn comment_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(Stri
 
 /// Materialize every comment into a [`crate::snapshot::CommentView`] (sorted by id), recovering each comment's anchored body range.
 pub fn materialize_comments(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::CommentView> {
-    comment_ids(doc, c)
-        .into_iter()
+    let ids = comment_ids(doc, c);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let ranges = AnchorRanges::of(&ordered_views(doc, &c.blocks));
+    comments_with_ranges(doc, c, ids, &ranges)
+}
+
+fn comments_with_ranges(
+    doc: &AutoCommit,
+    c: &Containers,
+    ids: Vec<String>,
+    ranges: &AnchorRanges,
+) -> Vec<crate::snapshot::CommentView> {
+    let mut replies = comment_replies_by_parent(doc, c);
+    ids.into_iter()
         .map(|id| crate::snapshot::CommentView {
             author: comment_author(doc, c, &id).unwrap_or_default(),
             date: comment_date(doc, c, &id).unwrap_or_default(),
             blocks: materialize_comment_blocks(doc, c, &id),
-            replies: materialize_comment_replies(doc, c, &id),
-            range: comment_range(doc, c, &id),
+            replies: reply_views(doc, c, &id, replies.remove(&id).unwrap_or_default()),
+            range: ranges.get(MARK_COMMENT, &id),
             id,
         })
         .collect()
 }
 
-/// Every bookmark in the body, recovered from the `bookmark` marks. Sorted by `(name, block, start)`
-/// so replicas that merged in different orders materialize byte-identically; a name may repeat if the source document duplicated it.
-pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
+/// The first body range each comment / tracked-change anchor mark covers, keyed by `(mark name, id)`:
+/// "first" in block order, then in canonical mark order — what [`comment_range`] / [`change_range`]
+/// find, but for every id from one pass over already-materialized body blocks.
+struct AnchorRanges(HashMap<(&'static str, String), (String, usize, usize)>);
+
+impl AnchorRanges {
+    fn of(blocks: &[BlockView]) -> Self {
+        let mut out = HashMap::new();
+        for b in blocks {
+            for m in &b.marks {
+                let Some(name) = [MARK_COMMENT, MARK_INS, MARK_DEL]
+                    .into_iter()
+                    .find(|n| *n == m.name)
+                else {
+                    continue;
+                };
+                if let crate::document::MarkValue::Str(v) = &m.value {
+                    out.entry((name, v.clone()))
+                        .or_insert_with(|| (b.id.clone(), m.start, m.end));
+                }
+            }
+        }
+        Self(out)
+    }
+
+    fn get(&self, name: &'static str, id: &str) -> Option<(String, usize, usize)> {
+        self.0.get(&(name, id.to_string())).cloned()
+    }
+}
+
+/// Every bookmark among already-materialized body blocks (see [`bookmarks`]).
+fn bookmarks_in(blocks: &[BlockView]) -> Vec<crate::snapshot::BookmarkView> {
     let mut out: Vec<crate::snapshot::BookmarkView> = Vec::new();
-    for bid in blocks_in_order(doc, c) {
-        for m in marks(doc, c, &bid) {
+    for b in blocks {
+        for m in &b.marks {
             if m.name == MARK_BOOKMARK
                 && let crate::document::MarkValue::Str(name) = &m.value
             {
                 out.push(crate::snapshot::BookmarkView {
                     name: name.clone(),
-                    range: (bid.clone(), m.start, m.end),
+                    range: (b.id.clone(), m.start, m.end),
                 });
             }
         }
@@ -914,6 +1048,12 @@ pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::Bookm
             .cmp(&(&b.name, &b.range.0, b.range.1, b.range.2))
     });
     out
+}
+
+/// Every bookmark in the body, recovered from the `bookmark` marks. Sorted by `(name, block, start)`
+/// so replicas that merged in different orders materialize byte-identically; a name may repeat if the source document duplicated it.
+pub fn bookmarks(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::BookmarkView> {
+    bookmarks_in(&ordered_views(doc, &c.blocks))
 }
 
 /// The auto/derived reference id of a heading block (so a cross-reference can target a heading with no
@@ -1015,15 +1155,30 @@ pub fn change_range(doc: &AutoCommit, c: &Containers, id: &str) -> Option<(Strin
 
 /// Materialize every tracked change into a [`crate::snapshot::ChangeView`] (sorted by id), recovering each change's anchored body range.
 pub fn materialize_changes(doc: &AutoCommit, c: &Containers) -> Vec<crate::snapshot::ChangeView> {
-    change_ids(doc, c)
-        .into_iter()
+    let ids = change_ids(doc, c);
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let ranges = AnchorRanges::of(&ordered_views(doc, &c.blocks));
+    changes_with_ranges(doc, c, ids, &ranges)
+}
+
+fn changes_with_ranges(
+    doc: &AutoCommit,
+    c: &Containers,
+    ids: Vec<String>,
+    ranges: &AnchorRanges,
+) -> Vec<crate::snapshot::ChangeView> {
+    ids.into_iter()
         .map(|id| {
-            let kind = change_kind(doc, c, &id).unwrap_or(crate::snapshot::ChangeKind::Ins);
+            let recorded = change_kind(doc, c, &id);
+            let kind = recorded.unwrap_or(crate::snapshot::ChangeKind::Ins);
             crate::snapshot::ChangeView {
                 kind,
                 author: change_author(doc, c, &id).unwrap_or_default(),
                 date: change_date(doc, c, &id).unwrap_or_default(),
-                range: change_range(doc, c, &id),
+                // `change_range` has no range for a change without a recorded kind.
+                range: recorded.and_then(|k| ranges.get(change_mark_name(k), &id)),
                 id,
             }
         })
@@ -1120,17 +1275,6 @@ fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
     }
 }
 
-fn block_order(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<Vec<u8>> {
-    let obj = block_obj(doc, container, id)?;
-    match doc.get(&obj, BLOCK_ORDER) {
-        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-            ScalarValue::Bytes(b) => Some(b.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 thread_local! {
     /// Per-thread count of full [`ordered_keys`] container scans (each an O(n) read-and-sort). The in-memory
     /// order index means a *bulk* insert (build/import of n blocks) triggers only O(1) of these — one per
@@ -1145,14 +1289,78 @@ pub fn ordered_keys_scan_count() -> u64 {
     ORDERED_KEYS_SCANS.with(std::cell::Cell::get)
 }
 
-fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
+/// A block map's fields, read in one pass over its entries. Automerge answers each `get` with a fresh
+/// seek into the op set, so reading a block field by field cost one seek per field; a single
+/// `map_range` walk visits every field in order for the price of one.
+#[derive(Default)]
+struct BlockFields {
+    order: Option<Vec<u8>>,
+    kind: Option<String>,
+    text: Option<ObjId>,
+    attrs: Option<ObjId>,
+    children: Option<ObjId>,
+}
+
+fn block_fields(doc: &AutoCommit, obj: &ObjId) -> BlockFields {
+    let mut f = BlockFields::default();
+    for item in doc.map_range(obj, ..) {
+        match (item.key.as_ref(), &item.value) {
+            (BLOCK_ORDER, ValueRef::Scalar(ScalarValueRef::Bytes(b))) => {
+                f.order = Some(b.to_vec());
+            }
+            (BLOCK_KIND, ValueRef::Scalar(ScalarValueRef::Str(s))) => {
+                f.kind = Some(s.to_string());
+            }
+            (BLOCK_TEXT, ValueRef::Object(ObjType::Text)) => f.text = Some(item.id()),
+            (BLOCK_ATTRS, ValueRef::Object(ObjType::Map)) => f.attrs = Some(item.id()),
+            (BLOCK_CHILDREN, ValueRef::Object(ObjType::Map)) => f.children = Some(item.id()),
+            _ => {}
+        }
+    }
+    f
+}
+
+/// One block of a container, as found by [`ordered_blocks`].
+struct OrderedBlock {
+    order: Vec<u8>,
+    id: String,
+    fields: BlockFields,
+}
+
+/// Every block of `container` that carries an order key, sorted into document order (fractional key via
+/// [`crate::order::cmp_keys`], then id as a tiebreak). One walk over the container and one over each block.
+fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
     ORDERED_KEYS_SCANS.with(|c| c.set(c.get().saturating_add(1)));
-    let mut v: Vec<(Vec<u8>, String)> = doc
-        .keys(container)
-        .filter_map(|id| block_order(doc, container, &id).map(|ord| (ord, id)))
+    let mut v: Vec<OrderedBlock> = doc
+        .map_range(container, ..)
+        .filter(|item| matches!(item.value, ValueRef::Object(ObjType::Map)))
+        .filter_map(|item| {
+            let mut fields = block_fields(doc, &item.id());
+            let order = fields.order.take()?;
+            Some(OrderedBlock {
+                order,
+                id: item.key.into_owned(),
+                fields,
+            })
+        })
         .collect();
-    v.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
-    v.into_iter().map(|(_, id)| id).collect()
+    v.sort_by(|a, b| crate::order::cmp_keys(&a.order, &b.order).then_with(|| a.id.cmp(&b.id)));
+    v
+}
+
+fn ordered_keys(doc: &AutoCommit, container: &ObjId) -> Vec<String> {
+    ordered_blocks(doc, container)
+        .into_iter()
+        .map(|b| b.id)
+        .collect()
+}
+
+/// Materialize every block of `container` in document order.
+fn ordered_views(doc: &AutoCommit, container: &ObjId) -> Vec<BlockView> {
+    ordered_blocks(doc, container)
+        .into_iter()
+        .map(|b| block_view(doc, b.id, b.fields))
+        .collect()
 }
 
 pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
@@ -1169,22 +1377,20 @@ pub fn blocks_in_order(doc: &AutoCommit, c: &Containers) -> Vec<String> {
 /// before a concurrent deletion safe to consume without fabricating a block.
 pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> Vec<BlockView> {
     ids.iter()
-        .filter(|id| {
-            matches!(
-                doc.get(&c.blocks, id.as_str()),
-                Ok(Some((Value::Object(ObjType::Map), _)))
-            )
+        .filter_map(|id| {
+            let obj = block_obj(doc, &c.blocks, id)?;
+            Some(block_view(doc, id.clone(), block_fields(doc, &obj)))
         })
-        .map(|id| materialize_block(doc, &c.blocks, id))
         .collect()
 }
 
-/// The byte length of every body block's fractional order key. The truncating [`crate::order::key_between`]
-/// keeps these bounded for a run of sequential appends; a naive append-a-byte scheme grows them O(n) per key.
-/// The perf test asserts the max stays small — a direct, mode-independent guard on the key-growth half of the fix.
+/// The byte length of every body block's fractional order key. [`crate::order::key_between`] keeps these
+/// logarithmic in a run of sequential appends; a scheme that grows keys linearly makes every comparison O(n).
+/// The perf test asserts the max stays small — a direct, mode-independent guard on key growth.
 pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
-    doc.keys(&c.blocks)
-        .filter_map(|id| block_order(doc, &c.blocks, &id).map(|k| k.len()))
+    ordered_blocks(doc, &c.blocks)
+        .into_iter()
+        .map(|b| b.order.len())
         .collect()
 }
 
@@ -1290,25 +1496,63 @@ fn marks_on(doc: &AutoCommit, block_obj: &ObjId) -> Vec<MarkSpan> {
     let Ok(Some((Value::Object(ObjType::Text), tid))) = doc.get(block_obj, BLOCK_TEXT) else {
         return vec![];
     };
-    let mut spans: Vec<MarkSpan> = doc
-        .marks(&tid)
-        .map(|ms| {
-            ms.into_iter()
-                .map(|m| MarkSpan {
-                    start: m.start,
-                    end: m.end,
-                    name: m.name().to_string(),
-                    value: m.value().into(),
+    text_and_marks(doc, &tid).1
+}
+
+/// A text object's content and its marks, from one walk over its spans (`text` and `marks` would each
+/// walk every character). Runs are merged exactly as automerge's own `marks` merges them — a run
+/// extends the previous run of the same name when it carries the same value and starts where that
+/// one ended — and removed (null-valued) marks are dropped. Marks come back in canonical order so
+/// replicas that merged in different orders produce byte-identical materializations (the mark *set*
+/// is order-independent); value is part of the key so concurrent valued marks sort deterministically.
+fn text_and_marks(doc: &AutoCommit, tid: &ObjId) -> (String, Vec<MarkSpan>) {
+    let Ok(spans) = doc.spans(tid) else {
+        return (String::new(), Vec::new());
+    };
+    let mut text = String::new();
+    let mut runs: BTreeMap<String, Vec<(usize, usize, ScalarValue)>> = BTreeMap::new();
+    let mut index = 0usize;
+    for span in spans {
+        let piece = span.as_str();
+        let len = piece.chars().count();
+        text.push_str(piece);
+        if let automerge::Span::Text {
+            marks: Some(marks), ..
+        } = &span
+            && len > 0
+        {
+            for (name, value) in marks.iter() {
+                let named = runs.entry(name.to_string()).or_default();
+                match named.last_mut() {
+                    Some((start, run_len, v))
+                        if v == value && start.saturating_add(*run_len) == index =>
+                    {
+                        *run_len = run_len.saturating_add(len);
+                    }
+                    _ => named.push((index, len, value.clone())),
+                }
+            }
+        }
+        index = index.saturating_add(len);
+    }
+    let mut marks: Vec<MarkSpan> = runs
+        .into_iter()
+        .flat_map(|(name, named)| {
+            named
+                .into_iter()
+                .filter(|(_, _, value)| !value.is_null())
+                .map(move |(start, len, value)| MarkSpan {
+                    start,
+                    end: start.saturating_add(len),
+                    name: name.clone(),
+                    value: (&value).into(),
                 })
-                .collect()
         })
-        .unwrap_or_default();
-    // Canonical order so replicas that merged in different orders produce byte-identical materializations
-    // (mark *set* is order-independent); value is part of the key so concurrent valued marks sort deterministically.
-    spans.sort_by(|a, b| {
+        .collect();
+    marks.sort_by(|a, b| {
         (a.start, a.end, &a.name, &a.value).cmp(&(b.start, b.end, &b.name, &b.value))
     });
-    spans
+    (text, marks)
 }
 
 pub fn marks(doc: &AutoCommit, c: &Containers, id: &str) -> Vec<MarkSpan> {
@@ -1556,32 +1800,32 @@ fn split_xml_top_level(bytes: &[u8]) -> Option<Vec<Vec<u8>>> {
     None
 }
 
-fn read_attrs(doc: &AutoCommit, block_obj: &ObjId) -> BTreeMap<String, AttrVal> {
-    let Ok(Some((Value::Object(ObjType::Map), attrs_obj))) = doc.get(block_obj, BLOCK_ATTRS) else {
-        return BTreeMap::new();
-    };
+/// A block's (or style's) scalar properties as [`AttrVal`]s, read in one walk over the map.
+fn scalar_props(doc: &AutoCommit, obj: &ObjId) -> BTreeMap<String, AttrVal> {
     let mut out = BTreeMap::new();
-    for key in doc.keys(&attrs_obj) {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(&attrs_obj, &key) {
-            let val = match s.as_ref() {
-                ScalarValue::Int(i) => AttrVal::Int(*i),
-                ScalarValue::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
-                ScalarValue::Boolean(b) => AttrVal::Bool(*b),
-                ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
-                ScalarValue::F64(f) => AttrVal::Float(*f),
-                _ => continue,
-            };
-            out.insert(key, val);
-        }
+    for item in doc.map_range(obj, ..) {
+        let ValueRef::Scalar(s) = &item.value else {
+            continue;
+        };
+        let val = match s {
+            ScalarValueRef::Int(i) => AttrVal::Int(*i),
+            ScalarValueRef::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
+            ScalarValueRef::Boolean(b) => AttrVal::Bool(*b),
+            ScalarValueRef::Str(st) => AttrVal::Str(st.to_string()),
+            ScalarValueRef::F64(f) => AttrVal::Float(*f),
+            _ => continue,
+        };
+        out.insert(item.key.into_owned(), val);
     }
     out
 }
 
 pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
-    let blocks = blocks_in_order(doc, c)
-        .into_iter()
-        .map(|id| materialize_block(doc, &c.blocks, &id))
-        .collect();
+    let blocks = ordered_views(doc, &c.blocks);
+    let ranges = AnchorRanges::of(&blocks);
+    let comments = comments_with_ranges(doc, c, comment_ids(doc, c), &ranges);
+    let changes = changes_with_ranges(doc, c, change_ids(doc, c), &ranges);
+    let bookmarks = bookmarks_in(&blocks);
     let (columns, column_gap) = columns(doc, c);
     #[allow(
         clippy::cast_possible_truncation,
@@ -1598,9 +1842,9 @@ pub fn materialize(doc: &AutoCommit, c: &Containers) -> DocSnapshot {
         header: materialize_region(doc, c, Region::Header),
         footer: materialize_region(doc, c, Region::Footer),
         notes: materialize_notes(doc, c),
-        comments: materialize_comments(doc, c),
-        changes: materialize_changes(doc, c),
-        bookmarks: bookmarks(doc, c),
+        comments,
+        changes,
+        bookmarks,
         columns,
         column_gap,
         language: language(doc, c),
@@ -1664,25 +1908,6 @@ fn project_blob_meta(doc: &AutoCommit, c: &Containers, snap: &mut DocSnapshot) {
     }
 }
 
-/// Read a style sub-map's scalar properties into an [`AttrVal`] map.
-fn read_style_props(doc: &AutoCommit, style_obj: &ObjId) -> BTreeMap<String, AttrVal> {
-    let mut out = BTreeMap::new();
-    for key in doc.keys(style_obj) {
-        if let Ok(Some((Value::Scalar(s), _))) = doc.get(style_obj, &key) {
-            let val = match s.as_ref() {
-                ScalarValue::Int(i) => AttrVal::Int(*i),
-                ScalarValue::Uint(u) => AttrVal::Int(i64::try_from(*u).unwrap_or(i64::MAX)),
-                ScalarValue::Boolean(b) => AttrVal::Bool(*b),
-                ScalarValue::Str(st) => AttrVal::Str(st.to_string()),
-                ScalarValue::F64(f) => AttrVal::Float(*f),
-                _ => continue,
-            };
-            out.insert(key, val);
-        }
-    }
-    out
-}
-
 /// Style ids defined in the document's styles container (e.g. `body`, `heading1`, or an imported ODF named-style name).
 pub fn style_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
     doc.keys(&c.styles)
@@ -1704,7 +1929,7 @@ pub fn style_is_tombstoned(doc: &AutoCommit, c: &Containers, id: &str) -> bool {
 /// The scalar properties of a single style (`name`/`font`/`size`/… → value), or an empty map if the style id is unknown.
 pub fn style_props(doc: &AutoCommit, c: &Containers, id: &str) -> BTreeMap<String, AttrVal> {
     match doc.get(&c.styles, id) {
-        Ok(Some((Value::Object(ObjType::Map), obj))) => read_style_props(doc, &obj),
+        Ok(Some((Value::Object(ObjType::Map), obj))) => scalar_props(doc, &obj),
         _ => BTreeMap::new(),
     }
 }
@@ -1719,41 +1944,34 @@ pub fn all_styles(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, BTreeMap
     out
 }
 
+#[cfg(test)]
 fn materialize_block(doc: &AutoCommit, container: &ObjId, id: &str) -> BlockView {
-    let Ok(Some((Value::Object(ObjType::Map), obj))) = doc.get(container, id) else {
-        return BlockView {
-            id: id.into(),
-            kind: String::new(),
-            text: String::new(),
-            marks: vec![],
-            attrs: BTreeMap::new(),
-            children: vec![],
-        };
+    let fields = match block_obj(doc, container, id) {
+        Some(obj) => block_fields(doc, &obj),
+        None => BlockFields::default(),
     };
-    let kind = match doc.get(&obj, BLOCK_KIND) {
-        Ok(Some((v, _))) => v.as_str().unwrap_or("").to_string(),
-        _ => String::new(),
-    };
-    let text = match doc.get(&obj, BLOCK_TEXT) {
-        Ok(Some((Value::Object(ObjType::Text), tid))) => doc.text(&tid).unwrap_or_default(),
-        _ => String::new(),
-    };
-    let marks = marks_on(doc, &obj);
-    let attrs = read_attrs(doc, &obj);
-    let children = match doc.get(&obj, BLOCK_CHILDREN) {
-        Ok(Some((Value::Object(ObjType::Map), cid))) => ordered_keys(doc, &cid)
-            .into_iter()
-            .map(|cc| materialize_block(doc, &cid, &cc))
-            .collect(),
-        _ => vec![],
+    block_view(doc, id.to_string(), fields)
+}
+
+/// Build a block's view from its already-read fields (see [`block_fields`]).
+fn block_view(doc: &AutoCommit, id: String, fields: BlockFields) -> BlockView {
+    let (text, marks) = match &fields.text {
+        Some(tid) => text_and_marks(doc, tid),
+        None => (String::new(), Vec::new()),
     };
     BlockView {
-        id: id.into(),
-        kind,
+        id,
+        kind: fields.kind.unwrap_or_default(),
         text,
         marks,
-        attrs,
-        children,
+        attrs: fields
+            .attrs
+            .map(|a| scalar_props(doc, &a))
+            .unwrap_or_default(),
+        children: fields
+            .children
+            .map(|cid| ordered_views(doc, &cid))
+            .unwrap_or_default(),
     }
 }
 
@@ -1823,22 +2041,22 @@ impl DocMut<'_> {
             .by_container
             .get(container)
             .expect("order cache just built");
-        let (lo, hi): (Option<Vec<u8>>, Option<Vec<u8>>) = match after {
+        let (lo, hi) = match after {
             // Insert at the front: bounded above by the first block's key.
             None => (None, co.entries.iter().next().map(|k| k.key.clone())),
-            Some(id) => match co.by_id.get(id) {
+            Some(id) => match co.by_id.get_key_value(id) {
                 // `after` exists: lo is its key, hi is the next block's key.
-                Some(after_key) => {
+                Some((id, after_key)) => {
                     let probe = OrderKey {
-                        key: after_key.clone(),
-                        id: id.to_string(),
+                        key: Arc::clone(after_key),
+                        id: Arc::clone(id),
                     };
                     let hi = co
                         .entries
                         .range((Bound::Excluded(probe), Bound::Unbounded))
                         .next()
                         .map(|k| k.key.clone());
-                    (Some(after_key.clone()), hi)
+                    (Some(Arc::clone(after_key)), hi)
                 }
                 // `after` unknown → append at the end (mirrors the old `unwrap_or(len)`).
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
@@ -1858,11 +2076,8 @@ impl DocMut<'_> {
             return;
         }
         let mut co = ContainerOrder::default();
-        for id in ordered_keys(self.doc, container) {
-            if let Some(key) = block_order(self.doc, container, &id) {
-                co.by_id.insert(id.clone(), key.clone());
-                co.entries.insert(OrderKey { key, id });
-            }
+        for b in ordered_blocks(self.doc, container) {
+            co.insert(b.id.into(), b.order.into());
         }
         self.ids.order.by_container.insert(container.clone(), co);
     }
@@ -1871,29 +2086,15 @@ impl DocMut<'_> {
     /// document, so the index stays in lock-step with it.
     fn record_order(&mut self, container: &ObjId, id: &str, key: &[u8]) {
         if let Some(co) = self.ids.order.by_container.get_mut(container) {
-            if let Some(old) = co.by_id.insert(id.to_string(), key.to_vec()) {
-                co.entries.remove(&OrderKey {
-                    key: old,
-                    id: id.to_string(),
-                });
-            }
-            co.entries.insert(OrderKey {
-                key: key.to_vec(),
-                id: id.to_string(),
-            });
+            co.insert(id.into(), key.into());
         }
     }
 
     /// Drop a block from the order index (on delete). A no-op if the container's index hasn't been built
     /// yet — it will rebuild from the (already-updated) document on next use.
     fn forget_order(&mut self, container: &ObjId, id: &str) {
-        if let Some(co) = self.ids.order.by_container.get_mut(container)
-            && let Some(old) = co.by_id.remove(id)
-        {
-            co.entries.remove(&OrderKey {
-                key: old,
-                id: id.to_string(),
-            });
+        if let Some(co) = self.ids.order.by_container.get_mut(container) {
+            co.remove(id);
         }
     }
 
@@ -1912,6 +2113,9 @@ impl DocMut<'_> {
     /// Panics if `self.c`'s cached container ids no longer resolve in `self.doc` — see the note on `impl DocMut` above.
     pub fn insert_block_in(&mut self, region: Region, after: Option<&str>, kind: &str) -> String {
         let container = self.region_container(region);
+        if self.bulk_active() {
+            return self.stage_block(container, after, kind);
+        }
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self
@@ -1938,6 +2142,9 @@ impl DocMut<'_> {
         del: isize,
         ins: &str,
     ) {
+        if self.bulk_splice(block_id, idx, del, ins) {
+            return;
+        }
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
@@ -1953,6 +2160,12 @@ impl DocMut<'_> {
         name: &str,
         value: impl Into<ScalarValue>,
     ) {
+        if self.bulk_active() {
+            if let Some(container) = region_obj(self.doc, self.c, region) {
+                self.stage_mark(container, block_id, start, end, name, value.into());
+            }
+            return;
+        }
         if let Some(tid) = self.region_text_obj(region, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
@@ -1968,6 +2181,9 @@ impl DocMut<'_> {
         value: impl Into<ScalarValue>,
     ) {
         let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        let Some(value) = self.stage_attr(&container, block_id, key, value.into()) else {
             return;
         };
         let Some(obj) = block_obj(self.doc, &container, block_id) else {
@@ -2068,6 +2284,9 @@ impl DocMut<'_> {
         kind: &str,
     ) -> Option<String> {
         let container = self.note_blocks_container(note_id)?;
+        if self.bulk_active() {
+            return Some(self.stage_block(container, after, kind));
+        }
         let key = self.order_after_in(&container, after);
         let id = self.ids.mint();
         let obj = self
@@ -2108,6 +2327,9 @@ impl DocMut<'_> {
         del: isize,
         ins: &str,
     ) {
+        if self.bulk_splice(block_id, idx, del, ins) {
+            return;
+        }
         if let Some(tid) = self.note_text_obj(note_id, block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
@@ -2123,6 +2345,12 @@ impl DocMut<'_> {
         name: &str,
         value: impl Into<ScalarValue>,
     ) {
+        if self.bulk_active() {
+            if let Some(container) = self.note_blocks_container(note_id) {
+                self.stage_mark(container, block_id, start, end, name, value.into());
+            }
+            return;
+        }
         if let Some(tid) = self.note_text_obj(note_id, block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
@@ -2476,6 +2704,7 @@ impl DocMut<'_> {
     /// mark; a **deletion** removes the struck text (and its `del` mark). The change record is removed from
     /// the `changes` container either way. A no-op for an unknown id.
     pub fn accept_change(&mut self, change_id: &str) {
+        self.flush_bulk();
         let Some(kind) = change_kind(self.doc, self.c, change_id) else {
             return;
         };
@@ -2506,6 +2735,7 @@ impl DocMut<'_> {
     /// inserted text (and its `ins` mark); a **deletion** keeps the struck text and drops its `del` mark. The
     /// change record is removed from the `changes` container either way. A no-op for an unknown id.
     pub fn reject_change(&mut self, change_id: &str) {
+        self.flush_bulk();
         let Some(kind) = change_kind(self.doc, self.c, change_id) else {
             return;
         };
@@ -2548,8 +2778,7 @@ impl DocMut<'_> {
         let (mut s, mut e) = (start, end);
         if e <= s {
             // Widen a point bookmark to one character so the mark has somewhere to live.
-            let blen = crate::model::block_text(self.doc, self.c, block_id)
-                .map_or(0, |t| t.chars().count());
+            let blen = self.block_text_len(block_id);
             if s < blen {
                 e = s.saturating_add(1);
             } else if blen > 0 {
@@ -2580,6 +2809,7 @@ impl DocMut<'_> {
 
     /// Remove every block from a region (clearing a header/footer).
     pub fn clear_region(&mut self, region: Region) {
+        self.flush_bulk();
         let Some(container) = region_obj(self.doc, self.c, region) else {
             return;
         };
@@ -2605,6 +2835,11 @@ impl DocMut<'_> {
     }
 
     pub fn remove_block(&mut self, id: &str) {
+        let container = self.c.blocks.clone();
+        if self.unstage_block(&container, id) {
+            return;
+        }
+        self.flush_bulk();
         let _ = self.doc.delete(&self.c.blocks, id);
         let container = self.c.blocks.clone();
         self.forget_order(&container, id);
@@ -2614,6 +2849,7 @@ impl DocMut<'_> {
     /// the same region container. Action replay uses this for delete-wins
     /// behavior against divergent edits of the removed object.
     pub fn tombstone_block_in(&mut self, region: Region, id: &str) {
+        self.flush_bulk();
         let Some(container) = region_obj(self.doc, self.c, region) else {
             return;
         };
@@ -2628,6 +2864,7 @@ impl DocMut<'_> {
     /// # Panics
     /// Panics if `self.c.blocks` no longer resolves in `self.doc` — see the note on `impl DocMut` above.
     pub fn move_block(&mut self, id: &str, after: Option<&str>) {
+        self.flush_bulk();
         // Compute the target key with the block still at its old position (mirrors the pre-index behaviour).
         let key = self.order_after(after);
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, id) {
@@ -2652,6 +2889,9 @@ impl DocMut<'_> {
     }
 
     pub fn splice_text(&mut self, block_id: &str, idx: usize, del: isize, ins: &str) {
+        if self.bulk_splice(block_id, idx, del, ins) {
+            return;
+        }
         if let Some(tid) = self.text_obj(block_id) {
             let _ = self.doc.splice_text(&tid, idx, del, ins);
         }
@@ -2665,6 +2905,11 @@ impl DocMut<'_> {
         name: &str,
         value: impl Into<ScalarValue>,
     ) {
+        if self.bulk_active() {
+            let container = self.c.blocks.clone();
+            self.stage_mark(container, block_id, start, end, name, value.into());
+            return;
+        }
         if let Some(tid) = self.text_obj(block_id) {
             let mark = Mark::new(name.to_string(), value, start, end);
             let _ = self.doc.mark(&tid, mark, ExpandMark::After);
@@ -2673,6 +2918,10 @@ impl DocMut<'_> {
 
     /// Set a scalar attribute (e.g. heading `level`, list `ordered`) in the block's `attrs` map.
     pub fn set_attr(&mut self, block_id: &str, key: &str, value: impl Into<ScalarValue>) {
+        let container = self.c.blocks.clone();
+        let Some(value) = self.stage_attr(&container, block_id, key, value.into()) else {
+            return;
+        };
         let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) else {
             return;
         };
@@ -2773,6 +3022,10 @@ impl DocMut<'_> {
 
     /// Change a block's kind (e.g. `paragraph` ↔ `heading` ↔ `list_item`).
     pub fn set_kind(&mut self, block_id: &str, kind: &str) {
+        let container = self.c.blocks.clone();
+        if self.stage_kind(&container, block_id, kind) {
+            return;
+        }
         if let Some(obj) = block_obj(self.doc, &self.c.blocks, block_id) {
             let _ = self.doc.put(&obj, BLOCK_KIND, kind);
         }
@@ -2780,6 +3033,7 @@ impl DocMut<'_> {
 
     /// Remove a mark named `name` over `[start, end)` of the block's text.
     pub fn remove_mark(&mut self, block_id: &str, start: usize, end: usize, name: &str) {
+        self.flush_bulk();
         if let Some(tid) = self.text_obj(block_id) {
             let _ = self.doc.unmark(&tid, name, start, end, ExpandMark::After);
         }
@@ -3465,6 +3719,62 @@ mod region_tests {
             "both comments survive (no overwrite): {:?}",
             snap.comments
         );
+    }
+
+    #[test]
+    fn replies_of_every_comment_come_from_one_pass() {
+        let mut doc = AutoCommit::new();
+        let c = init(&mut doc, &ROOT);
+        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let mut comments = Vec::new();
+        {
+            let mut dm = DocMut {
+                doc: &mut doc,
+                c: &c,
+                ids: &mut ids,
+            };
+            let paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "one two three four five");
+            for (i, start) in [0usize, 4, 8, 14].into_iter().enumerate() {
+                let comment = dm.add_comment(&paragraph, start, start + 3, "Ada", "note");
+                // Interleave replies across threads, and leave the last thread without any.
+                for n in 0..(3 - i.min(3)) {
+                    dm.add_comment_reply(&comment, "Bea", "2026-09-07", &format!("reply {n}"))
+                        .expect("parent comment exists");
+                }
+                comments.push(comment);
+            }
+            let first = comments[0].clone();
+            dm.add_comment_reply(&first, "Cy", "2026-09-08", "late reply")
+                .expect("parent comment exists");
+        }
+        let by_parent = comment_replies_by_parent(&doc, &c);
+        let all = materialize_comments(&doc, &c);
+        assert_eq!(all.len(), comments.len());
+        for view in &all {
+            assert_eq!(
+                comment_reply_ids(&doc, &c, &view.id),
+                by_parent.get(&view.id).cloned().unwrap_or_default()
+            );
+            assert_eq!(
+                view.replies,
+                materialize_comment_replies(&doc, &c, &view.id),
+                "a comment's replies read the same alone and in the full list"
+            );
+        }
+        let counts: Vec<usize> = comments
+            .iter()
+            .map(|id| {
+                all.iter()
+                    .find(|v| &v.id == id)
+                    .map_or(0, |v| v.replies.len())
+            })
+            .collect();
+        assert_eq!(counts, vec![4, 2, 1, 0]);
+
+        // A generator seeded from the document mints past every reply and reply-body block.
+        let seeded = try_seeded_id_gen(&doc, &c).expect("seeds");
+        assert_eq!(seeded.next, ids.next);
     }
 
     #[test]

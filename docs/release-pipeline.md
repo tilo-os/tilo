@@ -73,7 +73,13 @@ binaries. A successful `main` build publishes it immutably and advances
 downloads the matching architecture and omits those three Cargo packages from
 its build. OS-only changes therefore test the desktop/OS integration without
 recompiling the desktop. Scheduled/manual OS builds exercise this immutable
-integration boundary; ordinary PRs do not run the OS image workflow.
+integration boundary; ordinary PRs do not run the OS image workflow. The OS
+build reuses the payload only while it is current: the payload's
+`manifest.json` records its source revision, and if any Rust or Cargo input
+(`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, `.cargo`, `crates`, `apps`,
+`vendor`) changed between that revision and the build commit, or the revision
+cannot be fetched, the OS build compiles the desktop from its own source
+instead of shipping an older compositor.
 
 Each architecture collection also contains the signed `tilo-runtime` bundle
 built in the same Cargo graph as its thin app binaries. The OS verifies and
@@ -252,6 +258,16 @@ No architecture-specific child is promoted as an update channel. Non-publishing
 manual rehearsals retain the single generic x86-64 lane,
 so absent native release capacity does not block ordinary integration feedback.
 
+A publication reads the next generation from the signed published series and
+refuses to run when `code.sandbox.example/qos/tilo` does not exist, so a renamed
+or deleted repository can never silently restart the series at `gen1`. The
+very first publication therefore needs an explicit operator decision: set the
+repository variable `TILO_OS_SERIES_GENESIS_REVISION` to the full 40-hex
+`main` commit being published, then dispatch **Release / OS** with `publish`.
+Only that exact commit may start an absent series, and only after the
+registry authenticated the request and answered "name unknown". Once `gen1`
+exists the repository exists too and the variable has no effect; delete it.
+
 ## Dev VM disks
 
 A published OS generation requests **Release / Dev VM disk**
@@ -315,9 +331,10 @@ To find the current tag, read the `org.opencontainers.image.version` label of
 - The release-signing role (`AWS_SIGNING_ROLE_ARN`, OIDC audience
   `tilo-release-signing`) must trust scheduled runs on `main` as well as
   manual `main` dispatches and `v*` tags; the nightly publication signs with it.
-- Desktop payload publication uses a package-write/repository-write integration
-  restricted to `package-desktop.yml` scheduled/manual runs on `main`; store its audience in
-  `TILO_DESKTOP_RELEASE_AUDIENCE`.
+- Desktop payload publication (`package-desktop.yml` scheduled/manual runs on
+  `main`) writes the immutable payload with the CI account's package token
+  (`secrets.REGISTRY_TOKEN`) and advances the `TILO_DESKTOP_PAYLOAD_*` channel
+  variables with the repository-scoped `secrets.RELEASE_TOKEN`; it needs no OIDC.
 - Dev VM disks are development artifacts, never release-signed, so
   `dev-disk.yml` uploads them with the CI account's package token
   (`secrets.REGISTRY_TOKEN`, as `build-kernel.yml` uses) rather than an

@@ -25,8 +25,8 @@ path = "src/lib.rs"
 getrandom.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true
-postcard = { workspace = true, features = ["alloc"] }
 tokio = { workspace = true, features = ["io-util", "time"] }
+wire-frame = { path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "test-util", "time"] }
