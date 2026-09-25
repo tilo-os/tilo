@@ -1748,7 +1748,10 @@ impl WorkspaceSettingsOverlay {
         clippy::too_many_arguments,
         reason = "Workspace identity painting combines render context and card bounds with chrome state, active name, and the existing body-position parameter."
     )]
-
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine that lays its elements out top to bottom from shared running offsets"
+    )]
     fn draw_ws_settings_name_input(
         &self,
         scene: &mut Scene,
@@ -2187,8 +2190,8 @@ pub(crate) fn tab_strip_plan(
             .map(|label| f64::from(text_renderer.measure(label, size, None).0))
             .fold(0.0, f64::max)
     };
-    let full: Vec<&str> = WsTab::all().iter().map(|tab| tab.label()).collect();
-    let compact: Vec<&str> = WsTab::all().iter().map(|tab| tab.compact_label()).collect();
+    let full: Vec<&str> = WsTab::all().iter().map(WsTab::label).collect();
+    let compact: Vec<&str> = WsTab::all().iter().map(WsTab::compact_label).collect();
     let icon_w = TAB_ICON_PX + TAB_ICON_GAP;
     let fits = |label_w: f64, with_icon: bool| {
         label_w + TAB_LABEL_INSET + if with_icon { icon_w } else { 0.0 } <= pill_w

@@ -188,25 +188,25 @@ impl EditorApp {
 
     fn insert_text(&mut self, state: &mut AutoCommit, root: &ObjId, s: &str) {
         let edit = self.edit.insert(s);
-        self.apply_edit(state, root, edit);
+        self.apply_edit(state, root, &edit);
     }
 
     fn delete_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let edit = self.edit.delete_backward(&self.body.text, false);
-        self.apply_edit(state, root, edit);
+        self.apply_edit(state, root, &edit);
     }
 
     fn delete_word_before(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let edit = self.edit.delete_backward(&self.body.text, true);
-        self.apply_edit(state, root, edit);
+        self.apply_edit(state, root, &edit);
     }
 
     fn delete_word_after(&mut self, state: &mut AutoCommit, root: &ObjId) {
         let edit = self.edit.delete_forward(&self.body.text, true);
-        self.apply_edit(state, root, edit);
+        self.apply_edit(state, root, &edit);
     }
 
-    fn apply_edit(&mut self, state: &mut AutoCommit, root: &ObjId, edit: Edit) {
+    fn apply_edit(&mut self, state: &mut AutoCommit, root: &ObjId, edit: &Edit) {
         if edit.is_noop() {
             return;
         }
@@ -580,6 +580,10 @@ impl EditorApp {
 
     /// Gutter line numbers, tokenized body text, and the local caret —
     /// one visual row per source line.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "a paint routine for gutter, text and caret in one row loop"
+    )]
     fn draw_lines(
         &self,
         scene: &mut Scene,
@@ -1037,6 +1041,10 @@ impl Widget for EditorApp {
 }
 
 impl EditorApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one key dispatcher maps every editing shortcut"
+    )]
     fn handle_keyboard_input(
         &mut self,
         key_event: &KeyEvent,
@@ -1099,7 +1107,7 @@ impl EditorApp {
                                 clipboard_copy(selected);
                             }
                             let edit = self.edit.delete_backward(&self.body.text, false);
-                            self.apply_edit(state, root, edit);
+                            self.apply_edit(state, root, &edit);
                         }
                         *handled = true;
                     }
@@ -1115,7 +1123,7 @@ impl EditorApp {
                                 .collect();
                             if !cleaned.is_empty() {
                                 let edit = self.edit.insert(&cleaned);
-                                self.apply_edit(state, root, edit);
+                                self.apply_edit(state, root, &edit);
                             }
                         }
                         *handled = true;
@@ -1133,7 +1141,7 @@ impl EditorApp {
             }
             Key::Named(NamedKey::Delete) => {
                 let edit = self.edit.delete_forward(&self.body.text, false);
-                self.apply_edit(state, root, edit);
+                self.apply_edit(state, root, &edit);
                 *handled = true;
             }
             Key::Named(NamedKey::Enter) => {

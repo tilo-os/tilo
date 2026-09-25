@@ -1285,12 +1285,10 @@ impl Widget for SidebarWheelDisc {
     /// lands on the sector rather than on the middle of the whole disc.
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let &idx = path.first()?;
-        let rect = if idx < self.spokes.len() {
-            self.spoke_hit_rects.get(idx).copied()?
-        } else if idx == self.spokes.len() {
-            self.plus_rect
-        } else {
-            return None;
+        let rect = match idx.cmp(&self.spokes.len()) {
+            std::cmp::Ordering::Less => self.spoke_hit_rects.get(idx).copied()?,
+            std::cmp::Ordering::Equal => self.plus_rect,
+            std::cmp::Ordering::Greater => return None,
         };
         (rect.area() > 0.0).then_some(rect)
     }
