@@ -637,3 +637,291 @@ fn every_allocation_is_reserved_first() {
         assert!(precharged(&owner.allowance, || native.has_missing_dependencies()));
     }
 }
+
+// ---- hostile storage --------------------------------------------------------
+
+/// Minimal SHA-256 (FIPS 180-4) for re-checksumming crafted chunks.
+fn sha256(data: &[u8]) -> [u8; 32] {
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+    let mut message = data.to_vec();
+    message.push(0x80);
+    while message.len() % 64 != 56 {
+        message.push(0);
+    }
+    message.extend_from_slice(&((data.len() as u64) * 8).to_be_bytes());
+    for block in message.chunks(64) {
+        let mut w = [0u32; 64];
+        for (i, word) in block.chunks(4).enumerate() {
+            w[i] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+        let mut v = h;
+        for i in 0..64 {
+            let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
+            let ch = (v[4] & v[5]) ^ (!v[4] & v[6]);
+            let t1 = v[7]
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
+            let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+            let t2 = s0.wrapping_add(maj);
+            v = [
+                t1.wrapping_add(t2),
+                v[0],
+                v[1],
+                v[2],
+                v[3].wrapping_add(t1),
+                v[4],
+                v[5],
+                v[6],
+            ];
+        }
+        for (a, b) in h.iter_mut().zip(v) {
+            *a = a.wrapping_add(b);
+        }
+    }
+    let mut out = [0u8; 32];
+    for (i, word) in h.iter().enumerate() {
+        out[4 * i..4 * i + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+fn uleb(input: &mut &[u8]) -> u64 {
+    let mut value = 0u64;
+    let mut shift = 0;
+    loop {
+        let byte = input[0];
+        *input = &input[1..];
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
+            return value;
+        }
+        shift += 7;
+    }
+}
+
+fn write_uleb(out: &mut Vec<u8>, mut value: u64) {
+    loop {
+        let byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value == 0 {
+            out.push(byte);
+            return;
+        }
+        out.push(byte | 0x80);
+    }
+}
+
+/// Replaces one op column of an uncompressed document chunk and rewrites
+/// lengths and the checksum.
+fn rewrite_op_column(chunk: &[u8], spec: u64, data: &[u8]) -> Vec<u8> {
+    assert_eq!(chunk[8], 0, "document chunk");
+    let mut rest = &chunk[9..];
+    let length = uleb(&mut rest) as usize;
+    let body = &rest[..length];
+    let mut input = body;
+    for _ in 0..uleb(&mut input) {
+        let len = uleb(&mut input) as usize;
+        input = &input[len..];
+    }
+    let heads = uleb(&mut input) as usize;
+    input = &input[heads * 32..];
+    let prefix = &body[..body.len() - input.len()];
+    let mut groups = Vec::new();
+    for _ in 0..2 {
+        let mut columns = Vec::new();
+        for _ in 0..uleb(&mut input) {
+            columns.push((uleb(&mut input), uleb(&mut input) as usize));
+        }
+        groups.push(columns);
+    }
+    let mut datas = Vec::new();
+    for group in &groups {
+        let mut columns = Vec::new();
+        for (_, len) in group {
+            columns.push(input[..*len].to_vec());
+            input = &input[*len..];
+        }
+        datas.push(columns);
+    }
+    let suffix = input;
+    let position = groups[1]
+        .iter()
+        .position(|(s, _)| *s == spec)
+        .expect("op column present");
+    groups[1][position].1 = data.len();
+    datas[1][position] = data.to_vec();
+    let mut new_body = prefix.to_vec();
+    for group in &groups {
+        write_uleb(&mut new_body, group.len() as u64);
+        for (spec, len) in group {
+            write_uleb(&mut new_body, *spec);
+            write_uleb(&mut new_body, *len as u64);
+        }
+    }
+    for columns in &datas {
+        for column in columns {
+            new_body.extend_from_slice(column);
+        }
+    }
+    new_body.extend_from_slice(suffix);
+    let mut hashed = vec![0u8];
+    write_uleb(&mut hashed, new_body.len() as u64);
+    hashed.extend_from_slice(&new_body);
+    let checksum = sha256(&hashed);
+    let mut out = chunk[..4].to_vec();
+    out.extend_from_slice(&checksum[..4]);
+    out.extend_from_slice(&hashed);
+    out
+}
+
+fn op_column(chunk: &[u8], spec: u64) -> Vec<u8> {
+    let mut rest = &chunk[9..];
+    let _length = uleb(&mut rest);
+    let mut input = rest;
+    for _ in 0..uleb(&mut input) {
+        let len = uleb(&mut input) as usize;
+        input = &input[len..];
+    }
+    let heads = uleb(&mut input) as usize;
+    input = &input[heads * 32..];
+    let mut groups = Vec::new();
+    for _ in 0..2 {
+        let mut columns = Vec::new();
+        for _ in 0..uleb(&mut input) {
+            columns.push((uleb(&mut input), uleb(&mut input) as usize));
+        }
+        groups.push(columns);
+    }
+    let change_bytes: usize = groups[0].iter().map(|(_, len)| len).sum();
+    input = &input[change_bytes..];
+    for (s, len) in &groups[1] {
+        if *s == spec {
+            return input[..*len].to_vec();
+        }
+        input = &input[*len..];
+    }
+    panic!("no column {spec:#x}")
+}
+
+#[test]
+fn crafted_chunk_helper_round_trips() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "a", 1).unwrap();
+    doc.put(ROOT, "b", 2).unwrap();
+    doc.commit();
+    let bytes = doc.save_nocompress();
+    // Same id counters (deltas 1, 1), re-encoded as a literal run.
+    let original = op_column(&bytes, 0x23);
+    assert_eq!(original, [0x02, 0x01], "id counters 1, 2 as one delta run");
+    assert_eq!(rewrite_op_column(&bytes, 0x23, &original), bytes);
+}
+
+/// Two ops of one change sharing an op id reached `assert!` in 0.12's
+/// `VecEncoder::add`; now refused as Invalid.
+#[test]
+fn duplicate_op_ids_are_invalid_not_a_panic() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "a", 1).unwrap();
+    doc.put(ROOT, "b", 2).unwrap();
+    doc.commit();
+    let bytes = doc.save_nocompress();
+    // Counters 1, 1 (deltas 1, 0): a canonical literal run.
+    let rewritten = rewrite_op_column(&bytes, 0x23, &[0x7e, 0x01, 0x00]);
+    let mut owner = new_owner(64 * 1024 * 1024);
+    assert!(reconstruct(&mut owner, &rewritten).is_err());
+}
+
+#[test]
+fn upstream_fuzz_crashers_are_refused() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut seen = 0;
+    for dir in [
+        root.join("tests/fuzz-crashers"),
+        root.join("../../../vendor/automerge/tests/fuzz-crashers"),
+    ] {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let bytes = std::fs::read(entry.path()).unwrap();
+            let mut owner = new_owner(64 * 1024 * 1024);
+            assert!(
+                reconstruct(&mut owner, &bytes).is_err(),
+                "{:?}",
+                entry.path()
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0);
+}
+
+/// Many changes: roughly one in 256 hashes is a level >= 1 fragment, whose
+/// cache growth is reserved from the exact count before finalization.
+#[test]
+fn fragment_cache_growth_is_reserved() {
+    // Deterministic hashes (fixed actor and timestamps). The size stays
+    // below the point where L1's provisional F = changes quadratic fragment
+    // term would exceed the 64 MiB allowance.
+    let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from([7u8; 16]));
+    for i in 0..1200u64 {
+        doc.put(ROOT, "k", i).unwrap();
+        doc.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+    }
+    let fragments: Vec<usize> = doc
+        .get_changes(&[])
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.hash().0[0] == 0)
+        .map(|(i, _)| i)
+        .collect();
+    // Deterministic: [13, 328, 881, 950, 1137], on both sides of the split.
+    assert!(fragments.iter().any(|&i| i < 1000) && fragments.iter().any(|&i| i >= 1000));
+    let heads = doc.get_heads();
+    // Document chunk of the first 1000 changes, then 200 change chunks: the
+    // finalize path and the queued-apply path both grow the fragment cache.
+    let all = doc.get_changes(&[]);
+    let mut mixed = doc.fork_at(&[all[999].hash()]).unwrap().save();
+    for change in &all[1000..] {
+        mixed.extend_from_slice(change.raw_bytes());
+    }
+    for (variant, bytes) in [doc.save(), mixed].into_iter().enumerate() {
+        let mut owner = new_owner(64 * 1024 * 1024);
+        let normalized = owner
+            .turn
+            .normalize_input(&bytes, &NativeLimits::default())
+            .unwrap();
+        let native = precharged(&owner.allowance, || {
+            normalized.reconstruct(&mut owner.allocations, &owner.turn)
+        })
+        .unwrap_or_else(|error| panic!("variant {variant}: {error:?}"));
+        let mut restored = AutoCommit::load(&saved(&owner, &native, true)).unwrap();
+        assert_eq!(restored.get_heads(), heads);
+    }
+}
