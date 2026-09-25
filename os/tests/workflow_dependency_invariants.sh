@@ -94,8 +94,7 @@ else
   fail=1
 fi
 
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$kernel_workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$kernel_workflow" \
+if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$kernel_workflow" \
    && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow" \
    && grep -Fq "(needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')" "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
@@ -104,9 +103,19 @@ else
   fail=1
 fi
 
+authority="$repo/os/dev/require-cosign-authority.sh"
+if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"' "$authority" \
+   && grep -Fq 'cmp --silent "$repo/keys/cosign.pub" "$resolved"' "$authority" \
+   && grep -Fq '. "$repo/os/dev/configure-cosign-kms.sh"' "$authority" \
+   && python3 "$repo/os/tests/test_require_cosign_authority.py" >/dev/null 2>&1; then
+  printf 'ok    the shared signing preflight binds the KMS key to keys/cosign.pub\n'
+else
+  printf 'the shared signing preflight does not bind the KMS key to keys/cosign.pub\n' >&2
+  fail=1
+fi
+
 relay_workflow="$workflows/tilo-relay.yaml"
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$relay_workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$relay_workflow" \
+if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
    && grep -Fq 'needs: [signing-preflight, applicability]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
@@ -236,8 +245,7 @@ if [ "$fail" = 0 ]; then
   printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
 builder_workflow="$workflows/build-builder-image.yml"
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$builder_workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$builder_workflow" \
+if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$builder_workflow" \
    && grep -Fq 'needs: [plan, signing-preflight]' "$builder_workflow"; then
   printf 'ok    native builder work starts only after KMS authority matches the pinned public key\n'
 else

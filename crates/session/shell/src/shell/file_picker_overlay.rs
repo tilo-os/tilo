@@ -343,7 +343,7 @@ mod tests {
         let chrome = ChromeState::new(tree);
         chrome.borrow_mut().hosted_inputs.picker_scope = Some(crate::portal::PickerScope {
             initial_dir: root.clone(),
-            roots: vec![root.clone()],
+            roots: vec![root],
         });
 
         let queue = crate::portal::FilePickerQueue::new();

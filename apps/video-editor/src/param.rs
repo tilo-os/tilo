@@ -55,7 +55,7 @@ impl Interp {
             Interp::Ease => "Ease",
         }
     }
-    pub fn from_str(s: &str) -> Self {
+    pub fn from_name(s: &str) -> Self {
         match s {
             "hold" | "step" | "constant" => Interp::Hold,
             "ease" | "smooth" => Interp::Ease,
@@ -220,7 +220,7 @@ impl Param {
         }
     }
 
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_name(s: &str) -> Option<Self> {
         Some(match s {
             "opacity" => Param::Opacity,
             "volume" => Param::Volume,
@@ -285,11 +285,12 @@ impl ParamTrack {
     /// holds that key's value, and after the last it holds the last: a
     /// curve never extrapolates off into a value the user never typed.
     pub fn sample(&self, t: f64) -> Option<f64> {
-        let first = self.keys.first()?;
+        let (Some(first), Some(last)) = (self.keys.first(), self.keys.last()) else {
+            return None;
+        };
         if t <= first.t {
             return Some(first.v);
         }
-        let last = self.keys.last().expect("non-empty, checked above");
         if t >= last.t {
             return Some(last.v);
         }
@@ -298,36 +299,38 @@ impl ParamTrack {
             .keys
             .binary_search_by(|k| k.t.partial_cmp(&t).unwrap_or(std::cmp::Ordering::Equal))
         {
-            Ok(exact) => return Some(self.keys[exact].v),
+            Ok(exact) => return self.keys.get(exact).map(|k| k.v),
             // `Err(n)` is the insertion point, so the left key is n-1.
             Err(n) => n.saturating_sub(1),
         };
-        let a = self.keys[i];
-        let b = self.keys[i + 1];
-        let span = b.t - a.t;
+        // `t` lies strictly between the first and last keys, so the insertion
+        // point is in `1..len` and the segment `[i, i + 1]` exists.
+        let Some(&[left, right]) = self.keys.get(i..i + 2) else {
+            return Some(last.v);
+        };
+        let span = right.t - left.t;
         if span <= 1e-12 {
             // Two keys at the same instant: the later one wins, which is
             // what a hard cut in a curve should look like.
-            return Some(b.v);
+            return Some(right.v);
         }
-        let u = a.interp.shape((t - a.t) / span);
-        Some(a.v + (b.v - a.v) * u)
+        let eased = left.interp.shape((t - left.t) / span);
+        Some(left.v + (right.v - left.v) * eased)
     }
 
     /// Insert or replace the key at `t` (within a tight tolerance, so
     /// re-keying the same instant edits rather than stacks).
     pub fn set_key(&mut self, t: f64, v: f64, interp: Interp) {
         let key = Keyframe { t, v, interp };
-        match self.keys.iter().position(|k| (k.t - t).abs() < 1e-6) {
-            Some(i) => self.keys[i] = key,
-            None => {
-                let at = self
-                    .keys
-                    .iter()
-                    .position(|k| k.t > t)
-                    .unwrap_or(self.keys.len());
-                self.keys.insert(at, key);
-            }
+        if let Some(existing) = self.keys.iter_mut().find(|k| (k.t - t).abs() < 1e-6) {
+            *existing = key;
+        } else {
+            let at = self
+                .keys
+                .iter()
+                .position(|k| k.t > t)
+                .unwrap_or(self.keys.len());
+            self.keys.insert(at, key);
         }
     }
 
@@ -358,6 +361,7 @@ impl ParamTrack {
     /// rebase). The value at each *edge* is preserved by planting a key
     /// there sampled from the original curve, so cutting a clip in half
     /// does not change what either half looks like at the cut.
+    #[must_use]
     pub fn sliced(&self, from: f64, to: f64) -> Self {
         let mut out = ParamTrack::new(self.param);
         if self.keys.is_empty() {
@@ -415,12 +419,18 @@ impl ClipAnimation {
     }
 
     /// The curve for `param`, creating an empty one if absent.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "`i` is either an existing track's position or the one just pushed"
+    )]
     pub fn ensure(&mut self, param: Param) -> &mut ParamTrack {
-        if let Some(i) = self.tracks.iter().position(|t| t.param == param) {
-            return &mut self.tracks[i];
-        }
-        self.tracks.push(ParamTrack::new(param));
-        self.tracks.last_mut().expect("just pushed")
+        let i = if let Some(i) = self.tracks.iter().position(|t| t.param == param) {
+            i
+        } else {
+            self.tracks.push(ParamTrack::new(param));
+            self.tracks.len() - 1
+        };
+        &mut self.tracks[i]
     }
 
     /// Sample `param` at clip-local time `t`, or `None` when it has no
@@ -480,6 +490,7 @@ impl ClipAnimation {
 
     /// Restrict every curve to `[from, to)` and rebase (see
     /// [`ParamTrack::sliced`]). Used by split and trim.
+    #[must_use]
     pub fn sliced(&self, from: f64, to: f64) -> Self {
         Self {
             tracks: self
@@ -667,17 +678,17 @@ mod tests {
     #[test]
     fn param_names_round_trip_including_indexed_effects() {
         for p in Param::SIMPLE {
-            assert_eq!(Param::from_str(&p.as_str()), Some(p), "{p:?}");
+            assert_eq!(Param::from_name(&p.as_str()), Some(p), "{p:?}");
         }
         let e = Param::EffectAmount(3);
-        assert_eq!(Param::from_str(&e.as_str()), Some(e));
-        assert_eq!(Param::from_str("nonsense"), None);
+        assert_eq!(Param::from_name(&e.as_str()), Some(e));
+        assert_eq!(Param::from_name("nonsense"), None);
     }
 
     #[test]
     fn interp_names_round_trip() {
         for i in Interp::ALL {
-            assert_eq!(Interp::from_str(i.as_str()), i);
+            assert_eq!(Interp::from_name(i.as_str()), i);
         }
     }
 }

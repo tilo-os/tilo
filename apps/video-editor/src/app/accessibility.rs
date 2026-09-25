@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 // ==========================================================================
@@ -255,8 +259,8 @@ impl VideoEditorApp {
             return vec![Section::Markers, Section::Project];
         };
         let media = self.project.media(clip.media);
-        let is_title = media.map(|m| m.text.is_some()).unwrap_or(false);
-        let is_video = media.map(|m| m.kind.is_visual()).unwrap_or(true);
+        let is_title = media.is_some_and(|m| m.text.is_some());
+        let is_video = media.is_none_or(|m| m.kind.is_visual());
         // The same `is_video` test the layout makes, so the reader is
         // offered exactly the sections that are drawn — no more and no
         // fewer. An audio clip has no picture to place, key, mask or
@@ -339,8 +343,7 @@ impl VideoEditorApp {
     pub(super) fn a11y_clip_name(&self, clip: &Clip) -> String {
         self.project
             .media(clip.media)
-            .map(|m| m.name.clone())
-            .unwrap_or_else(|| "Missing media".into())
+            .map_or_else(|| "Missing media".into(), |m| m.name.clone())
     }
 
     /// What a reader says about a clip beyond its name: where it sits, how long
@@ -352,8 +355,7 @@ impl VideoEditorApp {
         let track = self
             .project
             .track(clip.track)
-            .map(|t| t.name.clone())
-            .unwrap_or_else(|| "track".into());
+            .map_or_else(|| "track".into(), |t| t.name.clone());
         format!(
             "{} to {}, {} long, on {track}",
             crate::timecode::timecode(clip.start, fps),
@@ -364,7 +366,7 @@ impl VideoEditorApp {
 
     /// Build one pane's group node, marking it focused when the keyboard is in
     /// it so the export layer can nominate an active descendant inside.
-    pub(super) fn a11y_pane(&self, pane: Pane, children: Vec<AccessNode>) -> AccessNode {
+    pub(super) fn a11y_pane(pane: Pane, children: Vec<AccessNode>) -> AccessNode {
         AccessNode::new(Role::Group)
             .with_name(pane.label())
             .with_key(pane.key())
@@ -408,14 +410,14 @@ impl VideoEditorApp {
             })
             .collect();
         if rows.is_empty() {
-            return self.a11y_pane(
+            return VideoEditorApp::a11y_pane(
                 Pane::Bin,
                 vec![AccessNode::new(Role::StaticText)
                     .with_name("No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.")
                     .with_key(0)],
             );
         }
-        self.a11y_pane(Pane::Bin, rows)
+        VideoEditorApp::a11y_pane(Pane::Bin, rows)
     }
 
     /// The five transport buttons, named.
@@ -464,7 +466,7 @@ impl VideoEditorApp {
                     }),
             );
         }
-        let mut node = self.a11y_pane(Pane::Transport, buttons);
+        let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
         node = node.with_value(crate::timecode::timecode(self.playhead, self.project.fps));
@@ -473,6 +475,10 @@ impl VideoEditorApp {
 
     /// Tracks as containers, clips as the items inside them, plus each track's
     /// mute / solo / lock toggles.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the timeline's accessible tree, built top to bottom in reading order"
+    )]
     pub(super) fn a11y_timeline(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Timeline;
         let primary = self.selection.primary();
@@ -581,7 +587,7 @@ impl VideoEditorApp {
                 }),
             );
         }
-        let mut node = self.a11y_pane(Pane::Timeline, tracks);
+        let mut node = VideoEditorApp::a11y_pane(Pane::Timeline, tracks);
         node = node.with_value(format!(
             "playhead at {}, {} of {} clips selected, timeline view starts at {}; Page Up and Page Down scroll the timeline",
             crate::timecode::timecode(self.playhead, self.project.fps),
@@ -706,16 +712,14 @@ impl VideoEditorApp {
         }
         // Re-mark the focused header now that every group exists: a header's
         // focus lives on its group node.
-        if cursor {
-            if let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
-                for g in groups.iter_mut() {
-                    if g.key == Some(ui::a11y::hash_key(&target.label())) {
-                        g.state.focused = true;
-                    }
+        if cursor && let Some(InspectorRow::Header(target)) = rows.get(self.focus.inspector) {
+            for g in &mut groups {
+                if g.key == Some(ui::a11y::hash_key(&target.label())) {
+                    g.state.focused = true;
                 }
             }
         }
-        self.a11y_pane(Pane::Inspector, groups)
+        VideoEditorApp::a11y_pane(Pane::Inspector, groups)
     }
 
     /// One inspector section, carrying whether it is folded and — when it is —
@@ -796,9 +800,10 @@ impl VideoEditorApp {
                 )
             }
             PickField::MatchFormat => (
-                self.format_source()
-                    .map(|m| format!("Match the shape of {}", m.name))
-                    .unwrap_or_else(|| "Match media".to_string()),
+                self.format_source().map_or_else(
+                    || "Match media".to_string(),
+                    |m| format!("Match the shape of {}", m.name),
+                ),
                 Role::Button,
                 false,
             ),
@@ -1065,9 +1070,7 @@ impl VideoEditorApp {
                 }
             }
             (Section::Mask, Some(c)) => {
-                if !c.mask.is_active() {
-                    "off".into()
-                } else {
+                if c.mask.is_active() {
                     format!(
                         "{} {:.0}% by {:.0}%, {}",
                         c.mask.shape.label().to_lowercase(),
@@ -1079,6 +1082,8 @@ impl VideoEditorApp {
                             "keeping the inside"
                         }
                     )
+                } else {
+                    "off".into()
                 }
             }
             (Section::Effects, Some(c)) => {
@@ -1392,7 +1397,7 @@ impl VideoEditorApp {
 impl VideoEditorApp {
     /// The shortcut sheet as accessible content — every binding readable in
     /// order, so the sheet is as useful to a reader as it is to the eye.
-    pub(super) fn a11y_help_sheet(&self) -> AccessNode {
+    pub(super) fn a11y_help_sheet() -> AccessNode {
         let mut kids: Vec<AccessNode> = Vec::new();
         let mut key = 0u64;
         for (group, rows) in SHORTCUTS {
@@ -1614,7 +1619,7 @@ impl VideoEditorApp {
     /// consumed — the timeline deliberately consumes only Up/Down, leaving
     /// Left/Right to nudge the selection and step the playhead as every
     /// non-linear editor does.
-    pub(super) fn nav_arrow(&mut self, up: bool, vertical: bool, state: &mut AutoCommit) -> bool {
+    pub(super) fn nav_arrow(&mut self, up: bool, vertical: bool, state: &AutoCommit) -> bool {
         let _ = state;
         match self.focus.pane {
             Pane::Bin if vertical => {
@@ -2130,7 +2135,7 @@ impl VideoEditorApp {
         // eight-second clip's fade in three-minute jumps.
         let next = match self.field_span(f) {
             Some((lo, hi)) => (v + dir * 0.05 * (hi - lo)).clamp(lo, hi),
-            None => f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0)),
+            None => f.at_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0)),
         };
         self.set_num(f, next);
         if f.is_media() {

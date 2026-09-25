@@ -60,10 +60,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         [_, cmd, root, blob, automerge_out, json_out] if cmd == "document" => {
             let root = Path::new(root);
             let workspace: serde_json::Value = serde_json::from_slice(&std::fs::read(root.join("profile/workspace.json"))?)?;
-            let room = workspace.pointer("/workspaces/0/room").and_then(serde_json::Value::as_str).ok_or("missing workspace room")?;
+            let workspace_id = workspace.pointer("/workspaces/0/room").and_then(serde_json::Value::as_str).ok_or("missing workspace room")?;
             let events: Vec<collab_types::SignedOp> = std::fs::read_to_string(root.join("signed-document-events.jsonl"))?
                 .lines().map(serde_json::from_str).collect::<Result<_, _>>()?;
-            let mut doc = reconstruct(&events, room)?;
+            let mut doc = reconstruct(&events, workspace_id)?;
             let model = qdoc::model::open(&doc, &automerge::ROOT)?;
             let materialized = qdoc::model::materialize(&doc, &model);
             let images: Vec<_> = materialized.blocks.iter().filter(|b| b.kind == "image").collect();
@@ -72,7 +72,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 if block.attrs.get(name) != Some(&expected) { return Err(format!("reconstructed {name} mismatch").into()); }
             }
             std::fs::write(automerge_out, doc.save())?;
-            let evidence = json!({"app":WRITER,"record":"","room":room,"image_block":block.id,"blob":blob,"width":32,"height":32,"signed_envelopes":events.len(),"verification":"independent signature and exact-route validation, Automerge reconstruction"});
+            let evidence = json!({"app":WRITER,"record":"","room":workspace_id,"image_block":block.id,"blob":blob,"width":32,"height":32,"signed_envelopes":events.len(),"verification":"independent signature and exact-route validation, Automerge reconstruction"});
             std::fs::write(json_out, serde_json::to_vec_pretty(&evidence)?)?;
             evidence
         }
@@ -82,14 +82,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn wait_ready(root: &Path, room: &str, timeout: Duration) -> Result<(), Box<dyn Error>> {
+fn wait_ready(root: &Path, workspace_id: &str, timeout: Duration) -> Result<(), Box<dyn Error>> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or("observer readiness timeout overflows")?;
     loop {
         if let Ok(bytes) = std::fs::read(root.join("observer-ready.json")) {
             let ready: serde_json::Value = serde_json::from_slice(&bytes)?;
-            if ready.get("room").and_then(serde_json::Value::as_str) != Some(room)
+            if ready.get("room").and_then(serde_json::Value::as_str) != Some(workspace_id)
                 || ready.get("app").and_then(serde_json::Value::as_str) != Some(WRITER)
                 || ready.get("subscribed") != Some(&serde_json::Value::Bool(true))
             {
@@ -132,10 +132,10 @@ fn reconstruct(
 }
 
 fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
-    let room = std::env::var("TILO_WORKSPACE_ID")?;
+    let workspace_id = std::env::var("TILO_WORKSPACE_ID")?;
     let mut manager = ui::collaboration::CollaborationManager::for_route(
         WRITER,
-        uuid::Uuid::parse_str(&room)?,
+        uuid::Uuid::parse_str(&workspace_id)?,
         None,
         Some("MCP proof observer".into()),
     )?;
@@ -145,8 +145,7 @@ fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
         .open(root.join("signed-document-events.jsonl"))?;
     // for_route returns only after authenticated primary-route setup and normal
     // SDK subscriptions. The fresh marker gates the real Writer exec, not edits.
-    let ready =
-        json!({"app":WRITER,"room":room,"record":"","pid":std::process::id(),"subscribed":true});
+    let ready = json!({"app":WRITER,"room":workspace_id,"record":"","pid":std::process::id(),"subscribed":true});
     std::fs::write(
         root.join("observer-ready.tmp"),
         serde_json::to_vec_pretty(&ready)?,
@@ -170,7 +169,12 @@ fn observe(root: &Path) -> Result<(), Box<dyn Error>> {
                     return Err("unexpected encrypted document route".into());
                 }
                 collab_types::verify_op(&envelope)?;
-                collab_types::validate_document_payload_route(WRITER, &room, "", &envelope)?;
+                collab_types::validate_document_payload_route(
+                    WRITER,
+                    &workspace_id,
+                    "",
+                    &envelope,
+                )?;
                 serde_json::to_writer(&mut events, &envelope)?;
                 writeln!(events)?;
                 events.flush()?;

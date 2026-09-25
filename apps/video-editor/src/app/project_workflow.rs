@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
@@ -115,7 +119,7 @@ impl VideoEditorApp {
                 self.recents = crate::project_file::recents::remember(&self.recents, &path);
                 self.project_notice = Some(Notice::ok(format!("Saved to {}", path.display())));
                 // Save As can move the project; relative media follows it.
-                crate::media::set_project_anchor(path.parent().map(|p| p.to_path_buf()));
+                crate::media::set_project_anchor(path.parent().map(std::path::Path::to_path_buf));
                 self.project_path = Some(path);
                 // The document's heads as they are *now*, not the copy `sync`
                 // cached at the start of the frame. Saving from a key press
@@ -169,14 +173,14 @@ impl VideoEditorApp {
         // anything asks whether a source can be read, including the notice
         // below, or a project copied somewhere with its footage would report
         // the footage missing.
-        crate::media::set_project_anchor(path.parent().map(|p| p.to_path_buf()));
+        crate::media::set_project_anchor(path.parent().map(std::path::Path::to_path_buf));
         // The name follows the file unless the file's own project carries a
         // real one — a project still called "Untitled" opened from
         // `Holiday.qvp` should read as Holiday.
-        if project.name.trim().is_empty() || project.name == "Untitled" {
-            if let Some(n) = crate::project_file::name_from_path(&path) {
-                project.name = n;
-            }
+        if (project.name.trim().is_empty() || project.name == "Untitled")
+            && let Some(n) = crate::project_file::name_from_path(&path)
+        {
+            project.name = n;
         }
         // Whether this Open is throwing a timeline away. If it is, the notice
         // says the way back, because an accidental Open otherwise feels final
@@ -199,8 +203,8 @@ impl VideoEditorApp {
         self.clip_edit_bases.clear();
         self.doc_heads = doc.get_heads();
         self.saved_heads = Some(self.doc_heads.clone());
-        self.project_path = Some(path.clone());
         self.recents = crate::project_file::recents::remember(&self.recents, &path);
+        self.project_path = Some(path);
         // The view belongs to the project that was open, not to this one.
         self.selection = Selection::default();
         self.selected_media = None;
@@ -480,7 +484,7 @@ impl VideoEditorApp {
     /// Whether the Export action is actually available. The dialog paints the
     /// button from this and the press path gates on it, so the offer and the
     /// behaviour cannot disagree — which they did: the dialog said "Export
-    /// needs the GStreamer build" and put an enabled Export button under it.
+    /// needs the `GStreamer` build" and put an enabled Export button under it.
     pub(super) fn export_is_offered(&self) -> bool {
         crate::export::unavailable_reason().is_none() && !self.export_running()
     }

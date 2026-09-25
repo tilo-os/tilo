@@ -102,19 +102,7 @@ jobs:
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          resolved="$RUNNER_TEMP/kernel-release-signing-authority.pub"
-          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
-          cmp --silent keys/cosign.pub "$resolved" || {
-            echo '::error::kernel KMS/HSM authority does not match keys/cosign.pub'
-            exit 1
-          }
+        run: os/dev/require-cosign-authority.sh
 
   build-and-push-kernel:
     needs: [signing-preflight, applicability]
@@ -217,9 +205,30 @@ jobs:
       # Every CI pool provides the same S3 compiler cache and a bucket-scoped
       # credential. The kernel compile requires it, so a dead cache fails
       # instead of silently compiling the whole tree again.
+      #
+      # Only pull requests use it. Every other run publishes a kernel that
+      # signed OS images install, and every CI job and agent sandbox holds a
+      # credential that can write any object in that bucket. A published
+      # kernel therefore compiles with the cache off and receives no cache
+      # settings or credentials.
       - name: Bind the runner compiler cache
+        env:
+          PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
+          if [[ $PULL_REQUEST != true ]]; then
+            {
+              echo 'KERNEL_COMPILER_CACHE=off'
+              echo 'KERNEL_REQUIRE_COMPILER_CACHE=0'
+              echo 'KERNEL_SCCACHE_BUCKET='
+              echo 'KERNEL_SCCACHE_ENDPOINT='
+              echo 'KERNEL_SCCACHE_REGION=auto'
+              echo 'KERNEL_SCCACHE_S3_USE_SSL=false'
+              echo 'KERNEL_COMPILER_CACHE_SECRETS='
+            } >> "$GITHUB_ENV"
+            echo '::notice::publication: compiling the kernel without the shared compiler cache'
+            exit 0
+          fi
           for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
             value="${!name:-}"
             if [[ -z $value || $value == *$'\n'* ]]; then
@@ -228,10 +237,16 @@ jobs:
             fi
           done
           {
+            echo 'KERNEL_COMPILER_CACHE=shared'
+            echo 'KERNEL_REQUIRE_COMPILER_CACHE=1'
             printf 'KERNEL_SCCACHE_BUCKET=%s\n' "$SCCACHE_BUCKET"
             printf 'KERNEL_SCCACHE_ENDPOINT=%s\n' "$SCCACHE_ENDPOINT"
             printf 'KERNEL_SCCACHE_REGION=%s\n' "$SCCACHE_REGION"
             printf 'KERNEL_SCCACHE_S3_USE_SSL=%s\n' "$SCCACHE_S3_USE_SSL"
+            echo 'KERNEL_COMPILER_CACHE_SECRETS<<TILO_COMPILER_CACHE_SECRETS'
+            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
+            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
+            echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_ENV"
 
       - name: Set up buildx for registry cache export
@@ -291,11 +306,13 @@ jobs:
             SCCACHE_ENDPOINT=${{ env.KERNEL_SCCACHE_ENDPOINT }}
             SCCACHE_REGION=${{ env.KERNEL_SCCACHE_REGION }}
             SCCACHE_S3_USE_SSL=${{ env.KERNEL_SCCACHE_S3_USE_SSL }}
-            TILO_REQUIRE_COMPILER_CACHE=1
-          secret-envs: |
-            aws_access_key_id=AWS_ACCESS_KEY_ID
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:${{ matrix.arch }}
+            TILO_COMPILER_CACHE=${{ env.KERNEL_COMPILER_CACHE }}
+            TILO_REQUIRE_COMPILER_CACHE=${{ env.KERNEL_REQUIRE_COMPILER_CACHE }}
+          secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}
+          # A published kernel imports no layer cache: no uncached rebuild
+          # checks it, and the cache tag is writable by other jobs. Publishing
+          # runs refresh the cache that pull requests then consume.
+          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0}', matrix.arch) || '' }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
@@ -443,6 +460,13 @@ jobs:
         run: |
           set -euo pipefail
           probe="$RUNNER_TEMP/tilo-secureboot-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # The same compiler-cache mode as the kernel build, so the probe
+          # reuses its compile; a publication passes no cache credential.
+          cache_secrets=()
+          if [[ $KERNEL_COMPILER_CACHE == shared ]]; then
+            cache_secrets=(--secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
+                           --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
+          fi
           docker buildx build --file os/kernel/Containerfile \
             --target secureboot-probe-inputs \
             --build-context github-assets=os/external-assets/kernel-cache \
@@ -453,9 +477,9 @@ jobs:
             --build-arg "SCCACHE_ENDPOINT=$KERNEL_SCCACHE_ENDPOINT" \
             --build-arg "SCCACHE_REGION=$KERNEL_SCCACHE_REGION" \
             --build-arg "SCCACHE_S3_USE_SSL=$KERNEL_SCCACHE_S3_USE_SSL" \
-            --build-arg TILO_REQUIRE_COMPILER_CACHE=1 \
-            --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID \
-            --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY \
+            --build-arg "TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE" \
+            --build-arg "TILO_REQUIRE_COMPILER_CACHE=$KERNEL_REQUIRE_COMPILER_CACHE" \
+            "${cache_secrets[@]}" \
             --output "type=local,dest=$probe" .
           TILO_KERNEL_PATH="$probe/vmlinuz" \
           TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \

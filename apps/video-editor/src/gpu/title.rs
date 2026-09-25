@@ -113,13 +113,13 @@ impl TitleRaster {
                 Affine::IDENTITY,
                 Color::new([0.0, 0.0, 0.0, text.backdrop.clamp(0.0, 1.0) as f32]),
                 None,
-                &Rect::new(0.0, 0.0, width as f64, height as f64),
+                &Rect::new(0.0, 0.0, f64::from(width), f64::from(height)),
             );
         }
 
         // Sizes are fractions of the frame height, so the same title reads
         // the same against a 1080p project and a 4K one.
-        let size = (text.size.clamp(0.005, 2.0) * height as f64) as f32;
+        let size = (text.size.clamp(0.005, 2.0) * f64::from(height)) as f32;
         let color = Color::new([
             text.color[0].clamp(0.0, 1.0) as f32,
             text.color[1].clamp(0.0, 1.0) as f32,
@@ -153,7 +153,7 @@ impl TitleRaster {
         // The safe width matches the inset the left- and right-aligned cases
         // already use (8% each side), so a wrapped line never sits closer to
         // the edge than a deliberately aligned one.
-        let safe = width as f64 * 0.84;
+        let safe = f64::from(width) * 0.84;
         let lines: Vec<String> = text
             .content
             .lines()
@@ -170,15 +170,15 @@ impl TitleRaster {
                 )
             })
             .collect();
-        let leading = size as f64 * 1.25;
+        let leading = f64::from(size) * 1.25;
         let block = leading * lines.len().max(1) as f64;
-        let mut y = height as f64 * 0.5 - block * 0.5;
+        let mut y = f64::from(height) * 0.5 - block * 0.5;
         for line in &lines {
             let (w, _h) = tr.measure_font(line.as_str(), size, None, weight, text.italic, &family);
             let x = match text.align {
-                TextAlign::Left => width as f64 * 0.08,
-                TextAlign::Center => (width as f64 - w as f64) * 0.5,
-                TextAlign::Right => width as f64 * 0.92 - w as f64,
+                TextAlign::Left => f64::from(width) * 0.08,
+                TextAlign::Center => (f64::from(width) - f64::from(w)) * 0.5,
+                TextAlign::Right => f64::from(width) * 0.92 - f64::from(w),
             };
             tr.draw_text_font(
                 &mut scene,
@@ -194,8 +194,97 @@ impl TitleRaster {
             y += leading;
         }
 
-        let renderer = self.renderer.as_mut().expect("built above");
+        // Built (or refused, returning early) at the top of this call.
+        let renderer = self.renderer.as_mut()?;
         Some(renderer.render_rgba(&scene))
+    }
+}
+
+/// Break `line` into pieces that each fit inside `max_w`.
+///
+/// Greedy on word boundaries, which is what a reader expects and what every
+/// other text surface here does. A single word too long for the frame — a URL,
+/// a compound noun, a language that does not space its words — is broken by
+/// character rather than allowed to run off the edge: a title that leaves the
+/// frame is worse than one with an awkward break, because the part outside is
+/// simply gone from the exported file.
+///
+/// Measured through the same `measure_font` the drawing uses, so the wrap and
+/// the paint cannot disagree about what fits. Called only when a title's
+/// raster is rebuilt, never per frame.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the line and the full font description `measure_font` takes, plus both widths"
+)]
+fn wrap_to(
+    tr: &mut ui::text_render::TextRenderer,
+    line: &str,
+    size: f32,
+    weight: ui::text_render::TextWeight,
+    italic: bool,
+    family: &ui::text_render::FontChoice,
+    max_w: f64,
+    frame_w: f64,
+) -> Vec<String> {
+    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
+    };
+    // Breaking mid-letter is measured against the **frame**, not the
+    // title-safe box. Safe-area is a placement margin, not a hard bound: a
+    // single word that merely runs into the margin should use the margin,
+    // because "HELLO" chopped to "HELL" / "O" is worse than a title sitting
+    // slightly wider than broadcast-safe. Only a word that cannot fit the
+    // picture at all is broken.
+    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
+    };
+
+    // An empty line is a deliberate blank line, and must survive as one.
+    if line.trim().is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if fits(tr, &candidate) {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        // The word alone: on its own line if it fits the picture at all,
+        // and only broken up when even that is impossible.
+        if fits_frame(tr, word) {
+            current = word.to_string();
+            continue;
+        }
+        let mut piece = String::new();
+        for ch in word.chars() {
+            let mut next = piece.clone();
+            next.push(ch);
+            if piece.is_empty() || fits_frame(tr, &next) {
+                piece = next;
+            } else {
+                out.push(std::mem::take(&mut piece));
+                piece.push(ch);
+            }
+        }
+        current = piece;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        vec![String::new()]
+    } else {
+        out
     }
 }
 
@@ -226,7 +315,7 @@ mod tests {
         );
         let rgba = r.render_rgba(&scene);
         let (rr, a) = (rgba[0], rgba[3]);
-        assert!((a as i32 - 128).abs() <= 2, "half alpha, got {a}");
+        assert!((i32::from(a) - 128).abs() <= 2, "half alpha, got {a}");
         assert_eq!(
             rr, 255,
             "straight alpha: a half-transparent white keeps its full colour",
@@ -325,7 +414,7 @@ mod tests {
             let (mut sum, mut n) = (0f64, 0f64);
             for (i, p) in rgba.chunks_exact(4).enumerate() {
                 if p[3] > 128 {
-                    sum += (i as u32 % w) as f64;
+                    sum += f64::from(i as u32 % w);
                     n += 1.0;
                 }
             }
@@ -392,89 +481,5 @@ mod tests {
             1,
             "a new frame size rebuilds the renderer"
         );
-    }
-}
-
-/// Break `line` into pieces that each fit inside `max_w`.
-///
-/// Greedy on word boundaries, which is what a reader expects and what every
-/// other text surface here does. A single word too long for the frame — a URL,
-/// a compound noun, a language that does not space its words — is broken by
-/// character rather than allowed to run off the edge: a title that leaves the
-/// frame is worse than one with an awkward break, because the part outside is
-/// simply gone from the exported file.
-///
-/// Measured through the same `measure_font` the drawing uses, so the wrap and
-/// the paint cannot disagree about what fits. Called only when a title's
-/// raster is rebuilt, never per frame.
-fn wrap_to(
-    tr: &mut ui::text_render::TextRenderer,
-    line: &str,
-    size: f32,
-    weight: ui::text_render::TextWeight,
-    italic: bool,
-    family: &ui::text_render::FontChoice,
-    max_w: f64,
-    frame_w: f64,
-) -> Vec<String> {
-    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
-        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
-    };
-    // Breaking mid-letter is measured against the **frame**, not the
-    // title-safe box. Safe-area is a placement margin, not a hard bound: a
-    // single word that merely runs into the margin should use the margin,
-    // because "HELLO" chopped to "HELL" / "O" is worse than a title sitting
-    // slightly wider than broadcast-safe. Only a word that cannot fit the
-    // picture at all is broken.
-    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
-        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
-    };
-
-    // An empty line is a deliberate blank line, and must survive as one.
-    if line.trim().is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for word in line.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if fits(tr, &candidate) {
-            current = candidate;
-            continue;
-        }
-        if !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-        }
-        // The word alone: on its own line if it fits the picture at all,
-        // and only broken up when even that is impossible.
-        if fits_frame(tr, word) {
-            current = word.to_string();
-            continue;
-        }
-        let mut piece = String::new();
-        for ch in word.chars() {
-            let mut next = piece.clone();
-            next.push(ch);
-            if piece.is_empty() || fits_frame(tr, &next) {
-                piece = next;
-            } else {
-                out.push(std::mem::take(&mut piece));
-                piece.push(ch);
-            }
-        }
-        current = piece;
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.is_empty() {
-        vec![String::new()]
-    } else {
-        out
     }
 }
