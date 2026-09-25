@@ -2174,7 +2174,7 @@ impl QuickFS {
         {
             return Err(EBUSY);
         }
-        if self.restore_codec(&self.ns(), ino).is_err() {
+        if Self::restore_codec(&self.ns(), ino).is_err() {
             // Document restoration needs codec-aware CRDT checkout rather
             // than replacing its exported bytes as if it were a plain file.
             return Err(libc::ENOTSUP);
