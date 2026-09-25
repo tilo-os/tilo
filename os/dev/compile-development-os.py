@@ -37,7 +37,7 @@ CONTROLLER = REPO
 RECONSTRUCTION_SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
 PRIVATE = Path('/var/lib/tilo-provisional-compile')
 EVIDENCE = Path('/evidence')
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
+BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:5365970de75407269908d486afd076f4a480356333e1b188958cd2dac60345c9'
 PIN_FILES = {'BASE_REF': 'base-snapshot.env', 'RPMS_REF': 'rpms-snapshot.env',
              'KERNEL_RPMS_REF': 'kernel-snapshot.env'}
 ARCHITECTURES = {'x86_64': 'amd64', 'aarch64': 'arm64'}
