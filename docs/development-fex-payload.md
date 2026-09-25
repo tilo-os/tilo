@@ -31,8 +31,10 @@ builds an ARM image without Windows apps if both are absent. An explicit
 Lenovo `main` dispatch can instead supply both immutable references as
 `fex_payload_candidate` and `windows_guest_candidate`. This confines the
 experimental inputs to one build without changing the nightly or tag channels.
-The resulting image carries `org.tilo.windows-provider.input-class=development-only`
-as well as its provider digest record; the ordinary variable path is labeled
-`repository-pinned`. A production provider additionally needs frozen input
-transactions and mixed-width Wine, Proton, DXVK, graphics, capsule and
-target-hardware acceptance.
+The resulting image retains `org.tilo.with-windows=1` and its embedded provider
+digest record. Its KMS-signed SLSA release provenance names both input digests
+and records `inputClass=development-only` and
+`runtimeAcceptanceVerified=false`. Lenovo publication verifies those exact
+claims before making the board image tag visible. A production provider
+additionally needs frozen input transactions and mixed-width Wine, Proton,
+DXVK, graphics, capsule and target-hardware acceptance.

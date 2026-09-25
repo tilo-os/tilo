@@ -1895,8 +1895,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
 
 ARG TILO_WITH_WINDOWS
 LABEL org.tilo.with-windows="${TILO_WITH_WINDOWS}"
-ARG TILO_WINDOWS_PROVIDER_INPUT_CLASS=repository-pinned
-LABEL org.tilo.windows-provider.input-class="${TILO_WINDOWS_PROVIDER_INPUT_CLASS}"
 COPY --from=windows-provider /out/usr/ /usr/
 RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
     python3 /tilo-windows-provider.py host --manifest /usr/share/tilo/windows/provider.json
