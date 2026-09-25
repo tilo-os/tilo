@@ -66,7 +66,7 @@ pub fn rsync_command(
     let locks = "/var/lib/tilo-vm/locks";
     let rsync_path =
         format!("mkdir -p {locks} {dest_dir} && flock --nonblock {locks}/src-{id}.lock rsync");
-    let mut source = root.display().to_string();
+    let mut source = rsync_source(root);
     if !source.ends_with('/') {
         source.push('/');
     }
@@ -88,6 +88,21 @@ pub fn rsync_command(
     .arg(rsync_path)
     .arg(source)
     .arg(format!("{}@{}:{dest_dir}/", endpoint.user, endpoint.host))
+}
+
+/// MSYS2 rsync parses `C:\...` as a remote `host:path` operand. Use its
+/// `/c/...` mount syntax for a Windows worktree passed as a local source.
+fn rsync_source(root: &Path) -> String {
+    let path = root.display().to_string();
+    #[cfg(windows)]
+    {
+        let bytes = path.as_bytes();
+        if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            let drive = (bytes[0] as char).to_ascii_lowercase();
+            return format!("/{drive}{}", path[2..].replace('\\', "/"));
+        }
+    }
+    path
 }
 
 /// The remote command for a `tilo-vmd` subcommand, following the VM's
@@ -227,6 +242,21 @@ mod tests {
         assert!(
             path.contains("flock --nonblock /var/lib/tilo-vm/locks/src-wt-1.lock rsync"),
             "{path}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_worktree_is_a_local_msys2_rsync_operand() {
+        let line = rsync_command(
+            Path::new(r"C:\Users\bob\qos-tilo-main"),
+            &endpoint(),
+            None,
+            "wt-1",
+        );
+        assert_eq!(
+            line.args[line.args.len() - 2],
+            "/c/Users/user/qos-tilo-main/"
         );
     }
 

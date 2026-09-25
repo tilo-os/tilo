@@ -9,8 +9,11 @@ use std::io;
 use std::pin::Pin;
 use std::time::Duration;
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 
+use wire_frame::FrameError;
+
+use super::client::connection_failed;
 use crate::{NotAvailable, wire};
 
 trait BrokerAsyncIo: AsyncRead + AsyncWrite {}
@@ -232,43 +235,24 @@ impl AsyncBrokerSigningIdentity {
     }
 }
 
-async fn write_frame<T: serde::Serialize>(
+async fn write_frame<T: serde::Serialize + Sync>(
     stream: &mut BrokerStream,
     value: &T,
 ) -> Result<(), NotAvailable> {
-    let bytes = postcard::to_allocvec(value).map_err(|error| {
-        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
-    })?;
-    if bytes.len() > super::client::MAX_IDENTITY_FRAME_BYTES {
-        return Err(NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "identity frame exceeds 64 MiB",
-        )));
-    }
-    let len = u32::try_from(bytes.len()).map_err(|_| {
-        NotAvailable::ConnectionFailed(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "frame too large",
-        ))
-    })?;
-    stream.write_all(&len.to_le_bytes()).await?;
-    stream.write_all(&bytes).await?;
+    wire::FRAMING
+        .write_value_async(stream, value)
+        .await
+        .map_err(connection_failed)?;
     stream.flush().await?;
     Ok(())
 }
 
 async fn read_frame(stream: &mut BrokerStream) -> Result<wire::Response, NotAvailable> {
-    let mut len = [0; 4];
-    stream.read_exact(&mut len).await?;
-    let len = u32::from_le_bytes(len) as usize;
-    if len > super::client::MAX_IDENTITY_FRAME_BYTES {
-        return Err(invalid_data("identity frame exceeds 64 MiB"));
-    }
-    let mut bytes = vec![0; len];
-    stream.read_exact(&mut bytes).await?;
-    postcard::from_bytes(&bytes).map_err(|error| {
-        NotAvailable::ConnectionFailed(io::Error::new(io::ErrorKind::InvalidData, error))
-    })
+    wire::FRAMING
+        .read_value_async(stream)
+        .await
+        .map_err(connection_failed)?
+        .ok_or_else(|| connection_failed(FrameError::Closed))
 }
 
 fn permission_denied(reason: String) -> NotAvailable {
@@ -289,6 +273,7 @@ fn poisoned() -> NotAvailable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::AsyncReadExt as _;
 
     fn metadata() -> wire::Response {
         wire::Response::Metadata {
@@ -304,20 +289,18 @@ mod tests {
     }
 
     async fn read_request(stream: &mut tokio::io::DuplexStream) -> wire::Request {
-        let mut len = [0; 4];
-        stream.read_exact(&mut len).await.unwrap();
-        let mut body = vec![0; u32::from_le_bytes(len) as usize];
-        stream.read_exact(&mut body).await.unwrap();
-        postcard::from_bytes(&body).unwrap()
+        wire::FRAMING
+            .read_value_async(stream)
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     async fn write_response(stream: &mut tokio::io::DuplexStream, response: wire::Response) {
-        let body = postcard::to_allocvec(&response).unwrap();
-        stream
-            .write_all(&u32::try_from(body.len()).unwrap().to_le_bytes())
+        wire::FRAMING
+            .write_value_async(stream, &response)
             .await
             .unwrap();
-        stream.write_all(&body).await.unwrap();
     }
 
     fn error_kind<T>(result: Result<T, NotAvailable>) -> io::ErrorKind {
@@ -369,6 +352,27 @@ mod tests {
         broker.await.unwrap();
     }
 
+    /// The async client speaks the same bytes as the blocking one: a
+    /// little-endian `u32` length, then postcard.
+    #[tokio::test]
+    async fn async_wire_bytes_are_pinned() {
+        const REQUEST: [u8; 7] = [3, 0, 0, 0, 2, 1, b'w'];
+        let (mut identity, mut server) = connected(Duration::from_secs(5)).await;
+        let broker = tokio::spawn(async move {
+            let mut request = [0_u8; REQUEST.len()];
+            server.read_exact(&mut request).await.unwrap();
+            let mut response = vec![66, 0, 0, 0, 1, 64];
+            response.extend_from_slice(&[7; 64]);
+            server.write_all(&response).await.unwrap();
+            request
+        });
+        assert_eq!(
+            identity.sign_collaboration_join("w").await.unwrap(),
+            [7; 64]
+        );
+        assert_eq!(broker.await.unwrap(), REQUEST);
+    }
+
     #[tokio::test(start_paused = true)]
     async fn stalled_metadata_obeys_one_absolute_deadline() {
         let (client, mut server) = tokio::io::duplex(64);
@@ -397,11 +401,10 @@ mod tests {
                 wire::Request::CollaborationJoin { .. }
             ));
             tokio::time::sleep(Duration::from_millis(40)).await;
-            let body = postcard::to_allocvec(&wire::Response::Signature(vec![7; 64])).unwrap();
-            server
-                .write_all(&u32::try_from(body.len()).unwrap().to_le_bytes())
-                .await?;
-            server.write_all(&body).await
+            wire::FRAMING
+                .write_value_async(&mut server, &wire::Response::Signature(vec![7; 64]))
+                .await
+                .map_err(std::io::Error::from)
         });
         assert_eq!(
             error_kind(identity.sign_collaboration_join("workspace").await),
@@ -488,7 +491,7 @@ mod tests {
 
     #[tokio::test]
     async fn oversized_response_poison_prevents_reuse() {
-        let oversized = u32::try_from(super::super::client::MAX_IDENTITY_FRAME_BYTES + 1)
+        let oversized = u32::try_from(wire::FRAMING.max_len() + 1)
             .unwrap()
             .to_le_bytes();
         assert_raw_response_poisoned(oversized.to_vec(), io::ErrorKind::InvalidData).await;

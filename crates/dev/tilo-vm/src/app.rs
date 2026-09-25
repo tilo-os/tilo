@@ -274,23 +274,44 @@ fn existing_ancestor(path: &Path) -> &Path {
 /// Free bytes of the filesystem that holds (or will hold) `path`, where the
 /// host can tell.
 fn host_free(path: &Path) -> Option<u64> {
-    if !cfg!(unix) {
-        return None;
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "[IO.DriveInfo]::new([IO.Path]::GetPathRoot($env:TILO_VM_DISK_DIR)).AvailableFreeSpace",
+            ])
+            .env("TILO_VM_DISK_DIR", existing_ancestor(path))
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        return String::from_utf8_lossy(&output.stdout).trim().parse().ok();
     }
-    let output = std::process::Command::new("df")
-        .arg("-Pk")
-        .arg(existing_ancestor(path))
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let kib: u64 = text
-        .lines()
-        .nth(1)?
-        .split_whitespace()
-        .nth(3)?
-        .parse()
-        .ok()?;
-    Some(kib.saturating_mul(1024))
+    #[cfg(unix)]
+    {
+        let output = std::process::Command::new("df")
+            .arg("-Pk")
+            .arg(existing_ancestor(path))
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&output.stdout).into_owned();
+        let kib: u64 = text
+            .lines()
+            .nth(1)?
+            .split_whitespace()
+            .nth(3)?
+            .parse()
+            .ok()?;
+        Some(kib.saturating_mul(1024))
+    }
+}
+
+fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
+    configured.max(if hypervisor == "whpx" { 15 << 30 } else { 0 })
 }
 
 fn on_path(tool: &str) -> bool {
@@ -1210,7 +1231,7 @@ impl App {
         } else {
             None
         };
-        let floor = self.registry()?.min_free_bytes();
+        let floor = vm_free_floor(self.registry()?.min_free_bytes(), choice.adapter);
         if let Some(published) = &published
             && !disk::cached(&published.dest, &published.disk)
         {
@@ -1219,13 +1240,13 @@ impl App {
             let needed = published.disk.size.saturating_sub(have);
             let dir = published.dest.parent().unwrap_or_else(|| Path::new("."));
             if let Some(free) = host_free(dir)
-                && free < needed
+                && free < needed.saturating_add(floor)
             {
                 return Err(CliError::NoSpace {
                     place: existing_ancestor(dir).display().to_string(),
                     free: human_bytes(free),
                     what: format!("the {} dev disk download", published.tag),
-                    needed: human_bytes(needed),
+                    needed: human_bytes(needed.saturating_add(floor)),
                 });
             }
         }
@@ -1351,6 +1372,9 @@ impl App {
             ssh_port: args.ssh_port,
             template: args.template,
             qemu_img: plan.choice.tool("qemu-img").map(str::to_owned),
+            qemu_system: plan.choice.tool("qemu-system-aarch64").map(str::to_owned),
+            firmware_code: plan.choice.tool("firmware-code").map(str::to_owned),
+            firmware_vars: plan.choice.tool("firmware-vars").map(str::to_owned),
             ..VmEntry::default()
         };
         let adapter = hypervisor::adapter(&entry.hypervisor)?;
@@ -1497,7 +1521,7 @@ impl App {
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let floor = self.registry()?.min_free_bytes();
+        let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
         if let Some(dir) = vm
             .entry
             .disk

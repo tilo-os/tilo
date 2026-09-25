@@ -135,7 +135,7 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_firmware_selection('cache-only', 'lenovo-83ed', '', '', True)
         for change in ({'reference': ''}, {'manifest_sha256': ''}, {'manifest_sha256': 'latest'},
                        {'reference': 'code.sandbox.example/qos/tilo-firmware:latest'},
-                       {'reference': reference.replace('/tilo/', '/other/')},
+                       {'reference': reference.replace('/qos/', '/other/')},
                        {'profile': 'generic'}, {'mode': 'cache-only'}):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 driver.validate_firmware_selection(**(valid | change))
@@ -330,7 +330,7 @@ class CompileBoundaries(unittest.TestCase):
         driver.validate_inputs(**inputs)
         for field in ('fex_payload_candidate', 'windows_guest_candidate'):
             for invalid in ('', 'code.sandbox.example/qos/example:latest',
-                            'foreign.example/tilo/example@sha256:' + '1' * 64,
+                            'foreign.example/qos/example@sha256:' + '1' * 64,
                             'code.sandbox.example/other/example@sha256:' + '1' * 64,
                             payload + ';false'):
                 with self.subTest(field=field, invalid=invalid), self.assertRaises(ValueError):

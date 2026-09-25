@@ -8,6 +8,8 @@
 #     --bootloader systemd|grub|none
 #     --size 20G              whole-disk size (raised if the parts don't fit)
 #     --root-min 12G          minimum root partition size
+#     --root-max 40G          optional root partition ceiling
+#     --rootfs btrfs|ext4     root filesystem (default: btrfs)
 #     --esp 2G                ESP size
 #     --retain 3              rollback generations the ESP must hold (see below)
 #     --uki-budget 160M       per-generation kernel budget used by that check
@@ -71,7 +73,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
 IMAGE=""; OUTDIR=""
-COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ESP_SIZE=2G
+COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=12G; ROOT_MAX=""; ROOTFS=btrfs; ESP_SIZE=2G
 RETAIN="${TILO_RETAINED_GENERATIONS:-3}"; UKI_BUDGET=160M
 KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
@@ -85,6 +87,8 @@ while [ $# -gt 0 ]; do
     --bootloader) BOOTLOADER="$2"; shift ;;
     --size) SIZE="$2"; shift ;;
     --root-min) ROOT_MIN="$2"; shift ;;
+    --root-max) ROOT_MAX="$2"; shift ;;
+    --rootfs) ROOTFS="$2"; shift ;;
     --esp) ESP_SIZE="$2"; shift ;;
     --retain) RETAIN="$2"; shift ;;
     --uki-budget) UKI_BUDGET="$2"; shift ;;
@@ -104,6 +108,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$IMAGE" ] && [ -n "$OUTDIR" ] || { sed -n '2,20p' "$0"; exit 1; }
+case "$ROOTFS" in
+  btrfs|ext4) ;;
+  *) die "--rootfs must be btrfs or ext4, got: $ROOTFS" ;;
+esac
 
 if [ -n "$FIRSTBOOT_SEED" ]; then
   [ -f "$FIRSTBOOT_SEED" ] && [ ! -L "$FIRSTBOOT_SEED" ] \
@@ -286,6 +294,11 @@ REPAIR_UKI=1
 KERNEL_FS_SLACK_MIB=64
 esp_mib="$(to_mib "$ESP_SIZE")"
 root_mib="$(to_mib "$ROOT_MIN")"
+if [ -n "$ROOT_MAX" ]; then
+  root_max_mib="$(to_mib "$ROOT_MAX")"
+  [ "$root_max_mib" -ge "$root_mib" ] \
+    || die "--root-max $ROOT_MAX is smaller than --root-min $ROOT_MIN"
+fi
 uki_mib="$(to_mib "$UKI_BUDGET")"
 [ "$RETAIN" -ge 1 ] 2>/dev/null || die "--retain must be a positive integer, got: $RETAIN"
 kernels_need=$(( (RETAIN + RETAINED_NEWER + REPAIR_UKI) * uki_mib + KERNEL_FS_SLACK_MIB ))
@@ -470,10 +483,13 @@ fi
 mkdir -p "$DEFS"
 printf '[Partition]\nType=esp\nFormat=vfat\nSizeMinBytes=%s\nSizeMaxBytes=%s\n' \
   "$ESP_SIZE" "$ESP_SIZE" > "$DEFS/01-esp.conf"
-printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=btrfs\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
-  "$ROOT_MIN" > "$DEFS/02-root.conf"
+printf '[Partition]\nType=7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab\nLabel=Tilo root\nFormat=%s\nSizeMinBytes=%s\nGrowFileSystem=yes\n' \
+  "$ROOTFS" "$ROOT_MIN" > "$DEFS/02-root.conf"
+if [ -n "$ROOT_MAX" ]; then
+  printf 'SizeMaxBytes=%s\n' "$ROOT_MAX" >> "$DEFS/02-root.conf"
+fi
 
-msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + btrfs root >= $ROOT_MIN, disk $SIZE)"
+msg "1/4 systemd-repart -> $RAW (ESP $ESP_SIZE + $ROOTFS root >= $ROOT_MIN, disk $SIZE)"
 rm -f "$RAW"
 truncate -s "$SIZE" "$RAW"
 sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \

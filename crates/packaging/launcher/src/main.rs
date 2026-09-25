@@ -521,27 +521,21 @@ fn request_received_mount(
     };
     let request = collab_types::canonical_bytes(&request)
         .map_err(|_| "could not encode received-file request".to_string())?;
-    if request.is_empty() || request.len() > collab_types::MAX_RECIPIENT_CONTROL_FRAME_BYTES {
-        return Err("received-file request exceeds its bound".into());
-    }
-    let request_len = u32::try_from(request.len())
-        .map_err(|_| "received-file request exceeds its wire bound".to_string())?;
+    let framing = collab_types::RECIPIENT_CONTROL_FRAMING;
+    let request = framing
+        .encode(&request)
+        .map_err(|_| "received-file request exceeds its bound".to_string())?;
     stream
-        .write_all(&request_len.to_be_bytes())
-        .and_then(|()| stream.write_all(&request))
+        .write_all(&request)
         .map_err(|_| "received-file service is unavailable".to_string())?;
-    let mut prefix = [0u8; 4];
-    stream
-        .read_exact(&mut prefix)
-        .map_err(|_| "received-file service did not respond".to_string())?;
-    let length = u32::from_be_bytes(prefix) as usize;
-    if length == 0 || length > collab_types::MAX_RECIPIENT_CONTROL_FRAME_BYTES {
-        return Err("received-file service returned an oversized response".into());
-    }
-    let mut response = vec![0u8; length];
-    stream
-        .read_exact(&mut response)
-        .map_err(|_| "received-file service response was truncated".to_string())?;
+    let response = match framing.read(stream) {
+        Ok(Some(response)) => response,
+        Ok(None) => return Err("received-file service did not respond".into()),
+        Err(wire_frame::FrameError::TooLarge(_) | wire_frame::FrameError::EmptyFrame) => {
+            return Err("received-file service returned an oversized response".into());
+        }
+        Err(_) => return Err("received-file service response was truncated".into()),
+    };
     let response: collab_types::RecipientControlResponseV1 =
         collab_types::canonical::from_canonical_bytes(&response)
             .map_err(|_| "received-file service returned an invalid response".to_string())?;
@@ -968,6 +962,9 @@ mod admit_share_tests {
         let mut stream = response("/home/alice/Shared/record");
         let mount = request_received_mount(uri.clone(), &mut stream).unwrap();
         assert_eq!(mount, PathBuf::from("/home/alice/Shared/record"));
+        // One frame: a big-endian `u32` length, then the canonical request.
+        let body_len = u32::try_from(stream.written.len() - 4).unwrap();
+        assert_eq!(stream.written[..4], body_len.to_be_bytes());
         let length = u32::from_be_bytes(stream.written[..4].try_into().unwrap()) as usize;
         let request: collab_types::RecipientControlRequestV1 =
             collab_types::canonical::from_canonical_bytes(&stream.written[4..4 + length]).unwrap();

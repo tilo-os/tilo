@@ -20,9 +20,8 @@ class CacheApprovalTests(unittest.TestCase):
     def setUpClass(cls):
         ApprovalTests.setUpClass()
         cls.required = ApprovalTests.required
-        cls.material = dict(ApprovalTests.material, helper=a.blob(ROOT, HELPER, 'os/dev/native_resume.py'),
-            producer=a.blob(ROOT, HELPER, 'os/dev/resume-native-payload.py'),
-            restore_helper=a.blob(ROOT, HELPER, 'os/dev/restore-thin-cache.py'))
+        cls.material = dict(ApprovalTests.material,
+            restore_helper=(ROOT / 'os/dev/restore-thin-cache.py').read_bytes())
         cls.resume = types.ModuleType('cache_fixture_resume')
         exec(compile(cls.material['helper'], 'pinned-cache-helper', 'exec'), cls.resume.__dict__)
 

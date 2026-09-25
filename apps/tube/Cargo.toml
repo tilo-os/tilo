@@ -62,6 +62,7 @@ base64 = { workspace = true, optional = true }
 runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optional = true }
 sha2 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
+wire-frame = { path = "../../crates/system/wire-frame", optional = true }
 dirs.workspace = true
 
 [dev-dependencies]
@@ -95,6 +96,7 @@ grayjay-sync = [
     "dep:runtime-portal-xdg",
     "dep:sha2",
     "dep:zeroize",
+    "dep:wire-frame",
 ]
 
 [lints]

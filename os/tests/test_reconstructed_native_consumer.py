@@ -70,7 +70,8 @@ class ConsumerTests(unittest.TestCase):
     def test_resume_hook_private_inputs_and_explicit_producer_only(self):
         with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ,{'GITHUB_RUN_ID':'123','GITHUB_RUN_ATTEMPT':'1'}), \
              patch.object(d,'PRIVATE',Path(temp)), patch.object(d,'run') as run:
-            args=SimpleNamespace(resume_checkpoint=[['/verified/partial.json','a'*64]])
+            args=SimpleNamespace(resume_checkpoint=[['/verified/partial.json','a'*64]],
+                                 resume_thin_cache_approval=None, resume_reconstructed_partial_admission=None)
             d.resume_selected_native(args,{'source':'frozen'},{'PUBLIC_SETTING':'value'})
             command=run.call_args.args
             self.assertEqual(command[:2],('python3',str(d.CONTROLLER/'os/dev/resume-native-payload.py')))

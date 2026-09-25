@@ -39,7 +39,7 @@ done
 # --- the two sides, each read from where it is defined ------------------------
 retain="$(sed -n 's/^ *retained_generations: \([0-9]\+\),$/\1/p' "$ROLLBACK_LIB" | head -1)"
 newer="$(sed -n 's/^pub const RETAINED_NEWER_GENERATIONS: usize = \([0-9]\+\);$/\1/p' "$RETENTION" | head -1)"
-esp="$(sed -n 's/^COMPOSEFS=auto; BOOTLOADER=""; SIZE=""; ROOT_MIN=\([0-9]\+G\); ESP_SIZE=\([0-9]\+\)G$/\2/p' "$DISK_IMAGE" | head -1)"
+esp="$(sed -n 's/^COMPOSEFS=auto;.*; ESP_SIZE=\([0-9]\+\)G$/\1/p' "$DISK_IMAGE" | head -1)"
 budget="$(sed -n 's/^RETAIN=.*UKI_BUDGET=\([0-9]\+\)M$/\1/p' "$DISK_IMAGE" | head -1)"
 script_retain="$(sed -n 's/^RETAIN="\${TILO_RETAINED_GENERATIONS:-\([0-9]\+\)}".*$/\1/p' "$DISK_IMAGE" | head -1)"
 slack="$(sed -n 's/^KERNEL_FS_SLACK_MIB=\([0-9]\+\)$/\1/p' "$DISK_IMAGE" | head -1)"
