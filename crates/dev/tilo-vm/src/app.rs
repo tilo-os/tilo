@@ -289,7 +289,7 @@ fn host_free(path: &Path) -> Option<u64> {
         if !output.status.success() {
             return None;
         }
-        return String::from_utf8_lossy(&output.stdout).trim().parse().ok();
+        String::from_utf8_lossy(&output.stdout).trim().parse().ok()
     }
     #[cfg(unix)]
     {
