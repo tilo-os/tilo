@@ -1,6 +1,6 @@
 use super::*;
-use tilo_automerge::ApplyIncoming as _;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
+use tilo_automerge::ApplyIncoming as _;
 
 fn fixture(texts: &[&str]) -> AutoCommit {
     let mut source = qdoc::Document::new();
