@@ -73,9 +73,6 @@ windows-sys = { version = "0.61.2", features = ["Wdk_Foundation", "Wdk_Storage_F
 # the small hashes in this host-side firmware handoff tool.
 [target.'cfg(all(windows, target_arch = "aarch64"))'.dependencies]
 blake3 = { workspace = true, features = ["no_neon"] }
-# cargo-xwin's ARM MSVC build otherwise leaves Zstd NEON helper references
-# unresolved at link time. Select its portable decoder for this host.
-zstd = { version = "0.13", default-features = false, features = ["no_asm"] }
 
 [package.metadata.cargo-machete]
 # This target dependency only enables a feature on the transitive blake3 crate.
