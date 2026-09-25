@@ -2,7 +2,6 @@
 
 use std::fs::{self, File};
 use std::io;
-use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -414,16 +413,10 @@ impl DeviceFleetStore {
         atomic_file::write_creating_parent(&path, &bytes)
     }
 
-    fn lock_fleets(&self) -> io::Result<File> {
+    fn lock_fleets(&self) -> io::Result<advisory_lock::FileLock> {
         let directory = self.identity_dir.join("fleets");
         fs::create_dir_all(&directory)?;
-        let file = File::open(directory)?;
-        // SAFETY: flock consumes a valid live directory descriptor and no
-        // pointers. Dropping the returned File releases the lock on all paths.
-        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(file)
+        advisory_lock::FileLock::exclusive(File::open(directory)?)
     }
 
     fn path(&self, identity_id: &str) -> PathBuf {

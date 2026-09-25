@@ -1,0 +1,22 @@
+[package]
+name = "advisory-lock"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "One advisory file-lock guard that unlocks explicitly on drop."
+
+[lib]
+name = "advisory_lock"
+path = "src/lib.rs"
+
+[target.'cfg(unix)'.dependencies]
+# `flock(2)` and `FD_CLOEXEC` without hand-written FFI.
+rustix = { workspace = true, features = ["fs", "std"] }
+
+[dev-dependencies]
+libc.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
