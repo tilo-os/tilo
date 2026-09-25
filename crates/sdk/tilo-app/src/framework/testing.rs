@@ -92,7 +92,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
                     directory.path().join("state"),
                     "test-device".into(),
                     "test-workspace",
-                    author.clone(),
+                    author,
                     Rc::clone(&permissions),
                     tilo_actions::ActionContext::default(),
                     directory.clone(),
