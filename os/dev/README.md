@@ -269,6 +269,11 @@ How it works:
 ./os/dev/build-custom-installer.sh
 #    …or test the OS plumbing without the real UI:
 ./os/dev/build-custom-installer.sh --stub-ui
+# VM size experiment: use a fixed 40 GiB ext4 live root. The builder rejects
+# images whose 2x OCI size plus 4 GiB slack would exceed it. Physical use
+# requires end-to-end VM peak usage and boot checks for this filesystem.
+TILO_INSTALLER_OUTPUT="$PWD/os/output/installer-compact-vm" \
+  ./os/dev/build-custom-installer.sh --compact-ext4
 #    A local diagnostic image may explicitly add SSH + a wheel account:
 TILO_INSTALLER_DEV_PASSWORD='use-a-unique-local-secret' \
   ./os/dev/build-custom-installer.sh --dev-login
