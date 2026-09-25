@@ -233,11 +233,21 @@ fn namespace_well_formed(xml: &[u8]) -> Result<(), String> {
     }
 }
 
-fn import(codec: &dyn FormatProvider, bytes: &[u8], what: &str) -> Document {
+/// Import `bytes`, keeping the binary content the file embeds in `content` (as an app would).
+fn import(
+    codec: &dyn FormatProvider,
+    bytes: &[u8],
+    what: &str,
+    content: &tilo_content::ContentStore,
+) -> Document {
     let mut d = Document::new();
+    let mut inputs = tilo_content::ContentInputs::new();
     codec
-        .import(bytes, &mut d.as_mut())
+        .import(bytes, &mut d.as_mut(), &mut inputs)
         .unwrap_or_else(|e| panic!("{what}: import failed: {e}"));
+    content
+        .put_inputs(&inputs)
+        .unwrap_or_else(|e| panic!("{what}: keeping the file's binary content failed: {e}"));
     d
 }
 
@@ -434,11 +444,12 @@ fn check_fixture(
 ) {
     let what = fx.name;
     let original = unzip(fx.bytes);
-    let mut d = import(codec, fx.bytes, what);
+    let content = tilo_content::ContentStore::memory();
+    let mut d = import(codec, fx.bytes, what, &content);
     edit(&mut d, what);
     let edited = d.materialize();
     let out = codec
-        .export(d.as_ref())
+        .export(d.as_ref(), &content)
         .unwrap_or_else(|e| panic!("{what}: export failed: {e}"));
     let exported = unzip(&out);
     // Hand the export to an outside check (LibreOffice re-opening it, see
@@ -492,7 +503,7 @@ fn check_fixture(
     }
 
     // (c) Re-import yields the edited model.
-    let again = import(codec, &out, &format!("{what} (re-import)")).materialize();
+    let again = import(codec, &out, &format!("{what} (re-import)"), &content).materialize();
     let (want, got) = (norm(&edited), norm(&again));
     if want != got {
         let first = want
@@ -640,11 +651,15 @@ fn second_round_trip_keeps_part_set() {
         (&OdtCodec as &dyn FormatProvider, ODT_FIXTURES),
     ] {
         for fx in fixtures {
+            let content = tilo_content::ContentStore::memory();
             let once = codec
-                .export(import(codec, fx.bytes, fx.name).as_ref())
+                .export(
+                    import(codec, fx.bytes, fx.name, &content).as_ref(),
+                    &content,
+                )
                 .expect("export");
             let twice = codec
-                .export(import(codec, &once, fx.name).as_ref())
+                .export(import(codec, &once, fx.name, &content).as_ref(), &content)
                 .expect("export");
             let a: BTreeSet<String> = unzip(&once).into_keys().collect();
             let b: BTreeSet<String> = unzip(&twice).into_keys().collect();
@@ -670,8 +685,9 @@ fn cross_format_export_leaves_out_the_other_formats_markup() {
     ];
     for (fixtures, from, to, body_part) in cases {
         for fx in fixtures {
-            let d = import(from, fx.bytes, fx.name);
-            let out = to.export(d.as_ref()).expect("export");
+            let content = tilo_content::ContentStore::memory();
+            let d = import(from, fx.bytes, fx.name, &content);
+            let out = to.export(d.as_ref(), &content).expect("export");
             let parts = unzip(&out);
             let body = parts.get(body_part).expect("body part");
             if let Err(e) = namespace_well_formed(body) {
