@@ -219,14 +219,15 @@ cargo run -p tilo-app-cli --bin tilo-app -- new project-workspace --template wor
 
 Use `--template workspace` for a composed professional starting point rather
 than an isolated widget example. It creates a responsive master-detail shell
-with stable tree selection, a keyed detail view, and directly document-bound
-fields for each item. Wide windows show both panes; compact windows switch
-between full-width navigation and detail panes with an accessible Back action.
-Switching items preserves independent edits, while the standard app document
-supplies persistence, collaboration, inspection, and undo without app-owned
-synchronization callbacks. The generated headless scenario exercises
-navigation and editing, and the normal generated test covers wide and compact
-geometry plus the initial accessibility audit.
+whose projects are a `Collection` in the resource. The selection is view state;
+`cx.switch` rebuilds only the detail pane when it changes, and the pane's fields
+bind to the selected project's actions. Wide windows show both panes; compact
+windows switch between full-width navigation and detail panes with an
+accessible Back action. Switching items preserves independent edits, and the
+framework supplies persistence, collaboration, history and undo without
+app-owned synchronization callbacks. The generated headless scenario exercises
+navigation and editing, and the generated tests cover wide and compact
+geometry, undo, and the native-contract audit.
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -544,44 +545,49 @@ beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
 `--debounce-ms` to adjust the default 150 ms quiet period.
 
-The generated app uses `ui::launch::LaunchSpec`, so the same root widget gets
-live startup, persisted
-CRDT state, argument validation, and headless driving. It also starts with the
-minimum sandbox declaration, a package manifest, and a runnable semantic app
-test in `tests/app.rs`. Every generated template also includes an initial
-accessibility-contract test, so ordinary `tilo-app test` fails on unlabeled
-controls, invalid virtual-collection metadata, or unstable synthetic identity
-without requiring a separate audit command. Interaction-specific states remain
-covered by `tilo-app scenario run --audit`.
-`starter` demonstrates a
-complete local input-to-state-to-output loop; `data` begins with a selectable
-`DataTable` with a 100-million-row sparse model, a background page
-request, stale-result suppression, targeted row notifications, and retained
-cell controls;
-`tree` begins with a
-stable-id hierarchy, keyboard and multi-selection behavior, accessibility
-semantics, a retained interactive row action, bounded virtualization, safe
-subtree reparenting, and structural motion already supplied by `TreeView`;
-`list` begins with a sparse 100-million-item `ListModel`, background page
-loading, explicit loading/error delegates, stale-result suppression, measured
-variable-height ready delegates, stable-key multi-selection, and an
-independently interactive button inside each mounted row; `graph` emits a model-bound
-`ui/main.json` screen that can be edited without rewriting the app lifecycle.
-The `async` starter shows a complete button-to-worker flow using
-`LatestTask` for automatic event-loop wakeup, cancellation, and stale-result
-suppression, plus `ModelView::from_state_by` for keyed loading, success, and
-failure subtrees without polling or string messages.
+Every template starts on the app framework (`ui::framework`): the app's
+state is a `#[derive(Model)]` resource, every edit is an `#[action]` method in
+its `#[resource]` impl, and `impl ResourceApp` supplies a view that binds
+controls to those actions. `main` is one line, `ui::framework::run::<App>()`,
+which provides the live window, durable record storage, sync and
+collaboration, a History mode, per-author undo, permissions, the action
+palette, agents, scripts, search, and the standard `--shots`,
+`--headless-drive` and `--native-audit` modes. The app also starts with the
+minimum sandbox declaration, a package manifest, and tests in `tests/app.rs`:
+`Replica` tests the resource's actions without a window, and `TestApp` drives
+the running app (controls, undo, a viewer's refused edit, a relaunch). Every
+generated template also includes a native-contract test, so ordinary
+`tilo-app test` fails on a control without an action, unlabeled controls,
+invalid virtual-collection metadata, or unstable synthetic identity.
+Interaction-specific states remain covered by `tilo-app scenario run --audit`.
+
+`starter` binds a profile resource to a text field, checkbox, number field,
+slider and dropdown (`cx.input`, `cx.checkbox`, and `cx.control` for any other
+toolkit control); `data` begins with a selectable `DataTable` over a
+100-million-row sparse model with a background page request, stale-result
+suppression, targeted row notifications, and retained cell buttons that open
+rows through the resource (`cx.actions()` binds controls a table, list or tree
+builds on demand); `tree` begins with a stable-id hierarchy, keyboard and
+multi-selection behavior, accessibility semantics, a retained row action that
+pins nodes in the resource, bounded virtualization, safe subtree reparenting,
+and structural motion already supplied by `TreeView`; `list` begins with a
+sparse 100-million-item `ListModel`, background page loading, explicit
+loading/error delegates, measured variable-height delegates, stable-key
+multi-selection, and an independently interactive button inside each mounted
+row; `graph` emits a model-bound `ui/main.json` screen, editable without
+rewriting the app, above native controls bound to the resource.
+The `async` starter keeps its input (the folder to scan) in the resource and
+runs the scan as an effect action with `LatestTask` for automatic event-loop
+wakeup, cancellation, and stale-result suppression, plus
+`ModelView::from_state_by` for keyed loading, success, and failure subtrees.
 The `qr` starter demonstrates a compact generated-visual composition path: an
-IME-capable input writes one typed `LocalState<String>`,
+IME-capable input invokes `set-payload`, `cx.value` follows the payload,
 `ModelView::from_state` replaces only the generated `QrWidget`, and
-payload-specific alternative text makes the output independently visible to
-screen readers, inspection, and headless scenarios. No app-owned event bus or
-extra image dependency is required.
-The `document` starter is the durable counterpart: title and body inputs write
-directly to the persisted Automerge model, live preview text reads those same
-fields, and the generated headless contract proves an edit is synchronized
-and undoable. It is the shortest starting point for user data that must survive
-restarts or participate in collaboration.
+payload-specific alternative text makes the output visible to screen readers,
+inspection, and headless scenarios.
+The `document` starter is the collaborative-text case: title and body are
+Automerge text, concurrent typing merges, the live preview follows every
+edit, and `clear` is a destructive action that asks for confirmation.
 
 Every ordinary `LaunchSpec` also reuses that live root for a screenshot; no
 second screenshot-only tree is required. `shot` writes `preview.png` in the
@@ -626,24 +632,51 @@ Keep the binary boring:
 
 ```rust
 fn main() {
-    ui::launch::run_or_exit(
-        &ui::launch::LaunchSpec::new(
-            "org.example.reading-list",
-            reading_list::app_root,
-        )
-        .configure_app(|app| {
-            app.autofocus_first = true;
-            app.autofocus_on_structure_change = true;
-        }),
-    );
+    ui::framework::run::<reading_list::App>();
 }
 ```
 
-The library owns the application and returns `Box<dyn Widget>`. This boundary
-is shared by the real event loop, screenshots, and the headless driver; it is
-also the seam for deterministic app tests. Use toolkit widgets for controls so
-focus, keyboard input, IME positioning, accessibility, theme behavior, and
-testing metadata remain one implementation rather than app-local replicas.
+The library declares the resource, its actions, and the view:
+
+```rust
+use ui::prelude::*;
+
+#[derive(Model, Default)]
+pub struct List {
+    pub title: String,
+}
+
+#[resource(kind = "reading.list", label = "Reading list")]
+impl List {
+    /// Rename the list.
+    #[action]
+    pub fn rename(&mut self, title: String) {
+        self.title = title;
+    }
+}
+
+pub struct App;
+
+impl ResourceApp for App {
+    type Resource = List;
+    const ID: &'static str = "org.example.reading-list";
+    const TITLE: &'static str = "Reading list";
+
+    fn view(cx: &mut ViewCx<List>) -> Element {
+        Box::new(ui::column![
+            cx.input(|list| list.title.clone(), List::RENAME).with_id("title"),
+        ])
+    }
+}
+```
+
+The same declaration is shared by the real event loop, screenshots, the
+headless driver and `TestApp`. Use toolkit widgets for controls so focus,
+keyboard input, IME positioning, accessibility, theme behavior, and testing
+metadata remain one implementation rather than app-local replicas. The
+toolkit-level `LaunchSpec::new(id, app_root)` path, where the library returns a
+`Box<dyn Widget>` root itself, remains available for roots that manage their
+own documents.
 
 Compose ordinary heterogeneous children with the layout macros instead of
 writing one allocation step per child:
@@ -1270,7 +1303,8 @@ For a small app with one launchable resource, wrap its ordinary retained root
 with `ui::widget::resource_actions::immediate` or `background`. The toolkit
 owns the forwarding widget, operation dispatch, pending-job bookkeeping, and
 failure conversion; the app supplies only its resource contract and operation
-closure. `tilo-app new` uses this path and imports action types through
+closure. The generated `async` app uses this path for its effect action inside a
+framework view, and imports action types through
 `ui::tilo_actions`, so a generated project contains no copied host
 implementation and needs no direct internal actions dependency.
 
@@ -1487,8 +1521,8 @@ undo behavior.
 
 ### Localization
 
-`tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry used
-from `app_root`. Add a catalog and wire it into that registry in one command:
+`tilo-app new` creates `locales/en-US.ftl` and an embedded locale registry
+installed by the app's view. Add a catalog and wire it into that registry in one command:
 
 ```bash
 tilo-app add locale de-DE
