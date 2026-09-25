@@ -1,5 +1,6 @@
 [Unit]
 Description=Tilo confined shell runtime activation socket
+PartOf=tilo-graphical-session.target
 
 [Socket]
 ListenStream=%t/tilo/services/ush.sock
@@ -10,4 +11,4 @@ Backlog=16
 RemoveOnStop=yes
 
 [Install]
-WantedBy=sockets.target
+WantedBy=tilo-graphical-session.target

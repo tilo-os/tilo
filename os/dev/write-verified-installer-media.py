@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 SCHEMA_PLAN = 'tilo.windows-installer-media-plan.v1'
 SCHEMA_EVIDENCE = 'tilo.windows-installer-media-write.v1'
 ACCEPTANCE_PURPOSE = 'tilo-arm-installer-prepared-alongside-acceptance'
+HARDWARE_ACCEPTANCE_PURPOSE = 'unsigned Lenovo 83ED ARM64 development installer media'
 ACCEPTED_MEDIA_BYTES = 64 * 1024**3
 REMOVABLE_BUSES = {'USB', 'SD', 'MMC'}
 CHUNK = 8 * 1024 * 1024
@@ -180,6 +181,8 @@ def load_acceptance(path):
         receipt = json.loads(raw)
     except json.JSONDecodeError as error:
         fail(f'acceptance receipt is invalid JSON: {error}')
+    if receipt.get('purpose') == HARDWARE_ACCEPTANCE_PURPOSE:
+        return load_hardware_acceptance(path, receipt, raw)
     media = receipt.get('raw_media') or {}
     archive = receipt.get('cycle_evidence_archive') or {}
     required = set(archive.get('required_files') or [])
@@ -242,6 +245,53 @@ def load_acceptance(path):
         exit_status = bundle.extractfile(members['exit-status.txt']).read()
         if verdict != b'PASS\n' or exit_status != b'0\n':
             fail('cycle evidence archive records a failed acceptance')
+    return path, receipt, {'size': size, 'sha256': digest}, hashlib.sha256(raw).hexdigest()
+
+
+def load_hardware_acceptance(path, receipt, raw):
+    """Validate the profile-specific handoff emitted after a hardware overlay.
+
+    This receipt describes the final USB bytes directly instead of referring to
+    the older generic VM-cycle archive.  Keep the requirements explicit so a
+    descriptive build manifest cannot accidentally authorize a disk write.
+    """
+    artifact = receipt.get('artifact') or {}
+    hardware = receipt.get('hardware') or {}
+    source = receipt.get('os_source') or {}
+    uki = receipt.get('uki') or {}
+    verification = receipt.get('verification') or {}
+    digest = str(artifact.get('sha256') or '')
+    size = artifact.get('bytes')
+    sha256 = lambda value: bool(re.fullmatch(r'[0-9a-f]{64}', str(value or '')))
+    verity = lambda value: bool(re.fullmatch(r'[0-9a-f]{128}', str(value or '')))
+    immutable = str(source.get('immutable_reference') or '')
+    live_contracts = set(uki.get('live_cmdline_contracts') or [])
+    target_contracts = set(uki.get('target_cmdline_contracts') or [])
+    mount_contract = 'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec'
+    if (receipt.get('schema') != 1
+            or artifact.get('partition_table') != 'GPT'
+            or size != ACCEPTED_MEDIA_BYTES or not sha256(digest)
+            or hardware.get('architecture') != 'aarch64'
+            or hardware.get('profile') != 'lenovo-83ed'
+            or not str(hardware.get('model') or '').startswith('Lenovo Yoga Slim 7')
+            or hardware.get('devicetree') != 'qcom/x1e80100-lenovo-yoga-slim7x.dtb'
+            or not sha256(hardware.get('devicetree_sha256'))
+            or not re.fullmatch(r'[^\s@]+@sha256:[0-9a-f]{64}', immutable)
+            or not str(source.get('signature') or '').startswith('verified ')
+            or not verity(source.get('composefs_verity'))
+            or not all(sha256(uki.get(field)) for field in
+                       ('base_sha256', 'firmware_initramfs_sha256', 'live_sha256',
+                        'source_uki_before_live_sha256', 'target_sha256'))
+            or {'root=tilo-auto', 'tilo.install', mount_contract} - live_contracts
+            or {'root=tilo-auto', mount_contract} - target_contracts
+            or 'tilo.install' not in set(uki.get('target_excludes') or [])
+            or verification.get('physical_disks_touched') is not False
+            or verification.get('usb_touched') is not False
+            or not str(verification.get('proven_base') or '').startswith('clean local install')
+            or 'clean fsck.fat' not in str(verification.get('esp') or '')
+            or 'matched pinned SHA-256' not in str(verification.get('esp_readback') or '')
+            or 'removed' not in str(verification.get('identity_scrub') or '')):
+        fail('receipt does not prove accepted Lenovo 83ED installer media')
     return path, receipt, {'size': size, 'sha256': digest}, hashlib.sha256(raw).hexdigest()
 
 

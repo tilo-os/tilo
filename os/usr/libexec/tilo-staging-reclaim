@@ -29,7 +29,9 @@ ROOT_MOUNT = os.environ.get('TILO_STAGING_RECLAIM_ROOT_MOUNT', '/sysroot')
 RECORD_MAX_BYTES = 16 * 1024
 GUID_RE = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
 ESP_TYPE = 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'
-STAGING_ROOT_TYPE = '0fc63daf-8483-4772-8e79-3d69d8477de4'
+# The Tilo staging root type; only the live installer UKI resolves it
+# (os/usr/libexec/tilo-root-discover).
+STAGING_ROOT_TYPE = 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d'
 TILO_ROOT_TYPE = '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab'
 RECORD_KEYS = {'schema', 'operation_id', 'disk_guid', 'disk_size_bytes', 'sector_bytes',
                'staging_esp', 'staging_root', 'target_root', 'target_esp_partuuid'}

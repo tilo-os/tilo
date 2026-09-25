@@ -20,6 +20,10 @@ use serde_json::Value;
 pub const LINUX_FILESYSTEM_GUID: &str = "0fc63daf-8483-4772-8e79-3d69d8477de4";
 /// Tilo-owned root GPT type used for target-independent same-disk discovery.
 pub const TILO_ROOT_GUID: &str = "7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab";
+/// GPT type of the root a staged live installer boots from. Only the live
+/// installer UKI resolves it (os/usr/libexec/tilo-root-discover), so it never
+/// competes with the Tilo root installed beside it.
+pub const TILO_STAGING_ROOT_GUID: &str = "d4c4daf6-f72c-43ee-b8e3-5ba32550311d";
 /// GPT type used for an EFI System Partition.
 pub const EFI_SYSTEM_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
 /// Minimum prepared root accepted by the guided alongside flow (32 GiB).
@@ -367,7 +371,7 @@ impl Disk {
             return Err("unsupported logical sector size".into());
         }
         let esp = self.staged_partition(&handoff.staging_esp, EFI_SYSTEM_GUID)?;
-        let root = self.staged_partition(&handoff.staging_root, LINUX_FILESYSTEM_GUID)?;
+        let root = self.staged_partition(&handoff.staging_root, TILO_STAGING_ROOT_GUID)?;
         if !self
             .live_system_nodes
             .iter()
@@ -1205,6 +1209,12 @@ mod tests {
                 Box::new(|j| {
                     j["blockdevices"][0]["children"][2]["partuuid"] =
                         "cccccccc-0000-4000-8000-000000000009".into();
+                }),
+            ),
+            (
+                "root not a staging root",
+                Box::new(|j| {
+                    j["blockdevices"][0]["children"][3]["parttype"] = LINUX_FILESYSTEM_GUID.into();
                 }),
             ),
             (
