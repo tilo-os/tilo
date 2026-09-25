@@ -202,3 +202,67 @@ fn the_palette_and_agents_see_every_action() {
         );
     }
 }
+
+fn typed(operation: ChecklistAction) -> Invoke<Checklist> {
+    Invoke::apply(&tilo_app::tilo_resource::Stamped {
+        operation,
+        now_ms: 0,
+    })
+    .unwrap()
+}
+
+#[test]
+fn the_generic_apply_action_is_for_agents_and_scripts_only() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    let resources = app.harness().resources();
+    let apply = resources
+        .iter()
+        .flat_map(|resource| &resource.actions)
+        .find(|spec| spec.id == tilo_app::tilo_resource::APPLY)
+        .expect("apply is published for agents and scripts");
+    assert!(apply.is_programmatic(), "never a palette row");
+    assert!(apply.contract.confirmation_depends_on_arguments());
+    let named = resources
+        .iter()
+        .flat_map(|resource| &resource.actions)
+        .find(|spec| spec.id == "rename")
+        .unwrap();
+    assert!(
+        !named.is_programmatic(),
+        "named actions stay in the palette"
+    );
+}
+
+#[test]
+fn a_destructive_typed_value_is_confirmed_like_its_named_action() {
+    let mut app = TestApp::<ChecklistApp>::new().unwrap();
+    // An ordinary typed edit applies directly.
+    app.invoke(typed(ChecklistAction::Rename {
+        title: "Weekly".into(),
+    }))
+    .unwrap();
+    assert_eq!(app.state().title, "Weekly");
+
+    app.invoke(Checklist::ADD.with("milk".into())).unwrap();
+    let id = app.state().items.ids().next().cloned().unwrap();
+    app.invoke(typed(ChecklistAction::SetDone {
+        item: id,
+        done: true,
+    }))
+    .unwrap();
+
+    // `clear_done` is `#[action(destructive)]`: reached through `apply` it
+    // needs the same confirmation its named declaration does.
+    assert!(matches!(
+        app.invoke(typed(ChecklistAction::ClearDone {})),
+        Err(tilo_actions::DoorError::ConfirmationRequired)
+    ));
+    assert_eq!(
+        app.state().items.len(),
+        1,
+        "the refused edit changed nothing"
+    );
+    app.invoke_confirmed(typed(ChecklistAction::ClearDone {}))
+        .unwrap();
+    assert!(app.state().items.is_empty());
+}

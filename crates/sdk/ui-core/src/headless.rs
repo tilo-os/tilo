@@ -3605,7 +3605,7 @@ impl FrameHarness {
                 reason: reason.clone(),
             });
         }
-        let confirmed = match &spec.contract.confirmation {
+        let confirmed = match &spec.confirmation_for_json(arguments) {
             tilo_actions::ConfirmationPolicy::None => false,
             tilo_actions::ConfirmationPolicy::Confirm if confirm => true,
             tilo_actions::ConfirmationPolicy::Phrase { phrase }
