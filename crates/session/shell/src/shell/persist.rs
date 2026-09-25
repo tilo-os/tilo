@@ -136,6 +136,7 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     // same tab.
     symbolise_foreign_surfaces(&mut durable);
     clear_transient_launch_notes(&mut durable);
+    durable.prune_local_app_records();
     for ws in &mut durable.desktop.workspaces {
         ws.capabilities
             .retain(ui::CapOverride::persists_across_restart);
@@ -198,6 +199,7 @@ pub fn load_tree_from(path: &Path) -> std::io::Result<WorkspaceTree> {
     // before seeding the document so both local restore and peer projection
     // see the retryable state.
     clear_transient_launch_notes(&mut tree);
+    tree.prune_local_app_records();
     // `doc` is `#[serde(skip)]`; without re-seeding, peer-sync exports
     // nothing and existing workspaces never propagate after restart.
     tree.seed_doc_from_cache();

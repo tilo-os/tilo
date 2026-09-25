@@ -2,7 +2,14 @@
 
 Scripts for controlling the headless compositor through the `TILO_TEST_CONTROL` Unix socket.
 
-**All examples assume the compositor is running headlessly.** Start it once with:
+For app automation, begin with `tilo-control actions list QUERY --json`, then
+invoke the chosen `(provider, id)`. The [search selection guide](../../docs/headless-testing.md#select-search-results-by-identity)
+explains how to distinguish same-named native and host apps and verify execution
+without opening the palette. Use the input examples below when testing input or
+rendering itself. `action-api-demo.py` and `app-launch-proof.py` start their own
+isolated sessions and exercise semantic invocation.
+
+For examples that connect to an existing compositor, start it once with:
 
 ```bash
 ./scripts/headless-examples/spawn-headless.sh
