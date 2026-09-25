@@ -579,16 +579,18 @@ run_args=(--rm --privileged --pid=host
   --security-opt label=type:unconfined_t
   -v /var/lib/containers:/var/lib/containers
   -v /dev:/dev -v "$MNT:/run/tilo-install-target:rbind")
-# Older bootc resolves the loop backing device while test-mounting composefs.
-# A container-private udev database knows nothing about host loop devices even
-# though /dev itself is shared, producing "Can't lookup blockdev". Project only
-# the host's runtime udev metadata, read-only, when it actually contains a data
-# database. This is an install-harness compatibility seam, not image content.
+# Bootc compares /run/udev with /proc/1/root/run/udev even without a udev
+# database. Kata CI has no udev daemon, so create the parent-namespace path
+# before Podman starts; otherwise that comparison fails with ENOENT. When a
+# real database exists, project it so loop devices resolve during installation.
+sudo -n mkdir -p /run/udev
 host_udev_dir="${TILO_DISK_HOST_UDEV_DIR:-/run/udev}"
 if [ -d "$host_udev_dir/data" ]; then
   host_udev_dir="$(readlink -f "$host_udev_dir")"
-  run_args+=(-v "$host_udev_dir:/run/udev:ro")
+else
+  host_udev_dir=/run/udev
 fi
+run_args+=(-v "$host_udev_dir:/run/udev:ro")
 bootc_argv=(bootc)
 if [ -n "$BOOTC_HELPER" ]; then
   run_args+=(-v "$BOOTC_HELPER:/run/tilo-installer-bootc:ro"
