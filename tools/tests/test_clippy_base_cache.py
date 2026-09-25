@@ -464,6 +464,7 @@ class CacheSelectionTests(unittest.TestCase):
             self.assertNotEqual(reference, key(base='b' * 40))
             self.assertNotEqual(reference, key(image='builder@sha256:2'))
             self.assertNotEqual(reference, key(RUSTFLAGS=''))
+            self.assertNotEqual(reference, key(CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS='-D warnings'))
             self.assertNotEqual(reference, key(FIXTURE_RUSTC='1.98.0'))
 
 

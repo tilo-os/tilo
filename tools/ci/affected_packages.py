@@ -6,8 +6,9 @@ list.  A package is selected when its own files change, or when it transitively
 depends on a changed workspace package.  Root Cargo.toml and Cargo.lock changes
 are attributed to the packages they reach when the difference can be proved;
 other repository-wide build inputs fall back to the complete workspace.
-Ordinary feedback checks the closure on x86 and tests changed packages plus
-contract suites; --full qualifies both native architectures.
+Ordinary feedback checks the closure on x86 and tests changed packages, their
+direct dependants (within one shard's cost) and contract suites; --full
+qualifies both native architectures.
 The hermetic suites outside Cargo declared in tools/ci/suites.toml are selected
 by the paths they read, as are the packages it declares to read repository files
 outside their own directory.
@@ -42,6 +43,11 @@ from ci import suites as path_suites
 # These catch repository contracts outside a changed crate's dependency edges.
 ALWAYS_PACKAGES = {"collab-types", "pkg", "qdoc", "qdoc-codecs"}
 EXTERNAL_ASSET_MANIFEST = "os/external-assets/github-assets.tsv"
+# Snapshot pins CI publishes and signs. A pull request that changes only these
+# changes no code: check.yml's `pins` job proves each changed pin is the signed
+# snapshot published for this source (os/dev/verify-snapshot-pins.sh) instead
+# of the Rust and security suites, which main runs after the merge.
+PIN_FILES = ("os/rpms-snapshot.env", "os/kernel-snapshot.env")
 # Audited developer/CI prose, not compiled documentation or runtime contracts.
 # Keep this explicit: crates/sdk/ui-core/CHARTS.md is included by Rust, docs/app-development.md
 # is inspected by tilo-app, and docs/packaging.md is a packaging contract input.
@@ -67,6 +73,7 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
+    "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
     "tools/ci/merge_pr.py": "tools/tests/test_ci_merge_pr.py",
     "tools/ci/builder_workflow_plan.py": "tools/tests/test_builder_workflow_plan.py",
     "tools/ci/resolve_promoted_builder.py": "tools/tests/test_resolve_promoted_builder.py",
@@ -165,6 +172,14 @@ SHARD_COST_BUDGET = 1_000
 # Cargo workers each). Keep small/reverse-closure changes on one warm target;
 # explicit full qualification retains its native architecture matrix.
 MAX_DEVELOPER_SHARDS = 2
+# Ordinary feedback also tests the direct dependants of changed packages, as
+# long as together they cost no more than one shard. That covers the direct
+# consumers of almost every package (138 of 149 at the time of writing,
+# including tilo-ui's six). The dependants of foundation crates such as
+# tilo-actions, tilo-app, runtime-dylib or qdoc would add 20-60% of the whole
+# workspace to every such change; they stay type-checked here and are
+# tested nightly on both architectures.
+REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -368,6 +383,40 @@ def package_cost(pkg: dict) -> int:
     return score
 
 
+def direct_dependants_within_budget(
+    seeds: set[str],
+    reverse: dict[str, set[str]],
+    packages: dict[str, dict],
+    already_tested: set[str],
+    budget: int | None = None,
+) -> tuple[set[str], list[str]]:
+    """Direct dependants of the seeds to test, cheapest seed first, within budget.
+
+    Returns the dependants to add and the seeds whose dependants were left to
+    nightly because they would exceed the budget.
+    """
+    if budget is None:
+        budget = REVERSE_TEST_COST_BUDGET
+    added: set[str] = set()
+    deferred: list[str] = []
+    spent = 0
+
+    def extra(seed: str) -> set[str]:
+        return reverse.get(seed, set()) - already_tested - added
+
+    def cost(names: set[str]) -> int:
+        return sum(package_cost(packages[name]) for name in names)
+
+    for seed in sorted(seeds, key=lambda name: (cost(extra(name)), name)):
+        candidates = extra(seed)
+        if spent + cost(candidates) <= budget:
+            added |= candidates
+            spent += cost(candidates)
+        elif candidates:
+            deferred.append(seed)
+    return added, sorted(deferred)
+
+
 def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> list[dict]:
     if not names:
         return []
@@ -412,6 +461,7 @@ def make_plan(
     packages, by_dir = package_maps(metadata, root)
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
                        if path in changes}
+    reverse = reverse_dependencies(packages, root)
     seeds = {owner for path in changes if (owner := owner_for(path, by_dir))}
     # Packages whose tests or build read a changed file from outside their own
     # directory. Their code is unchanged, so their dependants are not re-checked.
@@ -454,12 +504,19 @@ def make_plan(
     # Security may be omitted only for pull-request inputs whose observers do
     # not live in the security suite itself. Workflow and OS control inputs are
     # added to Rust's broader quality-only set below, after this decision.
+    pins = sorted(path for path in changes if path in PIN_FILES)
+    pin_only = (
+        allow_security_skip
+        and not force_full
+        and bool(changes)
+        and all(path in PIN_FILES and (root / path).is_file() for path in changes)
+    )
     security_not_applicable = (
         allow_security_skip
         and not force_full
         and bool(changes)
         and all(path in security_prose or path in quality_helper_paths for path in changes)
-    )
+    ) or pin_only
     quality_paths = set(quality_helper_paths)
     quality_paths.update(
         path for source, observers in QUALITY_ONLY_CONTROL_INPUTS.items()
@@ -480,7 +537,11 @@ def make_plan(
         or (recipe_present and path == "os/Containerfile.builder")
         for path in changes
     )
-    if quality_only and not force_full:
+    if pin_only:
+        selected = set()
+        reason = "snapshot pins only; the pins job verifies their signatures and provenance"
+        full = False
+    elif quality_only and not force_full:
         selected = set()
         reason = ("builder recipe covered by mandatory policy checks; candidate image qualification is separate"
                   if recipe_present else
@@ -494,7 +555,7 @@ def make_plan(
                   "repository-wide build input changed" if global_change else "workspace path has no package owner")
         full = True
     else:
-        selected = closure(seeds | checked, reverse_dependencies(packages, root))
+        selected = closure(seeds | checked, reverse)
         selected.update(ALWAYS_PACKAGES & packages.keys())
         selected.update(readers)
         reason = f"{len(seeds)} changed packages, their reverse dependencies, and contract packages"
@@ -505,9 +566,17 @@ def make_plan(
         full = False
     # Ordinary feedback type-checks the entire reverse-dependency closure once
     # on x86, but links tests only for changed crates, the crates that read the
-    # changed files and the existing contract suites. Global/unowned workspace
-    # inputs retain complete test coverage.
-    tested = (selected if full else (seeds | readers | ALWAYS_PACKAGES) & selected)
+    # changed files, their direct dependants within REVERSE_TEST_COST_BUDGET and
+    # the existing contract suites. Global/unowned workspace inputs retain
+    # complete test coverage.
+    deferred_dependants: list[str] = []
+    if full:
+        tested = selected
+    else:
+        tested = (seeds | readers | ALWAYS_PACKAGES) & selected
+        dependants, deferred_dependants = direct_dependants_within_budget(
+            seeds, reverse, packages, tested)
+        tested |= dependants & selected
     shard_limit = (shard_count if force_full else
                    min(shard_count, MAX_DEVELOPER_SHARDS) if full else 1)
     effective_shards = useful_shard_count(selected, packages, shard_limit)
@@ -527,12 +596,14 @@ def make_plan(
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
-              if suite_manifest is not None else [])
+              if suite_manifest is not None and not pin_only else [])
     return {
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
         "suites_required": bool(suites),
+        "pins_required": pin_only,
+        "pins": pins if pin_only else [],
         "suites": suites,
         "reason": reason,
         "changed_files": changes,
@@ -540,6 +611,9 @@ def make_plan(
         "workspace_count": len(packages),
         "selected": sorted(selected),
         "tested": sorted(tested),
+        # Changed packages whose direct dependants are only type-checked here
+        # (and tested nightly) because testing them exceeds the budget.
+        "dependants_tested_nightly": deferred_dependants,
         "qualification": "full-native" if force_full else "developer-feedback",
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
@@ -562,6 +636,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
         handle.write(f"suites={' '.join(plan['suites'])}\n")
+        handle.write(f"pins_required={'true' if plan['pins_required'] else 'false'}\n")
+        handle.write(f"pins={' '.join(plan['pins'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")

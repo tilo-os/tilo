@@ -4,6 +4,7 @@
 # in a distrobox and the host is immutable (see os/dev/_common.sh for config).
 #
 #   ./os/dev/vm.sh boot [--gl] [--disk PATH] [--serial ID] [--tpm] [--secboot] [--attach PATH]
+#                       [--validation-sysext PATH]
 #                                              start the VM (detached); --serial gives
 #                                              the boot disk a stable hardware serial
 #   ./os/dev/vm.sh boot-installer [--gl]       boot the custom installer + blank /dev/vdb
@@ -103,6 +104,7 @@ vm_running() { [ -f "$TILO_PIDFILE" ] && inenv "kill -0 \$(cat '$TILO_PIDFILE') 
 
 cmd_boot() {
   local mode=2d disk="$TILO_DISK" attach="" disk_serial=""
+  local validation="${TILO_VM_VALIDATION_SYSEXT:-}"
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;; --disk) disk="$2"; shift;;
     # The installer binds a destructive target to WWN or serial; a virtio disk
@@ -114,6 +116,9 @@ cmd_boot() {
     # booted image install onto a fresh disk (encryption tests) without building
     # the installer medium.
     --attach) attach="$2"; shift;;
+    # The release gate's signed validation extension (os/dev/validation-access.sh),
+    # read-only under the serial its unit in the disk copy's /etc binds to.
+    --validation-sysext) validation="$2"; shift;;
     *) die "boot: unknown arg $1";; esac; shift; done
   [ -f "$disk" ] || die "disk not found: $disk (run os/dev/build-image.sh)"
   vm_running && die "VM already running (pid $(cat "$TILO_PIDFILE")); stop it first"
@@ -125,6 +130,11 @@ cmd_boot() {
     inenv "test -f '$attach' || qemu-img create -f qcow2 '$attach' '$TILO_TARGET_SIZE'" >/dev/null
     attach_arg="-drive file=$attach,format=qcow2,if=virtio,serial=tilo-install-target"
     msg "attaching $attach as /dev/vdb"
+  fi
+  if [ -n "$validation" ]; then
+    [ -f "$validation" ] || die "validation extension not found: $validation"
+    attach_arg="$attach_arg -drive file=$validation,format=raw,if=virtio,readonly=on,serial=tilo-validation"
+    msg "attaching the validation extension $validation (serial tilo-validation)"
   fi
 
   local varstore display

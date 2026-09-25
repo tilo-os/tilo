@@ -493,6 +493,47 @@ opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
 
+# Hashing, signature verification and font parsing run on every fixture in
+# large parts of the suite: tilo-ui hashes its 43 MB bundled font catalog per
+# fixture renderer, and fs re-verifies ed25519 signatures on each record it
+# loads. Unoptimised, these dominate test time for little debugging value.
+[profile.dev.package.sha2]
+opt-level = 3
+[profile.dev.package.blake3]
+opt-level = 3
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+[profile.dev.package.ed25519-dalek]
+opt-level = 3
+[profile.dev.package.fontdb]
+opt-level = 3
+[profile.dev.package.ttf-parser]
+opt-level = 3
+[profile.dev.package.skrifa]
+opt-level = 3
+[profile.dev.package.read-fonts]
+opt-level = 3
+[profile.dev.package.swash]
+opt-level = 3
+[profile.test.package.sha2]
+opt-level = 3
+[profile.test.package.blake3]
+opt-level = 3
+[profile.test.package.curve25519-dalek]
+opt-level = 3
+[profile.test.package.ed25519-dalek]
+opt-level = 3
+[profile.test.package.fontdb]
+opt-level = 3
+[profile.test.package.ttf-parser]
+opt-level = 3
+[profile.test.package.skrifa]
+opt-level = 3
+[profile.test.package.read-fonts]
+opt-level = 3
+[profile.test.package.swash]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"
