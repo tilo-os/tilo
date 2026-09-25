@@ -460,7 +460,8 @@ fn declared_borders_in_chrome_do_not_grow() {
 /// Product apps share one viewport/large-type/pseudo-locale audit path. A new
 /// bespoke launcher silently loses that acceptance matrix, so keep the fleet on
 /// `LaunchSpec` unless the binary is itself an automation agent rather than a
-/// user-facing app window.
+/// user-facing app window. `framework::run` builds its launch from a
+/// `LaunchSpec`, so an app started through it is on the shared launcher too.
 #[test]
 fn product_apps_use_the_shared_responsive_launcher() {
     let apps = repository_root().join("apps");
@@ -478,7 +479,7 @@ fn product_apps_use_the_shared_responsive_launcher() {
             continue;
         }
         let source = fs::read_to_string(&main).expect("app main is readable");
-        if !source.contains("LaunchSpec") {
+        if !source.contains("LaunchSpec") && !source.contains("framework::run::<") {
             missing.push(
                 app.file_name()
                     .unwrap_or_default()
