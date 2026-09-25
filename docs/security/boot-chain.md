@@ -286,6 +286,27 @@ strict `/dev/mem`, and compiles kexec out entirely, but Secure Boot remains what
 authenticates the kernel containing those controls and closes the pre-kernel
 replacement boundary.
 
+### No systemd credentials from firmware or the boot loader
+
+systemd imports system credentials from four places: the kernel command line,
+SMBIOS type 11 OEM strings, qemu `fw_cfg`, and the credential files
+systemd-stub passes on from the ESP. It skips them only in containers and
+confidential VMs (systemd 259, `src/core/import-creds.c`). **Physical machines
+are not excluded.** Firmware OEM strings are not in PCR 11, the register disk
+unlock binds to. So whoever can set them, by reflashing firmware or with a
+vendor tool, could hand a sealed boot `systemd.extra-unit.*`, `tmpfiles.extra`
+or `ssh.authorized_keys.root`. The generation still unlocks, and their code runs
+as root.
+
+The sealed command line carries `systemd.import_credentials=no`
+(`os/usr/lib/bootc/kargs.d/05-credentials.toml`). With it, PID 1 imports no
+credential from any of those sources, in the initrd or after it, and
+`tilo-security-audit` checks that it is live. Nothing in a sealed boot needs
+imported credentials. Service-local credentials are unaffected, such as
+`LoadCredentialEncrypted=` for the Secure Boot signing key. The unsealed dev
+image deletes the file, because `tilo-vm` passes a dev VM its SSH key as an
+SMBIOS credential.
+
 ### systemd filesystem restrictions
 
 Tilo's kernel enables `CONFIG_BPF_LSM=y`, `CONFIG_DEBUG_INFO_BTF=y`, and has
