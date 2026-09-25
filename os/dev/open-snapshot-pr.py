@@ -169,6 +169,8 @@ def promote() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--snapshot-digest", required=True)
+    parser.add_argument("--supersede", action="append", default=[], metavar="BRANCH",
+                        help="close the open pin pull request from this older automation branch")
     kinds = parser.add_subparsers(dest="kind", required=True)
     kernel = kinds.add_parser("kernel", help="both native kernel RPM repositories")
     kernel.add_argument("--x86-ref", required=True)
@@ -223,7 +225,30 @@ def promote() -> int:
     if not isinstance(url, str) or not isinstance(number, int):
         raise PromotionError("Forgejo returned an invalid pull-request record")
     print(f"{kind['label']} snapshot promotion PR #{number}: {url}")
+    for branch in args.supersede:
+        close_superseded(args.server, args.repository, token, branch, number)
     return 0
+
+
+def close_superseded(server: str, repository: str, token: str, branch: str, keep: int) -> None:
+    """Close an open pin pull request that the new one replaces.
+
+    Best effort: the new pull request already exists, and a superseded one
+    left open only conflicts with it once either merges.
+    """
+    if not branch.startswith("automation/"):
+        raise PromotionError(f"refusing to supersede non-automation branch {branch}")
+    try:
+        pull = find_open(server, repository, token, branch)
+        if pull is None or pull.get("number") == keep:
+            return
+        request(server, repository, token, f"/pulls/{pull['number']}", "PATCH",
+                {"state": "closed"})
+    except (PromotionError, urllib.error.HTTPError, KeyError) as error:
+        print(f"::warning::could not close superseded pin PR for {branch}: {error}",
+              file=sys.stderr)
+        return
+    print(f"Closed superseded snapshot PR #{pull['number']} ({branch})")
 
 
 def main() -> int:
