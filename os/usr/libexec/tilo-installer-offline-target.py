@@ -94,8 +94,22 @@ def read_target(root=ROOT):
     require(len(manifest) == descriptor.get("size")
             and hashlib.sha256(manifest).hexdigest() == match["digest"].removeprefix("sha256:"),
             "offline OCI manifest differs from pinned CI digest")
-    require(json.loads(manifest).get("schemaVersion") == 2,
-            "offline target manifest is invalid")
+    parsed_manifest = json.loads(manifest)
+    config = parsed_manifest.get("config")
+    require(parsed_manifest.get("schemaVersion") == 2 and type(config) is dict
+            and type(config.get("digest")) is str
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", config["digest"])
+            and type(config.get("size")) is int and 0 < config["size"] <= 16 * 1024 * 1024,
+            "offline target manifest has invalid config descriptor")
+    config_bytes = checked_file(layout / "blobs/sha256" / config["digest"][7:],
+                                limit=16 * 1024 * 1024)
+    require(len(config_bytes) == config["size"]
+            and hashlib.sha256(config_bytes).hexdigest() == config["digest"][7:],
+            "offline target config differs from pinned manifest")
+    image_config = json.loads(config_bytes)
+    require(type(image_config) is dict and image_config.get("architecture") == "arm64"
+            and image_config.get("os") == "linux",
+            "offline target image is not Linux ARM64")
     return metadata, layout
 
 
