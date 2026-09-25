@@ -91,7 +91,8 @@ FROM ${KERNEL_RPMS_REF} AS kernel-rpms
 
 # CI restores these checksum-pinned files from persistent storage before the
 # build; local builds use the same resumable verifier.
-FROM github-assets AS external-assets
+FROM scratch AS external-assets
+COPY --from=github-assets / /
 
 FROM --platform=linux/arm64 ${FEX_PAYLOAD_REF} AS windows-fex-input
 FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
