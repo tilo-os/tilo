@@ -209,8 +209,10 @@ class LaneAdmission(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             (root/'disk-output').mkdir()
+            (root/'disk-output').chmod(0o700)
             for name in ('helpers','public-trust','installer-bootc-helper'):
                 (root/name/'nested').mkdir(parents=True)
+                (root/name).chmod(0o700)
                 (root/name/'nested'/'payload').write_bytes(b'x')
             receipt={'schema':1,'purpose':'tilo-supervised-creator-inputs',
                      'helpers':'a'*64,'public':'b'*64,'installer':'c'*64}
@@ -228,14 +230,15 @@ class LaneAdmission(unittest.TestCase):
                          'remote receipt contract requires Linux root semantics')
     def test_remote_input_status_only_adopts_exact_running_or_succeeded_job(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); output=root/'disk-output'; output.mkdir()
+            # mkdir modes pass through the umask; the remote side requires 0700.
+            root=Path(directory); output=root/'disk-output'; output.mkdir(); output.chmod(0o700)
             for name in ('helpers','public-trust','installer-bootc-helper'):
-                (root/name).mkdir(mode=0o700)
+                (root/name).mkdir(); (root/name).chmod(0o700)
             receipt={'schema':1,'purpose':'tilo-supervised-creator-inputs',
                      'helpers':'a'*64,'public':'b'*64,'installer':'c'*64}
             receipt_path=root/'.creator-inputs.json'; receipt_path.write_text(json.dumps(receipt)+'\n')
             receipt_path.chmod(0o600)
-            job=output/'.creator-job'; job.mkdir(mode=0o700)
+            job=output/'.creator-job'; job.mkdir(); job.chmod(0o700)
             binding={'schema':1,'purpose':'tilo-supervised-creator-job-binding',
                      'operation':'run1','pod_uid':'pod-uid','node_uid':'node-uid',
                      'container_id':'container','image':'image',
@@ -274,14 +277,15 @@ class LaneAdmission(unittest.TestCase):
                          'remote receipt contract requires Linux root semantics')
     def test_failed_creator_retry_is_exact_and_reset_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
-            root=Path(directory); output=root/'disk-output'; output.mkdir()
+            # mkdir modes pass through the umask; the remote side requires 0700.
+            root=Path(directory); output=root/'disk-output'; output.mkdir(); output.chmod(0o700)
             for name in ('helpers','public-trust','installer-bootc-helper'):
-                (root/name).mkdir(mode=0o700)
+                (root/name).mkdir(); (root/name).chmod(0o700)
             receipt={'schema':1,'purpose':'tilo-supervised-creator-inputs',
                      'helpers':'a'*64,'public':'b'*64,'installer':'c'*64}
             receipt_path=root/'.creator-inputs.json'; receipt_path.write_text(json.dumps(receipt)+'\n')
             receipt_path.chmod(0o600)
-            job=output/'.creator-job'; job.mkdir(mode=0o700)
+            job=output/'.creator-job'; job.mkdir(); job.chmod(0o700)
             status={'schema':1,'purpose':'tilo-supervised-creator-job','state':'failed',
                     'binding':{'operation':'run1','pod_uid':'pod-uid','node_uid':'node-uid',
                                'output':'/work/disk-output/disk.raw'},'log_bytes':0}
