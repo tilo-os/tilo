@@ -78,6 +78,57 @@ display at `127.0.0.1:5900 + (<ssh_port> % 1000)`. The serial logs are
 `<disk>.ttyS0.log` and `<disk>.uart.log`. `vm stop` sends an ACPI power button
 through QMP and waits for QEMU to exit.
 
+For SSH-only development, pass `--headless` to `vm create`: WHPX omits the
+virtual GPU, USB devices and VNC. `--memory-mb` controls guest RAM; less RAM
+can shorten WHPX's cold start, but choose enough for the components being
+tested. A 2 GiB VM is suitable only for light service work. Neither option
+changes the disk image or the installer test path.
+
+### Direct kernel boot for a fast service VM
+
+WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
+`Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
+and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline should
+publish these as a companion bundle; until then, an operator may extract
+them from the disk's UKI. Put this JSON beside `Image` and `initrd`:
+
+```json
+{
+  "kernel": "Image",
+  "initrd": "initrd",
+  "cmdline": "<the complete UKI .cmdline section>",
+  "loader_partuuid": "<the source disk ESP partition UUID>"
+}
+```
+
+Create the COW VM with `--direct-boot-bundle` to validate and register these
+files before the image download or disk creation:
+
+```powershell
+tilo-vm vm create dev --hypervisor whpx --direct-boot-bundle C:\tilo-vm\boot\boot.json --headless --memory-mb 2048
+```
+
+Alternatively, add a `direct_kernel` table to an existing VM's
+`%APPDATA%\tilo-vm\vms.toml` entry:
+
+```toml
+[vms.dev.direct_kernel]
+kernel = 'C:\tilo-vm\boot\Image'
+initrd = 'C:\tilo-vm\boot\initrd'
+cmdline = 'root=tilo-auto composefs=<the UKI cmdline, unchanged>'
+loader_partuuid = '<the VM disk ESP partition UUID>'
+```
+
+`cmdline` must be the complete `.cmdline` section, not the abbreviated example
+above. `loader_partuuid` is the GPT **partition** UUID of the ESP in the
+source disk, not the disk GUID or FAT volume ID. WHPX passes it through
+`systemd.setenv=TILO_ROOT_LOADER_PARTUUID=...`, preserving Tilo's existing
+ESP-to-root binding when systemd-stub is absent. Without the correct value,
+Tilo root discovery stops in the initrd. This mode is for local development:
+it bypasses firmware and UKI boot verification, so installer and release
+acceptance still use the normal firmware boot. Remove the table to restore
+normal boot.
+
 ## Creating a VM
 
 ```sh
