@@ -187,6 +187,14 @@ impl App {
         &mut self,
         args: &InstallScenarioArgs,
     ) -> Result<Outcome, CliError> {
+        if cfg!(windows) && !args.dry_run {
+            return Err(CliError::Unsupported {
+                what: "installer scenario on a Windows host".into(),
+                alternative:
+                    "run this Linux vm.sh scenario in WSL; Windows WHPX dev VMs use `tilo-vm vm`"
+                        .into(),
+            });
+        }
         let root = self
             .worktree
             .as_ref()
@@ -618,6 +626,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn every_vm_call_shares_one_named_cycle_and_the_plan_names_its_console() {
         let plan = plan(Layout::GuidedAlongside);
