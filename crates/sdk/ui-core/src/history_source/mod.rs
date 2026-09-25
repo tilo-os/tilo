@@ -492,6 +492,20 @@ fn block_order_changed(prev: &DocSnapshot, cur: &DocSnapshot) -> bool {
 /// `&mut AutoCommit` because reading a diff flushes the open transaction; the
 /// document is not otherwise modified.
 pub fn change_summary(doc: &mut AutoCommit, from: &[ChangeHash], to: &[ChangeHash]) -> String {
+    // A change made through an action says what it did. Reading that costs
+    // one change's metadata; diffing the span costs a scan of the document,
+    // which an undo control asking every frame cannot afford.
+    if let [head] = to
+        && !from.contains(head)
+        && let Some(summary) = doc
+            .get_change_meta_by_hash(head)
+            .and_then(|meta| meta.message.as_deref().map(str::to_owned))
+            .as_deref()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .and_then(|context| context.summary())
+    {
+        return summary;
+    }
     patch_summary(doc, from, to).0
 }
 

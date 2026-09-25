@@ -10868,6 +10868,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-resource",
  "tracing",
+ "url",
  "zip",
 ]
 

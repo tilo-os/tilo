@@ -219,7 +219,14 @@ fn plain_body_edit_refreshes_a_shifted_virtual_window() {
     let c = wp.inner.containers.as_ref().unwrap();
     assert_eq!(
         wp.blocks,
-        qdoc::model::materialize_blocks(&state.doc, c, &wp.body_order[start..end])
+        qdoc::model::materialize_blocks(
+            &state.doc,
+            c,
+            &wp.body_order
+                .ids(start..end)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        )
     );
 }
 
@@ -551,7 +558,7 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
-    let first = wp.body_order[0].clone();
+    let first = wp.body_order.id_at(0).unwrap().to_owned();
     let cold_shapes = wp.dbg_layout_misses;
     assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
     let distant_scroll = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
@@ -597,8 +604,12 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     let mut state = large_body();
     let mut wp = WordProcessorWidget::new();
     pipeline_draw(&mut wp, &mut state, 1000, 700);
-    let first = wp.body_order[0].clone();
-    let deep = wp.body_order[VIEWPORT_BLOCK_WINDOW * 3].clone();
+    let first = wp.body_order.id_at(0).unwrap().to_owned();
+    let deep = wp
+        .body_order
+        .id_at(VIEWPORT_BLOCK_WINDOW * 3)
+        .unwrap()
+        .to_owned();
     wp.inner.set_caret(Caret {
         block: deep.clone(),
         offset: 0,
@@ -660,7 +671,10 @@ fn scrolling_retains_overlap_but_discards_transient_block_previews() {
             qdoc::model::materialize_blocks(
                 &state.doc,
                 wp.inner.containers.as_ref().unwrap(),
-                &wp.body_order[start..end]
+                &wp.body_order
+                    .ids(start..end)
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
             )
         );
     }
@@ -678,7 +692,10 @@ fn scrolling_retains_overlap_but_discards_transient_block_previews() {
         qdoc::model::materialize_blocks(
             &state.doc,
             wp.inner.containers.as_ref().unwrap(),
-            &wp.body_order[start..end]
+            &wp.body_order
+                .ids(start..end)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
         ),
         "scrolling must discard uncommitted previews even without a live drag"
     );
@@ -3560,11 +3577,11 @@ fn multi_block_typing_dispatches_one_replace_selection_action() {
     wp.insert_text_via_action(&mut state.doc, "X");
 
     let dispatched = wp.last_dispatched_for_test().expect("action dispatched");
-    let action: crate::actions::WordProcessorAction =
+    let action: crate::actions::RichTextAction =
         serde_json::from_slice(&dispatched.payload).unwrap();
     assert!(matches!(
         action,
-        crate::actions::WordProcessorAction::ReplaceSelection { .. }
+        crate::actions::RichTextAction::ReplaceSelection { .. }
     ));
     let blocks = qdoc::model::materialize(
         &state.doc,
@@ -6106,7 +6123,7 @@ fn a_named_peers_caret_is_labelled_with_their_name() {
     let peer = "peer@5537458103208628978";
 
     let mut presence = PresenceCtx::empty();
-    presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+    presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
     presence.set_display_name(ui::permissions::UserId(peer.into()), "bob");
 
     let (carets, _) = wp.remote_presence_overlays(&presence);
@@ -6128,7 +6145,7 @@ fn an_unnamed_peers_caret_is_labelled_with_its_id() {
     let peer = "peer@5537458103208628978";
 
     let mut presence = PresenceCtx::empty();
-    presence.set_remote_caret(peer.into(), block_presence_key(&block_id), 3);
+    presence.set_remote_caret(peer.into(), block_presence_key(false, &block_id), 3);
 
     let (carets, _) = wp.remote_presence_overlays(&presence);
     assert_eq!(carets.len(), 1);
@@ -6148,7 +6165,7 @@ fn remote_caret_is_resolved_to_on_screen_rect() {
 
     let mut presence = PresenceCtx::empty();
     // Place "alice"'s caret 3 bytes into the first block.
-    presence.set_remote_caret("alice".into(), block_presence_key(&block_id), 3);
+    presence.set_remote_caret("alice".into(), block_presence_key(false, &block_id), 3);
 
     let (carets, selections) = wp.remote_presence_overlays(&presence);
     assert_eq!(carets.len(), 1, "one remote caret resolved");
@@ -6192,7 +6209,7 @@ fn remote_selection_is_resolved_to_highlight_rects() {
 
     let mut presence = PresenceCtx::empty();
     // "bob" selects bytes [0, 4) of the first block.
-    presence.set_remote_selection("bob".into(), block_presence_key(&block_id), 0, 4);
+    presence.set_remote_selection("bob".into(), block_presence_key(false, &block_id), 0, 4);
 
     let (carets, selections) = wp.remote_presence_overlays(&presence);
     assert!(carets.is_empty(), "a selection yields no bare caret");
@@ -6220,7 +6237,7 @@ fn empty_remote_selection_produces_no_rects() {
 
     let mut presence = PresenceCtx::empty();
     presence.selections.insert(
-        block_presence_key(&block_id),
+        block_presence_key(false, &block_id),
         vec![(UserId("bob".into()), SelectionRange { start: 2, end: 2 })],
     );
 
@@ -6244,8 +6261,8 @@ fn distinct_peers_on_distinct_blocks_resolve_independently() {
     let b1 = wp.laid[1].id.clone();
 
     let mut presence = PresenceCtx::empty();
-    presence.set_remote_caret("alice".into(), block_presence_key(&b0), 1);
-    presence.set_remote_caret("bob".into(), block_presence_key(&b1), 1);
+    presence.set_remote_caret("alice".into(), block_presence_key(false, &b0), 1);
+    presence.set_remote_caret("bob".into(), block_presence_key(false, &b1), 1);
 
     let (carets, _selections) = wp.remote_presence_overlays(&presence);
     assert_eq!(carets.len(), 2, "both peers' carets resolved");
@@ -6272,7 +6289,7 @@ fn draw_with_presence_renders_remote_caret_through_production_path() {
     let block_id = first_block_id(&wp);
 
     let mut presence = PresenceCtx::empty();
-    presence.set_remote_caret("charlie".into(), block_presence_key(&block_id), 2);
+    presence.set_remote_caret("charlie".into(), block_presence_key(false, &block_id), 2);
 
     // Run the REAL five-pass draw with the populated presence (the same call
     // the App makes each frame). It must paint without panicking.
@@ -6359,7 +6376,7 @@ fn presence_payload_reports_focused_caret_in_bytes() {
         Some((key, ui::PresencePayload::Caret { pos })) => {
             assert_eq!(
                 key,
-                block_presence_key(&block),
+                block_presence_key(false, &block),
                 "keyed to the caret's block"
             );
             // The caret block text is ASCII here, so byte offset == char offset.
@@ -6384,7 +6401,7 @@ fn presence_payload_reports_selection_when_present() {
     let block = wp.model().caret().block.clone();
     match wp.presence_payload() {
         Some((key, ui::PresencePayload::Selection { start, end })) => {
-            assert_eq!(key, block_presence_key(&block));
+            assert_eq!(key, block_presence_key(false, &block));
             assert_eq!((start, end), (1, 4), "selection reported as a byte range");
         }
         other => panic!("expected a Selection payload, got {other:?}"),

@@ -155,6 +155,68 @@ fn preview<A: ResourceApp>(input: PreviewInput) -> Result<Box<dyn HistoryPreview
     }))
 }
 
+/// A past version drawn by the app's own view, exactly as History mode's
+/// preview draws it: read-only, over the frozen document. Built by
+/// [`HeadlessApp::past_version`](super::testing::HeadlessApp::past_version).
+pub struct PastVersion<R: Resource> {
+    preview: ViewPreview<R>,
+}
+
+impl<R: Resource> PastVersion<R> {
+    /// Every name and value the drawn view exposes to assistive technology,
+    /// depth first: what a reader of the past version would hear.
+    pub fn texts(&self) -> Vec<String> {
+        fn node(access: &ui_core::a11y::AccessNode, out: &mut Vec<String>) {
+            out.extend(access.name.clone());
+            out.extend(access.value.clone());
+            for child in &access.children {
+                node(child, out);
+            }
+        }
+        fn visit(widget: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(access) = widget.accessibility() {
+                node(&access, out);
+            }
+            widget.for_each_child(&mut |child| visit(child, out));
+        }
+        let mut out = Vec::new();
+        visit(&self.preview.root, &mut out);
+        out
+    }
+
+    /// The state the view was presented.
+    pub fn state(&self) -> std::rc::Rc<R::State> {
+        self.preview.root.live().get()
+    }
+
+    /// The drawn size of the view.
+    pub fn size(&self) -> Rect {
+        self.preview.root.get_rect()
+    }
+}
+
+/// Lay out and draw `A`'s view over `doc`, a frozen past version, in a
+/// `size` pane.
+pub(crate) fn render_past<A: ResourceApp>(
+    doc: AutoCommit,
+    size: (u32, u32),
+) -> Result<PastVersion<A::Resource>, String> {
+    let reader = Reader::<A::Resource>::read(&doc).map_err(|error| error.to_string())?;
+    let mut preview = ViewPreview {
+        root: build_root::<A>(reader, Editing::ReadOnly),
+        doc: Some(doc),
+        bounds: Rect::ZERO,
+        view: PreviewView::default(),
+    };
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+    preview.layout(bounds, &mut text, &theme)?;
+    let mut scene = Scene::new();
+    preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
+    Ok(PastVersion { preview })
+}
+
 struct ViewPreview<R: Resource> {
     root: ResourceRoot<R>,
     doc: Option<AutoCommit>,

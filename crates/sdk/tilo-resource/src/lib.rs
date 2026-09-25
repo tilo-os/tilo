@@ -117,7 +117,7 @@ pub use action::{
     ActionCx, ActionRef, Binds, Invoke, Mapped, Operation, Outcome, Refusal, Stamped,
 };
 pub use collection::{Collection, Id};
-pub use delta::{Delta, Touch, Touched, Tracker};
+pub use delta::{Delta, Path, Touch, Touched, Tracker};
 pub use group::{ActionGroup, GROUP, GROUP_PARAM};
 pub use model::{
     Atom, Doc, Fields, Json, Model, ModelError, Slot, read_key, refresh_key, write_key,
