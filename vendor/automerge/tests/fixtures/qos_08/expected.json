@@ -304,7 +304,7 @@
               "id": "40@a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
               "v": {
                 "type": "text",
-                "text": "unicode héllo wörld 🌍 alpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon z[cut]beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta ",
+                "text": "unicode h\u00e9llo w\u00f6rld \ud83c\udf0d alpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon z[cut]beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta ",
                 "len": 2778,
                 "marks": []
               }
@@ -552,7 +552,7 @@
           },
           "notes": {
             "v": {
-              "text": "unicode héllo wörld 🌍 alpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon z[cut]beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta "
+              "text": "unicode h\u00e9llo w\u00f6rld \ud83c\udf0d alpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon z[cut]beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta gamma delta epsilon zeta eta theta\nalpha beta gamma delta epsilon zeta eta theta alpha beta gamma\ndelta epsilon zeta eta theta alpha beta gamma delta epsilon zeta\neta theta alpha beta gamma delta epsilon zeta eta theta alpha\nbeta gamma delta epsilon zeta eta theta alpha beta gamma delta\nepsilon zeta eta theta alpha beta gamma delta epsilon zeta eta\ntheta alpha beta gamma delta epsilon zeta eta theta alpha beta\ngamma delta epsilon zeta eta theta alpha beta gamma delta epsilon\nzeta eta theta alpha beta "
             },
             "conflict": false
           },
@@ -732,7 +732,7 @@
       "name": "counters",
       "kind": "document",
       "file": "counters.automerge",
-      "nocompress_file": "counters.nocompress.automerge",
+      "nocompress_file": "counters.automerge",
       "compressed_differs": false,
       "retain_orphans": false,
       "heads": [
@@ -921,7 +921,7 @@
       "name": "table",
       "kind": "document",
       "file": "table.automerge",
-      "nocompress_file": "table.nocompress.automerge",
+      "nocompress_file": "table.automerge",
       "compressed_differs": false,
       "retain_orphans": false,
       "heads": [
@@ -1412,7 +1412,7 @@
       "name": "multi",
       "kind": "document",
       "file": "multi.automerge",
-      "nocompress_file": "multi.nocompress.automerge",
+      "nocompress_file": "multi.automerge",
       "compressed_differs": false,
       "retain_orphans": false,
       "heads": [
@@ -1940,7 +1940,7 @@
           "compressed": false
         }
       ],
-      "all_file": "orphan_changes.all.changes",
+      "all_file": "orphan_changes.00.change",
       "heads": [],
       "missing_deps": [
         "385313c856c80817730d55160a5dc64c6d64f75d0f16d54bdf99db7e34734819"
@@ -1958,7 +1958,7 @@
       "name": "with_orphan",
       "kind": "document",
       "file": "with_orphan.automerge",
-      "nocompress_file": "with_orphan.nocompress.automerge",
+      "nocompress_file": "with_orphan.automerge",
       "compressed_differs": false,
       "retain_orphans": true,
       "heads": [
@@ -2012,7 +2012,7 @@
           "compressed": true
         }
       ],
-      "all_file": "big_compressed.all.changes",
+      "all_file": "big_compressed.00.change",
       "heads": [
         "65984d74023f33a0a321abd347dc26bf0efca3bedd25252b21323fed34523bec"
       ],

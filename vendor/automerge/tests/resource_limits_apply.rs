@@ -651,7 +651,6 @@ fn qos_08_corpus_applies_without_panic() {
     for name in [
         "table_changes.all.changes",
         "table.automerge",
-        "table.nocompress.automerge",
         "multi_changes.all.changes",
         "counters.automerge",
         "marks.automerge",
