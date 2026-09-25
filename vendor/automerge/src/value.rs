@@ -452,7 +452,9 @@ pub struct Counter {
 
 impl Counter {
     pub(crate) fn increment(&mut self, inc: i64) {
-        self.current += inc;
+        // qOS: counter arithmetic wraps like the release profile, so a valid
+        // remote history can never panic a debug build or diverge by profile.
+        self.current = self.current.wrapping_add(inc);
     }
 }
 
@@ -514,7 +516,7 @@ impl From<&Counter> for f64 {
 }
 
 /// A value which is not a composite value
-#[derive(Serialize, PartialEq, Debug, Clone)]
+#[derive(Serialize, PartialEq, Clone)]
 #[serde(untagged)]
 pub enum ScalarValue {
     Bytes(Vec<u8>),
@@ -531,6 +533,47 @@ pub enum ScalarValue {
         bytes: Vec<u8>,
     },
     Null,
+}
+
+/// qOS: shared borrowed view of the derived ScalarValue debug shape. Legacy
+/// owners and native loans both format through these exact variant/field
+/// names, so bounded readers reproduce the legacy output without allocating.
+/// Counter lends both fields rather than reducing a value to its current sum.
+// The fields are read only by the derived Debug, which is the point.
+#[allow(dead_code)]
+#[derive(Debug)]
+pub(crate) enum ScalarDebug<'a> {
+    Bytes(&'a [u8]),
+    Str(&'a str),
+    Int(i64),
+    Uint(u64),
+    F64(f64),
+    Counter(&'a Counter),
+    Timestamp(i64),
+    Boolean(bool),
+    Unknown { type_code: u8, bytes: &'a [u8] },
+    Null,
+}
+
+impl fmt::Debug for ScalarValue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = match self {
+            Self::Bytes(v) => ScalarDebug::Bytes(v),
+            Self::Str(v) => ScalarDebug::Str(v),
+            Self::Int(v) => ScalarDebug::Int(*v),
+            Self::Uint(v) => ScalarDebug::Uint(*v),
+            Self::F64(v) => ScalarDebug::F64(*v),
+            Self::Counter(v) => ScalarDebug::Counter(v),
+            Self::Timestamp(v) => ScalarDebug::Timestamp(*v),
+            Self::Boolean(v) => ScalarDebug::Boolean(*v),
+            Self::Unknown { type_code, bytes } => ScalarDebug::Unknown {
+                type_code: *type_code,
+                bytes,
+            },
+            Self::Null => ScalarDebug::Null,
+        };
+        value.fmt(f)
+    }
 }
 
 impl PartialEq for Counter {

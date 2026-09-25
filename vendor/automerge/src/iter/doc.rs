@@ -282,8 +282,8 @@ impl IterType {
     fn new(obj_type: ObjType) -> Self {
         match obj_type {
             ObjType::Text => IterType::Text,
-            ObjType::Map => IterType::Map,
-            _ => IterType::List,
+            ObjType::Map | ObjType::Table => IterType::Map,
+            ObjType::List => IterType::List,
         }
     }
 }
