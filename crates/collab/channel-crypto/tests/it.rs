@@ -7,9 +7,12 @@
     clippy::string_slice,
     clippy::panic,
     clippy::unreachable,
+    clippy::arithmetic_side_effects,
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "content_history.rs"]
+mod content_history;
 #[path = "governance_journal.rs"]
 mod governance_journal;
 #[path = "interop_with_signed_op.rs"]
