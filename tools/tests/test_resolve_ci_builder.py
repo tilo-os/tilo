@@ -67,7 +67,7 @@ class BuilderResolutionTests(unittest.TestCase):
         workflow = (ROOT / '.forgejo/workflows/check.yml').read_text()
         self.assertIn('REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}', workflow)
         self.assertIn('run: python3 tools/ci/resolve_builder.py', workflow)
-        self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 4)
+        self.assertEqual(workflow.count('image: ${{ needs.builder.outputs.image }}'), 3)
         security = workflow.split('\n  security:', 1)[1].split('\n  suites:', 1)[0]
         self.assertIn('image: code.sandbox.example/qos/ci-fast@sha256:', security)
         self.assertNotIn('image=code.sandbox.example/qos/tilo-builder:latest', workflow)

@@ -2,7 +2,7 @@ name: CI / weekly quality
 
 # These compile-heavy whole-tree gates do not need to consume the shared runner
 # on every pull request. Nightly covers compilation/tests; this weekly job covers
-# the warning ratchet, Clippy baseline, docs, and release-size promises.
+# the warning ratchet, workspace Clippy, docs, and release-size promises.
 on:
   schedule:
     - cron: "0 4 * * 0"
@@ -66,8 +66,8 @@ jobs:
       - name: No rustc warnings
         run: bash tools/ci/measure.sh "workspace warnings" -- tools/ci/check-warnings.sh
 
-      - name: Clippy ratchet
-        run: bash tools/ci/measure.sh "workspace clippy" -- tools/ci/clippy-ratchet.sh
+      - name: Clippy (warnings are errors)
+        run: bash tools/ci/measure.sh "workspace clippy" -- tools/ci/clippy-check.sh --workspace
 
       - name: Documentation (warnings are errors)
         env:

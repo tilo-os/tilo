@@ -513,24 +513,6 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
-      # Clippy compares the selected packages with the immutable base already
-      # established by the select job. Fetch that one commit instead of every
-      # branch and tag in this large, short-lived repository.
-      - name: Fetch exact Clippy base
-        env:
-          CLIPPY_BASE: ${{ needs.select.outputs.base }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$CLIPPY_BASE" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]
-          head=$(git rev-parse HEAD)
-          test "$head" = "$GITHUB_SHA"
-          if ! git cat-file -e "$CLIPPY_BASE^{commit}" 2>/dev/null; then
-            git fetch --no-tags --no-write-fetch-head --depth=1 origin \
-              "+$CLIPPY_BASE:refs/ci/clippy-base"
-          fi
-          test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"
-
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
@@ -540,54 +522,23 @@ jobs:
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
 
-      # Pull requests compare with their merge-base, a main commit whose
-      # workspace-wide Clippy diagnostics the clippy-base job below normally
-      # recorded when it was main's tip. Bind the
-      # record to that exact commit, the builder image, the toolchain and the
-      # compiler flags; any miss makes clippy-diff.sh lint a fresh base checkout.
-      - name: Resolve the recorded Clippy base key
-        id: clippy-base-key
-        if: matrix.arch == 'x86_64'
-        continue-on-error: true
-        env:
-          CLIPPY_BASE: ${{ needs.select.outputs.base }}
-          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$CLIPPY_BASE" --image "$BUILDER_IMAGE")
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          printf 'CLIPPY_BASE_CACHE=%s\nCLIPPY_BASE_CACHE_KEY=%s\n' \
-            "$PWD/target/ci/clippy-base.json" "$key" >> "$GITHUB_ENV"
-
-      - name: Restore the recorded Clippy base diagnostics
-        if: matrix.arch == 'x86_64' && steps.clippy-base-key.outputs.key != ''
-        continue-on-error: true
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: target/ci/clippy-base.json
-          key: ${{ steps.clippy-base-key.outputs.key }}
-
-      # Lint the exact same reverse-dependency closure at the selected base and
-      # at HEAD. Historical diagnostics in an otherwise untouched dependant do
-      # not make an unrelated change impossible to merge, while compiler errors
-      # and every newly introduced Clippy site still fail this exact SHA. The
-      # release-app workflow separately compiles the shipped thin-app feature;
-      # `--all-features` is deliberately invalid here because it also selects
-      # ui/webview-wpe, whose native SDK exists only in the OS image builder.
-      #
-      # Compilation deliberately stays here rather than in the pre-commit
-      # hook: local hooks are bypassable and must remain fast enough to keep
-      # their formatting, secret, and staged-diff checks useful. This is the
-      # authoritative, base-aware lint gate.
+      # Every workspace member satisfies the workspace lint table, so any
+      # Clippy diagnostic in the selected packages (or the workspace members
+      # they build on) fails this exact SHA. Compilation deliberately stays
+      # here rather than in the pre-commit hook: local hooks are bypassable and
+      # must remain fast enough to keep their formatting, secret, and
+      # staged-diff checks useful. The release-app workflow separately
+      # compiles the shipped thin-app feature; `--all-features` is
+      # deliberately invalid here because it also selects ui/webview-wpe,
+      # whose native SDK exists only in the OS image builder.
       - name: Clippy shard ${{ matrix.shard }}
         if: matrix.arch == 'x86_64'
         env:
           XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
         run: >-
           bash tools/ci/measure.sh "clippy shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "Clippy diagnostic diff (affected shard ${{ matrix.shard }})" --
-          tools/ci/clippy-diff.sh '${{ needs.select.outputs.base }}' ${{ matrix.packages }}
+          bash scripts/ci-run.sh "Clippy (affected shard ${{ matrix.shard }})" --
+          tools/ci/clippy-check.sh ${{ matrix.packages }}
 
       - name: Save observed Clippy inputs
         if: always()
@@ -603,56 +554,6 @@ jobs:
         if: always()
         run: |
           echo "### sccache clippy shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-
-  clippy-base:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [builder]
-    runs-on: runner
-    timeout-minutes: 60
-    container:
-      image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
-    steps:
-      - name: Checkout exact main commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 1
-
-      - name: Prepare Rust build caches
-        uses: ./.forgejo/actions/prepare-rust-build
-
-      - name: Record workspace Clippy diagnostics
-        id: record
-        continue-on-error: true
-        env:
-          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$GITHUB_SHA" --image "$BUILDER_IMAGE")
-          echo "key=$key" >> "$GITHUB_OUTPUT"
-          bash tools/ci/measure.sh "clippy workspace record" -- \
-            bash scripts/ci-run.sh "Clippy workspace diagnostics record" -- \
-            tools/ci/clippy-diff.sh --export-base target/ci/clippy-base.json "$key"
-
-      - name: Save workspace Clippy diagnostics
-        if: steps.record.outcome == 'success'
-        continue-on-error: true
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: target/ci/clippy-base.json
-          key: ${{ steps.record.outputs.key }}
-
-      - name: Report remote compiler-cache effectiveness
-        if: always()
-        run: |
-          echo "### sccache clippy-base" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
