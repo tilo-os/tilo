@@ -78,7 +78,9 @@ the dependants of removed ones, and `[workspace.dependencies]` edits select the
 members using those dependencies. Everything else (lints, profiles, patches,
 `workspace.package`, `exclude`, glob members, a malformed or missing file, or a
 lockfile header change) and every other global input keep the full workspace.
-App release planning shares the same lockfile attribution.
+The native dependency job runs for an attributed lockfile change only when it
+reaches the vendored `openh264-sys2` graph. App release planning shares the
+same lockfile attribution.
 
 To inspect the committed branch's selection locally, without starting a build
 or requesting a runner, run from the checkout:

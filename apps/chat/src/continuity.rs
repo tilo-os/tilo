@@ -249,9 +249,6 @@ impl ChatApp {
         self.media
             .transport_mut()
             .unpublish(crate::media::TrackKind::Screen);
-        self.media
-            .transport_mut()
-            .unpublish(crate::media::TrackKind::CameraFramed);
         self.call.leave();
     }
 }

@@ -207,20 +207,18 @@ const VP9: &[EncoderSpec] = &[
 ];
 const VP9_BASELINE: EncoderSpec = target_bits("vp9enc");
 
-/// AV1. SVT-AV1 is the software baseline: fast enough for export (it has no
-/// latency budget here, unlike the real-time path in
-/// [`crate::hw::realtime`], which cannot use it) and royalty-free.
+/// AV1.
 const AV1: &[EncoderSpec] = &[
     kbit("vaav1enc", EncoderKind::Va),
     kbit("qsvav1enc", EncoderKind::Qsv),
-    kbit("nvav1enc", EncoderKind::NvCodec),
     AV1_BASELINE,
 ];
-/// `svtav1enc`'s `target-bitrate` counts in kilobits per second.
-const AV1_BASELINE: EncoderSpec = EncoderSpec {
-    bitrate_property: "target-bitrate",
-    ..kbit("svtav1enc", EncoderKind::Software)
-};
+/// AV1 is the one codec with no software entry: this workspace's plugin set
+/// carries no AV1 *encoder* that runs on the CPU, so the last resort is still
+/// a hardware element and an export on a machine without one fails to
+/// instantiate rather than falling back. Adding `svtav1enc` here is what would
+/// close that gap.
+const AV1_BASELINE: EncoderSpec = kbit("nvav1enc", EncoderKind::NvCodec);
 
 /// AAC. No hardware AAC encoders exist; the choice is quality. `fdkaacenc`
 /// (Fraunhofer) is the better encoder, `avenc_aac` the one that is always
@@ -551,7 +549,7 @@ impl EncodeReport {
 /// `gst_init`, and an uninitialised lookup would report every encoder missing,
 /// which is the failure mode this module exists to prevent. `gst_init` is
 /// documented as safe to call repeatedly.
-#[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
+#[cfg(any(feature = "decode", feature = "encode"))]
 pub fn registry_has(name: &str) -> bool {
     let _ = gstreamer::init();
     gstreamer::ElementFactory::find(name).is_some()
@@ -559,13 +557,13 @@ pub fn registry_has(name: &str) -> bool {
 
 /// The encoder this process would use for `codec`, read from the live registry
 /// under the environment's policy.
-#[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
+#[cfg(any(feature = "decode", feature = "encode"))]
 pub fn select_video_from_registry(codec: VideoCodec) -> Selection {
     select_video(codec, HwEncPolicy::from_env(), registry_has)
 }
 
 /// [`select_video_from_registry`] for audio.
-#[cfg(any(feature = "decode", feature = "encode", feature = "realtime"))]
+#[cfg(any(feature = "decode", feature = "encode"))]
 pub fn select_audio_from_registry(codec: AudioCodec) -> Selection {
     select_audio(codec, HwEncPolicy::from_env(), registry_has)
 }

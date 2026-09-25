@@ -1909,28 +1909,6 @@ impl ChatDoc {
         }
     }
 
-    /// Publish which video codecs `user` decodes (hardware and software),
-    /// so senders in the call can pick a codec every member takes. Stored as
-    /// comma-separated wire labels; guarded so an unchanged announcement
-    /// doesn't churn the document.
-    pub fn voice_set_video_caps(
-        doc: &mut AutoCommit,
-        channel: &str,
-        user: &str,
-        caps: &crate::model::VideoCaps,
-    ) {
-        let ch = Self::voice_channel_map(doc, channel);
-        let m = get_or_map(doc, &ch, user);
-        let hw = caps.hardware_decode.join(",");
-        let sw = caps.software_decode.join(",");
-        if read_str(doc, &m, "video_hw_decode").as_deref() != Some(hw.as_str()) {
-            let _ = doc.put(&m, "video_hw_decode", hw);
-        }
-        if read_str(doc, &m, "video_sw_decode").as_deref() != Some(sw.as_str()) {
-            let _ = doc.put(&m, "video_sw_decode", sw);
-        }
-    }
-
     // -----------------------------------------------------------------------
     // Readers
     // -----------------------------------------------------------------------
@@ -1969,19 +1947,6 @@ impl ChatDoc {
             .filter_map(|user| {
                 let m = map_at(doc, &ch, &user)?;
                 let ticket = read_str(doc, &m, "ticket").unwrap_or_default();
-                let labels = |s: String| -> Vec<String> {
-                    s.split(',')
-                        .filter(|l| !l.is_empty())
-                        .map(str::to_string)
-                        .collect()
-                };
-                let video =
-                    read_str(doc, &m, "video_sw_decode").map(|sw| crate::model::VideoCaps {
-                        hardware_decode: labels(
-                            read_str(doc, &m, "video_hw_decode").unwrap_or_default(),
-                        ),
-                        software_decode: labels(sw),
-                    });
                 Some(VoiceMember {
                     user,
                     talking: read_bool(doc, &m, "talking").unwrap_or(false),
@@ -1994,7 +1959,6 @@ impl ChatDoc {
                     } else {
                         Some(ticket)
                     },
-                    video,
                 })
             })
             .collect();
@@ -2857,23 +2821,6 @@ mod tests {
                 .is_some_and(|m| m.sharing)
         };
         assert!(!sharing(&doc), "a fresh member is not sharing");
-        let video = |doc: &AutoCommit| {
-            ChatDoc::list_voice_members(doc, "c_huddle")
-                .into_iter()
-                .find(|m| m.user == "u_me")
-                .and_then(|m| m.video)
-        };
-        assert_eq!(
-            video(&doc),
-            None,
-            "a member that never announced is a legacy peer"
-        );
-        let caps = crate::model::VideoCaps {
-            hardware_decode: vec!["av1".into(), "vp9".into()],
-            software_decode: vec!["h264".into()],
-        };
-        ChatDoc::voice_set_video_caps(&mut doc, "c_huddle", "u_me", &caps);
-        assert_eq!(video(&doc), Some(caps));
         ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", true);
         assert!(sharing(&doc), "a started share is visible to every peer");
         ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_me", false);

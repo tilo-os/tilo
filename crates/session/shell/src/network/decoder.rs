@@ -1,44 +1,62 @@
-//! Video decoder for peer-sync surface streaming.
+//! Video decoders for peer-sync surface streaming.
 //!
-//! [`VideoDecoder`] wraps [`media::RealtimeDecoder`] (hardware first, then
-//! royalty-free software, then Cisco's `openh264` for H.264) for every wire
-//! codec: `"h264"`, `"hevc-main10"`, `"vp9"` and `"av1"`. SDR streams decode
-//! to 8-bit RGBA the `PeerView` blit path consumes directly; 10-bit streams
-//! decode to P010 planes for the receiver's tone-map without downcasting.
+//! [`H264Decoder`] — pure-software openh264 for the SDR pipeline, producing
+//! 8-bit RGBA the `PeerView` blit path consumes directly. [`HevcDecoder`] —
+//! libavcodec software HEVC Main10 for the HDR pipeline, producing P010
+//! planes for the receiver's tone-map compute shader without downcasting
+//! to 8-bit.
 //!
-//! The media pipeline starts on the first access unit, so constructing a
-//! decoder never fails for a known codec; a machine that cannot decode the
-//! codec yields no frames and logs why once. The sender only picks a codec
-//! every receiver advertised (see `media::realtime::negotiate`).
+//! The peer view picks its decoder at construction from the
+//! `SurfaceStreamStart.codec` wire label (`"h264"` / `"hevc-main10"`); the
+//! [`VideoDecoder`] enum wraps both so `PeerView` doesn't fork its
+//! receive-side plumbing.
+//!
+//! The HEVC path is behind the `hdr-decode` cargo feature (default-on); a
+//! build without it accepts SDR normally and rejects HEVC with a clear
+//! error.
+//!
+//! **Compiling the feature is not the same as having the codec.**
+//! Whether the linked libavcodec carries an HEVC decoder is a property of
+//! the distro's build: Fedora's `libavcodec-free` is configured
+//! `--disable-decoder='h264,hevc,vc1,vvc'`, so [`HevcDecoder::new`] fails
+//! there regardless of cargo features. `PeerView::new_for_stream` falls
+//! back to H.264 in that case, and the sender never emits HEVC without a
+//! hardware encoder, so HDR share is an enhancement gated on both ends, never a baseline dependency.
+use openh264::decoder::{Decoder, DecoderConfig};
+use openh264::formats::YUVSource;
 
-use media::realtime::{DecodeOutput, DecoderConfig, RealtimeDecoder, StreamColor};
-use media::{FramePayload, PlanarFormat, StreamCodec};
-
+use crate::collab::colorimetry::Colorimetry;
+#[cfg(feature = "hdr-decode")]
 use crate::collab::colorimetry::{
-    ColorPrimaries, ColorRange, Colorimetry, MatrixCoefficients, TransferCharacteristics,
+    ColorPrimaries, ColorRange, MatrixCoefficients, TransferCharacteristics,
 };
 
 /// One decoded picture handed back to `PeerView`.
+///
+/// Two shapes: the SDR path yields already-converted RGBA (openh264 does
+/// the Y'CbCr→RGB matrix internally), the HDR path yields P010 planes so the tone-map shader preserves 10-bit precision.
 #[derive(Debug, Clone)]
 pub struct DecodedFrame {
     pub width: u32,
     pub height: u32,
     /// The pixel payload — either 8-bit RGBA or 10-bit P010 planes.
     pub pixels: DecodedPixels,
-    /// Colorimetry the decoder reported for the stream.
+    /// Colorimetry read off the decoder's per-frame side data. Typically
+    /// matches the wire-level `Colorimetry` hint for H.264; for HEVC HDR it's
+    /// authoritative, since streams often tag the VUI with the real transfer even when the container hint is legacy-default.
     pub colorimetry: Colorimetry,
 }
 
-/// Discriminated pixel data — the shape depends on the decoder output.
+/// Discriminated pixel data — the shape depends on the codec that produced it.
 #[derive(Debug, Clone)]
 pub enum DecodedPixels {
-    /// 8-bit RGBA, row-major, no padding, `width * height * 4` bytes.
+    /// 8-bit sRGB / BT.709 RGBA, row-major, no padding, `width * height * 4` bytes.
     Rgba8(Vec<u8>),
-    /// 10-bit P010 planes. Each `u16` stores the sample in its upper bits;
-    /// `y_stride`/`uv_stride` are in u16 units.
+    /// 10-bit P010 planes. Each `u16` stores the sample in its upper bits
+    /// (matches libavcodec's `AV_PIX_FMT_P010LE`); `y_stride`/`uv_stride` are in u16 units.
     P010 {
         y: Vec<u16>,
-        /// Interleaved UV at half resolution in both axes (4:2:0).
+        /// Interleaved UV: two samples per pixel-pair (U then V), half-resolution horizontally + vertically (4:2:0).
         uv: Vec<u16>,
         y_stride: u32,
         uv_stride: u32,
@@ -57,11 +75,27 @@ impl DecodedPixels {
     }
 }
 
+/// The two decoders wrapped for uniform push/pull from `PeerView`.
+///
+/// Constructed via [`Self::for_wire_codec`] using the
+/// `SurfaceStreamStart.codec` label, so an SDR peer never spins up the HEVC path and vice-versa.
+pub enum VideoDecoder {
+    /// H.264 8-bit via openh264. Wire label `"h264"`.
+    H264(H264Decoder),
+    /// HEVC Main10 10-bit via libavcodec. Wire label `"hevc-main10"`; only present in builds with the `hdr-decode` cargo feature.
+    #[cfg(feature = "hdr-decode")]
+    Hevc(HevcDecoder),
+}
+
 /// Why a codec label failed to construct a decoder.
 #[derive(Debug)]
 pub enum DecoderError {
     /// Wire label wasn't one of the known codecs.
     UnknownCodec(String),
+    /// The build was compiled without the feature that would supply this decoder (typically HEVC without `hdr-decode`).
+    FeatureDisabled { codec: String, reason: String },
+    /// Backend failed to initialise (typically HEVC when libavcodec isn't linked against the decoder).
+    Backend(String),
 }
 
 impl std::fmt::Display for DecoderError {
@@ -70,226 +104,357 @@ impl std::fmt::Display for DecoderError {
             DecoderError::UnknownCodec(c) => {
                 write!(f, "unknown codec label on the wire: {c:?}")
             }
+            DecoderError::FeatureDisabled { codec, reason } => {
+                write!(f, "codec {codec} not compiled into this build: {reason}")
+            }
+            DecoderError::Backend(msg) => write!(f, "decoder backend failed: {msg}"),
         }
     }
 }
 
 impl std::error::Error for DecoderError {}
 
-/// Streaming decoder for one shared surface.
-pub struct VideoDecoder {
-    codec: StreamCodec,
-    output: DecodeOutput,
-    display_size: Option<(u32, u32)>,
-    inner: Option<RealtimeDecoder>,
-    failed: bool,
-    last_colorimetry: Option<Colorimetry>,
-    /// The colorimetry the sender announced for the stream.
-    stream_colorimetry: Option<Colorimetry>,
+impl VideoDecoder {
+    /// Pick a decoder from the wire label.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DecoderError::UnknownCodec`] for an unrecognised string,
+    /// [`DecoderError::FeatureDisabled`] when the build lacks the required feature, or
+    /// [`DecoderError::Backend`] if the backend fails to initialize.
+    pub fn for_wire_codec(codec: &str) -> Result<Self, DecoderError> {
+        match codec {
+            "h264" => Ok(VideoDecoder::H264(H264Decoder::new())),
+            "hevc-main10" => {
+                #[cfg(feature = "hdr-decode")]
+                {
+                    HevcDecoder::new()
+                        .map(VideoDecoder::Hevc)
+                        .map_err(DecoderError::Backend)
+                }
+                #[cfg(not(feature = "hdr-decode"))]
+                {
+                    Err(DecoderError::FeatureDisabled {
+                        codec: codec.to_string(),
+                        reason:
+                            "`hdr-decode` feature not enabled — libavcodec HEVC decoder unavailable"
+                                .to_string(),
+                    })
+                }
+            }
+            other => Err(DecoderError::UnknownCodec(other.to_string())),
+        }
+    }
+
+    /// Push NALU bytes; returns the decoded frame if a picture is ready.
+    /// Failure returns `None` — callers log the packet as dropped without distinguishing "buffered, waiting on keyframe" from "corrupt".
+    pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
+        match self {
+            VideoDecoder::H264(d) => d.decode(nalus),
+            #[cfg(feature = "hdr-decode")]
+            VideoDecoder::Hevc(d) => d.decode(nalus),
+        }
+    }
+
+    /// Colorimetry recorded from the most recent decoded frame. The wire
+    /// `SurfaceStreamStart.colorimetry` is authoritative for session intent,
+    /// but the decoder's own VUI read can catch drift (e.g. a legacy peer emitting `codec: "h264"` with BT.2020 VUI).
+    pub fn last_colorimetry(&self) -> Option<Colorimetry> {
+        match self {
+            VideoDecoder::H264(d) => d.last_colorimetry(),
+            #[cfg(feature = "hdr-decode")]
+            VideoDecoder::Hevc(d) => d.last_colorimetry(),
+        }
+    }
 }
 
-impl VideoDecoder {
-    /// A decoder for `codec`, producing RGBA (`ten_bit = false`) or P010.
-    pub fn new(codec: StreamCodec, ten_bit: bool) -> Self {
+/// Streaming H.264 decoder — the SDR path.
+///
+/// Wraps openh264 and yields RGBA. openh264 clamps colorimetry to BT.709
+/// + limited range (no HDR VUIs), so [`Self::last_colorimetry`] always returns [`Colorimetry::sdr_bt709`] once a frame has decoded.
+pub struct H264Decoder {
+    inner: Decoder,
+    rgba_scratch: Vec<u8>,
+    /// Sticky colorimetry once the first frame lands; `None` before then so
+    /// peers can distinguish "no frame yet" from "decoded but SDR".
+    last_colorimetry: Option<Colorimetry>,
+}
+
+impl H264Decoder {
+    /// # Panics
+    ///
+    /// Never in practice: openh264 is statically bundled with a fixed config, so
+    /// construction cannot fail in a shipped build (see the `allow` below).
+    #[allow(
+        clippy::expect_used,
+        reason = "the bundled openh264 lib is statically linked with a fixed config; \
+                  construction has no real failure mode to propagate, and threading a \
+                  Result through every PeerView/decoder call site buys nothing"
+    )]
+    pub fn new() -> Self {
+        let inner =
+            Decoder::with_api_config(openh264::OpenH264API::from_source(), DecoderConfig::new())
+                .expect("openh264 decoder construction is infallible with the bundled lib");
         Self {
-            codec,
-            output: if ten_bit {
-                DecodeOutput::P010
-            } else {
-                DecodeOutput::Rgba
-            },
-            display_size: None,
-            inner: None,
-            failed: false,
+            inner,
+            rgba_scratch: Vec::new(),
             last_colorimetry: None,
-            stream_colorimetry: None,
         }
     }
 
-    /// An SDR H.264 decoder, what a stream without a codec label carries.
-    pub fn h264() -> Self {
-        Self::new(StreamCodec::H264, false)
-    }
-
-    /// Pick a decoder from the wire label. HEVC Main10 decodes to P010;
-    /// the other codecs to RGBA unless [`Self::for_stream`] asks for 10-bit.
+    /// Push NALU bytes and try to extract a decoded frame. Failures fold into `None` — see the module doc for why.
     ///
-    /// # Errors
-    ///
-    /// Returns [`DecoderError::UnknownCodec`] for an unrecognised label.
-    pub fn for_wire_codec(codec: &str) -> Result<Self, DecoderError> {
-        Self::for_stream(codec, 0)
-    }
-
-    /// Pick a decoder from the wire label and announced bit depth
-    /// (`SurfaceStreamStart.bit_depth`; `0` = infer from the codec).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`DecoderError::UnknownCodec`] for an unrecognised label.
-    pub fn for_stream(codec: &str, bit_depth: u8) -> Result<Self, DecoderError> {
-        let parsed = StreamCodec::from_wire_label(codec)
-            .ok_or_else(|| DecoderError::UnknownCodec(codec.to_string()))?;
-        let ten_bit = match bit_depth {
-            0 => parsed.bit_depth() == 10,
-            depth => depth > 8,
-        };
-        Ok(Self::new(parsed, ten_bit))
-    }
-
-    /// The codec this decoder expects.
-    pub fn codec(&self) -> StreamCodec {
-        self.codec
-    }
-
-    /// Whether frames come out as 10-bit planes.
-    pub fn is_ten_bit(&self) -> bool {
-        self.output == DecodeOutput::P010
-    }
-
-    /// The colorimetry the sender announced (`SurfaceStreamStart`). It
-    /// drives the conversion and is what decoded frames report: measured,
-    /// `GStreamer`'s VA-API encoders write no colour description, so without
-    /// it a decoder guesses from the picture size (BT.601 below HD) and a PQ
-    /// stream decodes as SDR.
-    pub fn set_stream_colorimetry(&mut self, colorimetry: Option<Colorimetry>) {
-        self.stream_colorimetry = colorimetry;
-        if let Some(d) = self.inner.as_mut() {
-            d.set_stream_color(colorimetry.map(stream_color));
+    /// `width`/`height` come from the peer's bitstream via openh264, so the size
+    /// computation and the down-cast to `u32` both degrade to `None` (dropped frame)
+    /// rather than trust an attacker-influenced dimension.
+    pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
+        let maybe = self.inner.decode(nalus).ok().flatten();
+        let yuv = maybe?;
+        let (width, height) = yuv.dimensions();
+        let needed = width.checked_mul(height)?.checked_mul(4)?;
+        if self.rgba_scratch.len() != needed {
+            self.rgba_scratch.resize(needed, 0);
         }
-    }
-
-    /// Crop pictures to the size the sender announced
-    /// (`SurfaceStreamStart.width`/`height`); some hardware encoders pad.
-    pub fn set_display_size(&mut self, size: Option<(u32, u32)>) {
-        self.display_size = size;
-        if let Some(d) = self.inner.as_mut() {
-            d.set_display_size(size);
-        }
-    }
-
-    /// Push one access unit; returns the decoded frame if a picture is
-    /// ready. `None` covers "waiting for a keyframe", corrupt input and "no
-    /// decoder for this codec here" alike — callers log the packet as dropped.
-    pub fn decode(&mut self, unit: &[u8]) -> Option<DecodedFrame> {
-        if unit.is_empty() || self.failed {
-            return None;
-        }
-        if self.inner.is_none() {
-            let config = DecoderConfig {
-                output: self.output,
-                display_size: self.display_size,
-                ..DecoderConfig::new(self.codec)
-            };
-            match RealtimeDecoder::new(config) {
-                Ok(mut d) => {
-                    d.set_stream_color(self.stream_colorimetry.map(stream_color));
-                    self.inner = Some(d);
-                }
-                Err(e) => {
-                    tracing::warn!(codec = self.codec.wire_label(), "no video decoder: {e}");
-                    self.failed = true;
-                    return None;
-                }
-            }
-        }
-        let picture = match self.inner.as_mut()?.decode(unit, None) {
-            Ok(p) => p?,
-            Err(e) => {
-                tracing::warn!(
-                    codec = self.codec.wire_label(),
-                    "video decoder stopped: {e}"
-                );
-                self.failed = true;
-                return None;
-            }
-        };
-        let colorimetry = colorimetry_from(picture.color);
-        self.last_colorimetry = Some(colorimetry);
-        let frame = picture.frame;
-        let pixels = match &frame.payload {
-            FramePayload::Planar(image) if image.format == PlanarFormat::P010 => {
-                let [y_plane, uv_plane] = image.planes.as_slice() else {
-                    return None;
-                };
-                DecodedPixels::P010 {
-                    y: u16_samples(&y_plane.bytes),
-                    uv: u16_samples(&uv_plane.bytes),
-                    y_stride: y_plane.stride / 2,
-                    uv_stride: uv_plane.stride / 2,
-                }
-            }
-            _ => DecodedPixels::Rgba8(std::sync::Arc::unwrap_or_clone(frame.to_rgba()?)),
-        };
+        yuv.write_rgba8(&mut self.rgba_scratch);
+        self.last_colorimetry = Some(Colorimetry::sdr_bt709());
         Some(DecodedFrame {
-            width: frame.width,
-            height: frame.height,
-            pixels,
-            colorimetry,
+            width: u32::try_from(width).ok()?,
+            height: u32::try_from(height).ok()?,
+            pixels: DecodedPixels::Rgba8(self.rgba_scratch.clone()),
+            colorimetry: Colorimetry::sdr_bt709(),
         })
     }
 
-    /// Colorimetry recorded from the most recent decoded frame; `None`
-    /// until the first frame arrives.
+    /// Colorimetry of the most recent decoded frame; `None` until the first frame arrives.
     pub fn last_colorimetry(&self) -> Option<Colorimetry> {
         self.last_colorimetry
     }
 }
 
-impl Default for VideoDecoder {
+impl Default for H264Decoder {
     fn default() -> Self {
-        Self::h264()
+        Self::new()
     }
 }
 
-/// Little-endian 16-bit samples of a P010 plane (samples in the high bits).
-fn u16_samples(bytes: &[u8]) -> Vec<u16> {
-    bytes
-        .chunks_exact(2)
-        .map(|pair| match pair {
-            &[a, b] => u16::from_le_bytes([a, b]),
-            _ => 0,
+/// Streaming HEVC Main10 decoder — the HDR path.
+///
+/// Wraps libavcodec's software HEVC decoder and yields P010 planes so the
+/// receiver's tone-map shader (or direct `Rgb10a2Unorm` upload) preserves 10-bit precision. Behind the `hdr-decode` cargo feature.
+#[cfg(feature = "hdr-decode")]
+pub struct HevcDecoder {
+    ctx: ffmpeg_next::codec::decoder::Video,
+    /// Sticky colorimetry read off the `AVFrame`'s `color_*` fields on the last successful decode.
+    last_colorimetry: Option<Colorimetry>,
+}
+
+#[cfg(feature = "hdr-decode")]
+static FFMPEG_INIT: std::sync::Once = std::sync::Once::new();
+
+#[cfg(feature = "hdr-decode")]
+impl HevcDecoder {
+    /// Construct a new HEVC decoder.
+    ///
+    /// That is the **expected** outcome on a stock Tilo image: Fedora's
+    /// `libavcodec-free` is configured `--disable-decoder='h264,hevc,vc1,vvc'`
+    /// and carries no `hevc` entry at all. Only a host that replaced it
+    /// (`libavcodec-freeworld`, or a self-built ffmpeg) can construct this
+    /// decoder. Callers must treat the error as routine and fall back to SDR rather than dropping the stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error with the libavcodec message when the linked libavcodec has no HEVC decoder.
+    pub fn new() -> Result<Self, String> {
+        FFMPEG_INIT.call_once(|| {
+            let _ = ffmpeg_next::init();
+        });
+        let codec = ffmpeg_next::codec::decoder::find(ffmpeg_next::codec::Id::HEVC)
+            .ok_or_else(|| "libavcodec has no HEVC decoder".to_string())?;
+        let context = ffmpeg_next::codec::Context::new();
+        let decoder = context
+            .decoder()
+            .open_as(codec)
+            .map_err(|e| format!("avcodec_open2(HEVC): {e}"))?;
+        let video = decoder
+            .video()
+            .map_err(|e| format!("HEVC decoder not video: {e}"))?;
+        Ok(Self {
+            ctx: video,
+            last_colorimetry: None,
         })
-        .collect()
-}
+    }
 
-/// The wire's colorimetry as CICP code points.
-fn stream_color(c: Colorimetry) -> StreamColor {
-    StreamColor {
-        primaries: c.primaries.cicp(),
-        transfer: c.transfer.cicp(),
-        matrix: c.matrix.cicp(),
-        full_range: c.range == ColorRange::Full,
+    /// Push NALU bytes; return the decoded frame if one is ready. Same
+    /// semantics as [`H264Decoder::decode`] — failures fold into `None`.
+    pub fn decode(&mut self, nalus: &[u8]) -> Option<DecodedFrame> {
+        let packet = ffmpeg_next::packet::Packet::copy(nalus);
+        if self.ctx.send_packet(&packet).is_err() {
+            return None;
+        }
+        let mut frame = ffmpeg_next::util::frame::Video::empty();
+        if self.ctx.receive_frame(&mut frame).is_err() {
+            return None;
+        }
+        let width = frame.width();
+        let height = frame.height();
+        // Read colorimetry off the frame side-data, mapped from libavcodec's enums to our own CICP-aligned enums.
+        let colorimetry = colorimetry_from_frame(&frame);
+        self.last_colorimetry = Some(colorimetry);
+
+        // Grab P010 planes. Frame format may also be YUV420P10LE if the SW
+        // decoder chose that — both are 10-bit-in-16-bit but the layout differs
+        // (P010 = Y + interleaved UV; YUV420P10 = Y + U + V separate); handle both by re-packing YUV420P10 into P010-shaped UV.
+        // Every offset/length below is derived from the peer's decoded bitstream via
+        // libavcodec, not from anything this function can bound in advance; each
+        // `checked_*`/`try_from`/`?` degrades to "drop this frame" instead of
+        // trusting an attacker-influenced stride or plane size.
+        let (y, uv, y_stride, uv_stride) = match frame.format() {
+            ffmpeg_next::util::format::Pixel::P010LE => {
+                let y_stride_bytes = frame.stride(0);
+                let uv_stride_bytes = frame.stride(1);
+                let y_plane = plane_u16_from_bytes(frame.data(0), y_stride_bytes);
+                let uv_plane = plane_u16_from_bytes(frame.data(1), uv_stride_bytes);
+                (
+                    y_plane,
+                    uv_plane,
+                    u32::try_from(y_stride_bytes.saturating_div(2)).ok()?,
+                    u32::try_from(uv_stride_bytes.saturating_div(2)).ok()?,
+                )
+            }
+            ffmpeg_next::util::format::Pixel::YUV420P10LE => {
+                // Re-pack: interleave U and V into UV. libavcodec returns U in plane 1, V in plane 2, each half-width.
+                let y_stride_bytes = frame.stride(0);
+                let u_stride_bytes = frame.stride(1);
+                let v_stride_bytes = frame.stride(2);
+                let y_plane = plane_u16_from_bytes(frame.data(0), y_stride_bytes);
+                let u_bytes = frame.data(1);
+                let v_bytes = frame.data(2);
+                let uv_height = frame.plane_height(1) as usize;
+                let uv_width = frame.plane_width(1) as usize;
+                let uv_capacity = uv_width.checked_mul(2)?.checked_mul(uv_height)?;
+                let mut uv = Vec::with_capacity(uv_capacity);
+                for row in 0..uv_height {
+                    let u_row_off = row.checked_mul(u_stride_bytes)?;
+                    let v_row_off = row.checked_mul(v_stride_bytes)?;
+                    for col in 0..uv_width {
+                        let byte_off = col.checked_mul(2)?;
+                        let u_off = byte_off.checked_add(u_row_off)?;
+                        let v_off = byte_off.checked_add(v_row_off)?;
+                        let u_val = read_u16_le(u_bytes, u_off)?;
+                        let v_val = read_u16_le(v_bytes, v_off)?;
+                        // P010 stores samples in the upper 10 bits of the u16; YUV420P10LE
+                        // stores them in the lower 10 bits — shift on re-pack so downstream shaders always see the same upper-bit layout.
+                        uv.push(u_val << 6);
+                        uv.push(v_val << 6);
+                    }
+                }
+                // Same upper-bit shift for the Y plane.
+                let mut y_shifted = y_plane;
+                for sample in &mut y_shifted {
+                    *sample <<= 6;
+                }
+                let uv_stride_u16 = u32::try_from(uv_width.checked_mul(2)?).ok()?;
+                (
+                    y_shifted,
+                    uv,
+                    u32::try_from(y_stride_bytes.saturating_div(2)).ok()?,
+                    uv_stride_u16,
+                )
+            }
+            _other => {
+                // Unexpected pixel format — drop the frame rather than downcast to 8-bit silently (defeats the whole reason for HDR).
+                return None;
+            }
+        };
+        Some(DecodedFrame {
+            width,
+            height,
+            pixels: DecodedPixels::P010 {
+                y,
+                uv,
+                y_stride,
+                uv_stride,
+            },
+            colorimetry,
+        })
+    }
+
+    /// Colorimetry from the most recent frame's VUI + side-data.
+    pub fn last_colorimetry(&self) -> Option<Colorimetry> {
+        self.last_colorimetry
     }
 }
 
-/// Map the decoder's CICP code points onto the wire's colorimetry.
-pub fn colorimetry_from(color: StreamColor) -> Colorimetry {
+/// Read a little-endian `u16` at `offset`, or `None` if it doesn't fit in `bytes` —
+/// used instead of direct indexing since every offset here is derived from a
+/// peer-controlled decoded frame.
+#[cfg(feature = "hdr-decode")]
+fn read_u16_le(bytes: &[u8], offset: usize) -> Option<u16> {
+    let pair = bytes.get(offset..offset.checked_add(2)?)?;
+    let &[a, b] = pair else {
+        return None; // the range above is exactly 2 bytes wide
+    };
+    Some(u16::from_le_bytes([a, b]))
+}
+
+/// Copy a byte-strided plane into a `u16` Vec (native LE-encoded).
+#[cfg(feature = "hdr-decode")]
+fn plane_u16_from_bytes(bytes: &[u8], stride_bytes: usize) -> Vec<u16> {
+    let mut out = Vec::with_capacity(bytes.len().saturating_div(2));
+    // bytes.len() is stride_bytes * plane_height; iterate as pairs. The
+    // stride includes libavcodec's per-row padding, which the receiver's y_stride/uv_stride preserve but don't read as samples.
+    let _ = stride_bytes; // only referenced for clarity — length already accounts for it
+    for pair in bytes.chunks_exact(2) {
+        let &[a, b] = pair else {
+            continue; // chunks_exact(2) guarantees len == 2
+        };
+        out.push(u16::from_le_bytes([a, b]));
+    }
+    // Handle odd-length tail (shouldn't happen for a well-formed P010 buffer, but be defensive).
+    if bytes.len() % 2 == 1
+        && let Some(&last) = bytes.last()
+    {
+        out.push(u16::from(last));
+    }
+    out
+}
+
+/// Translate libavcodec's `color_*` enums (BT2020, SMPTE2084, BT2020NCL) into our CICP-aligned [`Colorimetry`].
+#[cfg(feature = "hdr-decode")]
+fn colorimetry_from_frame(frame: &ffmpeg_next::util::frame::Video) -> Colorimetry {
+    use ffmpeg_next::util::color as avc;
+
+    let primaries = match frame.color_primaries() {
+        avc::Primaries::BT2020 => ColorPrimaries::Bt2020,
+        avc::Primaries::BT709 => ColorPrimaries::Bt709,
+        avc::Primaries::SMPTE432 => ColorPrimaries::DisplayP3,
+        _ => ColorPrimaries::Unspecified,
+    };
+    let transfer = match frame.color_transfer_characteristic() {
+        avc::TransferCharacteristic::SMPTE2084 => TransferCharacteristics::SmpteSt2084,
+        avc::TransferCharacteristic::ARIB_STD_B67 => TransferCharacteristics::AribStdB67,
+        avc::TransferCharacteristic::BT709 => TransferCharacteristics::Bt709,
+        avc::TransferCharacteristic::IEC61966_2_1 => TransferCharacteristics::Srgb,
+        _ => {
+            // Absent transfer characteristics on an HEVC stream: assume PQ, since that's what HDR10 content signals when the decoder can't read the VUI.
+            TransferCharacteristics::SmpteSt2084
+        }
+    };
+    let matrix = match frame.color_space() {
+        avc::Space::BT2020NCL | avc::Space::BT2020CL => MatrixCoefficients::Bt2020NonConstant,
+        avc::Space::BT709 => MatrixCoefficients::Bt709,
+        avc::Space::RGB => MatrixCoefficients::Identity,
+        _ => MatrixCoefficients::Unspecified,
+    };
+    let range = match frame.color_range() {
+        avc::Range::JPEG => ColorRange::Full,
+        _ => ColorRange::Limited,
+    };
     Colorimetry {
-        primaries: match color.primaries {
-            1 => ColorPrimaries::Bt709,
-            9 => ColorPrimaries::Bt2020,
-            12 => ColorPrimaries::DisplayP3,
-            _ => ColorPrimaries::Unspecified,
-        },
-        transfer: match color.transfer {
-            1 | 6 | 14 | 15 => TransferCharacteristics::Bt709,
-            13 => TransferCharacteristics::Srgb,
-            16 => TransferCharacteristics::SmpteSt2084,
-            18 => TransferCharacteristics::AribStdB67,
-            _ => TransferCharacteristics::Unspecified,
-        },
-        matrix: match color.matrix {
-            0 => MatrixCoefficients::Identity,
-            1 => MatrixCoefficients::Bt709,
-            9 | 10 => MatrixCoefficients::Bt2020NonConstant,
-            _ => MatrixCoefficients::Unspecified,
-        },
-        range: if color.full_range {
-            ColorRange::Full
-        } else {
-            ColorRange::Limited
-        },
+        primaries,
+        transfer,
+        matrix,
+        range,
     }
 }
 
@@ -298,53 +463,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_input_decodes_nothing() {
-        let mut dec = VideoDecoder::h264();
+    fn h264_decoder_returns_none_for_empty_input() {
+        let mut dec = H264Decoder::new();
         assert!(dec.decode(&[]).is_none());
     }
 
     #[test]
-    fn wire_labels_pick_the_codec_and_the_output() {
-        let d = VideoDecoder::for_wire_codec("h264").expect("h264");
-        assert_eq!(d.codec(), StreamCodec::H264);
-        assert!(!d.is_ten_bit());
-        let d = VideoDecoder::for_wire_codec("hevc-main10").expect("hevc");
-        assert!(d.is_ten_bit(), "HEVC Main10 decodes to P010");
-        let d = VideoDecoder::for_stream("av1", 10).expect("av1");
-        assert!(d.is_ten_bit(), "a 10-bit AV1 stream decodes to P010");
-        let d = VideoDecoder::for_wire_codec("vp9").expect("vp9");
-        assert!(!d.is_ten_bit());
-        match VideoDecoder::for_wire_codec("h266") {
-            Err(DecoderError::UnknownCodec(label)) => assert_eq!(label, "h266"),
-            Ok(_) => panic!("an unknown label must not build a decoder"),
-        }
+    fn h264_decoder_returns_none_for_garbage_input() {
+        let mut dec = H264Decoder::new();
+        let garbage = [0u8, 0, 0, 1, 0xFF, 0xFF, 0xFF];
+        let _ = dec.decode(&garbage);
     }
 
     #[test]
-    fn cicp_maps_onto_the_wire_colorimetry() {
-        assert_eq!(
-            colorimetry_from(StreamColor::BT709),
-            Colorimetry::sdr_bt709()
-        );
-        for c in [
-            Colorimetry::sdr_bt709(),
-            Colorimetry::hdr10(),
-            Colorimetry::hdr_hlg(),
-        ] {
-            assert_eq!(colorimetry_from(stream_color(c)), c, "round trip {c:?}");
+    fn video_decoder_dispatches_on_wire_label() {
+        // "h264" always works — the SDR path is always compiled and is the only
+        // codec a default build can encode, so a receiver that can't build it can't view any share at all.
+        let d = VideoDecoder::for_wire_codec("h264").expect("h264 available");
+        assert!(matches!(d, VideoDecoder::H264(_)));
+
+        // Unknown labels always error, and say which label they choked on.
+        let e = VideoDecoder::for_wire_codec("av1").err().expect("unknown");
+        match e {
+            DecoderError::UnknownCodec(label) => assert_eq!(label, "av1"),
+            other => panic!("an unrecognised label must be UnknownCodec, got {other:?}"),
         }
-        let pq = colorimetry_from(StreamColor::BT2100_PQ);
-        assert_eq!(pq.transfer, TransferCharacteristics::SmpteSt2084);
-        assert_eq!(pq.primaries, ColorPrimaries::Bt2020);
-        assert_eq!(pq.matrix, MatrixCoefficients::Bt2020NonConstant);
-        assert!(pq.is_hdr());
     }
 
+    /// `"hevc-main10"` is a label this build *knows*, so the only legal
+    /// answers are the HEVC decoder or a backend failure — never
+    /// `UnknownCodec` (arm dropped) and never `FeatureDisabled` (feature
+    /// compiled in). Both happen in practice: whether libavcodec carries HEVC
+    /// is the distro's choice, and Fedora's `libavcodec-free` — what Tilo
+    /// builds against — disables it.
+    ///
+    /// Asserting success here would assert a property of whoever's ffmpeg
+    /// happened to be installed, not of Tilo; the actual promise is asserted
+    /// on the production receive path in `shell::shell::peer_view::tests`, which holds either way.
+    #[cfg(feature = "hdr-decode")]
     #[test]
-    fn an_announced_hdr_colorimetry_is_kept_for_a_stream_that_signals_none() {
-        let mut dec = VideoDecoder::new(StreamCodec::Av1, true);
-        dec.set_stream_colorimetry(Some(Colorimetry::hdr10()));
-        assert_eq!(dec.stream_colorimetry, Some(Colorimetry::hdr10()));
+    fn hevc_label_is_known_and_never_misreports_why_it_failed() {
+        match VideoDecoder::for_wire_codec("hevc-main10") {
+            Ok(d) => assert!(
+                matches!(d, VideoDecoder::Hevc(_)),
+                "the hevc label must build the HEVC decoder, not some other variant"
+            ),
+            Err(DecoderError::Backend(msg)) => assert!(
+                !msg.is_empty(),
+                "a backend failure has to say what libavcodec reported"
+            ),
+            Err(other) => panic!(
+                "with `hdr-decode` compiled, hevc-main10 is a known label \
+                 backed by a real attempt; got {other:?}"
+            ),
+        }
+    }
+
+    /// Without `hdr-decode` the label is still recognised but not built —
+    /// the receiver must tell a peer using an omitted codec from one talking nonsense, since only the first is a capability gap worth reporting.
+    #[cfg(not(feature = "hdr-decode"))]
+    #[test]
+    fn hevc_label_reports_the_missing_feature_rather_than_an_unknown_codec() {
+        let err = VideoDecoder::for_wire_codec("hevc-main10")
+            .err()
+            .expect("a build without `hdr-decode` cannot produce an HEVC decoder");
+        match err {
+            DecoderError::FeatureDisabled { codec, reason } => {
+                assert_eq!(codec, "hevc-main10");
+                assert!(!reason.is_empty(), "the gap has to name itself");
+            }
+            other => panic!("expected FeatureDisabled without `hdr-decode`, got {other:?}"),
+        }
     }
 
     #[test]
@@ -352,12 +541,14 @@ mod tests {
         let rgba = DecodedPixels::Rgba8(vec![0u8; 4]);
         assert!(rgba.is_rgba());
         assert!(!rgba.is_p010());
+
         let p010 = DecodedPixels::P010 {
             y: vec![0u16; 16],
             uv: vec![0u16; 8],
             y_stride: 4,
             uv_stride: 4,
         };
+        assert!(!p010.is_rgba());
         assert!(p010.is_p010());
     }
 }

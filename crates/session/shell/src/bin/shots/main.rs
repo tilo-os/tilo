@@ -20,8 +20,8 @@ enum Mode {
     Window,
     Offscreen,
     Headless,
-    /// Video recording. Renders every scenario step as one or more
-    /// encoded frames into a single `.mp4` file.
+    /// H.264 video recording. Renders every scenario step as one or more
+    /// encoded frames into a single `.h264` file (raw Annex-B NALU stream).
     Recording,
 }
 
@@ -40,7 +40,7 @@ struct Args {
     out: PathBuf,
     width: u32,
     height: u32,
-    /// Frame rate hint for the video encoder AND the number of frames
+    /// Frame rate hint for the H.264 encoder AND the number of frames
     /// emitted per scenario step (× `step_duration`). Only consulted in
     /// recording mode.
     fps: u32,
@@ -295,10 +295,10 @@ impl Args {
                 return Err("--per-frame is not supported in recording mode".into());
             }
             // Default `out` is a directory; in recording mode we write a
-            // single file. Switch the default to a `.mp4` path if the
+            // single file. Switch the default to a `.h264` path if the
             // caller didn't supply one.
             if args.out == *"target/tilo-shots" {
-                args.out = PathBuf::from("target/tilo-shots.mp4");
+                args.out = PathBuf::from("target/tilo-shots.h264");
             }
         }
         if args.mode == Mode::Window && (args.sweep.is_some() || args.per_frame.is_some()) {
@@ -366,14 +366,14 @@ Modes:\n\
   --mode window     real winit window (interactive)\n\
   --mode offscreen  no window, captures PNGs       [default]\n\
   --mode headless   no GPU, dumps state JSON\n\
-  --mode recording  no window, writes one .mp4 file\n\
+  --mode recording  no window, writes one .h264 file (raw NALUs)\n\
 \n\
 Common flags:\n\
   --scenario NAME       replay a built-in scenario\n\
   --scenes A,B,C        [offscreen, no scenario] pick scenes from the legacy catalogue\n\
   --out PATH            output path. Directory for offscreen/headless/check;\n\
                         file for recording (default ./target/tilo-shots for the\n\
-                        former, ./target/tilo-shots.mp4 for the latter)\n\
+                        former, ./target/tilo-shots.h264 for the latter)\n\
   --width N             viewport width  (default 1600)\n\
   --height N            viewport height (default 900)\n\
   --fps N               [recording] frame rate (default 30)\n\
@@ -406,7 +406,7 @@ Examples:\n\
   shots --mode offscreen --scenes desktop --sweep --out /tmp/sweep\n\
   shots --mode offscreen --scenario overview_transition --per-frame 4\n\
   shots --mode headless  --scenario palette_typing --out target/headless\n\
-  shots --mode recording --scenario palette_typing --out /tmp/out.mp4\n\
+  shots --mode recording --scenario palette_typing --out /tmp/out.h264\n\
   shots --mode window    --scenario workspace_switch\n\
   shots check --baseline target/baseline --out target/current\n",
         default_sweep = default_sweep.join(","),
@@ -508,21 +508,13 @@ fn run_capture_one(args: &Args, viewport: (u32, u32), out: &std::path::Path) -> 
             };
             let scenario = require_scenario(name);
             let mut driver = ShellDriver::new(viewport);
-            let summary = mode::recording::run_scenario(
+            mode::recording::run_scenario(
                 &mut driver,
                 &scenario,
                 out,
                 args.fps,
                 args.step_duration,
             )?;
-            if summary.first_unit.is_none() {
-                return Err(format!("recording {} contains no frames", out.display()));
-            }
-            println!(
-                "shots: recorded {} as {}",
-                out.display(),
-                summary.codec.wire_label()
-            );
         }
         Mode::Window => {
             let pre_roll = args.scenario.as_deref().map(require_scenario);

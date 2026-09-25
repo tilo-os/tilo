@@ -262,7 +262,7 @@ impl SurfaceBuffer {
     }
 }
 
-/// A drained frame returned from [`SurfaceTracker::take_latest`]. `rgba` is row-major, no padding, `width * height * 4` bytes — suitable for direct hand-off to [`crate::network::VideoEncoder::encode`].
+/// A drained frame returned from [`SurfaceTracker::take_latest`]. `rgba` is row-major, no padding, `width * height * 4` bytes — suitable for direct hand-off to [`crate::network::H264Encoder::encode`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TakenFrame {
     /// Row-major, no padding.

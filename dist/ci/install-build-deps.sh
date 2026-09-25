@@ -28,8 +28,7 @@ esac
 # Weak dependencies stay enabled so runtime plugins and drivers arrive.
 # vulkan-loader + mesa-vulkan-drivers: lavapipe/llvmpipe, so GPU tests and
 # goldens render headless on the CPU. GStreamer plugins: the media suites encode
-# and decode real VP9, AV1 and H.264/AAC (dav1d is the AV1 decoder the
-# real-time stack prefers). The Noto set: text shaping and golden rendering.
+# and decode real H.264/AAC. The Noto set: text shaping and golden rendering.
 # pulseaudio: only the private software endpoint tools/with-headless-audio.sh
 # starts; it replaces PipeWire's PulseAudio shim where that is installed.
 # bubblewrap, GNOME Text Editor, cryptsetup, swtpm and tpm2-tools are test
@@ -41,7 +40,7 @@ install_test_runtime_fedora() {
     dnf install -y \
         pulseaudio \
         gstreamer1 gstreamer1-plugins-good gstreamer1-plugins-bad-free \
-        gstreamer1-plugin-dav1d gstreamer1-plugin-openh264 \
+        gstreamer1-plugin-openh264 \
         google-noto-sans-fonts google-noto-sans-mono-fonts \
         google-noto-serif-fonts google-noto-color-emoji-fonts \
         google-noto-sans-symbols-fonts google-noto-sans-symbols-2-fonts \
@@ -119,10 +118,12 @@ fedora)
         fontconfig-devel freetype-devel harfbuzz-devel fuse3-devel \
         gstreamer1-devel gstreamer1-plugins-base-devel
     if [[ $profile == workspace || $profile == test ]]; then
-        # nasm, perl-FindBin and python3 drive vendored native builds;
-        # zlib-ng-compat provides zlib. Video goes through GStreamer, so no
-        # FFmpeg or libva development packages are needed.
+        # FFmpeg: the shell's hdr-decode/vaapi features. Fedora ships the
+        # libraries as libav*-free; there is no ffmpeg-devel. nasm, perl-FindBin
+        # and python3 drive vendored native builds; zlib-ng-compat provides zlib.
         dnf install -y --setopt=install_weak_deps=False \
+            libavcodec-free-devel libavformat-free-devel libavutil-free-devel \
+            libswscale-free-devel libva-devel \
             nasm perl-FindBin python3 \
             sqlite-devel zlib-ng-compat-devel expat-devel
     fi

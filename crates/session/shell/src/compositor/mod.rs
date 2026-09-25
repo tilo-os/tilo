@@ -10,6 +10,7 @@
 pub mod accessibility;
 #[cfg(target_os = "linux")]
 pub mod activation;
+#[cfg(feature = "hdr-decode")]
 #[cfg(target_os = "linux")]
 mod audio_capture;
 pub mod backend;
@@ -40,6 +41,7 @@ pub mod lock_screen;
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod metrics;
+#[cfg(feature = "hdr-decode")]
 pub mod mp4_recording;
 #[cfg(target_os = "linux")]
 pub mod native;
