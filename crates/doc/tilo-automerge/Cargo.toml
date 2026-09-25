@@ -19,6 +19,10 @@ automerge.workspace = true
 
 [dev-dependencies]
 tilo-automerge = { path = ".", features = ["heap-probe"] }
+# The automerge 0.12 bounded-admission suites (vendor/automerge/tests/resource_limits_*.rs)
+# run from here, because the vendored crate is excluded from the workspace.
+hex.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
