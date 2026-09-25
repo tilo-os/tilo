@@ -1,0 +1,326 @@
+//! Building views: widgets whose values come from the resource and whose
+//! edits are actions.
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::{Rc, Weak};
+
+use tilo_actions::ActionBinding;
+use tilo_resource::{Binds, Collection, Id, Invoke, Resource};
+use ui_core::LocalState;
+use ui_core::record::RecordSaveStatus;
+use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
+
+use super::dispatch::Dispatcher;
+use super::each::Each;
+use super::live::Live;
+use super::surface::{ResourceSurface, SurfaceCx, SurfaceHost};
+
+fn disabled(mut button: Button) -> Button {
+    button.set_enabled(false);
+    button
+}
+
+type Update<R> = Box<dyn FnMut(&<R as Resource>::State)>;
+type Updater<R> = (Weak<()>, Update<R>);
+
+/// Model-to-widget refreshers registered by bound controls. Each is tied to
+/// the lifetime of the view scope that created it (a row of an [`Each`]).
+pub(crate) struct Updaters<R: Resource>(Rc<RefCell<Vec<Updater<R>>>>);
+
+impl<R: Resource> Clone for Updaters<R> {
+    fn clone(&self) -> Self {
+        Self(Rc::clone(&self.0))
+    }
+}
+
+impl<R: Resource> Updaters<R> {
+    pub(crate) fn new() -> Self {
+        Self(Rc::default())
+    }
+
+    pub(crate) fn run(&self, state: &R::State) {
+        // Take the list so an updater may register more (a rebuilt row)
+        // without a reentrant borrow.
+        let mut current = std::mem::take(&mut *self.0.borrow_mut());
+        current.retain_mut(|(alive, update)| {
+            if alive.strong_count() == 0 {
+                return false;
+            }
+            update(state);
+            true
+        });
+        let mut list = self.0.borrow_mut();
+        current.append(&mut list);
+        *list = current;
+    }
+
+    fn push(&self, alive: Weak<()>, update: Update<R>) {
+        self.0.borrow_mut().push((alive, update));
+    }
+}
+
+/// Projects the resource state onto the value a view scope reads: the whole
+/// state at the root, one item inside an [`Each`] row.
+pub(crate) type Focus<R, T> = Rc<dyn for<'a> Fn(&'a <R as Resource>::State) -> Option<&'a T>>;
+
+/// Everything a view needs: reads of the resource state, bindings of controls
+/// to actions, local state, and custom surfaces.
+///
+/// `T` is what this scope reads — the resource state at the root, one item in
+/// a row built by [`ViewCx::each`].
+pub struct ViewCx<R: Resource, T: 'static = <R as Resource>::State> {
+    pub(crate) live: Live<R>,
+    pub(crate) focus: Focus<R, T>,
+    pub(crate) updaters: Updaters<R>,
+    pub(crate) alive: Weak<()>,
+    pub(crate) dispatch: Dispatcher<R>,
+    pub(crate) published: Rc<tilo_actions::Resource>,
+    pub(crate) item: Option<Id>,
+    pub(crate) controls: Rc<RefCell<HashMap<String, u32>>>,
+    pub(crate) saved: LocalState<RecordSaveStatus>,
+}
+
+impl<R: Resource> ViewCx<R> {
+    pub(crate) fn root(
+        live: Live<R>,
+        updaters: Updaters<R>,
+        alive: &Rc<()>,
+        dispatch: Dispatcher<R>,
+        published: tilo_actions::Resource,
+        saved: LocalState<RecordSaveStatus>,
+    ) -> Self {
+        Self {
+            live,
+            focus: Rc::new(|state| Some(state)),
+            updaters,
+            alive: Rc::downgrade(alive),
+            dispatch,
+            published: Rc::new(published),
+            item: None,
+            controls: Rc::default(),
+            saved,
+        }
+    }
+}
+
+impl<R: Resource, T: 'static> ViewCx<R, T> {
+    /// The live resource state, for reads a binding does not cover.
+    pub fn live(&self) -> &Live<R> {
+        &self.live
+    }
+
+    /// Where edits go. Custom widgets keep a clone.
+    pub fn dispatcher(&self) -> Dispatcher<R> {
+        self.dispatch.clone()
+    }
+
+    /// Whether this participant may only view. Bound controls already
+    /// disable themselves; custom surfaces read this.
+    pub fn read_only(&self) -> bool {
+        self.dispatch.read_only()
+    }
+
+    /// Whether the record's latest edits are durable, for a status line.
+    /// Saving is automatic; there is nothing to save by hand.
+    pub fn save_status(&self) -> LocalState<RecordSaveStatus> {
+        self.saved.clone()
+    }
+
+    /// The item this scope stands for, inside an [`Each`] row.
+    pub fn item(&self) -> Option<&Id> {
+        self.item.as_ref()
+    }
+
+    /// Read the scope's value now (at build time). For values that must
+    /// follow the resource, use a binding such as [`Self::text`].
+    pub fn read<V>(&self, read: impl FnOnce(Option<&T>) -> V) -> V {
+        self.live.with(|state| read((self.focus)(state)))
+    }
+
+    /// Typed process-local view state: never persisted, shared or undone.
+    pub fn local<V: Send + Sync + 'static>(&self, initial: V) -> LocalState<V> {
+        LocalState::new(initial)
+    }
+
+    fn reader<V: Default + 'static>(
+        &self,
+        read: impl Fn(&T) -> V + 'static,
+    ) -> impl Fn(&R::State) -> V + 'static {
+        let focus = Rc::clone(&self.focus);
+        move |state| (focus)(state).map(&read).unwrap_or_default()
+    }
+
+    /// A stable, addressable control name: the action id, qualified by the
+    /// row's item, numbered only when the same binding repeats.
+    fn control_id(&self, action: &str) -> String {
+        let base = match &self.item {
+            Some(item) => format!("{action}-{item}"),
+            None => action.to_owned(),
+        };
+        let mut seen = self.controls.borrow_mut();
+        let count = seen.entry(base.clone()).or_insert(0);
+        *count = count.saturating_add(1);
+        if *count == 1 {
+            base
+        } else {
+            format!("{base}-{count}")
+        }
+    }
+
+    fn binding<I: 'static>(&self, binds: impl Binds<R, I>) -> Option<ActionBinding<I>> {
+        let id = binds.action_id();
+        let spec = self
+            .published
+            .actions
+            .iter()
+            .find(|spec| spec.id == id)?
+            .clone();
+        ActionBinding::new(&self.published, &spec, move |input| binds.arguments(input))
+            .map_err(|error| tracing::warn!(%error, action = id, "control not bound"))
+            .ok()
+    }
+
+    /// Keep `sink` in step with a value derived from the resource.
+    fn follow<V: PartialEq + Default + Clone + 'static>(
+        &self,
+        read: impl Fn(&T) -> V + 'static,
+        mut sink: impl FnMut(V) + 'static,
+    ) -> V {
+        let read = self.reader(read);
+        let initial = self.live.with(&read);
+        let mut last = initial.clone();
+        self.updaters.push(
+            self.alive.clone(),
+            Box::new(move |state| {
+                let next = read(state);
+                if next != last {
+                    last.clone_from(&next);
+                    sink(next);
+                }
+            }),
+        );
+        initial
+    }
+
+    /// Text that always shows `read` of the resource.
+    pub fn text(&self, read: impl Fn(&T) -> String + 'static) -> Text {
+        let live = self.live.clone();
+        let read = self.reader(read);
+        Text::dynamic(move || live.with(&read))
+    }
+
+    /// A text field showing `read` of the resource; each committed edit
+    /// invokes `action` with the field's new text.
+    pub fn input(
+        &self,
+        read: impl Fn(&T) -> String + 'static,
+        action: impl Binds<R, String>,
+    ) -> TextInput {
+        let id = self.control_id(action.action_id());
+        let state = LocalState::new(String::new());
+        let sink = state.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        state.set(initial);
+        let input = TextInput::from_state(&state).with_id(&id);
+        match self.binding(action) {
+            Some(binding) => input.on_action(binding),
+            None => input.disabled(true),
+        }
+    }
+
+    /// A checkbox showing `read` of the resource; toggling invokes `action`
+    /// with the new value.
+    pub fn checkbox(
+        &self,
+        label: impl Into<String>,
+        read: impl Fn(&T) -> bool + 'static,
+        action: impl Binds<R, bool>,
+    ) -> Checkbox {
+        let id = self.control_id(action.action_id());
+        let state = LocalState::new(false);
+        let sink = state.clone();
+        let initial = self.follow(read, move |value| sink.set(value));
+        state.set(initial);
+        let checkbox = Checkbox::from_state(&state).with_id(&id).with_label(label);
+        match self.binding(action) {
+            Some(binding) => checkbox.on_action(binding),
+            None => checkbox.with_enabled(false),
+        }
+    }
+
+    /// A button that invokes one fully specified action.
+    pub fn button(&self, label: &str, invoke: Invoke<R>) -> Button {
+        let id = self.control_id(invoke.id);
+        let button = Button::new(&id, label, None);
+        let Some(spec) = self
+            .published
+            .actions
+            .iter()
+            .find(|spec| spec.id == invoke.id)
+            .cloned()
+        else {
+            return disabled(button);
+        };
+        match ActionBinding::static_json(&self.published, &spec, invoke.arguments) {
+            Ok(binding) => button.on_action(binding),
+            Err(error) => {
+                tracing::warn!(%error, action = invoke.id, "button not bound");
+                disabled(button)
+            }
+        }
+    }
+
+    /// One row per item of a collection, kept in collection order. A row is
+    /// built once per item and retained while the item exists, so focus and
+    /// caret inside it survive other items changing.
+    pub fn each<I: 'static>(
+        &self,
+        items: fn(&T) -> &Collection<I>,
+        row: impl Fn(&mut ViewCx<R, I>) -> Element + 'static,
+    ) -> Each<R> {
+        let focus = Rc::clone(&self.focus);
+        let ids = move |state: &R::State| -> Vec<Id> {
+            (focus)(state).map_or_else(Vec::new, |value| items(value).ids().cloned().collect())
+        };
+        let parent_focus = Rc::clone(&self.focus);
+        let live = self.live.clone();
+        let updaters = self.updaters.clone();
+        let dispatch = self.dispatch.clone();
+        let published = Rc::clone(&self.published);
+        let controls = Rc::clone(&self.controls);
+        let saved = self.saved.clone();
+        Each::new(
+            self.live.clone(),
+            Box::new(ids),
+            Box::new(move |id: &Id, alive: &Rc<()>| {
+                let parent = Rc::clone(&parent_focus);
+                let key = id.clone();
+                let focus: Focus<R, I> =
+                    Rc::new(move |state| (parent)(state).and_then(|value| items(value).get(&key)));
+                let mut cx = ViewCx {
+                    live: live.clone(),
+                    focus,
+                    updaters: updaters.clone(),
+                    alive: Rc::downgrade(alive),
+                    dispatch: dispatch.clone(),
+                    published: Rc::clone(&published),
+                    item: Some(id.clone()),
+                    controls: Rc::clone(&controls),
+                    saved: saved.clone(),
+                };
+                row(&mut cx)
+            }),
+        )
+    }
+
+    /// Host a custom widget or renderer that takes part through the
+    /// [`ResourceSurface`] contract.
+    pub fn surface<S: ResourceSurface<R> + 'static>(&self, mut surface: S) -> Element {
+        surface.attach(SurfaceCx {
+            dispatch: self.dispatch.clone(),
+        });
+        surface.present(&self.live.get());
+        Box::new(SurfaceHost::new(self.live.clone(), surface))
+    }
+}
