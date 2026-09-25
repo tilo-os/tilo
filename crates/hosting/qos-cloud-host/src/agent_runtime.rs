@@ -134,13 +134,45 @@ impl CloudAgentRuntime {
             }
         }
     }
-    pub(crate) async fn close(&mut self) -> Result<(), String> {
+    /// Withdraw readiness and ask the owner thread to stop, without waiting.
+    /// Shutdown signals this first so the owner winds down while the service
+    /// and transport close.
+    pub(crate) fn request_stop(&mut self) {
         self.closed
             .store(true, std::sync::atomic::Ordering::Release);
         self.owner.stop_readiness();
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
         }
+    }
+    /// [`Self::close`] with an upper bound. On expiry the owner thread is left
+    /// to finish on its own (every durable effect is behind a Store barrier);
+    /// the caller is not held and no executor waits for that thread.
+    pub(crate) async fn close_within(&mut self, bound: Duration) -> Result<(), String> {
+        self.request_stop();
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
+        let (joined, result) = oneshot::channel();
+        std::thread::Builder::new()
+            .name("cloud-agent-join".into())
+            .spawn(move || {
+                let _ = joined.send(
+                    thread
+                        .join()
+                        .map_err(|_| "agent owner panicked".to_string())
+                        .and_then(|result| result),
+                );
+            })
+            .map_err(|e| e.to_string())?;
+        match tokio::time::timeout(bound, result).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err("agent owner join lost".into()),
+            Err(_) => Err(format!("agent owner did not stop within {bound:?}")),
+        }
+    }
+    pub(crate) async fn close(&mut self) -> Result<(), String> {
+        self.request_stop();
         let Some(thread) = self.thread.take() else {
             return Ok(());
         };
@@ -167,6 +199,23 @@ impl CloudAgentRuntime {
             .await
     }
 }
+/// Test only: every owner command slot held, as a burst of queued agent
+/// reads holds them. Dropping it releases the slots unused.
+#[cfg(test)]
+pub(crate) struct QueuedAgentWork(
+    #[allow(dead_code, reason = "held only to keep the queue permits occupied")]
+    Vec<mpsc::OwnedPermit<Command>>,
+);
+#[cfg(test)]
+impl CloudAgentRuntime {
+    pub(crate) fn occupy_command_queue(&self) -> QueuedAgentWork {
+        let mut held = Vec::new();
+        while let Ok(permit) = self.commands.clone().try_reserve_owned() {
+            held.push(permit);
+        }
+        QueuedAgentWork(held)
+    }
+}
 impl Drop for CloudAgentRuntime {
     fn drop(&mut self) {
         self.closed
@@ -186,6 +235,7 @@ async fn handle_certified_command(
     evidence: &CertifiedAction,
     queued: &mut AgentWorkQueue,
     policy_time: &qos_action_broker::peer_actions::PolicyTime,
+    reads: &mut read_attachment::ReadCache,
 ) -> Result<Option<ActionMessage>, String> {
     let action = evidence.action();
     if !matches!(
@@ -221,7 +271,8 @@ async fn handle_certified_command(
     {
         return retained_status(&store, &caller, action.room, *invocation).map(Some);
     }
-    drop(store);
+    // The same locked Store and fresh caller proof continue into the command
+    // (no second open and second proof of the identical caller).
     handle_command(
         root,
         owner,
@@ -231,6 +282,9 @@ async fn handle_certified_command(
         evidence,
         queued,
         policy_time,
+        store,
+        caller,
+        reads,
     )
     .await
     .map(Some)
@@ -256,7 +310,8 @@ fn observe_certified(
 }
 fn authenticate(store: &Store, evidence: &CertifiedAction) -> Result<VerifiedAgentCaller, String> {
     let action = evidence.action();
-    let peer = store.peer().map_err(|e| e.to_string())?;
+    let peers = store.peer_shared().map_err(|e| e.to_string())?;
+    let peer = &peers.1;
     if action.room.to_string() != peer.room()
         || action.source != evidence.certificate().device_public_key
         || action.target != peer.authority().device_public_key
@@ -411,6 +466,52 @@ fn retained(
 }
 /// Longest interval between provider state republications without a change.
 const RUNTIME_STATE_INTERVAL: Duration = Duration::from_millis(250);
+/// Owner tick period. A tick that overruns delays the next one; missed ticks
+/// never burst (a burst of overdue ticks never returned to the executor).
+const RUNTIME_TICK: Duration = Duration::from_millis(10);
+/// With no agent task, step, control or command activity for this long, the
+/// headless worker runners (≈10 ms of work per pump even when idle) are
+/// pumped every [`IDLE_WORKER_PUMP`] instead of every tick. Any command,
+/// step submission or child settlement makes the loop active again at once.
+const IDLE_AFTER: Duration = Duration::from_secs(2);
+const IDLE_WORKER_PUMP: Duration = Duration::from_millis(100);
+/// A tick that took at least this long yields to the executor afterwards.
+const HEAVY_TICK: Duration = Duration::from_millis(2);
+/// A tick at least this long logs its content-free stage breakdown.
+const SLOW_TICK: Duration = Duration::from_millis(20);
+/// Gateway Plan query cadence; readiness itself is last-known-good (PLAN_TTL).
+const PLAN_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+/// Worker mount retry backoff after a transient start failure (for example a
+/// collaboration route join timeout). Hosting continues without agents.
+const WORKER_RETRY_MIN: Duration = Duration::from_millis(500);
+const WORKER_RETRY_MAX: Duration = Duration::from_secs(30);
+type StartedWorkers = (
+    AgentWorkers,
+    mpsc::Receiver<qos_action_broker::host_documents::PendingHostDocument>,
+);
+fn start_workers(
+    root: &Path,
+    owner: &Arc<RuntimeOwner>,
+    outbound: &mpsc::Sender<NeighbourMsg>,
+) -> Result<StartedWorkers, String> {
+    #[cfg(test)]
+    {
+        // One-shot injected start failure (test binary only; grants nothing).
+        let fault = root.join("agent-test-worker-start-fail");
+        if fault.is_file() {
+            std::fs::remove_file(&fault).map_err(|e| e.to_string())?;
+            return Err("worker join: injected collaboration primary route timeout".into());
+        }
+    }
+    let (mut workers, documents) = AgentWorkers::start(root, owner.clone(), outbound.clone())?;
+    workers.set_transport_ready(true);
+    Ok((workers, documents))
+}
+fn worker_retry_delay(attempt: u32) -> Duration {
+    WORKER_RETRY_MIN
+        .saturating_mul(1u32 << attempt.min(8))
+        .min(WORKER_RETRY_MAX)
+}
 async fn run(
     root: PathBuf,
     owner: Arc<RuntimeOwner>,
@@ -428,15 +529,17 @@ async fn run(
         .map_err(|e| e.to_string())?
         .admission_v5_selected();
     let _outbound_guard = outbound.clone();
+    // A transient worker start failure never aborts hosting: the runtime starts
+    // with agents unavailable (no worker publication, so no mutation offer) and
+    // retries the mount with backoff.
+    let mut worker_retry: Option<(u32, Instant)> = None;
     let (mut workers, mut documents) = if selected {
-        match AgentWorkers::start(&root, owner.clone(), outbound) {
-            Ok((mut workers, documents)) => {
-                workers.set_transport_ready(true);
-                (Some(workers), Some(documents))
-            }
+        match start_workers(&root, &owner, &outbound) {
+            Ok((workers, documents)) => (Some(workers), Some(documents)),
             Err(error) => {
-                let _ = ready.send(Err(error.clone()));
-                return Err(error);
+                tracing::warn!(%error, "agent workers unavailable at startup; hosting continues and retries");
+                worker_retry = Some((1, Instant::now() + WORKER_RETRY_MIN));
+                (None, None)
             }
         }
     } else {
@@ -484,18 +587,28 @@ async fn run(
         }
     };
     let mut queued = AgentWorkQueue::default();
+    // Burst reuse of private reads (read-only projections; see ReadCache).
+    let mut reads = read_attachment::ReadCache::default();
     #[cfg(target_os = "linux")]
     let mut last_recovery = Instant::now() - Duration::from_secs(2);
     let mut offer: Option<GrantOffer> = None;
     let mut last_configuration = Instant::now() - Duration::from_secs(10);
+    // Last-known-good gateway Plan configuration: only an explicit negative
+    // answer or PLAN_TTL without a confirmation withdraws it.
+    let mut plan = crate::agent_runtime_config::PlanReadiness::default();
     let mut plan_configured = false;
-    let (probe_tx, mut probe_rx) = mpsc::channel(1);
-    let mut probe: Option<tokio::task::JoinHandle<()>> = None;
-    let mut tick = tokio::time::interval(Duration::from_millis(10));
-    // Provider state is republished after document commits, plan changes and
-    // at most every RUNTIME_STATE_INTERVAL otherwise. Each publication opens
-    // the Store; doing so on every 10 ms tick starved other Store users.
+    // The probe runs on the gateway I/O runtime, not on this busy executor.
+    let mut probe: Option<tokio::task::JoinHandle<Result<bool, String>>> = None;
+    let mut tick = tokio::time::interval(RUNTIME_TICK);
+    // Idle pacing of the headless worker pump (see IDLE_WORKER_PUMP).
+    let mut last_active = Instant::now();
+    let mut last_worker_pump = Instant::now() - IDLE_WORKER_PUMP;
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Provider state is republished after document commits, plan changes,
+    // observed Store generation changes and at most every
+    // RUNTIME_STATE_INTERVAL otherwise.
     let mut published_at = Instant::now();
+    let mut published_generation = workers.as_ref().and_then(|w| w.observed_generation());
     let mut publish_due = false;
     if let Err(error) = publish_runtime_state(
         &owner,
@@ -518,15 +631,76 @@ async fn run(
             command=commands.recv()=>match command {
                 None=>break,
                 Some(command)=>{
-                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued).await;
+                    // Only a new control (Spawn/Message) is activity; status,
+                    // catalogue and read polls are not.
+                    if matches!(command.kind, read_attachment::CommandKind::Action)
+                        && matches!(&command.evidence.action().message, ActionMessage::InvokeBound { .. })
+                    {
+                        last_active = Instant::now();
+                    }
+                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued,&mut reads).await;
                 }
             },
+            // A submitted agent step runs its tick now (see STEP_WAKE).
+            _=crate::agent_sender::STEP_WAKE.notified()=>{last_active = Instant::now(); tick.reset_immediately();}
+            _=qos_action_broker::enrolled_dispatch::CHILD_SETTLED.notified()=>{last_active = Instant::now(); tick.reset_immediately();}
             _=tick.tick()=>{
-                if let Some(workers)=&mut workers {workers.pump()?;}
+                let began = Instant::now();
+                if workers.is_none() {
+                    if let Some((attempt, due)) = worker_retry.filter(|(_, due)| began >= *due) {
+                        match start_workers(&root, &owner, &outbound).and_then(|(started, requests)| {
+                            #[cfg(target_os="linux")]
+                            let mut started = started;
+                            #[cfg(target_os="linux")]
+                            if execution.is_none() {
+                                match started.app_broker() {
+                                    Ok(broker) => execution = Some(execution::Execution::new(owner.clone(), broker)),
+                                    Err(error) => {
+                                        let closed = started.close();
+                                        return Err(closed.err().map_or(error.clone(), |c| format!("{error}; {c}")));
+                                    }
+                                }
+                            }
+                            Ok((started, requests))
+                        }) {
+                            Ok((started, requests)) => {
+                                tracing::info!(attempt, "agent workers started after retry");
+                                workers = Some(started);
+                                documents = Some(requests);
+                                worker_retry = None;
+                                publish_due = true;
+                            }
+                            Err(error) => {
+                                let delay = worker_retry_delay(attempt);
+                                tracing::warn!(%error, attempt, retry_in_ms = delay.as_millis() as u64, "agent workers unavailable; retrying");
+                                worker_retry = Some((attempt.saturating_add(1), due.max(Instant::now()) + delay));
+                            }
+                        }
+                    }
+                }
+                let stage = Instant::now();
+                // Activity, not state: a live agent process or an agent task
+                // waiting for its next model turn or message needs no pumping
+                // every tick (that kept an idle host at ~90% of a core). Steps,
+                // child settlements and commands wake the loop above; a pending
+                // step keeps it active until it is served.
+                // Bounded worker mounting continues every tick until done.
+                if workers.as_ref().is_some_and(|w| w.has_pending_steps() || w.mounting()) {
+                    last_active = began;
+                }
+                let idle = last_active.elapsed() >= IDLE_AFTER;
+                if !idle || last_worker_pump.elapsed() >= IDLE_WORKER_PUMP {
+                    last_worker_pump = began;
+                    if let Some(workers)=&mut workers {workers.pump()?;}
+                }
+                let pump_us = qos_action_broker::agent_timing::us(stage);
+                let stage = Instant::now();
+                let mut documents_applied = 0u64;
                 // apply opens Store only in its callback; refresh and release the deferred signer
                 // after the exact committed bytes have entered the worker cache.
                 while let Some(pending)=documents.as_mut().and_then(|requests|requests.try_recv().ok()){
                     let(complete,result)=crate::agent_documents::apply_worker_document(&owner,pending,Instant::now()+Duration::from_secs(5));
+                    documents_applied += 1;
                     publish_due = true;
                     match result {
                         Ok(())=>{workers.as_mut().ok_or("document owner unavailable")?.committed()?;complete();}
@@ -539,27 +713,53 @@ async fn run(
                         }
                     }
                 }
-                if let Ok(configured)=probe_rx.try_recv(){publish_due |= configured != plan_configured; plan_configured=configured;}
-                if probe.as_ref().is_some_and(|t|t.is_finished()){let _=probe.take().expect("present probe").await;}
-                if last_configuration.elapsed()>=Duration::from_secs(5)&&probe.is_none(){
+                if documents_applied > 0 {
+                    // Settle and answer the step whose child just committed
+                    // now, not after publication and the next tick.
+                    if let Some(workers)=&mut workers { workers.pump_steps(); }
+                }
+                let documents_us = qos_action_broker::agent_timing::us(stage);
+                let stage = Instant::now();
+                let mut published = 0u64;
+                if probe.as_ref().is_some_and(|t|t.is_finished()){
+                    let result = probe.take().expect("present probe").await.unwrap_or_else(|error| Err(error.to_string()));
+                    #[cfg(test)]
+                    if let Err(error) = &result { test_readiness_diagnostic("gateway-plan", error); }
+                    if let Err(error) = &result {
+                        tracing::debug!(%error, "gateway Plan probe failed; last known Plan state retained until TTL");
+                    }
+                    plan.observe(&result, Instant::now());
+                }
+                if last_configuration.elapsed()>=PLAN_PROBE_INTERVAL&&probe.is_none(){
                     last_configuration=Instant::now();
-                    publish_due |= plan_configured;
-                    plan_configured=false; // No stale positive capability while the next bounded query is unresolved.
-                    if let Some(config)=configuration.clone(){
-                        let sender=probe_tx.clone();
-                        probe=Some(tokio::task::spawn_local(async move{
-                            let result = config.configured_for_plan().await;
-                            #[cfg(test)]
-                            if let Err(error) = &result { test_readiness_diagnostic("gateway-plan", error); }
-                            let _=sender.try_send(result.is_ok());
-                        }));
+                    if let Some(config)=&configuration{
+                        probe=Some(config.spawn_plan_probe());
                     }
                 }
-                if publish_due || published_at.elapsed() >= RUNTIME_STATE_INTERVAL {
+                let configured = plan.configured(Instant::now());
+                publish_due |= configured != plan_configured;
+                plan_configured = configured;
+                let generation = workers.as_ref().and_then(|w| w.observed_generation());
+                publish_due |= generation != published_generation;
+                // While an agent step is in flight, its own commits do not
+                // republish provider state each tick (the offer and presence
+                // views cannot change a running task); the periodic
+                // republication still runs, and a deferred one follows the step.
+                let stepping = workers.as_ref().is_some_and(|w| w.has_pending_steps());
+                if (publish_due && !stepping) || published_at.elapsed() >= RUNTIME_STATE_INTERVAL {
+                    if let Some(workers)=&mut workers {
+                        if let Err(error)=workers.sync_agent_participants(&owner.active_agent_tasks()) {
+                            tracing::warn!(%error,"agent participant views not synchronized");
+                        }
+                    }
                     publish_runtime_state(&owner,workers.as_ref(),&mut offer,plan_configured,launcher.is_some())?;
+                    published = 1;
                     published_at = Instant::now();
+                    published_generation = generation;
                     publish_due = false;
                 }
+                let publish_us = qos_action_broker::agent_timing::us(stage);
+                let stage = Instant::now();
                 #[cfg(target_os="linux")]
                 if let (Some(launcher),Some(config),Some(execution))=(&mut launcher,&configuration,&mut execution){
                     execution.pump(launcher,config).await?;
@@ -579,6 +779,25 @@ async fn run(
                 }
                 #[cfg(not(target_os="linux"))]
                 while let Some(id)=queued.pop_front(){owner.uncertain(id,"managed execution requires Linux")?;}
+                if began.elapsed() >= SLOW_TICK {
+                    qos_action_broker::agent_timing::span(
+                        "runtime_tick",
+                        None,
+                        began.elapsed(),
+                        &[
+                            ("pump_us", pump_us),
+                            ("documents_us", documents_us),
+                            ("documents", documents_applied),
+                            ("publish_us", publish_us),
+                            ("published", published),
+                            ("execution_us", qos_action_broker::agent_timing::us(stage)),
+                        ],
+                    );
+                }
+                if began.elapsed() >= HEAVY_TICK {
+                    // Let the executor poll I/O, timers and the stop/command arms.
+                    tokio::task::yield_now().await;
+                }
             }
         }}
         Ok(())
@@ -586,6 +805,10 @@ async fn run(
     #[cfg(test)]
     if let Err(error) = &outcome {
         test_readiness_diagnostic("runtime-loop", error);
+    }
+    if let Err(error) = &outcome {
+        // The loop ending retires the shared Store source (CloseOnDrop).
+        tracing::warn!(%error, "agent runtime loop stopped");
     }
     owner.stop_readiness();
     if let Some(probe) = probe.take() {
@@ -633,6 +856,93 @@ mod tests {
         );
         assert!(!dir.path().join("actions/journal").exists());
     }
+    /// A5: a transient worker join failure at startup must not abort hosting;
+    /// the runtime starts with agents unavailable and mounts them on retry.
+    #[tokio::test]
+    async fn agent_runtime_worker_join_timeout_keeps_hosting_and_retries() {
+        use qos_action_broker::agent_control::AgentProviderAuthority;
+        let (dir, owner) = crate::agent_workers::tests::selected();
+        drop(owner);
+        let fault = dir.path().join("agent-test-worker-start-fail");
+        std::fs::write(&fault, b"one-shot").unwrap();
+        let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
+            .await
+            .expect("a worker join timeout must not abort runtime startup");
+        assert!(
+            !fault.exists(),
+            "the injected failure was consumed at startup"
+        );
+        let unmounted = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
+        assert!(!unmounted.required_services_ready);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let state = AgentProviderAuthority::snapshot(&*runtime.owner).unwrap();
+            if state.publication_revision != "unavailable" {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "workers were not mounted on retry"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        runtime.close().await.unwrap();
+    }
+    /// Spawning agents and the passage of time keep the one offer (and so
+    /// the spawn descriptor) a client composed against; only a consent
+    /// change mints a new offer.
+    #[test]
+    fn agent_offer_stays_stable_across_spawns_and_expiry_renewal() {
+        let grants = vec![qos_agent_control_protocol::GrantAction {
+            app_id: "so.tilo.chat".into(),
+            record_id: "@qos:package-primary".into(),
+            resource: "document".into(),
+            action: "insert".into(),
+        }];
+        let label = || "Current workspace documents".to_string();
+        let t0 = chrono::Utc::now();
+        let mut offer = None;
+        refresh_offer(&mut offer, &grants, label(), &"a".repeat(64), t0);
+        let first = offer.clone().expect("offer for current grants");
+        // Every runtime tick (250 ms) for 16 spawns: nothing changes.
+        for tick in 1..=64 {
+            let now = t0 + chrono::Duration::milliseconds(250 * tick);
+            refresh_offer(&mut offer, &grants, label(), &"a".repeat(64), now);
+            assert_eq!(offer.as_ref(), Some(&first));
+        }
+        // A publication/governance revision change with the same consent
+        // keeps the offer.
+        refresh_offer(&mut offer, &grants, label(), &"b".repeat(64), t0);
+        assert_eq!(offer.as_ref(), Some(&first));
+        // Past the advisory expiry (long session): same id, renewed expiry.
+        for minutes in [11, 25, 40, 90] {
+            let now = t0 + chrono::Duration::minutes(minutes);
+            refresh_offer(&mut offer, &grants, label(), &"a".repeat(64), now);
+            let current = offer.as_ref().unwrap();
+            assert_eq!(current.id, first.id, "{minutes} min");
+            assert_eq!(current.revision, first.revision);
+            assert_eq!(current.actions, first.actions);
+            let expiry = chrono::DateTime::parse_from_rfc3339(&current.expires_at).unwrap();
+            assert!(expiry > now, "{minutes} min: offer must stay unexpired");
+        }
+        // A consent change is a new offer.
+        let mut wider = grants.clone();
+        wider.push(qos_agent_control_protocol::GrantAction {
+            action: "delete".into(),
+            ..grants[0].clone()
+        });
+        refresh_offer(&mut offer, &wider, label(), &"c".repeat(64), t0);
+        assert_ne!(offer.as_ref().unwrap().id, first.id);
+        // No grants, no offer.
+        refresh_offer(&mut offer, &[], label(), &"d".repeat(64), t0);
+        assert!(offer.is_none());
+    }
+    #[test]
+    fn agent_runtime_worker_retry_backoff_is_bounded() {
+        assert_eq!(worker_retry_delay(0), WORKER_RETRY_MIN);
+        assert!(worker_retry_delay(1) > worker_retry_delay(0));
+        assert_eq!(worker_retry_delay(40), WORKER_RETRY_MAX);
+    }
     #[test]
     fn agent_runtime_legacy_status_requires_no_writer_upgrade() {
         let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
@@ -676,9 +986,10 @@ async fn handle_command(
     evidence: &CertifiedAction,
     queued: &mut AgentWorkQueue,
     policy_time: &qos_action_broker::peer_actions::PolicyTime,
+    store: Store,
+    caller: VerifiedAgentCaller,
+    reads: &mut read_attachment::ReadCache,
 ) -> Result<ActionMessage, String> {
-    let store = owner.store()?;
-    let caller = authenticate(&store, &evidence)?;
     let action = evidence.action();
     match &action.message {
         ActionMessage::CatalogueRefresh { scope } => {
@@ -722,7 +1033,14 @@ async fn handle_command(
                     }
                 }
                 if reads_supported {
-                    if let Ok(binding) = provider.read_binding(evidence.certificate()) {
+                    // The binding is a read-only projection: while this
+                    // caller's read burst basis is exact, it is reused (no
+                    // Store open); otherwise it is proved as before.
+                    let binding = reads
+                        .binding(root, evidence, owner, policy_time)
+                        .map(Ok)
+                        .unwrap_or_else(|| provider.read_binding(evidence.certificate()));
+                    if let Ok(binding) = binding {
                         catalogue["agentReadsV1"] =
                             serde_json::to_value(binding).map_err(|e| e.to_string())?;
                     }
@@ -732,8 +1050,17 @@ async fn handle_command(
         }
         ActionMessage::AgentReadV1 { .. } => {
             drop(store);
-            read_attachment::read_current(owner, provider, offer, evidence)
-                .map_err(|error| error.to_string())
+            // Dispatch serves reads before this generic path.
+            read_attachment::read_current(
+                root,
+                owner,
+                provider,
+                offer,
+                evidence,
+                policy_time,
+                reads,
+            )
+            .map_err(|error| error.to_string())
         }
         ActionMessage::InvokeBound { .. } => {
             if let Some(observed) = retained(&store, &caller, &evidence)? {
@@ -772,6 +1099,58 @@ async fn handle_command(
     }
 }
 
+/// The one current grant offer a Spawn names (see `publish_runtime_state`).
+///
+/// The consent a Spawn names is its exact action set and label. A policy or
+/// publication revision change that leaves both identical keeps the same
+/// offer (id and revision), so a spawn dialog opened just before a guest
+/// joined or a Writer action became available stays valid; spawning agents
+/// changes neither. Current policy is still checked at admission; the offer
+/// grants nothing itself.
+///
+/// Its advisory expiry is renewed in place (same id, same consent) before it
+/// lapses: a new id every 15 minutes changed the spawn descriptor and refused
+/// every control composed against the previous one. Admission never trusted
+/// the expiry; it checks the id and current policy.
+pub(crate) fn refresh_offer(
+    offer: &mut Option<GrantOffer>,
+    grants: &[qos_agent_control_protocol::GrantAction],
+    label: String,
+    revision: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let lifetime = chrono::Duration::minutes(15);
+    let expires =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let expiry = |o: &GrantOffer| chrono::DateTime::parse_from_rfc3339(&o.expires_at).ok();
+    let expired = |o: &GrantOffer| expiry(o).is_none_or(|t| t.timestamp() <= now.timestamp());
+    let consent = offer
+        .as_ref()
+        .is_some_and(|o| o.actions == grants && o.label == label);
+    if consent && !grants.is_empty() {
+        if let Some(o) = offer.as_mut() {
+            if expiry(o).is_none_or(|t| t <= now + chrono::Duration::minutes(5)) {
+                o.expires_at = expires(now + lifetime);
+            }
+        }
+    }
+    let same_consent = consent && offer.as_ref().is_some_and(|o| !expired(o));
+    if !same_consent
+        && offer
+            .as_ref()
+            .is_none_or(|o| o.revision != revision || expired(o))
+    {
+        *offer = (!grants.is_empty() && grants.len() <= 64).then(|| GrantOffer {
+            id: Uuid::new_v4().to_string(),
+            revision: revision.to_owned(),
+            expires_at: expires(now + lifetime),
+            // Derived from the frozen scopes (security review MUST-19).
+            label,
+            actions: grants.to_vec(),
+        });
+    }
+}
+
 pub(crate) fn publish_runtime_state(
     owner: &RuntimeOwner,
     workers: Option<&AgentWorkers>,
@@ -779,6 +1158,8 @@ pub(crate) fn publish_runtime_state(
     plan_configured: bool,
     launcher_available: bool,
 ) -> Result<(), String> {
+    // With mounted workers the publication carries the Store facts observed at
+    // its own generation; no additional Store open is needed here.
     let publications = if let Some(workers) = workers {
         workers.publications()?
     } else {
@@ -792,15 +1173,15 @@ pub(crate) fn publish_runtime_state(
             grants: vec![],
             ready: false,
             native_v5_ready: false,
+            private_v2_ready: matches!(
+                store.state.private_agent_ledger,
+                Some(PrivateAgentState::V2(_))
+            ),
+            machine: store.state.machine_id.clone(),
         }
     };
-    let store = owner.store()?;
-    let machine = store.state.machine_id.clone();
-    let private_v2_ready = matches!(
-        store.state.private_agent_ledger,
-        Some(PrivateAgentState::V2(_))
-    );
-    drop(store);
+    let machine = publications.machine.clone();
+    let private_v2_ready = publications.private_v2_ready;
     let revision = blake3::hash(
         &serde_json::to_vec(&(
             &publications.governance_revision,
@@ -810,22 +1191,15 @@ pub(crate) fn publish_runtime_state(
     )
     .to_hex()
     .to_string();
-    if offer.as_ref().is_none_or(|o| {
-        o.revision != revision
-            || chrono::DateTime::parse_from_rfc3339(&o.expires_at)
-                .map_or(true, |t| t.timestamp() <= chrono::Utc::now().timestamp())
-    }) {
-        *offer = (!publications.grants.is_empty() && publications.grants.len() <= 64).then(|| {
-            GrantOffer {
-                id: Uuid::new_v4().to_string(),
-                revision: revision.clone(),
-                expires_at: (chrono::Utc::now() + chrono::Duration::minutes(15))
-                    .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-                label: "Current workspace documents".into(),
-                actions: publications.grants.clone(),
-            }
-        });
-    }
+    let label = crate::agent_workers::consent_label(&publications.grants)
+        .unwrap_or_else(|| "Current workspace documents".into());
+    refresh_offer(
+        offer,
+        &publications.grants,
+        label,
+        &revision,
+        chrono::Utc::now(),
+    );
     let room = publications
         .room
         .parse::<Uuid>()
@@ -852,6 +1226,33 @@ pub(crate) fn publish_runtime_state(
                     current.0, current.1, current.2, current.3, current.4, current.5
                 ),
             );
+        }
+    }
+    // Operator-visible readiness transitions (no private content): which
+    // agent prerequisite is still missing when spawn is not offered.
+    {
+        static LAST: std::sync::Mutex<Option<(bool, bool, bool, bool, bool, usize)>> =
+            std::sync::Mutex::new(None);
+        let current = (
+            publications.ready,
+            publications.native_v5_ready,
+            private_v2_ready,
+            plan_configured,
+            launcher_available,
+            publications.grants.len(),
+        );
+        if let Ok(mut last) = LAST.lock() {
+            if last.replace(current) != Some(current) {
+                tracing::info!(
+                    workers = current.0,
+                    native_v5 = current.1,
+                    private_v2 = current.2,
+                    plan = current.3,
+                    launcher = current.4,
+                    grants = current.5,
+                    "agent runtime readiness"
+                );
+            }
         }
     }
     owner.publish_provider(

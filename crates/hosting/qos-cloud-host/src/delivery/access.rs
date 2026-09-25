@@ -171,7 +171,7 @@ pub(crate) fn try_open_retained(
             root: root.into(),
             directory: directory_file,
             state: retained.state,
-            _lock: lock,
+            _lock: crate::HeldLock::new(lock),
             failed_commit: std::cell::Cell::new(None),
             tip: std::cell::RefCell::new(retained.tip),
         };
@@ -232,15 +232,24 @@ pub(crate) fn open_reusing(
     use atomic_file::StorageDirectory;
     let deny = |error| AccessError::Denied(anyhow::Error::from(error));
     let directory_file = std::fs::File::open(root).map_err(deny)?;
+    let began = std::time::Instant::now();
     let locked =
         ExistingStoreLock::acquire(root, directory_file, true).map_err(|error| match error {
             LockFailure::Busy => AccessError::Busy,
             LockFailure::Unavailable(error) => AccessError::Denied(error),
         })?;
+    qos_action_broker::agent_timing::slow_store("store_lock_wait", began, &[]);
     let directory =
         StorageDirectory::from_file(locked.directory().try_clone().map_err(deny)?).map_err(deny)?;
     let mut aggregate = Aggregate::open(&directory).map_err(deny)?;
-    if let Some((state, tip)) = reuse(&aggregate) {
+    let began = std::time::Instant::now();
+    let reused = reuse(&aggregate);
+    qos_action_broker::agent_timing::slow_store(
+        "store_reuse_copy",
+        began,
+        &[("reused", u64::from(reused.is_some()))],
+    );
+    if let Some((state, tip)) = reused {
         let (directory_file, lock) = locked.into_parts();
         return Ok((
             Store {
@@ -248,7 +257,7 @@ pub(crate) fn open_reusing(
                 root: root.into(),
                 directory: directory_file,
                 state,
-                _lock: lock,
+                _lock: crate::HeldLock::new(lock),
                 failed_commit: std::cell::Cell::new(None),
                 tip: std::cell::RefCell::new(tip),
             },

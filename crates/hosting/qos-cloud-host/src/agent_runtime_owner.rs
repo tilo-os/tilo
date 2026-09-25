@@ -314,8 +314,10 @@ impl Store {
                             .contains_key(&format!("{}:process_exited", r.change.invocation))
                 })
                 .count();
-            if legacy_seats + seats >= 4 {
-                return Err(AgentCommitError::Capacity { limit: 4 });
+            if legacy_seats + seats >= MAX_LIVE_PRIVATE_AGENTS {
+                return Err(AgentCommitError::Capacity {
+                    limit: MAX_LIVE_PRIVATE_AGENTS,
+                });
             }
         }
         for grant in &intent.grants {
@@ -324,15 +326,27 @@ impl Store {
             } else {
                 &grant.record_id
             };
-            if !collab_types::first_party_app_ids::is_any_first_party_app(
-                &grant.app_id,
-                &["so.tilo.word-processor", "so.tilo.chat"],
-            ) || peer.document(&grant.app_id, record).is_none()
+            // The desktop's open action names the room desktop, which has no
+            // application document; every other grant names a current record
+            // of an application with a checked record factory.
+            let desktop =
+                grant.app_id == qos_agent_control_protocol::DESKTOP_APP_ID && record.is_empty();
+            if !desktop
+                && (qos_session_peer::canonical_records::resolve(&grant.app_id).is_none()
+                    || peer.document(&grant.app_id, record).is_none())
             {
                 return Err(rejected(
                     "agent grant has no current exact supported canonical record",
                 ));
             }
+        }
+        if matches!(request, AgentRequest::Message { .. }) {
+            // A Message inherits its Spawn's frozen grants under a (possibly
+            // newer) governance revision it is pinned to. Re-run the Spawn
+            // admission policy for every inherited scope against the current
+            // governance, under this same Store lock: a narrowed policy never
+            // revives Spawn-time grants (security review R1).
+            self.inherited_grants_admissible(&current, &peer, &intent.grants)?;
         }
         let spawn = matches!(request, AgentRequest::Spawn { .. });
         let fresh_id = || uuid::Uuid::new_v4().to_string();
@@ -441,6 +455,8 @@ impl Store {
         &self,
         binding: CommitBinding,
     ) -> Result<OwnerCommitReceipt, AgentCommitError> {
+        #[cfg(test)]
+        RUNTIME_RECEIPTS.with(|count| count.set(count.get() + 1));
         self.ensure_reconciled().map_err(storage_error)?;
         let bytes = serde_json::to_vec(&self.state).map_err(|e| AgentCommitError::Uncertain {
             generation: Some(self.state.generation),
@@ -498,6 +514,38 @@ impl Store {
         caller: &VerifiedAgentCaller,
         id: &AgentControlId,
     ) -> Result<AgentRuntimeObservation, AgentCommitError> {
+        self.observe_agent_runtime_with(caller, id, true)
+    }
+    /// The same caller check and phase derivation as
+    /// [`Self::observe_agent_runtime`], for internal authorization checks that
+    /// read only `phase`/`qualified_completed`: it skips the receipt's
+    /// aggregate hash (a full serialization of the Store state). Its
+    /// placeholder receipt never leaves the crate's checks.
+    pub(crate) fn agent_runtime_phase(
+        &self,
+        caller: &VerifiedAgentCaller,
+        id: &AgentControlId,
+    ) -> Result<(AgentRuntimePhase, bool), AgentCommitError> {
+        self.observe_agent_runtime_with(caller, id, false)
+            .map(|observed| (observed.phase, observed.qualified_completed))
+    }
+    fn observe_agent_runtime_with(
+        &self,
+        caller: &VerifiedAgentCaller,
+        id: &AgentControlId,
+        with_receipt: bool,
+    ) -> Result<AgentRuntimeObservation, AgentCommitError> {
+        let receipt = |binding: CommitBinding| {
+            if with_receipt {
+                self.runtime_receipt(binding)
+            } else {
+                Ok(OwnerCommitReceipt {
+                    binding,
+                    generation: self.state.generation,
+                    aggregate_hash: [0; 32],
+                })
+            }
+        };
         let current = self
             .refresh_agent_caller(caller)
             .map_err(AgentCommitError::Rejected)?;
@@ -525,7 +573,7 @@ impl Store {
                 run_id: legacy.ids.run.clone(),
                 phase,
                 qualified_completed: false,
-                receipt: self.runtime_receipt(admission.binding.clone())?,
+                receipt: receipt(admission.binding.clone())?,
                 error: legacy.error.clone().or_else(|| {
                     (phase == AgentRuntimePhase::Unknown).then(|| AgentError {
                         code: AgentErrorCode::OutcomeUncertain,
@@ -591,9 +639,49 @@ impl Store {
             run_id: ids.run_id.clone(),
             phase,
             qualified_completed: phase == AgentRuntimePhase::Completed,
-            receipt: self.runtime_receipt(binding)?,
+            receipt: receipt(binding)?,
             error,
         })
+    }
+    /// The Spawn offer policy (`admissible_scope`: delegable app, canonical
+    /// records, and the current owner holding each scope's verb on the app or
+    /// each exact action and on each record's document artifact) for every
+    /// inherited grant, against the given current peer.
+    fn inherited_grants_admissible(
+        &self,
+        current: &VerifiedAgentCaller,
+        peer: &qos_peer_state::StatePeer,
+        grants: &[qos_agent_control_protocol::GrantAction],
+    ) -> Result<(), AgentCommitError> {
+        let refused = || rejected("grants no longer permitted; spawn again");
+        let tree = crate::agent_owner::workspace_tree(peer).map_err(|_| refused())?;
+        let workspace = tree
+            .workspaces
+            .iter()
+            .find(|w| w.room.to_string() == self.state.room)
+            .ok_or_else(refused)?;
+        if workspace.owner.as_deref() != Some(current.person()) {
+            return Err(refused());
+        }
+        use qos_action_broker::policy::WorkspacePolicy;
+        let seconds = self.policy_now_ns().map_err(storage_error)? / 1_000_000_000;
+        let actor = workspace.actor_for_person_at(&current.person().to_string(), seconds);
+        let registry = qos_agent_control_protocol::DelegationRegistry::first_party();
+        let scopes =
+            qos_agent_control_protocol::scopes_from_grants(grants).map_err(|_| refused())?;
+        if scopes.iter().all(|scope| {
+            qos_agent_control_service::admissible_scope(
+                workspace,
+                &actor,
+                &self.state.room,
+                &registry,
+                scope,
+            )
+        }) {
+            Ok(())
+        } else {
+            Err(refused())
+        }
     }
     fn collaboration_has_invocation(&self, device: [u8; 32], invocation: &str) -> bool {
         let scope = format!("{}:{invocation}", hex::encode(device));
@@ -626,6 +714,11 @@ impl Store {
         }
         Ok(false)
     }
+}
+#[cfg(test)]
+thread_local! {
+    /// Test-only: runtime receipts (full-state serializations) on this thread.
+    pub(crate) static RUNTIME_RECEIPTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 fn rejected(reason: &str) -> AgentCommitError {
     AgentCommitError::Rejected(reason.into())

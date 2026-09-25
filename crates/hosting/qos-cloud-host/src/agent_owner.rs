@@ -16,7 +16,35 @@ pub struct CloudAgentAuthority {
     policy: Arc<RuntimePolicyClock>,
     root: PathBuf,
     machine: String,
+    /// Last health proof and membership projection, each with the exact
+    /// Store files it was read from (see [`StoreReads`]).
+    reads: Arc<StoreReads>,
 }
+/// Reuse of two read-only Store observations while the Store files are the
+/// identical files (`store_hint::StoreStamp`: device, inode, length, mtime,
+/// ctime of `state.json`/`state.journal`) and at most [`STORE_READ_REUSE`]
+/// old. `health` was probed every owner tick (100/s) and `snapshot` (a pure
+/// projection of the committed room, no time dependence; callers evaluate
+/// roles `_at` their own instant) by every broker membership check: each
+/// was a full Store open, together ~35% of a core with no agent running.
+/// Neither is an authorization verdict.
+#[derive(Default)]
+struct StoreReads {
+    health: std::sync::Mutex<
+        Option<(
+            crate::agent_runtime_adapter::store_hint::StoreStamp,
+            std::time::Instant,
+        )>,
+    >,
+    snapshot: std::sync::Mutex<
+        Option<(
+            crate::agent_runtime_adapter::store_hint::StoreStamp,
+            std::time::Instant,
+            qos_desktop::WorkspaceTree,
+        )>,
+    >,
+}
+const STORE_READ_REUSE: std::time::Duration = std::time::Duration::from_secs(2);
 impl CloudAgentAuthority {
     pub fn open(root: &Path, machine: &str) -> Result<Self, String> {
         Self::open_with_clock(
@@ -47,14 +75,20 @@ impl CloudAgentAuthority {
             policy,
             root,
             machine: machine.into(),
+            reads: Arc::default(),
         })
     }
     pub(crate) fn policy_context(&self) -> Arc<RuntimePolicyClock> {
         self.policy.clone()
     }
+    #[track_caller]
     fn store(&self) -> Result<Store, String> {
+        let site = std::panic::Location::caller();
+        crate::agent_runtime_adapter::count_open(site);
         let time = self.policy.capture()?;
-        self.policy.open_store(&self.root, &self.machine, &time)
+        let mut store = self.policy.open_store(&self.root, &self.machine, &time)?;
+        store.mark_site(site);
+        Ok(store)
     }
     /// `device` must come from completed authenticated ingress, never request JSON.
     pub fn caller(&self, device: [u8; 32]) -> Result<VerifiedAgentCaller, String> {
@@ -71,26 +105,48 @@ impl Store {
         ))
     }
     pub fn agent_caller(&self, device: [u8; 32]) -> Result<VerifiedAgentCaller, String> {
-        let peer = self.peer().map_err(|e| e.to_string())?;
-        VerifiedAgentCaller::from_authenticated_source(
-            &peer,
-            self.agent_scope(&peer)?,
+        let peers = self.peer_shared().map_err(|e| e.to_string())?;
+        let peer = &peers.1;
+        let scope = self.agent_scope(peer)?;
+        let now_ns = self.policy_now_ns().map_err(|e| e.to_string())?;
+        crate::peer_memo::caller(
+            &peers,
+            scope,
             self.state.generation,
             &self.state.room,
             device,
-            self.policy_now().map_err(|e| e.to_string())?,
+            String::new(),
+            now_ns,
+            || {
+                VerifiedAgentCaller::from_authenticated_source(
+                    peer,
+                    scope,
+                    self.state.generation,
+                    &self.state.room,
+                    device,
+                    crate::now_time(now_ns),
+                )
+            },
         )
     }
     pub fn refresh_agent_caller(
         &self,
         caller: &VerifiedAgentCaller,
     ) -> Result<VerifiedAgentCaller, String> {
-        let peer = self.peer().map_err(|e| e.to_string())?;
-        caller.refresh(
-            &peer,
-            self.agent_scope(&peer)?,
+        let peers = self.peer_shared().map_err(|e| e.to_string())?;
+        let peer = &peers.1;
+        let scope = self.agent_scope(peer)?;
+        let now_ns = self.policy_now_ns().map_err(|e| e.to_string())?;
+        crate::peer_memo::caller(
+            &peers,
+            scope,
             self.state.generation,
-            self.policy_now().map_err(|e| e.to_string())?,
+            caller.room(),
+            caller.device(),
+            // The exact prior proof `refresh` compares with (memory only).
+            format!("{caller:?}"),
+            now_ns,
+            || caller.refresh(peer, scope, self.state.generation, crate::now_time(now_ns)),
         )
     }
     /// Explicit host migration selection. No network export or ordinary command calls this.
@@ -224,11 +280,36 @@ fn store_error(error: anyhow::Error) -> AgentCommitError {
     }
 }
 impl OwnerCommitService for CloudAgentAuthority {
-    fn commit(&self, _request: OwnerCommitRequest) -> CommitFuture {
+    fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        // The worker broker's durable Effect receipts (e.g. the desktop's
+        // open-application action) are the only generic commits served here.
+        if matches!(
+            request.operation,
+            qos_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+        ) {
+            let this = self.clone();
+            return Box::pin(async move { this.store()?.commit_effect_receipt(&request) });
+        }
         Box::pin(async { Err("generic owner commit unavailable on agent adapter".into()) })
     }
     fn health(&self) -> Result<(), String> {
-        self.store()?.peer().map(|_| ()).map_err(|e| e.to_string())
+        use crate::agent_runtime_adapter::store_hint::StoreStamp;
+        // The policy clock/source must still be current on every probe.
+        self.policy.capture()?;
+        let stamp = StoreStamp::of(&self.root);
+        if let (Some(stamp), Ok(retained)) = (stamp, self.reads.health.lock()) {
+            if retained.is_some_and(|(seen, at)| seen == stamp && at.elapsed() < STORE_READ_REUSE) {
+                return Ok(());
+            }
+        }
+        let store = self.store()?;
+        store.peer_shared().map_err(|e| e.to_string())?;
+        let proved = StoreStamp::of(&self.root);
+        drop(store);
+        if let (Some(proved), Ok(mut retained)) = (proved, self.reads.health.lock()) {
+            *retained = Some((proved, std::time::Instant::now()));
+        }
+        Ok(())
     }
     fn commit_agent(
         &self,
@@ -247,22 +328,47 @@ impl OwnerCommitService for CloudAgentAuthority {
     }
 }
 
+/// The public room projection of one committed peer: workspace, owner and
+/// governed capabilities. Never projects private admissions or tasks.
+pub(crate) fn workspace_tree(
+    peer: &qos_peer_state::StatePeer,
+) -> Result<qos_desktop::WorkspaceTree, String> {
+    let owner = canonical_owner(peer)?;
+    let doc = peer.admitted_room().ok_or("admitted room missing")?;
+    let mut tree = qos_desktop::WorkspaceTree::default();
+    qos_desktop::projection::RoomProjection::apply_admitted_room(
+        &mut tree,
+        qos_desktop::RoomId::parse(peer.room()).ok_or("invalid room")?,
+        doc,
+    )?;
+    let workspace = tree.workspaces.first_mut().ok_or("workspace missing")?;
+    workspace.owner = Some(owner);
+    workspace.capabilities = qos_peer_state::room::extract_governed_fields(doc).2;
+    Ok(tree)
+}
 impl qos_action_broker::services::WorkspaceAuthority for CloudAgentAuthority {
     fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
+        use crate::agent_runtime_adapter::store_hint::StoreStamp;
+        self.policy.capture()?;
+        if let (Some(stamp), Ok(retained)) =
+            (StoreStamp::of(&self.root), self.reads.snapshot.lock())
+        {
+            if let Some((seen, at, tree)) = retained.as_ref() {
+                if *seen == stamp && at.elapsed() < STORE_READ_REUSE {
+                    return Ok(tree.clone());
+                }
+            }
+        }
         let store = self.store()?;
-        let peer = store.peer().map_err(|e| e.to_string())?;
-        let owner = canonical_owner(&peer)?;
-        let doc = peer.admitted_room().ok_or("admitted room missing")?;
-        let mut tree = qos_desktop::WorkspaceTree::default();
-        qos_desktop::projection::RoomProjection::apply_admitted_room(
-            &mut tree,
-            qos_desktop::RoomId::parse(peer.room()).ok_or("invalid room")?,
-            doc,
-        )?;
-        let workspace = tree.workspaces.first_mut().ok_or("workspace missing")?;
-        workspace.owner = Some(owner);
-        workspace.capabilities = qos_peer_state::room::extract_governed_fields(doc).2;
-        // Existing public room projection only; never project private admissions/tasks here.
+        let peers = store.peer_shared().map_err(|e| e.to_string())?;
+        let tree = workspace_tree(&peers.1)?;
+        // Stamped while the Store lock is still held: exactly these files.
+        if let (Some(stamp), Ok(mut retained)) =
+            (StoreStamp::of(&self.root), self.reads.snapshot.lock())
+        {
+            *retained = Some((stamp, std::time::Instant::now(), tree.clone()));
+        }
+        drop(store);
         Ok(tree)
     }
 }

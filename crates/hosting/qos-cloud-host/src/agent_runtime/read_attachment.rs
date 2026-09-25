@@ -276,11 +276,121 @@ fn current_binding(
     }
     Ok((binding, current, publication))
 }
+/// Private-read bursts served from one Store observation. The browser reads
+/// Capabilities, the List and every agent's Conversation back to back each
+/// refresh; each read used to open the Store five to six times. The first read
+/// of a burst proves the caller and its binding exactly as before and
+/// captures a [`ReadBasis`] under one Store lock, stamped with the exact Store
+/// files (`store_hint::Verified`). Later reads of the same caller answer from
+/// it while the files are unchanged, the policy time stays before the next
+/// roster/revocation boundary, the provider publication is identical and the
+/// capture is younger than `store_hint::STORE_RECHECK`.
+///
+/// Only [`read_current`] consults it: a read-only projection, never an
+/// authorization verdict. Status, Cancel, catalogue, admission and task
+/// actions keep their own fresh Store checks.
+#[derive(Default)]
+pub(crate) struct ReadCache {
+    entries: Vec<ReadEntry>,
+    hits: u64,
+    misses: u64,
+    reported: Option<std::time::Instant>,
+}
+struct ReadEntry {
+    verified: crate::agent_runtime_adapter::store_hint::Verified,
+    /// Room and host device of the peer the caller was proved against.
+    room: Uuid,
+    host_device: [u8; 32],
+    publication: AgentProviderState,
+    binding: AgentReadBinding,
+    basis: crate::agent_runtime_reads::ReadBasis,
+}
+/// Callers retained at once (one per signed-in device reading agents).
+const READ_CACHE_CALLERS: usize = 16;
+impl ReadCache {
+    /// The retained basis answering `evidence` now, if still exact.
+    fn current(
+        &mut self,
+        root: &Path,
+        evidence: &CertifiedAction,
+        publication: &AgentProviderState,
+        now_ns: u64,
+    ) -> Option<&ReadEntry> {
+        let action = evidence.action();
+        let certificate = evidence.certificate();
+        let index = self.entries.iter().position(|entry| {
+            entry.basis.certificate() == certificate
+                && action.source == certificate.device_public_key
+                && action.room == entry.room
+                && action.target == entry.host_device
+                && entry.publication == *publication
+        })?;
+        if !self.entries[index].verified.current(root, now_ns) {
+            self.entries.swap_remove(index);
+            return None;
+        }
+        Some(&self.entries[index])
+    }
+    fn retain(&mut self, entry: ReadEntry) {
+        let certificate = entry.basis.certificate().clone();
+        self.entries
+            .retain(|retained| *retained.basis.certificate() != certificate);
+        if self.entries.len() >= READ_CACHE_CALLERS {
+            self.entries.remove(0);
+        }
+        self.entries.push(entry);
+    }
+    /// Content-free reuse accounting, one line per 10 s while reads arrive.
+    fn count(&mut self, hit: bool) {
+        if hit {
+            self.hits += 1;
+        } else {
+            self.misses += 1;
+        }
+        let started = *self.reported.get_or_insert_with(std::time::Instant::now);
+        if started.elapsed() >= Duration::from_secs(10) {
+            if qos_action_broker::agent_timing::store_spans_enabled() {
+                tracing::info!(
+                    target: "qos_cloud_host::agent_timing",
+                    event = "agent_read_reuse",
+                    hits = self.hits,
+                    misses = self.misses,
+                    window_ms = started.elapsed().as_millis() as u64,
+                    "agent timing"
+                );
+            }
+            self.hits = 0;
+            self.misses = 0;
+            self.reported = Some(std::time::Instant::now());
+        }
+    }
+    /// The retained binding of this caller's exact burst basis, if any: the
+    /// catalogue's `agentReadsV1` projection without a Store open.
+    pub(crate) fn binding(
+        &mut self,
+        root: &Path,
+        evidence: &CertifiedAction,
+        owner: &RuntimeOwner,
+        policy_time: &qos_action_broker::peer_actions::PolicyTime,
+    ) -> Option<AgentReadBinding> {
+        let publication = owner.snapshot().ok()?;
+        let now_ns = policy_time.now_ns().ok()?;
+        self.current(root, evidence, &publication, now_ns)
+            .map(|entry| entry.binding.clone())
+    }
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
 pub(super) fn read_current(
+    root: &Path,
     owner: &RuntimeOwner,
     provider: Option<&Arc<AgentControlProvider>>,
     offer: Option<&GrantOffer>,
     evidence: &CertifiedAction,
+    policy_time: &qos_action_broker::peer_actions::PolicyTime,
+    cache: &mut ReadCache,
 ) -> Result<ActionMessage, AgentReadError> {
     let ActionMessage::AgentReadV1 {
         host,
@@ -296,8 +406,28 @@ pub(super) fn read_current(
     {
         return Err(AgentReadError::InvalidRequest);
     }
+    let began = std::time::Instant::now();
+    let offers: Vec<GrantOffer> = offer.cloned().into_iter().collect();
+    let publication = owner.snapshot().map_err(|_| AgentReadError::Unavailable)?;
+    let now_ns = policy_time
+        .now_ns()
+        .map_err(|_| AgentReadError::Unavailable)?;
+    if let Some(entry) = cache.current(root, evidence, &publication, now_ns) {
+        let result = entry
+            .basis
+            .answer(*invocation, request, entry.binding.clone(), offers)
+            .map_err(|_| AgentReadError::InvalidResult);
+        cache.count(true);
+        let _timing = ReadTiming(began, 0, 1);
+        return result;
+    }
+    cache.count(false);
     let (binding, caller, publication) = current_binding(owner, provider, evidence)?;
-    let store = owner.store().map_err(|_| AgentReadError::Unavailable)?;
+    let binding_us = qos_action_broker::agent_timing::us(began);
+    let _timing = ReadTiming(began, binding_us, 0);
+    let store = owner
+        .store_for(policy_time)
+        .map_err(|_| AgentReadError::Unavailable)?;
     let current = store
         .refresh_agent_caller(&caller)
         .map_err(|_| AgentReadError::Denied)?;
@@ -306,15 +436,35 @@ pub(super) fn read_current(
     {
         return Err(AgentReadError::Denied);
     }
-    let result = crate::agent_runtime_reads::read(
-        &store,
-        &current,
-        *invocation,
-        request,
-        binding,
-        offer.cloned().into_iter().collect(),
-    )
-    .map_err(|_| AgentReadError::InvalidResult)?;
+    let peers = store
+        .peer_shared()
+        .map_err(|_| AgentReadError::Unavailable)?;
+    let host_device = peers.1.authority().device_public_key;
+    let room = peers
+        .1
+        .room()
+        .parse::<Uuid>()
+        .map_err(|_| AgentReadError::Unavailable)?;
+    let basis = crate::agent_runtime_reads::ReadBasis::capture(&store, &current)
+        .map_err(|_| AgentReadError::InvalidResult)?;
+    // Stamped while the Store lock is still held: exactly these files.
+    let verified = store.policy_now_ns().ok().and_then(|at_ns| {
+        crate::agent_runtime_adapter::store_hint::Verified::under_lock(root, &store.state, at_ns)
+    });
+    drop(store);
+    let result = basis
+        .answer(*invocation, request, binding.clone(), offers)
+        .map_err(|_| AgentReadError::InvalidResult)?;
+    if let Some(verified) = verified {
+        cache.retain(ReadEntry {
+            verified,
+            room,
+            host_device,
+            publication,
+            binding,
+            basis,
+        });
+    }
     Ok(result)
 }
 pub(super) async fn dispatch(
@@ -325,6 +475,7 @@ pub(super) async fn dispatch(
     offer: Option<&GrantOffer>,
     reads_supported: bool,
     queued: &mut AgentWorkQueue,
+    reads: &mut ReadCache,
 ) {
     // Reads are disposable. A lost mutation waiter still requires exact retained
     // status/uncertainty; do not change already-started mutation semantics.
@@ -353,6 +504,31 @@ pub(super) async fn dispatch(
         return;
     }
     let result = match command.kind {
+        // A private read on the certified command path: the read itself
+        // proves the caller (freshly, or from the exact burst basis); the two
+        // earlier caller proofs of the generic path only reopened the Store.
+        CommandKind::Action
+            if matches!(
+                &command.evidence.action().message,
+                ActionMessage::AgentReadV1 { .. }
+            ) =>
+        {
+            if reads_supported {
+                read_current(
+                    root,
+                    owner,
+                    provider,
+                    offer,
+                    &command.evidence,
+                    &command.policy_time,
+                    reads,
+                )
+                .map(|value| CommandReply::Action(Some(value)))
+                .map_err(|error| CommandError::Owner(error.to_string()))
+            } else {
+                Ok(CommandReply::Action(None))
+            }
+        }
         CommandKind::Action => handle_certified_command(
             root,
             owner,
@@ -362,6 +538,7 @@ pub(super) async fn dispatch(
             &command.evidence,
             queued,
             &command.policy_time,
+            reads,
         )
         .await
         .map(CommandReply::Action)
@@ -369,9 +546,17 @@ pub(super) async fn dispatch(
         CommandKind::Binding => current_binding(owner, provider, &command.evidence)
             .map(|(binding, _, _)| CommandReply::Binding(binding))
             .map_err(CommandError::Read),
-        CommandKind::Read => read_current(owner, provider, offer, &command.evidence)
-            .map(|value| CommandReply::Action(Some(value)))
-            .map_err(CommandError::Read),
+        CommandKind::Read => read_current(
+            root,
+            owner,
+            provider,
+            offer,
+            &command.evidence,
+            &command.policy_time,
+            reads,
+        )
+        .map(|value| CommandReply::Action(Some(value)))
+        .map_err(CommandError::Read),
         CommandKind::Observe(invocation) => observe_certified(owner, &command.evidence, invocation)
             .map(CommandReply::Action)
             .map_err(CommandError::Owner),
@@ -386,3 +571,17 @@ pub(super) async fn dispatch(
 }
 #[cfg(test)]
 pub(crate) mod tests;
+
+/// Content-free duration of one agent read on the owner thread; `reused`
+/// is 1 when it was answered from the burst basis without a Store open.
+struct ReadTiming(std::time::Instant, u64, u64);
+impl Drop for ReadTiming {
+    fn drop(&mut self) {
+        qos_action_broker::agent_timing::slow(
+            "agent_read",
+            None,
+            self.0,
+            &[("binding_us", self.1), ("reused", self.2)],
+        );
+    }
+}

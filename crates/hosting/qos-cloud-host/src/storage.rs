@@ -177,6 +177,30 @@ impl Aggregate {
             clean: false,
         })
     }
+    /// Under the Store lock held since `tip` was read or written: the current
+    /// files, as a clean observation, when they are exactly the files `tip`
+    /// describes. Lets a Store holder retain its decode for a later turn.
+    pub(crate) fn observe_tip(
+        directory: &atomic_file::StorageDirectory,
+        tip: &Tip,
+    ) -> Option<Self> {
+        let mut aggregate = Self::open(directory).ok()?;
+        let base = &tip.base;
+        let journal = match (&aggregate.journal, &base.journal) {
+            (None, None) => true,
+            (Some((_, identity, len)), Some((expected, expected_len))) => {
+                identity == expected && len == expected_len && *len == base.valid_len
+            }
+            _ => false,
+        };
+        (journal
+            && aggregate.checkpoint_identity == base.checkpoint_identity
+            && aggregate.checkpoint_len == base.checkpoint_len)
+            .then(|| {
+                aggregate.clean = true;
+                aggregate
+            })
+    }
     /// Persisted byte length (checkpoint plus journal): a sizing hint.
     pub(crate) fn length(&self) -> u64 {
         self.checkpoint_len
@@ -238,11 +262,14 @@ impl Aggregate {
         &mut self,
         directory: &atomic_file::StorageDirectory,
     ) -> Result<Persisted> {
-        // Exactly the files this process last wrote and barriered: their
-        // state is known without reading, hashing or replaying, and the
-        // journal needs no barrier. `state.json` is still reconciled as ever.
+        // Exactly the files this process last wrote and barriered (or last
+        // reconciled): their state is known without reading, hashing or
+        // replaying, and neither file needs another barrier. Every remembered
+        // base was produced by a publication with file and directory barriers
+        // or by a reconciliation of the identical, still pinned files, and the
+        // lookup re-proves both names and lengths under this lock; a
+        // read-only open of an unchanged Store therefore performs no fsync.
         if let Some((bytes, base)) = durable::lookup(directory, self) {
-            self.reconcile_checkpoint(directory)?;
             self.clean = true;
             return Ok(Persisted { bytes, base });
         }
@@ -282,17 +309,22 @@ impl Aggregate {
             .as_ref()
             .map(|(_, identity, len)| (identity.clone(), *len));
         self.clean = journal.as_ref().is_none_or(|(_, len)| *len == valid_len);
-        Ok(Persisted {
-            bytes,
-            base: Base {
-                checkpoint_identity: self.checkpoint_identity.clone(),
-                checkpoint_len,
-                checkpoint_digest,
-                journal,
-                valid_len,
-                records,
-            },
-        })
+        let base = Base {
+            checkpoint_identity: self.checkpoint_identity.clone(),
+            checkpoint_len,
+            checkpoint_digest,
+            journal,
+            valid_len,
+            records,
+        };
+        // The observed files are now durable: later readers in this process
+        // (every Cloud component opens its own Store per transaction) reuse
+        // this reconstruction without another read, replay or barrier. Only
+        // a clean observation qualifies, and only where writes remember too.
+        if self.clean && journal_enabled() {
+            durable::remember(directory, &base, &bytes);
+        }
+        Ok(Persisted { bytes, base })
     }
     /// The durability barriers of `read_reconciled`, for callers that read
     /// the bytes through their own paid buffers.
@@ -318,6 +350,8 @@ impl Aggregate {
     fn reconcile_checkpoint(&self, directory: &atomic_file::StorageDirectory) -> Result<()> {
         use atomic_file::Privacy;
         use std::ffi::OsStr;
+        #[cfg(test)]
+        RECONCILES.with(|count| count.set(count.get() + 1));
         directory
             .commit_existing(
                 OsStr::new(CHECKPOINT),
@@ -407,8 +441,11 @@ mod durable {
         base: Base,
         state: Vec<u8>,
     }
-    /// A few Store directories per process (tests open many).
+    /// A few Store directories per process (tests open many, concurrently).
+    #[cfg(not(test))]
     const ENTRIES: usize = 4;
+    #[cfg(test)]
+    const ENTRIES: usize = 64;
     static DURABLE: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
     pub(super) fn forget(directory: &StorageDirectory) {
@@ -483,6 +520,26 @@ mod durable {
         if let Ok(mut entries) = DURABLE.lock() {
             entries.clear();
         }
+    }
+}
+#[cfg(test)]
+thread_local! {
+    /// Checkpoint durability reconciliations (each a file and a directory
+    /// barrier) performed on this thread.
+    static RECONCILES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub(crate) fn reconciles_for_test() -> u64 {
+    RECONCILES.with(std::cell::Cell::get)
+}
+/// Forget only what this process remembered about one Store directory.
+#[cfg(test)]
+pub(crate) fn forget_durable_directory_for_test(directory: &std::fs::File) {
+    if let Ok(directory) = directory
+        .try_clone()
+        .and_then(atomic_file::StorageDirectory::from_file)
+    {
+        durable::forget(&directory);
     }
 }
 #[cfg(test)]

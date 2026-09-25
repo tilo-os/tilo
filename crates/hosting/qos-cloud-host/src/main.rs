@@ -27,6 +27,16 @@ async fn main() -> Result<()> {
     if args == ["serve"] {
         return qos_cloud_host::runtime::serve(&root, &machine).await;
     }
+    if args.len() == 4
+        && args[0] == "agent"
+        && args[1] == "select-private-runtime"
+        && args[2] == "--owner-device"
+    {
+        let selected =
+            qos_cloud_host::operator::select_private_agent_runtime(&root, &machine, &args[3])?;
+        println!("{}", serde_json::json!({"selected": selected}));
+        return Ok(());
+    }
     if args.first().is_some_and(|arg| arg == "agent") {
         if args.len() != 4 || args[1] != "receipt" || args[2] != "--invocation-id" {
             bail!("usage: qos-cloud-host agent receipt --invocation-id UUID");
@@ -71,7 +81,7 @@ async fn main() -> Result<()> {
         store.apply(&request, qos_relay::clock::now_ns())?
     } else {
         bail!(
-            "usage: qos-cloud-host serve-https --config PATH --ready-file PATH | agent receipt --invocation-id UUID | serve | enrollment inspect | enrollment apply --request-file PATH | mesh inspect | mesh status | mesh apply --request-file PATH"
+            "usage: qos-cloud-host serve-https --config PATH --ready-file PATH | agent receipt --invocation-id UUID | agent select-private-runtime --owner-device HEX | serve | enrollment inspect | enrollment apply --request-file PATH | mesh inspect | mesh status | mesh apply --request-file PATH"
         )
     };
     println!("{}", serde_json::to_string(&output)?);

@@ -168,10 +168,7 @@ impl Store {
                 || certificate != candidate.authority()
                 || certificate.device_public_key != self.key().verifying_key().to_bytes()
                 || !candidate.certificates().contains(certificate)
-                || !collab_types::first_party_app_ids::is_any_first_party_app(
-                    &route.app_id,
-                    &["so.tilo.word-processor", "so.tilo.chat"],
-                )
+                || qos_session_peer::canonical_records::resolve(&route.app_id).is_none()
                 || candidate.document(&route.app_id, record).is_none()
             {
                 return Err(
@@ -183,6 +180,10 @@ impl Store {
                 self.policy_now().map_err(|e| e.to_string())?,
             )?;
             check(self, &before, &candidate, now)?;
+            // A snapshot is republished below as the route's single covered
+            // checkpoint; publishing it here too would put an uncovered
+            // checkpoint ahead of the covered one and stall members.
+            let snapshot = matches!(mutation, DocumentMutation::Snapshot(_));
             let message = candidate.signed_mutation(
                 &route.app_id,
                 record,
@@ -209,6 +210,7 @@ impl Store {
                 return Err("worker signer did not produce an application document".into());
             };
             let envelope = envelope.clone();
+            crate::agent_live::capture_worker_commit(route, record, &message, &before, &candidate);
             let request = OwnerCommitRequest {
                 room: self.state.room.clone(),
                 operation: CommitOperation::Document {
@@ -220,9 +222,11 @@ impl Store {
             let binding = request.binding()?;
             let generation = self.next_generation().map_err(|e| e.to_string())?;
             let mut state = self.state.clone();
-            state
-                .outbox
-                .push(StoredPublication::mutation(message).map_err(|e| e.to_string())?);
+            if !snapshot {
+                state
+                    .outbox
+                    .push(StoredPublication::mutation(message).map_err(|e| e.to_string())?);
+            }
             state.outbox.extend(
                 durable_mutation_publications(
                     &mut candidate,
@@ -267,17 +271,37 @@ pub(crate) fn apply_worker_document(
     deadline: std::time::Instant,
 ) -> (Box<dyn FnOnce() + Send>, Result<(), String>) {
     pending.apply_scoped_fenced(deadline, |route, certificate, mutation, authorization| {
+        let began = std::time::Instant::now();
         let mut store = owner.store().map_err(HostDocumentTurnError::Refused)?;
-        match authorization {
-            Some(authorization) => {
-                store.commit_scoped_agent_document(route, certificate, mutation, authorization)
-            }
-            None => {
-                store.commit_agent_document_checked(route, certificate, mutation, |_, _, _, _| {
-                    Ok(())
-                })
-            }
-        }
+        let open_us = qos_action_broker::agent_timing::us(began);
+        let committed =
+            crate::agent_live::on_worker_commit(owner, authorization, &mut store, |store| {
+                match authorization {
+                    Some(authorization) => store.commit_scoped_agent_document(
+                        route,
+                        certificate,
+                        mutation,
+                        authorization,
+                    ),
+                    None => store.commit_agent_document_checked(
+                        route,
+                        certificate,
+                        mutation,
+                        |_, _, _, _| Ok(()),
+                    ),
+                }
+            });
+        drop(store);
+        qos_action_broker::agent_timing::span(
+            "worker_document_commit",
+            None,
+            began.elapsed(),
+            &[
+                ("open_us", open_us),
+                ("scoped", u64::from(authorization.is_some())),
+            ],
+        );
+        committed
     })
 }
 
@@ -765,5 +789,88 @@ mod tests {
         let reopened = Store::open(dir.path(), "agent-admission").unwrap();
         assert_eq!(reopened.state.bound.as_ref().unwrap().peer, peer);
         assert_eq!(reopened.state.generation, receipt.generation);
+    }
+
+    /// A worker's snapshot turn hands members exactly one checkpoint of the
+    /// record, the covered one: a member without any skip for superseded
+    /// checkpoints admits every publication and reaches the new state.
+    /// An incremental turn still publishes its delta.
+    #[test]
+    fn worker_snapshot_turn_publishes_one_covered_checkpoint() {
+        use automerge::{ROOT, transaction::Transactable};
+        let (_dir, mut store, route, cert) = selected();
+        let now = store.policy_now_ns().unwrap();
+        let host = store.peer().unwrap();
+        let authority = host.authority().clone();
+        let mut member = StatePeer::new(
+            &store.state.room,
+            authority.clone(),
+            host.certificates(),
+            qos_user_identity::RevocationList::new(),
+            now_time(now),
+        )
+        .unwrap();
+        // The member starts from the room this Store committed (its older
+        // enrollment publications are outside their attestation window).
+        for publication in &store.state.outbox {
+            let _ = member.receive_from(
+                TransportOrigin::RelayDelta(authority.device_public_key),
+                publication.message.clone(),
+                now_time(now),
+            );
+        }
+        let checkpoints = |published: &[NeighbourMsg]| {
+            published
+                .iter()
+                .filter(|m| matches!(m, NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat"))
+                .count()
+        };
+        let mut edit = |store: &mut Store, snapshot: bool, value: &str| {
+            let bytes = store.peer().unwrap().document("so.tilo.chat", "").unwrap();
+            let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+            let heads = doc.get_heads();
+            doc.put(ROOT, "x_regression", value).unwrap();
+            let mutation = if snapshot {
+                DocumentMutation::Snapshot(doc.save())
+            } else {
+                DocumentMutation::Incremental(doc.save_after(&heads))
+            };
+            let before = store.state.outbox.len();
+            store
+                .commit_agent_document(&route, &cert, mutation)
+                .unwrap();
+            store.state.outbox[before..]
+                .iter()
+                .map(|publication| publication.message.clone())
+                .collect::<Vec<_>>()
+        };
+        for (snapshot, value, most) in [(true, "a", 1), (false, "b", 2), (true, "c", 1)] {
+            let published = edit(&mut store, snapshot, value);
+            assert!(
+                checkpoints(&published) <= most,
+                "snapshot={snapshot}: {} chat publications",
+                checkpoints(&published)
+            );
+            let at = store.policy_now_ns().unwrap();
+            // Strict: every publication of the turn is admitted.
+            for message in published {
+                member
+                    .receive_from(
+                        TransportOrigin::RelayDelta(authority.device_public_key),
+                        message,
+                        now_time(at),
+                    )
+                    .unwrap();
+            }
+            assert_eq!(
+                member.durable_covers_current("so.tilo.chat", ""),
+                Ok(true),
+                "member reaches the covered state after snapshot={snapshot}"
+            );
+            assert_eq!(
+                member.document("so.tilo.chat", ""),
+                store.peer().unwrap().document("so.tilo.chat", "")
+            );
+        }
     }
 }

@@ -135,14 +135,34 @@ impl ManagedConfig {
         )
     }
     /// Only proves current local Plan configuration, never model execution or reachability.
+    #[cfg(test)]
     pub(crate) async fn configured_for_plan(&self) -> Result<(), String> {
         self.configured_for_plan_until(tokio::time::Instant::now() + Duration::from_secs(5))
             .await
     }
+    #[cfg(test)]
     async fn configured_for_plan_until(
         &self,
         deadline: tokio::time::Instant,
     ) -> Result<(), String> {
+        match self.plan_status_until(deadline).await? {
+            true => Ok(()),
+            false => Err("selected gateway Plan configuration unavailable".into()),
+        }
+    }
+    /// The bounded gateway query on the dedicated gateway I/O runtime, so a busy
+    /// runtime owner cannot starve it. `Ok(false)` is only an explicit, complete
+    /// gateway answer that the selection is not configured; transport failures
+    /// and deadlines are `Err`. Aborting the handle drops the socket.
+    pub(crate) fn spawn_plan_probe(&self) -> tokio::task::JoinHandle<Result<bool, String>> {
+        let config = self.clone();
+        gateway_io().spawn(async move {
+            config
+                .plan_status_until(tokio::time::Instant::now() + Duration::from_secs(5))
+                .await
+        })
+    }
+    async fn plan_status_until(&self, deadline: tokio::time::Instant) -> Result<bool, String> {
         if tokio::time::Instant::now() >= deadline {
             return Err("gateway configuration deadline exceeded".into());
         }
@@ -170,17 +190,13 @@ impl ManagedConfig {
             )
             .await?;
             let response = read_gateway_response(&mut stream).await?;
-            if !response.ok
-                || response.configured != Some(true)
-                || response.output.is_some()
-                || response.error.is_some()
-            {
-                return Err("selected gateway Plan configuration unavailable".into());
-            }
             if tokio::time::Instant::now() >= deadline {
                 return Err("gateway configuration deadline exceeded".into());
             }
-            Ok(())
+            Ok(response.ok
+                && response.configured == Some(true)
+                && response.output.is_none()
+                && response.error.is_none())
         })
         .await
         .map_err(|_| "gateway configuration deadline exceeded".to_string())?
@@ -211,6 +227,46 @@ impl ManagedConfig {
         Ok(stream)
     }
 }
+/// The process-wide gateway I/O executor: one small runtime whose only work is
+/// bounded gateway queries and connects. The agent runtime owner executes long
+/// synchronous ticks; tasks spawned there with `spawn_local` could not be
+/// polled until the owner yielded (observed: the Plan probe never completed).
+pub(crate) fn gateway_io() -> tokio::runtime::Handle {
+    static IO: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    IO.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("cloud-agent-gateway-io")
+            .enable_all()
+            .build()
+            .expect("gateway I/O runtime")
+    })
+    .handle()
+    .clone()
+}
+
+/// Last-known-good gateway Plan configuration. A confirmed selection stays
+/// usable until an explicit negative answer or until no confirmation arrived
+/// for [`PLAN_TTL`]; a transient probe failure alone does not withdraw it.
+pub(crate) const PLAN_TTL: Duration = Duration::from_secs(20);
+#[derive(Default, Debug)]
+pub(crate) struct PlanReadiness {
+    confirmed: Option<std::time::Instant>,
+}
+impl PlanReadiness {
+    pub(crate) fn observe(&mut self, result: &Result<bool, String>, now: std::time::Instant) {
+        match result {
+            Ok(true) => self.confirmed = Some(now),
+            Ok(false) => self.confirmed = None,
+            Err(_) => {}
+        }
+    }
+    pub(crate) fn configured(&self, now: std::time::Instant) -> bool {
+        self.confirmed
+            .is_some_and(|at| now.saturating_duration_since(at) < PLAN_TTL)
+    }
+}
+
 // Existing gateway wire framing, asynchronously driven under one enclosing deadline.
 // Cancellation drops the owned stream; no blocking connector or detached worker survives stop.
 async fn write_gateway_frame<T: serde::Serialize>(
@@ -477,6 +533,87 @@ mod tests {
         let result = runtime().block_on(configuration(&path).configured_for_plan());
         server.join().unwrap();
         assert!(result.unwrap_err().contains("exceeds frame limit"));
+    }
+    fn answering_gateway(path: &Path, response: serde_json::Value) -> std::thread::JoinHandle<()> {
+        let listener = UnixListener::bind(path).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let _: serde_json::Value = tilo_model_gateway::read_frame(&mut stream).unwrap();
+            let _: serde_json::Value = tilo_model_gateway::read_frame(&mut stream).unwrap();
+            tilo_model_gateway::write_frame(&mut stream, &response).unwrap();
+        })
+    }
+    /// A1: the owner loop executes long synchronous ticks and never yields on
+    /// its own; the Plan probe must still complete within its deadline.
+    #[test]
+    fn agent_runtime_plan_probe_completes_while_owner_ticks_are_busy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gateway.sock");
+        let server = answering_gateway(&path, serde_json::json!({"ok":true,"configured":true}));
+        let config = configuration(&path);
+        let result = tokio::task::LocalSet::new().block_on(&runtime(), async move {
+            let probe = config.spawn_plan_probe();
+            let started = std::time::Instant::now();
+            let mut tick = tokio::time::interval(Duration::from_millis(10));
+            loop {
+                tick.tick().await;
+                std::thread::sleep(Duration::from_millis(40)); // A synchronous heavy tick.
+                if probe.is_finished() {
+                    break probe.await.unwrap();
+                }
+                assert!(
+                    started.elapsed() < Duration::from_secs(3),
+                    "Plan probe starved by busy owner ticks"
+                );
+            }
+        });
+        server.join().unwrap();
+        assert_eq!(result, Ok(true));
+    }
+    #[test]
+    fn agent_runtime_plan_probe_reports_explicit_negative_apart_from_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gateway.sock");
+        let server = answering_gateway(&path, serde_json::json!({"ok":true,"configured":false}));
+        let result = runtime().block_on(configuration(&path).spawn_plan_probe());
+        server.join().unwrap();
+        assert_eq!(result.unwrap(), Ok(false));
+        let missing = runtime()
+            .block_on(configuration(&dir.path().join("absent.sock")).spawn_plan_probe())
+            .unwrap();
+        assert!(
+            missing.is_err(),
+            "an unreachable gateway is not a negative answer"
+        );
+    }
+    /// A3: last-known-good with a TTL; only an explicit negative or expiry withdraws.
+    #[test]
+    fn agent_runtime_plan_readiness_keeps_last_known_good_until_negative_or_ttl() {
+        let start = std::time::Instant::now();
+        let mut plan = PlanReadiness::default();
+        assert!(!plan.configured(start));
+        plan.observe(&Err("gateway unavailable".into()), start);
+        assert!(!plan.configured(start), "a failure never confirms");
+        plan.observe(&Ok(true), start);
+        assert!(plan.configured(start));
+        let later = start + Duration::from_secs(6);
+        plan.observe(
+            &Err("gateway configuration deadline exceeded".into()),
+            later,
+        );
+        assert!(
+            plan.configured(later),
+            "a transient failure keeps last known good"
+        );
+        assert!(plan.configured(start + PLAN_TTL - Duration::from_millis(1)));
+        assert!(!plan.configured(start + PLAN_TTL), "TTL expiry withdraws");
+        plan.observe(&Ok(true), later);
+        assert!(plan.configured(start + PLAN_TTL));
+        plan.observe(&Ok(false), later + Duration::from_secs(1));
+        assert!(
+            !plan.configured(later + Duration::from_secs(1)),
+            "an explicit negative withdraws at once"
+        );
     }
     #[test]
     fn gateway_connected_model_handoff_is_original_blocking_descriptor() {

@@ -111,6 +111,8 @@ fn relay_config(root: &Path, bound: &Bound, room: &str, workspace: u64) -> Resul
 /// Prepare explicit Cloud HTTPS from trusted operator configuration. A missing
 /// bounded owner or mandatory handler fails before Store mutation or readiness.
 pub async fn serve_https(config: &Path, ready_file: &Path) -> Result<()> {
+    // Content-free Store stage timing for the long-running host only.
+    qos_action_broker::agent_timing::enable_store_spans();
     crate::https_owner::serve::serve(config, ready_file).await
 }
 
@@ -399,7 +401,7 @@ where
                        let response=match agents.handle_certified(&evidence).await {
                           Ok(Some(response))=>response,
                           Ok(None)=>crate::broker::handle(root,machine,evidence.certificate(),evidence.action(),qos_relay::clock::now_ns()).await?,
-                          Err(error)=>{tracing::debug!(%error,"private agent action rejected or observation unavailable");qos_relay::peer_actions::ActionMessage::Rejected {code:"agent_control_unavailable".into()}},
+                          Err(error)=>{tracing::debug!(%error,"private agent action rejected or observation unavailable");qos_relay::peer_actions::ActionMessage::Rejected {code:crate::https_owner::agent_rejection_code(&error).into()}},
                        };
                        // A successful membership mutation is not observable until the relay
                        // has replaced its live exact-device access from durable Store state.

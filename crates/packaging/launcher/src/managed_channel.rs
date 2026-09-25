@@ -20,6 +20,23 @@ pub trait ManagedProcessAuthority {
 struct Executable {
     file: File,
     digest: tilo_app_package::BlobHash,
+    /// Last full digest match and the exact file metadata it covered.
+    hashed: std::sync::Mutex<Option<(std::time::Instant, [i64; 7])>>,
+}
+/// Longest interval a digest match of the executing image is reused while
+/// its inode, length, mtime and ctime are unchanged (an executing image
+/// cannot be written on Linux: ETXTBSY; any write or chmod changes ctime).
+const EXECUTABLE_RECHECK: Duration = Duration::from_secs(2);
+fn image_stamp(metadata: &std::fs::Metadata) -> [i64; 7] {
+    [
+        metadata.dev() as i64,
+        metadata.ino() as i64,
+        metadata.len() as i64,
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ]
 }
 impl Executable {
     fn capture(path: &Path, digest: tilo_app_package::BlobHash) -> Result<Self, String> {
@@ -35,7 +52,11 @@ impl Executable {
         if tilo_app_package::BlobHash::of(&bytes) != digest {
             return Err("installed executable changed after verification".into());
         }
-        Ok(Self { file, digest })
+        Ok(Self {
+            file,
+            digest,
+            hashed: std::sync::Mutex::new(None),
+        })
     }
     fn verify(&self, pid: u32) -> Result<(), String> {
         // Opening /proc/PID/exe names the kernel's executable object, not a
@@ -47,6 +68,16 @@ impl Executable {
         if expected.dev() != metadata.dev() || expected.ino() != metadata.ino() {
             return Err("sender is not the installed executable object".into());
         }
+        let stamp = image_stamp(&metadata);
+        let reusable = self
+            .hashed
+            .lock()
+            .map_err(|_| "executable verification cache poisoned")?
+            .is_some_and(|(at, hashed)| at.elapsed() < EXECUTABLE_RECHECK && hashed == stamp);
+        if reusable {
+            return recheck_executable_object(pid, &expected);
+        }
+        let began = std::time::Instant::now();
         let mut bytes = vec![];
         (&mut actual)
             .take(256 * 1024 * 1024 + 1)
@@ -57,6 +88,11 @@ impl Executable {
         }
         if tilo_app_package::BlobHash::of(&bytes) != self.digest {
             return Err("executing image bytes changed".into());
+        }
+        // Retained only when the image metadata was unchanged across the read.
+        let after = actual.metadata().map_err(|e| e.to_string())?;
+        if let Ok(mut hashed) = self.hashed.lock() {
+            *hashed = (image_stamp(&after) == stamp).then_some((began, stamp));
         }
         // exec preserves PID/start and leaves an already-open executable FD
         // naming the prior image. Recheck the current kernel object after the

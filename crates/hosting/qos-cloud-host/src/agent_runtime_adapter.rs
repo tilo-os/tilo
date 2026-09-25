@@ -65,6 +65,86 @@ pub(crate) struct RuntimeOwner {
     ordinary: CloudAgentAuthority,
     runtime: OnceLock<VerifiedManagedRuntime>,
     live: Mutex<LiveState>,
+    /// Broker certificate verdicts proved under the Store lock, with the
+    /// instant each was last asked for. Reused only while the Store files are
+    /// unchanged, before the next roster/revocation time boundary and for at
+    /// most `store_hint::STORE_RECHECK`; see [`RuntimeOwner::authorize_key`].
+    authorized: Mutex<Vec<(AuthorizationKey, store_hint::Verified, std::time::Instant)>>,
+    /// Serializes locked re-proofs so concurrent misses share one Store open.
+    proving: Mutex<()>,
+}
+#[derive(Clone, PartialEq)]
+enum AuthorizationKey {
+    HostWorker {
+        route: qos_action_broker::route::CrdtRoute,
+        certificate: DeviceCert,
+    },
+    Room {
+        room: Uuid,
+        certificate: DeviceCert,
+    },
+}
+/// Content-free Store-open accounting: every 10 s, one line naming the code
+/// sites (file:line) that opened the Store through the runtime owner and how
+/// often. Attributes idle and per-step Store work.
+pub(crate) fn count_open(site: &'static std::panic::Location<'static>) {
+    use std::collections::BTreeMap;
+    type Counts = (
+        Option<std::time::Instant>,
+        BTreeMap<(&'static str, u32), u64>,
+    );
+    static OPENS: Mutex<Counts> = Mutex::new((None, BTreeMap::new()));
+    if !qos_action_broker::agent_timing::store_spans_enabled() {
+        return;
+    }
+    let Ok(mut opens) = OPENS.lock() else { return };
+    *opens.1.entry((site.file(), site.line())).or_default() += 1;
+    let started = *opens.0.get_or_insert_with(std::time::Instant::now);
+    if started.elapsed() >= std::time::Duration::from_secs(10) {
+        let mut top: Vec<_> = opens.1.iter().map(|(k, v)| (*v, *k)).collect();
+        top.sort_unstable_by(|a, b| b.cmp(a));
+        let total: u64 = top.iter().map(|(n, _)| n).sum();
+        let sites = top
+            .iter()
+            .take(8)
+            .map(|(n, (file, line))| {
+                format!("{}:{line}={n}", file.rsplit('/').next().unwrap_or(file))
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        tracing::info!(
+            target: "qos_cloud_host::agent_timing",
+            event = "store_opens",
+            total,
+            window_ms = started.elapsed().as_millis() as u64,
+            sites = %sites,
+            "agent timing"
+        );
+        opens.1.clear();
+        opens.0 = Some(std::time::Instant::now());
+    }
+}
+/// Bound on retained broker verdicts; the least recently asked is dropped
+/// first. Above the live worker count (one host-worker key per mounted record
+/// plus room keys), so a round-robin revalidation never evicts itself.
+const AUTHORIZATION_CACHE: usize = 512;
+/// A retained verdict nobody asked for within this interval is not re-proved
+/// in the next batch (its worker is gone); it is simply dropped.
+const AUTHORIZATION_IDLE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Token-to-action timing: one info line per runtime event, carrying only the
+/// opaque invocation id, the event name and a wall-clock microsecond stamp.
+/// Filter with target `qos_cloud_host::agent_timing`.
+pub(crate) fn agent_timing(event: &'static str, invocation: Uuid) {
+    qos_action_broker::agent_timing::mark(event, Some(invocation));
+}
+/// A finished owner stage: total duration plus the Store open share.
+fn owner_span(event: &'static str, invocation: Uuid, began: std::time::Instant, open_us: u64) {
+    qos_action_broker::agent_timing::span(
+        event,
+        Some(invocation),
+        began.elapsed(),
+        &[("open_us", open_us)],
+    );
 }
 impl RuntimeOwner {
     pub(crate) fn open(root: &Path, machine: &str) -> Result<Self, String> {
@@ -99,6 +179,7 @@ impl RuntimeOwner {
         machine: &str,
         ordinary: CloudAgentAuthority,
     ) -> Result<Self, String> {
+        crate::peer_memo::configure(root);
         Ok(Self {
             policy: ordinary.policy_context(),
             root: root.canonicalize().map_err(|e| e.to_string())?,
@@ -106,7 +187,94 @@ impl RuntimeOwner {
             ordinary,
             runtime: OnceLock::new(),
             live: Mutex::new(LiveState::default()),
+            authorized: Mutex::new(vec![]),
+            proving: Mutex::new(()),
         })
+    }
+    /// The canonical Store directory (for unlocked change hints only).
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
+    }
+    fn authorization_current(&self, key: &AuthorizationKey) -> Result<bool, String> {
+        let now = self.policy_time()?.now_ns().map_err(|e| e.to_string())?;
+        let mut cache = self
+            .authorized
+            .lock()
+            .map_err(|_| "authorization cache poisoned")?;
+        Ok(cache
+            .iter_mut()
+            .find(|(retained, _, _)| retained == key)
+            .is_some_and(|(_, verified, used)| {
+                *used = std::time::Instant::now();
+                verified.current(&self.root, now)
+            }))
+    }
+    /// A broker certificate verdict (host worker or room admission).
+    ///
+    /// Every live worker session revalidates on each RPC, so an idle workspace
+    /// asks this for every mounted record several times a second. A verdict is
+    /// reused only under the exact rule of `store_hint::Verified::current`
+    /// (identical Store files, policy time inside the roster/authority/
+    /// revocation interval it was proved in, locked proof < `STORE_RECHECK`).
+    /// On a miss the Store is opened once and, under that one lock and policy
+    /// instant, the full check is run again for the requested key *and* for
+    /// every other recently asked key. Each re-proved verdict is therefore a
+    /// fresh locked proof, identical to what that key's own call would have
+    /// computed at that instant; failures are never retained. So N workers
+    /// cost one Store open per Store change or per `STORE_RECHECK`, not N.
+    fn authorize_key(&self, key: AuthorizationKey) -> Result<(), String> {
+        if self.authorization_current(&key)? {
+            return Ok(());
+        }
+        let _proving = self
+            .proving
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A concurrent miss may have re-proved this key while we waited.
+        if self.authorization_current(&key)? {
+            return Ok(());
+        }
+        let others: Vec<_> = self
+            .authorized
+            .lock()
+            .map_err(|_| "authorization cache poisoned")?
+            .iter()
+            .filter(|(retained, _, used)| retained != &key && used.elapsed() < AUTHORIZATION_IDLE)
+            .map(|(retained, _, used)| (retained.clone(), *used))
+            .collect();
+        let store = self.store()?;
+        let now_ns = store.policy_now_ns().map_err(|e| e.to_string())?;
+        let peers = store.peer_shared().map_err(|e| e.to_string())?;
+        let verdict = self.authorize_locked(&store, &peers.1, now_ns, &key);
+        let mut retained: Vec<_> = others
+            .into_iter()
+            .filter(|(other, _)| {
+                self.authorize_locked(&store, &peers.1, now_ns, other)
+                    .is_ok()
+            })
+            .collect();
+        if verdict.is_ok() {
+            retained.push((key, std::time::Instant::now()));
+        }
+        let verified = store_hint::Verified::under_lock(&self.root, &store.state, now_ns);
+        drop(peers);
+        drop(store);
+        let mut cache = self
+            .authorized
+            .lock()
+            .map_err(|_| "authorization cache poisoned")?;
+        cache.clear();
+        if let Some(verified) = verified {
+            retained.sort_by_key(|(_, used)| *used);
+            let excess = retained.len().saturating_sub(AUTHORIZATION_CACHE);
+            cache.extend(
+                retained
+                    .into_iter()
+                    .skip(excess)
+                    .map(|(key, used)| (key, verified, used)),
+            );
+        }
+        verdict
     }
     pub(crate) fn policy_context(&self) -> Arc<RuntimePolicyClock> {
         self.policy.clone()
@@ -117,11 +285,19 @@ impl RuntimeOwner {
     pub(crate) fn validate_policy_time(&self, time: &PolicyTime) -> Result<(), String> {
         self.policy.validate(time)
     }
+    #[track_caller]
     pub(crate) fn store(&self) -> Result<Store, String> {
         self.store_for(&self.policy_time()?)
     }
+    #[track_caller]
     pub(crate) fn store_for(&self, time: &PolicyTime) -> Result<Store, String> {
-        self.policy.open_store(&self.root, &self.machine, time)
+        let site = std::panic::Location::caller();
+        count_open(site);
+        #[cfg(test)]
+        authorization_tests::OPENS.with(|opens| opens.set(opens.get() + 1));
+        let mut store = self.policy.open_store(&self.root, &self.machine, time)?;
+        store.mark_site(site);
+        Ok(store)
     }
     pub(crate) fn ordinary(&self) -> CloudAgentAuthority {
         self.ordinary.clone()
@@ -158,6 +334,7 @@ impl RuntimeOwner {
     /// Store for one task's step ledger: the live attempt's original policy
     /// time when present, else the installed registered owner time. Opening
     /// Store never implies authority; each step method rechecks custody.
+    #[track_caller]
     fn step_store(&self, id: Uuid) -> Result<Store, ParentFailure> {
         let time = match self.attempt(id) {
             Ok(attempt) => attempt.policy_time.clone(),
@@ -170,6 +347,96 @@ impl RuntimeOwner {
         HostRecoveryParent {
             owner: self.clone(),
         }
+    }
+    /// Live agent tasks (a live process, no terminal progress) with their
+    /// host-known agent id, display name and retained grants: the worker
+    /// participant views and presence labels follow exactly these.
+    /// In-memory only; grants no authority.
+    /// Whether any agent task is live (a live process whose task has no
+    /// terminal progress) — the same filter as [`Self::active_agent_tasks`],
+    /// without building its list. In-memory only.
+    pub(crate) fn has_active_agent_tasks(&self) -> bool {
+        let Ok(live) = self.live.lock() else {
+            return true;
+        };
+        live.attempts.iter().any(|(id, attempt)| {
+            live.processes.contains_key(&attempt.ids.agent_id)
+                && !live.progress.get(id).is_some_and(|p| {
+                    matches!(
+                        p.update,
+                        TaskRunUpdate::Succeeded { .. }
+                            | TaskRunUpdate::Failed { .. }
+                            | TaskRunUpdate::Cancelled { .. }
+                    )
+                })
+        })
+    }
+    pub(crate) fn active_agent_tasks(&self) -> Vec<crate::agent_workers::ActiveAgentTask> {
+        let Ok(live) = self.live.lock() else {
+            return vec![];
+        };
+        live.attempts
+            .iter()
+            .filter(|(id, attempt)| {
+                live.processes.contains_key(&attempt.ids.agent_id)
+                    && !live.progress.get(id).is_some_and(|p| {
+                        matches!(
+                            p.update,
+                            TaskRunUpdate::Succeeded { .. }
+                                | TaskRunUpdate::Failed { .. }
+                                | TaskRunUpdate::Cancelled { .. }
+                        )
+                    })
+            })
+            .map(|(_, attempt)| crate::agent_workers::ActiveAgentTask {
+                task: attempt.ids.task_id.clone(),
+                agent: attempt.ids.agent_id.clone(),
+                name: match qos_agent_control_protocol::decode_request(
+                    attempt.intent.request.as_bytes(),
+                ) {
+                    Ok(AgentRequest::Spawn { name, .. }) => name,
+                    _ => "Agent".into(),
+                },
+                grants: attempt.intent.grants.clone(),
+            })
+            .collect()
+    }
+    /// Owner revocation of an agent (security review MUST-10): commit a
+    /// terminal fact for each of its live tasks (only the tasks' own owner
+    /// may), then close its enrolled connection so no queued step leaves.
+    /// Wire from the owner's agents panel (HTTPS owner route).
+    pub(crate) fn revoke_agent(
+        &self,
+        caller: &DeviceCert,
+        agent: &str,
+        broker: &qos_action_broker::collab_broker::AppActionBroker,
+    ) -> Result<usize, String> {
+        let attempts: Vec<Uuid> = self
+            .live
+            .lock()
+            .map_err(|_| "live registry poisoned")?
+            .attempts
+            .iter()
+            .filter(|(_, attempt)| attempt.ids.agent_id == agent)
+            .map(|(id, _)| *id)
+            .collect();
+        if attempts.is_empty() {
+            return Err("no live task for this agent".into());
+        }
+        {
+            let mut store = self.store()?;
+            for id in &attempts {
+                let id = crate::agent_runtime_owner::AgentControlId::new(*id)
+                    .map_err(|e| e.to_string())?;
+                store
+                    .revoke_agent_task(caller, &id)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        if let Ok(mut live) = self.live.lock() {
+            live.processes.remove(agent);
+        }
+        Ok(broker.close_enrolled_agent(agent))
     }
     pub(crate) fn attempt(&self, id: Uuid) -> Result<Arc<LiveAttempt>, String> {
         let attempt = self
@@ -220,15 +487,19 @@ impl RuntimeOwner {
         {
             return Ok(RuntimeAdmission::Existing(existing));
         }
-        if let AgentRequest::Message { agent_id, .. } =
-            admission.intent().validate(&store.state.room)?
-        {
+        let request = admission.intent().validate(&store.state.room)?;
+        let kind = match &request {
+            AgentRequest::Spawn { .. } => "spawn_admitted",
+            AgentRequest::Message { .. } => "message_admitted",
+            _ => "command_admitted",
+        };
+        if let AgentRequest::Message { agent_id, .. } = &request {
             let Some(PrivateAgentState::V2(ledger)) = &store.state.private_agent_ledger else {
                 return Err("private runtime schema unavailable".into());
             };
             let busy = ledger.facts.values().any(|receipt| {
                 matches!(&receipt.change.fact, AgentRuntimeFact::Admitted { ids, intent, .. }
-                    if ids.agent_id == agent_id && intent.scope.caller == *caller.certificate())
+                    if ids.agent_id == *agent_id && intent.scope.caller == *caller.certificate())
                     && !ledger
                         .facts
                         .contains_key(&format!("{}:failed", receipt.change.invocation))
@@ -268,6 +539,8 @@ impl RuntimeOwner {
                     return Err("live admission identity conflict; status only".into());
                 }
                 live.attempts.insert(id.invocation(), fresh);
+                drop(live);
+                agent_timing(kind, id.invocation());
                 Ok(RuntimeAdmission::Fresh(observation))
             }
         }
@@ -294,7 +567,8 @@ impl RuntimeOwner {
         self.runtime()?.revalidate()?;
         let intent = store.current_spawn_intent(id).map_err(|e| e.to_string())?;
         let caller = store.agent_caller(intent.scope.caller.device_public_key)?;
-        let peer = store.peer().map_err(|e| e.to_string())?;
+        let peers = store.peer_shared().map_err(|e| e.to_string())?;
+        let peer = &peers.1;
         let live = self.live.lock().map_err(|_| "live registry poisoned")?;
         let state = live
             .provider
@@ -461,6 +735,8 @@ impl RuntimeOwner {
         Ok(())
     }
     pub(crate) fn uncertain(&self, id: Uuid, reason: &str) -> Result<(), String> {
+        // Operator visibility: the reason otherwise only reaches the private ledger.
+        tracing::warn!(target: "qos_cloud_host::agent_timing", invocation = %id, reason, "agent control uncertain");
         let mut store = self.store()?;
         let id = AgentControlId::new(id).map_err(|e| e.to_string())?;
         let Some(PrivateAgentState::V2(ledger)) = &store.state.private_agent_ledger else {
@@ -546,6 +822,7 @@ impl ManagedProcessAuthority for RuntimeOwner {
             .bind_agent_process(&id, process)
             .map_err(|e| e.to_string())?;
         drop(store);
+        agent_timing("process_bound", id.invocation());
         let mut live = self
             .live
             .lock()
@@ -609,15 +886,20 @@ impl EnrolledAgentOwner for RuntimeOwner {
             .map_err(|e| e.to_string())
     }
     fn dispatch(&self, dispatch: &VerifiedEnrolledDispatch) -> Result<DispatchCommit, String> {
+        let began = std::time::Instant::now();
         let attempt = self.attempt(dispatch.invocation())?;
         let mut store = self.store_for(&attempt.policy_time)?;
+        let open_us = qos_action_broker::agent_timing::us(began);
         match store
             .claim_agent_dispatch(&attempt.custody, dispatch)
             .map_err(|e| e.to_string())?
         {
-            EffectClaim::Fresh { permit, .. } => Ok(DispatchCommit::Fresh(
-                permit.consume(&store).map_err(|e| e.to_string())?,
-            )),
+            EffectClaim::Fresh { permit, .. } => {
+                let commit = permit.consume(&store).map_err(|e| e.to_string())?;
+                owner_span("dispatch_owner", dispatch.invocation(), began, open_us);
+                agent_timing("dispatch_committed", dispatch.invocation());
+                Ok(DispatchCommit::Fresh(commit))
+            }
             EffectClaim::Existing(_) => Ok(DispatchCommit::Existing),
         }
     }
@@ -625,29 +907,46 @@ impl EnrolledAgentOwner for RuntimeOwner {
         &self,
         acceptance: &VerifiedRecipientAcceptance,
     ) -> Result<OwnerCommitReceipt, String> {
+        let began = std::time::Instant::now();
         let attempt = self.attempt(acceptance.invocation())?;
-        self.store_for(&attempt.policy_time)?
+        let mut store = self.store_for(&attempt.policy_time)?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        let receipt = store
             .complete_agent_control(acceptance)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        owner_span("accept_owner", acceptance.invocation(), began, open_us);
+        agent_timing("control_accepted", acceptance.invocation());
+        Ok(receipt)
     }
     fn update(&self, update: &VerifiedTaskUpdate) -> Result<OwnerCommitReceipt, String> {
+        let began = std::time::Instant::now();
         let attempt = self.attempt(update.invocation())?;
-        let receipt = self
-            .store_for(&attempt.policy_time)?
+        let mut store = self.store_for(&attempt.policy_time)?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        let receipt = store
             .record_agent_task_update(update)
             .map_err(|e| e.to_string())?;
+        drop(store);
+        owner_span("update_owner", update.invocation(), began, open_us);
         self.live
             .lock()
             .map_err(|_| "live registry poisoned")?
             .progress
             .remove(&update.invocation());
+        crate::agent_live::on_update(&attempt, update.invocation(), update.update());
+        agent_timing("task_update_committed", update.invocation());
         Ok(receipt)
     }
     fn progress(&self, update: &VerifiedTaskUpdate) -> Result<(), String> {
+        let began = std::time::Instant::now();
         let attempt = self.attempt(update.invocation())?;
-        self.store_for(&attempt.policy_time)?
+        let store = self.store_for(&attempt.policy_time)?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        store
             .validate_agent_progress(update)
             .map_err(|e| e.to_string())?;
+        drop(store);
+        owner_span("progress_owner", update.invocation(), began, open_us);
         let mut live = self.live.lock().map_err(|_| "live registry poisoned")?;
         if live.progress.len() >= 32 && !live.progress.contains_key(&update.invocation()) {
             return Err("private progress capacity reached".into());
@@ -666,6 +965,8 @@ impl EnrolledAgentOwner for RuntimeOwner {
                 update: update.update().clone(),
             },
         );
+        drop(live);
+        crate::agent_live::on_progress(self, &attempt, update.invocation(), update.update());
         Ok(())
     }
     fn authorize_task_action(
@@ -677,9 +978,14 @@ impl EnrolledAgentOwner for RuntimeOwner {
         action: &str,
     ) -> Result<(), String> {
         let attempt = self.attempt(dispatch.invocation())?;
-        self.store_for(&attempt.policy_time)?
-            .authorize_agent_task_action(dispatch, app, record, resource, action)
-            .map_err(|e| e.to_string())
+        self.authorize_task_action_at(
+            dispatch,
+            app,
+            record,
+            resource,
+            action,
+            &attempt.policy_time,
+        )
     }
     fn authorize_task_action_with_policy_time(
         &self,
@@ -693,17 +999,24 @@ impl EnrolledAgentOwner for RuntimeOwner {
         // The original invocation's registered clock and origin, never a
         // fresh sample: the Store opened for it rechecks the task ledger.
         self.validate_policy_time(time)?;
-        self.store_for(time)?
-            .authorize_agent_task_action(dispatch, app, record, resource, action)
-            .map_err(|e| e.to_string())
+        self.authorize_task_action_at(dispatch, app, record, resource, action, time)
     }
     fn task_step(
         &self,
         dispatch: &VerifiedEnrolledDispatch,
         step: ParentStep,
     ) -> Result<Option<ParentRecord>, ParentFailure> {
-        self.step_store(dispatch.invocation())?
-            .agent_task_step(dispatch, step)
+        let began = std::time::Instant::now();
+        let record = self
+            .step_store(dispatch.invocation())?
+            .agent_task_step(dispatch, step);
+        qos_action_broker::agent_timing::slow(
+            "lookup_step_owner",
+            Some(dispatch.invocation()),
+            began,
+            &[],
+        );
+        record
     }
     fn task_step_child(
         &self,
@@ -720,16 +1033,28 @@ impl EnrolledAgentOwner for RuntimeOwner {
         child: ChildTicket,
         intent: [u8; 32],
     ) -> Result<ParentRecord, ParentFailure> {
-        self.step_store(dispatch.invocation())?
-            .bind_agent_task_step(dispatch, step, child, intent)
+        let began = std::time::Instant::now();
+        let mut store = self.step_store(dispatch.invocation())?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        let record = store.bind_agent_task_step(dispatch, step, child, intent)?;
+        drop(store);
+        owner_span("bind_step_owner", dispatch.invocation(), began, open_us);
+        agent_timing("action_ticket_bound", dispatch.invocation());
+        Ok(record)
     }
     fn commit_task_step(
         &self,
         dispatch: &VerifiedEnrolledDispatch,
         commit: ChildCommit<'_>,
     ) -> Result<ParentReceipt, ParentFailure> {
-        self.step_store(dispatch.invocation())?
-            .commit_agent_task_step(dispatch, commit)
+        let began = std::time::Instant::now();
+        let mut store = self.step_store(dispatch.invocation())?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        let receipt = store.commit_agent_task_step(dispatch, commit)?;
+        drop(store);
+        owner_span("commit_step_owner", dispatch.invocation(), began, open_us);
+        agent_timing("action_committed", dispatch.invocation());
+        Ok(receipt)
     }
     fn grants(
         &self,
@@ -782,14 +1107,14 @@ impl AgentProviderAuthority for RuntimeOwner {
     ) -> Result<VerifiedManagedProcess, String> {
         let process = self.process(agent)?;
         self.store()?
-            .agent_process_grants(process.facts(), caller)
+            .agent_process_grants_for_new_control(process.facts(), caller)
             .map_err(|e| e.to_string())?;
         Ok(process)
     }
     fn parent_grants(&self, caller: &DeviceCert, agent: &str) -> Result<Vec<GrantAction>, String> {
         let process = self.process(agent)?;
         self.store()?
-            .agent_process_grants(process.facts(), caller)
+            .agent_process_grants_for_new_control(process.facts(), caller)
             .map(|(_, g)| g)
             .map_err(|e| e.to_string())
     }
@@ -810,7 +1135,7 @@ impl AgentProviderAuthority for RuntimeOwner {
         if let AgentRequest::Message { agent_id, .. } = request {
             let process = self.process(agent_id)?;
             let (_, grants) = store
-                .agent_process_grants(process.facts(), caller)
+                .agent_process_grants_for_new_control(process.facts(), caller)
                 .map_err(|e| e.to_string())?;
             // Exact current worker grant availability is checked by the installed publication snapshot.
             let published = self
@@ -854,46 +1179,88 @@ impl qos_action_broker::peer_actions::CertificateAuthority for RuntimeOwner {
         route: &qos_action_broker::route::CrdtRoute,
         certificate: &DeviceCert,
     ) -> Result<(), String> {
-        let store = self.store()?;
-        let peer = store.peer().map_err(|e| e.to_string())?;
-        let bound = store.state.bound.as_ref().ok_or("workspace not enrolled")?;
-        if certificate != peer.authority()
-            || certificate != &bound.authority
-            || !certificate.capabilities.can_act_as_host
-            || certificate.device_public_key != store.key().verifying_key().to_bytes()
-            || !peer.certificates().contains(certificate)
-            || peer.incomplete_reason().is_some()
-            || route.cluster_id != peer.room()
-            || !collab_types::first_party_app_ids::is_any_first_party_app(
-                &route.app_id,
-                &["so.tilo.word-processor", "so.tilo.chat"],
-            )
-            || peer.document(&route.app_id, &route.record_id).is_none()
-        {
-            return Err("local worker route or exact pinned host is unavailable".into());
-        }
-        peer.permissions(
-            certificate.device_public_key,
-            store.policy_now().map_err(|e| e.to_string())?,
-        )
-        .map(|_| ())
+        self.authorize_key(AuthorizationKey::HostWorker {
+            route: route.clone(),
+            certificate: certificate.clone(),
+        })
     }
     fn authorize(&self, room: Uuid, certificate: &DeviceCert) -> Result<(), String> {
-        let store = self.store()?;
-        let peer = store.peer().map_err(|e| e.to_string())?;
-        if peer.room() != room.to_string() || !peer.certificates().contains(certificate) {
-            return Err("worker certificate no longer admitted".into());
+        self.authorize_key(AuthorizationKey::Room {
+            room,
+            certificate: certificate.clone(),
+        })
+    }
+}
+impl RuntimeOwner {
+    /// Task-action authorization at `time`: the full Store-side task check on
+    /// every call (security review MUST-10: no caching of grant, scope or
+    /// task verdicts); its inputs (peer, caller) come from exact memos.
+    fn authorize_task_action_at(
+        &self,
+        dispatch: &VerifiedEnrolledDispatch,
+        app: &str,
+        record: &str,
+        resource: &str,
+        action: &str,
+        time: &PolicyTime,
+    ) -> Result<(), String> {
+        let began = std::time::Instant::now();
+        let store = self.store_for(time)?;
+        let open_us = qos_action_broker::agent_timing::us(began);
+        store
+            .authorize_agent_task_action(dispatch, app, record, resource, action)
+            .map_err(|e| e.to_string())?;
+        drop(store);
+        owner_span("authorize_owner", dispatch.invocation(), began, open_us);
+        agent_timing("action_authorized", dispatch.invocation());
+        Ok(())
+    }
+    /// The full broker check for one key against the open (locked) Store.
+    fn authorize_locked(
+        &self,
+        store: &Store,
+        peer: &crate::StatePeer,
+        now_ns: u64,
+        key: &AuthorizationKey,
+    ) -> Result<(), String> {
+        match key {
+            AuthorizationKey::HostWorker { route, certificate } => {
+                let bound = store.state.bound.as_ref().ok_or("workspace not enrolled")?;
+                if certificate != peer.authority()
+                    || certificate != &bound.authority
+                    || !certificate.capabilities.can_act_as_host
+                    || certificate.device_public_key != store.key().verifying_key().to_bytes()
+                    || !peer.certificates().contains(certificate)
+                    || peer.incomplete_reason().is_some()
+                    || route.cluster_id != peer.room()
+                    || qos_session_peer::canonical_records::resolve(&route.app_id).is_none()
+                    // Existence only: the heads read the same entry without
+                    // serializing the whole document.
+                    || peer.document_heads(&route.app_id, &route.record_id).is_none()
+                {
+                    return Err("local worker route or exact pinned host is unavailable".into());
+                }
+                peer.permissions(certificate.device_public_key, crate::now_time(now_ns))?;
+            }
+            AuthorizationKey::Room { room, certificate } => {
+                if peer.room() != room.to_string() || !peer.certificates().contains(certificate) {
+                    return Err("worker certificate no longer admitted".into());
+                }
+                peer.permissions(certificate.device_public_key, crate::now_time(now_ns))?;
+            }
         }
-        peer.permissions(
-            certificate.device_public_key,
-            store.policy_now().map_err(|e| e.to_string())?,
-        )
-        .map(|_| ())
+        Ok(())
     }
 }
 impl qos_action_broker::services::WorkspaceAuthority for RuntimeOwner {
     fn snapshot(&self) -> Result<qos_desktop::WorkspaceTree, String> {
         qos_action_broker::services::WorkspaceAuthority::snapshot(&self.ordinary)
+    }
+    fn task_opened_records(
+        &self,
+        task: &str,
+    ) -> Result<Vec<qos_agent_control_protocol::OpenedRecord>, String> {
+        Ok(self.store()?.task_opened_records(task))
     }
 }
 fn uncertain(message: &str) -> AgentError {
@@ -964,4 +1331,8 @@ fn validate_retained_publication(
 #[cfg(test)]
 mod recovery_tests;
 
+#[cfg(test)]
+mod authorization_tests;
+
 pub(crate) mod launch_retry;
+pub(crate) mod store_hint;

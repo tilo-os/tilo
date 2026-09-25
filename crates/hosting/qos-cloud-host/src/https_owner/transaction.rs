@@ -185,6 +185,20 @@ impl CloudStoreSource {
             full
         };
         let Some(credit) = reserved.and_then(|bytes| pool.try_acquire_bulk(bytes)) else {
+            // Turn budgets scale with the persisted aggregate; name the sizes
+            // so a capacity refusal is attributable (rate-limited).
+            if let Some(suppressed) = super::service::ops_log::admit("turn_capacity") {
+                tracing::warn!(
+                    event = "cloud_turn_capacity",
+                    ?operation,
+                    reserved = reserved.unwrap_or(usize::MAX),
+                    available = pool.available_bytes(),
+                    aggregate,
+                    reused,
+                    suppressed,
+                    "Cloud Store turn refused: host byte budget exhausted"
+                );
+            }
             return Current::Current(Err(CloudDeliveryError::Capacity));
         };
         let mut decode_credit = None;
@@ -554,6 +568,55 @@ impl CloudStoreTurn {
     }
     /// Retire expired pins after restart or client abandonment. A pin past its
     /// signed expiry can never be renewed or read, so only quota is released.
+    /// Durable snapshot pins that no live transfer of this process serves
+    /// (`live` names every live transfer's pin), released in one metadata
+    /// commit before a new pin is taken: all of `device`'s own (a device
+    /// starting a new transfer has abandoned them; only a Renew could resume
+    /// one, and that answers SnapshotRequired), and, while the table is
+    /// nearly full, the oldest of any device down to half of `MAX_PINS`.
+    /// Without this, pins of failed or restarted transfers stay until expiry
+    /// and retrying clients fill the table, after which every snapshot of
+    /// every device is refused with Capacity (observed in the lab after a
+    /// host restart and after a delivery rotation).
+    pub(crate) fn release_orphan_snapshot_pins(
+        &mut self,
+        device: [u8; 32],
+        live: &[[u8; 16]],
+    ) -> Result<Vec<[u8; 16]>> {
+        use qos_relay::delivery_v3::commit::MAX_PINS;
+        // Its own Release turn, or the draft turn of the new transfer.
+        if self
+            .require_delivery_operation(DeliveryOperation::SnapshotCommit)
+            .is_err()
+        {
+            self.require_delivery_operation(DeliveryOperation::SnapshotRelease)?;
+        }
+        let ledger = self.delivery_ledger();
+        let own = ledger.consumers.get(&device).map(|consumer| consumer.id);
+        let mut orphans = ledger
+            .pins
+            .iter()
+            .filter(|(id, _)| !live.contains(id))
+            .map(|(id, pin)| (Some(pin.consumer) == own, pin.expires_at_ns, *id))
+            .collect::<Vec<_>>();
+        // Own pins first, then the oldest (earliest expiry) of other devices.
+        orphans.sort_by_key(|(mine, expires, _)| (!*mine, *expires));
+        let full = ledger.pins.len() + 1 >= MAX_PINS;
+        let mut remaining = ledger.pins.len();
+        let mut released = Vec::new();
+        for (mine, _, id) in orphans {
+            if mine || (full && remaining > MAX_PINS / 2) {
+                released.push(id);
+                remaining -= 1;
+            }
+        }
+        if !released.is_empty() {
+            self.commit_metadata(MetadataMutation::ReleasePins {
+                ids: released.clone(),
+            })?;
+        }
+        Ok(released)
+    }
     pub(crate) fn expire_snapshot_pins(&mut self) -> Result<Vec<[u8; 16]>> {
         self.require_delivery_operation(DeliveryOperation::Maintenance)?;
         let now = self
@@ -795,6 +858,10 @@ enum MetadataMutation {
     ReleasePin {
         id: [u8; 16],
     },
+    /// Release several pins at once; ids already gone are skipped.
+    ReleasePins {
+        ids: Vec<[u8; 16]>,
+    },
     Pin {
         id: [u8; 16],
         pin: SnapshotPin,
@@ -838,6 +905,15 @@ impl CloudStoreTurn {
                     .pins
                     .remove(&id)
                     .ok_or(CloudDeliveryError::Reset(ResetReason::HistoryUnavailable))?;
+            }
+            MetadataMutation::ReleasePins { ids } => {
+                let before = ledger.pins.len();
+                for id in &ids {
+                    ledger.pins.remove(id);
+                }
+                if ledger.pins.len() == before {
+                    return Ok(());
+                }
             }
             MetadataMutation::Pin { id, pin } => {
                 if let Some(previous) = ledger.pins.get(&id) {

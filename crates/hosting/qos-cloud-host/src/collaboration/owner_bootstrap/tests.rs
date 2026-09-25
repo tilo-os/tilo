@@ -379,39 +379,39 @@ fn cloud_owner_bootstrap_typed_receipt_rejects_unknown_versions_fields_bounds_an
         .store
         .owner_membership_complete(f.cert.device_public_key, request.clone(), 31)
         .unwrap();
-    let key = receipt_key([46; 32]);
+    let key = receipt::key(f.cert.device_public_key);
     let original = f.store.state.consumed.get(&key).unwrap().1.clone();
-    assert_eq!(
-        receipt::OwnerReceipt::decode(&original).unwrap().bootstrap,
-        result
-    );
+    let decoded = receipt::OwnerReceipt::decode(&original).unwrap();
+    assert_eq!(decoded.request_id, [46; 32]);
+    assert_eq!(decoded.device, f.cert.device_public_key);
+    assert_eq!(decoded.generation, result.generation);
+    // Minimal: a receipt never retains the reply.
+    assert!(serde_json::to_vec(&original).unwrap().len() < 1024);
     let mut cases = Vec::new();
     for (field, value) in [
-        ("version", serde_json::json!(2)),
+        ("version", serde_json::json!(1)),
         ("purpose", serde_json::json!("enrollment")),
         ("unknown", serde_json::json!(true)),
+        ("generation", serde_json::json!(0)),
+        ("request_id", serde_json::json!(vec![0u8; 32])),
+        ("device", serde_json::json!(vec![1u8; 32])),
     ] {
         let mut changed = original.clone();
         changed[field] = value;
         cases.push(changed);
     }
-    let mut unknown = original.clone();
-    unknown["issued"]["device_cert"]["ignored"] = serde_json::json!("not canonical");
-    cases.push(unknown);
     let mut nested = serde_json::json!(null);
     for _ in 0..20 {
         nested = serde_json::json!([nested]);
     }
     cases.push(nested);
-    let mut huge = original.clone();
-    huge["bootstrap"]["governance_messages"] = serde_json::json!(vec![Vec::<u8>::new(); 4097]);
-    cases.push(huge);
     let mut large = original.clone();
-    large["bootstrap"]["device_cert"]["device_label"] =
-        serde_json::json!("x".repeat(256 * 1024 + 1));
+    large["padding"] = serde_json::json!("x".repeat(2048));
     cases.push(large);
     for value in cases {
-        assert!(receipt::OwnerReceipt::decode(&value).is_err());
+        let rejected =
+            receipt::OwnerReceipt::decode(&value).is_err() || value["device"] != original["device"];
+        assert!(rejected);
         f.store.state.consumed.get_mut(&key).unwrap().1 = value;
         let before = f.bytes();
         assert!(
@@ -419,25 +419,241 @@ fn cloud_owner_bootstrap_typed_receipt_rejects_unknown_versions_fields_bounds_an
                 .owner_membership_complete(f.cert.device_public_key, request.clone(), 32)
                 .is_err()
         );
-        assert_eq!(f.bytes(), before);
-    }
-    for field in ["workspace_id", "generation"] {
-        let mut changed = original.clone();
-        changed["bootstrap"][field] = serde_json::json!(u64::MAX);
-        f.store.state.consumed.get_mut(&key).unwrap().1 = changed;
         assert!(
             f.store
-                .owner_membership_complete(f.cert.device_public_key, request.clone(), 32)
+                .membership_refresh(f.cert.device_public_key, request.clone(), 32)
                 .is_err()
         );
+        assert_eq!(f.bytes(), before);
     }
-    f.store.state.consumed.get_mut(&key).unwrap().1 = original;
+    // A stored digest that disagrees with the typed receipt is refused too.
+    f.store.state.consumed.get_mut(&key).unwrap().1 = original.clone();
+    f.store.state.consumed.get_mut(&key).unwrap().0 = hex::encode([5; 32]);
+    assert!(
+        f.store
+            .owner_membership_complete(f.cert.device_public_key, request.clone(), 32)
+            .is_err()
+    );
+    f.store.state.consumed.get_mut(&key).unwrap().0 = hex::encode(decoded.proof_digest);
     assert_eq!(
         f.store
             .owner_membership_complete(f.cert.device_public_key, request, 32)
             .unwrap(),
         result
     );
+}
+
+fn owner_keys(store: &Store) -> Vec<String> {
+    store
+        .state
+        .consumed
+        .keys()
+        .filter(|key| key.starts_with("owner-membership"))
+        .cloned()
+        .collect()
+}
+
+#[test]
+fn cloud_owner_bootstrap_state_size_is_constant_over_fifty_refreshes() {
+    let mut f = Fixture::new();
+    let mut sizes = Vec::new();
+    for i in 0..50u8 {
+        let request = f.request(100 + i);
+        let MembershipRefresh::Owner(result) = f
+            .store
+            .membership_refresh(f.cert.device_public_key, request, 31 + u64::from(i))
+            .unwrap()
+        else {
+            panic!("structural owner must receive the owner bootstrap")
+        };
+        assert_eq!(
+            admitted_owner_role(&result, f.cert.device_public_key),
+            collab_types::Role::Owner
+        );
+        sizes.push(f.bytes().len());
+        assert_eq!(
+            owner_keys(&f.store),
+            vec![receipt::key(f.cert.device_public_key)]
+        );
+        assert!(
+            super::super::issued_challenges(f.dir.path()).len() <= MEMBERSHIP_CHALLENGES_PER_DEVICE
+        );
+    }
+    // Once the bounded outstanding challenges are reached, nothing grows: an
+    // unchanged governed state is answered without a commit or new messages.
+    let steady = &sizes[10..];
+    let (min, max) = (steady.iter().min().unwrap(), steady.iter().max().unwrap());
+    assert!(max - min < 1024, "state size drifted: {sizes:?}");
+    // The only growth is the bounded set of outstanding challenges.
+    assert!(
+        sizes[49] < sizes[0] + MEMBERSHIP_CHALLENGES_PER_DEVICE * 2048,
+        "state grew: {sizes:?}"
+    );
+}
+
+#[test]
+fn cloud_owner_bootstrap_committed_refreshes_keep_one_minimal_receipt() {
+    // Without process reuse (a restarted host) every refresh commits; the
+    // Store still keeps one minimal receipt and no retained bootstraps.
+    let mut f = Fixture::new();
+    let mut growth = Vec::new();
+    for i in 0..10u8 {
+        reuse::forget(f.dir.path());
+        let before = f.bytes().len();
+        let generation = f.store.state.generation;
+        let request = f.request(160 + i);
+        let result = f
+            .store
+            .owner_membership_complete(f.cert.device_public_key, request, 31 + u64::from(i))
+            .unwrap();
+        assert!(result.generation > generation);
+        let encoded = postcard::to_stdvec(&result).unwrap().len();
+        growth.push((f.bytes().len() - before, encoded));
+        assert_eq!(
+            owner_keys(&f.store),
+            vec![receipt::key(f.cert.device_public_key)]
+        );
+    }
+    for (grew, reply) in &growth[1..] {
+        assert!(grew < reply, "a refresh retained its reply: {growth:?}");
+    }
+}
+
+#[test]
+fn cloud_owner_bootstrap_replay_is_exact_equivalent_or_refused() {
+    let mut f = Fixture::new();
+    let request = f.request(120);
+    let first = f
+        .store
+        .owner_membership_complete(f.cert.device_public_key, request.clone(), 31)
+        .unwrap();
+    // Lost reply, same process: byte-identical and no commit.
+    let committed = f.bytes();
+    assert_eq!(
+        f.store
+            .owner_membership_complete(f.cert.device_public_key, request.clone(), 40)
+            .unwrap(),
+        first
+    );
+    assert_eq!(f.bytes(), committed);
+    // Lost reply after a host restart: an equivalent current bootstrap.
+    reuse::forget(f.dir.path());
+    drop(f.store);
+    f.store = Store::open(f.dir.path(), "owner-bootstrap").unwrap();
+    let rebuilt = f
+        .store
+        .owner_membership_complete(f.cert.device_public_key, request.clone(), 50)
+        .unwrap();
+    assert!(rebuilt.generation > first.generation);
+    assert_eq!(rebuilt.device_cert, first.device_cert);
+    assert_eq!(
+        admitted_owner_role(&rebuilt, f.cert.device_public_key),
+        collab_types::Role::Owner
+    );
+    assert_eq!(
+        owner_keys(&f.store),
+        vec![receipt::key(f.cert.device_public_key)]
+    );
+    // ...which then replays exactly again.
+    let committed = f.bytes();
+    assert_eq!(
+        f.store
+            .membership_refresh(f.cert.device_public_key, request.clone(), 60)
+            .unwrap(),
+        MembershipRefresh::Owner(rebuilt.clone())
+    );
+    assert_eq!(f.bytes(), committed);
+    // Past the replay window: refused, nothing committed.
+    assert!(
+        f.store
+            .owner_membership_complete(
+                f.cert.device_public_key,
+                request.clone(),
+                50 + receipt::REPLAY_WINDOW_NS
+            )
+            .is_err()
+    );
+    assert_eq!(f.bytes(), committed);
+    // A newer refresh supersedes the receipt: the older request ID is refused.
+    reuse::forget(f.dir.path());
+    let newer = f.request(121);
+    f.store
+        .owner_membership_complete(f.cert.device_public_key, newer, 70)
+        .unwrap();
+    let committed = f.bytes();
+    assert!(
+        f.store
+            .membership_refresh(f.cert.device_public_key, request, 71)
+            .is_err()
+    );
+    assert_eq!(f.bytes(), committed);
+}
+
+#[test]
+fn cloud_owner_bootstrap_legacy_receipts_are_pruned_on_next_write() {
+    let mut f = Fixture::new();
+    f.store.state.consumed.insert(
+        "owner-membership-v1:0101".into(),
+        (
+            hex::encode([1; 32]),
+            serde_json::json!({"bootstrap": "x".repeat(4096)}),
+        ),
+    );
+    // Challenge issuance no longer commits (lane M); the next commit prunes.
+    let _ = f.request(130);
+    let candidate = f.store.state.clone();
+    f.store.commit(candidate).unwrap();
+    assert!(owner_keys(&f.store).is_empty());
+    assert!(
+        !String::from_utf8(f.bytes())
+            .unwrap()
+            .contains("owner-membership-v1")
+    );
+}
+
+#[test]
+fn cloud_owner_bootstrap_membership_challenges_are_swept_and_bounded() {
+    let mut f = Fixture::new();
+    for i in 0..10u8 {
+        let _ = f.request(140 + i);
+    }
+    assert_eq!(
+        super::super::issued_challenges(f.dir.path()).len(),
+        MEMBERSHIP_CHALLENGES_PER_DEVICE
+    );
+    // The newest survive; evicted request IDs are no longer answerable.
+    assert!(super::super::issued_challenges(f.dir.path()).contains_key(&hex::encode([149; 32])));
+    assert!(!super::super::issued_challenges(f.dir.path()).contains_key(&hex::encode([140; 32])));
+    // Expired challenges are swept on the next issuance.
+    let later = 30 + MEMBERSHIP_CHALLENGE_LIFETIME_NS;
+    f.store
+        .membership_challenge(
+            f.cert.device_public_key,
+            MembershipChallengeRequest {
+                room: f.store.state.room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                device_cert: f.cert.clone(),
+                request_id: [150; 32],
+            },
+            later,
+        )
+        .unwrap();
+    assert_eq!(super::super::issued_challenges(f.dir.path()).len(), 1);
+    // An expired challenge under a reused request ID is reissued, not replayed.
+    let reissued = f
+        .store
+        .membership_challenge(
+            f.cert.device_public_key,
+            MembershipChallengeRequest {
+                room: f.store.state.room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                device_cert: f.cert.clone(),
+                request_id: [150; 32],
+            },
+            later + MEMBERSHIP_CHALLENGE_LIFETIME_NS,
+        )
+        .unwrap();
+    assert!(reissued.challenge.expires_at_ns > later + MEMBERSHIP_CHALLENGE_LIFETIME_NS);
 }
 
 #[test]

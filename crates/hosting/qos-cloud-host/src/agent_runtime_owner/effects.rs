@@ -174,6 +174,42 @@ impl Store {
         &self,
         id: &AgentControlId,
     ) -> Result<VerifiedAgentCaller, AgentCommitError> {
+        self.current_agent_effect_pinned(id, GovernancePin::Own)
+    }
+    /// Governance revision recorded by the latest admitted control (the
+    /// Spawn `id` itself or a later Message to it) of one agent process.
+    fn latest_control_governance(&self, id: &AgentControlId) -> Result<String, AgentCommitError> {
+        let spawn = id.invocation().to_string();
+        self.runtime_ledger()?
+            .facts
+            .values()
+            .filter(|receipt| match &receipt.change.fact {
+                AgentRuntimeFact::Admitted {
+                    parent_invocation, ..
+                } => {
+                    receipt.change.invocation == spawn
+                        || parent_invocation.as_deref() == Some(spawn.as_str())
+                }
+                _ => false,
+            })
+            // A refused or failed control never re-pins the process (R2).
+            .filter(|receipt| {
+                receipt.change.invocation == spawn
+                    || !self.runtime_ledger().is_ok_and(|ledger| {
+                        ledger
+                            .facts
+                            .contains_key(&format!("{}:failed", receipt.change.invocation))
+                    })
+            })
+            .max_by_key(|receipt| receipt.generation)
+            .map(|receipt| receipt.change.expected_governance.clone())
+            .ok_or_else(|| rejected("retained v2 admission missing"))
+    }
+    fn current_agent_effect_pinned(
+        &self,
+        id: &AgentControlId,
+        pin: GovernancePin,
+    ) -> Result<VerifiedAgentCaller, AgentCommitError> {
         let caller = self.original_agent_caller(id)?;
         let admission = self.admission_fact(id)?;
         let AgentRuntimeFact::Admitted {
@@ -184,29 +220,26 @@ impl Store {
         else {
             unreachable!()
         };
-        if caller.governance_revision() != admission.change.expected_governance {
+        // A task stops at its next step after any policy change: each control
+        // (Spawn task or Message task) is pinned to the governance revision
+        // it was admitted under. The owner's later Message re-pins the agent
+        // to the then-current governance (security review T12/T13, MUST-10).
+        let pinned = match pin {
+            GovernancePin::Own => Some(admission.change.expected_governance.clone()),
+            GovernancePin::LatestControl => Some(self.latest_control_governance(id)?),
+            GovernancePin::NewControl => None,
+        };
+        if pinned.is_some_and(|pinned| caller.governance_revision() != pinned) {
             return Err(rejected("agent governance changed since admission"));
         }
         if self.collaboration_has_invocation(caller.device(), &id.invocation().to_string()) {
             return Err(rejected("same-caller cross-journal conflict"));
         }
-        let peer = self.peer().map_err(storage_error)?;
-        for grant in &intent.grants {
-            let record = if grant.record_id == "@qos:package-primary" {
-                ""
-            } else {
-                &grant.record_id
-            };
-            if !collab_types::first_party_app_ids::is_any_first_party_app(
-                &grant.app_id,
-                &["so.tilo.word-processor", "so.tilo.chat"],
-            ) || peer.document(&grant.app_id, record).is_none()
-            {
-                return Err(rejected(
-                    "retained agent grant has no current supported record",
-                ));
-            }
-        }
+        let peers = self.peer_shared().map_err(storage_error)?;
+        // Every record of every retained grant or scope is a current document
+        // of a manifest-delegable app (no hard-coded app list).
+        grant_records_current(&peers.1, &intent.grants)
+            .map_err(|_| rejected("retained agent grant has no current supported record"))?;
         if let Some(parent) = parent_invocation {
             let parent_id = control_id(parent)?;
             let p = self.admission_fact(&parent_id)?;
@@ -221,7 +254,9 @@ impl Store {
             if original.scope != intent.scope || original.grants != intent.grants {
                 return Err(rejected("message changed original caller/grants"));
             }
-            self.current_agent_effect(&parent_id)?;
+            // The Message's own pin (checked above) covers governance; its
+            // parent must otherwise still be a current effect.
+            self.current_agent_effect_pinned(&parent_id, GovernancePin::NewControl)?;
             if self
                 .runtime_ledger()?
                 .facts
@@ -500,9 +535,26 @@ impl Store {
         &self,
         dispatch: &VerifiedEnrolledDispatch,
     ) -> Result<(VerifiedAgentCaller, String), AgentCommitError> {
+        let began = std::time::Instant::now();
         let live = dispatch.revalidate().map_err(AgentCommitError::Rejected)?;
+        let live_us = qos_action_broker::agent_timing::us(began);
+        let stage = std::time::Instant::now();
         // Factual callback authorization is deliberately wider than new dispatch/tool use.
         self.agent_process_grants_data(&process_to_data(&live), dispatch.caller())?;
+        let grants_us = qos_action_broker::agent_timing::us(stage);
+        let stage = std::time::Instant::now();
+        let _timing = TimingOnDrop(move || {
+            qos_action_broker::agent_timing::slow(
+                "dispatch_witness",
+                Some(dispatch.invocation()),
+                began,
+                &[
+                    ("live_us", live_us),
+                    ("grants_us", grants_us),
+                    ("enrolled_us", qos_action_broker::agent_timing::us(stage)),
+                ],
+            )
+        });
         self.validate_enrolled(
             &AgentControlId::new(dispatch.invocation())?,
             dispatch.caller(),
@@ -647,13 +699,21 @@ impl Store {
         facts: &ChannelProcessFactsV2,
         caller: &qos_user_identity::DeviceCert,
     ) -> Result<AgentControlId, AgentCommitError> {
+        self.agent_process_scope_pinned(facts, caller, GovernancePin::LatestControl)
+    }
+    fn agent_process_scope_pinned(
+        &self,
+        facts: &ChannelProcessFactsV2,
+        caller: &qos_user_identity::DeviceCert,
+        pin: GovernancePin,
+    ) -> Result<AgentControlId, AgentCommitError> {
         let retained = self.runtime_ledger()?.facts.values().find(|r| matches!(&r.change.fact, AgentRuntimeFact::ProcessBound { process, .. } if process == facts))
             .ok_or_else(|| rejected("live agent process has no exact retained binding"))?;
         let id = control_id(&retained.change.invocation)?;
-        let current = self.current_agent_effect(&id)?;
-        let observation = self.observe_agent_runtime(&current, &id)?;
+        let current = self.current_agent_effect_pinned(&id, pin)?;
+        let (phase, _) = self.agent_runtime_phase(&current, &id)?;
         if current.certificate() != caller
-            || observation.phase == AgentRuntimePhase::Failed
+            || phase == AgentRuntimePhase::Failed
             || self
                 .runtime_ledger()?
                 .facts
@@ -672,14 +732,34 @@ impl Store {
         };
         Ok(id)
     }
+    /// The live process's retained Spawn grants for authorizing a *new*
+    /// owner Message to it: every process/caller/custody check, but the
+    /// governance pin is the new Message's own (current) revision, which its
+    /// admission records and every later step of it rechecks.
+    pub(crate) fn agent_process_grants_for_new_control(
+        &self,
+        live: Result<ChannelProcessFacts, String>,
+        caller: &qos_user_identity::DeviceCert,
+    ) -> Result<(AgentControlId, Vec<GrantAction>), AgentCommitError> {
+        let facts = process_to_data(&live.map_err(AgentCommitError::Rejected)?);
+        self.agent_process_grants_pinned(&facts, caller, GovernancePin::NewControl)
+    }
     fn agent_process_grants_data(
         &self,
         facts: &ChannelProcessFactsV2,
         caller: &qos_user_identity::DeviceCert,
     ) -> Result<(AgentControlId, Vec<GrantAction>), AgentCommitError> {
-        let id = self.agent_process_scope_data(facts, caller)?;
+        self.agent_process_grants_pinned(facts, caller, GovernancePin::LatestControl)
+    }
+    fn agent_process_grants_pinned(
+        &self,
+        facts: &ChannelProcessFactsV2,
+        caller: &qos_user_identity::DeviceCert,
+        pin: GovernancePin,
+    ) -> Result<(AgentControlId, Vec<GrantAction>), AgentCommitError> {
+        let id = self.agent_process_scope_pinned(facts, caller, pin)?;
         let current = self.original_agent_caller(&id)?;
-        if self.observe_agent_runtime(&current, &id)?.phase == AgentRuntimePhase::Unknown {
+        if self.agent_runtime_phase(&current, &id)?.0 == AgentRuntimePhase::Unknown {
             return Err(rejected("uncertain agent has no current grant authority"));
         }
         let AgentRuntimeFact::Admitted { intent, .. } = &self.admission_fact(&id)?.change.fact
@@ -696,34 +776,309 @@ impl Store {
         resource: &str,
         action: &str,
     ) -> Result<(), AgentCommitError> {
+        let result = self.authorize_agent_task_scope(dispatch, app, record, resource, action);
+        let refused = result.as_ref().err().map(ToString::to_string);
+        scope_audit::persist(
+            &self.root,
+            dispatch.invocation(),
+            app,
+            action,
+            refused.as_deref(),
+            self.policy_now_ns().map_or(0, |ns| ns / 1_000_000),
+        );
+        scope_audit::record(dispatch.invocation(), app, action, refused);
+        result
+    }
+    /// The host Store's half of the shared per-step authorization: task state
+    /// (accepted, not finished, not uncertain, not exited or revoked), the
+    /// canonical route record, retained scope coverage (v1 tuples as exact
+    /// degenerate scopes, v2 scopes with their frozen schema pin), and the
+    /// step and wall-clock budgets. Governance pinning and the owner check run
+    /// in `validate_dispatch_witness`. The broker's half (`scoped::authorize_published`)
+    /// adds the live descriptor: class, confirmation, agent ∧ owner policy.
+    fn authorize_agent_task_scope(
+        &self,
+        dispatch: &VerifiedEnrolledDispatch,
+        app: &str,
+        record: &str,
+        resource: &str,
+        action: &str,
+    ) -> Result<(), AgentCommitError> {
+        let began = std::time::Instant::now();
         let (caller, _) = self.validate_dispatch_witness(dispatch)?;
+        let witness_us = qos_action_broker::agent_timing::us(began);
+        let stage = std::time::Instant::now();
         let id = AgentControlId::new(dispatch.invocation())?;
-        if !self
-            .observe_agent_runtime(&caller, &id)?
-            .qualified_completed
-            || self
-                .runtime_ledger()?
+        let ledger = self.runtime_ledger()?;
+        let fact = |kind: &str| {
+            ledger
                 .facts
-                .contains_key(&format!("{}:task_finished", id.invocation()))
+                .contains_key(&format!("{}:{kind}", id.invocation()))
+        };
+        if !self.agent_runtime_phase(&caller, &id)?.1
+            || fact("task_finished")
+            || fact("task_unknown")
+            || fact("process_exited")
         {
             return Err(rejected("agent task is not currently accepted for actions"));
         }
+        let observe_us = qos_action_broker::agent_timing::us(stage);
+        let stage = std::time::Instant::now();
+        let _timing = TimingOnDrop(move || {
+            qos_action_broker::agent_timing::slow(
+                "authorize_scope",
+                Some(dispatch.invocation()),
+                began,
+                &[
+                    ("witness_us", witness_us),
+                    ("observe_us", observe_us),
+                    ("scope_us", qos_action_broker::agent_timing::us(stage)),
+                ],
+            )
+        });
         let AgentRuntimeFact::Admitted { intent, .. } = &self.admission_fact(&id)?.change.fact
         else {
             unreachable!()
         };
-        if !intent.grants.iter().any(|g| {
-            g.app_id == app
-                && (g.record_id == record
-                    || (g.record_id == "@qos:package-primary" && record.is_empty()))
-                && g.resource == resource
-                && g.action == action
-        }) {
+        let canonical = qos_agent_control_protocol::canonical_record(record)
+            .map_err(|_| rejected("reserved or invalid route record"))?;
+        let registry = qos_action_broker::agent_control::scoped::delegation_registry();
+        // Frozen scopes, plus the records this task opened itself with a
+        // covered open action (from this Store's own desktop receipts).
+        let scopes = qos_agent_control_protocol::scopes_with_opened_records(
+            &qos_agent_control_protocol::scopes_from_grants(&intent.grants)
+                .map_err(|_| rejected("invalid retained agent grants"))?,
+            &self.task_opened_records(&dispatch.envelope().task_id),
+            registry,
+            &qos_action_broker::agent_control::scoped::schema_digest,
+        );
+        let classes = registry.classes_of_action(app, action);
+        let live_digest = qos_action_broker::agent_control::scoped::schema_digest(app);
+        let covering: Vec<_> = scopes
+            .iter()
+            .filter(|scope| {
+                let target = |class| qos_agent_control_protocol::ScopeTarget {
+                    app_id: app,
+                    record_id: &canonical,
+                    resource,
+                    action,
+                    class,
+                    // The broker checks the contract's verb precisely.
+                    required: qos_agent_control_protocol::GrantVerb::Read,
+                };
+                let covered = if scope.is_degenerate() {
+                    scope.covers(&target(None))
+                } else {
+                    classes
+                        .iter()
+                        .any(|class| scope.covers(&target(Some(*class))))
+                };
+                covered
+                    && scope.package.as_ref().is_none_or(|pin| {
+                        live_digest.as_deref() == Some(pin.schema_digest.as_str())
+                            && registry.package_for_app(app) == Some(pin.package_id.as_str())
+                    })
+            })
+            .collect();
+        if covering.is_empty() {
             return Err(rejected(
                 "agent action is outside its immutable task grants",
             ));
         }
+        // v2 budgets (v1 tuples keep today's unbudgeted behaviour, T20).
+        if let Some(budgets) = covering
+            .iter()
+            .filter(|scope| !scope.is_degenerate())
+            .map(|scope| scope.budgets())
+            .reduce(qos_agent_control_protocol::ScopeBudgets::tightest)
+        {
+            let steps = ledger
+                .facts
+                .values()
+                .filter(|r| {
+                    r.change.invocation == id.invocation().to_string()
+                        && matches!(r.change.fact, AgentRuntimeFact::TaskStepBound { .. })
+                })
+                .count();
+            let accepted_ms = ledger
+                .facts
+                .get(&format!("{}:completed", id.invocation()))
+                .and_then(|r| timestamp(&r.change.fact))
+                .ok_or_else(|| rejected("agent task acceptance time missing"))?;
+            let now_ms = self.policy_now_ns().map_err(storage_error)? / 1_000_000;
+            qos_agent_control_protocol::check_step_budget(
+                &budgets,
+                u32::try_from(steps).unwrap_or(u32::MAX),
+                now_ms.saturating_sub(accepted_ms),
+            )
+            .map_err(|refusal| rejected(&refusal.to_string()))?;
+        }
         Ok(())
+    }
+    /// Invocation-rate budget of one task (MUST-9): one token per new step,
+    /// burst and sustained from the task's v2 scopes. Called once when a new
+    /// step binds; v1 tuples are unbudgeted. Process-local and never a grant.
+    pub(crate) fn admit_agent_step_rate(
+        &self,
+        dispatch: &VerifiedEnrolledDispatch,
+    ) -> Result<(), AgentCommitError> {
+        let id = AgentControlId::new(dispatch.invocation())?;
+        let AgentRuntimeFact::Admitted { intent, .. } = &self.admission_fact(&id)?.change.fact
+        else {
+            unreachable!()
+        };
+        let Some(budgets) = qos_agent_control_protocol::scopes_from_grants(&intent.grants)
+            .map_err(|_| rejected("invalid retained agent grants"))?
+            .iter()
+            .filter(|scope| !scope.is_degenerate())
+            .map(|scope| scope.budgets())
+            .reduce(qos_agent_control_protocol::ScopeBudgets::tightest)
+        else {
+            return Ok(());
+        };
+        let now_ms = self.policy_now_ns().map_err(storage_error)? / 1_000_000;
+        scope_audit::admit_rate(dispatch.invocation(), &budgets, now_ms)
+            .map_err(|refusal| rejected(&refusal.to_string()))
+    }
+    /// The v2 budgets of a task's covering scopes (`None` for v1 tuples).
+    fn agent_task_budgets(
+        &self,
+        id: &AgentControlId,
+    ) -> Option<(qos_agent_control_protocol::ScopeBudgets, Vec<GrantAction>)> {
+        let AgentRuntimeFact::Admitted { intent, .. } = &self.admission_fact(id).ok()?.change.fact
+        else {
+            return None;
+        };
+        let budgets = qos_agent_control_protocol::scopes_from_grants(&intent.grants)
+            .ok()?
+            .iter()
+            .filter(|scope| !scope.is_degenerate())
+            .map(|scope| scope.budgets())
+            .reduce(qos_agent_control_protocol::ScopeBudgets::tightest)?;
+        Some((budgets, intent.grants.clone()))
+    }
+    /// Visible text bytes of every Writer record a task's scopes name, from
+    /// the committed Store documents.
+    fn covered_writer_text_bytes(&self, grants: &[GrantAction]) -> Option<u64> {
+        fn bytes(blocks: &[qdoc::snapshot::BlockView]) -> u64 {
+            blocks
+                .iter()
+                .map(|b| b.text.len() as u64 + bytes(&b.children))
+                .sum()
+        }
+        let peer = self.peer().ok()?;
+        let scopes = qos_agent_control_protocol::scopes_from_grants(grants).ok()?;
+        let mut total = 0;
+        for scope in scopes
+            .iter()
+            .filter(|s| s.app_id == qos_agent_control_protocol::WRITER_APP_ID)
+        {
+            for record in scope.records() {
+                let record = qos_agent_control_protocol::route_record(record).ok()?;
+                let Some(document) = peer.document(&scope.app_id, record) else {
+                    continue;
+                };
+                let doc = ui::automerge::AutoCommit::load(&document).ok()?;
+                let Ok(containers) = qdoc::model::open(&doc, &ui::automerge::ROOT) else {
+                    continue;
+                };
+                total += bytes(&qdoc::model::materialize_region(
+                    &doc,
+                    &containers,
+                    qdoc::model::Region::Body,
+                ));
+            }
+        }
+        Some(total)
+    }
+    /// Remember the covered Writer text size before a new step executes.
+    pub(crate) fn note_agent_step_start(&self, id: &AgentControlId, step: u32) {
+        if let Some((_, grants)) = self.agent_task_budgets(id)
+            && let Some(bytes) = self.covered_writer_text_bytes(&grants)
+        {
+            scope_audit::note_step_start(id.invocation(), step, bytes);
+        }
+    }
+    /// Measure what the committed step removed and stop the task when the
+    /// per-step or per-task content-removal budget is exceeded (MUST-8). A
+    /// human editing the same records during the step window counts against
+    /// the agent: the check errs toward stopping.
+    pub(crate) fn enforce_agent_step_removal(&mut self, id: &AgentControlId, step: u32) {
+        let Some((budgets, grants)) = self.agent_task_budgets(id) else {
+            return;
+        };
+        let Some(after) = self.covered_writer_text_bytes(&grants) else {
+            return;
+        };
+        let Some(verdict) = scope_audit::finish_step(id.invocation(), step, after, &budgets) else {
+            return;
+        };
+        if let Err(refusal) = verdict {
+            scope_audit::persist(
+                &self.root,
+                id.invocation(),
+                qos_agent_control_protocol::WRITER_APP_ID,
+                "content-removal",
+                Some(&refusal.to_string()),
+                self.policy_now_ns().map_or(0, |ns| ns / 1_000_000),
+            );
+            scope_audit::record(
+                id.invocation(),
+                qos_agent_control_protocol::WRITER_APP_ID,
+                "content-removal",
+                Some(refusal.to_string()),
+            );
+            let _ = self.mark_agent_task_unknown(
+                id,
+                AgentError {
+                    code: AgentErrorCode::PermissionDenied,
+                    message: format!("Stopped: {refusal}"),
+                },
+            );
+        }
+    }
+    /// The owner's durable audit of one of its agent tasks (MUST-18): every
+    /// step decision with its refusal reason. Only the task's original
+    /// owner caller may read it.
+    #[allow(
+        dead_code,
+        reason = "owner read route in the agents panel lane (integration diff)"
+    )]
+    pub(crate) fn agent_task_audit(
+        &self,
+        caller: &qos_user_identity::DeviceCert,
+        id: &AgentControlId,
+    ) -> Result<Vec<serde_json::Value>, AgentCommitError> {
+        let owner = self.original_agent_caller(id)?;
+        if owner.certificate().user_public_key != caller.user_public_key {
+            return Err(rejected("agent audit belongs to another owner"));
+        }
+        Ok(scope_audit::read_persisted(&self.root, id.invocation()))
+    }
+    /// Owner revocation of one running task (MUST-10): commits a terminal
+    /// task fact, so the next step's Store check refuses. The adapter then
+    /// closes the enrolled connection; the one child already dispatched may
+    /// still complete.
+    #[allow(
+        dead_code,
+        reason = "RuntimeOwner::revoke_agent (lane S integration diff) calls it"
+    )]
+    pub(crate) fn revoke_agent_task(
+        &mut self,
+        caller: &qos_user_identity::DeviceCert,
+        id: &AgentControlId,
+    ) -> Result<OwnerCommitReceipt, AgentCommitError> {
+        let owner = self.current_agent_effect(id)?;
+        if owner.certificate().user_public_key != caller.user_public_key {
+            return Err(rejected("only the task's owner may revoke it"));
+        }
+        self.mark_agent_task_unknown(
+            id,
+            AgentError {
+                code: AgentErrorCode::PermissionDenied,
+                message: "Revoked by the workspace owner".into(),
+            },
+        )
     }
     pub(crate) fn control_for_launch(
         &self,
@@ -904,6 +1259,7 @@ fn process_to_data(p: &ChannelProcessFacts) -> ChannelProcessFactsV2 {
         channel_id: p.channel_id.clone(),
     }
 }
+mod scope_audit;
 mod steps;
 #[cfg(test)]
 mod tests;
@@ -916,3 +1272,23 @@ pub(crate) use launch::{FailedLaunchAppend, RuntimeLaunchClaim};
 
 #[cfg(test)]
 pub(crate) use launch::LaunchCandidateTestClaim;
+
+/// Runs its closure when dropped (content-free timing of early-return paths).
+struct TimingOnDrop<F: FnMut()>(F);
+impl<F: FnMut()> Drop for TimingOnDrop<F> {
+    fn drop(&mut self) {
+        (self.0)()
+    }
+}
+
+/// Which admission's governance revision an effect check pins.
+#[derive(Clone, Copy)]
+enum GovernancePin {
+    /// The checked control's own admission (every task step).
+    Own,
+    /// The latest admitted control of the checked Spawn's process.
+    LatestControl,
+    /// None here: a new control being authorized under current governance,
+    /// or a Message's parent whose own pin the Message already checked.
+    NewControl,
+}

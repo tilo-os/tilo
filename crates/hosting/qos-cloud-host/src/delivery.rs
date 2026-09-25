@@ -6,6 +6,7 @@ use qos_relay::delivery_v3::commit::*;
 use rand::RngCore;
 pub(crate) mod access;
 pub(crate) mod admission;
+pub(crate) mod commit_wake;
 pub(crate) mod early_forward;
 pub(crate) mod relay;
 pub(crate) mod replay_digest;
@@ -23,6 +24,12 @@ pub(crate) fn committed_peer(state: &State, now: u64) -> Result<StatePeer> {
         .bound
         .as_ref()
         .context("delivery requires enrolled Store")?;
+    // The same restore as the Store's current transition (its `before`
+    // half), through the exact memo. A transition that cannot be computed
+    // falls back to this plain restore, unchanged and unretained.
+    if let Ok(peers) = crate::shared_transition(state, now) {
+        return Ok(peers.0.clone());
+    }
     StatePeer::restore(
         &bound.peer,
         &state.room,
