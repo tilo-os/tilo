@@ -188,12 +188,15 @@ impl Widget for OverviewPane {
     ) -> bool {
         let search_key = ui::a11y::hash_key(&"weather.city_search");
         if let Some(index) = key_path.iter().position(|key| *key == search_key) {
-            return self.core.borrow_mut().perform_search_action(
-                action,
-                &key_path[index..],
-                state,
-                path,
-            );
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "`index` comes from `position` on this slice, so it is in bounds"
+            )]
+            let search_path = &key_path[index..];
+            return self
+                .core
+                .borrow_mut()
+                .perform_search_action(action, search_path, state, path);
         }
         if !matches!(action, Action::Activate) {
             return false;

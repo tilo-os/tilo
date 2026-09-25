@@ -4482,9 +4482,10 @@ impl RemoteApp {
         } else {
             "+ New connection"
         };
-        let (add_tw, _) =
+        let (add_text_width, _) =
             text_renderer.measure_weighted(add_label, 13.0, None, TextWeight::Semibold);
-        let add_w = (f64::from(add_tw) + 28.0).max(if compact_header { 88.0 } else { 150.0 });
+        let add_w =
+            (f64::from(add_text_width) + 28.0).max(if compact_header { 88.0 } else { 150.0 });
         let add_cy = header.y0 + S4 + title_h / 2.0;
         let add = Rect::new(
             content.x1 - pad - add_w,
@@ -4816,6 +4817,10 @@ impl RemoteApp {
 
     /// `draw_connection_row`'s second line (kind badge · address · group)
     /// and its right-aligned action buttons + last-used stamp.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "declarative paint of the row's meta line and action buttons, read left to right"
+    )]
     fn draw_connection_row_meta_and_actions(
         &mut self,
         scene: &mut Scene,
@@ -6782,6 +6787,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "segments must meet on the exact same edge, and the card edges are exact layout outputs"
+    )]
     fn protocol_segments_share_one_gapless_form_card_row() {
         let mut app = RemoteApp::new();
         lay_out(&mut app, 1280.0, 800.0);
@@ -6990,7 +6999,7 @@ mod tests {
         // 1920px at 2× is still the wide row form (breakpoint scales to 1240).
         let (two, rows) = drawn_rows(1920.0, 2.0);
         assert!(!two.list_rows_compact);
-        let m = two.list_rows.clone();
+        let m = two.list_rows;
         assert!(m.row_h > ROW_H && m.line2_y > 38.0 && m.btn_h > 32.0);
         assert!(rows.iter().all(|r| (r.height() - m.row_h).abs() < 1e-6));
         for pair in rows.windows(2) {
@@ -7012,7 +7021,7 @@ mod tests {
         // take the compact two-line form, with the action line under the badge.
         let (compact, rows) = drawn_rows(800.0, 2.0);
         assert!(compact.list_rows_compact);
-        let m = compact.list_rows.clone();
+        let m = compact.list_rows;
         assert!(
             rows.iter()
                 .all(|r| (r.height() - m.compact_row_h).abs() < 1e-6)

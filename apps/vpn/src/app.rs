@@ -4686,7 +4686,7 @@ mod tests {
     }
 
     /// The protocol segments are painted and hit-tested from one geometry:
-    /// pressing inside the second painted segment selects OpenVPN, the strip
+    /// pressing inside the second painted segment selects `OpenVPN`, the strip
     /// is contiguous (so the shared segmented control can draw it) and stays
     /// inside the sheet at the narrowest supported width.
     #[test]
