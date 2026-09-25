@@ -717,7 +717,7 @@ impl ShellDriver {
     /// Build the privacy-sensitive state through the same capability and
     /// compositor exposure stores the live shell reads. The display label is
     /// deliberately different from the principal id to guard agent typing.
-    pub fn seed_agent_screen_exposure_for_shots(&mut self, surface_id: u64) {
+    pub fn seed_agent_screen_exposure_for_shots(&self, surface_id: u64) {
         use shell::shell::chrome_state::ActiveExposure;
         use shell::shell::state::{CapOverride, Collaborator, Subject, Verb};
 

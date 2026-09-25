@@ -397,6 +397,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "the scales are parsed from exact decimal literals and passed through unchanged"
+    )]
     fn standalone_shot_scale_uses_environment_unless_cli_overrides_it() {
         assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
         assert_eq!(

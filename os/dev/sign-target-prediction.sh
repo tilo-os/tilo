@@ -209,7 +209,10 @@ chmod 0755 "$work/layer/boot/tilo-target/predictions" \
   "$work/layer/boot/EFI/tilo/pcr-predictions"
 
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
-[ -z "${SOURCE_DATE_EPOCH:-}" ] || build_args+=(--source-date-epoch "$SOURCE_DATE_EPOCH" --rewrite-timestamp)
+if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
+  mapfile -t reproducible < <(podman_epoch_args "$SOURCE_DATE_EPOCH")
+  build_args+=("${reproducible[@]}")
+fi
 podman build "${build_args[@]}" "$work/layer" <<'EOF'
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
