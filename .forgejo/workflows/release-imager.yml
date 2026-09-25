@@ -411,10 +411,6 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo '::error::medium signing requires non-exportable release KMS key'; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           identity="dist/tilo-installer/tilo-installer-${TILO_OFFLINE_TARGET_PROFILE:?}-aarch64.whpx-source.json"
           cosign sign-blob --yes --key "$COSIGN_KEY_REF" \

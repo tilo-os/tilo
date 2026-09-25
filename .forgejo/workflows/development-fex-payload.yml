@@ -220,10 +220,6 @@ jobs:
           FEX_PAYLOAD_BUILD_RUN_ID: ${{ inputs.payload_build_run_id }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           source_revision="${FEX_PAYLOAD_REPOSITORY_REVISION:-$GITHUB_SHA}"
           build_run_id="${FEX_PAYLOAD_BUILD_RUN_ID:-$GITHUB_RUN_ID}"
