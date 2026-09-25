@@ -105,10 +105,13 @@ jobs:
     outputs:
       needed: ${{ steps.decide.outputs.needed }}
     steps:
+      # Shallow: only this push and its predecessor are compared.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 0
           token: ${{ secrets.REGISTRY_TOKEN }}
+      # snapshot-rpms.yml runs for the same push when it touches a snapshot
+      # input, and refreshes when the inputs differ from the pinned snapshot's
+      # source. The same script answers both questions here.
       - name: Skip pushes whose kernels another run provides
         id: decide
         env:
@@ -117,13 +120,16 @@ jobs:
           set -euo pipefail
           needed=true
           reason='kernel inputs changed'
-          if changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA" 2>/dev/null)"; then
+          snapshot_changed() {
+            GITHUB_OUTPUT='' python3 os/dev/rpm-snapshot-inputs.py "$@" --head "$GITHUB_SHA" \
+              | grep -Fq '"changed": true'
+          }
+          if git fetch --quiet --no-tags --depth=1 origin "$BEFORE" 2>/dev/null \
+              && changed="$(git diff --name-only "$BEFORE" "$GITHUB_SHA")"; then
             if [ "$(printf '%s\n' "$changed" | LC_ALL=C sort -u)" = "$(printf 'os/kernel-snapshot.env\nos/rpms-snapshot.env')" ]; then
               needed=false
               reason='this push only lands RPM and kernel pins built together'
-            elif ! grep -Fxq os/rpms-snapshot.env <<<"$changed" \
-                && GITHUB_OUTPUT='' python3 os/dev/rpm-snapshot-inputs.py --base "$BEFORE" --head "$GITHUB_SHA" \
-                  | grep -Fq '"changed": true'; then
+            elif snapshot_changed --base "$BEFORE" && snapshot_changed --since-pin; then
               needed=false
               reason='snapshot-rpms.yml refreshes the RPM snapshot and rebuilds the kernels against it'
             fi
@@ -729,7 +735,8 @@ jobs:
             printf '%s\n' \
               '# Digest-pinned frozen RPM repository used by os/Containerfile.' \
               '# Updated by the snapshot-rpms workflow when the package set changes.' \
-              "RPMS_REF=$CALLER_RPMS_REF" > os/rpms-snapshot.env
+              "RPMS_REF=$CALLER_RPMS_REF" \
+              "RPMS_SOURCE_REVISION=$GITHUB_SHA" > os/rpms-snapshot.env
           fi
           printf '%s\n' \
             '# Per-architecture Tilo kernel RPM repositories, signed and pinned by digest.' \
@@ -746,7 +753,7 @@ jobs:
           if [ -n "$CALLER_RPMS_REF" ]; then
             git commit -m 'build(os): refresh the RPM snapshot and its native kernels'
             branch="automation/rpm-kernel-snapshot-${snapshot_digest:0:16}"
-            snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF")
+            snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF" --rpms-source-revision "$GITHUB_SHA")
           else
             git commit -m 'build(os): refresh native kernel snapshots'
             branch="automation/kernel-snapshot-${snapshot_digest:0:16}"

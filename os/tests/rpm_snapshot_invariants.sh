@@ -120,6 +120,14 @@ has "$workflow" 'python3 os/dev/promote-native-index.py' \
   'snapshot promotion verifies signed native children'
 has "$workflow" 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
   'snapshot promotion rejects source-input changes during native builds'
+inputs_job="$(sed -n '/^  inputs:/,/^  signing-preflight:/p' "$workflow")"
+if grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --since-pin --head "$GITHUB_SHA"' <<<"$inputs_job" \
+   && ! grep -Fq 'fetch-depth: 0' <<<"$inputs_job" \
+   && grep -Fxq '      - os/rpms-snapshot.env' "$workflow"; then
+  ok 'snapshot refresh compares with the pinned snapshot source, so a refused publication loses no change'
+else
+  bad 'snapshot refresh compares only with the previous push and can miss a package change'
+fi
 has "$workflow" 'driver = "vfs"' \
   'snapshot promotion isolates Podman storage from the runner overlay'
 has "$workflow" 'rm -f -- "${AWS_WEB_IDENTITY_TOKEN_FILE:-}"' \
@@ -158,7 +166,7 @@ fi
 # pull-request API, so RELEASE_TOKEN opens the PR (whose checks then run).
 if grep -Fq 'branch="automation/rpm-kernel-snapshot-${snapshot_digest:0:16}"' <<<"$promotion_step" \
    && grep -Fq 'pins=(os/rpms-snapshot.env os/kernel-snapshot.env)' <<<"$promotion_step" \
-   && grep -Fq 'snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF")' <<<"$promotion_step" \
+   && grep -Fq 'snapshot=(kernel --rpms-ref "$CALLER_RPMS_REF" --rpms-source-revision "$GITHUB_SHA")' <<<"$promotion_step" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' <<<"$promotion_step" \
    && grep -Fq 'python3 os/dev/open-snapshot-pr.py' <<<"$promotion_step" \
    && grep -Fq 'FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}' <<<"$promotion_step" \

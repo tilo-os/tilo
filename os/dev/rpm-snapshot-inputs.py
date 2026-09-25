@@ -16,9 +16,11 @@ parser = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(parser)
 
 # Everything that can change what snapshot-rpms.yml publishes. Its push paths
-# mirror this list minus the pin itself: a pin change alone never republishes,
-# but a newer pin on main makes an in-flight publication stale. build-kernel.yml
-# reads the same list, so both workflows agree on when a snapshot is refreshed.
+# mirror this list. The pin is included so an in-flight publication becomes
+# stale when another pin lands, and so landing a pin rechecks for drift.
+# build-kernel.yml reads the same list, so both workflows agree on when a
+# snapshot is refreshed.
+PIN = "os/rpms-snapshot.env"
 INPUTS = (
     "os/Containerfile",
     "os/base-snapshot.env",
@@ -40,17 +42,36 @@ INPUTS = (
     "os/containers/tilo-relay/Containerfile",
     "os/kernel/Containerfile",
     ".forgejo/workflows/snapshot-rpms.yml",
-    "os/rpms-snapshot.env",
+    PIN,
 )
+# The published pin records the commit its snapshot was built from.
+SOURCE_REVISION = re.compile(r"^RPMS_SOURCE_REVISION=([0-9a-f]{40})$", re.MULTILINE)
 
 
 def git(repo, *args):
     return subprocess.check_output(["git", "-C", str(repo), *args], stderr=subprocess.PIPE)
 
 
+def commit(repo, revision):
+    """Resolve a commit, fetching it alone into a shallow checkout if absent."""
+    try:
+        return git(repo, "rev-parse", "--verify", revision + "^{commit}").decode().strip()
+    except subprocess.CalledProcessError:
+        git(repo, "fetch", "--no-tags", "--depth=1", "origin", revision)
+        return git(repo, "rev-parse", "--verify", revision + "^{commit}").decode().strip()
+
+
+def pinned_source(repo, head):
+    """Return the commit the snapshot pinned at head was built from."""
+    revisions = SOURCE_REVISION.findall(git(repo, "show", f"{head}:{PIN}").decode())
+    if len(revisions) != 1:
+        raise ValueError("the pinned snapshot records no single source revision")
+    return revisions[0]
+
+
 def equivalent(repo, base, head, inputs):
     # Resolve commits before reading paths. Missing/zero/truncated history is unknown.
-    base = git(repo, "rev-parse", "--verify", base + "^{commit}").decode().strip()
+    base = commit(repo, base)
     head = git(repo, "rev-parse", "--verify", head + "^{commit}").decode().strip()
     changed = set(git(repo, "diff", "--name-only", base, head, "--", *inputs).decode().splitlines())
     other = changed - set(parser.SOURCES)
@@ -82,7 +103,12 @@ def equivalent(repo, base, head, inputs):
 
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
-    cli.add_argument("--base", required=True)
+    bases = cli.add_mutually_exclusive_group(required=True)
+    bases.add_argument("--base")
+    # Compare with the source of the snapshot pinned at head, ignoring the pin:
+    # a change that landed while an earlier publication was refused as stale is
+    # still seen by every later push.
+    bases.add_argument("--since-pin", action="store_true")
     cli.add_argument("--head", required=True)
     cli.add_argument("--event", default="push")
     cli.add_argument("--require-equivalent", action="store_true")
@@ -93,6 +119,9 @@ def main():
             raise ValueError("incomplete snapshot input manifest")
         if args.event == "workflow_dispatch" and not args.require_equivalent:
             same, reason = False, "manual snapshot refresh is forced"
+        elif args.since_pin:
+            base = pinned_source(ROOT, commit(ROOT, args.head))
+            same, reason = equivalent(ROOT, base, args.head, [i for i in inputs if i != PIN])
         else:
             same, reason = equivalent(ROOT, args.base, args.head, inputs)
     except (OSError, ValueError, subprocess.CalledProcessError, SystemExit) as error:
