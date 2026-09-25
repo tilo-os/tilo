@@ -23,7 +23,8 @@ KEY = Path("/usr/share/tilo/cosign.pub")
 COSIGN = Path("/usr/libexec/tilo-cosign")
 RECEIPT = Path("/run/tilo-installer/offline-target.json")
 REF = re.compile(r"code\.podesta\.ai/qos/tilo@(?P<digest>sha256:[0-9a-f]{64})\Z")
-ORIGIN = re.compile(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}\Z")
+BOARD_ORIGIN = re.compile(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}\Z")
+GENERIC_ORIGIN = re.compile(r"code\.podesta\.ai/qos/tilo:gen([1-9][0-9]*)\Z")
 HEX = re.compile(r"[0-9a-f]{64}\Z")
 BUILD_TYPE = "https://tilo.sh/buildtypes/bootc-os/v1"
 BUILDER = "https://code.podesta.ai/qos/forgejo/actions/bootc-release-v1"
@@ -64,8 +65,11 @@ def read_target(root=ROOT):
             and match is not None
             and metadata["target_digest"] == match["digest"]
             and metadata["architecture"] == "aarch64"
-            and metadata["hardware_profile"] == "lenovo-83ed"
-            and ORIGIN.fullmatch(metadata["update_origin"]),
+            and metadata["hardware_profile"] in {"generic", "lenovo-83ed"}
+            and ((metadata["hardware_profile"] == "lenovo-83ed"
+                  and BOARD_ORIGIN.fullmatch(metadata["update_origin"]))
+                 or (metadata["hardware_profile"] == "generic"
+                     and GENERIC_ORIGIN.fullmatch(metadata["update_origin"]))),
             "offline target metadata has invalid image identity")
     layout = root / "oci"
     require(layout.is_dir() and not layout.is_symlink(), "offline OCI layout is unsafe")
@@ -139,12 +143,8 @@ def checked_provenance(output, metadata):
                 or not isinstance(external, dict) or not isinstance(internal, dict)
                 or not isinstance(dependencies, list) or not isinstance(byproducts, list)
                 or internal.get("expectedReleaseDigest") != metadata["target_digest"]
-                or external.get("generation") != 1
-                or external.get("architecture") != "aarch64"
-                or external.get("hardwareProfile") != "lenovo-83ed"
-                or not isinstance(external.get("firmwareManifestSha256"), str)
-                or not HEX.fullmatch(external["firmwareManifestSha256"])
-                or "children" in external
+                or type(external.get("generation")) is not int
+                or external["generation"] < 1
                 or not any(type(item) is dict and item.get("name") == "independent-rebuild"
                            and item.get("uri") == "urn:tilo:verification:manifest-digest-equal"
                            for item in byproducts)):
@@ -155,15 +155,33 @@ def checked_provenance(output, metadata):
         firmware = dependencies[-1].get("uri") if dependencies and type(dependencies[-1]) is dict else None
         run_metadata = details.get("metadata")
         invocation = run_metadata.get("invocationId") if type(run_metadata) is dict else None
-        if (len(sources) != 1 or metadata["update_origin"] !=
-                f"code.podesta.ai/qos/tilo:lenovo-83ed-{sources[0]}"
-                or type(firmware) is not str
-                or not re.fullmatch(r"code\.podesta\.ai/qos/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}", firmware)
-                or not re.fullmatch(r"[0-9]+", str(invocation))):
+        if len(sources) != 1 or not re.fullmatch(r"[0-9]+", str(invocation)):
             continue
+        if metadata["hardware_profile"] == "lenovo-83ed":
+            if (external.get("generation") != 1
+                    or external.get("architecture") != "aarch64"
+                    or external.get("hardwareProfile") != "lenovo-83ed"
+                    or not isinstance(external.get("firmwareManifestSha256"), str)
+                    or not HEX.fullmatch(external["firmwareManifestSha256"])
+                    or "children" in external
+                    or metadata["update_origin"] !=
+                    f"code.podesta.ai/qos/tilo:lenovo-83ed-{sources[0]}"
+                    or type(firmware) is not str
+                    or not re.fullmatch(r"code\.podesta\.ai/qos/tilo-lenovo-83ed-firmware@sha256:[0-9a-f]{64}", firmware)):
+                continue
+            firmware_manifest = external["firmwareManifestSha256"]
+        else:
+            if (metadata["update_origin"] !=
+                    f"code.podesta.ai/qos/tilo:gen{external['generation']}"
+                    or any(key in external for key in
+                           ("hardwareProfile", "architecture", "firmwareManifestSha256", "children"))):
+                continue
+            firmware = None
+            firmware_manifest = None
         matches.append({"source_revision": sources[0],
                         "firmware_candidate": firmware,
-                        "firmware_manifest_sha256": external["firmwareManifestSha256"],
+                        "firmware_manifest_sha256": firmware_manifest,
+                        "generation": external["generation"],
                         "invocation_id": invocation})
     require(len(matches) == 1, "offline target has no unique CI SLSA provenance")
     return matches[0]

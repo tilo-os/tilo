@@ -245,7 +245,8 @@ runs the graphical installer (`installer/`, binary `tilo-installer`) under `cage
 and **self-installs the booted image** onto a target disk — offline, no network
 pull.
 
-A CI install medium can instead carry a separately signed target in
+A CI install medium can instead carry a separately signed generic or Lenovo
+ARM64 target in
 `/var/lib/tilo-installer/target-oci/`. Before changing a disk, the guest
 checks its exact OCI manifest digest, offline Cosign signature, and CI SLSA
 provenance with the immutable Tilo public key. It imports only that target

@@ -38,10 +38,15 @@ while [ "$#" -gt 0 ]; do
     *) printf 'unknown option: %s\n' "$1" >&2; exit 2;;
   esac
 done
+expected_target_ref="${TILO_EXPECTED_INSTALLED_REF:-}"
 if [ "$install_only" -eq 1 ]; then
   [ "$install_mode" = guided-alongside ] \
     || { echo '--install-only requires --guided-alongside' >&2; exit 2; }
-  [[ "${TILO_EXPECTED_INSTALLED_REF:-}" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] \
+fi
+if [ -n "$expected_target_ref" ] || [ "$install_only" -eq 1 ]; then
+  [ "$install_mode" = guided-alongside ] \
+    || { echo 'signed offline target proof requires --guided-alongside' >&2; exit 2; }
+  [[ "$expected_target_ref" =~ ^code\.podesta\.ai/qos/tilo@sha256:[0-9a-f]{64}$ ]] \
     || { echo 'TILO_EXPECTED_INSTALLED_REF must pin the separately signed target' >&2; exit 2; }
 fi
 case "$graphics" in
@@ -308,7 +313,7 @@ PY
       || die "guided Tilo EFI partition has no systemd-boot loader configuration"
     MTOOLS_SKIP_CHECK=1 mattrib -i "$raw@@$((1537 * 1024 * 1024))" "::/EFI/systemd/$systemd_loader" >/dev/null \
       || die "guided Tilo EFI partition has no architecture-matched systemd-boot binary"
-    if [ "$install_only" -eq 1 ]; then
+    if [ -n "$expected_target_ref" ]; then
       local target_composefs target_uki_sha
       target_composefs="$(python3 - "$run/install-proof.txt" <<'PY'
 import json, pathlib, sys
@@ -499,7 +504,7 @@ printf 'medium=%s\ncustomized_medium=%s\narchitecture=%s\nuser=%s\nhostname=cycl
   > "$out/scenario.txt"
 
 proof_arg=()
-[ "$install_only" -eq 0 ] || proof_arg=(--install-proof)
+[ -z "$expected_target_ref" ] || proof_arg=(--install-proof)
 if [ "$software_tpm" -eq 1 ]; then
   "$vm" boot-installer "$display_arg" --tpm "${proof_arg[@]}"
 else
@@ -601,11 +606,11 @@ if [ "$install_mode" != erase ]; then
   cp "$out/alongside-preservation.txt" "$out/alongside-preservation-before-target-boot.txt"
 fi
 
-if [ "$install_only" -eq 1 ]; then
+if [ -n "$expected_target_ref" ]; then
   proof_file="$run/install-proof.txt"
   [ -f "$proof_file" ] && [ ! -L "$proof_file" ] \
     || die "VM guest did not emit its dedicated install proof"
-  python3 - "$proof_file" "$TILO_EXPECTED_INSTALLED_REF" "$out/guest-install-proof.json" <<'PY'
+  python3 - "$proof_file" "$expected_target_ref" "$out/guest-install-proof.json" <<'PY'
 import json
 from pathlib import Path
 import re
@@ -632,6 +637,8 @@ if (proof.get('schema') != 'tilo.vm-install-image-proof.v2'
     raise SystemExit('VM install proof differs from independently pinned signed target')
 Path(sys.argv[3]).write_text(json.dumps(proof, sort_keys=True, indent=2) + '\n')
 PY
+fi
+if [ "$install_only" -eq 1 ]; then
   printf 'PASS_INSTALL_ONLY\n' > "$out/verdict.txt"
   exit 0
 fi
