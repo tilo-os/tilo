@@ -503,6 +503,24 @@ struct BodyState {
     item_paras: usize,
     // (start byte, open depth) of an in-progress inline atom.
     inline: Option<(usize, i32)>,
+    // Grid columns the open (or covered) table cell takes: its `table:number-columns-repeated`.
+    cell_repeat: usize,
+}
+
+/// A table cell's `table:number-columns-repeated` (at least 1).
+fn columns_repeated(e: &BytesStart) -> usize {
+    attr_val(e, b"table:number-columns-repeated")
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, 1024)
+}
+
+/// A table cell's span in the `table:number-columns-spanned`/`-rows-spanned` attribute `key`,
+/// when it spans more than one.
+fn span(e: &BytesStart, key: &[u8]) -> Option<i64> {
+    attr_val(e, key)
+        .and_then(|v| v.parse::<i64>().ok())
+        .filter(|n| *n > 1)
 }
 
 /// Paragraph content the body parser models; any other element inside a `text:p`/`text:h` is
@@ -566,6 +584,32 @@ impl BodyState {
                 MARK_ODT_XML.to_string(),
                 MarkValue::Str(raw),
             ));
+        }
+    }
+
+    /// Open a `cell` block at the current grid position, carrying its spans. A cell repeated
+    /// over several columns (an empty run `LibreOffice` writes once) is one block; the columns
+    /// after it stay empty.
+    fn open_cell(&mut self, e: &BytesStart, doc: &mut DocMut) {
+        self.cell_repeat = columns_repeated(e);
+        let Some(tid) = self.table_id.clone() else {
+            return;
+        };
+        let id = start_block(
+            doc,
+            &mut self.prev,
+            &mut self.cur,
+            &mut self.cur_len,
+            "cell",
+        );
+        doc.set_attr(&id, "table", tid.as_str());
+        doc.set_attr(&id, "row", i64::try_from(self.trow).unwrap_or(i64::MAX));
+        doc.set_attr(&id, "col", i64::try_from(self.tcol).unwrap_or(i64::MAX));
+        if let Some(n) = span(e, b"table:number-columns-spanned") {
+            doc.set_attr(&id, "colspan", n);
+        }
+        if let Some(n) = span(e, b"table:number-rows-spanned") {
+            doc.set_attr(&id, "rowspan", n);
         }
     }
 
@@ -796,19 +840,9 @@ impl BodyState {
             b"table:table-row" if self.in_text => self.tcol = 0,
             b"table:table-cell" if self.in_text => {
                 self.item_paras = 0;
-                if let Some(tid) = self.table_id.clone() {
-                    let id = start_block(
-                        doc,
-                        &mut self.prev,
-                        &mut self.cur,
-                        &mut self.cur_len,
-                        "cell",
-                    );
-                    doc.set_attr(&id, "table", tid.as_str());
-                    doc.set_attr(&id, "row", i64::try_from(self.trow).unwrap_or(i64::MAX));
-                    doc.set_attr(&id, "col", i64::try_from(self.tcol).unwrap_or(i64::MAX));
-                }
+                self.open_cell(e, doc);
             }
+            b"table:covered-table-cell" if self.in_text => self.cell_repeat = columns_repeated(e),
             b"text:span" if self.in_text => {
                 let marks = attr_val(e, b"text:style-name")
                     .map(|s| reg.text_marks(&s))
@@ -987,20 +1021,13 @@ impl BodyState {
                 append(doc, self.cur.as_deref(), &mut self.cur_len, &" ".repeat(n));
             }
             b"table:table-cell" if self.in_text => {
-                if let Some(tid) = self.table_id.clone() {
-                    let id = start_block(
-                        doc,
-                        &mut self.prev,
-                        &mut self.cur,
-                        &mut self.cur_len,
-                        "cell",
-                    );
-                    doc.set_attr(&id, "table", tid.as_str());
-                    doc.set_attr(&id, "row", i64::try_from(self.trow).unwrap_or(i64::MAX));
-                    doc.set_attr(&id, "col", i64::try_from(self.tcol).unwrap_or(i64::MAX));
-                    self.cur = None;
-                }
-                self.tcol = self.tcol.saturating_add(1);
+                self.open_cell(e, doc);
+                self.cur = None;
+                self.tcol = self.tcol.saturating_add(self.cell_repeat);
+            }
+            // A cell covered by a spanning neighbour holds a grid position but no content.
+            b"table:covered-table-cell" if self.in_text => {
+                self.tcol = self.tcol.saturating_add(columns_repeated(e));
             }
             _ if self.in_text && self.cur.is_none() && !self.in_item && self.table_id.is_none() => {
                 let raw = s.get(pos_before..pos_after).unwrap_or_default();
@@ -1036,9 +1063,9 @@ impl BodyState {
                 self.cur = None;
             }
             b"table:table-row" => self.trow = self.trow.saturating_add(1),
-            b"table:table-cell" => {
+            b"table:table-cell" | b"table:covered-table-cell" => {
                 self.cur = None;
-                self.tcol = self.tcol.saturating_add(1);
+                self.tcol = self.tcol.saturating_add(self.cell_repeat);
             }
             b"text:list-item" => {
                 self.flush_para_marks();
