@@ -13,7 +13,7 @@
 //! [`run`] hosts that on the toolkit's component runtime, so without writing
 //! any of it the app gets persistence and sync of its record, collaboration
 //! and presence, versioned history (a History mode that renders past versions
-//! with the app's own view), per-author undo, permissions enforced on every
+//! with the app's own view and restores any of them), per-author undo, permissions enforced on every
 //! action (controls of forbidden actions disable themselves), the action
 //! palette and agent/script door, and search indexing.
 //!

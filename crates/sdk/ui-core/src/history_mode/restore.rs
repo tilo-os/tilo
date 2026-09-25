@@ -14,6 +14,17 @@ pub use projection::ContentProjection;
 pub enum RestoreValueType {
     Object(ObjType),
     Scalar(ScalarType),
+    /// Whatever the property holds. For content whose stored representation
+    /// may vary (text written as a scalar by an older schema, an integer read
+    /// as a float); the schema's `validate` functions own its shape.
+    Any,
+}
+
+impl RestoreValueType {
+    /// Whether a stored value of type `actual` satisfies this expectation.
+    pub fn accepts(self, actual: Self) -> bool {
+        self == Self::Any || self == actual
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
