@@ -2,10 +2,12 @@
 import importlib.util
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from types import SimpleNamespace
 
 SPEC = importlib.util.spec_from_file_location('private_disk_image',
     Path(__file__).resolve().parents[1] / 'dev/private_disk_image.py')
@@ -28,6 +30,147 @@ class InputTests(unittest.TestCase):
                 with disk.PrivateDiskImage('/var/lib/private/image.raw', 4096):
                     self.fail('must not allocate')
             opening.assert_not_called()
+
+
+class LoopPartitionNodeTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        self.devices, self.sys_class, self.kernel = root / 'dev', root / 'sys', root / 'kernel'
+        self.devices.mkdir(); self.sys_class.mkdir(); (self.kernel / 'loop0').mkdir(parents=True)
+        (self.kernel / 'loop0/dev').write_text('7:0\n')
+        (self.sys_class / 'loop0').symlink_to(self.kernel / 'loop0', target_is_directory=True)
+        for number, minor in ((1, 41), (2, 42)):
+            entry = self.kernel / 'loop0' / f'loop0p{number}'
+            entry.mkdir(); (entry / 'partition').write_text(f'{number}\n')
+            (entry / 'dev').write_text(f'259:{minor}\n')
+            (entry / 'uevent').write_text(
+                f'MAJOR=259\nMINOR={minor}\nDEVNAME={entry.name}\nDEVTYPE=partition\nPARTN={number}\n')
+            (self.sys_class / entry.name).symlink_to(entry, target_is_directory=True)
+
+    def test_creates_yields_and_removes_only_exact_partition_nodes(self):
+        identities = {}
+        original = Path.lstat
+        def mknod(path, mode, device):
+            path.touch(mode=0o600)
+            identities[str(path)] = device
+        def lstat(path):
+            info = original(path)
+            device = identities.get(str(path))
+            if device is None:
+                return info
+            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                st_rdev=device, st_nlink=1, st_dev=info.st_dev, st_ino=info.st_ino)
+        with patch.object(disk.os, 'mknod', side_effect=mknod), \
+                patch.object(Path, 'lstat', lstat):
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, sleep=lambda _: None) as nodes:
+                self.assertEqual(nodes, [self.devices / 'loop0p1', self.devices / 'loop0p2'])
+                self.assertTrue(all(path.exists() for path in nodes))
+            self.assertFalse(any(self.devices.iterdir()))
+
+    def test_post_creation_lstat_failure_removes_exact_owned_node(self):
+        identities = {}
+        original = Path.lstat
+        fail_once = {'value': True}
+        def mknod(path, mode, device):
+            path.touch(mode=0o600)
+            identities[str(path)] = device
+        def lstat(path):
+            info = original(path)
+            device = identities.get(str(path))
+            if device is None:
+                return info
+            if fail_once['value']:
+                fail_once['value'] = False
+                raise OSError('post-mknod inspection failed')
+            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                st_rdev=device, st_nlink=1, st_dev=info.st_dev, st_ino=info.st_ino)
+        with patch.object(disk.os, 'mknod', side_effect=mknod), \
+                patch.object(Path, 'lstat', lstat), \
+                self.assertRaisesRegex(OSError, 'post-mknod inspection failed'):
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, sleep=lambda _: None):
+                pass
+        self.assertFalse((self.devices / 'loop0p1').exists())
+
+    def _block_nodes(self, identities):
+        original = Path.lstat
+        def lstat(path):
+            info = original(path)
+            device = identities.get(str(path))
+            if device is None:
+                return info
+            return SimpleNamespace(st_mode=stat.S_IFBLK | 0o600, st_uid=0, st_gid=0,
+                st_rdev=device, st_nlink=1, st_dev=info.st_dev, st_ino=info.st_ino)
+        return lstat
+
+    def test_accepts_and_leaves_exact_preexisting_nodes(self):
+        identities = {}
+        for number in (1, 2):
+            node = self.devices / f'loop0p{number}'
+            node.touch(mode=0o600)
+            identities[str(node)] = os.makedev(259, 40 + number)
+        with patch.object(Path, 'lstat', self._block_nodes(identities)), \
+                patch.object(disk.os, 'mknod') as mknod:
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, sleep=lambda _: None):
+                pass
+        mknod.assert_not_called()
+        self.assertEqual({path.name for path in self.devices.iterdir()},
+                         {'loop0p1', 'loop0p2'})
+
+    def test_rejects_symlink_nonblock_and_wrong_device_identity(self):
+        target = self.devices / 'target'; target.touch()
+        first = self.devices / 'loop0p1'
+        cases = ('symlink', 'nonblock', 'wrong-rdev')
+        for case in cases:
+            with self.subTest(case=case):
+                first.unlink(missing_ok=True)
+                if case == 'symlink':
+                    first.symlink_to(target)
+                    lstat = Path.lstat
+                else:
+                    first.touch(mode=0o600)
+                    identities = ({str(first): os.makedev(259, 99)}
+                                  if case == 'wrong-rdev' else {})
+                    lstat = self._block_nodes(identities)
+                with patch.object(Path, 'lstat', lstat), \
+                        self.assertRaisesRegex(ValueError, 'differs from kernel identity'):
+                    with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                            sys_class=self.sys_class, sleep=lambda _: None):
+                        pass
+        self.assertTrue(target.exists())
+
+    def test_rejects_mismatched_partition_sysfs_identity(self):
+        (self.kernel / 'loop0/loop0p1/partition').write_text('3\n')
+        with self.assertRaisesRegex(ValueError, 'partition number differs'):
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, sleep=lambda _: None):
+                pass
+
+    def test_rejects_mismatched_partition_uevent_identity(self):
+        uevent = self.kernel / 'loop0/loop0p1/uevent'
+        for content in (
+                'MAJOR=259\nMINOR=41\nDEVNAME=loop0p9\nPARTN=1\n',
+                'MAJOR=259\nMINOR=41\nDEVNAME=loop0p1\nPARTN=9\n'):
+            with self.subTest(content=content):
+                uevent.write_text(content)
+                with self.assertRaisesRegex(ValueError, 'uevent identity differs'):
+                    with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                            sys_class=self.sys_class, sleep=lambda _: None):
+                        pass
+
+    def test_rejects_extra_partition_inventory_before_device_creation(self):
+        extra = self.kernel / 'loop0/loop0p3'; extra.mkdir()
+        (extra / 'partition').write_text('3\n'); (extra / 'dev').write_text('7:3\n')
+        (extra / 'uevent').write_text('DEVNAME=loop0p3\nPARTN=3\n')
+        (self.sys_class / 'loop0p3').symlink_to(extra, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, 'inventory'):
+            with disk.loop_partition_nodes('/dev/loop0', devices=self.devices,
+                    sys_class=self.sys_class, timeout=0.001, sleep=lambda _: None):
+                pass
 
 
 @unittest.skipUnless(sys.platform == 'linux' and os.getuid() == 0 and os.geteuid() == 0,

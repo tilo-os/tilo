@@ -14,10 +14,21 @@ recipient_socket="$repo/os/usr/lib/systemd/user/tilo-fs-recipient.socket"
 release_workflow="$repo/.forgejo/workflows/build-image.yml"
 shell_main="$repo/crates/session/shell/src/linux_main.rs"
 
+grep -Fqx 'readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment' "$wrapper"
+grep -Fqx '"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
+grep -Fqx '"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE' "$wrapper"
+
 grep -Fqx 'Requires=graphical-session-pre.target graphical-session.target' "$target"
 grep -Fqx 'After=graphical-session-pre.target' "$target"
 grep -Fqx 'PartOf=graphical-session.target' "$target"
 grep -Fqx 'PropagatesStopTo=graphical-session.target graphical-session-pre.target' "$target"
+grep -Fqx 'Wants=tilo-ush.service' "$target"
+for socket in \
+  "$repo/os/usr/lib/systemd/user/tilo-models.socket" \
+  "$repo/os/usr/lib/systemd/user/tilo-model-gateway.socket"; do
+  grep -Fqx 'PartOf=tilo-graphical-session.target' "$socket"
+  grep -Fqx 'WantedBy=tilo-graphical-session.target' "$socket"
+done
 grep -Fqx 'Before=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'WantedBy=graphical-session-pre.target' "$identity_unit"
 grep -Fqx 'ExecStart=/usr/bin/shell --provision-identity' "$identity_unit"
@@ -82,6 +93,9 @@ grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm' \
   "$repo/os/usr/share/wayland-sessions/shell.desktop"
 grep -Fqx 'Exec=/usr/libexec/tilo-session --backend drm --enable-peer-sync' \
   "$repo/os/usr/share/wayland-sessions/shell-peer-sync.desktop"
+grep -Fq 'missing="$(ldd /usr/bin/shell | awk '\''/not found/ { print $1 }'\'')"' \
+  "$repo/os/Containerfile"
+grep -Fq '&& test -z "$missing"' "$repo/os/Containerfile"
 grep -Fq "pgrep -f '^/usr/bin/shell --backend drm( |$)'" "$release_workflow"
 # First-use actions are now driven through the installed AT-SPI endpoint;
 # keeping stale blind-keyboard assertions here made the FUSE lane reject the
@@ -99,6 +113,7 @@ trap cleanup EXIT INT TERM
 
 log="$tmp/log"
 fake_systemctl="$tmp/systemctl"
+fake_dbus_update="$tmp/dbus-update-activation-environment"
 fake_shell="$tmp/shell"
 test_wrapper="$tmp/tilo-session"
 runtime_dir="$tmp/runtime"
@@ -107,6 +122,11 @@ install -d -m 700 "$runtime_dir"
 cat >"$fake_systemctl" <<'SH'
 #!/bin/bash
 printf 'systemctl %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
+exit 0
+SH
+cat >"$fake_dbus_update" <<'SH'
+#!/bin/bash
+printf 'dbus-update %s\n' "$*" >>"$TILO_SESSION_TEST_LOG"
 exit 0
 SH
 cat >"$fake_shell" <<'SH'
@@ -145,9 +165,10 @@ if [ "${TILO_SESSION_HOLD:-0}" = 1 ]; then
 fi
 exit "${TILO_SESSION_DESKTOP_STATUS:-0}"
 SH
-chmod 0755 "$fake_systemctl" "$fake_shell"
+chmod 0755 "$fake_systemctl" "$fake_dbus_update" "$fake_shell"
 sed \
   -e "s|readonly SYSTEMCTL=/usr/bin/systemctl|readonly SYSTEMCTL=$fake_systemctl|" \
+  -e "s|readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment|readonly DBUS_UPDATE=$fake_dbus_update|" \
   -e "s|readonly SHELL_BIN=/usr/bin/shell|readonly SHELL_BIN=$fake_shell|" \
   "$wrapper" >"$test_wrapper"
 chmod 0755 "$test_wrapper"
@@ -165,9 +186,14 @@ status=$?
 set -e
 [ "$status" = 7 ]
 cat >"$tmp/expected" <<'EOF'
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
+dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
 
@@ -178,9 +204,14 @@ cmp "$tmp/expected" "$log"
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_WRITE_LOGOUT=1 \
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
+dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
 request_path=$(cat "$log.request-path")
@@ -201,9 +232,14 @@ esac
 XDG_RUNTIME_DIR="$runtime_dir" TILO_SESSION_TEST_LOG="$log" TILO_SESSION_VERIFY_SEQUENCE=1 \
   "$test_wrapper" --backend drm
 cat >"$tmp/expected" <<'EOF'
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_SESSION_DESKTOP
+dbus-update --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+systemctl --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 systemctl --user start tilo-graphical-session.target
 desktop --backend drm
 systemctl --user stop tilo-graphical-session.target
+dbus-update --systemd XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE=
+systemctl --user unset-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
 EOF
 cmp "$tmp/expected" "$log"
 

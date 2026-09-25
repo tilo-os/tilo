@@ -819,6 +819,17 @@ fn run_job_file_bound(
             "source image no longer matches its signed release catalog".into(),
         );
     }
+    // The descriptor path has already checked the reviewed metadata, but a
+    // local source can still grow while the copy is in flight.  Keep this
+    // path as strict as the pathname writer: accepting only the reviewed
+    // prefix would make the two production backends disagree about what was
+    // actually flashed.
+    let mut extra = [0_u8; 1];
+    match source.read(&mut extra) {
+        Ok(0) => {}
+        Ok(_) => return JobResult::WriteFailed("source image became larger after review".into()),
+        Err(error) => return JobResult::WriteFailed(error.to_string()),
+    }
     if let Err(error) = device.flush().and_then(|()| device.sync_all()) {
         return JobResult::WriteFailed(error.to_string());
     }
@@ -937,18 +948,27 @@ fn run_system_job(
         )
     };
     if prepared {
-        if result.is_success()
-            && req.source.installable
-            && let Err(error) =
+        if result.is_success() && req.source.installable {
+            // The profile is written through a second open because the
+            // pathname backend's streaming verifier owns and then closes its
+            // descriptor.  Revalidate immediately before that open so a
+            // disconnect/replug cannot make the profile land on a replacement
+            // device which happens to reuse the same path.
+            if let Err(error) = revalidate_target(&req.target) {
+                result = JobResult::VerifyFailed(format!(
+                    "could not revalidate the drive before embedding the setup profile: {error}"
+                ));
+            } else if let Err(error) =
                 write_profile_block_bound(&dst, req.target.size, &req.profile, should_cancel)
-        {
-            result = if error.kind() == io::ErrorKind::Interrupted {
-                JobResult::Cancelled
-            } else {
-                JobResult::VerifyFailed(format!(
-                    "could not embed and verify the setup profile: {error}"
-                ))
-            };
+            {
+                result = if error.kind() == io::ErrorKind::Interrupted {
+                    JobResult::Cancelled
+                } else {
+                    JobResult::VerifyFailed(format!(
+                        "could not embed and verify the setup profile: {error}"
+                    ))
+                };
+            }
         }
         if result.is_success() && should_cancel() {
             result = JobResult::Cancelled;

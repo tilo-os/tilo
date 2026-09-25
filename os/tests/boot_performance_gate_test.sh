@@ -275,6 +275,10 @@ for model_unit in tilo-models.service tilo-model-gateway.service; do
     exit 1
   fi
 done
+for model_socket in tilo-models.socket tilo-model-gateway.socket; do
+  grep -Fqx 'PartOf=tilo-graphical-session.target' "$repo/os/usr/lib/systemd/user/$model_socket"
+  grep -Fqx 'WantedBy=tilo-graphical-session.target' "$repo/os/usr/lib/systemd/user/$model_socket"
+done
 if grep -Fq 'systemctl --global enable tilo-app-host.service' "$repo/os/Containerfile"; then
   echo 'app-host broker still starts eagerly at every graphical login' >&2
   exit 1
@@ -343,6 +347,8 @@ for incompatible in ProtectKernelTunables ProtectKernelModules ProtectKernelLogs
     fail "ush supervisor blocks nested guest mounts with $incompatible"
   fi
 done
+grep -Fqx 'PartOf=tilo-graphical-session.target' "$ush_socket"
+grep -Fqx 'WantedBy=tilo-graphical-session.target' "$ush_socket"
 grep -Fq 'std::env::var("LISTEN_PID")' "$ush_source"
 grep -Fq 'listener.local_addr()?.as_pathname() == Some(expected)' "$ush_source"
 ush_vm_probe="$repo/os/tests/ush-systemd-terminal-vm.sh"

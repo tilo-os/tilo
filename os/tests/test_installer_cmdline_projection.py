@@ -54,8 +54,13 @@ class InstallerCmdlineProjectionTest(unittest.TestCase):
         self.assertLessEqual(len(" ".join(live).encode()), raw_room)
         self.assertIn("tilo.install", live)
         self.assertIn("tilo.mode=normal", live)
-        self.assertFalse(any(token.startswith("root=") for token in live))
-        self.assertFalse(any(token.startswith("rd.luks.options=") for token in live))
+        self.assertIn("root=tilo-auto", live)
+        self.assertIn(
+            "rd.luks.options=tpm2-device=auto,fido2-device=auto", live
+        )
+        self.assertFalse(any(token.startswith("tilo.root=") for token in live))
+        self.assertFalse(any(token.startswith("tilo.luks=") for token in live))
+        self.assertFalse(any(token.startswith("tilo.unlock=") for token in live))
 
         target = list(live)
         for action, argument in target_operations:
