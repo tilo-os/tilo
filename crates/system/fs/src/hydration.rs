@@ -73,7 +73,9 @@ pub struct Hydrator {
     /// Bytes of loose blobs received so far.
     blob_bytes: std::sync::atomic::AtomicU64,
     /// One blob-protocol connection per peer, reused by every request.
-    blob_connections: AsyncMutex<HashMap<iroh_base::PublicKey, iroh::endpoint::Connection>>,
+    /// Pooled blob-protocol connections per peer, by lane: batches use
+    /// lane 0, large content spreads over several lanes.
+    blob_connections: AsyncMutex<HashMap<(iroh_base::PublicKey, usize), iroh::endpoint::Connection>>,
     pub runtime_handle: tokio::runtime::Handle,
 }
 

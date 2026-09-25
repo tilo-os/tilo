@@ -109,9 +109,25 @@ impl Hydrator {
     ///
     /// Returns an error when no connection can be opened in time.
     pub async fn blob_connection(&self, peer: &EndpointAddr) -> Result<Connection> {
+        self.blob_connection_lane(peer, 0).await
+    }
+
+    /// The pooled connection to `peer` in `lane`. One QUIC connection is
+    /// processed by one task on each side, which bounds its throughput;
+    /// large transfers therefore spread their requests over a few lanes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no connection can be opened in time.
+    pub(super) async fn blob_connection_lane(
+        &self,
+        peer: &EndpointAddr,
+        lane: usize,
+    ) -> Result<Connection> {
+        let key = (peer.id, lane);
         {
             let pool = self.blob_connections.lock().await;
-            if let Some(connection) = pool.get(&peer.id)
+            if let Some(connection) = pool.get(&key)
                 && connection.close_reason().is_none()
             {
                 return Ok(connection.clone());
@@ -125,13 +141,13 @@ impl Hydrator {
         .map_err(|_| anyhow!("connecting to {} timed out", peer.id))??;
         let mut pool = self.blob_connections.lock().await;
         // Another caller may have connected meanwhile; keep one.
-        if let Some(existing) = pool.get(&peer.id)
+        if let Some(existing) = pool.get(&key)
             && existing.close_reason().is_none()
         {
             connection.close(0u32.into(), b"duplicate");
             return Ok(existing.clone());
         }
-        pool.insert(peer.id, connection.clone());
+        pool.insert(key, connection.clone());
         drop(pool);
         Ok(connection)
     }
@@ -144,12 +160,7 @@ impl Hydrator {
         failed: &Connection,
     ) {
         let mut pool = self.blob_connections.lock().await;
-        if pool
-            .get(&peer)
-            .is_some_and(|c| c.stable_id() == failed.stable_id())
-        {
-            pool.remove(&peer);
-        }
+        pool.retain(|(id, _), c| *id != peer || c.stable_id() != failed.stable_id());
     }
 
     /// Fetches every blob in `wants` that is not local yet, in batched,
