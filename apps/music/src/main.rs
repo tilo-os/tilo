@@ -487,7 +487,7 @@ fn pick_shot_theme(args: &LaunchArgs) -> Theme {
         "" => None,
         "light" => Some(Theme::light()),
         "high-contrast" | "high_contrast" => Some(Theme::high_contrast()),
-        "dark" => Some(Theme::dark()),
+        // "dark" and anything unrecognised.
         _ => Some(Theme::dark()),
     };
     let reduce_motion = [
