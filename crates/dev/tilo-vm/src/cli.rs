@@ -238,7 +238,7 @@ pub enum Command {
 pub enum ScenarioCommand {
     /// Boot an installer medium, install through its published actions, cold-boot the result and verify first boot.
     #[command(
-        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
+        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
     )]
     Install(InstallScenarioArgs),
 }
@@ -248,6 +248,9 @@ pub struct InstallScenarioArgs {
     /// The installer medium (default: os/output/installer/qcow2/disk.qcow2, what os/dev/build-custom-installer.sh writes). Never modified: the VM boots a throwaway overlay.
     #[arg(long)]
     pub medium: Option<PathBuf>,
+    /// Existing sparse raw target file for a Windows WHPX guided-alongside cycle. The file is written in place and retained after the run.
+    #[arg(long)]
+    pub target_disk: Option<PathBuf>,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
@@ -469,7 +472,7 @@ pub enum VmCommand {
         /// The VM (default: the one this worktree uses).
         name: Option<String>,
     },
-    /// Pass arguments to the hypervisor's native control tool (virsh, QEMU monitor, utmctl, PowerShell).
+    /// Pass arguments to the hypervisor's native control tool (virsh, QEMU monitor, utmctl, `PowerShell`).
     #[command(
         after_help = "Examples:\n  tilo-vm vm control dominfo dev\n  tilo-vm vm control --vm ci info block"
     )]
