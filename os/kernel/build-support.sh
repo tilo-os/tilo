@@ -331,8 +331,15 @@ case "$command" in
         extmod=${5:?expected the v4l2loopback source directory}
         positive_jobs "$jobs"
         cd "$ksrc"
-        make -j"$jobs" all
-        make -C "$ksrc" M="$extmod" -j"$jobs" modules
+        # An optional compiler launcher (sccache in CI) wraps the target and
+        # host compiler for both the tree and the out-of-tree module.
+        if [ -n "${TILO_KERNEL_CC_LAUNCHER:-}" ]; then
+            make -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" all
+            make -C "$ksrc" M="$extmod" -j"$jobs" CC="$TILO_KERNEL_CC_LAUNCHER gcc" HOSTCC="$TILO_KERNEL_CC_LAUNCHER gcc" modules
+        else
+            make -j"$jobs" all
+            make -C "$ksrc" M="$extmod" -j"$jobs" modules
+        fi
         make -s kernelrelease
         ;;
     stage-modules)

@@ -222,21 +222,44 @@ jobs:
         uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/kernel-cache
-          key: kernel-assets-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: kernel-assets-v2-${{ hashFiles('os/external-assets/github-assets.tsv') }}
           restore-keys: |
+            kernel-assets-v2-
             kernel-assets-v1-
 
       - name: Materialize immutable kernel inputs
         env:
           TILO_GITHUB_ASSET_CACHE: os/external-assets/kernel-cache
-        run: ./os/dev/cache-github-assets.sh v4l2loopback-0.15.3-a7e4a4d.tar.gz
+        run: |
+          ./os/dev/cache-github-assets.sh v4l2loopback-0.15.3-a7e4a4d.tar.gz \
+            "sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz"
 
       - name: Save checksum-pinned kernel inputs immediately
         if: steps.kernel-assets-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
           path: os/external-assets/kernel-cache
-          key: kernel-assets-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: kernel-assets-v2-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+
+      # Every CI pool provides the same S3 compiler cache and a bucket-scoped
+      # credential. The kernel compile requires it, so a dead cache fails
+      # instead of silently compiling the whole tree again.
+      - name: Bind the runner compiler cache
+        run: |
+          set -euo pipefail
+          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            value="${!name:-}"
+            if [[ -z $value || $value == *$'\n'* ]]; then
+              echo "::error::runner compiler cache setting $name is missing"
+              exit 1
+            fi
+          done
+          {
+            printf 'KERNEL_SCCACHE_BUCKET=%s\n' "$SCCACHE_BUCKET"
+            printf 'KERNEL_SCCACHE_ENDPOINT=%s\n' "$SCCACHE_ENDPOINT"
+            printf 'KERNEL_SCCACHE_REGION=%s\n' "$SCCACHE_REGION"
+            printf 'KERNEL_SCCACHE_S3_USE_SSL=%s\n' "$SCCACHE_S3_USE_SSL"
+          } >> "$GITHUB_ENV"
 
       - name: Set up buildx for registry cache export
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -292,6 +315,14 @@ jobs:
             BASE_REF=${{ env.BASE_REF }}
             RPMS_REF=${{ env.RPMS_REF }}
             KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}
+            SCCACHE_BUCKET=${{ env.KERNEL_SCCACHE_BUCKET }}
+            SCCACHE_ENDPOINT=${{ env.KERNEL_SCCACHE_ENDPOINT }}
+            SCCACHE_REGION=${{ env.KERNEL_SCCACHE_REGION }}
+            SCCACHE_S3_USE_SSL=${{ env.KERNEL_SCCACHE_S3_USE_SSL }}
+            TILO_REQUIRE_COMPILER_CACHE=1
+          secret-envs: |
+            aws_access_key_id=AWS_ACCESS_KEY_ID
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
           cache-from: type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:${{ matrix.arch }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
@@ -447,6 +478,13 @@ jobs:
             --build-arg "BASE_REF=$BASE_REF" \
             --build-arg "RPMS_REF=$RPMS_REF" \
             --build-arg "KERNEL_BUILD_JOBS=${{ matrix.kernel_build_jobs }}" \
+            --build-arg "SCCACHE_BUCKET=$KERNEL_SCCACHE_BUCKET" \
+            --build-arg "SCCACHE_ENDPOINT=$KERNEL_SCCACHE_ENDPOINT" \
+            --build-arg "SCCACHE_REGION=$KERNEL_SCCACHE_REGION" \
+            --build-arg "SCCACHE_S3_USE_SSL=$KERNEL_SCCACHE_S3_USE_SSL" \
+            --build-arg TILO_REQUIRE_COMPILER_CACHE=1 \
+            --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID \
+            --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY \
             --output "type=local,dest=$probe" .
           TILO_KERNEL_PATH="$probe/vmlinuz" \
           TILO_GEN_INIT_CPIO="$probe/gen_init_cpio" \
