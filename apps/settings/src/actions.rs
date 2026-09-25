@@ -188,6 +188,7 @@ pub enum UpdateOperation {
     InstallFirmware,
     InstallCodecs,
     RemoveCodecs,
+    RefreshCodecs,
     SetAutomatic { enabled: bool },
     SetSchedule { schedule: String },
     SetMetered { allowed: bool },
@@ -3654,6 +3655,11 @@ fn updates_section() -> Resource {
             "Remove additional codecs",
             UpdateOperation::RemoveCodecs,
         ),
+        (
+            "refresh-codecs",
+            "Check again for the codec pack's hardware video driver",
+            UpdateOperation::RefreshCodecs,
+        ),
     ] {
         if let Some(mut action) = local_operation_spec(
             id,
@@ -5315,6 +5321,7 @@ mod tests {
             "install-firmware",
             "install-codecs",
             "remove-codecs",
+            "refresh-codecs",
             "automatic",
             "schedule",
             "metered",
