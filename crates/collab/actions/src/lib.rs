@@ -108,8 +108,8 @@ pub use context::{
     ActionApp, ActionContext, ActionFacet, ActionGroup, ActionResource, CHANGE_MESSAGE_PREFIX,
 };
 pub use contract::{
-    ActionContract, Availability, ConfirmationPolicy, DiscoveryScope, ExecutionMode,
-    PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
+    ARGUMENT_RISK_TAG, ActionContract, Availability, ConfirmationPolicy, DiscoveryScope,
+    ExecutionMode, PROGRAMMATIC_TAG, PermissionRequirement, ResultSpec, RetryPolicy, RiskLevel,
 };
 pub use door::{ActionAddress, ActionDescriptor, DoorError, InputSpec, ResourceViewDescriptor};
 pub use envelope::ActionEnvelope;
