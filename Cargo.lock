@@ -14186,7 +14186,12 @@ dependencies = [
 name = "tilo-app"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-resource",
  "tilo-ui",
+ "tracing",
 ]
 
 [[package]]
