@@ -696,6 +696,7 @@ impl App {
             operation_kind: descriptor.kind.as_str().to_string(),
             params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
             contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
+            view: descriptor.view.clone(),
             input: match &descriptor.input {
                 tilo_actions::InputSpec::None => crate::collaboration::ExportedInput::None,
                 tilo_actions::InputSpec::Text {
@@ -766,6 +767,24 @@ impl App {
             operation_kind: descriptor.kind.as_str().to_string(),
             params_json: serde_json::to_string(&descriptor.params).unwrap_or_default(),
             contract_json: serde_json::to_string(&descriptor.contract).unwrap_or_default(),
+            view: descriptor
+                .view
+                .as_ref()
+                .map(|view| runtime_collab::ExportedView {
+                    id: view.id.clone(),
+                    label: view.label.clone(),
+                    description: view.description.clone(),
+                    open_action: view.open_action.clone(),
+                    primary: view.primary,
+                    mount: view
+                        .mount
+                        .as_ref()
+                        .map(|mount| runtime_collab::ExportedViewMount {
+                            action: mount.action.clone(),
+                            capability_param: mount.capability_param.clone(),
+                            view_param: mount.view_param.clone(),
+                        }),
+                }),
             input: match &descriptor.input {
                 tilo_actions::InputSpec::None => runtime_collab::ExportedInput::None,
                 tilo_actions::InputSpec::Text {
