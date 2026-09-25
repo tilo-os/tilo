@@ -109,13 +109,13 @@ has "$snapshot_workflow" 'actual_arch="$(docker run --rm --entrypoint cat "$ref"
   'WPE snapshot proves each image was built on its declared native architecture'
 has "$snapshot_workflow" 'enable-openid-connect: true' \
   'WPE snapshot signing jobs explicitly enable Forgejo OIDC for the KMS role'
-has "$snapshot_workflow" 'cmp --silent keys/cosign.pub "$resolved"' \
+has "$snapshot_workflow" 'run: os/dev/require-cosign-authority.sh' \
   'WPE snapshot refuses a KMS authority that differs from keys/cosign.pub'
 has "$snapshot_workflow" '. os/dev/configure-cosign-kms.sh' \
   'WPE snapshot signs through the shared KMS configuration'
 has "$snapshot_workflow" 'cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_WPE_REF"' \
   'WPE buildroots are signed with the non-exportable release key'
-has "$snapshot_workflow" 'gcpkms://*|awskms://*|azurekms://*|hashivault://*' \
+has "$repo/os/dev/configure-cosign-kms.sh" 'gcpkms://*|awskms://*|azurekms://*|hashivault://*' \
   'WPE snapshot accepts only a KMS/HSM signing key reference'
 if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' "$snapshot_workflow"; then
   bad 'WPE snapshot retains an exportable key or retired credential broker path'

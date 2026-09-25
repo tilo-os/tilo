@@ -234,13 +234,17 @@ fi
 for workflow in "${release_signed_workflows[@]}"; do
   if grep -Eq -- 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|--tlog-upload=false|--insecure-ignore-tlog' \
       "$workflow" \
-     || ! grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
+     || ! grep -Fq '. os/dev/configure-cosign-kms.sh' "$workflow" \
      || ! grep -Eq 'cosign verify --key keys/cosign\.pub "\$(ref|image)"' "$workflow"; then
     printf 'release artifact bypasses KMS, transparency, or digest verification: %s\n' \
       "${workflow#$repo/}" >&2
     fail=1
   fi
 done
+if ! grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$repo/os/dev/configure-cosign-kms.sh"; then
+  printf 'shared Cosign configuration does not refuse exportable signing keys\n' >&2
+  fail=1
+fi
 if [ "$fail" = 0 ]; then
   printf 'ok    OS, kernel, RPM, and relay releases use KMS signing, transparency, and digest verification\n'
 fi
