@@ -3928,11 +3928,24 @@ impl QuickFS {
     /// [`Self::commit_content`] with the version's modification time given by
     /// the caller: the native data plane publishes the time the file was
     /// written, which peers then materialise.
+    fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
+        self.commit_content_fenced(ino, data, mtime_ms, None)
+    }
+
+    /// [`Self::commit_content_at`] for a version written under a write
+    /// lease: `fence` names the tenancy, and is published in the same
+    /// namespace change as the content it tags.
     #[allow(
         clippy::significant_drop_tightening,
         reason = "content publication and namespace replacement must preserve the previous committed revision on failure"
     )]
-    fn commit_content_at(&self, ino: u64, data: &[u8], mtime_ms: u64) -> io::Result<()> {
+    fn commit_content_fenced(
+        &self,
+        ino: u64,
+        data: &[u8],
+        mtime_ms: u64,
+        fence: Option<crate::namespace::VersionFence>,
+    ) -> io::Result<()> {
         #[cfg(test)]
         if let Some((fault_ino, errno)) = *self
             .commit_fault
@@ -3994,6 +4007,17 @@ impl QuickFS {
                 && (ns.hash_for(ino) != expected_hash || current_len != Some(expected_len))
             {
                 return Err(io::Error::from_raw_os_error(EBUSY));
+            }
+            if let Some(fence) = fence
+                && let Some(record) = ns.record_id_for(ino)
+                && !ns.put_version_fence(
+                    record,
+                    hash.map(|h| *h.as_bytes()),
+                    data.len() as u64,
+                    fence,
+                )
+            {
+                return Err(io::Error::other("could not tag the version with its lease"));
             }
             if let Some(revision) = &revision {
                 if !ns.set_content_revision(ino, revision, stamp) {
