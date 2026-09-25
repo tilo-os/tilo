@@ -12875,7 +12875,6 @@ dependencies = [
  "bytes",
  "capnp",
  "capnp-rpc",
- "chacha20poly1305 0.11.0",
  "channel-crypto",
  "chrono",
  "cli",
@@ -12950,6 +12949,7 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-rt",
+ "tilo-seal",
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
@@ -12970,7 +12970,6 @@ dependencies = [
  "winit",
  "wire-frame",
  "word-processor",
- "x25519-dalek 3.0.0",
  "xattr",
  "xdg-paths",
  "zbus",
@@ -18082,7 +18081,6 @@ checksum = "e7e8131a03190127fb2263afc72b322ecadae46b6ff8c6f399ff5d02f5559af6"
 dependencies = [
  "curve25519-dalek 5.0.0",
  "rand_core 0.10.0",
- "zeroize",
 ]
 
 [[package]]
