@@ -77,8 +77,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             [
-                {"arch": "x86_64", "runner": "runner-disk-100g"},
-                {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+                {"arch": "x86_64", "runner": "runner-large"},
+                {"arch": "aarch64", "runner": "runner-large-arm64"},
             ],
         )
 
@@ -97,8 +97,8 @@ class OsReleaseMatrixTests(unittest.TestCase):
         self.assertEqual(
             lanes,
             [
-                {"arch": "x86_64", "runner": "runner-disk-100g"},
-                {"arch": "aarch64", "runner": "runner-disk-100g-arm64"},
+                {"arch": "x86_64", "runner": "runner-large"},
+                {"arch": "aarch64", "runner": "runner-large-arm64"},
             ],
         )
 

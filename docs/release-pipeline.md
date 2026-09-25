@@ -166,7 +166,7 @@ Developers and agents build dev VMs from a published, signed OS image, so
 `code.podesta.ai/qos/tilo:latest` must not depend on someone remembering to
 dispatch CI. **Release / OS** therefore runs every night at 02:00 UTC on
 `main` and publishes a signed generation through exactly the protected manual
-`main` path: the same native `runner-disk-100g`/`runner-disk-100g-arm64`
+`main` path: the same native `runner-large`/`runner-large-arm64`
 lanes, KMS signing preflight, reproducibility, installed-VM and AT-SPI gates,
 SBOM, provenance and freshness attestations, and the shared
 `tilo-os-image-series` generation lock. It also receives the same protected
@@ -246,7 +246,7 @@ rehearsal while the production signing key is unavailable.
 
 A tag publication allocates both `imager-linux-x86_64` and
 `imager-linux-aarch64`; a manual or nightly `main` publication uses
-`runner-disk-100g` and `runner-disk-100g-arm64`. Each native lane independently rebuilds, reseals,
+`runner-large` and `runner-large-arm64`. Each native lane independently rebuilds, reseals,
 boots, signs, generates an SBOM, and attests its child manifest with the same
 source revision and generation. Only after both descriptors agree does the
 generic promotion job construct an OCI index containing exactly those two
