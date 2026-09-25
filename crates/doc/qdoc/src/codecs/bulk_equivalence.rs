@@ -1,12 +1,14 @@
 //! Every built-in codec builds the same document through a bulk scope as it does op by op —
-//! with marks applied as local operations (a host-owned document) and as one committed change
-//! (an owned [`crate::Document`]) — and the documents keep behaving the same under later edits.
+//! with marks applied as local operations (a host-owned document with history) and as committed
+//! changes (an owned [`crate::Document`], or a host's document with no history yet) — and the
+//! documents keep behaving the same under later edits.
 
 use crate::export_html::{HtmlOptions, render_html};
 use crate::export_rtf::render_rtf;
 use crate::model::{self, Containers, DocMut, DocRef, IdGen, Region, change_writes, op_by_op};
 use crate::snapshot::DocSnapshot;
 use crate::{DocxCodec, FormatProvider, HtmlCodec, MarkdownCodec, OdtCodec, RtfCodec};
+use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit, ROOT};
 
 #[path = "../../tests/support/synth.rs"]
@@ -20,9 +22,16 @@ enum Path {
     OpByOp,
     BulkLocalMarks,
     BulkChangeMarks,
+    /// A host-owned document that has never been committed, as a host opening a file creates.
+    BulkFreshHost,
 }
 
-const PATHS: [Path; 3] = [Path::OpByOp, Path::BulkLocalMarks, Path::BulkChangeMarks];
+const PATHS: [Path; 4] = [
+    Path::OpByOp,
+    Path::BulkLocalMarks,
+    Path::BulkChangeMarks,
+    Path::BulkFreshHost,
+];
 
 struct Replica {
     doc: AutoCommit,
@@ -35,11 +44,19 @@ impl Replica {
     fn new(path: Path) -> Self {
         let mut doc = AutoCommit::new().with_actor(ActorId::from(b"bulk-equivalence".as_slice()));
         let c = model::init(&mut doc, &ROOT);
-        let mut ids = IdGen::new(doc.get_actor().to_hex_string());
+        let actor = doc.get_actor().to_hex_string();
+        // A host editing a document seeds its generator from it; one creating a document starts
+        // a new one. Both count from zero here, so every path mints the same ids.
+        let mut ids = match path {
+            Path::BulkLocalMarks => IdGen::with_counter(actor, 0),
+            _ => IdGen::new(actor),
+        };
         if matches!(path, Path::BulkChangeMarks) {
             ids.allow_commits();
         }
-        doc.commit();
+        if !matches!(path, Path::BulkFreshHost) {
+            doc.commit();
+        }
         Self { doc, c, ids }
     }
 
@@ -67,15 +84,23 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8], path: Path) -> Replica {
     let writes = change_writes();
     match path {
         Path::OpByOp => op_by_op(|| codec.import(bytes, &mut r.dm())),
-        Path::BulkLocalMarks | Path::BulkChangeMarks => codec.import(bytes, &mut r.dm()),
+        Path::BulkLocalMarks | Path::BulkChangeMarks | Path::BulkFreshHost => {
+            codec.import(bytes, &mut r.dm())
+        }
     }
     .unwrap();
     let wrote_changes = change_writes() > writes;
     assert_eq!(
         wrote_changes,
-        matches!(path, Path::BulkChangeMarks),
+        matches!(path, Path::BulkChangeMarks | Path::BulkFreshHost),
         "{path:?} took the wrong write path"
     );
+    if matches!(path, Path::BulkFreshHost) {
+        assert!(
+            r.doc.pending_ops() > 0,
+            "the host's own commit must still carry part of the import"
+        );
+    }
     r.doc.commit();
     r
 }

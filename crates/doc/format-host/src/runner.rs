@@ -1,244 +1,360 @@
-//! WASM Component Model host. Loads one `.wasm` component per registered
-//! provider, holds a precompiled module in memory, and runs detect / import /
-//! export under per-call resource limits.
+//! Provider runner. Loads one core WebAssembly module per registered
+//! provider, checks it against the `format-provider-abi` contract once, and
+//! runs detect / import / export in a fresh wasmi instance per call.
 //!
-//! Resource caps:
-//! * **Memory** — `ResourceLimiter::memory_growing` rejects growth past
-//!   `MAX_MEMORY_BYTES` (256 MiB). A guest that asks for more gets a
-//!   trap.
-//! * **Wallclock** — `Engine::increment_epoch()` is bumped once per
-//!   `EPOCH_TICK` by a Tokio task; each Store sets a deadline `MAX_TICKS`
-//!   ahead (= 10 s). A guest that loops forever is interrupted at the next
-//!   epoch bump.
+//! Resource caps, applied per call:
+//! * **Memory** — the store's limiter refuses linear-memory growth past
+//!   [`Limits::max_memory_bytes`] (default 256 MiB) and traps, so the guest
+//!   cannot mask the refusal.
+//! * **CPU** — the store starts with [`Limits::fuel`] units of wasmi fuel.
+//!   Fuel is deterministic, so a runaway guest stops after the same amount of
+//!   work on every machine instead of after a wall-clock deadline.
+//!
+//! Providers get no WASI and may import nothing except
+//! `tilo_fp.fill_random`.
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
-use format_provider_wit::CodecError;
-use wasmtime::component::{Component, Linker, ResourceTable};
-use wasmtime::{Engine, Store, StoreLimits, StoreLimitsBuilder};
-use wasmtime_wasi::{WasiCtx, WasiCtxBuilder, WasiCtxView, WasiView};
+use format_provider_abi::{
+    ABI_VERSION, CodecError, Detected, decode_detected, decode_result, exports, imports,
+    unpack_region,
+};
+use wasmi::{
+    Caller, Config, Engine, Extern, ExternType, FuncType, Instance, Linker, Module, Store,
+    StoreLimits, StoreLimitsBuilder, TrapCode, ValType,
+};
 
-/// Maximum guest memory per call.
+/// Default linear-memory ceiling per call.
 pub const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-pub const MAX_WALLCLOCK: Duration = Duration::from_secs(10);
-/// Epoch interruption uses one-second resolution to keep timer overhead low.
-pub const EPOCH_TICK: Duration = Duration::from_secs(1);
-pub const MAX_TICKS: u64 = MAX_WALLCLOCK.as_secs() / EPOCH_TICK.as_secs();
 
-// Generate host-side Component Model bindings from the WIT package shipped by
-// `format-provider-wit`. The host imports the generated `Provider`
-// world's `format_provider` exports.
-wasmtime::component::bindgen!({
-    path: "../format-provider-wit/wit",
-    world: "provider",
-});
+/// Default fuel per call. Importing 1 MB of Markdown with the builtin provider
+/// consumes about 220 billion units, so it fits with roughly 2x headroom;
+/// wasmi burns on the order of a billion units per second.
+pub const DEFAULT_FUEL: u64 = 500_000_000_000;
 
-use exports::tilo::format_provider::format_provider as wit_iface;
+/// Largest provider module the host will read.
+const MAX_MODULE_BYTES: u64 = 64 * 1024 * 1024;
 
-pub struct WasiHostState {
-    table: ResourceTable,
-    wasi: WasiCtx,
+/// Per-call resource budget.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Limits {
+    pub max_memory_bytes: usize,
+    pub fuel: u64,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_memory_bytes: MAX_MEMORY_BYTES,
+            fuel: DEFAULT_FUEL,
+        }
+    }
+}
+
+struct HostState {
     limits: StoreLimits,
 }
 
-impl WasiView for WasiHostState {
-    fn ctx(&mut self) -> WasiCtxView<'_> {
-        WasiCtxView {
-            ctx: &mut self.wasi,
-            table: &mut self.table,
-        }
-    }
-}
-
+/// A validated provider module, cheap to clone.
 #[derive(Clone)]
-pub struct LoadedComponent {
-    engine: Engine,
-    component: Component,
-    linker: Arc<Linker<WasiHostState>>,
+pub struct LoadedProvider {
+    module: Module,
+    linker: Arc<Linker<HostState>>,
+    limits: Limits,
 }
 
-impl LoadedComponent {
-    /// Build an engine wired for the component model + per-call interruption.
+/// Build an engine with fuel metering, shared by every provider.
+pub fn engine() -> Engine {
+    let mut cfg = Config::default();
+    cfg.consume_fuel(true);
+    Engine::new(&cfg)
+}
+
+impl LoadedProvider {
+    /// Load a provider module from a `.wasm` file.
     ///
     /// # Errors
     ///
-    /// Returns an error if the Wasmtime engine configuration or creation fails.
-    pub fn engine() -> anyhow::Result<Engine> {
-        let mut cfg = wasmtime::Config::new();
-        cfg.wasm_component_model(true);
-        cfg.epoch_interruption(true);
-        // On-disk compilation cache. Best-effort: if the cache dir can't be
-        // created (read-only homes, sandbox, etc.) we fall back to no cache —
-        // the host stays usable, just slower.
-        if let Some(cache_dir) = cache_dir() {
-            let _ = std::fs::create_dir_all(&cache_dir);
-            let mut cache_conf = wasmtime::CacheConfig::new();
-            cache_conf.with_directory(cache_dir);
-            if let Ok(cache) = wasmtime::Cache::new(cache_conf) {
-                cfg.cache(Some(cache));
-            }
-        }
-        Engine::new(&cfg).map_err(|e| anyhow::anyhow!("building wasmtime engine: {e:#}"))
+    /// Returns an error if the file cannot be read, is too large, is not a
+    /// valid WebAssembly module, or does not implement the provider ABI.
+    pub fn from_path(engine: &Engine, path: &Path, limits: Limits) -> anyhow::Result<Self> {
+        let size = std::fs::metadata(path)
+            .map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?
+            .len();
+        anyhow::ensure!(
+            size <= MAX_MODULE_BYTES,
+            "{} is {size} bytes; providers are limited to {MAX_MODULE_BYTES}",
+            path.display()
+        );
+        let bytes =
+            std::fs::read(path).map_err(|e| anyhow::anyhow!("reading {}: {e}", path.display()))?;
+        Self::from_bytes(engine, &bytes, limits)
+            .map_err(|e| anyhow::anyhow!("loading {}: {e:#}", path.display()))
     }
 
-    /// Load a component from a `.wasm` file.
+    /// Load a provider module from in-memory bytes.
     ///
     /// # Errors
     ///
-    /// Returns an error if reading the file or parsing it as a component fails.
-    pub fn from_path(engine: &Engine, path: &Path) -> anyhow::Result<Self> {
-        let component = Component::from_file(engine, path)
-            .map_err(|e| anyhow::anyhow!("loading {}: {e:#}", path.display()))?;
-        Ok(Self::wrap(engine.clone(), component))
-    }
-
-    /// Load a component from in-memory bytes (used by tests + `.wat` fixtures).
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if parsing the bytes as a component fails.
-    pub fn from_bytes(engine: &Engine, bytes: &[u8]) -> anyhow::Result<Self> {
-        let component = Component::new(engine, bytes)
-            .map_err(|e| anyhow::anyhow!("loading component bytes: {e:#}"))?;
-        Ok(Self::wrap(engine.clone(), component))
-    }
-
-    fn wrap(engine: Engine, component: Component) -> Self {
-        let mut linker: Linker<WasiHostState> = Linker::new(&engine);
-        // WASI imports — some component bindgen artifacts unconditionally
-        // pull in WASI even when the guest doesn't use it; wire it up
-        // pre-emptively. Best-effort: in older wasmtime-wasi builds the
-        // function may live behind a different module path.
-        let _ = wasmtime_wasi::p2::add_to_linker_sync(&mut linker);
-        Self {
-            engine,
-            component,
+    /// Returns an error if the bytes are not a valid WebAssembly module or do
+    /// not implement the provider ABI.
+    pub fn from_bytes(engine: &Engine, bytes: &[u8], limits: Limits) -> anyhow::Result<Self> {
+        let module =
+            Module::new(engine, bytes).map_err(|e| anyhow::anyhow!("invalid module: {e}"))?;
+        check_interface(&module)?;
+        let mut linker = Linker::<HostState>::new(engine);
+        linker
+            .func_wrap(imports::MODULE, imports::FILL_RANDOM, fill_random)
+            .map_err(|e| anyhow::anyhow!("defining {}: {e}", imports::FILL_RANDOM))?;
+        let provider = Self {
+            module,
             linker: Arc::new(linker),
-        }
-    }
-
-    /// Build a fresh Store with our resource caps applied.
-    fn new_store(&self) -> Store<WasiHostState> {
-        let limits = StoreLimitsBuilder::new()
-            .memory_size(MAX_MEMORY_BYTES)
-            .build();
-        let wasi = WasiCtxBuilder::new().inherit_stderr().build();
-        let state = WasiHostState {
-            table: ResourceTable::new(),
-            wasi,
             limits,
         };
-        let mut store = Store::new(&self.engine, state);
+        let mut store = provider.new_store();
+        let instance = provider
+            .instantiate(&mut store)
+            .map_err(|e| anyhow::anyhow!("instantiating: {e}"))?;
+        let version = instance
+            .get_typed_func::<(), i32>(&store, exports::ABI_VERSION)
+            .and_then(|f| f.call(&mut store, ()))
+            .map_err(|e| anyhow::anyhow!("calling {}: {e}", exports::ABI_VERSION))?;
+        anyhow::ensure!(
+            version == ABI_VERSION,
+            "provider speaks ABI version {version}; this host supports {ABI_VERSION}"
+        );
+        Ok(provider)
+    }
+
+    /// The per-call budget this provider runs under.
+    pub fn limits(&self) -> Limits {
+        self.limits
+    }
+
+    fn new_store(&self) -> Store<HostState> {
+        let limits = StoreLimitsBuilder::new()
+            .memory_size(self.limits.max_memory_bytes)
+            .instances(1)
+            .memories(1)
+            .tables(1)
+            .trap_on_grow_failure(true)
+            .build();
+        let mut store = Store::new(self.module.engine(), HostState { limits });
         store.limiter(|s| &mut s.limits);
-        // 10-s wallclock budget. The background ticker bumps the engine epoch
-        // once per second; if the guest spins past 10 bumps, this trap fires.
-        store.set_epoch_deadline(MAX_TICKS);
-        store.epoch_deadline_trap();
+        // Fuel metering is always enabled by `engine()`; a store from any
+        // other engine is rejected when the module is instantiated.
+        let _ = store.set_fuel(self.limits.fuel);
         store
     }
 
-    /// Instantiate + call `detect`.
-    ///
-    /// # Errors
-    ///
-    /// Returns a `CodecError` if component instantiation fails or if the guest
-    /// component returns an error.
-    pub fn detect(&self, head: &[u8]) -> Result<wit_iface::Detected, CodecError> {
-        let mut store = self.new_store();
-        let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.tilo_format_provider_format_provider();
-        iface
-            .call_detect(&mut store, head)
-            .map_err(|e| classify_trap(&e))
+    fn instantiate(&self, store: &mut Store<HostState>) -> Result<Instance, wasmi::Error> {
+        self.linker.instantiate_and_start(store, &self.module)
     }
 
-    /// Instantiate + call `import-doc`. Returns the canonical CRDT bytes.
+    /// Run one entry point in a fresh instance and return its response bytes.
+    fn call(&self, entry: &str, input: &[u8]) -> Result<Vec<u8>, CodecError> {
+        let mut store = self.new_store();
+        let instance = self.instantiate(&mut store).map_err(|e| classify(&e))?;
+        let memory = instance
+            .get_memory(&store, exports::MEMORY)
+            .ok_or_else(|| CodecError::trap("provider exports no memory"))?;
+        let len = u32::try_from(input.len())
+            .map_err(|_| CodecError::resource_limit("input exceeds 4 GiB"))?;
+        let ptr = instance
+            .get_typed_func::<u32, u32>(&store, exports::ALLOC)
+            .and_then(|f| f.call(&mut store, len))
+            .map_err(|e| classify(&e))?;
+        region(memory.data_mut(&mut store), ptr, len)
+            .ok_or_else(|| CodecError::trap("provider allocated an out-of-bounds input region"))?
+            .copy_from_slice(input);
+        let packed = instance
+            .get_typed_func::<(u32, u32), u64>(&store, entry)
+            .and_then(|f| f.call(&mut store, (ptr, len)))
+            .map_err(|e| classify(&e))?;
+        let (out_ptr, out_len) = unpack_region(packed);
+        region(memory.data_mut(&mut store), out_ptr, out_len)
+            .map(|r| r.to_vec())
+            .ok_or_else(|| CodecError::trap("provider returned an out-of-bounds response"))
+    }
+
+    /// Run `detect` on a file head.
     ///
     /// # Errors
     ///
-    /// Returns a `CodecError` if component instantiation fails or if the guest
-    /// component returns an error.
+    /// Returns a `CodecError` if the guest traps, exceeds its limits, or
+    /// returns a malformed response.
+    pub fn detect(&self, head: &[u8]) -> Result<Detected, CodecError> {
+        let response = self.call(exports::DETECT, head)?;
+        decode_detected(&response).map_err(|e| CodecError::trap(e.to_string()))
+    }
+
+    /// Run `import`. Returns the canonical CRDT bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns the guest's `CodecError`, or one describing a trap, exhausted
+    /// limit, or malformed response.
     pub fn import_doc(&self, bytes: &[u8]) -> Result<Vec<u8>, CodecError> {
-        let mut store = self.new_store();
-        let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.tilo_format_provider_format_provider();
-        match iface.call_import_doc(&mut store, bytes) {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(CodecError {
-                kind: e.kind,
-                message: e.message,
-            }),
-            Err(trap) => Err(classify_trap(&trap)),
-        }
+        let response = self.call(exports::IMPORT, bytes)?;
+        decode_result(response).map_err(|e| CodecError::trap(e.to_string()))?
     }
 
-    /// Instantiate + call `export-doc`. Returns the file-format bytes.
+    /// Run `export`. Returns the file-format bytes.
     ///
     /// # Errors
     ///
-    /// Returns a `CodecError` if component instantiation fails or if the guest
-    /// component returns an error.
+    /// Returns the guest's `CodecError`, or one describing a trap, exhausted
+    /// limit, or malformed response.
     pub fn export_doc(&self, canonical: &[u8]) -> Result<Vec<u8>, CodecError> {
-        let mut store = self.new_store();
-        let bindings = Provider::instantiate(&mut store, &self.component, &self.linker)
-            .map_err(|e| CodecError::trap(format!("instantiate: {e:#}")))?;
-        let iface = bindings.tilo_format_provider_format_provider();
-        match iface.call_export_doc(&mut store, canonical) {
-            Ok(Ok(v)) => Ok(v),
-            Ok(Err(e)) => Err(CodecError {
-                kind: e.kind,
-                message: e.message,
-            }),
-            Err(trap) => Err(classify_trap(&trap)),
-        }
+        let response = self.call(exports::EXPORT, canonical)?;
+        decode_result(response).map_err(|e| CodecError::trap(e.to_string()))?
     }
 }
 
-/// Map a wasmtime trap to a structured `CodecError`. The epoch-interruption
-/// path surfaces as a trap whose Display contains `"interrupt"`; memory growth
-/// past the ceiling fails inside the limiter and bubbles back as an
-/// out-of-bounds trap. Either way, the host stays up.
-fn classify_trap<E: std::fmt::Display + std::fmt::Debug>(e: &E) -> CodecError {
-    let msg = format!("{e:#?}");
-    let lo = msg.to_lowercase();
-    if lo.contains("interrupt") || lo.contains("epoch") {
-        CodecError::resource_limit(format!("wallclock budget exhausted: {msg}"))
-    } else if lo.contains("memory") || lo.contains("out of bounds") {
-        CodecError::resource_limit(format!("memory cap hit: {msg}"))
-    } else {
-        CodecError::trap(msg)
-    }
+/// Host side of `tilo_fp.fill_random`: write OS entropy into guest memory.
+fn fill_random(mut caller: Caller<'_, HostState>, ptr: u32, len: u32) -> Result<(), wasmi::Error> {
+    let Some(Extern::Memory(memory)) = caller.get_export(exports::MEMORY) else {
+        return Err(wasmi::Error::new("fill_random: provider exports no memory"));
+    };
+    let dest = region(memory.data_mut(&mut caller), ptr, len)
+        .ok_or_else(|| wasmi::Error::from(TrapCode::MemoryOutOfBounds))?;
+    getrandom::fill(dest).map_err(|e| wasmi::Error::new(format!("fill_random: {e}")))
 }
 
-/// Cache dir for wasmtime's on-disk compilation cache. Lives under
-/// `$XDG_CACHE_HOME/tilo/wasmtime/` (≈`~/.cache/tilo/wasmtime/`).
-fn cache_dir() -> Option<std::path::PathBuf> {
-    xdg_paths::cache_dir().map(|d| d.join("tilo").join("wasmtime"))
+/// The guest memory region `ptr..ptr + len`, if it is in bounds.
+fn region(memory: &mut [u8], ptr: u32, len: u32) -> Option<&mut [u8]> {
+    let start = usize::try_from(ptr).ok()?;
+    let end = start.checked_add(usize::try_from(len).ok()?)?;
+    memory.get_mut(start..end)
 }
 
-/// Spawn a Tokio task that bumps the engine's epoch counter once per
-/// [`EPOCH_TICK`]. One ticker per engine is enough; the wallclock budget is
-/// applied per Store via `set_epoch_deadline`.
-pub fn spawn_epoch_ticker(engine: Engine) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(EPOCH_TICK);
-        loop {
-            interval.tick().await;
-            engine.increment_epoch();
+/// Reject modules that do not match the ABI before running any guest code.
+fn check_interface(module: &Module) -> anyhow::Result<()> {
+    use ValType::{I32, I64};
+    let required: [(&str, &[ValType], &[ValType]); 5] = [
+        (exports::ABI_VERSION, &[], &[I32]),
+        (exports::ALLOC, &[I32], &[I32]),
+        (exports::DETECT, &[I32, I32], &[I64]),
+        (exports::IMPORT, &[I32, I32], &[I64]),
+        (exports::EXPORT, &[I32, I32], &[I64]),
+    ];
+    for (name, params, results) in required {
+        match module.get_export(name) {
+            Some(ExternType::Func(ty))
+                if ty == FuncType::new(params.iter().copied(), results.iter().copied()) => {}
+            Some(ExternType::Func(ty)) => {
+                anyhow::bail!(
+                    "export {name} has signature {ty:?}, expected {params:?} -> {results:?}"
+                )
+            }
+            Some(_) => anyhow::bail!("export {name} is not a function"),
+            None => anyhow::bail!("missing export {name}"),
         }
-    });
+    }
+    anyhow::ensure!(
+        matches!(
+            module.get_export(exports::MEMORY),
+            Some(ExternType::Memory(_))
+        ),
+        "missing memory export `{}`",
+        exports::MEMORY
+    );
+    for import in module.imports() {
+        anyhow::ensure!(
+            import.module() == imports::MODULE && import.name() == imports::FILL_RANDOM,
+            "provider imports {}::{}; only {}::{} is available",
+            import.module(),
+            import.name(),
+            imports::MODULE,
+            imports::FILL_RANDOM
+        );
+    }
+    Ok(())
+}
+
+/// Map a wasmi error to a structured `CodecError`. Exhausted fuel and refused
+/// memory growth are resource limits; everything else is a guest trap. Either
+/// way, the host stays up.
+fn classify(e: &wasmi::Error) -> CodecError {
+    match e.as_trap_code() {
+        Some(TrapCode::OutOfFuel) => {
+            CodecError::resource_limit(format!("fuel budget exhausted: {e}"))
+        }
+        Some(TrapCode::GrowthOperationLimited) => {
+            CodecError::resource_limit(format!("memory cap hit: {e}"))
+        }
+        Some(TrapCode::StackOverflow) => {
+            CodecError::resource_limit(format!("stack exhausted: {e}"))
+        }
+        _ => CodecError::trap(e.to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const MINIMAL: &str = r#"(module
+        (memory (export "memory") 1)
+        (func (export "tilo_fp_abi_version") (result i32) i32.const 1)
+        (func (export "tilo_fp_alloc") (param i32) (result i32) i32.const 1024)
+        (func (export "tilo_fp_detect") (param i32 i32) (result i64) i64.const 0)
+        (func (export "tilo_fp_import") (param i32 i32) (result i64) i64.const 0)
+        (func (export "tilo_fp_export") (param i32 i32) (result i64) i64.const 0))"#;
+
+    fn load(wat: &str) -> anyhow::Result<LoadedProvider> {
+        let wasm = wat::parse_str(wat)?;
+        LoadedProvider::from_bytes(&engine(), &wasm, Limits::default())
+    }
+
     #[test]
-    fn engine_builds_with_component_model() {
-        let _ = LoadedComponent::engine().unwrap();
+    fn minimal_module_loads() {
+        load(MINIMAL).unwrap();
+    }
+
+    #[test]
+    fn rejects_missing_export() {
+        let wat = MINIMAL.replace("tilo_fp_export", "something_else");
+        let err = load(&wat).err().unwrap().to_string();
+        assert!(err.contains("missing export tilo_fp_export"), "{err}");
+    }
+
+    #[test]
+    fn rejects_wrong_signature() {
+        let wat = MINIMAL.replace(
+            r#"(func (export "tilo_fp_detect") (param i32 i32) (result i64) i64.const 0)"#,
+            r#"(func (export "tilo_fp_detect") (param i32) (result i64) i64.const 0)"#,
+        );
+        let err = load(&wat).err().unwrap().to_string();
+        assert!(err.contains("tilo_fp_detect has signature"), "{err}");
+    }
+
+    #[test]
+    fn rejects_foreign_imports() {
+        let wat = MINIMAL.replace(
+            "(memory",
+            r#"(import "wasi_snapshot_preview1" "fd_write" (func (param i32 i32 i32 i32) (result i32))) (memory"#,
+        );
+        let err = load(&wat).err().unwrap().to_string();
+        assert!(err.contains("wasi_snapshot_preview1::fd_write"), "{err}");
+    }
+
+    #[test]
+    fn rejects_other_abi_version() {
+        let wat = MINIMAL.replace("(result i32) i32.const 1)", "(result i32) i32.const 2)");
+        let err = load(&wat).err().unwrap().to_string();
+        assert!(err.contains("ABI version 2"), "{err}");
+    }
+
+    #[test]
+    fn out_of_bounds_response_is_a_trap() {
+        let wat = MINIMAL.replace(
+            r#"(func (export "tilo_fp_import") (param i32 i32) (result i64) i64.const 0)"#,
+            r#"(func (export "tilo_fp_import") (param i32 i32) (result i64) i64.const 0x0010000000000000)"#,
+        );
+        let err = load(&wat).unwrap().import_doc(b"x").unwrap_err();
+        assert_eq!(err.kind, "trap");
+        assert!(err.message.contains("out-of-bounds response"), "{err:?}");
     }
 }

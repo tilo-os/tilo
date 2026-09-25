@@ -14,6 +14,29 @@ pub(super) mod windows;
 #[cfg(any(target_os = "linux", windows, all(test, unix)))]
 pub(super) mod coordinator;
 
+/// Path of verified final component `index` for the elevated staging helper,
+/// which opens and re-hashes it itself; the path grants no authority here. It
+/// names the verified bytes only while a consumer holds the verified readers.
+#[cfg(all(any(target_os = "linux", windows), not(test)))]
+pub(in crate::setup) fn final_component_path(
+    selected: &super::internal_download::SelectedManifest,
+    index: usize,
+) -> Result<std::path::PathBuf, String> {
+    let component = selected
+        .bundle()
+        .component(index)
+        .ok_or("Invalid cache component")?;
+    #[cfg(target_os = "linux")]
+    let base = linux::cache_base()?;
+    #[cfg(windows)]
+    let base = windows::cache_base()?;
+    Ok(base
+        .join("qos-internal-install")
+        .join(selected.manifest_sha256())
+        .join("payload")
+        .join(component.filename))
+}
+
 /// Scoped consumer interface: no File, raw handle, clone or path authority.
 pub(in crate::setup) trait HeldReadSeek: std::io::Read + std::io::Seek {}
 impl<T: std::io::Read + std::io::Seek> HeldReadSeek for T {}
