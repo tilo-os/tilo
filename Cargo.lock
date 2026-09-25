@@ -1915,20 +1915,18 @@ name = "channel-crypto"
 version = "0.1.0"
 dependencies = [
  "atomic-file",
- "chacha20poly1305 0.11.0",
  "collab-types",
  "ed25519-dalek 3.0.0",
- "getrandom 0.4.1",
  "hex",
  "openmls",
  "openmls_basic_credential",
  "openmls_rust_crypto",
  "openmls_traits",
  "postcard",
- "rand 0.10.1",
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-seal",
  "zeroize",
 ]
 

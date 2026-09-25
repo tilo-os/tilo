@@ -61,12 +61,6 @@ ALLOWED = {
     "tilo-seal": FORBIDDEN,
 }
 
-# Crates whose formats are still being moved onto tilo-seal. Each entry is
-# removed by the change that migrates that crate; nothing may be added.
-MIGRATING = {
-    "channel-crypto": frozenset({"chacha20poly1305"}),
-}
-
 DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
@@ -136,7 +130,7 @@ def violations(root: Path = ROOT) -> list[str]:
             continue
         manifest = load_manifest(manifest_path)
         package = manifest.get("package", {}).get("name", member)
-        allowed = ALLOWED.get(package, frozenset()) | MIGRATING.get(package, frozenset())
+        allowed = ALLOWED.get(package, frozenset())
         for table_name, table in dependency_tables(manifest):
             for key, dependency in named_packages(table, renames):
                 if dependency in FORBIDDEN and dependency not in allowed:
