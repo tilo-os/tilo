@@ -45,6 +45,11 @@ jobs:
           # ring forces clang for Windows ARM64, bypassing cc-rs' CC setting.
           # Use cargo-xwin's clang backend so its SDK flags match that driver.
           export XWIN_CROSS_COMPILER=clang
+          # This is a file-backed firmware handoff test binary, not the
+          # optimized public imager release. Avoid workspace fat LTO here:
+          # linking the whole UI otherwise takes many minutes per edit.
+          export CARGO_PROFILE_RELEASE_LTO=false
+          export CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16
           # cargo-xwin owns the target CFLAGS for its MSVC sysroot. Clang 18
           # treats the SDK's __prefetch declaration as a conflicting builtin
           # in zstd-sys and OpenH264, so rename that unused declaration only
