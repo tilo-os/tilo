@@ -679,7 +679,7 @@ fn draw_secondary_lock_widget(
 const CLOCK_PX: f32 = 88.0;
 /// Beside the credential panel on a wide output, where the clock has its own
 /// column:
-const CLOCK_BESIDE_PANEL_PX: f32 = 120.0;
+const CLOCK_BESIDE_PANEL_PX: f32 = 120.0; // display type size; the chrome type scale stops at 40
 /// The secondary display's clock, a step quieter than the primary's.
 const SECONDARY_CLOCK_PX: f32 = 52.0;
 
