@@ -109,6 +109,7 @@ pub struct BridgeAdapterInfo {
     pub vendor: u32,
     pub device: u32,
     pub pci_bus_id: String,
+    pub drm_device: Option<ui::dmabuf_import::VulkanDrmDeviceIdentity>,
 }
 
 /// Per-paint wall-clock breakdown, available only when explicit profiling is enabled.
@@ -1148,6 +1149,7 @@ impl RetainedGpuTarget {
             vendor: info.vendor,
             device: info.device,
             pci_bus_id: info.device_pci_bus_id,
+            drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&self.device),
         }
     }
     /// Existing Vello resource accounting; framebuffer staging is owned by the bridge.
@@ -1506,6 +1508,7 @@ impl VelloDrmBridge {
             vendor: info.vendor,
             device: info.device,
             pci_bus_id: info.device_pci_bus_id,
+            drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&dev_handle.device),
         })
     }
 
@@ -2755,14 +2758,45 @@ impl VelloDrmBridge {
     }
 
     #[inline]
-    fn swizzle_xrgb_row(dst: &mut [u8], source: &[u8]) {
-        for (d, s) in dst.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
-            if let ([db, dg, dr, dx], [sr, sg, sb, _sa]) = (d, s) {
-                *db = *sb;
-                *dg = *sg;
-                *dr = *sr;
-                *dx = 0xFF;
+    #[doc(hidden)]
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "every offset is below the prevalidated pixel count times four"
+    )]
+    /// Convert one row of tight RGBA pixels to little-endian DRM XRGB8888.
+    ///
+    /// Public only so the CPU-only fallback benchmark can exercise the exact
+    /// production primitive without constructing a GPU bridge.
+    pub fn swizzle_xrgb_row(dst: &mut [u8], source: &[u8]) {
+        // Use one prevalidated pixel count and raw byte pointers. This matters
+        // for developer sessions: `shell` is deliberately built with debug
+        // assertions, where the old chunks/zip/slice-pattern loop paid iterator
+        // and bounds-check overhead for every one of the 2.07M pixels in a
+        // 1080p frame. LLVM still recognises and vectorises this byte shuffle in
+        // release builds.
+        let pixels = dst.len().min(source.len()) / 4;
+        let src = source.as_ptr();
+        let out = dst.as_mut_ptr();
+        for pixel in 0..pixels {
+            let offset = pixel * 4;
+            // SAFETY: `pixels` is the smaller slice length divided by four,
+            // so `offset + 3` is in bounds of both `source` and `dst`.
+            unsafe {
+                *out.add(offset) = *src.add(offset + 2);
+                *out.add(offset + 1) = *src.add(offset + 1);
+                *out.add(offset + 2) = *src.add(offset);
+                *out.add(offset + 3) = 0xff;
             }
+        }
+    }
+
+    #[cfg(test)]
+    fn swizzle_xrgb_row_reference(dst: &mut [u8], source: &[u8]) {
+        for (d, s) in dst.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+            d[0] = s[2];
+            d[1] = s[1];
+            d[2] = s[0];
+            d[3] = 0xff;
         }
     }
 
@@ -3702,6 +3736,39 @@ mod tests {
     use vello::peniko::Fill;
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState, Modifiers, MouseButton, WindowEvent};
+
+    #[test]
+    fn pointer_swizzle_matches_scalar_oracle_for_unaligned_and_truncated_rows() {
+        for source_offset in 0..4 {
+            for destination_offset in 0..4 {
+                for source_len in 0..68 {
+                    for destination_len in 0..68 {
+                        let source_storage: Vec<u8> = (0_usize..source_offset + source_len)
+                            .map(|index| {
+                                u8::try_from(index.wrapping_mul(37).wrapping_add(11) & 0xff)
+                                    .unwrap_or_default()
+                            })
+                            .collect();
+                        let source = &source_storage[source_offset..];
+                        let mut expected_storage = vec![0x6d; destination_offset + destination_len];
+                        let mut actual_storage = expected_storage.clone();
+                        VelloDrmBridge::swizzle_xrgb_row_reference(
+                            &mut expected_storage[destination_offset..],
+                            source,
+                        );
+                        VelloDrmBridge::swizzle_xrgb_row(
+                            &mut actual_storage[destination_offset..],
+                            source,
+                        );
+                        assert_eq!(
+                            actual_storage, expected_storage,
+                            "source offset={source_offset} destination offset={destination_offset} source len={source_len} destination len={destination_len}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     fn required_bridge(w: u32, h: u32) -> VelloDrmBridge {
         let bridge = VelloDrmBridge::new(w, h).expect("renderer gate requires a real wgpu adapter");

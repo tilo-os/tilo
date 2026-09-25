@@ -569,25 +569,100 @@ fn serve_one(stream: &UnixStream, store: &Store, base: PathBuf) -> anyhow::Resul
     // Hold the master open until the app has it: closing before the descriptor
     // is received would hand over a dead terminal.
     drop(master);
-    // The request connection is the lifetime capability for this guest. Keep
-    // the worker attached to it: when Terminal closes (or crashes), its socket
-    // closes and this worker tears down exactly the child it created. Merely
-    // dropping the pty master is insufficient because the PID-namespace init
-    // is allowed to survive a terminal hangup.
-    let _ = reader.read(&mut [0u8; 1]);
+    // The request connection is the lifetime capability for this guest, in
+    // both directions. When Terminal closes (or crashes) its end, this worker
+    // tears down exactly the child it created: dropping the pty master is not
+    // enough because the PID-namespace init may survive a terminal hangup.
+    // When the guest exits first, this worker reaps it at once and closes the
+    // connection, which is how Terminal tells a finished session from the
+    // hand-off window in which its PTY master also reports `EIO`.
     let mut child = child;
-    let termination = match child.try_wait() {
-        Ok(Some(status)) => format!("exit {}", status.code().unwrap_or(-1)),
-        Ok(None) => match child.kill().and_then(|()| child.wait()) {
-            Ok(status) => format!("terminal closed; exit {}", status.code().unwrap_or(-1)),
-            Err(error) => format!("terminal closed; teardown failed: {error}"),
+    let termination = match wait_for_guest_or_terminal(stream, &child) {
+        LifetimeEnd::GuestExited => {
+            let status = child.wait();
+            let _ = stream.shutdown(std::net::Shutdown::Both);
+            match status {
+                Ok(status) => format!("exit {}", status.code().unwrap_or(-1)),
+                Err(error) => format!("wait failed: {error}"),
+            }
+        }
+        LifetimeEnd::TerminalClosed => match child.try_wait() {
+            Ok(Some(status)) => format!("exit {}", status.code().unwrap_or(-1)),
+            Ok(None) => match child.kill().and_then(|()| child.wait()) {
+                Ok(status) => format!("terminal closed; exit {}", status.code().unwrap_or(-1)),
+                Err(error) => format!("terminal closed; teardown failed: {error}"),
+            },
+            Err(error) => format!("status failed: {error}"),
         },
-        Err(error) => format!("status failed: {error}"),
     };
     AuditLog::at(store.audit_dir()).append(
         &crate::audit::AuditRecord::new(&id, "ush", "close-session", true).because(termination),
     );
     Ok(())
+}
+
+/// Which side ended a hosted session first.
+#[derive(Debug, PartialEq, Eq)]
+enum LifetimeEnd {
+    GuestExited,
+    TerminalClosed,
+}
+
+/// Block until either the guest process exits or Terminal's end of the
+/// session connection becomes readable (closed, or an unexpected byte).
+///
+/// Waits on a pidfd so neither side is polled. Without pidfd support the
+/// guest's exit cannot be observed separately, so only the terminal side is
+/// waited on, as before.
+fn wait_for_guest_or_terminal(stream: &UnixStream, child: &std::process::Child) -> LifetimeEnd {
+    let Ok(pid) = libc::pid_t::try_from(child.id()) else {
+        return wait_for_terminal(stream);
+    };
+    // SAFETY: pidfd_open takes a pid and flags and returns a new descriptor
+    // or -1; it reads no memory from this process.
+    let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    let Ok(raw) = std::os::fd::RawFd::try_from(raw) else {
+        return wait_for_terminal(stream);
+    };
+    if raw < 0 {
+        return wait_for_terminal(stream);
+    }
+    // SAFETY: pidfd_open returned a new descriptor that nothing else owns.
+    let pidfd = unsafe { std::os::fd::OwnedFd::from_raw_fd(raw) };
+    let mut fds = [
+        libc::pollfd {
+            fd: stream.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+        libc::pollfd {
+            fd: pidfd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        },
+    ];
+    loop {
+        // SAFETY: `fds` is a valid array of two initialised pollfd entries.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) };
+        if ready >= 0 {
+            break;
+        }
+        if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+            return wait_for_terminal(stream);
+        }
+    }
+    let [terminal, guest] = fds;
+    if guest.revents != 0 && terminal.revents == 0 {
+        LifetimeEnd::GuestExited
+    } else {
+        LifetimeEnd::TerminalClosed
+    }
+}
+
+fn wait_for_terminal(stream: &UnixStream) -> LifetimeEnd {
+    let mut reader = stream;
+    let _ = reader.read(&mut [0u8; 1]);
+    LifetimeEnd::TerminalClosed
 }
 
 /// Start `tilo-ush run` with `slave` as its stdio, in its own session, with the
@@ -687,6 +762,37 @@ pub use runtime_portal::fd_transport::{recv_with_fd, send_with_fd};
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_guest_that_exits_first_ends_the_session_without_the_terminal() {
+        let (supervisor_end, _terminal_end) = UnixStream::pair().expect("socket pair");
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn guest");
+        assert_eq!(
+            wait_for_guest_or_terminal(&supervisor_end, &child),
+            LifetimeEnd::GuestExited,
+            "an exited guest must end the session while Terminal still holds its end"
+        );
+        assert!(child.wait().expect("reap guest").success());
+    }
+
+    #[test]
+    fn a_closed_terminal_ends_the_session_of_a_running_guest() {
+        let (supervisor_end, terminal_end) = UnixStream::pair().expect("socket pair");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn guest");
+        drop(terminal_end);
+        assert_eq!(
+            wait_for_guest_or_terminal(&supervisor_end, &child),
+            LifetimeEnd::TerminalClosed
+        );
+        assert!(child.try_wait().expect("guest status").is_none());
+        child.kill().expect("stop guest");
+        let _ = child.wait();
+    }
     use crate::layer::LayerKind;
 
     /// The gate on the deliberate exception, at the place an app would hit it.

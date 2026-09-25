@@ -83,11 +83,10 @@ fn px_f32(v: f64) -> f32 {
 
 /// Pointer band that reveals the floating title/restore/close controls.
 /// Hit-testing is unaffected; only paint is gated.
-// The row starts below the 48px top bar and 12px strip header. Its floating
-// controls are 6px inset and 22px tall, ending at y=120 on the standard
-// desktop layout. Keep the complete painted controls shell-owned; using 80px
-// left their lower half visible but click-through to the maximized client.
-const MAXIMIZED_CHROME_REVEAL_Y: f64 = 120.0;
+// The maximized work area starts immediately below the 48px top bar. Its
+// controls are 6px inset and 22px tall, ending at y=76; keep a small buffer
+// so the whole painted row remains shell-owned while it is visible.
+const MAXIMIZED_CHROME_REVEAL_Y: f64 = 80.0;
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
 // search-open, focus, ...), not a bitset encoding related states, and the
@@ -556,6 +555,13 @@ impl WindowGroup {
 
     pub fn take_pending_maximize_change(&mut self) -> Option<bool> {
         self.pending_maximize_change.take()
+    }
+
+    /// Keyboard/accessibility twin of the frame maximize button.
+    pub fn toggle_maximized(&mut self) {
+        self.maximized = !self.maximized;
+        self.pending_maximize_change = Some(self.maximized);
+        self.style_dirty = true;
     }
 
     /// Not gated by `cfg(any(test, debug_assertions))`: `ui`'s `cfg(test)`
@@ -2440,6 +2446,11 @@ mod tests {
             group_node,
             &taffy,
         );
+        assert!(
+            g.bar
+                .hold_hover_intent_at(std::time::Duration::from_secs(1)),
+            "hovering the pill must arm deliberate reveal",
+        );
         g.apply_layout(&taffy, group_node, Point::ZERO);
 
         let max_rect = g.bar.max_rects()[0];
@@ -3896,9 +3907,8 @@ mod tests {
         g.maximized = true;
         assert!(g.should_show_maximized_chrome(Some(40.0)));
         assert!(g.should_show_maximized_chrome(Some(80.0)));
-        assert!(g.should_show_maximized_chrome(Some(109.0)));
-        assert!(g.should_show_maximized_chrome(Some(120.0)));
-        assert!(!g.should_show_maximized_chrome(Some(121.0)));
+        assert!(!g.should_show_maximized_chrome(Some(81.0)));
+        assert!(!g.should_show_maximized_chrome(Some(120.0)));
         assert!(!g.should_show_maximized_chrome(Some(400.0)));
         // No cursor observed yet is treated as "below the band".
         assert!(!g.should_show_maximized_chrome(None));
