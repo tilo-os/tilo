@@ -10,7 +10,7 @@ use ui::presence::PresenceKey;
 use super::{ActiveRun, Session, arguments_for_step, is_chat_app_id};
 use crate::apply::Editor;
 use crate::model::Route;
-use crate::plan::{self, Instruction};
+use crate::plan::Instruction;
 use crate::surface::{self, AppContract};
 use ::chat::doc::ChatDoc;
 use ::chat::model::{
