@@ -77,13 +77,13 @@ promote_line="$(grep -n 'Assemble, sign, attest, and promote the OS index' "$wor
   && ok 'channel tags are promoted only after signing and attestation' \
   || bad 'release channels can expose an unsigned candidate'
 
-grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$workflow" \
+grep -Fq '. os/dev/configure-cosign-kms.sh' "$workflow" \
+  && grep -Fq 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' "$repo/os/dev/configure-cosign-kms.sh" \
   && ! grep -Fq 'COSIGN_PRIVATE_KEY' "$workflow" \
   && ok 'release signing requires a non-exportable KMS/HSM key' \
   || bad 'release signing still accepts an exportable private key secret'
 
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
+if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$workflow" \
    && grep -Fq 'needs: [plan, signing-preflight]' "$workflow"; then
   ok 'OS construction starts only after release KMS identity preflight'
 else
