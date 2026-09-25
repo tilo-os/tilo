@@ -38,9 +38,14 @@ function Resolve-Firmware([string]$name, [string]$override) {
 
 function Get-VmProcess {
     if (!(Test-Path -LiteralPath $pidFile)) { return $null }
-    $id = [int](Get-Content -LiteralPath $pidFile -Raw)
-    $proc = Get-Process -Id $id -ErrorAction SilentlyContinue
-    if ($proc -and $proc.ProcessName -eq 'qemu-system-aarch64') { return $proc }
+    # A reused PID must never let status or stop act on another QEMU process.
+    try {
+        $identity = Get-Content -LiteralPath $pidFile -Raw | ConvertFrom-Json
+        if ($identity.cycle -ne $cycle) { return $null }
+        $proc = Get-Process -Id ([int]$identity.id) -ErrorAction SilentlyContinue
+        if ($proc -and $proc.ProcessName -eq 'qemu-system-aarch64' -and
+            $proc.StartTime.ToUniversalTime().Ticks -eq [long]$identity.started) { return $proc }
+    } catch { return $null }
     return $null
 }
 
@@ -100,7 +105,8 @@ function Boot([bool]$installer, [string[]]$flags) {
     $start.UseShellExecute = $false
     $start.CreateNoWindow = $true
     $proc = [Diagnostics.Process]::Start($start)
-    Set-Content -LiteralPath $pidFile -Value $proc.Id
+    @{ id = $proc.Id; started = $proc.StartTime.ToUniversalTime().Ticks.ToString(); cycle = $cycle } |
+        ConvertTo-Json -Compress | Set-Content -LiteralPath $pidFile
     Start-Sleep -Seconds 1
     if ($proc.HasExited) { throw "QEMU exited immediately with code $($proc.ExitCode)" }
     "running pid=$($proc.Id) target=$target"
@@ -116,7 +122,21 @@ switch ($Action) {
     'boot-installer' { Boot $true $Args }
     'boot-target' { Boot $false $Args }
     'status' { if (Get-VmProcess) { 'running' } else { 'stopped' } }
-    'stop' { if (Get-VmProcess) { $null = Invoke-Qmp 'quit' } }
+    'stop' {
+        $proc = Get-VmProcess
+        if ($proc) {
+            try {
+                $identity = Invoke-Qmp 'query-name'
+                if ($identity.return.name -ne $cycle) { throw 'QMP endpoint belongs to another VM' }
+                $null = Invoke-Qmp 'quit'
+            } catch { Write-Warning "QMP quit did not acknowledge: $_" }
+            Wait-Process -Id $proc.Id -Timeout 5 -ErrorAction SilentlyContinue
+            $remaining = Get-VmProcess
+            if ($remaining -and $remaining.Id -eq $proc.Id) {
+                Stop-Process -Id $proc.Id -Force
+            }
+        }
+    }
     'keys' { foreach ($key in $Args) { Send-Key $key } }
     'type' {
         if ($Args.Count -ne 1 -or $Args[0] -ne '-') { throw 'type accepts stdin only' }
