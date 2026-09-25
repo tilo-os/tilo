@@ -27,13 +27,14 @@ jobs:
             fi
           fi
           mkdir -p "$RUNNER_TEMP/llvm-bin"
-          for tool in clang-cl lld-link; do
-            if ! command -v "$tool" >/dev/null; then
-              versioned="$(find /usr/bin -maxdepth 1 -name "$tool-[0-9]*" | sort -V | tail -n 1)"
-              test -n "$versioned"
-              ln -s "$versioned" "$RUNNER_TEMP/llvm-bin/$tool"
-            fi
-          done
+          if ! command -v clang-cl >/dev/null; then
+            # Ubuntu's clang package omits the clang-cl link; Clang selects
+            # the MSVC driver mode from this executable name.
+            ln -s "$(command -v clang-18 || command -v clang)" "$RUNNER_TEMP/llvm-bin/clang-cl"
+          fi
+          if ! command -v lld-link >/dev/null; then
+            ln -s "$(command -v lld-link-18)" "$RUNNER_TEMP/llvm-bin/lld-link"
+          fi
           export PATH="$RUNNER_TEMP/llvm-bin:$PATH"
           printf '%s\n' "$RUNNER_TEMP/llvm-bin" >> "$GITHUB_PATH"
           command -v clang-cl
