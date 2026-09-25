@@ -6,6 +6,11 @@ publish.workspace = true
 license.workspace = true
 description = "Apply incoming Automerge changes to an AutoCommit without keeping patch events nothing reads."
 
+[package.metadata.cargo-machete]
+# The automerge resource-limit suites under vendor/automerge/tests are
+# compiled into this crate's tests by path; machete does not follow them.
+ignored = ["flate2", "serde_json"]
+
 [lib]
 name = "tilo_automerge"
 path = "src/lib.rs"
