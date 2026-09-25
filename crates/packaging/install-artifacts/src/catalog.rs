@@ -71,7 +71,7 @@ impl InternalRelease {
                 release_id: "fixture-only".into(),
                 arch: "x86_64".into(),
                 manifest_url: url.into(),
-                manifest_sha256: format!("{:x}", Sha256::digest(bytes)),
+                manifest_sha256: hex::encode(Sha256::digest(bytes)),
                 manifest_size: bytes.len() as u64,
             },
         }
@@ -92,7 +92,7 @@ impl InternalRelease {
     ) -> Result<crate::bundle::InternalBundle, String> {
         let expected = &self.metadata;
         if bytes.len() as u64 != expected.manifest_size
-            || format!("{:x}", Sha256::digest(bytes)) != expected.manifest_sha256
+            || hex::encode(Sha256::digest(bytes)) != expected.manifest_sha256
         {
             return Err("Internal manifest does not match the embedded catalog bytes.".into());
         }
@@ -152,7 +152,7 @@ mod internal_catalog_tests {
         json!({"purpose":"qos-internal-installer","layout":"internal-bundle-v1",
             "release_id":"fixture-only","arch":"x86_64",
             "manifest_url":"https://code.podesta.ai/fixture/manifest.json",
-            "manifest_sha256":format!("{:x}",Sha256::digest(manifest)),"manifest_size":manifest.len()})
+            "manifest_sha256":hex::encode(Sha256::digest(manifest)),"manifest_size":manifest.len()})
     }
     fn selection(value: Value) -> InternalRelease {
         match parse_catalog(&catalog(value))

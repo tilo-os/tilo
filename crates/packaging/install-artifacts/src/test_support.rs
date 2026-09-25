@@ -10,11 +10,11 @@ pub fn manifest_value() -> Value {
         "installer_protocol":1,"source_image_bytes":65536,
         "components":[
             {"role":"staging-esp","filename":"staging-esp.img","byte_size":4096,
-             "sha256":format!("{:x}",Sha256::digest(vec![b'E';4096])),
+             "sha256":hex::encode(Sha256::digest(vec![b'E';4096])),
              "partition_type_guid":"c12a7328-f81f-11d2-ba4b-00a0c93ec93b","filesystem_type":"vfat","filesystem_uuid":"1234-ABCD",
              "minimum_partition_bytes":4096,"source_offset":17408},
             {"role":"staging-root","filename":"staging-root.img","byte_size":8192,
-             "sha256":format!("{:x}",Sha256::digest(vec![b'R';8192])),
+             "sha256":hex::encode(Sha256::digest(vec![b'R';8192])),
              "partition_type_guid":"0fc63daf-8483-4772-8e79-3d69d8477de4","filesystem_type":"btrfs","filesystem_uuid":root,
              "minimum_partition_bytes":8192,"source_offset":21504}],
         "boot_binding":{"efi_path":"/EFI/Linux/fixture.efi","uki_architecture":"x86_64",

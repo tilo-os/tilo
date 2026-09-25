@@ -9,6 +9,7 @@ license.workspace = true
 test-support = []
 
 [dependencies]
+hex.workspace = true
 qos-ntfs-protocol = { path = "../../session/qos-ntfs-protocol" }
 cap-fs-ext = "3.4.6"
 cap-primitives = "3.4.6"

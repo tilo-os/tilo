@@ -205,12 +205,16 @@ fn relay_config_toml_encoding() {
                 pin: true,
                 replication: ReplicationIntent::FullWorkspace,
                 admitted_users: vec!["cd".repeat(32)],
+                shell_authority: None,
+                checkpoint_prefix_recovery: Default::default(),
             },
             WorkspaceBinding {
                 id: 42,
                 pin: false,
                 replication: selected_resources(),
                 admitted_users: Vec::new(),
+                shell_authority: None,
+                checkpoint_prefix_recovery: Default::default(),
             },
         ],
         peer_relays: vec![PeerRelayConfig {
@@ -288,6 +292,8 @@ fn legacy_workspace_binding_toml_still_parses() {
             pin: true,
             replication: ReplicationIntent::WorkspaceOnly,
             admitted_users: Vec::new(),
+            shell_authority: None,
+            checkpoint_prefix_recovery: Default::default(),
         }
     );
 }

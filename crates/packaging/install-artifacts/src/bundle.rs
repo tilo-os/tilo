@@ -442,7 +442,7 @@ fn verify_bytes(
     tests::event("eof", &component.filename, component.byte_size);
     check_cancel(cancel)?;
     require(
-        format!("{:x}", hash.finalize()) == component.sha256,
+        hex::encode(hash.finalize()) == component.sha256,
         "component digest mismatch",
     )
 }
@@ -1195,7 +1195,7 @@ pub(crate) mod tests {
         let mut manifest = fixture();
         manifest["components"][1]["byte_size"] = json!(payload.len());
         manifest["components"][1]["minimum_partition_bytes"] = json!(payload.len());
-        manifest["components"][1]["sha256"] = json!(format!("{:x}", Sha256::digest(&payload)));
+        manifest["components"][1]["sha256"] = json!(hex::encode(Sha256::digest(&payload)));
         manifest["source_image_bytes"] = json!(21504 + payload.len());
         let bundle = validate_internal_bundle(&bytes(&manifest)).unwrap();
         assert!(verify_internal_components(&bundle, dir.path(), &AtomicBool::new(false)).is_ok());

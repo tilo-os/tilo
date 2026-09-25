@@ -72,10 +72,6 @@ mod secure_store;
 #[path = "service_connection_tests.rs"]
 mod service_connection_tests;
 
-#[cfg(test)]
-#[path = "service_connection_tests.rs"]
-mod service_connection_tests;
-
 pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,

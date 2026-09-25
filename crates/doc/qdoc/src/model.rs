@@ -1358,6 +1358,18 @@ pub fn blobs(doc: &AutoCommit, c: &Containers) -> BTreeMap<String, Vec<u8>> {
     out
 }
 
+/// A block's fractional order key, when it has one.
+fn block_order(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<Vec<u8>> {
+    let obj = block_obj(doc, container, id)?;
+    match doc.get(&obj, BLOCK_ORDER) {
+        Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
+            ScalarValue::Bytes(b) => Some(b.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
     match doc.get(container, id) {
         Ok(Some((Value::Object(ObjType::Map), oid))) => Some(oid),
@@ -2363,8 +2375,7 @@ impl DocMut<'_> {
         for candidate in region_objs(self.doc, self.c, region) {
             for id in ordered_keys(self.doc, &candidate) {
                 if let Some(key) = block_order(self.doc, &candidate, &id) {
-                    co.by_id.insert(id.clone(), key.clone());
-                    co.entries.insert(OrderKey { key, id });
+                    co.insert(id.into(), key.into());
                 }
             }
         }

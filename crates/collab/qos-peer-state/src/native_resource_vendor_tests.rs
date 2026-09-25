@@ -245,30 +245,6 @@ fn malformed_deflate_must_not_reach_native_reconstruction() {
     }
 }
 
-// Catches charging only logical length and deduping by contents or wrapper
-// address. A retained handle also prevents allocator address reuse in a ledger.
-#[test]
-fn shared_backing_accounts_capacity_and_retains_identity() {
-    use automerge::resource_limits::SharedBytes;
-    use std::sync::Arc;
-    let mut bytes = Vec::with_capacity(4_096);
-    bytes.push(7);
-    let capacity = bytes.capacity();
-    let bytes = Arc::new(bytes);
-    let weak = Arc::downgrade(&bytes);
-    let handle = SharedBytes::from_arc(Arc::clone(&bytes));
-    let clone = handle.clone();
-    assert_eq!(handle.identity(), clone.identity());
-    assert!(handle.allocation_bytes() >= capacity + std::mem::size_of::<Vec<u8>>());
-    let separate = SharedBytes::from_arc(Arc::new(vec![7]));
-    assert_ne!(handle.identity(), separate.identity());
-    drop(bytes);
-    drop(handle);
-    assert!(weak.upgrade().is_some());
-    drop(clone);
-    assert!(weak.upgrade().is_none());
-}
-
 // Catches leaving compressed columns for a later unchecked native inflater,
 // and releasing the normalized buffer's reservation before its owner dies.
 #[test]

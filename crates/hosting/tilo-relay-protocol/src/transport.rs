@@ -355,11 +355,14 @@ mod tests {
                 [vec![2, 7], vec![1; 32], vec![8, 1, 9, 64], vec![2; 64]].concat(),
             ),
         ];
+        // The frame codec (length prefix) lives in `tilo-relay-client`; the
+        // payload bytes it carries are these postcard encodings.
         for (envelope, payload) in cases {
-            let mut expected = (payload.len() as u32).to_le_bytes().to_vec();
-            expected.extend_from_slice(&payload);
-            assert_eq!(encode(&envelope).unwrap(), expected);
-            assert_eq!(decode(&payload).unwrap(), envelope);
+            assert_eq!(postcard::to_stdvec(&envelope).unwrap(), payload);
+            assert_eq!(
+                postcard::from_bytes::<Envelope>(&payload).unwrap(),
+                envelope
+            );
         }
     }
 

@@ -78,7 +78,7 @@ fn verify(
         }
         h.update(&buffer[..n]);
     }
-    if format!("{:x}", h.finalize()) != c.sha256 {
+    if hex::encode(h.finalize()) != c.sha256 {
         return Err("fixture final digest mismatch".into());
     }
     check(cancel)

@@ -10,6 +10,7 @@ default = []
 test-support = ["atomic-file/test-support"]
 
 [dependencies]
+hex.workspace = true
 atomic-file = { path = "../../system/atomic-file" }
 dirs.workspace = true
 serde.workspace = true
