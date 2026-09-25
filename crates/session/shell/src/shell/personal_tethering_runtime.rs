@@ -169,6 +169,7 @@ pub fn request_phone_tethering(
         request_id,
         provider: provider.clone(),
     });
+    drop(state);
     Ok(request_id)
 }
 
@@ -184,6 +185,7 @@ pub fn disconnect_phone_tethering(request_id: TetheringId) -> Result<(), String>
         return Err("that tethering session is no longer active".into());
     }
     state.commands.push_back(Command::Disconnect { request_id });
+    drop(state);
     Ok(())
 }
 
@@ -198,6 +200,7 @@ pub fn authorize_phone_tethering(request_id: TetheringId, approved: bool) -> Res
         request_id,
         approved,
     });
+    drop(state);
     Ok(())
 }
 
@@ -746,7 +749,7 @@ mod tests {
             &mut self,
             _requester: &DeviceId,
         ) -> Result<crate::shell::device_fabric::WifiCredential, String> {
-            self.hotspot_starts += 1;
+            self.hotspot_starts = self.hotspot_starts.saturating_add(1);
             if self.fail_hotspot {
                 return Err("NetworkManager refused hotspot".into());
             }
@@ -754,7 +757,7 @@ mod tests {
         }
 
         fn stop_hotspot(&mut self) {
-            self.hotspot_stops += 1;
+            self.hotspot_stops = self.hotspot_stops.saturating_add(1);
         }
 
         fn connect(

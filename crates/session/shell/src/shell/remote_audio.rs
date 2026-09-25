@@ -168,11 +168,12 @@ fn queue_egress(
 fn append_bounded_pcm(pending: &mut Vec<u8>, bytes: &[u8]) {
     pending.extend_from_slice(bytes);
     if pending.len() > MAX_PENDING_PCM_BYTES {
-        let excess = pending.len() - MAX_PENDING_PCM_BYTES;
+        let excess = pending.len().saturating_sub(MAX_PENDING_PCM_BYTES);
         // Stereo S16LE is four bytes per sample frame. Drop old audio at a
         // sample boundary: live routing favours bounded latency over replaying
-        // a growing backlog after transport backpressure clears.
-        let discard = excess.saturating_add(3) / 4 * 4;
+        // a growing backlog after transport backpressure clears. A rounded-up
+        // count past usize::MAX still clamps to dropping the whole buffer.
+        let discard = excess.checked_next_multiple_of(4).unwrap_or(usize::MAX);
         pending.drain(..discard.min(pending.len()));
     }
 }
@@ -467,7 +468,11 @@ pub fn request(
         let mut state = state()
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
-        if state.outbound.len() + state.inbound.len() + state.pending.len()
+        if state
+            .outbound
+            .len()
+            .saturating_add(state.inbound.len())
+            .saturating_add(state.pending.len())
             >= MAX_REMOTE_AUDIO_SESSIONS
         {
             return Err("too many remote audio routes are active".into());
@@ -494,6 +499,7 @@ pub fn request(
                 pending_pcm: Vec::new(),
             },
         );
+        drop(state);
         (session_id, selection, label)
     };
     let action = PersonalFabricAction::RemoteAudioOffer {
@@ -541,7 +547,7 @@ pub fn authorize(
         let mut state = state()
             .lock()
             .map_err(|_| "remote audio service is unavailable".to_string())?;
-        if state.outbound.len() + state.inbound.len() >= MAX_REMOTE_AUDIO_SESSIONS {
+        if state.outbound.len().saturating_add(state.inbound.len()) >= MAX_REMOTE_AUDIO_SESSIONS {
             state.pending.insert(session_id, pending);
             return Err("too many remote audio routes are active".into());
         }
@@ -618,7 +624,11 @@ pub fn handle_action(network: &ShellNetwork, envelope: &PersonalFabricActionEnve
             session_id, label, ..
         } => {
             if let Ok(mut state) = state().lock()
-                && state.pending.len() + state.inbound.len() + state.outbound.len()
+                && state
+                    .pending
+                    .len()
+                    .saturating_add(state.inbound.len())
+                    .saturating_add(state.outbound.len())
                     < MAX_REMOTE_AUDIO_SESSIONS
                 && !state.pending.contains_key(session_id)
                 && !state.inbound.contains_key(session_id)
@@ -1019,7 +1029,12 @@ fn read_capture(mut stdout: impl Read, sender: &SyncSender<Vec<u8>>) {
         if read == 0 {
             break;
         }
-        match sender.try_send(buffer[..read].to_vec()) {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Read::read never reports more bytes than the buffer it was given"
+        )]
+        let chunk = buffer[..read].to_vec();
+        match sender.try_send(chunk) {
             Ok(()) | Err(TrySendError::Full(_)) => {}
             Err(TrySendError::Disconnected(_)) => break,
         }
@@ -1165,6 +1180,23 @@ mod tests {
     }
 
     #[test]
+    fn pending_pcm_rounds_partial_overflow_up_to_a_sample_frame() {
+        let mut at_limit = vec![1; MAX_PENDING_PCM_BYTES];
+        append_bounded_pcm(&mut at_limit, &[]);
+        assert_eq!(
+            at_limit.len(),
+            MAX_PENDING_PCM_BYTES,
+            "at the limit keeps everything"
+        );
+
+        // Five bytes over the limit drops two whole sample frames (eight bytes).
+        let mut over = vec![1; MAX_PENDING_PCM_BYTES];
+        append_bounded_pcm(&mut over, &[2; 5]);
+        assert_eq!(over.len(), MAX_PENDING_PCM_BYTES - 3);
+        assert_eq!(over.last(), Some(&2));
+    }
+
+    #[test]
     fn policy_disable_revokes_pending_and_outbound_routes() {
         let source = DeviceId::new("source").unwrap();
         let target = DeviceId::new("target").unwrap();
@@ -1283,7 +1315,12 @@ mod tests {
         let now = Instant::now();
         let mut state = RemoteAudioState::default();
         for (id, received) in [
-            ([1; 16], now - PENDING_TTL - Duration::from_millis(1)),
+            (
+                [1; 16],
+                now.checked_sub(PENDING_TTL)
+                    .and_then(|stale| stale.checked_sub(Duration::from_millis(1)))
+                    .unwrap(),
+            ),
             ([2; 16], now),
         ] {
             state.pending.insert(

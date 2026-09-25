@@ -162,7 +162,8 @@ impl EventBuffer {
             .events
             .iter()
             .rposition(|queued| matches!(queued, ForwardedGamepadEvent::Button { .. }))
-            .map_or(0, |index| index + 1);
+            // `index` is a position in `events`, so it is below usize::MAX.
+            .map_or(0, |index| index.saturating_add(1));
         let replace = match event {
             ForwardedGamepadEvent::Axis { axis, .. } => self
                 .events
@@ -296,6 +297,7 @@ pub fn start_physical_gamepad_forwarding(
             sent: VecDeque::new(),
         },
     );
+    drop(manager);
     Ok(session)
 }
 
