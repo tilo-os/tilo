@@ -345,13 +345,21 @@ class ProvenanceTests(unittest.TestCase):
                 board = proof.signed_medium_identity(path, ci_proof, key)
                 self.assertIn("verify-blob", runner.call_args.args[0])
             generic = dict(board, target_profile="generic", target_image=base,
-                           qcow2_sha256="f" * 64, run_id="13", run_attempt="2")
+                           qcow2_sha256="f" * 64)
             proof.checked_medium_pair(board, generic,
                                       {"first_boot_verified": False,
                                        "installer_medium_sha256": "d" * 64},
                                       {"first_boot_verified": True,
                                        "installer_medium_sha256": "f" * 64},
                                       image.split("@", 1)[1], base.split("@", 1)[1], base)
+            for field, other in (("run_id", "13"), ("run_attempt", "2")):
+                with self.subTest(field=field), self.assertRaisesRegex(ValueError, "paired WHPX"):
+                    proof.checked_medium_pair(board, {**generic, field: other},
+                                              {"first_boot_verified": False,
+                                               "installer_medium_sha256": "d" * 64},
+                                              {"first_boot_verified": True,
+                                               "installer_medium_sha256": "f" * 64},
+                                              image.split("@", 1)[1], base.split("@", 1)[1], base)
             with self.assertRaisesRegex(ValueError, "paired WHPX"):
                 proof.checked_medium_pair(board, generic,
                                           {"first_boot_verified": False,
