@@ -12377,11 +12377,11 @@ version = "0.1.0"
 dependencies = [
  "advisory-lock",
  "bounded-command",
- "chacha20poly1305 0.11.0",
  "getrandom 0.4.1",
  "hex",
  "private-fs",
  "tempfile",
+ "tilo-seal",
  "tracing",
  "windows-sys 0.61.2",
  "zeroize",

@@ -39,7 +39,7 @@
 
 use std::path::{Path, PathBuf};
 
-use secret_vault::{Custody as KeyCustody, KEY_LEN, VaultFormat, VaultKey};
+use secret_vault::{Custody as KeyCustody, VaultFormat, VaultKey};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -257,11 +257,11 @@ fn key_custody() -> KeyCustody {
     KeyCustody::for_session()
 }
 
-fn seal(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Option<Vec<u8>> {
+fn seal(key: &VaultKey, plaintext: &[u8]) -> Option<Vec<u8>> {
     FORMAT.seal(key, plaintext)
 }
 
-fn open(key: &[u8; KEY_LEN], blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+fn open(key: &VaultKey, blob: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
     FORMAT.open(key, blob)
 }
 
@@ -283,6 +283,7 @@ pub fn accounts_from_json(json: &str) -> Option<Vec<Account>> {
 mod tests {
     use super::*;
     use crate::model::demo_accounts;
+    use secret_vault::KEY_LEN;
 
     fn temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!("tilo-totp-store-{}", uuid::Uuid::new_v4()))
@@ -435,12 +436,12 @@ mod tests {
     fn windows_interrupted_migration_preserves_keys_if_ciphertext_is_corrupt() {
         let dir = temp_dir();
         let key = load_or_create_key(&dir, key_custody()).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
         private_fs::create_atomic(&dir.join("vault.enc"), b"damaged vault").unwrap();
         assert!(load_at_checked(&dir, key_custody()).is_err());
         assert_eq!(
             std::fs::read(dir.join("vault.key")).unwrap(),
-            key.as_slice()
+            key.expose_secret()
         );
         assert_eq!(
             std::fs::read(dir.join("vault.enc")).unwrap(),
@@ -457,7 +458,7 @@ mod tests {
         let dir = temp_dir();
         assert!(save_at_with_custody(&dir, &Vault::new(), key_custody()));
         let key = load_or_create_key(&dir, key_custody()).unwrap();
-        private_fs::create_atomic(&dir.join("vault.key"), key.as_slice()).unwrap();
+        private_fs::create_atomic(&dir.join("vault.key"), key.expose_secret()).unwrap();
         let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
         let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
         // Allow reads but deny deletion while this owned handle is alive.
@@ -524,10 +525,12 @@ mod tests {
         let blob = unhex(LEGACY_BLOB);
         assert_eq!(&blob[..5], b"QOAV\x01");
         assert_eq!(
-            open(&[0x42; KEY_LEN], &blob).unwrap().as_slice(),
+            open(&VaultKey::from_bytes([0x42; KEY_LEN]), &blob)
+                .unwrap()
+                .as_slice(),
             b"tilo authenticator known answer"
         );
-        assert!(open(&[0x43; KEY_LEN], &blob).is_none());
+        assert!(open(&VaultKey::from_bytes([0x43; KEY_LEN]), &blob).is_none());
     }
 
     #[test]
@@ -541,6 +544,12 @@ mod tests {
         let loaded = load_at_checked(&dir, KeyCustody::LocalFile).unwrap();
         assert_eq!(loaded.ordered(), expected);
         assert!(save_at_with_custody(&dir, &loaded, KeyCustody::LocalFile));
+        assert!(
+            std::fs::read(dir.join("vault.enc"))
+                .unwrap()
+                .starts_with(b"TSEAL"),
+            "re-saving writes the current tilo-seal envelope"
+        );
         assert_eq!(
             load_at_checked(&dir, KeyCustody::LocalFile)
                 .unwrap()
@@ -642,11 +651,9 @@ mod tests {
                 .map(|worker| worker.join().unwrap())
                 .collect();
             let persisted = std::fs::read(dir.join("vault.key")).unwrap();
-            assert!(
-                results
-                    .iter()
-                    .all(|(key, saved)| { *saved && key.as_slice() == persisted.as_slice() })
-            );
+            assert!(results.iter().all(|(key, saved)| {
+                *saved && key.expose_secret().as_slice() == persisted.as_slice()
+            }));
             assert_eq!(
                 load_at_checked(&dir, KeyCustody::LocalFile)
                     .unwrap()
@@ -675,17 +682,17 @@ mod tests {
 
     #[test]
     fn seal_open_round_trips_and_rejects_tampering() {
-        let key = [7u8; KEY_LEN];
+        let key = VaultKey::from_bytes([7u8; KEY_LEN]);
         let plaintext = b"secret vault bytes";
         let blob = seal(&key, plaintext).expect("seal");
         // The sealed blob is not the plaintext.
         assert!(!blob.windows(plaintext.len()).any(|w| w == plaintext));
-        // It carries the magic header.
-        assert_eq!(&blob[..4], FORMAT.magic.as_slice());
+        // It is a versioned `tilo-seal` envelope bound to this vault format.
+        assert!(blob.starts_with(b"TSEAL"));
         // Round-trips under the same key.
         assert_eq!(open(&key, &blob).unwrap().as_slice(), plaintext);
         // A different key can't open it.
-        assert!(open(&[9u8; KEY_LEN], &blob).is_none());
+        assert!(open(&VaultKey::from_bytes([9u8; KEY_LEN]), &blob).is_none());
         // A single flipped ciphertext byte fails authentication.
         let mut tampered = blob;
         let last = tampered.len() - 1;
