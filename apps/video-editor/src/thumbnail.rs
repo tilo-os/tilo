@@ -171,6 +171,10 @@ impl Thumb {
 /// Generate a representative thumbnail frame for a `palette` slot: a soft
 /// vertical gradient with a horizon band and a gentle corner vignette, in the
 /// palette's colour family — reads as a frame, not a flat swatch.
+#[expect(
+    clippy::many_single_char_names,
+    reason = "pixel maths: w/h and x/y are the frame and pixel, r/g/b the channels"
+)]
 pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let w = w.max(1);
     let h = h.max(1);
@@ -183,7 +187,7 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
     let bottom = [base.r * 0.32, base.g * 0.32, base.b * 0.32];
     let mut rgba = vec![0u8; (w * h * 4) as usize];
     let (wf, hf) = (f64::from(w), f64::from(h));
-    for y in 0..h {
+    for (y, row) in (0..h).zip(rgba.chunks_exact_mut(w as usize * 4)) {
         let yf = f64::from(y) / hf;
         // Vertical gradient top→bottom.
         let mut r = top[0] + (bottom[0] - top[0]) * yf;
@@ -195,17 +199,18 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
             g *= 0.82;
             b *= 0.82;
         }
-        for x in 0..w {
+        for (x, px) in (0..w).zip(row.as_chunks_mut::<4>().0) {
             let xf = f64::from(x) / wf;
             // Gentle corner vignette.
             let dx = (xf - 0.5) * 2.0;
             let dy = (yf - 0.5) * 2.0;
             let v = (1.0 - 0.28 * (dx * dx + dy * dy)).clamp(0.0, 1.0);
-            let i = ((y * w + x) * 4) as usize;
-            rgba[i] = ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 1] = ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 2] = ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8;
-            rgba[i + 3] = 255;
+            *px = [
+                ((r * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                ((g * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                ((b * v) * 255.0).round().clamp(0.0, 255.0) as u8,
+                255,
+            ];
         }
     }
     Thumb::new(w, h, Arc::new(rgba), false)
@@ -216,6 +221,10 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 /// would put megabytes per cell in RAM for a 4K clip; the strip only ever
 /// draws them a few dozen pixels wide.
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "pixel maths: x/y are the output pixel, r/g/b/a its channel sums, n the count"
+)]
 fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32, Vec<u8>) {
     if sw == 0 || sh == 0 || src.len() < (sw as usize * sh as usize * 4) {
         return (sw, sh, src.to_vec());
@@ -227,34 +236,40 @@ fn downscale(src: &[u8], sw: u32, sh: u32, max_w: u32, max_h: u32) -> (u32, u32,
     let dw = ((f64::from(sw) * scale).round() as u32).max(1);
     let dh = ((f64::from(sh) * scale).round() as u32).max(1);
     let mut out = vec![0u8; dw as usize * dh as usize * 4];
-    for y in 0..dh {
+    // `src` holds at least `sw * sh` pixels (checked above), so it has at
+    // least `sh` whole rows of `sw` pixels each.
+    let (src_px, _) = src.as_chunks::<4>();
+    let src_rows = || src_px.chunks_exact(sw as usize);
+    for (y, out_row) in (0..dh).zip(out.chunks_exact_mut(dw as usize * 4)) {
         let y0 = (u64::from(y) * u64::from(sh) / u64::from(dh)) as u32;
         let y1 = ((u64::from(y + 1) * u64::from(sh) / u64::from(dh)) as u32)
             .max(y0 + 1)
             .min(sh);
-        for x in 0..dw {
+        for (x, out_px) in (0..dw).zip(out_row.as_chunks_mut::<4>().0) {
             let x0 = (u64::from(x) * u64::from(sw) / u64::from(dw)) as u32;
             let x1 = ((u64::from(x + 1) * u64::from(sw) / u64::from(dw)) as u32)
                 .max(x0 + 1)
                 .min(sw);
             let (mut r, mut g, mut b, mut a) = (0u32, 0u32, 0u32, 0u32);
             let mut n = 0u32;
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = ((sy as usize * sw as usize) + sx as usize) * 4;
-                    r += u32::from(src[i]);
-                    g += u32::from(src[i + 1]);
-                    b += u32::from(src[i + 2]);
-                    a += u32::from(src[i + 3]);
+            let rows = src_rows()
+                .skip(y0 as usize)
+                .take(y1.saturating_sub(y0) as usize);
+            for row in rows {
+                let span = row
+                    .iter()
+                    .skip(x0 as usize)
+                    .take(x1.saturating_sub(x0) as usize);
+                for &[pr, pg, pb, pa] in span {
+                    r += u32::from(pr);
+                    g += u32::from(pg);
+                    b += u32::from(pb);
+                    a += u32::from(pa);
                     n += 1;
                 }
             }
             let n = n.max(1);
-            let o = ((y as usize * dw as usize) + x as usize) * 4;
-            out[o] = (r / n) as u8;
-            out[o + 1] = (g / n) as u8;
-            out[o + 2] = (b / n) as u8;
-            out[o + 3] = (a / n) as u8;
+            *out_px = [(r / n) as u8, (g / n) as u8, (b / n) as u8, (a / n) as u8];
         }
     }
     (dw, dh, out)
@@ -544,7 +559,7 @@ impl ThumbnailCache {
                 drop(q);
                 let pool = self.pool.clone();
                 let tx = self.tx.clone();
-                std::thread::spawn(move || run_worker(pool, tx));
+                std::thread::spawn(move || run_worker(&pool, &tx));
             }
         }
         self.pool.wake.notify_one();
@@ -573,6 +588,10 @@ impl ThumbnailCache {
     ///
     /// Failure is recorded exactly as the pool records it, so a source that
     /// cannot be decoded is written off here too rather than retried.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the swatch request plus `ensure_strip`'s filmstrip span, spelled the same way"
+    )]
     pub fn warm_blocking(
         &mut self,
         id: MediaId,
@@ -757,7 +776,7 @@ fn take_job(q: &mut Queue, preferred: Option<&Path>) -> Option<Job> {
 /// One worker: owns at most one engine, reuses it across consecutive requests
 /// for the same source, and retires after [`WORKER_IDLE`] with nothing to do.
 #[cfg_attr(not(feature = "decode"), allow(dead_code))]
-fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
+fn run_worker(pool: &Pool, tx: &Sender<Outcome>) {
     let mut session: Option<Session> = None;
     loop {
         let job = {
@@ -790,9 +809,8 @@ fn run_worker(pool: Arc<Pool>, tx: Sender<Outcome>) {
                     continue; // spurious wake
                 }
             }
-            let job = match picked {
-                Some(j) => j,
-                None => continue,
+            let Some(job) = picked else {
+                continue;
             };
             drop(guard);
             job

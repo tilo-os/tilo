@@ -92,6 +92,11 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     use gstreamer::prelude::*;
     use gstreamer_app as gst_app;
 
+    // Two-stage reduction: a peak per short window while pulling, then down to
+    // `buckets`. Taking the max at each stage preserves the true peak exactly
+    // while keeping memory flat for a long track.
+    const WINDOW: usize = 256;
+
     gst::init().ok()?;
     let uri = crate::media::engine_source(path).to_uri().ok()?;
 
@@ -149,10 +154,6 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
         return None;
     }
 
-    // Two-stage reduction: a peak per short window while pulling, then down to
-    // `buckets`. Taking the max at each stage preserves the true peak exactly
-    // while keeping memory flat for a long track.
-    const WINDOW: usize = 256;
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
@@ -170,8 +171,8 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
                 let Ok(map) = buffer.map_readable() else {
                     continue;
                 };
-                for pair in map.as_slice().chunks_exact(2) {
-                    let v = f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
+                for &pair in map.as_slice().as_chunks::<2>().0 {
+                    let v = f32::from(i16::from_le_bytes(pair)) / 32768.0;
                     let a = v.abs();
                     if a > acc {
                         acc = a;
@@ -205,21 +206,22 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
 /// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
 pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
     let buckets = buckets.max(1);
-    if d.len() < 12 || &d[0..4] != b"RIFF" || &d[8..12] != b"WAVE" {
+    if !d.starts_with(b"RIFF") || d.get(8..12) != Some(b"WAVE".as_slice()) {
         return None;
     }
     let mut i = 12usize;
     let (mut fmt, mut channels, mut bits) = (0u16, 1u16, 16u16);
     let mut data_range: Option<(usize, usize)> = None;
-    while i + 8 <= d.len() {
-        let id = &d[i..i + 4];
-        let size = u32::from_le_bytes([d[i + 4], d[i + 5], d[i + 6], d[i + 7]]) as usize;
+    while let Some(&[i0, i1, i2, i3, s0, s1, s2, s3]) = d.get(i..i + 8) {
+        let size = u32::from_le_bytes([s0, s1, s2, s3]) as usize;
         let body = i + 8;
-        match id {
-            b"fmt " if body + 16 <= d.len() => {
-                fmt = u16::from_le_bytes([d[body], d[body + 1]]);
-                channels = u16::from_le_bytes([d[body + 2], d[body + 3]]).max(1);
-                bits = u16::from_le_bytes([d[body + 14], d[body + 15]]);
+        match &[i0, i1, i2, i3] {
+            b"fmt " => {
+                if let Some(&[f0, f1, c0, c1, .., b0, b1]) = d.get(body..body + 16) {
+                    fmt = u16::from_le_bytes([f0, f1]);
+                    channels = u16::from_le_bytes([c0, c1]).max(1);
+                    bits = u16::from_le_bytes([b0, b1]);
+                }
             }
             b"data" => {
                 let end = (body + size).min(d.len());
@@ -232,7 +234,8 @@ pub fn peaks_from_wav_bytes(d: &[u8], buckets: usize) -> Option<Vec<f32>> {
         i = body + size + (size & 1);
     }
     let (start, end) = data_range?;
-    let samples = decode_samples(&d[start..end], fmt, bits, channels)?;
+    // `body < end <= d.len()` when the range was recorded.
+    let samples = decode_samples(d.get(start..end)?, fmt, bits, channels)?;
     if samples.is_empty() {
         return None;
     }
@@ -247,29 +250,26 @@ fn decode_samples(d: &[u8], fmt: u16, bits: u16, channels: u16) -> Option<Vec<f3
     if frame == 0 {
         return None;
     }
-    let frames = d.len() / frame;
-    let mut out = Vec::with_capacity(frames);
-    for f in 0..frames {
-        let base = f * frame;
+    let mut out = Vec::with_capacity(d.len() / frame);
+    for frame_bytes in d.chunks_exact(frame) {
         let mut acc = 0.0f32;
-        for c in 0..ch {
-            let o = base + c * bytes_per;
-            let v = match (fmt, bits) {
-                (1, 8) => (f32::from(d[o]) - 128.0) / 128.0,
-                (1, 16) => f32::from(i16::from_le_bytes([d[o], d[o + 1]])) / 32768.0,
-                (1, 24) => {
-                    let mut x =
-                        i32::from(d[o]) | (i32::from(d[o + 1]) << 8) | (i32::from(d[o + 2]) << 16);
+        // Every sample is exactly `bits / 8` bytes, so each arm's slice
+        // pattern matches whenever its `(fmt, bits)` does.
+        for sample in frame_bytes.chunks_exact(bytes_per) {
+            let v = match (fmt, bits, sample) {
+                (1, 8, &[b]) => (f32::from(b) - 128.0) / 128.0,
+                (1, 16, &[b0, b1]) => f32::from(i16::from_le_bytes([b0, b1])) / 32768.0,
+                (1, 24, &[b0, b1, b2]) => {
+                    let mut x = i32::from(b0) | (i32::from(b1) << 8) | (i32::from(b2) << 16);
                     if x & 0x0080_0000 != 0 {
                         x |= !0x00FF_FFFF;
                     }
                     x as f32 / 8_388_608.0
                 }
-                (1, 32) => {
-                    i32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]) as f32
-                        / 2_147_483_648.0
+                (1, 32, &[b0, b1, b2, b3]) => {
+                    i32::from_le_bytes([b0, b1, b2, b3]) as f32 / 2_147_483_648.0
                 }
-                (3, 32) => f32::from_le_bytes([d[o], d[o + 1], d[o + 2], d[o + 3]]),
+                (3, 32, &[b0, b1, b2, b3]) => f32::from_le_bytes([b0, b1, b2, b3]),
                 _ => return None,
             };
             acc += v;
@@ -287,8 +287,11 @@ fn bucketize(samples: &[f32], buckets: usize) -> Vec<f32> {
     for (idx, &s) in samples.iter().enumerate() {
         let b = (idx * buckets / n).min(buckets - 1);
         let a = s.abs();
-        if a > peaks[b] {
-            peaks[b] = a;
+        // `b <= buckets - 1`, the last slot.
+        if let Some(peak) = peaks.get_mut(b)
+            && a > *peak
+        {
+            *peak = a;
         }
     }
     let maxp = peaks.iter().copied().fold(0.0f32, f32::max);
@@ -404,7 +407,7 @@ impl WaveformCache {
             w.running = true;
             let work = self.work.clone();
             let tx = self.tx.clone();
-            std::thread::spawn(move || run_worker(work, tx));
+            std::thread::spawn(move || run_worker(&work, &tx));
         }
         drop(w);
         cv.notify_one();
@@ -468,8 +471,8 @@ impl Drop for WaveformCache {
 
 /// The single peak worker: drains the queue one source at a time and retires
 /// when idle.
-fn run_worker(work: Arc<(Mutex<Work>, Condvar)>, tx: Sender<(MediaId, Option<Vec<f32>>)>) {
-    let (lock, cv) = &*work;
+fn run_worker(work: &(Mutex<Work>, Condvar), tx: &Sender<(MediaId, Option<Vec<f32>>)>) {
+    let (lock, cv) = work;
     loop {
         let task = {
             let mut w = lock
@@ -543,6 +546,44 @@ mod tests {
         v.extend_from_slice(&(data.len() as u32).to_le_bytes());
         v.extend_from_slice(&data);
         v
+    }
+
+    #[test]
+    fn every_prefix_of_a_wav_is_read_without_panicking() {
+        // A download cut short can end anywhere: inside the chunk header,
+        // inside `fmt `, or mid-sample. None of those may read past the end.
+        let wav = wav_16(&[0.5, -0.5, 0.25, -0.25], 8000);
+        for n in 0..wav.len() {
+            let _ = peaks_from_wav_bytes(&wav[..n], 4);
+        }
+        // With the samples cut off entirely there is nothing to draw.
+        assert_eq!(peaks_from_wav_bytes(&wav[..44], 4), None);
+        assert!(peaks_from_wav_bytes(&wav, 4).is_some());
+    }
+
+    #[test]
+    fn every_supported_sample_format_decodes_to_the_same_level() {
+        // Half scale, as each PCM width spells it.
+        let cases: [(u16, u16, Vec<u8>); 5] = [
+            (1, 8, vec![192]),
+            (1, 16, 16_384i16.to_le_bytes().to_vec()),
+            (1, 24, vec![0x00, 0x00, 0x40]),
+            (1, 32, 1_073_741_824i32.to_le_bytes().to_vec()),
+            (3, 32, 0.5f32.to_le_bytes().to_vec()),
+        ];
+        for (fmt, bits, bytes) in cases {
+            let got = decode_samples(&bytes, fmt, bits, 1).expect("a supported format");
+            assert_eq!(got.len(), 1, "{fmt}/{bits}");
+            assert!((got[0] - 0.5).abs() < 1e-6, "{fmt}/{bits}: {}", got[0]);
+        }
+        // Negative 24-bit samples sign-extend rather than reading as huge.
+        let neg = decode_samples(&[0x00, 0x00, 0xC0], 1, 24, 1).expect("24-bit");
+        assert!((neg[0] + 0.5).abs() < 1e-6, "{}", neg[0]);
+        // An unknown width is refused, not guessed at.
+        assert_eq!(decode_samples(&[0, 0], 1, 12, 1), None);
+        // A partial trailing frame is dropped, not read past.
+        let stereo = decode_samples(&[0, 0x40, 0, 0x40, 0], 1, 16, 2).expect("stereo");
+        assert_eq!(stereo.len(), 1);
     }
 
     #[test]

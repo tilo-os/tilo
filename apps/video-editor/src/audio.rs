@@ -430,7 +430,9 @@ fn fetch_at_rate(
         return None;
     }
     let mut out = vec![0.0f32; frames * CHANNELS];
-    for i in 0..frames {
+    let (src_frames, _) = src.as_chunks::<CHANNELS>();
+    let (out_frames, _) = out.as_chunks_mut::<CHANNELS>();
+    for (i, out_frame) in out_frames.iter_mut().enumerate() {
         // Where this output frame falls in the source block.
         //
         // Reversed, the block covers `(source_time - span, source_time]`,
@@ -446,24 +448,19 @@ fn fetch_at_rate(
             continue;
         }
         let j = pos.floor() as usize;
-        if j >= have {
+        let Some(left) = src_frames.get(j) else {
             // Past what the source gave: the rest of the block is silent
             // rather than a repeat of the last frame.
             break;
-        }
+        };
         let frac = (pos - j as f64) as f32;
-        for ch in 0..CHANNELS {
-            let a = src[j * CHANNELS + ch];
-            // The window's final sample has no right-hand neighbour to
-            // interpolate toward. Hold it for that one frame rather than
-            // ramping into a zero the source never contained, which would
-            // put a click on the edge of every block that lands there.
-            let b = if j + 1 < have {
-                src[(j + 1) * CHANNELS + ch]
-            } else {
-                a
-            };
-            out[i * CHANNELS + ch] = a + (b - a) * frac;
+        // The window's final sample has no right-hand neighbour to
+        // interpolate toward. Hold it for that one frame rather than
+        // ramping into a zero the source never contained, which would
+        // put a click on the edge of every block that lands there.
+        let right = src_frames.get(j + 1).unwrap_or(left);
+        for ((o, &a), &b) in out_frame.iter_mut().zip(left).zip(right) {
+            *o = a + (b - a) * frac;
         }
     }
     Some(out)
@@ -547,7 +544,7 @@ impl PcmSource for DecodedPcm {
             return None;
         }
         let end = (start + frames * CHANNELS).min(pcm.len());
-        Some(pcm[start..end].to_vec())
+        pcm.get(start..end).map(<[f32]>::to_vec)
     }
 }
 
@@ -584,6 +581,8 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     use gstreamer_app as gst_app;
     use media::gst;
     use media::gst::prelude::*;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     gst::init().ok()?;
     let pipeline = gst::Pipeline::new();
@@ -611,8 +610,6 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
 
     // `uridecodebin` exposes pads once it knows the streams; take the audio
     // one and leave video alone.
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
     let linked = Arc::new(AtomicBool::new(false));
     let convert_weak = convert.downgrade();
     let linked_in = linked.clone();
@@ -675,9 +672,8 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
             let Ok(map) = buffer.map_readable() else {
                 continue;
             };
-            for chunk in map.chunks_exact(4) {
-                out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
-            }
+            let (words, _) = map.as_chunks::<4>();
+            out.extend(words.iter().map(|&w| f32::from_le_bytes(w)));
         } else {
             if sink.is_eos() {
                 break;
@@ -857,8 +853,8 @@ impl MixMeters {
             return;
         };
         s.monitored = true;
-        for ch in 0..CHANNELS {
-            s.master[ch] = s.master[ch].max(report.master.peak[ch]);
+        for (level, peak) in s.master.iter_mut().zip(report.master.peak) {
+            *level = level.max(peak);
         }
         s.master_hold = s.master_hold.max(report.master.loudest());
         for (id, m) in &report.tracks {
@@ -871,9 +867,12 @@ impl MixMeters {
                 });
                 s.tracks.len() - 1
             };
-            let t = &mut s.tracks[i];
-            for ch in 0..CHANNELS {
-                t.level[ch] = t.level[ch].max(m.peak[ch]);
+            // `i` was just found or pushed.
+            let Some(t) = s.tracks.get_mut(i) else {
+                continue;
+            };
+            for (level, peak) in t.level.iter_mut().zip(m.peak) {
+                *level = level.max(peak);
             }
             t.hold = t.hold.max(m.loudest());
             // Latched, never cleared by a quieter block: the point of the
@@ -906,12 +905,12 @@ impl MixMeters {
         let Ok(mut s) = self.state.lock() else {
             return;
         };
-        for ch in 0..CHANNELS {
-            s.master[ch] *= factor;
+        for level in &mut s.master {
+            *level *= factor;
         }
         for t in &mut s.tracks {
-            for ch in 0..CHANNELS {
-                t.level[ch] *= factor;
+            for level in &mut t.level {
+                *level *= factor;
             }
         }
     }

@@ -194,8 +194,97 @@ impl TitleRaster {
             y += leading;
         }
 
-        let renderer = self.renderer.as_mut().expect("built above");
+        // Built (or refused, returning early) at the top of this call.
+        let renderer = self.renderer.as_mut()?;
         Some(renderer.render_rgba(&scene))
+    }
+}
+
+/// Break `line` into pieces that each fit inside `max_w`.
+///
+/// Greedy on word boundaries, which is what a reader expects and what every
+/// other text surface here does. A single word too long for the frame — a URL,
+/// a compound noun, a language that does not space its words — is broken by
+/// character rather than allowed to run off the edge: a title that leaves the
+/// frame is worse than one with an awkward break, because the part outside is
+/// simply gone from the exported file.
+///
+/// Measured through the same `measure_font` the drawing uses, so the wrap and
+/// the paint cannot disagree about what fits. Called only when a title's
+/// raster is rebuilt, never per frame.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the line and the full font description `measure_font` takes, plus both widths"
+)]
+fn wrap_to(
+    tr: &mut ui::text_render::TextRenderer,
+    line: &str,
+    size: f32,
+    weight: ui::text_render::TextWeight,
+    italic: bool,
+    family: &ui::text_render::FontChoice,
+    max_w: f64,
+    frame_w: f64,
+) -> Vec<String> {
+    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
+    };
+    // Breaking mid-letter is measured against the **frame**, not the
+    // title-safe box. Safe-area is a placement margin, not a hard bound: a
+    // single word that merely runs into the margin should use the margin,
+    // because "HELLO" chopped to "HELL" / "O" is worse than a title sitting
+    // slightly wider than broadcast-safe. Only a word that cannot fit the
+    // picture at all is broken.
+    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
+        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
+    };
+
+    // An empty line is a deliberate blank line, and must survive as one.
+    if line.trim().is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut out: Vec<String> = Vec::new();
+    let mut current = String::new();
+    for word in line.split_whitespace() {
+        let candidate = if current.is_empty() {
+            word.to_string()
+        } else {
+            format!("{current} {word}")
+        };
+        if fits(tr, &candidate) {
+            current = candidate;
+            continue;
+        }
+        if !current.is_empty() {
+            out.push(std::mem::take(&mut current));
+        }
+        // The word alone: on its own line if it fits the picture at all,
+        // and only broken up when even that is impossible.
+        if fits_frame(tr, word) {
+            current = word.to_string();
+            continue;
+        }
+        let mut piece = String::new();
+        for ch in word.chars() {
+            let mut next = piece.clone();
+            next.push(ch);
+            if piece.is_empty() || fits_frame(tr, &next) {
+                piece = next;
+            } else {
+                out.push(std::mem::take(&mut piece));
+                piece.push(ch);
+            }
+        }
+        current = piece;
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    if out.is_empty() {
+        vec![String::new()]
+    } else {
+        out
     }
 }
 
@@ -392,89 +481,5 @@ mod tests {
             1,
             "a new frame size rebuilds the renderer"
         );
-    }
-}
-
-/// Break `line` into pieces that each fit inside `max_w`.
-///
-/// Greedy on word boundaries, which is what a reader expects and what every
-/// other text surface here does. A single word too long for the frame — a URL,
-/// a compound noun, a language that does not space its words — is broken by
-/// character rather than allowed to run off the edge: a title that leaves the
-/// frame is worse than one with an awkward break, because the part outside is
-/// simply gone from the exported file.
-///
-/// Measured through the same `measure_font` the drawing uses, so the wrap and
-/// the paint cannot disagree about what fits. Called only when a title's
-/// raster is rebuilt, never per frame.
-fn wrap_to(
-    tr: &mut ui::text_render::TextRenderer,
-    line: &str,
-    size: f32,
-    weight: ui::text_render::TextWeight,
-    italic: bool,
-    family: &ui::text_render::FontChoice,
-    max_w: f64,
-    frame_w: f64,
-) -> Vec<String> {
-    let fits = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
-        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= max_w
-    };
-    // Breaking mid-letter is measured against the **frame**, not the
-    // title-safe box. Safe-area is a placement margin, not a hard bound: a
-    // single word that merely runs into the margin should use the margin,
-    // because "HELLO" chopped to "HELL" / "O" is worse than a title sitting
-    // slightly wider than broadcast-safe. Only a word that cannot fit the
-    // picture at all is broken.
-    let fits_frame = |tr: &mut ui::text_render::TextRenderer, s: &str| -> bool {
-        f64::from(tr.measure_font(s, size, None, weight, italic, family).0) <= frame_w
-    };
-
-    // An empty line is a deliberate blank line, and must survive as one.
-    if line.trim().is_empty() {
-        return vec![String::new()];
-    }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut current = String::new();
-    for word in line.split_whitespace() {
-        let candidate = if current.is_empty() {
-            word.to_string()
-        } else {
-            format!("{current} {word}")
-        };
-        if fits(tr, &candidate) {
-            current = candidate;
-            continue;
-        }
-        if !current.is_empty() {
-            out.push(std::mem::take(&mut current));
-        }
-        // The word alone: on its own line if it fits the picture at all,
-        // and only broken up when even that is impossible.
-        if fits_frame(tr, word) {
-            current = word.to_string();
-            continue;
-        }
-        let mut piece = String::new();
-        for ch in word.chars() {
-            let mut next = piece.clone();
-            next.push(ch);
-            if piece.is_empty() || fits_frame(tr, &next) {
-                piece = next;
-            } else {
-                out.push(std::mem::take(&mut piece));
-                piece.push(ch);
-            }
-        }
-        current = piece;
-    }
-    if !current.is_empty() {
-        out.push(current);
-    }
-    if out.is_empty() {
-        vec![String::new()]
-    } else {
-        out
     }
 }

@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 // ==========================================================================
@@ -362,7 +366,7 @@ impl VideoEditorApp {
 
     /// Build one pane's group node, marking it focused when the keyboard is in
     /// it so the export layer can nominate an active descendant inside.
-    pub(super) fn a11y_pane(&self, pane: Pane, children: Vec<AccessNode>) -> AccessNode {
+    pub(super) fn a11y_pane(pane: Pane, children: Vec<AccessNode>) -> AccessNode {
         AccessNode::new(Role::Group)
             .with_name(pane.label())
             .with_key(pane.key())
@@ -406,14 +410,14 @@ impl VideoEditorApp {
             })
             .collect();
         if rows.is_empty() {
-            return self.a11y_pane(
+            return VideoEditorApp::a11y_pane(
                 Pane::Bin,
                 vec![AccessNode::new(Role::StaticText)
                     .with_name("No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.")
                     .with_key(0)],
             );
         }
-        self.a11y_pane(Pane::Bin, rows)
+        VideoEditorApp::a11y_pane(Pane::Bin, rows)
     }
 
     /// The five transport buttons, named.
@@ -462,7 +466,7 @@ impl VideoEditorApp {
                     }),
             );
         }
-        let mut node = self.a11y_pane(Pane::Transport, buttons);
+        let mut node = VideoEditorApp::a11y_pane(Pane::Transport, buttons);
         // The playhead is a live readout: it changes without focus moving, so
         // it rides on the pane as a value the reader can re-read on demand.
         node = node.with_value(crate::timecode::timecode(self.playhead, self.project.fps));
@@ -471,6 +475,10 @@ impl VideoEditorApp {
 
     /// Tracks as containers, clips as the items inside them, plus each track's
     /// mute / solo / lock toggles.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the timeline's accessible tree, built top to bottom in reading order"
+    )]
     pub(super) fn a11y_timeline(&self) -> AccessNode {
         let cursor = self.focus.pane == Pane::Timeline;
         let primary = self.selection.primary();
@@ -579,7 +587,7 @@ impl VideoEditorApp {
                 }),
             );
         }
-        let mut node = self.a11y_pane(Pane::Timeline, tracks);
+        let mut node = VideoEditorApp::a11y_pane(Pane::Timeline, tracks);
         node = node.with_value(format!(
             "playhead at {}, {} of {} clips selected, timeline view starts at {}; Page Up and Page Down scroll the timeline",
             crate::timecode::timecode(self.playhead, self.project.fps),
@@ -711,7 +719,7 @@ impl VideoEditorApp {
                 }
             }
         }
-        self.a11y_pane(Pane::Inspector, groups)
+        VideoEditorApp::a11y_pane(Pane::Inspector, groups)
     }
 
     /// One inspector section, carrying whether it is folded and — when it is —
@@ -1389,7 +1397,7 @@ impl VideoEditorApp {
 impl VideoEditorApp {
     /// The shortcut sheet as accessible content — every binding readable in
     /// order, so the sheet is as useful to a reader as it is to the eye.
-    pub(super) fn a11y_help_sheet(&self) -> AccessNode {
+    pub(super) fn a11y_help_sheet() -> AccessNode {
         let mut kids: Vec<AccessNode> = Vec::new();
         let mut key = 0u64;
         for (group, rows) in SHORTCUTS {
@@ -1611,7 +1619,7 @@ impl VideoEditorApp {
     /// consumed — the timeline deliberately consumes only Up/Down, leaving
     /// Left/Right to nudge the selection and step the playhead as every
     /// non-linear editor does.
-    pub(super) fn nav_arrow(&mut self, up: bool, vertical: bool, state: &mut AutoCommit) -> bool {
+    pub(super) fn nav_arrow(&mut self, up: bool, vertical: bool, state: &AutoCommit) -> bool {
         let _ = state;
         match self.focus.pane {
             Pane::Bin if vertical => {
@@ -2127,7 +2135,7 @@ impl VideoEditorApp {
         // eight-second clip's fade in three-minute jumps.
         let next = match self.field_span(f) {
             Some((lo, hi)) => (v + dir * 0.05 * (hi - lo)).clamp(lo, hi),
-            None => f.from_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0)),
+            None => f.at_frac((f.to_frac(v) + dir * 0.05).clamp(0.0, 1.0)),
         };
         self.set_num(f, next);
         if f.is_media() {

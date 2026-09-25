@@ -618,7 +618,7 @@ pub fn start_export(
     let handle = std::thread::Builder::new()
         .name("video-editor-export".into())
         .spawn(move || {
-            let result = render(&project, &settings, &destination, &state);
+            let result = render(&project, settings, &destination, &state);
             let status = match result {
                 Ok(path) => ExportStatus::Done { path },
                 Err(reason) => ExportStatus::Failed { reason },
@@ -702,7 +702,7 @@ pub fn places_decoded_video(project: &Project) -> bool {
 
 fn render(
     project: &Project,
-    settings: &ExportSettings,
+    settings: ExportSettings,
     destination: &std::path::Path,
     state: &JobState,
 ) -> Result<String, String> {
@@ -752,6 +752,10 @@ pub fn begin_export(project: &Project, settings: &ExportSettings) -> ExportStatu
 
 #[cfg(feature = "gst")]
 mod gst_pipeline {
+    #[allow(
+        clippy::wildcard_imports,
+        reason = "the pipeline module is the gated half of this file and shares its scope"
+    )]
     use super::*;
     use std::sync::atomic::Ordering;
 
@@ -797,13 +801,13 @@ mod gst_pipeline {
     )]
     pub fn run(
         project: &Project,
-        settings: &ExportSettings,
+        settings: ExportSettings,
         destination: &std::path::Path,
         state: &super::JobState,
     ) -> Result<String, String> {
         gst::init().map_err(|e| format!("GStreamer init failed: {e}"))?;
 
-        let (w, h) = output_dims(settings, project);
+        let (w, h) = output_dims(&settings, project);
         let fps = settings.frame_rate.fps();
         let out = destination.to_path_buf();
         if let Some(parent) = out.parent() {
@@ -822,7 +826,7 @@ mod gst_pipeline {
             "export: {}",
             selected_encoders(settings.container).describe()
         );
-        let desc = pipeline_desc_with_audio(settings, w, h, &out_str, with_audio);
+        let desc = pipeline_desc_with_audio(&settings, w, h, &out_str, with_audio);
         let pipeline = gst::parse::launch(&desc)
             .map_err(|e| format!("build export pipeline: {e}"))?
             .downcast::<gst::Pipeline>()
@@ -905,6 +909,10 @@ mod gst_pipeline {
             let mut buffer = gst::Buffer::with_size(frame_bytes)
                 .map_err(|_| "allocate export frame buffer".to_string())?;
             {
+                #[expect(
+                    clippy::expect_used,
+                    reason = "a buffer allocated on the line above has no other owner"
+                )]
                 let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
                 bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
                 bref.set_duration(frame_dur);
@@ -926,6 +934,10 @@ mod gst_pipeline {
                 let mut buffer = gst::Buffer::with_size(bytes.len())
                     .map_err(|_| "allocate export audio buffer".to_string())?;
                 {
+                    #[expect(
+                        clippy::expect_used,
+                        reason = "a buffer allocated on the line above has no other owner"
+                    )]
                     let bref = buffer.get_mut().expect("fresh buffer is uniquely owned");
                     bref.set_pts(gst::ClockTime::from_nseconds(ns_per_frame * i));
                     bref.set_duration(frame_dur);
@@ -1591,8 +1603,8 @@ mod tests {
         for container in Container::ALL {
             for resolution in Resolution::ALL {
                 let s = ExportSettings {
-                    container,
                     resolution,
+                    container,
                     ..Default::default()
                 };
                 let desc = pipeline_desc(&s, 640, 360, "/tmp/o");
@@ -2261,6 +2273,7 @@ mod tests {
                 std::time::Duration::from_secs(20),
             )
             .unwrap_or_else(|| panic!("decode {} at {at_secs}s", path.display()));
+        drop(s);
         frame
             .to_video_frame()
             .unwrap_or_else(|| panic!("{} produced a GPU-resident frame", path.display()))

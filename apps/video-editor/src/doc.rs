@@ -35,6 +35,10 @@ use crate::param::{ClipAnimation, Interp, Keyframe, Param, ParamTrack};
 pub struct VideoDoc;
 
 impl VideoDoc {
+    #[expect(
+        clippy::expect_used,
+        reason = "a map can always be put under the document root"
+    )]
     fn map(doc: &mut AutoCommit, key: &str) -> ObjId {
         match doc.get(&ROOT, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -44,6 +48,10 @@ impl VideoDoc {
         }
     }
 
+    #[expect(
+        clippy::expect_used,
+        reason = "callers pass a map they just read or created, which always takes a child map"
+    )]
     fn ensure_child(doc: &mut AutoCommit, parent: &ObjId, key: &str) -> ObjId {
         match doc.get(parent, key) {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
@@ -555,7 +563,7 @@ impl VideoDoc {
                     Self::get_i64(doc, &effect, "ordinal").unwrap_or(i64::MAX),
                     ClipEffect {
                         id,
-                        kind: EffectKind::from_str(&read_str(doc, &effect, "kind")?)?,
+                        kind: EffectKind::from_name(&read_str(doc, &effect, "kind")?)?,
                         amount: read_number(doc, &effect, "amount").unwrap_or(0.0),
                     },
                 ))
@@ -666,7 +674,7 @@ impl VideoDoc {
         let default = Mask::default();
         Mask {
             shape: read_str(doc, &map, "shape")
-                .map_or(default.shape, |value| MaskShape::from_str(&value)),
+                .map_or(default.shape, |value| MaskShape::from_name(&value)),
             x: read_number(doc, &map, "x").unwrap_or(default.x),
             y: read_number(doc, &map, "y").unwrap_or(default.y),
             w: read_number(doc, &map, "w").unwrap_or(default.w),
@@ -816,7 +824,7 @@ impl VideoDoc {
         };
         let mut out = Vec::new();
         for name in doc.keys(&tracks) {
-            let Some(param) = Param::from_str(&name) else {
+            let Some(param) = Param::from_name(&name) else {
                 continue;
             };
             let Ok(Some((Value::Object(ObjType::Map), track))) = doc.get(&tracks, &name) else {
@@ -836,7 +844,7 @@ impl VideoDoc {
                         t: read_number(doc, &entry, "t")?,
                         v: read_number(doc, &entry, "v")?,
                         interp: read_str(doc, &entry, "interp")
-                            .map_or(Interp::Linear, |value| Interp::from_str(&value)),
+                            .map_or(Interp::Linear, |value| Interp::from_name(&value)),
                     })
                 })
                 .collect();
@@ -1140,14 +1148,14 @@ impl VideoDoc {
                 p.media.push(MediaItem {
                     id,
                     name,
-                    kind: MediaKind::from_str(&read_str(doc, &obj, "kind").unwrap_or_default()),
+                    kind: MediaKind::from_name(&read_str(doc, &obj, "kind").unwrap_or_default()),
                     duration: read_number(doc, &obj, "duration").unwrap_or(0.0),
                     width: Self::get_i64(doc, &obj, "width").unwrap_or(0) as u32,
                     height: Self::get_i64(doc, &obj, "height").unwrap_or(0) as u32,
                     fps: read_number(doc, &obj, "fps").unwrap_or(30.0),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,
                     path,
-                    hydration: crate::media::Hydration::from_str(
+                    hydration: crate::media::Hydration::from_name(
                         &read_str(doc, &obj, "hydration").unwrap_or_default(),
                     ),
                     // Absent for every decoded source, and for any document
@@ -1176,7 +1184,7 @@ impl VideoDoc {
                 p.tracks.push(Track {
                     id,
                     name: read_str(doc, &obj, "name").unwrap_or_default(),
-                    kind: TrackKind::from_str(&read_str(doc, &obj, "kind").unwrap_or_default()),
+                    kind: TrackKind::from_name(&read_str(doc, &obj, "kind").unwrap_or_default()),
                     index: Self::get_i64(doc, &obj, "index").unwrap_or(0) as u32,
                     muted: read_bool(doc, &obj, "muted").unwrap_or(false),
                     locked: read_bool(doc, &obj, "locked").unwrap_or(false),
@@ -1219,7 +1227,7 @@ impl VideoDoc {
                     out_point: read_number(doc, &obj, "out").unwrap_or(0.0),
                     opacity: read_number(doc, &obj, "opacity").unwrap_or(1.0),
                     volume: read_number(doc, &obj, "volume").unwrap_or(1.0),
-                    transition: Transition::from_str(
+                    transition: Transition::from_name(
                         &read_str(doc, &obj, "transition").unwrap_or_default(),
                     ),
                     palette: Self::get_i64(doc, &obj, "palette").unwrap_or(0) as u8,

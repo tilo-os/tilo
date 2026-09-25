@@ -1,13 +1,21 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 // ==========================================================================
 // Event handling helpers
 // ==========================================================================
 impl VideoEditorApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the keyboard map: one arm per binding, in the order the help sheet lists them"
+    )]
     pub(super) fn handle_key(
         &mut self,
         key: &Key,
-        modifiers: &winit::event::Modifiers,
+        modifiers: winit::event::Modifiers,
         state: &mut AutoCommit,
         r: &Regions,
     ) -> bool {
@@ -401,11 +409,11 @@ impl VideoEditorApp {
             f64::from(sp.s4),
         );
         let line_xs = line_height(tr, type_sizes.xs);
-        let line_xl = line_height(tr, type_sizes.xl);
+        let timecode_line = line_height(tr, type_sizes.xl);
         // Three measured lines — caption, the timecode, the hint — each one
         // spacing step apart, inside the card's inset; so the field grows
         // with the text instead of drawing its 2× timecode through its hint.
-        let h = s3 + line_xs + s1 + line_xl + s1 + line_xs + s3;
+        let h = s3 + line_xs + s1 + timecode_line + s1 + line_xs + s3;
         let w = GOTO_CARD_W.min(self.rect.width() - 2.0 * s4);
         // Anchored just above the transport, whose playhead time it edits.
         let y1 = r.transport.y0 - s2;
@@ -413,7 +421,7 @@ impl VideoEditorApp {
         let card = Rect::new(cx - w / 2.0, y1 - h, cx + w / 2.0, y1);
         let label_top = card.y0 + s3;
         let entry_top = label_top + line_xs + s1;
-        let hint_top = entry_top + line_xl + s1;
+        let hint_top = entry_top + timecode_line + s1;
         GotoLayout {
             card,
             type_sizes,
@@ -432,6 +440,10 @@ impl VideoEditorApp {
             || self.goto_entry.is_some()
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one hit test per pressable region, in paint order"
+    )]
     pub(super) fn handle_press(&mut self, state: &mut AutoCommit, r: &Regions, shift: bool) {
         let p = self.last_mouse;
 
@@ -595,8 +607,9 @@ impl VideoEditorApp {
                             origin: p,
                             active: false,
                         });
-                        self.pending_rename =
-                            (rename_window && self.bin_name_rect(rect).contains(p)).then_some(mid);
+                        self.pending_rename = (rename_window
+                            && VideoEditorApp::bin_name_rect(rect).contains(p))
+                        .then_some(mid);
                         self.last_click_media = Some((mid, Instant::now()));
                     }
                     return;
@@ -637,7 +650,7 @@ impl VideoEditorApp {
         // walks the playhead through the places the mix went over, wrapping
         // round — which is the difference between a warning you can act on
         // and one you can only be annoyed by.
-        if self.mix.clipped() && self.clip_flag_rect(r).contains(p) {
+        if self.mix.clipped() && VideoEditorApp::clip_flag_rect(r).contains(p) {
             self.go_to_next_clipping();
             return;
         }
@@ -667,7 +680,7 @@ impl VideoEditorApp {
                 }
             }
             for (tid, _kind, lane) in self.lane_rects(r) {
-                let header = self.track_head_rect(r, &lane);
+                let header = VideoEditorApp::track_head_rect(r, &lane);
                 if header.contains(p) {
                     // The same bands the paint reads (`chrome_layout::track_head`),
                     // so the pill under the pointer is the pill that was drawn.
@@ -1051,7 +1064,7 @@ impl VideoEditorApp {
             if hit_slider(track, p) {
                 self.drag = Some(Drag::Num(f));
                 let frac = ((p.x - track.x0) / track.width()).clamp(0.0, 1.0);
-                self.set_num(f, f.from_frac(frac));
+                self.set_num(f, f.at_frac(frac));
                 return;
             }
         }
@@ -1227,25 +1240,24 @@ impl VideoEditorApp {
             self.edit_selected(doc, |c| {
                 placed = c.curves.spline_mut(ch).set_point(x, y);
             });
-            match placed {
-                Some(i) => i,
+            if let Some(i) = placed {
+                i
+            } else {
                 // Refused — too close to a neighbour for a point to mean
                 // anything. Grab the neighbour rather than doing nothing.
-                None => {
-                    let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
-                        return;
-                    };
-                    match clip.curves.spline(ch).point_near(x, y, POINT_GRAB * 2.0) {
-                        Some(i) => i,
-                        None => return,
-                    }
+                let Some(clip) = self.selected().and_then(|id| self.project.clip(id)) else {
+                    return;
+                };
+                match clip.curves.spline(ch).point_near(x, y, POINT_GRAB * 2.0) {
+                    Some(i) => i,
+                    None => return,
                 }
             }
         };
         self.drag = Some(Drag::CurvePoint { channel: ch, idx });
     }
 
-    pub(super) fn press_export(&mut self, state: &mut AutoCommit, p: Point) {
+    pub(super) fn press_export(&mut self, state: &AutoCommit, p: Point) {
         // Laid out from the current state, as the next frame will paint it —
         // see `chrome_theme`.
         let Some(l) = self.with_dialog_layout(super::VideoEditorApp::export_layout) else {

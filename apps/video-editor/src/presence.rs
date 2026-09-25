@@ -233,15 +233,20 @@ impl LocalPresence {
         facets: [(PresenceKey, PresencePayload); FACETS],
     ) -> Option<(PresenceKey, PresencePayload)> {
         let mut published = self.published.borrow_mut();
+        let mut facets = facets.map(Some);
         for step in 0..FACETS {
+            // `% FACETS` keeps `i` inside both arrays.
             let i = (self.last.get() + 1 + step) % FACETS;
-            if published[i].as_ref() != Some(&facets[i]) {
-                published[i] = Some(facets[i].clone());
+            let (Some(slot), Some(facet)) = (published.get_mut(i), facets.get_mut(i)) else {
+                continue;
+            };
+            if slot.as_ref() != facet.as_ref() {
+                *slot = facet.take();
                 self.last.set(i);
-                return published[i].clone();
+                return slot.clone();
             }
         }
-        published[self.last.get()].clone()
+        published.get(self.last.get()).cloned().flatten()
     }
 
     /// Forget what has been published, so the next poll re-sends every facet.
