@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-for tool in blkid blockdev findmnt flock lsblk mkfs.vfat partx python3 readlink sfdisk sort; do need "$tool"; done
+for tool in blkid blockdev findmnt flock lsblk mkfs.vfat partx python3 readlink sfdisk sort udevadm; do need "$tool"; done
 case "$DISK" in /dev/*) : ;; *) die "disk must be an absolute /dev path" ;; esac
 [ -b "$DISK" ] || die "$DISK is not a block device"
 DISK="$(readlink -f "$DISK")"
@@ -153,10 +153,66 @@ printf 'start=%s, size=%s, type=%s, uuid=%s, name="Tilo EFI"\nstart=%s, size=%s,
   "$efi_sector" "$efi_sectors" c12a7328-f81f-11d2-ba4b-00a0c93ec93b "${EFI_UUID,,}" \
   "$root_sector" "$root_sectors" 7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab "${ROOT_UUID,,}" \
   | sfdisk --append --no-reread --lock=no --wipe never --wipe-partitions never "$DISK"
+[ "$(canonical_actual | sort -t: -k2,2n)" = "$FINAL_EXPECTED_MAP" ] \
+  || die "final PARTUUID/geometry map differs from the reviewed plan"
 if [ "$IN_USE_DISK" -eq 0 ]; then
   blockdev --rereadpt "$DISK"
 fi
-partx -u "$DISK"
+
+# The staged root and ESP stay mounted on this disk, so the kernel cannot
+# reread its whole partition table. Register only the two newly reviewed GPT
+# entries in that case. An EEXIST result is harmless only if the live node
+# matches the reviewed disk, partition number, geometry, and PARTUUID below.
+disk_sysfs="$(readlink -f "/sys/dev/block/$EXPECT_DEVNUM")" \
+  || die "reviewed disk has no kernel block-device identity"
+[ -d "$disk_sysfs" ] || die "reviewed disk has no kernel block-device identity"
+kernel_partition_matches() {
+  local node="$1" number="$2" start="$3" sectors="$4" uuid="$5"
+  local part_sysfs live_uuid=""
+  [ -b "$node" ] || return 1
+  part_sysfs="$(readlink -f "/sys/class/block/${node##*/}")" || return 1
+  [ "$(dirname "$part_sysfs")" = "$disk_sysfs" ] || return 1
+  [ "$(cat "$part_sysfs/start" 2>/dev/null)" = "$start" ] || return 1
+  [ "$(cat "$part_sysfs/size" 2>/dev/null)" = "$sectors" ] || return 1
+  [ "$(cat "$part_sysfs/partition" 2>/dev/null)" = "$number" ] || return 1
+  [ "$(lsblk -dno MAJ:MIN "$node" 2>/dev/null | xargs)" = "$(cat "$part_sysfs/dev" 2>/dev/null)" ] || return 1
+  # uevent and udev can lag behind the partition node. Probe the entry
+  # directly; do not accept a stale or unrelated node on UUID alone.
+  live_uuid="$(blkid -p -s PART_ENTRY_UUID -o value "$node" 2>/dev/null || true)"
+  [ -n "$live_uuid" ] || live_uuid="$(lsblk -dno PARTUUID "$node" 2>/dev/null | xargs)"
+  [ "${live_uuid,,}" = "${uuid,,}" ]
+}
+for new_uuid in "$EFI_UUID" "$ROOT_UUID"; do
+  new_record="$(sfdisk --json "$DISK" | python3 -c '
+import json, re, sys
+wanted = sys.argv[1].lower()
+matches = [p for p in json.load(sys.stdin)["partitiontable"].get("partitions", [])
+           if str(p.get("uuid", "")).lower() == wanted]
+if len(matches) != 1:
+    raise SystemExit(1)
+match = re.search(r"([0-9]+)$", str(matches[0].get("node", "")))
+if not match:
+    raise SystemExit(1)
+print("{} {}".format(match.group(1), matches[0]["node"]))
+' "${new_uuid,,}")" || die "new partition number was not recorded in GPT"
+  read -r new_number new_node <<<"$new_record"
+  case "${new_uuid,,}" in
+    "${EFI_UUID,,}") new_start="$efi_sector"; new_sectors="$efi_sectors" ;;
+    "${ROOT_UUID,,}") new_start="$root_sector"; new_sectors="$root_sectors" ;;
+    *) die "unrecognized reviewed partition UUID" ;;
+  esac
+  if [ "$IN_USE_DISK" -eq 1 ]; then
+    partx -a -n "$new_number:$new_number" "$DISK" || true
+  fi
+  udevadm settle --timeout=10 2>/dev/null || true
+  for _ in {1..300}; do
+    kernel_partition_matches "$new_node" "$new_number" "$new_start" "$new_sectors" "$new_uuid" && break
+    sleep 0.1
+  done
+  kernel_partition_matches "$new_node" "$new_number" "$new_start" "$new_sectors" "$new_uuid" \
+    || die "kernel partition $new_number differs from the reviewed plan"
+done
+udevadm settle --timeout=5 2>/dev/null || true
 
 partition_by_uuid() {
   sfdisk --json "$DISK" | python3 -c '
