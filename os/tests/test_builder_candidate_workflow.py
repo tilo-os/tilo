@@ -234,7 +234,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn('needs: [builder, select]', security_job)
         self.assertNotIn('needs.builder.outputs.image', select_job)
         shard_jobs = {}
-        for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'clippy-base')):
+        for name, following in (('test', 'check'), ('check', 'clippy'), ('clippy', 'pins')):
             self.assertEqual(CHECK.count(f'\n  {name}:\n'), 1)
             shard_jobs[name] = CHECK.split(f'\n  {name}:\n', 1)[1].split(f'\n  {following}:\n', 1)[0]
         for name, job in shard_jobs.items():
@@ -245,11 +245,8 @@ class BuilderCandidates(unittest.TestCase):
                 self.assertIn('          fetch-depth: 1', job)
                 self.assertNotIn('          fetch-depth: 0', job)
         clippy_job = shard_jobs['clippy']
-        self.assertIn('CLIPPY_BASE: ${{ needs.select.outputs.base }}', clippy_job)
-        self.assertIn('test "$head" = "$GITHUB_SHA"', clippy_job)
-        self.assertIn('git fetch --no-tags --no-write-fetch-head --depth=1 origin', clippy_job)
-        self.assertIn('"+$CLIPPY_BASE:refs/ci/clippy-base"', clippy_job)
-        self.assertIn('test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"', clippy_job)
+        self.assertIn('tools/ci/clippy-check.sh ${{ matrix.packages }}', clippy_job)
+        self.assertNotIn('needs.select.outputs.base', clippy_job)
         builder_job = CHECK.split('  builder:\n', 1)[1].split('  select:\n', 1)[0]
         self.assertIn('image: code.sandbox.example/qos/ci-control@sha256:', builder_job)
         self.assertNotIn('needs.builder.outputs.image', builder_job)
