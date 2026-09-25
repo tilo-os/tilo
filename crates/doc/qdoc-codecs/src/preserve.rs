@@ -31,6 +31,15 @@ pub const MARK_ODT_XML: &str = "odt-xml";
 /// Attr of a `fidelity` block naming the format its `xml` came from (`docx` / `odt`).
 pub const ATTR_FORMAT: &str = "format";
 
+/// Whether a block attr is one an office codec keeps for its own export — markup kept
+/// verbatim, an original id — rather than part of the canonical model (`docx_…`, `odt_…`).
+/// Other codecs ignore these; the one that wrote them uses them only while the modeled
+/// attrs still agree with them.
+#[must_use]
+pub fn is_codec_private_attr(key: &str) -> bool {
+    key.starts_with("docx_") || key.starts_with("odt_")
+}
+
 /// The verbatim XML of a `fidelity` block if `format` may re-emit it: blocks captured by the
 /// other office codec are skipped; blocks without a format tag predate it and are kept.
 pub fn fidelity_xml<'a>(b: &'a BlockView, format: &str) -> Option<&'a str> {
