@@ -228,6 +228,11 @@ struct Validation<'a> {
     rows: HashMap<Id, Row>,
     /// (counter operation, increment operation, increment value).
     increments: Vec<(Id, Id, i64)>,
+    /// Mark-order walk scratch: element -> child on the walked path.
+    walk_end: HashMap<Option<Id>, Option<Id>>,
+    walk_begin: HashMap<Option<Id>, Option<Id>>,
+    /// Remaining sequence-tree steps for all mark-order walks.
+    walk_steps: usize,
 }
 
 impl<'a> Validation<'a> {
@@ -287,7 +292,15 @@ impl<'a> Validation<'a> {
         Ok(Id { counter, actor })
     }
 
-    fn row(&mut self, change: u32, id: Id, op: StoredOp, map: &[u32], clock: &Clock) -> Result {
+    fn row(
+        &mut self,
+        change: u32,
+        id: Id,
+        op: StoredOp,
+        map: &[u32],
+        clock: &Clock,
+        charge: &mut Charge<'_>,
+    ) -> Result {
         if self.rows.contains_key(&id) {
             return invalid();
         }
@@ -354,8 +367,19 @@ impl<'a> Validation<'a> {
                     counter,
                     actor: id.actor,
                 };
-                let begin = self.accessible(begin, id, change, clock)?;
-                if !begin.is_mark_begin() || begin.object()? != object {
+                {
+                    let begin = self.accessible(begin, id, change, clock)?;
+                    if !begin.is_mark_begin() || begin.object()? != object {
+                        return invalid();
+                    }
+                }
+                // 0.12 refuses to load a document whose mark end precedes its
+                // begin in sequence order.
+                let anchor = match &key {
+                    Prop::Elem(anchor) => *anchor,
+                    Prop::Map(_) => return invalid(),
+                };
+                if !self.end_follows_begin(begin, id, anchor, charge)? {
                     return invalid();
                 }
             }
@@ -422,6 +446,132 @@ impl<'a> Validation<'a> {
         }
         self.rows.insert(id, row);
         Ok(())
+    }
+
+    /// The anchor of a sequence element (`None` is HEAD).
+    fn parent(&self, id: Id) -> Result<Option<Id>> {
+        match self.locate(id)? {
+            Located::Incoming(row) if row.insert => match row.key {
+                Prop::Elem(anchor) => Ok(anchor),
+                Prop::Map(_) => invalid(),
+            },
+            Located::Source(op) if op.insert => match &op.key {
+                KeyRef::Seq(elem) if elem.is_head() => Ok(None),
+                KeyRef::Seq(elem) => Ok(Some(source_id(elem.0)?)),
+                KeyRef::Map(_) => invalid(),
+            },
+            _ => invalid(),
+        }
+    }
+
+    fn walk_insert(
+        map: &mut HashMap<Option<Id>, Option<Id>>,
+        node: Option<Id>,
+        child: Option<Id>,
+        charge: &mut Charge<'_>,
+    ) -> Result {
+        if map.len() == map.capacity() {
+            let target = map.capacity().max(8).checked_mul(2).ok_or(NativeResourceError::WorkBytes)?;
+            let grown = budget::hash::<(Option<Id>, Option<Id>)>(target)?;
+            // Old and new tables coexist while rehashing.
+            let old = budget::hash::<(Option<Id>, Option<Id>)>(map.capacity())?;
+            charge.grow(sum(grown, old)?)?;
+            map.try_reserve(target - map.len())
+                .map_err(|_| NativeResourceError::WorkBytes)?;
+            charge.shrink(old);
+        }
+        map.insert(node, child);
+        Ok(())
+    }
+
+    /// Whether the new mark end `end` (anchored after `anchor`) follows its
+    /// begin in the sequence. Automerge sequences order elements as the
+    /// preorder of the anchor tree with siblings in descending id order, and
+    /// adding elements never reorders existing ones, so this is decided from
+    /// the ancestor paths of both elements: `end` follows `begin` iff `begin`
+    /// is an ancestor of `end`, or at their lowest common ancestor the child
+    /// towards `begin` has the greater id. Both paths are walked alternately
+    /// until they meet; all walks share a step budget proportional to the
+    /// document and input (refusal with `WorkBytes` beyond it).
+    fn end_follows_begin(
+        &mut self,
+        begin: Id,
+        end: Id,
+        anchor: Option<Id>,
+        charge: &mut Charge<'_>,
+    ) -> Result<bool> {
+        let mut ends = std::mem::take(&mut self.walk_end);
+        let mut begins = std::mem::take(&mut self.walk_begin);
+        ends.clear();
+        begins.clear();
+        let result = (|| -> Result<bool> {
+            Self::walk_insert(&mut ends, Some(end), None, charge)?;
+            Self::walk_insert(&mut begins, Some(begin), None, charge)?;
+            if ends.contains_key(&Some(begin)) {
+                return Ok(true);
+            }
+            let mut end_at = (Some(end), anchor);
+            let mut begin_at = (Some(begin), Some(begin));
+            let mut begin_parent = Some(self.parent(begin)?);
+            let mut end_done = false;
+            let mut begin_done = false;
+            loop {
+                if end_done && begin_done {
+                    return invalid();
+                }
+                if !end_done {
+                    self.walk_steps = self
+                        .walk_steps
+                        .checked_sub(1)
+                        .ok_or(NativeResourceError::WorkBytes)?;
+                    let (child, node) = end_at;
+                    if let Some(on_begin) = begins.get(&node) {
+                        return Ok(self.begin_first(node, *on_begin, child, begin));
+                    }
+                    Self::walk_insert(&mut ends, node, child, charge)?;
+                    match node {
+                        None => end_done = true,
+                        Some(id) => end_at = (Some(id), self.parent(id)?),
+                    }
+                }
+                if !begin_done {
+                    self.walk_steps = self
+                        .walk_steps
+                        .checked_sub(1)
+                        .ok_or(NativeResourceError::WorkBytes)?;
+                    let Some(parent) = begin_parent else {
+                        begin_done = true;
+                        continue;
+                    };
+                    let child = begin_at.1;
+                    if let Some(on_end) = ends.get(&parent) {
+                        return Ok(self.begin_first(parent, child, *on_end, begin));
+                    }
+                    Self::walk_insert(&mut begins, parent, child, charge)?;
+                    begin_at = (child, parent);
+                    begin_parent = match parent {
+                        None => None,
+                        Some(id) => Some(self.parent(id)?),
+                    };
+                }
+            }
+        })();
+        self.walk_end = ends;
+        self.walk_begin = begins;
+        result
+    }
+
+    /// At common ancestor `node`, reached from `begin` through `on_begin`
+    /// and from the end through `on_end` (`None`: the path starts there).
+    fn begin_first(&self, node: Option<Id>, on_begin: Option<Id>, on_end: Option<Id>, begin: Id) -> bool {
+        if node == Some(begin) {
+            // `begin` is an ancestor of the end.
+            return true;
+        }
+        match (on_begin, on_end) {
+            (Some(b), Some(e)) => self.cmp(b, e) == Ordering::Greater,
+            _ => false,
+        }
     }
 
     // A history is refused when a counter's complete merged value, before or
@@ -750,6 +900,9 @@ pub(crate) fn validate_incoming(
         new_actors: HashMap::new(),
         rows: HashMap::new(),
         increments: Vec::new(),
+        walk_end: HashMap::new(),
+        walk_begin: HashMap::new(),
+        walk_steps: sum(product(sum(doc.ops.len(), counts.ops)?, 16)?, 1 << 20)?,
     };
     reserve_vec(&mut validation.actors, sum(resident, n)?)?;
     validation.actors.extend(doc.ops.actors.iter());
@@ -905,7 +1058,7 @@ pub(crate) fn validate_incoming(
                     .ok()
                     .and_then(|offset| start.checked_add(offset))
                     .ok_or(NativeResourceError::WorkBytes)?;
-                validation.row(change_index, Id { counter, actor }, op, &map, &clock)?;
+                validation.row(change_index, Id { counter, actor }, op, &map, &clock, charge)?;
             }
             let bound = canonical_bound(change)?;
             charge.grow(bound)?;
