@@ -14,10 +14,9 @@ path = "src/lib.rs"
 private-fs = { path = "../private-fs" }
 bounded-command = { path = "../bounded-command" }
 tracing.workspace = true
-# XChaCha20-Poly1305 seals the vault; getrandom's `SysRng` draws keys and
-# per-write nonces from the OS CSPRNG; `zeroize` wipes keys and plaintext.
-chacha20poly1305.workspace = true
-getrandom.workspace = true
+# `tilo-seal` seals the vault and mints its keys; `zeroize` wipes key
+# material read from custody and decrypted plaintext.
+tilo-seal = { path = "../tilo-seal" }
 zeroize.workspace = true
 # The Secret Service stores the vault key as lower-case hex.
 hex.workspace = true
@@ -25,6 +24,8 @@ hex.workspace = true
 [target.'cfg(windows)'.dependencies]
 # Serializes key creation between processes.
 advisory-lock = { path = "../advisory-lock" }
+# Draws a fresh key before DPAPI protects it.
+getrandom.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [dev-dependencies]

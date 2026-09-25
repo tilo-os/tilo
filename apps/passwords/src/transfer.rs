@@ -7,7 +7,8 @@
 use std::io::Read;
 
 use accounts::SecretItem;
-use getrandom::{SysRng, rand_core::TryRng as _};
+use tilo_seal::envelope::{self, Envelope, KeySource};
+use tilo_seal::{Context, Label, PasswordParams};
 use zeroize::Zeroizing;
 
 pub const MAX_IMPORT_BYTES: u64 = 8 * 1024 * 1024;
@@ -16,10 +17,17 @@ pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
 const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
 const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
-const BACKUP_VERSION: u8 = 1;
+/// Version 1: implied Argon2id profile and a hand-rolled XChaCha20-Poly1305
+/// header. Read-only.
+const BACKUP_V1: u8 = 1;
+/// Version 2: the magic, this byte, then a `tilo-seal` password envelope
+/// that records its Argon2id parameters and salt.
+const BACKUP_V2: u8 = 2;
+const BACKUP_V2_PREFIX: &[u8] = b"TILOPWBACKUP\x02";
 const BACKUP_SALT_BYTES: usize = 16;
 const BACKUP_NONCE_BYTES: usize = 24;
-const BACKUP_HEADER_BYTES: usize = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
+const BACKUP_V1_HEADER_BYTES: usize =
+    BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
 const BACKUP_READ_LIMIT: u64 = MAX_BACKUP_BYTES as u64 + 1;
 
 pub fn import_request() -> ui::portal::PickRequest {
@@ -234,16 +242,13 @@ pub fn export_browser_csv(items: &[SecretItem]) -> Zeroizing<String> {
     csv
 }
 
-/// Serialize every vault field into a portable, passphrase-encrypted backup.
-/// XChaCha20-Poly1305 authenticates both the ciphertext and format header;
-/// Argon2id deliberately makes offline passphrase guesses expensive.
+/// Serialize every vault field into a portable, passphrase-encrypted backup:
+/// a `tilo-seal` Argon2id password envelope (XChaCha20-Poly1305) whose
+/// header, parameters included, is authenticated.
 pub fn export_encrypted_backup(
     items: &[SecretItem],
     passphrase: &str,
 ) -> Result<Zeroizing<Vec<u8>>, String> {
-    use chacha20poly1305::aead::{Aead, Payload};
-    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-
     validate_backup_passphrase(passphrase)?;
     if items.len() > MAX_ROWS {
         return Err("The vault contains more than 10,000 items; no backup was created".into());
@@ -254,81 +259,94 @@ pub fn export_encrypted_backup(
     if plaintext.len() > MAX_BACKUP_BYTES {
         return Err("The vault is too large to back up safely".into());
     }
-    let mut salt = [0_u8; BACKUP_SALT_BYTES];
-    let mut nonce = [0_u8; BACKUP_NONCE_BYTES];
-    SysRng
-        .try_fill_bytes(&mut salt)
-        .and_then(|()| SysRng.try_fill_bytes(&mut nonce))
-        .map_err(|_| "Secure randomness is unavailable; no backup was created".to_string())?;
-    let key = derive_backup_key(passphrase, &salt)?;
-    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
-    let mut header = Vec::with_capacity(BACKUP_HEADER_BYTES);
-    header.extend_from_slice(BACKUP_MAGIC);
-    header.push(BACKUP_VERSION);
-    header.extend_from_slice(&salt);
-    header.extend_from_slice(&nonce);
-    let ciphertext = cipher
-        .encrypt(
-            <&XNonce>::from(&nonce),
-            Payload {
-                msg: &plaintext,
-                aad: &header,
-            },
-        )
-        .map_err(|_| "Could not encrypt the vault backup".to_string())?;
-    if header.len().saturating_add(ciphertext.len()) > MAX_BACKUP_BYTES {
+    let sealed = envelope::seal_with_password(
+        passphrase.as_bytes(),
+        BACKUP_KDF_PARAMS,
+        Context::new(Label::PasswordBackup, BACKUP_V2_PREFIX),
+        &plaintext,
+    )
+    .map_err(|error| match error {
+        tilo_seal::Error::Randomness => {
+            "Secure randomness is unavailable; no backup was created".to_string()
+        }
+        _ => "Could not encrypt the vault backup".to_string(),
+    })?;
+    if BACKUP_V2_PREFIX.len().saturating_add(sealed.len()) > MAX_BACKUP_BYTES {
         return Err("The vault is too large to back up safely".into());
     }
-    header.extend_from_slice(&ciphertext);
-    Ok(Zeroizing::new(header))
+    let mut out = Zeroizing::new(Vec::with_capacity(
+        BACKUP_V2_PREFIX.len().saturating_add(sealed.len()),
+    ));
+    out.extend_from_slice(BACKUP_V2_PREFIX);
+    out.extend_from_slice(&sealed);
+    Ok(out)
 }
 
-/// Open a backup created by [`export_encrypted_backup`]. Authentication is
-/// verified before JSON is parsed, so wrong passwords and modified files
-/// yield no partial vault contents.
+/// Open a backup created by [`export_encrypted_backup`] (version 2) or by an
+/// earlier build (version 1). Authentication is verified before JSON is
+/// parsed, so wrong passwords and modified files yield no partial vault
+/// contents.
 pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<SecretItem>, String> {
-    use chacha20poly1305::aead::{Aead, Payload};
-    use chacha20poly1305::{Key, KeyInit, XChaCha20Poly1305, XNonce};
-
     validate_backup_passphrase(passphrase)?;
-    if backup.len() > MAX_BACKUP_BYTES || backup.len() <= BACKUP_HEADER_BYTES {
+    if backup.len() > MAX_BACKUP_BYTES {
         return Err("This is not a valid Passwords backup".into());
     }
-    let (header, ciphertext) = backup
-        .split_at_checked(BACKUP_HEADER_BYTES)
-        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    let rest = header
+    let rest = backup
         .strip_prefix(BACKUP_MAGIC)
         .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    let (version, rest) = rest
+    let (version, body) = rest
         .split_first()
         .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    if *version != BACKUP_VERSION {
-        return Err("This Passwords backup uses an unsupported version".into());
-    }
-    let (salt, nonce) = rest
-        .split_at_checked(BACKUP_SALT_BYTES)
-        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    let key = derive_backup_key(passphrase, salt)?;
-    let cipher = XChaCha20Poly1305::new(<&Key>::from(&*key));
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(
-                <&XNonce>::try_from(nonce)
-                    .map_err(|_| "This is not a valid Passwords backup".to_string())?,
-                Payload {
-                    msg: ciphertext,
-                    aad: header,
-                },
-            )
-            .map_err(|_| "The password is incorrect or the backup was changed".to_string())?,
-    );
+    let plaintext = match *version {
+        BACKUP_V1 => open_v1_backup(backup, passphrase)?,
+        BACKUP_V2 => open_v2_backup(body, passphrase)?,
+        _ => return Err("This Passwords backup uses an unsupported version".into()),
+    };
     let items = serde_json::from_slice::<Vec<SecretItem>>(&plaintext)
         .map_err(|_| "The decrypted backup is not a valid vault".to_string())?;
     if items.len() > MAX_ROWS {
         return Err("The backup contains more than 10,000 items".into());
     }
     Ok(items)
+}
+
+fn open_v2_backup(body: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, String> {
+    // Stored parameters are bounded before any derivation runs, so a crafted
+    // file cannot demand an unbounded Argon2 workload.
+    match Envelope::parse(body)
+        .map_err(|_| "This is not a valid Passwords backup".to_string())?
+        .source
+    {
+        KeySource::Password { params, .. }
+            if params.m_cost_kib <= BACKUP_MAX_MEMORY_KIB
+                && params.t_cost <= BACKUP_MAX_ITERATIONS
+                && params.p_cost <= BACKUP_MAX_LANES => {}
+        _ => return Err("This is not a valid Passwords backup".into()),
+    }
+    envelope::open_with_password(
+        passphrase.as_bytes(),
+        Context::new(Label::PasswordBackup, BACKUP_V2_PREFIX),
+        body,
+    )
+    .map_err(|_| "The password is incorrect or the backup was changed".to_string())
+}
+
+fn open_v1_backup(backup: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, String> {
+    if backup.len() <= BACKUP_V1_HEADER_BYTES {
+        return Err("This is not a valid Passwords backup".into());
+    }
+    let (header, ciphertext) = backup
+        .split_at_checked(BACKUP_V1_HEADER_BYTES)
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
+    let (salt, nonce) = header
+        .get(BACKUP_MAGIC.len().saturating_add(1)..)
+        .and_then(|rest| rest.split_at_checked(BACKUP_SALT_BYTES))
+        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
+    let nonce = <&[u8; BACKUP_NONCE_BYTES]>::try_from(nonce)
+        .map_err(|_| "This is not a valid Passwords backup".to_string())?;
+    let key = derive_backup_key(passphrase, salt)?;
+    tilo_seal::legacy::open_xchacha20poly1305(&key, nonce, header, ciphertext)
+        .map_err(|_| "The password is incorrect or the backup was changed".to_string())
 }
 
 fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
@@ -341,28 +359,24 @@ fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Argon2id v1.3 cost for backup keys. Backups do not record these, so they
-/// are part of the file format and must not follow the argon2 crate's
-/// defaults (which they matched when the format was introduced).
-const BACKUP_KDF_MEMORY_KIB: u32 = 19 * 1024;
-const BACKUP_KDF_ITERATIONS: u32 = 2;
-const BACKUP_KDF_LANES: u32 = 1;
+/// Argon2id v1.3 cost for backup keys. Version 1 files do not record these,
+/// so for them they are part of the format; version 2 files store them in
+/// the authenticated header, so new backups can raise them without a format
+/// change. New backups keep the same (OWASP baseline) profile so restores
+/// stay fast on low-end devices.
+const BACKUP_KDF_PARAMS: PasswordParams = PasswordParams {
+    m_cost_kib: 19 * 1024,
+    t_cost: 2,
+    p_cost: 1,
+};
+/// The most work a version 2 file may ask a reader to do.
+const BACKUP_MAX_MEMORY_KIB: u32 = 1024 * 1024;
+const BACKUP_MAX_ITERATIONS: u32 = 16;
+const BACKUP_MAX_LANES: u32 = 8;
 
-fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
-    use argon2::{Algorithm, Argon2, Params, Version};
-
-    let params = Params::new(
-        BACKUP_KDF_MEMORY_KIB,
-        BACKUP_KDF_ITERATIONS,
-        BACKUP_KDF_LANES,
-        Some(32),
-    )
-    .map_err(|_| "Could not secure the backup password".to_string())?;
-    let mut key = Zeroizing::new([0_u8; 32]);
-    Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(passphrase.as_bytes(), salt, key.as_mut())
-        .map_err(|_| "Could not secure the backup password".to_string())?;
-    Ok(key)
+fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<tilo_seal::SymmetricKey, String> {
+    envelope::derive_password_key(passphrase.as_bytes(), salt, BACKUP_KDF_PARAMS)
+        .map_err(|_| "Could not secure the backup password".to_string())
 }
 
 #[cfg(test)]
@@ -375,7 +389,7 @@ mod tests {
         // backups only open if this never changes.
         let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
         assert_eq!(
-            *key,
+            *key.expose_secret(),
             [
                 0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe, 0x94,
                 0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5, 0xc4, 0xd0,
@@ -477,8 +491,9 @@ mod tests {
     #[test]
     fn every_truncated_backup_header_is_rejected_without_decryption() {
         let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
-        let header_len = BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
-        for length in 0..=header_len {
+        // Prefix plus the whole v2 envelope header (magic .. nonce).
+        let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + BACKUP_NONCE_BYTES;
+        for length in 0..=v2_header_len {
             assert!(
                 import_encrypted_backup(
                     backup.get(..length).unwrap(),
@@ -487,9 +502,39 @@ mod tests {
                 .is_err()
             );
         }
+        let v1 = include_bytes!("../tests/fixtures/backup-v1.tilopw");
+        for length in 0..=BACKUP_V1_HEADER_BYTES {
+            assert!(import_encrypted_backup(&v1[..length], "Owned backup fixture 52!").is_err());
+        }
         let mut unsupported = backup;
         *unsupported.get_mut(BACKUP_MAGIC.len()).unwrap() = 255;
         assert!(import_encrypted_backup(&unsupported, "a sufficiently long password").is_err());
+    }
+
+    #[test]
+    fn new_backups_are_version_2_envelopes_that_cannot_be_downgraded() {
+        let item = SecretItem::login("Mail", "ada", "strong secret");
+        let backup =
+            export_encrypted_backup(std::slice::from_ref(&item), "a sufficiently long password")
+                .unwrap();
+        assert!(backup.starts_with(BACKUP_V2_PREFIX));
+        assert!(envelope::is_envelope(&backup[BACKUP_V2_PREFIX.len()..]));
+        assert_eq!(
+            import_encrypted_backup(&backup, "a sufficiently long password").unwrap(),
+            vec![item]
+        );
+        assert!(import_encrypted_backup(&backup, "another long password!").is_err());
+        for index in [BACKUP_V2_PREFIX.len() + 8, backup.len() / 2] {
+            let mut tampered = backup.to_vec();
+            tampered[index] ^= 0x01;
+            assert!(
+                import_encrypted_backup(&tampered, "a sufficiently long password").is_err(),
+                "byte {index}"
+            );
+        }
+        let mut downgraded = backup.to_vec();
+        downgraded[BACKUP_MAGIC.len()] = BACKUP_V1;
+        assert!(import_encrypted_backup(&downgraded, "a sufficiently long password").is_err());
     }
 
     #[test]
