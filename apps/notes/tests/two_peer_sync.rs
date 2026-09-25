@@ -19,6 +19,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc};
+use tilo_automerge::ApplyIncoming;
 
 use notes::NotesApp;
 use notes::doc::NotesDoc;
@@ -122,7 +123,7 @@ fn text_edit_in_peer_a_converges_to_peer_b() {
 
     // The broker delivers A's update to B (a merge of A's full state).
     let mut a_loaded = AutoCommit::load(&doc_a.save()).unwrap();
-    doc_b.merge(&mut a_loaded).unwrap();
+    doc_b.merge_incoming(&mut a_loaded).unwrap();
     b.sync(&mut doc_b, &ROOT);
 
     let b_text = b.editor_text_for_test();

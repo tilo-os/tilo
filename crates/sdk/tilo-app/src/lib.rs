@@ -30,8 +30,8 @@ pub use tilo_resource;
 pub mod prelude {
     pub use crate::framework::testing::{HeadlessApp, TestApp};
     pub use crate::framework::{
-        Dispatcher, Each, Live, ResourceApp, ResourceSelection, ResourceSurface, SurfaceCx, ViewCx,
-        run,
+        ActionControl, Actions, Dispatcher, Each, Live, ResourceApp, ResourceSelection,
+        ResourceSurface, SurfaceCx, ViewCx, run,
     };
     pub use tilo_resource::{
         self, ActionCx, Atom, Collection, Id, Invoke, Json, Model, Refusal, Replica, Resource,

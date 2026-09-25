@@ -254,12 +254,12 @@ fn successful_initialization_survives_factory_failure_with_only_error_owner() {
     let LaunchError::ComponentSetup {
         source,
         record,
-        records,
-        ..
+        recovery,
     } = error
     else {
         panic!("missing retained binding")
     };
+    let records = recovery.into_record_store().unwrap().unwrap();
     assert!(matches!(*source, LaunchError::Operation(_)));
     assert_eq!(record.id, minted.id);
     assert_eq!(body(&records, &record), "initialized");
@@ -400,12 +400,12 @@ fn invalid_factory_view_retains_new_ready_record_without_saving_view() {
     let LaunchError::ComponentSetup {
         source,
         record,
-        records,
-        ..
+        recovery,
     } = error
     else {
         panic!("missing Ready owner")
     };
+    let records = recovery.into_record_store().unwrap().unwrap();
     assert!(matches!(*source, LaunchError::Restore(_)));
     assert_eq!(record.id, checkout.id);
     assert_eq!(body(&records, &record), "initialized");
@@ -562,12 +562,12 @@ fn new_restore_hook_failure_keeps_ready_record_and_old_view_bytes() {
     let LaunchError::ComponentSetup {
         source,
         record,
-        records,
-        ..
+        recovery,
     } = error
     else {
         panic!("missing restore failure owner")
     };
+    let records = recovery.into_record_store().unwrap().unwrap();
     assert!(matches!(*source, LaunchError::Restore(_)));
     assert_eq!(record.id, minted.id);
     assert_eq!(body(&records, &record), "initialized");
@@ -659,12 +659,12 @@ fn returned_component_must_be_the_exact_prepared_context() {
     let LaunchError::ComponentSetup {
         source,
         record,
-        records,
-        ..
+        recovery,
     } = error
     else {
         panic!("missing original binding")
     };
+    let records = recovery.into_record_store().unwrap().unwrap();
     assert!(matches!(*source, LaunchError::BindingMismatch));
     assert_eq!(record.id, expected.id);
     assert_ne!(record.id, foreign_record.id);
@@ -830,12 +830,12 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let LaunchError::ComponentSetup {
             source,
             record,
-            records,
-            ..
+            recovery,
         } = error
         else {
             panic!("Ready validation must retain its last owner: {case}")
         };
+        let records = recovery.into_record_store().unwrap().unwrap();
         match case {
             "definition" | "target" | "foreign" => {
                 assert!(matches!(*source, LaunchError::BindingMismatch));
@@ -988,14 +988,13 @@ fn prepared_runner_mount_failure_retains_close_recovery() {
                 .unwrap()
         };
         let LaunchError::ComponentSetup {
-            record,
-            records,
-            mut reports,
-            ..
+            record, recovery, ..
         } = error
         else {
             panic!("runner setup lost the canonical recovery owner");
         };
+        let (records, mut reports) = recovery.into_parts().unwrap();
+        let records = records.unwrap();
         assert_eq!(record, checkout);
         assert_eq!(reports.len(), 1);
         assert!(reports[0].view_error.is_some());

@@ -32,6 +32,15 @@ disallowed-methods = [
     { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
     { path = "libc::flock", reason = "use advisory_lock::FileLock" },
     { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
+    # An AutoCommit logs a patch event per applied op even when nothing will
+    # read it, and never drops them. Take changes in through tilo_automerge.
+    { path = "automerge::AutoCommit::apply_changes", reason = "use tilo_automerge::ApplyIncoming::apply_incoming" },
+    { path = "automerge::AutoCommit::apply_changes_batch", reason = "use tilo_automerge::ApplyIncoming::apply_incoming_batch" },
+    { path = "automerge::AutoCommit::load_incremental", reason = "use tilo_automerge::ApplyIncoming::load_incoming" },
+    { path = "automerge::AutoCommit::merge", reason = "use tilo_automerge::ApplyIncoming::merge_incoming" },
+    { path = "automerge::AutoCommit::isolate", reason = "use tilo_automerge::ApplyIncoming::isolate_at" },
+    { path = "automerge::AutoCommit::integrate", reason = "use tilo_automerge::ApplyIncoming::integrate_all" },
+    { path = "automerge::sync::SyncDoc::receive_sync_message", reason = "use tilo_automerge::ApplyIncoming::receive_incoming_sync" },
     { path = "std::time::Instant::now", reason = "read the clock through `crate::time::now()`" },
     { path = "std::time::SystemTime::now", reason = "read the clock through `crate::time::wall()`" },
     { path = "std::thread::spawn", reason = "run background work through `crate::background::Background::spawn`" },

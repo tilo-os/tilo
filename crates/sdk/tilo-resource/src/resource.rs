@@ -85,6 +85,12 @@ pub trait Resource: Sized + 'static {
 /// [`Resource::Action`] given as JSON. It is how a custom surface, an agent or
 /// a script submits an edit that has no named declaration (a drag with its
 /// final geometry) through the same permission-checked, undoable path.
+///
+/// It is programmatic: never offered in the palette or a menu, where a
+/// person picks named actions. Its risk is the value's own
+/// ([`tilo_actions::Action::risk`]), so a destructive value — deleting a clip —
+/// needs the same confirmation a declared destructive action does, while an
+/// ordinary edit applies directly.
 pub const APPLY: &str = "apply";
 /// The parameter of [`APPLY`] carrying the JSON-encoded action.
 pub const APPLY_PARAM: &str = "action";
@@ -243,6 +249,20 @@ fn apply_spec<R: Resource>() -> ActionSpec {
             }
         },
     )
+    // A typed edit is how a surface, an agent or a script says what should
+    // happen without a named declaration; a person picks named actions.
+    .programmatic()
+    // Each value is classified: deleting is destructive, trimming is not, so
+    // a destructive value gets the confirmation a declared one would.
+    .with_risk(|args| {
+        let Some(tilo_actions::ArgValue::Object(value)) = args.get(APPLY_PARAM) else {
+            return tilo_actions::RiskLevel::Low;
+        };
+        serde_json::from_value::<R::Action>(serde_json::Value::Object(value.clone()))
+            .map_or(tilo_actions::RiskLevel::Low, |action| {
+                tilo_actions::Action::risk(&action)
+            })
+    })
 }
 
 /// The resource tree published for one open resource: every declared action,

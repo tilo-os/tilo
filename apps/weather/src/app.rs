@@ -973,6 +973,7 @@ mod interaction_tests {
     use super::*;
     use crate::interaction::{EntryAction, SWIPE_COMMIT_DX};
     use crate::net::Request;
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::ContentLayout;
     use ui::widget::ShellMode;
     use vello::kurbo::Point as KPoint;
@@ -1960,7 +1961,7 @@ mod interaction_tests {
         WeatherDoc::upsert_location(&mut remote, &oslo);
         remote.commit();
         let changes = remote.get_changes(&h.state.doc.get_heads());
-        h.state.doc.apply_changes(changes).unwrap();
+        h.state.doc.apply_incoming(changes).unwrap();
 
         let local_id = h.app.core.borrow().model.locations[0].id;
         let local_temperature = 37.5;
