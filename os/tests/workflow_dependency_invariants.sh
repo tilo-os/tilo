@@ -75,7 +75,7 @@ fi
 
 if grep -Fq "group: snapshot-rpms-\${{ github.event_name == 'workflow_dispatch' && 'publication' || github.sha }}" "$rpm_snapshot_workflow" \
    && grep -Fq "cancel-in-progress: false" "$rpm_snapshot_workflow" \
-   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-equivalent' \
+   && grep -Fq 'python3 os/dev/rpm-snapshot-inputs.py --base "$GITHUB_SHA" --head origin/main --require-newer-than-pin' \
      "$rpm_snapshot_workflow" \
    && grep -Fq -- '--base "$GITHUB_SHA" --head FETCH_HEAD --require-equivalent' "$kernel_workflow" \
    && grep -Fq 'git checkout --detach FETCH_HEAD' "$kernel_workflow"; then

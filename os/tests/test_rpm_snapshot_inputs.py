@@ -76,6 +76,26 @@ class Inputs(unittest.TestCase):
         # The pin still names the older source; a later unrelated push must refresh.
         self.pin(self.base);self.write('unrelated.txt','x\n');head=self.commit()
         self.assertEqual(self.invoke(None,head=head),(0,'changed=true'))
+    def newer(self,source,head):
+        args=['gate','--base',source,'--head',head,'--require-newer-than-pin']
+        with patch.object(gate,'ROOT',self.repo),patch('sys.argv',args),contextlib.redirect_stdout(io.StringIO()):
+            return gate.main()==0
+    def test_promotion_supersedes_only_an_older_pin(self):
+        older=self.pin(None)
+        self.write('unrelated.txt','x\n');source=self.commit()
+        # Unrecorded pin: newer only while main still holds the pin source carried.
+        self.assertTrue(self.newer(source,source))
+        main=self.pin(older)
+        self.assertTrue(self.newer(source,main))
+        main=self.pin(source)
+        self.assertFalse(self.newer(source,main))
+        self.write('later.txt','x\n');later=self.commit()
+        main=self.pin(later)
+        self.assertFalse(self.newer(source,main))
+    def test_promotion_refuses_an_unrecorded_pin_that_landed_later(self):
+        source=self.pin(None)
+        self.write(gate.PIN,'RPMS_REF=code.sandbox.example/qos/rpms@sha256:'+'b'*64+'\n');main=self.commit()
+        self.assertFalse(self.newer(source,main))
     def test_pin_without_source_revision_refreshes(self):
         head=self.pin(None)
         self.assertEqual(self.invoke(None,head=head),(0,'changed=true'))

@@ -167,7 +167,7 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && ! grep -Eq 'FORGEJO_TOKEN: \$\{\{ (secrets\.REGISTRY_TOKEN|github\.token) \}\}' "$kernel_workflow" \
    && grep -Fq -- '--force-with-lease="refs/heads/$branch:$remote_tip"' "$kernel_workflow" \
    && ! grep -Fq 'git push origin HEAD:main' "$kernel_workflow" \
-   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main'" "$kernel_workflow" \
+   && grep -Fq "(github.event_name == 'workflow_dispatch' || github.event_name == 'push' || (github.event_name == 'workflow_call' && inputs.publish)) && github.ref == 'refs/heads/main'" "$kernel_workflow" \
    && ! grep -Fq "github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'" "$kernel_workflow" \
    && grep -Fq 'kernel-build-support.sh stage-modules "$(uname -m)"' "$repo/os/kernel/Containerfile" \
    && grep -Fq 'sh "$self" stage-boot "$arch" "$ksrc" "$stage" "$kver"' "$repo/os/kernel/build-support.sh" \
@@ -182,6 +182,28 @@ if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
   ok 'kernel publication builds, signs, attests, and reports native x86-64 and ARM64 payloads'
 else
   bad 'the two-architecture OS release does not have matching native kernel builds'
+fi
+
+# Inside a called workflow Forgejo reports github.event_name as workflow_call.
+# Such a run publishes (signs, pushes tags, opens pin pull requests) only when
+# its caller passes publish: true, and still only on main; the sole caller that
+# does is snapshot-rpms.yml on main. A pull-request-triggered call therefore can
+# never sign or propose pins.
+publish_default="$(sed -n '/^      publish:/,/^concurrency:/p' "$kernel_workflow")"
+unguarded_calls="$(grep -F "workflow_call'" "$kernel_workflow" \
+  | grep -vF "(github.event_name == 'workflow_call' && inputs.publish)) && github.ref == 'refs/heads/main'" || true)"
+publishing_callers="$(grep -lE '^      publish: true$' "$workflows"/*.y*ml || true)"
+snapshot_workflow="$workflows/snapshot-rpms.yml"
+if grep -Fq 'default: false' <<<"$publish_default" \
+   && grep -Fq 'type: boolean' <<<"$publish_default" \
+   && [ -z "$unguarded_calls" ] \
+   && [ "$(grep -Fc "(github.event_name == 'workflow_call' && inputs.publish)" "$kernel_workflow")" -ge 10 ] \
+   && [ "$publishing_callers" = "$snapshot_workflow" ] \
+   && sed -n '/^  kernels:/,$p' "$snapshot_workflow" | grep -Fq "if: github.ref == 'refs/heads/main'" \
+   && ! sed -n '/^on:/,/^concurrency:/p' "$snapshot_workflow" | grep -Fq 'pull_request'; then
+  ok 'a called kernel build publishes only for snapshot-rpms.yml on main'
+else
+  bad 'a called kernel build can sign or propose pins without an explicit main-only publish'
 fi
 
 # A push that lands both pins, or that snapshot-rpms.yml will answer with a
