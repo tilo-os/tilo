@@ -161,3 +161,31 @@ fn a_delete_key_on_the_surface_waits_for_confirmation() {
         "the surface's delete is held for the host's confirmation"
     );
 }
+
+#[test]
+fn a_gesture_of_several_edits_is_one_undo_step() {
+    let mut app = with_sample();
+    let clips = app.state().clips.len();
+    assert!(clips > 1, "the sample has several clips to delete");
+    let versions = app.versions().len();
+    app.harness().click_named("video_editor_root").unwrap();
+    // Select everything and lift it: one edit per clip, one gesture.
+    app.harness().set_modifiers(&["ctrl".into()]);
+    app.harness().key("a");
+    app.harness().set_modifiers(&[]);
+    app.harness().key("Delete");
+    // The deletions are one destructive action: one confirmation, not one
+    // per clip.
+    assert_eq!(app.state().clips.len(), clips, "held for confirmation");
+    app.harness().key("Enter");
+    assert!(app.state().clips.is_empty());
+    assert_eq!(
+        app.versions().len(),
+        versions + 1,
+        "the whole selection is deleted by one action"
+    );
+    assert!(app.undo());
+    assert_eq!(app.state().clips.len(), clips, "one undo restores all");
+    assert!(app.redo());
+    assert!(app.state().clips.is_empty());
+}
