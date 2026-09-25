@@ -96,6 +96,8 @@ jobs:
       rust_required: ${{ steps.plan.outputs.rust_required }}
       security_required: ${{ steps.plan.outputs.security_required }}
       native_dependencies_required: ${{ steps.plan.outputs.native_dependencies_required }}
+      suites_required: ${{ steps.plan.outputs.suites_required }}
+      suites: ${{ steps.plan.outputs.suites }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -155,6 +157,12 @@ jobs:
             selection_args+=(--full)
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base='${{ github.event.before }}'
+          fi
+          if [ '${{ github.event_name }}' = push ]; then
+            # Pull requests run the hermetic suites their paths reach. Every
+            # push runs all of them, so an input a suite forgot to declare
+            # still fails at the merge that broke it.
+            selection_args+=(--all-suites)
           fi
           if [ -z "$base" ] \
               || [ "$base" = "0000000000000000000000000000000000000000" ]; then
@@ -222,6 +230,35 @@ jobs:
         id: native-check
         run: |
           python3 os/tests/test_openh264_source_order.py -v
+
+  # Hermetic test suites outside Cargo (tools/ci/suites.toml), selected by the
+  # paths they read. They need no builder image and run beside the Rust jobs.
+  suites:
+    if: needs.select.outputs.suites_required == 'true'
+    needs: [select]
+    runs-on: runner-quality
+    timeout-minutes: 20
+    container:
+      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Run selected suites
+        id: suites-run
+        env:
+          SUITES: ${{ needs.select.outputs.suites }}
+        run: |
+          # Declared paths contain no whitespace; split the list into arguments.
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "path-selected suites" -- \
+            python3 tools/ci/suites.py run --jobs 2 $SUITES
 
   # Each shard runs its tests, its all-target check and its Clippy diff as
   # three parallel jobs rather than one after another on one runner. They share
@@ -598,7 +635,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [builder, select, security, test, check, clippy, native-dependencies]
+    needs: [builder, select, security, test, check, clippy, native-dependencies, suites]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -618,6 +655,8 @@ jobs:
           CLIPPY_RESULT: ${{ needs.clippy.result }}
           NATIVE_DEPENDENCIES_RESULT: ${{ needs.native-dependencies.result }}
           NATIVE_DEPENDENCIES_REQUIRED: ${{ needs.select.outputs.native_dependencies_required }}
+          SUITES_RESULT: ${{ needs.suites.result }}
+          SUITES_REQUIRED: ${{ needs.select.outputs.suites_required }}
           EVENT_NAME: ${{ github.event_name }}
           SECURITY_REQUIRED: ${{ needs.select.outputs.security_required }}
           RUST_REQUIRED: ${{ needs.select.outputs.rust_required }}
@@ -652,6 +691,16 @@ jobs:
               ;;
             *)
               echo '::error::Native dependency checks failed or applicability is invalid.'
+              exit 1
+              ;;
+          esac
+          case "$SUITES_REQUIRED:$SUITES_RESULT" in
+            true:success) ;;
+            false:skipped)
+              echo 'Path-selected suites not applicable: no declared suite inputs changed.' >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo '::error::Path-selected suites failed or applicability is invalid.'
               exit 1
               ;;
           esac

@@ -1534,6 +1534,7 @@ impl App {
                 },
             },
             params: action.params().to_vec(),
+            view: tilo_actions::ResourceViewDescriptor::declared_for(resource, &action.id),
         }
     }
 }
