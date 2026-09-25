@@ -26,6 +26,16 @@ jobs:
               exit 1
             fi
           fi
+          mkdir -p "$RUNNER_TEMP/llvm-bin"
+          for tool in clang-cl lld-link; do
+            if ! command -v "$tool" >/dev/null; then
+              versioned="$(find /usr/bin -maxdepth 1 -name "$tool-[0-9]*" | sort -V | tail -n 1)"
+              test -n "$versioned"
+              ln -s "$versioned" "$RUNNER_TEMP/llvm-bin/$tool"
+            fi
+          done
+          export PATH="$RUNNER_TEMP/llvm-bin:$PATH"
+          printf '%s\n' "$RUNNER_TEMP/llvm-bin" >> "$GITHUB_PATH"
           command -v clang-cl
           command -v lld-link
           rustup target add aarch64-pc-windows-msvc
