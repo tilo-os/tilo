@@ -8,6 +8,7 @@ import subprocess
 
 
 REBUILD_PATHS = {
+    "dist/ci/install-build-deps.sh",
     "os/Containerfile.builder",
     "os/external-assets/github-assets.tsv",
     "os/dev/cache-github-assets.sh",

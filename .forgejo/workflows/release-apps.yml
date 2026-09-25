@@ -647,7 +647,7 @@ jobs:
     container:
       # This public, immutable image is pulled before any release authorization.
       # It contains no compiler or build toolchain and needs no registry secret.
-      image: code.podesta.ai/public/tilo-release-tools@sha256:a59c9b664bc4aa09da7a747b77aa72c965608d6da9fa5659a3e70e01810b764b
+      image: code.podesta.ai/public/tilo-release-tools@sha256:2a7292af48bf8074e27f95661a293b2c48c420c5522d465da7fb31b6e22562fa
     timeout-minutes: 60
     enable-openid-connect: true
     steps:
