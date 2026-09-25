@@ -420,14 +420,15 @@ mod native {
             )
         )]
         pub(crate) fn acquire(selected: &SelectedManifest) -> Result<Self> {
-            let cache =
-                if let Some(raw) = std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty()) {
-                    std::path::PathBuf::from(raw)
-                } else {
-                    let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
-                    raw_components(home.as_os_str().as_bytes())?;
-                    home.join(".cache")
-                };
+            let cache = if let Some(raw) =
+                std::env::var_os("XDG_CACHE_HOME").filter(|p| !p.is_empty())
+            {
+                std::path::PathBuf::from(raw)
+            } else {
+                let home = xdg_paths::home().ok_or("Current-user home directory unavailable")?;
+                raw_components(home.as_os_str().as_bytes())?;
+                home.join(".cache")
+            };
             Self::acquire_at(&cache, selected)
         }
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {

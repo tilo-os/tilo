@@ -885,7 +885,8 @@ mod native {
     }
     impl CacheRoot {
         pub(crate) fn acquire(selected: &SelectedManifest) -> Result<Self> {
-            let cache = xdg_paths::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
+            let cache =
+                xdg_paths::cache_dir().ok_or("Current-user LocalAppData cache unavailable")?;
             Self::acquire_at(&cache, selected)
         }
         fn acquire_at(cache: &Path, selected: &SelectedManifest) -> Result<Self> {
