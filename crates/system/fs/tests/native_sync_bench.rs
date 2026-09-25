@@ -310,16 +310,17 @@ impl Daemon {
             self.alive();
             match self.lines.recv_timeout(Duration::from_millis(200)) {
                 Ok(line) if line.contains(expected) => return line,
-                Ok(_) => {}
-                Err(_) if Instant::now() >= deadline => {
-                    panic!(
-                        "{}: no line containing {expected:?}; logs:\n{}",
-                        self.name,
-                        self.dump()
-                    )
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    panic!("{}: its output closed; logs:\n{}", self.name, self.dump())
                 }
-                Err(_) => {}
             }
+            assert!(
+                Instant::now() < deadline,
+                "{}: no line containing {expected:?}; logs:\n{}",
+                self.name,
+                self.dump()
+            );
         }
     }
 
@@ -682,7 +683,7 @@ fn git_repository() {
     report(
         scenario,
         "sync_after_commit",
-        (clean - committed).as_secs_f64(),
+        clean.saturating_sub(committed).as_secs_f64(),
         "s",
     );
 }
