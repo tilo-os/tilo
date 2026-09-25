@@ -39,12 +39,13 @@ use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
-/// Build the scene one `--shots` frame is rasterised from: sync, publish the
-/// history the transport strip draws from, lay out at `w`×`h`, and draw.
+/// Build the scene of one frame of a standalone editor widget: sync, publish
+/// the history the transport strip draws from, lay out at `w`×`h`, and draw.
 ///
-/// The PNG path and the fingerprint path both come through here, so a
-/// fingerprint always describes the very scene the picture was made from
-/// rather than a second composition that could drift from it.
+/// `--shots` itself composes on the framework host (`ui::framework::stage`
+/// then the host's frame, whose scene [`fingerprint`] reads through
+/// `FrameHarness::scene`); this is the same pass for benchmarks that drive
+/// the widget directly, without a host.
 pub fn compose(
     widget: &mut dyn Widget,
     (w, h): (u32, u32),
@@ -154,19 +155,22 @@ pub fn fingerprint(scene: &Scene) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::VideoEditorApp;
-    use crate::app::ShotScenario;
+    use crate::VideoEditor;
+    use ui::prelude::TestApp;
 
-    /// Compose one scenario from scratch and fingerprint it — a whole
-    /// independent build of the app, the document and the scene, which is
-    /// what a second process would do.
-    fn print_of(scenario: ShotScenario, size: (u32, u32)) -> u64 {
-        let mut app: Box<dyn Widget> = Box::new(VideoEditorApp::new_for_shot(scenario));
-        let mut state = ui::State::new();
-        let mut tr = TextRenderer::new();
-        let scene = compose(&mut *app, size, &Theme::dark(), &mut state, &mut tr)
-            .expect("the scenario composes");
-        fingerprint(&scene)
+    /// Capture one scenario from scratch, the way `--shots --scenario`
+    /// does: a fresh framework host, the scenario staged through it, one
+    /// frame composed. A whole independent build of the app, the record and
+    /// the scene, which is what a second process would do.
+    fn capture(scenario: Option<&str>, size: (u32, u32)) -> TestApp<VideoEditor> {
+        let mut app = TestApp::<VideoEditor>::new().expect("the editor launches");
+        app.harness().resize(size).expect("the viewport lays out");
+        app.stage(scenario).expect("the scenario stages");
+        app
+    }
+
+    fn print_of(scenario: Option<&str>, size: (u32, u32)) -> u64 {
+        fingerprint(capture(scenario, size).harness().scene())
     }
 
     /// Every build of one scenario must describe the same picture exactly.
@@ -187,11 +191,11 @@ mod tests {
     #[test]
     fn a_scenario_composes_the_same_scene_every_time() {
         for scenario in [
-            ShotScenario::Live,
-            ShotScenario::Markers,
-            ShotScenario::SelectedFilters,
-            ShotScenario::JustSplit,
-            ShotScenario::Effects,
+            None,
+            Some("markers"),
+            Some("filters"),
+            Some("split"),
+            Some("effects"),
         ] {
             let first = print_of(scenario, (1280, 800));
             for again in 1..3 {
@@ -213,25 +217,12 @@ mod tests {
     /// set of pixels carrying ink unchanged. `pixels_differing_beyond_aa`
     /// tolerates exactly that step, so a zero here means the two runs made the
     /// same picture and anything above zero is a real difference in what was
-    /// drawn.
-    ///
-    /// This is the part a person diffing two screenshots is relying on: not
-    /// that the bytes match, which the rasteriser will not promise, but that
-    /// nothing beyond the wobble moved. A machine that cannot rasterise cannot
-    /// observe the property, so failing to build a renderer is the correct
-    /// outcome here rather than a silent pass.
+    /// drawn. A machine that cannot rasterise cannot observe the property, so
+    /// failing to build a renderer is the correct outcome here rather than a
+    /// silent pass.
     #[test]
     fn two_captures_of_one_scenario_are_the_same_picture() {
-        let size = (640, 400);
-        let shoot = || {
-            let mut app: Box<dyn Widget> =
-                Box::new(VideoEditorApp::new_for_shot(ShotScenario::Markers));
-            let mut state = ui::State::new();
-            let mut tr = TextRenderer::new();
-            let scene = compose(&mut *app, size, &Theme::dark(), &mut state, &mut tr)
-                .expect("the scenario composes");
-            ui::offscreen::OffscreenRenderer::new(size.0, size.1).render_rgba(&scene)
-        };
+        let shoot = || capture(Some("markers"), (640, 400)).harness().render_rgba();
         let a = shoot();
         let b = shoot();
         assert!(!a.is_empty(), "the capture produced pixels");
@@ -246,16 +237,55 @@ mod tests {
     /// above would pass on a function that returned a constant.
     #[test]
     fn the_fingerprint_separates_scenes_that_differ() {
-        let live = print_of(ShotScenario::Live, (1280, 800));
+        let live = print_of(None, (1280, 800));
         assert_ne!(
             live,
-            print_of(ShotScenario::Markers, (1280, 800)),
+            print_of(Some("markers"), (1280, 800)),
             "two different scenarios are two different scenes",
         );
         assert_ne!(
             live,
-            print_of(ShotScenario::Live, (900, 700)),
+            print_of(None, (900, 700)),
             "the same scenario at another size is a different scene",
+        );
+        assert_ne!(
+            live,
+            print_of(Some(crate::app::EMPTY_CAPTURE), (1280, 800)),
+            "the blank capture is not the demo project",
+        );
+    }
+
+    /// Every scenario the launcher accepts stages on the framework host, and
+    /// its view state lands: the capture differs from the plain demo frame.
+    #[test]
+    fn every_scenario_stages_through_the_host() {
+        let plain = print_of(None, (1280, 800));
+        for name in crate::app::ShotScenario::ALL_NAMES {
+            assert_ne!(
+                print_of(Some(name), (1280, 800)),
+                plain,
+                "{name} staged nothing visible"
+            );
+        }
+        // `--narrow` reveals the collapsed bin, which only collapses narrow.
+        assert_ne!(
+            print_of(Some(crate::app::NARROW_CAPTURE), (720, 820)),
+            print_of(None, (720, 820)),
+            "the narrow capture opens the bin overlay"
+        );
+    }
+
+    /// The staged capture is of the scenario, not of a blank editor: the
+    /// demo project went in through the host, as one attributed action.
+    #[test]
+    fn a_capture_loads_the_demo_project_through_the_host() {
+        let app = capture(Some("split"), (1280, 800));
+        assert!(!app.state().clips.is_empty());
+        assert!(
+            app.versions()
+                .iter()
+                .any(|version| version.summary().is_some()),
+            "the load is an attributed version"
         );
     }
 }
