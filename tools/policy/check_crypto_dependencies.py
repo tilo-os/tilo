@@ -67,7 +67,6 @@ MIGRATING = {
     "channel-crypto": frozenset({"chacha20poly1305"}),
     "passwords": frozenset({"argon2", "chacha20poly1305"}),
     "runtime-identity": frozenset({"argon2", "chacha20poly1305"}),
-    "secret-vault": frozenset({"chacha20poly1305"}),
     "shell": frozenset({"chacha20poly1305", "x25519-dalek"}),
     "tilo-relay": frozenset({"chacha20poly1305", "x25519-dalek"}),
     "tilo-ui": frozenset({"chacha20poly1305"}),
