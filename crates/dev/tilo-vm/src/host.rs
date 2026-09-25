@@ -170,14 +170,15 @@ pub fn which_all(tool: &str) -> Vec<PathBuf> {
     }
     // MSYS2's ARM64 QEMU is commonly installed without adding its bin to
     // the Windows PATH. Keep the detected binary and firmware in one prefix.
-    if cfg!(windows) && (tool == "qemu-img" || tool == "qemu-system-aarch64") {
-        if let Some(home) = std::env::var_os("USERPROFILE") {
-            let candidate = PathBuf::from(home)
-                .join("msys64/clangarm64/bin")
-                .join(format!("{tool}.exe"));
-            if candidate.is_file() && !found.contains(&candidate) {
-                found.push(candidate);
-            }
+    if cfg!(windows)
+        && (tool == "qemu-img" || tool == "qemu-system-aarch64")
+        && let Some(home) = std::env::var_os("USERPROFILE")
+    {
+        let candidate = PathBuf::from(home)
+            .join("msys64/clangarm64/bin")
+            .join(format!("{tool}.exe"));
+        if candidate.is_file() && !found.contains(&candidate) {
+            found.push(candidate);
         }
     }
     found
