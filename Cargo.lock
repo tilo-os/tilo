@@ -14487,7 +14487,6 @@ dependencies = [
  "automerge",
  "blake3",
  "bounded-command",
- "chacha20poly1305 0.11.0",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
@@ -14514,13 +14513,14 @@ dependencies = [
  "tilo-app-package",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-seal",
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "x25519-dalek 3.0.0",
+ "zeroize",
 ]
 
 [[package]]
