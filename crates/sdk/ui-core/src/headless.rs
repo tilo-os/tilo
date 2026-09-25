@@ -3418,6 +3418,16 @@ impl FrameHarness {
         }
     }
 
+    /// Commit text through the production input-method path in one event.
+    ///
+    /// Use this for scenarios whose subject is the resulting document rather
+    /// than physical-key handling. It models a completed input-method
+    /// composition without manufacturing a rendered frame for every character.
+    pub fn commit_text(&mut self, text: &str) {
+        self.pump_component_wakes();
+        self.send(&WindowEvent::Ime(winit::event::Ime::Commit(text.into())));
+    }
+
     /// Set the physical-to-logical input scale; layout and capture remain logical pixels.
     /// # Errors
     /// Rejects a non-finite or non-positive scale.
@@ -7112,18 +7122,21 @@ mod dispatched_action_driver_tests {
         fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
             let doc = &mut *ctx.state;
             let handled = &mut *ctx.handled;
-            let WindowEvent::KeyboardInput { event: ke, .. } = event else {
-                return;
-            };
-            if ke.state != ElementState::Pressed {
-                return;
-            }
-            let winit::keyboard::Key::Character(c) = &ke.logical_key else {
-                return;
+            let text = match event {
+                WindowEvent::KeyboardInput { event: ke, .. }
+                    if ke.state == ElementState::Pressed =>
+                {
+                    let winit::keyboard::Key::Character(text) = &ke.logical_key else {
+                        return;
+                    };
+                    text.as_str()
+                }
+                WindowEvent::Ime(winit::event::Ime::Commit(text)) => text.as_str(),
+                _ => return,
             };
             // "2" dispatches two actions within the one event, so a test can
             // prove the host brackets the *event*, not each action.
-            if c.as_str() == "2" {
+            if text == "2" {
                 for text in ["x", "y"] {
                     self.actions.dispatch(
                         doc,
@@ -7138,7 +7151,7 @@ mod dispatched_action_driver_tests {
                     doc,
                     APPEND,
                     &Append {
-                        text: c.as_str().to_string(),
+                        text: text.to_string(),
                     },
                 );
             }
@@ -7289,6 +7302,16 @@ mod dispatched_action_driver_tests {
 
         d.click_named("redo_button").expect("redo became available");
         assert_eq!(body(&mut d), "a", "redo put the action back");
+    }
+
+    #[test]
+    fn committed_text_uses_the_real_ime_path_as_one_edit() {
+        let mut d = action_driver();
+
+        d.commit_text("東京 notes");
+        assert_eq!(body(&mut d), "東京 notes");
+        assert!(d.perform_undo());
+        assert_eq!(body(&mut d), "");
     }
 
     /// The keyboard and the control must reach the same undo — for the action
