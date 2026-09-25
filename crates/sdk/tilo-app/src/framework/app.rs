@@ -11,7 +11,6 @@ use ui_core::application::{
     AppComponent, ApplicationDefinition, ApplicationHost, ComponentRunnerInputs, HostContext,
     LaunchTarget, NativeProcessHost, PreparedComponentInputs, RestoreInput,
 };
-use ui_core::bound_dispatch::BoundActionAddress;
 use ui_core::headless::FrameHarness;
 use ui_core::launch::{LaunchArgs, LaunchError, LaunchSpec};
 use ui_core::permissions::{
@@ -23,6 +22,7 @@ use ui_core::widget::{Element, IconDescriptor};
 use super::dispatch::Dispatcher;
 use super::live::Live;
 use super::root::ResourceRoot;
+use super::stage::Stages;
 use super::view::{Updaters, ViewCx};
 
 /// A framework app: one resource type and a view of it.
@@ -58,9 +58,12 @@ pub trait ResourceApp: 'static {
         &[]
     }
 
-    /// The actions that stage a screenshot scenario, applied through the
-    /// same door as every control before the frame is captured.
-    fn scenario(name: &str) -> Vec<Invoke<Self::Resource>> {
+    /// The actions that stage the resource for a capture: `Some(name)` for
+    /// `--shots --scenario NAME`, `None` for a plain `--shots`. They apply
+    /// through the same door as every control; then the views stage their
+    /// view state ([`ViewCx::on_stage`], `ResourceSurface::stage`) and the
+    /// frame is captured. See [`stage`](super::stage).
+    fn scenario(name: Option<&str>) -> Vec<Invoke<Self::Resource>> {
         let _ = name;
         Vec::new()
     }
@@ -162,6 +165,7 @@ pub(crate) fn build_root<A: ResourceApp>(
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(resource_id, read_only);
     let saved = ui_core::LocalState::new(ui_core::record::RecordSaveStatus::Saved);
+    let stages = Stages::new();
     let mut cx = ViewCx::root(
         live.clone(),
         updaters.clone(),
@@ -169,6 +173,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         dispatch.clone(),
         published,
         saved.clone(),
+        stages.clone(),
     );
     let content = A::view(&mut cx);
     ResourceRoot::new(
@@ -180,6 +185,7 @@ pub(crate) fn build_root<A: ResourceApp>(
         alive,
         dispatch,
         saved,
+        stages,
         content,
     )
     .following(permissions, scope)
@@ -315,20 +321,7 @@ fn capture<A: ResourceApp>(
     harness: &mut FrameHarness,
     args: &LaunchArgs,
 ) -> Result<(), LaunchError> {
-    let Some(name) = args.scenario.as_deref() else {
-        return Ok(());
-    };
-    for invoke in A::scenario(name) {
-        let address = BoundActionAddress {
-            instance_id: CAPTURE_INSTANCE,
-            address: tilo_actions::ActionAddress::new(<A::Resource as Resource>::KIND, invoke.id),
-        };
-        harness
-            .invoke_bound_action(&address, &invoke.arguments)
-            .map_err(operation)?;
-    }
-    harness.relayout();
-    Ok(())
+    super::stage::stage::<A>(harness, args.scenario.as_deref())
 }
 
 fn shot_viewport<A: ResourceApp>(_: &LaunchArgs) -> (u32, u32) {

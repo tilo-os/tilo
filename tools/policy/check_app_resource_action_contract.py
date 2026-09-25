@@ -52,6 +52,9 @@ TOOLKIT_RESOURCE_VALUE = re.compile(
 # declarations plus the typed `apply` door), builds its runtime Resource value
 # and installs its replay decoder in the component registry.
 FRAMEWORK_APP = re.compile(r"\bimpl\s+(?:[\w:]+::)?ResourceApp\s+for\b")
+# The framework's launch installs the resource's replay decoder
+# (`Resource::register`) into the component registry itself.
+FRAMEWORK_LAUNCH = re.compile(r"\bframework\s*::\s*(?:run|launch_spec)\s*::\s*<")
 FRAMEWORK_RESOURCE = re.compile(
     r"#\[\s*resource\s*\(|\bimpl\s+(?:[\w:]+::)?Resource\s+for\b"
 )
@@ -793,6 +796,7 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 and not LIVE_ACTION_REGISTRY_WIRING.search(main_code)
                 and not prepared_launch_registry_wired(main_raw)
                 and not component_launch_registry_wired(main_raw, combined_raw)
+                and not (framework_host and FRAMEWORK_LAUNCH.search(combined))
             ):
                 violations.append(
                     Violation(
