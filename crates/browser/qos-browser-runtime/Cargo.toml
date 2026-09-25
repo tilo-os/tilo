@@ -46,6 +46,7 @@ js-sys = "=0.3.85"
 web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "Window", "Document", "Element", "HtmlElement", "console"] }
 [dev-dependencies]
 tempfile.workspace = true
+tilo-automerge.workspace = true
 
 [package.metadata.cargo-machete]
 # The wasm32 build pulls iroh for its browser transport features; machete

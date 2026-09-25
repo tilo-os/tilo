@@ -392,7 +392,7 @@ fn local_publication_promotes_and_capacity_bounds_outstanding_changes() {
 fn cached_heads(view: &StatePeer, state: &StatePeer) -> Vec<String> {
     let mut cached = automerge::AutoCommit::load(&view.document(APP, RECORD).unwrap()).unwrap();
     let mut installed = automerge::AutoCommit::load(&state.document(APP, RECORD).unwrap()).unwrap();
-    cached.merge(&mut installed).unwrap();
+    tilo_automerge::ApplyIncoming::merge_incoming(&mut cached, &mut installed).unwrap();
     cached.get_heads().iter().map(ToString::to_string).collect()
 }
 /// The storage-batch check a cursor journal must pass

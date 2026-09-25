@@ -465,7 +465,7 @@ mod capture_tests {
             actual.get_heads(),
             "captured bytes must carry the owner's stamped transaction, not a separately committed clone"
         );
-        sent.merge(&mut actual).unwrap();
+        tilo_automerge::ApplyIncoming::merge_incoming(&mut sent, &mut actual).unwrap();
         let checkout = RecordCheckout::package_primary(definition.record_kind.clone());
         let mut remote = prepare_remote_owned(&records, &record).unwrap();
         assert!(

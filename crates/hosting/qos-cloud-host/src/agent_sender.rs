@@ -531,6 +531,7 @@ pub(crate) struct AgentSteps {
     recovering: Vec<ParentStep>,
     /// Last observation pass over `recovering`.
     recovered_at: Option<Instant>,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     pub(crate) recovered: Vec<(ParentStep, StepProgress)>,
 }
 /// Interval between observation passes over steps recovered at startup.

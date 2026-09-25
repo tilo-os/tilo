@@ -1,7 +1,7 @@
 //! WASM calls operate on the existing Peer key and actual storage custody only.
 use super::*;
 use crate::peer_journal::AcknowledgedDescriptorFloor;
-use crate::peer_media::{self, OwnerView, PeerMedia, PreparedRequest, Step};
+use crate::peer_media::{OwnerView, PeerMedia, PreparedRequest, Step};
 use tilo_relay::delivery_v3::descriptor::GenerationExpectation;
 
 pub(super) struct MediaEnrollment {

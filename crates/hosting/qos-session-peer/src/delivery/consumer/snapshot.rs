@@ -1,12 +1,16 @@
 //! Source-selected snapshot custody. Stored/wire claims alone never select roots.
 use super::*;
+#[cfg(any(test, feature = "media"))]
 use crate::{
     host_bytes::{ByteCredit, HostBytes},
     owner::resources::{OwnedPublicationPin, OwnerDataOperation, OwnerResourceTurn},
     publication_custody::PublicationCustody,
 };
+#[cfg(any(test, feature = "media"))]
 use error::DataResult;
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::state::{SnapshotKind, SnapshotOperation};
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct SnapshotSelection {
     scope: CursorIssue,
     kind: SnapshotKind,
@@ -19,23 +23,30 @@ pub(crate) struct SnapshotSelection {
     pool: HostBytes,
     _credit: ByteCredit,
 }
+#[cfg(any(test, feature = "media"))]
 impl SnapshotSelection {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn scope(&self) -> &CursorIssue {
         &self.scope
     }
+    #[cfg(test)]
     pub(crate) fn kind(&self) -> SnapshotKind {
         self.kind
     }
+    #[cfg(test)]
     pub(crate) fn predecessor(&self) -> Option<&CommitRef> {
         self.predecessor.as_ref()
     }
+    #[cfg(test)]
     pub(crate) fn baseline_generation(&self) -> u64 {
         self.baseline_generation
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn pin(&self) -> [u8; 16] {
         self.pin
     }
 }
+#[cfg(any(test, feature = "media"))]
 fn reference_digest(pin: &PublicationCustody) -> Result<Digest> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"qos-private-snapshot-selection-v1\0");
@@ -51,6 +62,7 @@ fn reference_digest(pin: &PublicationCustody) -> Result<Digest> {
     Ok(*digest.finalize().as_bytes())
 }
 impl SessionOwner {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_select_snapshot(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -167,6 +179,7 @@ impl SessionOwner {
     /// claim is checked against the currently retained history and current
     /// consumer scope; the caller must additionally prove the regenerated
     /// stream's chunk digests equal the signed ones before any disclosure.
+    #[cfg(feature = "media")]
     pub(crate) fn data_reselect_snapshot(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -265,6 +278,7 @@ impl SessionOwner {
             Ok((selection, pin))
         })
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_revalidate_snapshot(
         &self,
         turn: &mut OwnerResourceTurn,
@@ -277,6 +291,7 @@ impl SessionOwner {
         self.revalidate_snapshot(source, selection, pin, host)
             .map_err(|error| self.classify_data_error(error))
     }
+    #[cfg(any(test, feature = "media"))]
     fn revalidate_snapshot(
         &self,
         source: &VerifiedDeliverySource<'_>,
@@ -383,6 +398,7 @@ impl SessionOwner {
         )
     }
 }
+#[cfg(feature = "media")]
 impl SessionOwner {
     /// Sign manifest claims for a selection the caller has just revalidated
     /// against Current. The stream must be the one prepared from its pin.

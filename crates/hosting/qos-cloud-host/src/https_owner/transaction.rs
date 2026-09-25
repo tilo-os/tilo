@@ -1,7 +1,6 @@
 //! Cloud transaction entry: one host-byte reservation sized from the persisted
 //! aggregate BEFORE the actual Store lock/decode, then the original Store barrier.
 use super::{CloudStoreSource, CloudStoreTurn, Current};
-use automerge::resource_limits::NativeWorkTurn;
 use qos_relay::delivery_v3::{
     auth::{self, VerifiedSession},
     commit::{
@@ -270,8 +269,8 @@ impl FileProbe {
     fn at(directory: &std::fs::File, name: &std::ffi::CStr) -> Option<Self> {
         let stat = crate::storage::stat_at(directory, name)?;
         Some(Self {
-            inode: stat.st_ino as u64,
-            size: stat.st_size as i64,
+            inode: stat.st_ino,
+            size: stat.st_size,
             modified_ns: i128::from(stat.st_mtime) * 1_000_000_000 + i128::from(stat.st_mtime_nsec),
         })
     }
@@ -304,9 +303,6 @@ impl CloudStoreTurn {
             .as_ref()
             .map(|w| &w.pool)
             .ok_or(CloudDeliveryError::Unavailable)
-    }
-    pub(crate) fn native_work(&self) -> Result<&NativeWorkTurn> {
-        Err(CloudDeliveryError::Unavailable)
     }
     pub(crate) fn delivery_ledger(&self) -> &DeliveryLedgerV1 {
         self.store

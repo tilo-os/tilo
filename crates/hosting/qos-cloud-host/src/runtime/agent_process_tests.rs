@@ -37,12 +37,11 @@ async fn query(
                 EnvelopeV2::Delivered { action, .. }
                 | EnvelopeV2::CertifiedDelivered { action, .. },
             ) = client.recv_action().await
+                && action.request_id == request_id
             {
-                if action.request_id == request_id {
-                    assert_eq!(action.source, host);
-                    assert_eq!(action.target, source);
-                    return action.message;
-                }
+                assert_eq!(action.source, host);
+                assert_eq!(action.target, source);
+                return action.message;
             }
         }
     })

@@ -213,7 +213,7 @@ impl Fixture {
             assert_eq!(status, hyper::StatusCode::OK);
             let chunk = HandoffChunk::decode(&encoded).unwrap();
             chunk
-                .verify_host_signature(&manifest, &fetch, self.now)
+                .verify_host_signature(manifest, &fetch, self.now)
                 .unwrap();
             assert_eq!(chunk.offset, bytes.len() as u64);
             bytes.extend_from_slice(chunk.body);
@@ -446,7 +446,7 @@ async fn onboarding_charged_request_and_reply_keep_custody_on_cancel_and_complet
     let charged = f.ingress.host_bytes().available_bytes();
     assert!(charged < before);
     let view = f.current.read().unwrap();
-    let mut exchange = f
+    let exchange = f
         .registry
         .admit(&f.owner, view.view(), buffered, f.now)
         .unwrap();

@@ -1,6 +1,8 @@
 //! Closed pre-launch recovery. Retained data alone never grants runtime custody.
 use super::*;
+#[cfg(any(target_os = "linux", test))]
 use crate::agent_runtime_adapter::RuntimeOwner;
+#[cfg(any(target_os = "linux", test))]
 use qos_action_broker::peer_actions::PolicyTime;
 
 fn sole<'a>(ledger: &'a PrivateAgentLedgerV2, id: &str) -> Option<&'a AgentRuntimeFactReceipt> {
@@ -62,6 +64,7 @@ impl Store {
     }
     /// The only reconstruction door: actual installed owner/source, current runtime,
     /// exact retained caller/grants and the entire fact set are checked under Store.
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn recover_admitted_spawn(
         &self,
         id: &AgentControlId,

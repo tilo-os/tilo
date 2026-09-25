@@ -310,6 +310,10 @@ impl CollaborationService {
         self.issue_with_digest(owner, administrator, request, request_digest, now_ns)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     pub(crate) fn issue_from_action(
         &self,
         owner: &mut SessionOwner,
@@ -490,7 +494,6 @@ impl CollaborationService {
         Ok(())
     }
 
-    #[must_use]
     pub fn pending(
         &self,
         owner: &SessionOwner,
@@ -1149,6 +1152,60 @@ pub(crate) fn sign(grant: InviteGrant, key: &ed25519_dalek::SigningKey) -> Resul
     issue_invitation(grant, key)
 }
 
+impl From<CollaborationStateV4> for CollaborationState {
+    fn from(old: CollaborationStateV4) -> Self {
+        Self {
+            invitations: old.invitations,
+            join_challenges: old.join_challenges,
+            join_completions: old.join_completions,
+            membership_challenges: old.membership_challenges,
+            administration: old
+                .administration
+                .into_iter()
+                .map(|old| AdministrationRecord {
+                    request_id: old.request_id,
+                    request_digest: old.request_digest,
+                    generation: old.generation,
+                    media_result: None,
+                })
+                .collect(),
+        }
+    }
+}
+/// Borrowed legacy serialization preserves literal V4 without cloning retained reply bytes.
+pub(crate) struct CollaborationV4View<'a>(pub(crate) &'a CollaborationState);
+impl Serialize for CollaborationV4View<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::{SerializeSeq, SerializeStruct};
+        struct Administration<'a>(&'a [AdministrationRecord]);
+        impl Serialize for Administration<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
+                for r in self.0 {
+                    if r.media_result.is_some() {
+                        return Err(serde::ser::Error::custom(
+                            "V5 media result cannot be downgraded",
+                        ));
+                    }
+                    seq.serialize_element(&AdministrationRecordV4 {
+                        request_id: r.request_id,
+                        request_digest: r.request_digest,
+                        generation: r.generation,
+                    })?;
+                }
+                seq.end()
+            }
+        }
+        let mut value = serializer.serialize_struct("CollaborationStateV4", 5)?;
+        value.serialize_field("invitations", &self.0.invitations)?;
+        value.serialize_field("join_challenges", &self.0.join_challenges)?;
+        value.serialize_field("join_completions", &self.0.join_completions)?;
+        value.serialize_field("membership_challenges", &self.0.membership_challenges)?;
+        value.serialize_field("administration", &Administration(&self.0.administration))?;
+        value.end()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1483,59 +1540,5 @@ mod tests {
         assert_eq!(owner.collaboration_state().membership_challenges.len(), 1);
         assert!(owner.collaboration_state().join_completions.is_empty());
         drop(guest_key);
-    }
-}
-
-impl From<CollaborationStateV4> for CollaborationState {
-    fn from(old: CollaborationStateV4) -> Self {
-        Self {
-            invitations: old.invitations,
-            join_challenges: old.join_challenges,
-            join_completions: old.join_completions,
-            membership_challenges: old.membership_challenges,
-            administration: old
-                .administration
-                .into_iter()
-                .map(|old| AdministrationRecord {
-                    request_id: old.request_id,
-                    request_digest: old.request_digest,
-                    generation: old.generation,
-                    media_result: None,
-                })
-                .collect(),
-        }
-    }
-}
-/// Borrowed legacy serialization preserves literal V4 without cloning retained reply bytes.
-pub(crate) struct CollaborationV4View<'a>(pub(crate) &'a CollaborationState);
-impl Serialize for CollaborationV4View<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{SerializeSeq, SerializeStruct};
-        struct Administration<'a>(&'a [AdministrationRecord]);
-        impl Serialize for Administration<'_> {
-            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-                let mut seq = serializer.serialize_seq(Some(self.0.len()))?;
-                for r in self.0 {
-                    if r.media_result.is_some() {
-                        return Err(serde::ser::Error::custom(
-                            "V5 media result cannot be downgraded",
-                        ));
-                    }
-                    seq.serialize_element(&AdministrationRecordV4 {
-                        request_id: r.request_id,
-                        request_digest: r.request_digest,
-                        generation: r.generation,
-                    })?;
-                }
-                seq.end()
-            }
-        }
-        let mut value = serializer.serialize_struct("CollaborationStateV4", 5)?;
-        value.serialize_field("invitations", &self.0.invitations)?;
-        value.serialize_field("join_challenges", &self.0.join_challenges)?;
-        value.serialize_field("join_completions", &self.0.join_completions)?;
-        value.serialize_field("membership_challenges", &self.0.membership_challenges)?;
-        value.serialize_field("administration", &Administration(&self.0.administration))?;
-        value.end()
     }
 }

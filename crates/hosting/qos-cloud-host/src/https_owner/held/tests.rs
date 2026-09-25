@@ -482,6 +482,10 @@ async fn cloud_held_store_private_invalid_history_precedes_native_restore_and_re
     assert_eq!(std::fs::read(path).unwrap(), before);
 }
 
+#[expect(
+    clippy::enum_variant_names,
+    reason = "the names spell the protocol phases; renaming them would obscure the call sites"
+)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum OpenPhase {
     AfterPrivate,

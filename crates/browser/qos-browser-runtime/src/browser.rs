@@ -223,16 +223,15 @@ pub fn close(id: u64) -> Result<String, JsValue> {
         CLOSED.with_borrow_mut(|closed|closed.retain(id,reports,mount.storage.clone()));
         unconfigure(&mount.canvas);
         mount.gpu.take();
-        Ok(serde_json::to_string(&writes).map_err(error)?)
+        serde_json::to_string(&writes).map_err(error)
     })
 }
 fn unconfigure(canvas: &web_sys::HtmlCanvasElement) {
-    if let Ok(Some(context)) = canvas.get_context("webgpu") {
-        if let Ok(method) =
+    if let Ok(Some(context)) = canvas.get_context("webgpu")
+        && let Ok(method) =
             Reflect::get(&context, &"unconfigure".into()).and_then(|v| v.dyn_into::<Function>())
-        {
-            let _ = method.call0(&context);
-        }
+    {
+        let _ = method.call0(&context);
     }
 }
 #[wasm_bindgen]
@@ -791,10 +790,8 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
         });
         // GPU setup completes outside Winit dispatch. Wake an idle loop after
         // releasing the mount borrow so the new generation actually presents.
-        if installed {
-            if let Ok(wake) = proxy() {
-                let _ = wake.send_event(id);
-            }
+        if installed && let Ok(wake) = proxy() {
+            let _ = wake.send_event(id);
         }
     });
 }
@@ -941,10 +938,10 @@ impl Mount {
             }
         }
         self.frame.poll_frame().map_err(|e| e.to_string())?;
-        if let Some(desktop) = &self.desktop {
-            if let Err(error) = desktop.process_global_search(&mut self.frame) {
-                desktop.errors.borrow_mut().push(error);
-            }
+        if let Some(desktop) = &self.desktop
+            && let Err(error) = desktop.process_global_search(&mut self.frame)
+        {
+            desktop.errors.borrow_mut().push(error);
         }
         self.metrics.borrow_mut().end("draw_poll", poll_start);
         let snapshot_start = self.metrics.borrow().begin();
@@ -1657,7 +1654,7 @@ pub(crate) fn load_cache(
         if let Some(cache) = c.get(&key) {
             return Ok(cache.clone());
         }
-        let cache = PortableStorage::new(&profile, &device).map_err(error)?;
+        let cache = PortableStorage::new(profile, device).map_err(error)?;
         c.insert(key, cache.clone());
         Ok::<_, JsValue>(cache)
     })?;

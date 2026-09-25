@@ -64,6 +64,10 @@ struct Upload {
     bytes: Vec<u8>,
     progress: crate::peer_delivery::upload::UploadProgress,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Pending {
     Bootstrap,
     Http(u32),
@@ -111,10 +115,10 @@ impl DeliveryState {
     }
     fn stop(&mut self) {
         for (_, pending) in std::mem::take(&mut self.pending) {
-            if let Pending::Http(id) = pending {
-                if let Some(authority) = &self.authority {
-                    authority.borrow_mut().forget(id);
-                }
+            if let Pending::Http(id) = pending
+                && let Some(authority) = &self.authority
+            {
+                authority.borrow_mut().forget(id);
             }
         }
         self.bootstrap = None;
@@ -437,10 +441,10 @@ pub fn peer_delivery_forget(id: u32, request: u32) {
     if let Ok(peer) = owner(id) {
         peer.delivery.borrow_mut().incoming.remove(&request);
         let pending = peer.delivery.borrow_mut().pending.remove(&request);
-        if let Some(Pending::Http(inner)) = pending {
-            if let Some(authority) = &peer.delivery.borrow().authority {
-                authority.borrow_mut().forget(inner);
-            }
+        if let Some(Pending::Http(inner)) = pending
+            && let Some(authority) = &peer.delivery.borrow().authority
+        {
+            authority.borrow_mut().forget(inner);
         }
         // An unanswered inline state request (lost reply, timeout, transport
         // retry) releases its items; a resend returns the durable receipt.
@@ -603,10 +607,10 @@ pub fn peer_delivery_next(id: u32) -> Result<String, JsValue> {
             Pending::Private { operation, action },
         );
     }
-    if !peer.cache.has_pending_writes() {
-        if let Some(step) = next_inline_batch(&peer)? {
-            return Ok(step);
-        }
+    if !peer.cache.has_pending_writes()
+        && let Some(step) = next_inline_batch(&peer)?
+    {
+        return Ok(step);
     }
     if !peer
         .delivery
@@ -1284,7 +1288,7 @@ fn install_cuts(peer: &Rc<Peer>, cuts: Vec<ReplayCut>) -> Result<String, JsValue
     // LIVE_V1 lane C: a durable cut builds on durable state, never on the
     // view that includes speculative forwarded changes.
     let basis = super::live_api::take_durable_basis(peer);
-    let candidate = (|| {
+    let candidate = {
         let current = peer.state.borrow();
         admission::admit_cuts(
             basis.as_ref().unwrap_or(&*current),
@@ -1292,7 +1296,7 @@ fn install_cuts(peer: &Rc<Peer>, cuts: Vec<ReplayCut>) -> Result<String, JsValue
             &peer.incoming,
             now,
         )
-    })();
+    };
     let result = candidate.map_err(error).and_then(|(candidate, cursor, _)| {
         let Some(durable) = basis.as_ref() else {
             return install_admitted(peer, candidate, cursor, None);
@@ -1312,10 +1316,10 @@ fn install_cuts(peer: &Rc<Peer>, cuts: Vec<ReplayCut>) -> Result<String, JsValue
             }
         }
     });
-    if result.is_err() {
-        if let Some(basis) = basis {
-            super::live_api::restore_durable_basis(peer, basis);
-        }
+    if result.is_err()
+        && let Some(basis) = basis
+    {
+        super::live_api::restore_durable_basis(peer, basis);
     }
     result
 }

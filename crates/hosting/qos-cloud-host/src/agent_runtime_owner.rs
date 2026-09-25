@@ -5,10 +5,12 @@ use qos_agent_control_protocol::{AgentError, AgentErrorCode, AgentRequest};
 use qos_peer_state::owner_commit::*;
 mod effects;
 mod recovery;
+pub(crate) use effects::FailedLaunchAppend;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) use effects::RuntimeLaunchClaim;
 #[cfg(test)]
 pub(crate) use effects::enrolled_fixture::EnrolledFixtureTask;
 pub use effects::{AgentAttemptCustody, AgentDispatchPermit, AgentLaunchPermit, EffectClaim};
-pub(crate) use effects::{FailedLaunchAppend, RuntimeLaunchClaim};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentControlId(uuid::Uuid);
@@ -56,6 +58,10 @@ impl AdmittedAgent {
         self.custody
     }
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 #[derive(Debug)]
 pub enum AgentAdmissionResult {
     Fresh(AdmittedAgent),
@@ -704,13 +710,13 @@ impl Store {
         }) {
             return Ok(true);
         }
-        if let PrivateAgentState::V2(ledger) = selected {
-            if let Some(receipt) = ledger.facts.get(&format!("{key}:admitted")) {
-                let AgentRuntimeFact::Admitted { intent, .. } = &receipt.change.fact else {
-                    return Err("invalid private admission kind".into());
-                };
-                return Ok(intent.scope.caller.device_public_key == device);
-            }
+        if let PrivateAgentState::V2(ledger) = selected
+            && let Some(receipt) = ledger.facts.get(&format!("{key}:admitted"))
+        {
+            let AgentRuntimeFact::Admitted { intent, .. } = &receipt.change.fact else {
+                return Err("invalid private admission kind".into());
+            };
+            return Ok(intent.scope.caller.device_public_key == device);
         }
         Ok(false)
     }

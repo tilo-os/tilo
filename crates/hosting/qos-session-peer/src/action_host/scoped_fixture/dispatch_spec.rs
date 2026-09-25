@@ -234,10 +234,10 @@ async fn run(changed: bool) {
     let id = loop {
         let mut admitted = None;
         for event in fixture.caller.poll() {
-            if let CollabEvent::PublishedInvocationResult { request_id, result } = event {
-                if request_id == fixture.request {
-                    admitted = Some(result.expect("actual signed admission").0);
-                }
+            if let CollabEvent::PublishedInvocationResult { request_id, result } = event
+                && request_id == fixture.request
+            {
+                admitted = Some(result.expect("actual signed admission").0);
             }
         }
         if let Some(id) = admitted {
@@ -261,14 +261,14 @@ async fn run(changed: bool) {
     probe.changed.store(changed, Ordering::SeqCst);
     let terminal = loop {
         fixture.pump().await.unwrap();
-        if let Some(update) = fixture.invocation_status(id) {
-            if matches!(
+        if let Some(update) = fixture.invocation_status(id)
+            && matches!(
                 update,
                 tilo_actions::InvocationUpdate::Succeeded { .. }
                     | tilo_actions::InvocationUpdate::Failed { .. }
-            ) {
-                break update;
-            }
+            )
+        {
+            break update;
         }
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -381,14 +381,14 @@ async fn resolved_run(changed: bool) {
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     let terminal = loop {
         fixture.pump().await.unwrap();
-        if let Some(update) = fixture.invocation_status(id) {
-            if matches!(
+        if let Some(update) = fixture.invocation_status(id)
+            && matches!(
                 update,
                 tilo_actions::InvocationUpdate::Succeeded { .. }
                     | tilo_actions::InvocationUpdate::Failed { .. }
-            ) {
-                break update;
-            }
+            )
+        {
+            break update;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

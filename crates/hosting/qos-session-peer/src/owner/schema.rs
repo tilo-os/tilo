@@ -154,6 +154,10 @@ pub(super) struct Aggregate {
     pub(super) publication: PublicationStorage,
     pub(super) creation: Option<CreationLedgerV1>,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub(super) enum PublicationStorage {
     Legacy {
         outgoing: Vec<Vec<u8>>,
@@ -694,6 +698,7 @@ impl Aggregate {
             }
         }
     }
+    #[cfg(test)]
     pub(super) fn encode_payload(&self) -> Result<Vec<u8>> {
         self.encode_payload_bounded(crate::store::MAX_AGGREGATE_BYTES)
     }

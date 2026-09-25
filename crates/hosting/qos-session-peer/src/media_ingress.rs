@@ -211,6 +211,7 @@ impl InstalledIngress {
         Ok(true)
     }
 
+    #[cfg(test)]
     pub(crate) async fn start(
         owner: &mut SessionOwner,
         current: CommittedAuthority,
@@ -461,11 +462,11 @@ impl InstalledIngress {
         };
         // Keep the scope and request custody, but no Current guard, across
         // relay membership reconciliation.
-        if outcome.reconcile {
-            if let Err(error) = host.update_membership(owner).await {
-                tracing::debug!(%error, "onboarding membership reconciliation failed");
-                return;
-            }
+        if outcome.reconcile
+            && let Err(error) = host.update_membership(owner).await
+        {
+            tracing::debug!(%error, "onboarding membership reconciliation failed");
+            return;
         }
         let Some((registry, _)) = self.onboarding.as_mut() else {
             return;
@@ -716,6 +717,10 @@ fn endpoint(
     config.transport_config(Arc::new(transport));
     Ok(quinn::Endpoint::server(config, address)?)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn serve_h3(
     endpoint: quinn::Endpoint,
     authority: String,
@@ -758,7 +763,7 @@ async fn serve_h3(
            // Fresh comparison for this exact CONNECT, before response or MoQ decoding.
            let route=request.raw_authority().zip(request.raw_target()).and_then(|(raw,target)|qos_moq::relay::Relay::validate_route(raw,&authority,target));
            // LIVE_V1 shares this endpoint at its own exact route, once installed.
-           let live_route=request.raw_authority().zip(request.raw_target()).and_then(|(raw,target)|qos_moq::live::LiveRelay::validate_route(raw,&authority,target)).and_then(|route|live.get().cloned().map(|live|(route,live)));
+           let live_route=request.raw_authority().zip(request.raw_target()).and_then(|(raw,target)|qos_moq::live::LiveRelay::validate_route(raw,&authority,target)).zip(live.get().cloned());
            if (route.is_none() && live_route.is_none()) || request.headers.get("origin").is_some_and(|v|v!=&origin) || !request.protocols.iter().any(|v|v=="moqt-21") {
             let _=timeout(Duration::from_millis(100),request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND)).await;return;
            }

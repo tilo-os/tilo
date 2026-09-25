@@ -19,7 +19,6 @@ fn cert(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -
     cert
 }
 struct Fixture {
-    root: SigningKey,
     governor_key: SigningKey,
     governor: DeviceCert,
     host_key: SigningKey,
@@ -33,7 +32,6 @@ impl Fixture {
         let governor = cert(&root, &governor_key, DeviceCapabilities::primary());
         let host = cert(&root, &host_key, DeviceCapabilities::host());
         Self {
-            root,
             governor_key,
             governor,
             host_key,

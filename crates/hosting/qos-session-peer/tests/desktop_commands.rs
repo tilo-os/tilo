@@ -791,9 +791,10 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
                     panic!()
                 };
                 let last = packets.last_mut().unwrap();
-                let mut bytes = qos_peer_state::desktop_delivery::decode(&[last.clone()])
-                    .unwrap()
-                    .remove(0);
+                let mut bytes =
+                    qos_peer_state::desktop_delivery::decode(std::slice::from_ref(last))
+                        .unwrap()
+                        .remove(0);
                 let end = bytes.len() - 1;
                 bytes[end] ^= 1;
                 *last = hex::encode(bytes);
@@ -923,7 +924,10 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
     assert!(
         packets
             .iter()
-            .flat_map(|packet| qos_peer_state::desktop_delivery::decode(&[packet.clone()]).unwrap())
+            .flat_map(
+                |packet| qos_peer_state::desktop_delivery::decode(std::slice::from_ref(packet))
+                    .unwrap()
+            )
             .any(|packet| packet == withheld),
         "the direct delivery includes the exact already-persisted prerequisite that the browser missed"
     );

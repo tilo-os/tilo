@@ -156,10 +156,10 @@ impl SessionOwner {
                     },
                     now,
                 )?;
-                if owner.peer.pending_count() > before {
-                    if let Some(credit) = credit {
-                        owner.store_pending_input_credit(credit);
-                    }
+                if owner.peer.pending_count() > before
+                    && let Some(credit) = credit
+                {
+                    owner.store_pending_input_credit(credit);
                 }
                 Ok(result)
             },

@@ -14,6 +14,7 @@ use qos_relay::{
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+#[cfg(test)]
 pub(crate) fn read(
     store: &Store,
     caller: &VerifiedAgentCaller,

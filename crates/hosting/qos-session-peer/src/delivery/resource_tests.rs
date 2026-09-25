@@ -862,7 +862,6 @@ fn delivery_resource_receipt_lookup_returns_only_original_durable_outcome() {
         Kind::CurrentDenied
     );
     let root = owner.root().to_owned();
-    drop(source);
     drop(view);
     drop(turn);
     drop(wrong);
@@ -1124,6 +1123,7 @@ fn delivery_resource_pin_holds_its_generation_until_dropped() {
 
 /// Pool, disk and native-quota pressure are retryable (HTTP 503); other
 /// owner failures stay opaque refusals.
+#[cfg(feature = "media")]
 #[test]
 fn delivery_resource_transient_capacity_classification() {
     use crate::delivery_http::serve::transient_capacity;

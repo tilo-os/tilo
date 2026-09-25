@@ -78,16 +78,14 @@ fn challenge(
     {
         return Err("Enrollment identity/request mismatch".into());
     }
-    if let Some(scope) = &material.scope {
-        if scope.root != challenge.root_public_key
+    if let Some(scope) = &material.scope
+        && (scope.root != challenge.root_public_key
             || scope.room != challenge.room
-            || scope.workspace != challenge.workspace_id.to_string()
-        {
-            return Err(
-                "Enrollment authority changed; preserved identity requires explicit migration"
-                    .into(),
-            );
-        }
+            || scope.workspace != challenge.workspace_id.to_string())
+    {
+        return Err(
+            "Enrollment authority changed; preserved identity requires explicit migration".into(),
+        );
     }
     Ok(challenge)
 }

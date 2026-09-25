@@ -4,18 +4,52 @@ use crate::committed_authority::CommittedAuthority;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnerOperation {
-    Enrollment { input_len: usize },
-    Join { input_len: usize },
-    MediaAdministration { input_len: usize },
-    HostSigning { input_len: usize },
-    WorkerCommit { input_len: usize },
-    LegacyReceive { input_len: usize },
-    Recovery { input_len: usize },
+    #[cfg_attr(
+        not(all(test, feature = "media")),
+        expect(dead_code, reason = "constructed only by media owner-scope tests")
+    )]
+    Enrollment {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(feature = "media"),
+        expect(dead_code, reason = "only the media ingress admits joins")
+    )]
+    Join {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "constructed only by owner-scope tests")
+    )]
+    MediaAdministration {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(all(test, feature = "media")),
+        expect(dead_code, reason = "constructed only by media owner-scope tests")
+    )]
+    WorkerCommit {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "constructed only by owner-scope tests")
+    )]
+    LegacyReceive {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "constructed only by owner-scope tests")
+    )]
     Descriptor,
     Checkpoint,
-    Flush,
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "constructed only by owner-scope tests")
+    )]
     Export,
-    DeliveryActivation,
 }
 
 /// Holds serialized custody across the synchronous Current/owner publication
@@ -24,7 +58,6 @@ pub(crate) enum OwnerOperation {
 pub(crate) struct OwnerScope {
     retained: Arc<RetainedSerializedBytes>,
     generation: u64,
-    operation: OwnerOperation,
     _scratch: ByteCredit,
     active: Arc<ActiveTurn>,
     used: bool,
@@ -57,12 +90,8 @@ impl OwnerOperation {
             Self::Join { input_len } | Self::MediaAdministration { input_len } => {
                 (input_len, 256 * 1024)
             }
-            Self::HostSigning { input_len } | Self::WorkerCommit { input_len } => {
-                (input_len, 4 * 1024 * 1024)
-            }
-            Self::LegacyReceive { input_len } | Self::Recovery { input_len } => {
-                (input_len, crate::store::MAX_AGGREGATE_BYTES)
-            }
+            Self::WorkerCommit { input_len } => (input_len, 4 * 1024 * 1024),
+            Self::LegacyReceive { input_len } => (input_len, crate::store::MAX_AGGREGATE_BYTES),
             _ => return Ok(0),
         };
         if length == 0 || length > limit {
@@ -72,11 +101,6 @@ impl OwnerOperation {
             ));
         }
         Ok(length)
-    }
-}
-impl OwnerScope {
-    pub(crate) fn operation(&self) -> OwnerOperation {
-        self.operation
     }
 }
 impl SessionOwner {
@@ -111,7 +135,7 @@ impl SessionOwner {
                 .map_err(|e| self.classify_data_error(e))?,
         )
         .map_err(|e| self.classify_data_error(e))?;
-        let unchanged = matches!(operation, OwnerOperation::Flush | OwnerOperation::Export);
+        let unchanged = matches!(operation, OwnerOperation::Export);
         let aggregate = if unchanged {
             current
         } else {
@@ -138,10 +162,7 @@ impl SessionOwner {
             .try_acquire_bulk(add(transient, retained)?)
             .ok_or_else(capacity)?;
         let mut retained_allowance = credit.split(retained).ok_or_else(capacity)?;
-        let pending_input = if matches!(
-            operation,
-            OwnerOperation::LegacyReceive { .. } | OwnerOperation::Recovery { .. }
-        ) {
+        let pending_input = if matches!(operation, OwnerOperation::LegacyReceive { .. }) {
             Some(retained_allowance.split(input).ok_or_else(capacity)?)
         } else {
             None
@@ -149,7 +170,6 @@ impl SessionOwner {
         Ok(OwnerScope {
             retained: resources.retained.clone(),
             generation: self.committed_generation(),
-            operation,
             _scratch: credit,
             active: Arc::new(ActiveTurn {
                 cap: aggregate,
@@ -241,6 +261,7 @@ impl SessionOwner {
 
     /// Bind disk work to the actual owner root and workspace; this is not a
     /// session authorization or native resource qualification witness.
+    #[cfg(test)]
     pub(crate) fn staging_directory(
         &self,
         inventory: &crate::store::HostWorkInventory,

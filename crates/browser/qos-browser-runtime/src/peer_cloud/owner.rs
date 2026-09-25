@@ -139,6 +139,7 @@ impl CloudOwner {
         .map_err(|error| error.to_string())
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn material(&self) -> &[u8] {
         self.attempt.current_material()
     }
@@ -273,6 +274,7 @@ impl CloudOwner {
         Ok(state)
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn cancel(&mut self) {
         self.attempt.cancel();
     }

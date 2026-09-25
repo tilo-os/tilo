@@ -18,10 +18,10 @@ struct Link {
 impl Store {
     pub fn mesh_inspect(&mut self, now: u64) -> Result<MeshChallenge> {
         self.ensure_reconciled()?;
-        if let Some(c) = &self.state.mesh.challenge {
-            if now < c.expires_at_ns {
-                return Ok(c.clone());
-            }
+        if let Some(c) = &self.state.mesh.challenge
+            && now < c.expires_at_ns
+        {
+            return Ok(c.clone());
         }
         let b = self
             .state
@@ -102,10 +102,10 @@ impl Store {
         }
         let mut state = self.state.clone();
         if r.kind == "link" {
-            if let Some(old) = state.mesh.links.get(&r.link_id) {
-                if !old.active || !same_members(&old.grant, r) {
-                    bail!("mesh link id already used")
-                }
+            if let Some(old) = state.mesh.links.get(&r.link_id)
+                && (!old.active || !same_members(&old.grant, r))
+            {
+                bail!("mesh link id already used")
             }
             if state.mesh.links.len() >= 32 && !state.mesh.links.contains_key(&r.link_id) {
                 bail!("mesh link capacity reached")

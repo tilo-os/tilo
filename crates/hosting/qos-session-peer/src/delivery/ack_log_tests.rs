@@ -80,7 +80,8 @@ fn genuine_current_record_advances_once_and_is_idempotent() {
 #[test]
 fn superseded_or_foreign_records_are_inert() {
     let (f, record) = fixture();
-    let variants: Vec<Box<dyn Fn(&mut AckRecordV1)>> = vec![
+    type Mutation = Box<dyn Fn(&mut AckRecordV1)>;
+    let variants: Vec<Mutation> = vec![
         Box::new(|r| r.room.push('x')),
         Box::new(|r| r.store_generation[0] ^= 1),
         Box::new(|r| r.consumer[0] ^= 1),

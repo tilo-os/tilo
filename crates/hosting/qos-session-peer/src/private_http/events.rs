@@ -109,14 +109,14 @@ impl PrivateService {
             if watch.ready.is_some() {
                 continue;
             }
-            if let Some(pending) = &mut watch.pending {
-                if let Some(reply) = pending.try_reply()? {
-                    pending.validate_response_unqualified(&reply)?;
-                    if reply.message == watch.previous {
-                        watch.pending = None;
-                    } else {
-                        watch.ready = Some(reply);
-                    }
+            if let Some(pending) = &mut watch.pending
+                && let Some(reply) = pending.try_reply()?
+            {
+                pending.validate_response_unqualified(&reply)?;
+                if reply.message == watch.previous {
+                    watch.pending = None;
+                } else {
+                    watch.ready = Some(reply);
                 }
             }
         }

@@ -91,6 +91,15 @@ impl PublicationCursor {
 }
 
 #[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(test)]
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
@@ -399,13 +408,4 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
-}
-
-#[cfg(test)]
-fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
-    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
-}
-#[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
-    owner.outgoing().iter().map(|p| p.kind).collect()
 }

@@ -40,6 +40,10 @@ impl ChunkPrepareRefusal {
 }
 impl LiveSnapshot {
     /// Worker phase: no live Store turn or registry borrow crosses this work.
+    #[expect(
+        clippy::result_large_err,
+        reason = "a refusal returns the live snapshot custody to the caller; boxing would allocate on every refusal"
+    )]
     pub(in crate::https_owner) fn prepare_chunk(
         self,
         index: u32,

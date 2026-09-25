@@ -62,6 +62,8 @@ fn active_route(tree: &WorkspaceTree) -> Option<crate::desktop_navigation::Route
         tab: group.active_tab.to_string(),
     })
 }
+/// Outcome of the last navigation command: the navigated route, or a refusal.
+type NavigationResult = Result<Option<String>, String>;
 #[derive(Clone)]
 pub(crate) struct DesktopHandle {
     pub tree: Rc<RefCell<WorkspaceTree>>,
@@ -77,7 +79,7 @@ pub(crate) struct DesktopHandle {
     pub activation_sequence: Rc<std::cell::Cell<u64>>,
     pending_local_activation: Rc<RefCell<Option<crate::desktop_navigation::Route>>>,
     pub navigation_command: Rc<RefCell<Option<crate::desktop_navigation::Command>>>,
-    pub navigation_result: Rc<RefCell<Option<Result<Option<String>, String>>>>,
+    pub navigation_result: Rc<RefCell<Option<NavigationResult>>>,
     pub(crate) generation: String,
     pub search: Rc<RefCell<crate::system_search::SearchState>>,
     history_available: Rc<std::cell::Cell<bool>>,
@@ -234,14 +236,13 @@ impl DesktopHandle {
                     .as_ref()
                     .and_then(|route| route.ids().ok())
                     .map(|ids| ids.3);
-        if activates {
-            if let Some(instance) = target
+        if activates
+            && let Some(instance) = target
                 .as_ref()
                 .and_then(|route| route.ids().ok())
                 .map(|ids| ids.3)
-            {
-                frame.prepare_app_activation(instance);
-            }
+        {
+            frame.prepare_app_activation(instance);
         }
         *self.navigation_result.borrow_mut() = None;
         *self.navigation_command.borrow_mut() = Some(command);
@@ -632,6 +633,10 @@ impl DesktopRoot {
         }
         Self::queue_activation_after_route_change(handle, tree, previous);
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     pub fn new(
         admission: Admission,
         storage: PortableStorage,
@@ -1094,7 +1099,7 @@ impl DesktopRoot {
             let region=self.surface.primary_vertical_scroll(s,g,t)?;
             let owner=region.owner_generation?;
             let m=region.metrics;
-            if ui::widget::PrimaryScrollAction::Start.offset(m).is_none() { return None; }
+            ui::widget::PrimaryScrollAction::Start.offset(m)?;
             Some(json!({"region":format!("{}/{}/{}/{}/{}/{}/{}",self.handle.generation,r.workspace,r.strip,r.group,r.tab,owner,region.key),"offset":m.offset.clamp(0.0,m.max_scroll()),"viewport":m.viewport,"content":m.content,"max":m.max_scroll()}))
         }).unwrap_or(serde_json::Value::Null);
         if snapshot["scroll"] != scroll {
@@ -1370,11 +1375,10 @@ impl DesktopRoot {
                     .iter_mut()
                     .find(|v| v.id == w)
                     .and_then(|w| w.strips.iter_mut().find(|v| v.id == s))
+                    && strip.window_groups.iter().any(|group| group.maximized)
                 {
-                    if strip.window_groups.iter().any(|group| group.maximized) {
-                        for group in &mut strip.window_groups {
-                            group.maximized = group.id == g;
-                        }
+                    for group in &mut strip.window_groups {
+                        group.maximized = group.id == g;
                     }
                 }
                 Self::local(&mut tree, LocalViewIntent::Workspace(w));
@@ -1613,16 +1617,14 @@ impl DesktopRoot {
                 });
                 self.dirty = true;
             }
-            if let Ok(bytes) = serde_json::to_vec(&LocalView::from_tree(&tree)) {
-                if self
+            if let Ok(bytes) = serde_json::to_vec(&LocalView::from_tree(&tree))
+                && self
                     .storage
                     .get(&self.view_key)
                     .is_none_or(|saved| saved.bytes != bytes)
-                {
-                    if let Err(e) = self.storage.put(self.view_key.clone(), bytes, None) {
-                        self.handle.errors.borrow_mut().push(e);
-                    }
-                }
+                && let Err(e) = self.storage.put(self.view_key.clone(), bytes, None)
+            {
+                self.handle.errors.borrow_mut().push(e);
             }
         }
         self.surface.sync_navigation(&tree);
@@ -1696,128 +1698,125 @@ impl DesktopRoot {
                 .get(&strip.id)
                 .and_then(|id| strip.window_groups.iter().find(|g| g.id == *id))
                 .or_else(|| strip.window_groups.first());
-            if let Some(group) = active_group {
-                if let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab) {
-                    let location = TabLocation {
-                        strip: strip.id.0,
-                        group: group.id,
-                        tab: tab.id,
-                    };
-                    if close_target.is_none() {
+            if let Some(group) = active_group
+                && let Some(tab) = group.tabs.iter().find(|t| t.id == group.active_tab)
+            {
+                let location = TabLocation {
+                    strip: strip.id.0,
+                    group: group.id,
+                    tab: tab.id,
+                };
+                if close_target.is_none() {
+                    add(
+                        "close-tab".into(),
+                        format!("Close {}", tab.title),
+                        DesktopCommand::CloseTab { location },
+                    );
+                }
+                let index = group
+                    .tabs
+                    .iter()
+                    .position(|item| item.id == tab.id)
+                    .unwrap();
+                if index > 0 {
+                    add(
+                        "tab-left".into(),
+                        format!("Move {} left", tab.title),
+                        DesktopCommand::ReorderTab {
+                            location,
+                            before: Some(group.tabs[index - 1].id),
+                        },
+                    );
+                }
+                if index + 1 < group.tabs.len() {
+                    add(
+                        "tab-right".into(),
+                        format!("Move {} right", tab.title),
+                        DesktopCommand::ReorderTab {
+                            location,
+                            before: group.tabs.get(index + 2).map(|item| item.id),
+                        },
+                    );
+                }
+                let group_index = strip
+                    .window_groups
+                    .iter()
+                    .position(|item| item.id == group.id)
+                    .unwrap();
+                if group_index > 0 {
+                    add(
+                        "group-left".into(),
+                        "Move group left".into(),
+                        DesktopCommand::ReorderGroup {
+                            strip: strip.id.0,
+                            group: group.id,
+                            before: Some(strip.window_groups[group_index - 1].id),
+                        },
+                    );
+                }
+                if group_index + 1 < strip.window_groups.len() {
+                    add(
+                        "group-right".into(),
+                        "Move group right".into(),
+                        DesktopCommand::ReorderGroup {
+                            strip: strip.id.0,
+                            group: group.id,
+                            before: strip.window_groups.get(group_index + 2).map(|item| item.id),
+                        },
+                    );
+                }
+                add(
+                    "duplicate-tab".into(),
+                    format!("Duplicate {}", tab.title),
+                    DesktopCommand::DuplicateTab { location },
+                );
+                if group.tabs.len() > 1 {
+                    add(
+                        "split-tab".into(),
+                        format!("Split {} into a new group", tab.title),
+                        DesktopCommand::SplitTab {
+                            location,
+                            before: None,
+                        },
+                    );
+                }
+                for destination in &workspace.strips {
+                    if destination.id != strip.id {
                         add(
-                            "close-tab".into(),
-                            format!("Close {}", tab.title),
-                            DesktopCommand::CloseTab { location },
-                        );
-                    }
-                    let index = group
-                        .tabs
-                        .iter()
-                        .position(|item| item.id == tab.id)
-                        .unwrap();
-                    if index > 0 {
-                        add(
-                            "tab-left".into(),
-                            format!("Move {} left", tab.title),
-                            DesktopCommand::ReorderTab {
+                            format!("move-strip-{}", destination.id.0),
+                            format!("Move {} to strip {}", tab.title, destination.name),
+                            DesktopCommand::MoveTab {
                                 location,
-                                before: Some(group.tabs[index - 1].id),
+                                placement: TabPlacement::NewGroup {
+                                    strip: destination.id.0,
+                                    after: None,
+                                },
                             },
                         );
                     }
-                    if index + 1 < group.tabs.len() {
-                        add(
-                            "tab-right".into(),
-                            format!("Move {} right", tab.title),
-                            DesktopCommand::ReorderTab {
-                                location,
-                                before: group.tabs.get(index + 2).map(|item| item.id),
-                            },
-                        );
-                    }
-                    let group_index = strip
+                    for (index, target) in destination
                         .window_groups
                         .iter()
-                        .position(|item| item.id == group.id)
-                        .unwrap();
-                    if group_index > 0 {
+                        .enumerate()
+                        .filter(|(_, g)| g.id != group.id)
+                    {
                         add(
-                            "group-left".into(),
-                            "Move group left".into(),
-                            DesktopCommand::ReorderGroup {
-                                strip: strip.id.0,
-                                group: group.id,
-                                before: Some(strip.window_groups[group_index - 1].id),
-                            },
-                        );
-                    }
-                    if group_index + 1 < strip.window_groups.len() {
-                        add(
-                            "group-right".into(),
-                            "Move group right".into(),
-                            DesktopCommand::ReorderGroup {
-                                strip: strip.id.0,
-                                group: group.id,
-                                before: strip
-                                    .window_groups
-                                    .get(group_index + 2)
-                                    .map(|item| item.id),
-                            },
-                        );
-                    }
-                    add(
-                        "duplicate-tab".into(),
-                        format!("Duplicate {}", tab.title),
-                        DesktopCommand::DuplicateTab { location },
-                    );
-                    if group.tabs.len() > 1 {
-                        add(
-                            "split-tab".into(),
-                            format!("Split {} into a new group", tab.title),
-                            DesktopCommand::SplitTab {
+                            format!("move-group-{}", target.id),
+                            format!(
+                                "Move {} to {} group {}",
+                                tab.title,
+                                destination.name,
+                                index + 1
+                            ),
+                            DesktopCommand::MoveTab {
                                 location,
-                                before: None,
+                                placement: TabPlacement::InGroup {
+                                    strip: destination.id.0,
+                                    group: target.id,
+                                    after: target.tabs.last().map(|t| t.id),
+                                },
                             },
                         );
-                    }
-                    for destination in &workspace.strips {
-                        if destination.id != strip.id {
-                            add(
-                                format!("move-strip-{}", destination.id.0),
-                                format!("Move {} to strip {}", tab.title, destination.name),
-                                DesktopCommand::MoveTab {
-                                    location,
-                                    placement: TabPlacement::NewGroup {
-                                        strip: destination.id.0,
-                                        after: None,
-                                    },
-                                },
-                            );
-                        }
-                        for (index, target) in destination
-                            .window_groups
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, g)| g.id != group.id)
-                        {
-                            add(
-                                format!("move-group-{}", target.id),
-                                format!(
-                                    "Move {} to {} group {}",
-                                    tab.title,
-                                    destination.name,
-                                    index + 1
-                                ),
-                                DesktopCommand::MoveTab {
-                                    location,
-                                    placement: TabPlacement::InGroup {
-                                        strip: destination.id.0,
-                                        group: target.id,
-                                        after: target.tabs.last().map(|t| t.id),
-                                    },
-                                },
-                            );
-                        }
                     }
                 }
             }
@@ -1831,7 +1830,6 @@ impl DesktopRoot {
                 );
             }
         }
-        drop(add);
         for (id, label, strip) in std::iter::once(("new-strip".into(), "New strip".into(), None))
             .chain(workspace.strips.iter().map(|strip| {
                 (
@@ -4646,11 +4644,12 @@ mod tests {
                 targets(child, label, out);
             }
         }
+        type RouteMatch = (String, String, Option<String>, Option<u64>, Vec<String>);
         fn matching_routes(
             frame: &ui::headless::FrameHarness,
             node: &ui::headless::InspectionNode,
             label: &str,
-            out: &mut Vec<(String, String, Option<String>, Option<u64>, Vec<String>)>,
+            out: &mut Vec<RouteMatch>,
         ) {
             if let Some(semantics) = &node.semantics {
                 let mut action_targets = Vec::new();
@@ -8402,7 +8401,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .filter(|entry| entry["route"]["tab"] == tab.to_string())
+            .filter(|entry| entry["route"]["tab"].as_str() == Some(tab.to_string().as_str()))
             .cloned()
             .collect()
     }
@@ -8619,9 +8618,11 @@ mod layout_benchmark {
             .find(|r| r.app == "so.tilo.word-processor")
             .unwrap()
             .clone();
-        let body: String = std::iter::repeat("The quick brown fox jumps over the lazy dog. ")
-            .take(4096 / 45 + 1)
-            .collect();
+        let body: String = std::iter::repeat_n(
+            "The quick brown fox jumps over the lazy dog. ",
+            4096 / 45 + 1,
+        )
+        .collect();
         writer
             .store
             .with(&writer.checkout.id, |doc| {

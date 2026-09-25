@@ -57,6 +57,7 @@ impl LocalContext {
         self.consumed.set(true);
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn inline_governance(
         &self,
         material: &[u8],
@@ -105,6 +106,7 @@ pub(crate) struct GovernanceReply {
     _metadata: NativeReservation,
 }
 impl GovernanceReply {
+    #[cfg(test)]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }

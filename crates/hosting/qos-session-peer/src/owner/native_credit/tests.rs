@@ -187,7 +187,7 @@ fn sealed_allowance_keeps_reservations_and_releases_each_drop() {
     let second = allowance.reserve(8192).unwrap();
     allowance.finish_turn();
     let held = initial - pool.available_bytes();
-    assert!(held >= 12_288 && held < 13_312);
+    assert!((12_288..13_312).contains(&held));
     assert!(matches!(
         escaped.reserve(1),
         Err(NativeResourceError::WorkBytes)
@@ -486,7 +486,7 @@ fn public_native_allowance_peer_turns_keep_real_backings_above_one_turn_budget()
         peer_output(&work, 40 * 1024 * 1024)
     };
     let retained_first = before - pool.available_bytes();
-    assert!(retained_first >= 40 * 1024 * 1024 && retained_first < 41 * 1024 * 1024);
+    assert!((40 * 1024 * 1024..41 * 1024 * 1024).contains(&retained_first));
     let second = {
         let current = pool.native_allowance().unwrap();
         let _cancel = SealPublicAllowance(current.clone());

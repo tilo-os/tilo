@@ -1,5 +1,6 @@
 use qos_session_peer::SessionOwner;
 use std::{fs, process::Command};
+use tilo_automerge::ApplyIncoming as _;
 
 #[cfg(unix)]
 fn device_key_paths(root: &std::path::Path) -> (std::path::PathBuf, std::path::PathBuf) {
@@ -135,7 +136,7 @@ fn restart_preserves_canonical_state_and_journal() {
     drop(owner);
     let restored = SessionOwner::open(&path).unwrap();
     assert_eq!(restored.status(), before);
-    assert_eq!(restored.pending()[0].outcome_unknown, true);
+    assert!(restored.pending()[0].outcome_unknown);
 }
 
 #[cfg(unix)]
@@ -944,6 +945,7 @@ async fn admit_until_ready(
                     )
                     .unwrap();
             }
+            Inbound::RemoteAction { .. } => {}
         }
     }
 }
@@ -1059,7 +1061,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         panic!("room state")
     };
     let mut doc = AutoCommit::new();
-    doc.apply_changes(
+    doc.apply_incoming(
         changes
             .iter()
             .map(|b| ui::automerge::Change::try_from(b.as_slice()).unwrap()),
@@ -1090,7 +1092,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
             panic!("room state")
         };
         let mut doc = AutoCommit::new();
-        doc.apply_changes(
+        doc.apply_incoming(
             changes
                 .iter()
                 .map(|b| ui::automerge::Change::try_from(b.as_slice()).unwrap()),

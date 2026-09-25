@@ -379,6 +379,11 @@ fn tab_locations(
 }
 
 #[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use qos_peer_state::{
@@ -431,7 +436,7 @@ mod tests {
         include_documents: bool,
     ) {
         let source = owner.peer().authority().device_public_key;
-        for bytes in &outgoing_bytes(&owner)[start..] {
+        for bytes in &outgoing_bytes(owner)[start..] {
             let message = postcard::from_bytes(bytes).unwrap();
             if !include_documents && matches!(message, NeighbourMsg::AppDocument { .. }) {
                 continue;
@@ -739,9 +744,4 @@ mod tests {
             qos_browser_runtime::committed_desktop::Admission::AwaitingRetainedState(_)
         ));
     }
-}
-
-#[cfg(test)]
-fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
-    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }

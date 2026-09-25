@@ -213,15 +213,15 @@ impl Onboarding {
         };
         match result {
             Ok(body) => {
-                if let Err(error) = request.respond(StatusCode::OK, body) {
-                    if let Some(suppressed) = ops_log::admit("onboarding_reply_unsent") {
-                        tracing::warn!(
-                            event = "cloud_onboarding_reply_unsent",
-                            error,
-                            suppressed,
-                            "Cloud onboarding reply could not be sent"
-                        );
-                    }
+                if let Err(error) = request.respond(StatusCode::OK, body)
+                    && let Some(suppressed) = ops_log::admit("onboarding_reply_unsent")
+                {
+                    tracing::warn!(
+                        event = "cloud_onboarding_reply_unsent",
+                        error,
+                        suppressed,
+                        "Cloud onboarding reply could not be sent"
+                    );
                 }
             }
             Err(error) if deferrable(&error) => return Some(request),

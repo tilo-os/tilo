@@ -42,6 +42,7 @@ const MATERIAL_CREDIT: usize = 4 * MAX_MATERIAL;
 pub(crate) struct InvitedIdentity(
     MaterialV3,
     crate::peer_delivery::incoming::IncomingBudget,
+    #[expect(dead_code, reason = "held only to release its reservation on drop")]
     automerge::resource_limits::NativeReservation,
 );
 
@@ -198,6 +199,7 @@ impl InvitedIdentity {
         self.0.admitted
     }
 
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn public(&self) -> Result<String, String> {
         let scope = Self::scope(&self.0.invitation)?;
         let binding = tilo_user_identity::canonical::signing_digest(

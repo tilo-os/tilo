@@ -187,10 +187,9 @@ fn room_history(store: &Store, now: u64) -> (usize, usize, usize) {
                 for route in automerge::ReadDoc::keys(&room, &object) {
                     if let Ok(Some((automerge::Value::Scalar(value), _))) =
                         automerge::ReadDoc::get(&room, &object, route.as_str())
+                        && let automerge::ScalarValue::Bytes(raw) = value.as_ref()
                     {
-                        if let automerge::ScalarValue::Bytes(raw) = value.as_ref() {
-                            eprintln!("v2 {key} {route:?}: {} stored bytes", raw.len());
-                        }
+                        eprintln!("v2 {key} {route:?}: {} stored bytes", raw.len());
                     }
                 }
             }
@@ -267,10 +266,10 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
         if step % 10 == 9 {
             // The owner's retention maintenance (every 30 s in the service).
             let before = saved_bytes(dir.path());
-            if let Some(report) = store.retain_delivery(now).unwrap() {
-                if report.rotated.is_some() {
-                    drops.push((before, saved_bytes(dir.path())));
-                }
+            if let Some(report) = store.retain_delivery(now).unwrap()
+                && report.rotated.is_some()
+            {
+                drops.push((before, saved_bytes(dir.path())));
             }
         }
         let bytes = saved_bytes(dir.path());
@@ -311,7 +310,7 @@ fn store_stays_bounded_over_many_agent_steps_refreshes_and_retries() {
             < 2 * HISTORY_BYTES.max(pressure.baseline_bytes),
         "{pressure:?}"
     );
-    assert!(pressure.replay < 2 * HISTORY_COMMITS && pressure.replay < MAX_REFERENCES);
+    assert!(pressure.replay < (2 * HISTORY_COMMITS).min(MAX_REFERENCES));
     assert!(largest < 6 * 1024 * 1024, "largest saved Store {largest}");
     // A full reopen validates the retained aggregate.
     drop(store);

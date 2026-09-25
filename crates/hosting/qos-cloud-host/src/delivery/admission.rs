@@ -95,7 +95,7 @@ impl Store {
         let (before, peer) = self.peer_transition_at(now).map_err(StateRefusal::Owner)?;
         let mut candidate = peer;
         let report = candidate
-            .receive_from_report(origin.clone(), message, now_time(now))
+            .receive_from_report(origin, message, now_time(now))
             .map_err(|_| StateRefusal::Invalid)?;
         let (operation, result) = match report.primary() {
             InputDisposition::Accepted(op) => (op.operation_id(), DurableAdmissionKind::Accepted),
@@ -258,8 +258,7 @@ impl Store {
                     break;
                 }
                 let mut trial = candidate.clone();
-                let Ok(report) = trial.receive_from_report(origin.clone(), message, now_time(now))
-                else {
+                let Ok(report) = trial.receive_from_report(origin, message, now_time(now)) else {
                     break;
                 };
                 let InputDisposition::Accepted(op) = report.primary() else {

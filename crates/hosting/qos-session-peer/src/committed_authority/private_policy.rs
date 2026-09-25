@@ -58,6 +58,7 @@ impl OwnerTime {
     }
 }
 #[derive(Clone)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct NativeDisclosureFence {
     time: PolicyTime,
     continuity: u64,
@@ -87,6 +88,7 @@ impl CommittedView {
         }
         time.now_ns().map_err(|error| error.to_string())
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn private_disclosure_fence(&self) -> Result<NativeDisclosureFence, String> {
         let time = self.policy_time()?;
         let now = self.check_policy_time(&time)?;
@@ -109,10 +111,13 @@ impl CommittedView {
         })
     }
 }
+#[cfg(any(test, feature = "media"))]
 impl NativeDisclosureFence {
+    #[cfg(any(feature = "media", all(test, feature = "test-support")))]
     pub(crate) fn policy_time(&self) -> &PolicyTime {
         &self.time
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn check(&self, current: &CommittedView) -> Result<u64, String> {
         let now = current.check_policy_time(&self.time)?;
         if current.private_policy.is_none()

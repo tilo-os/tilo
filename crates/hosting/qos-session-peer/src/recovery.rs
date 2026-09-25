@@ -594,12 +594,8 @@ mod tests {
         let bytes = serde_json::to_vec(&manifest).unwrap();
         std::fs::write(archive.join("manifest.json"), &bytes).unwrap();
         assert!(
-            import_verified_archive(
-                &mut new,
-                &archive,
-                &blake3::hash(&bytes).to_hex().to_string()
-            )
-            .is_err()
+            import_verified_archive(&mut new, &archive, blake3::hash(&bytes).to_hex().as_ref())
+                .is_err()
         );
         assert_eq!(new.status(), before);
     }

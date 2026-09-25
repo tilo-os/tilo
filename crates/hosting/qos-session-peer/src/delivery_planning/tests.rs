@@ -139,7 +139,6 @@ fn neutral_policy_and_consumer_plan_preserve_native_bytes_and_identity() {
         initial.consumer_plan(&ledger, [11; 16]),
         Err(PlanningFailure::CurrentDenied)
     );
-    drop(initial);
     let native = register(&mut f, &session);
     let signed = native
         .authenticate(&f.owner.identity.host.verifying_key())

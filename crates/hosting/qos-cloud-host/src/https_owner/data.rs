@@ -104,6 +104,7 @@ impl CloudStoreTurn {
         Ok(cursor)
     }
 
+    #[cfg(test)]
     pub(crate) fn verify_delivery_cursor(
         &self,
         session: &VerifiedSession,
@@ -154,6 +155,7 @@ impl CloudStoreTurn {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(crate) fn delivery_replay(
         &self,
         session: &VerifiedSession,

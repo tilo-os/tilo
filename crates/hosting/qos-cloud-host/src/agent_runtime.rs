@@ -226,6 +226,10 @@ impl Drop for CloudAgentRuntime {
         }
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn handle_certified_command(
     root: &Path,
     owner: &RuntimeOwner,
@@ -254,10 +258,9 @@ async fn handle_certified_command(
     let store = owner.store()?;
     if let ActionMessage::Status { invocation } | ActionMessage::Cancel { invocation } =
         &action.message
+        && !store.private_agent_invocation_reserved(action.source, invocation.0)?
     {
-        if !store.private_agent_invocation_reserved(action.source, invocation.0)? {
-            return Ok(None);
-        }
+        return Ok(None);
     }
     let caller = match authenticate(&store, evidence) {
         Ok(caller) => caller,
@@ -646,23 +649,9 @@ async fn run(
             _=qos_action_broker::enrolled_dispatch::CHILD_SETTLED.notified()=>{last_active = Instant::now(); tick.reset_immediately();}
             _=tick.tick()=>{
                 let began = Instant::now();
-                if workers.is_none() {
-                    if let Some((attempt, due)) = worker_retry.filter(|(_, due)| began >= *due) {
-                        match start_workers(&root, &owner, &outbound).and_then(|(started, requests)| {
-                            #[cfg(target_os="linux")]
-                            let mut started = started;
-                            #[cfg(target_os="linux")]
-                            if execution.is_none() {
-                                match started.app_broker() {
-                                    Ok(broker) => execution = Some(execution::Execution::new(owner.clone(), broker)),
-                                    Err(error) => {
-                                        let closed = started.close();
-                                        return Err(closed.err().map_or(error.clone(), |c| format!("{error}; {c}")));
-                                    }
-                                }
-                            }
-                            Ok((started, requests))
-                        }) {
+                if workers.is_none()
+                    && let Some((attempt, due)) = worker_retry.filter(|(_, due)| began >= *due) {
+                        match start_workers(&root, &owner, &outbound) {
                             Ok((started, requests)) => {
                                 tracing::info!(attempt, "agent workers started after retry");
                                 workers = Some(started);
@@ -677,7 +666,6 @@ async fn run(
                             }
                         }
                     }
-                }
                 let stage = Instant::now();
                 // Activity, not state: a live agent process or an agent task
                 // waiting for its next model turn or message needs no pumping
@@ -747,11 +735,10 @@ async fn run(
                 // republication still runs, and a deferred one follows the step.
                 let stepping = workers.as_ref().is_some_and(|w| w.has_pending_steps());
                 if (publish_due && !stepping) || published_at.elapsed() >= RUNTIME_STATE_INTERVAL {
-                    if let Some(workers)=&mut workers {
-                        if let Err(error)=workers.sync_agent_participants(&owner.active_agent_tasks()) {
+                    if let Some(workers)=&mut workers
+                        && let Err(error)=workers.sync_agent_participants(&owner.active_agent_tasks()) {
                             tracing::warn!(%error,"agent participant views not synchronized");
                         }
-                    }
                     publish_runtime_state(&owner,workers.as_ref(),&mut offer,plan_configured,launcher.is_some())?;
                     published = 1;
                     published_at = Instant::now();
@@ -836,6 +823,330 @@ async fn run(
         .and(queued_cleanup)
         .and(execution_close)
         .and(worker_close)
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
+async fn handle_command(
+    root: &Path,
+    owner: &RuntimeOwner,
+    provider: Option<&Arc<AgentControlProvider>>,
+    offer: Option<&GrantOffer>,
+    reads_supported: bool,
+    evidence: &CertifiedAction,
+    queued: &mut AgentWorkQueue,
+    policy_time: &qos_action_broker::peer_actions::PolicyTime,
+    store: Store,
+    caller: VerifiedAgentCaller,
+    reads: &mut read_attachment::ReadCache,
+) -> Result<ActionMessage, String> {
+    let action = evidence.action();
+    match &action.message {
+        ActionMessage::CatalogueRefresh { scope } => {
+            let machine = store.state.machine_id.clone();
+            drop(store);
+            let mut value = crate::broker::handle_with_policy_time(
+                root,
+                &machine,
+                evidence.certificate(),
+                action,
+                policy_time,
+                owner.policy_context(),
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            if let (Some(provider), ActionMessage::BrokerCatalogue { catalogue, .. }) =
+                (provider, &mut value)
+            {
+                if let Ok(mut surface) = provider.catalogue_surface() {
+                    let matches = scope.as_ref().is_none_or(|s| {
+                        s.app_id == qos_action_broker::agent_control::APP_ID
+                            && s.record_id.is_empty()
+                            && surface["actions"].as_array().is_some_and(|a| {
+                                a.iter()
+                                    .any(|d| d["resource"] == s.resource && d["action"] == s.action)
+                            })
+                    });
+                    if matches {
+                        if let Some(scope) = scope {
+                            surface["actions"]
+                                .as_array_mut()
+                                .ok_or("invalid provider actions")?
+                                .retain(|d| {
+                                    d["resource"] == scope.resource && d["action"] == scope.action
+                                });
+                        }
+                        catalogue["surfaces"]
+                            .as_array_mut()
+                            .ok_or("invalid native catalogue")?
+                            .push(surface);
+                    }
+                }
+                if reads_supported {
+                    // The binding is a read-only projection: while this
+                    // caller's read burst basis is exact, it is reused (no
+                    // Store open); otherwise it is proved as before.
+                    let binding = reads
+                        .binding(root, evidence, owner, policy_time)
+                        .map(Ok)
+                        .unwrap_or_else(|| provider.read_binding(evidence.certificate()));
+                    if let Ok(binding) = binding {
+                        catalogue["agentReadsV1"] =
+                            serde_json::to_value(binding).map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+            Ok(value)
+        }
+        ActionMessage::AgentReadV1 { .. } => {
+            drop(store);
+            // Dispatch serves reads before this generic path.
+            read_attachment::read_current(
+                root,
+                owner,
+                provider,
+                offer,
+                evidence,
+                policy_time,
+                reads,
+            )
+            .map_err(|error| error.to_string())
+        }
+        ActionMessage::InvokeBound { .. } => {
+            if let Some(observed) = retained(&store, &caller, evidence)? {
+                let id = observed
+                    .invocation
+                    .parse::<Uuid>()
+                    .map_err(|e| e.to_string())?;
+                let control = AgentControlId::new(id).map_err(|e| e.to_string())?;
+                if store
+                    .sole_admitted_spawn(&control)
+                    .map_err(|e| e.to_string())?
+                    .is_some()
+                {
+                    // Exact retained intent was checked before scheduling; the same closed
+                    // installed-owner recovery door still runs immediately before begin.
+                    let _ = queued.enqueue(id);
+                }
+                return Ok(observation(action.room, observed));
+            }
+            drop(store);
+            queued.reserve_new_slot()?;
+            let verified = provider
+                .ok_or("native managed provider unavailable")?
+                .verify_invocation(evidence)?;
+            let observed = match owner.admit(&caller, &verified, policy_time)? {
+                RuntimeAdmission::Existing(value) => value,
+                RuntimeAdmission::Fresh(value) => {
+                    // Queue saturation cannot erase a committed Spawn; bounded scans retry it.
+                    queued.enqueue(verified.invocation())?;
+                    value
+                }
+            };
+            Ok(observation(action.room, observed))
+        }
+        _ => Err("unsupported private runtime command".into()),
+    }
+}
+
+/// The one current grant offer a Spawn names (see `publish_runtime_state`).
+///
+/// The consent a Spawn names is its exact action set and label. A policy or
+/// publication revision change that leaves both identical keeps the same
+/// offer (id and revision), so a spawn dialog opened just before a guest
+/// joined or a Writer action became available stays valid; spawning agents
+/// changes neither. Current policy is still checked at admission; the offer
+/// grants nothing itself.
+///
+/// Its advisory expiry is renewed in place (same id, same consent) before it
+/// lapses: a new id every 15 minutes changed the spawn descriptor and refused
+/// every control composed against the previous one. Admission never trusted
+/// the expiry; it checks the id and current policy.
+pub(crate) fn refresh_offer(
+    offer: &mut Option<GrantOffer>,
+    grants: &[qos_agent_control_protocol::GrantAction],
+    label: String,
+    revision: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let lifetime = chrono::Duration::minutes(15);
+    let expires =
+        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let expiry = |o: &GrantOffer| chrono::DateTime::parse_from_rfc3339(&o.expires_at).ok();
+    let expired = |o: &GrantOffer| expiry(o).is_none_or(|t| t.timestamp() <= now.timestamp());
+    let consent = offer
+        .as_ref()
+        .is_some_and(|o| o.actions == grants && o.label == label);
+    if consent
+        && !grants.is_empty()
+        && let Some(o) = offer.as_mut()
+        && expiry(o).is_none_or(|t| t <= now + chrono::Duration::minutes(5))
+    {
+        o.expires_at = expires(now + lifetime);
+    }
+    let same_consent = consent && offer.as_ref().is_some_and(|o| !expired(o));
+    if !same_consent
+        && offer
+            .as_ref()
+            .is_none_or(|o| o.revision != revision || expired(o))
+    {
+        *offer = (!grants.is_empty() && grants.len() <= 64).then(|| GrantOffer {
+            id: Uuid::new_v4().to_string(),
+            revision: revision.to_owned(),
+            expires_at: expires(now + lifetime),
+            // Derived from the frozen scopes (security review MUST-19).
+            label,
+            actions: grants.to_vec(),
+        });
+    }
+}
+
+pub(crate) fn publish_runtime_state(
+    owner: &RuntimeOwner,
+    workers: Option<&AgentWorkers>,
+    offer: &mut Option<GrantOffer>,
+    plan_configured: bool,
+    launcher_available: bool,
+) -> Result<(), String> {
+    // With mounted workers the publication carries the Store facts observed at
+    // its own generation; no additional Store open is needed here.
+    let publications = if let Some(workers) = workers {
+        workers.publications()?
+    } else {
+        let store = owner.store()?;
+        let peer = store.peer().map_err(|e| e.to_string())?;
+        crate::agent_workers::WorkerPublications {
+            room: store.state.room.clone(),
+            host_device: peer.authority().device_public_key,
+            governance_revision: qos_peer_state::owner_commit::governance_revision(&peer)?,
+            publication_revision: "unavailable".into(),
+            grants: vec![],
+            ready: false,
+            native_v5_ready: false,
+            private_v2_ready: matches!(
+                store.state.private_agent_ledger,
+                Some(PrivateAgentState::V2(_))
+            ),
+            machine: store.state.machine_id.clone(),
+        }
+    };
+    let machine = publications.machine.clone();
+    let private_v2_ready = publications.private_v2_ready;
+    let revision = blake3::hash(
+        &serde_json::to_vec(&(
+            &publications.governance_revision,
+            &publications.publication_revision,
+        ))
+        .map_err(|e| e.to_string())?,
+    )
+    .to_hex()
+    .to_string();
+    let label = crate::agent_workers::consent_label(&publications.grants)
+        .unwrap_or_else(|| "Current workspace documents".into());
+    refresh_offer(
+        offer,
+        &publications.grants,
+        label,
+        &revision,
+        chrono::Utc::now(),
+    );
+    let room = publications
+        .room
+        .parse::<Uuid>()
+        .map_err(|e| e.to_string())?;
+    #[cfg(test)]
+    {
+        type Readiness = (bool, bool, bool, bool, bool, usize);
+        std::thread_local! {
+            static LAST: std::cell::Cell<Option<Readiness>> = const { std::cell::Cell::new(None) };
+        }
+        let current = (
+            publications.ready,
+            publications.native_v5_ready,
+            private_v2_ready,
+            plan_configured,
+            launcher_available,
+            publications.grants.len(),
+        );
+        if LAST.with(|last| last.replace(Some(current)) != Some(current)) {
+            test_readiness_diagnostic(
+                "publication",
+                &format!(
+                    "workers={} native_v5={} private_v2={} plan={} launcher={} grants={}",
+                    current.0, current.1, current.2, current.3, current.4, current.5
+                ),
+            );
+        }
+    }
+    // Operator-visible readiness transitions (no private content): which
+    // agent prerequisite is still missing when spawn is not offered.
+    {
+        type Readiness = (bool, bool, bool, bool, bool, usize);
+        static LAST: std::sync::Mutex<Option<Readiness>> = std::sync::Mutex::new(None);
+        let current = (
+            publications.ready,
+            publications.native_v5_ready,
+            private_v2_ready,
+            plan_configured,
+            launcher_available,
+            publications.grants.len(),
+        );
+        if let Ok(mut last) = LAST.lock()
+            && last.replace(current) != Some(current)
+        {
+            tracing::info!(
+                workers = current.0,
+                native_v5 = current.1,
+                private_v2 = current.2,
+                plan = current.3,
+                launcher = current.4,
+                grants = current.5,
+                "agent runtime readiness"
+            );
+        }
+    }
+    owner.publish_provider(
+        AgentProviderState {
+            machine,
+            room,
+            host: room,
+            host_device: publications.host_device,
+            app_peer: qos_relay::room_workspace_id(&publications.room)
+                .map_err(|e| e.to_string())?,
+            governance_revision: publications.governance_revision,
+            publication_revision: publications.publication_revision,
+            grant_offers: offer.clone().into_iter().collect(),
+            private_v2_ready,
+            required_services_ready: cfg!(target_os = "linux")
+                && publications.ready
+                && publications.native_v5_ready
+                && plan_configured
+                && launcher_available,
+        },
+        publications.grants,
+    )?;
+
+    Ok(())
+}
+
+// Observation only: bound diagnostic output even if readiness oscillates.
+#[cfg(test)]
+fn test_readiness_diagnostic(phase: &str, reason: &str) {
+    std::thread_local! {
+        static REMAINING: std::cell::Cell<u8> = const { std::cell::Cell::new(32) };
+    }
+    if REMAINING.with(|remaining| {
+        let current = remaining.get();
+        remaining.set(current.saturating_sub(1));
+        current != 0
+    }) {
+        eprintln!(
+            "agent readiness {phase}: {}",
+            reason.chars().take(512).collect::<String>()
+        );
+    }
 }
 
 #[cfg(test)]
@@ -973,326 +1284,6 @@ mod tests {
         assert_eq!(
             std::fs::read(dir.path().join("state.json")).unwrap(),
             before
-        );
-    }
-}
-
-async fn handle_command(
-    root: &Path,
-    owner: &RuntimeOwner,
-    provider: Option<&Arc<AgentControlProvider>>,
-    offer: Option<&GrantOffer>,
-    reads_supported: bool,
-    evidence: &CertifiedAction,
-    queued: &mut AgentWorkQueue,
-    policy_time: &qos_action_broker::peer_actions::PolicyTime,
-    store: Store,
-    caller: VerifiedAgentCaller,
-    reads: &mut read_attachment::ReadCache,
-) -> Result<ActionMessage, String> {
-    let action = evidence.action();
-    match &action.message {
-        ActionMessage::CatalogueRefresh { scope } => {
-            let machine = store.state.machine_id.clone();
-            drop(store);
-            let mut value = crate::broker::handle_with_policy_time(
-                root,
-                &machine,
-                evidence.certificate(),
-                action,
-                policy_time,
-                owner.policy_context(),
-            )
-            .await
-            .map_err(|e| e.to_string())?;
-            if let (Some(provider), ActionMessage::BrokerCatalogue { catalogue, .. }) =
-                (provider, &mut value)
-            {
-                if let Ok(mut surface) = provider.catalogue_surface() {
-                    let matches = scope.as_ref().is_none_or(|s| {
-                        s.app_id == qos_action_broker::agent_control::APP_ID
-                            && s.record_id.is_empty()
-                            && surface["actions"].as_array().is_some_and(|a| {
-                                a.iter()
-                                    .any(|d| d["resource"] == s.resource && d["action"] == s.action)
-                            })
-                    });
-                    if matches {
-                        if let Some(scope) = scope {
-                            surface["actions"]
-                                .as_array_mut()
-                                .ok_or("invalid provider actions")?
-                                .retain(|d| {
-                                    d["resource"] == scope.resource && d["action"] == scope.action
-                                });
-                        }
-                        catalogue["surfaces"]
-                            .as_array_mut()
-                            .ok_or("invalid native catalogue")?
-                            .push(surface);
-                    }
-                }
-                if reads_supported {
-                    // The binding is a read-only projection: while this
-                    // caller's read burst basis is exact, it is reused (no
-                    // Store open); otherwise it is proved as before.
-                    let binding = reads
-                        .binding(root, evidence, owner, policy_time)
-                        .map(Ok)
-                        .unwrap_or_else(|| provider.read_binding(evidence.certificate()));
-                    if let Ok(binding) = binding {
-                        catalogue["agentReadsV1"] =
-                            serde_json::to_value(binding).map_err(|e| e.to_string())?;
-                    }
-                }
-            }
-            Ok(value)
-        }
-        ActionMessage::AgentReadV1 { .. } => {
-            drop(store);
-            // Dispatch serves reads before this generic path.
-            read_attachment::read_current(
-                root,
-                owner,
-                provider,
-                offer,
-                evidence,
-                policy_time,
-                reads,
-            )
-            .map_err(|error| error.to_string())
-        }
-        ActionMessage::InvokeBound { .. } => {
-            if let Some(observed) = retained(&store, &caller, &evidence)? {
-                let id = observed
-                    .invocation
-                    .parse::<Uuid>()
-                    .map_err(|e| e.to_string())?;
-                let control = AgentControlId::new(id).map_err(|e| e.to_string())?;
-                if store
-                    .sole_admitted_spawn(&control)
-                    .map_err(|e| e.to_string())?
-                    .is_some()
-                {
-                    // Exact retained intent was checked before scheduling; the same closed
-                    // installed-owner recovery door still runs immediately before begin.
-                    let _ = queued.enqueue(id);
-                }
-                return Ok(observation(action.room, observed));
-            }
-            drop(store);
-            queued.reserve_new_slot()?;
-            let verified = provider
-                .ok_or("native managed provider unavailable")?
-                .verify_invocation(&evidence)?;
-            let observed = match owner.admit(&caller, &verified, policy_time)? {
-                RuntimeAdmission::Existing(value) => value,
-                RuntimeAdmission::Fresh(value) => {
-                    // Queue saturation cannot erase a committed Spawn; bounded scans retry it.
-                    queued.enqueue(verified.invocation())?;
-                    value
-                }
-            };
-            Ok(observation(action.room, observed))
-        }
-        _ => Err("unsupported private runtime command".into()),
-    }
-}
-
-/// The one current grant offer a Spawn names (see `publish_runtime_state`).
-///
-/// The consent a Spawn names is its exact action set and label. A policy or
-/// publication revision change that leaves both identical keeps the same
-/// offer (id and revision), so a spawn dialog opened just before a guest
-/// joined or a Writer action became available stays valid; spawning agents
-/// changes neither. Current policy is still checked at admission; the offer
-/// grants nothing itself.
-///
-/// Its advisory expiry is renewed in place (same id, same consent) before it
-/// lapses: a new id every 15 minutes changed the spawn descriptor and refused
-/// every control composed against the previous one. Admission never trusted
-/// the expiry; it checks the id and current policy.
-pub(crate) fn refresh_offer(
-    offer: &mut Option<GrantOffer>,
-    grants: &[qos_agent_control_protocol::GrantAction],
-    label: String,
-    revision: &str,
-    now: chrono::DateTime<chrono::Utc>,
-) {
-    let lifetime = chrono::Duration::minutes(15);
-    let expires =
-        |at: chrono::DateTime<chrono::Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let expiry = |o: &GrantOffer| chrono::DateTime::parse_from_rfc3339(&o.expires_at).ok();
-    let expired = |o: &GrantOffer| expiry(o).is_none_or(|t| t.timestamp() <= now.timestamp());
-    let consent = offer
-        .as_ref()
-        .is_some_and(|o| o.actions == grants && o.label == label);
-    if consent && !grants.is_empty() {
-        if let Some(o) = offer.as_mut() {
-            if expiry(o).is_none_or(|t| t <= now + chrono::Duration::minutes(5)) {
-                o.expires_at = expires(now + lifetime);
-            }
-        }
-    }
-    let same_consent = consent && offer.as_ref().is_some_and(|o| !expired(o));
-    if !same_consent
-        && offer
-            .as_ref()
-            .is_none_or(|o| o.revision != revision || expired(o))
-    {
-        *offer = (!grants.is_empty() && grants.len() <= 64).then(|| GrantOffer {
-            id: Uuid::new_v4().to_string(),
-            revision: revision.to_owned(),
-            expires_at: expires(now + lifetime),
-            // Derived from the frozen scopes (security review MUST-19).
-            label,
-            actions: grants.to_vec(),
-        });
-    }
-}
-
-pub(crate) fn publish_runtime_state(
-    owner: &RuntimeOwner,
-    workers: Option<&AgentWorkers>,
-    offer: &mut Option<GrantOffer>,
-    plan_configured: bool,
-    launcher_available: bool,
-) -> Result<(), String> {
-    // With mounted workers the publication carries the Store facts observed at
-    // its own generation; no additional Store open is needed here.
-    let publications = if let Some(workers) = workers {
-        workers.publications()?
-    } else {
-        let store = owner.store()?;
-        let peer = store.peer().map_err(|e| e.to_string())?;
-        crate::agent_workers::WorkerPublications {
-            room: store.state.room.clone(),
-            host_device: peer.authority().device_public_key,
-            governance_revision: qos_peer_state::owner_commit::governance_revision(&peer)?,
-            publication_revision: "unavailable".into(),
-            grants: vec![],
-            ready: false,
-            native_v5_ready: false,
-            private_v2_ready: matches!(
-                store.state.private_agent_ledger,
-                Some(PrivateAgentState::V2(_))
-            ),
-            machine: store.state.machine_id.clone(),
-        }
-    };
-    let machine = publications.machine.clone();
-    let private_v2_ready = publications.private_v2_ready;
-    let revision = blake3::hash(
-        &serde_json::to_vec(&(
-            &publications.governance_revision,
-            &publications.publication_revision,
-        ))
-        .map_err(|e| e.to_string())?,
-    )
-    .to_hex()
-    .to_string();
-    let label = crate::agent_workers::consent_label(&publications.grants)
-        .unwrap_or_else(|| "Current workspace documents".into());
-    refresh_offer(
-        offer,
-        &publications.grants,
-        label,
-        &revision,
-        chrono::Utc::now(),
-    );
-    let room = publications
-        .room
-        .parse::<Uuid>()
-        .map_err(|e| e.to_string())?;
-    #[cfg(test)]
-    {
-        type Readiness = (bool, bool, bool, bool, bool, usize);
-        std::thread_local! {
-            static LAST: std::cell::Cell<Option<Readiness>> = const { std::cell::Cell::new(None) };
-        }
-        let current = (
-            publications.ready,
-            publications.native_v5_ready,
-            private_v2_ready,
-            plan_configured,
-            launcher_available,
-            publications.grants.len(),
-        );
-        if LAST.with(|last| last.replace(Some(current)) != Some(current)) {
-            test_readiness_diagnostic(
-                "publication",
-                &format!(
-                    "workers={} native_v5={} private_v2={} plan={} launcher={} grants={}",
-                    current.0, current.1, current.2, current.3, current.4, current.5
-                ),
-            );
-        }
-    }
-    // Operator-visible readiness transitions (no private content): which
-    // agent prerequisite is still missing when spawn is not offered.
-    {
-        static LAST: std::sync::Mutex<Option<(bool, bool, bool, bool, bool, usize)>> =
-            std::sync::Mutex::new(None);
-        let current = (
-            publications.ready,
-            publications.native_v5_ready,
-            private_v2_ready,
-            plan_configured,
-            launcher_available,
-            publications.grants.len(),
-        );
-        if let Ok(mut last) = LAST.lock() {
-            if last.replace(current) != Some(current) {
-                tracing::info!(
-                    workers = current.0,
-                    native_v5 = current.1,
-                    private_v2 = current.2,
-                    plan = current.3,
-                    launcher = current.4,
-                    grants = current.5,
-                    "agent runtime readiness"
-                );
-            }
-        }
-    }
-    owner.publish_provider(
-        AgentProviderState {
-            machine,
-            room,
-            host: room,
-            host_device: publications.host_device,
-            app_peer: qos_relay::room_workspace_id(&publications.room)
-                .map_err(|e| e.to_string())?,
-            governance_revision: publications.governance_revision,
-            publication_revision: publications.publication_revision,
-            grant_offers: offer.clone().into_iter().collect(),
-            private_v2_ready,
-            required_services_ready: cfg!(target_os = "linux")
-                && publications.ready
-                && publications.native_v5_ready
-                && plan_configured
-                && launcher_available,
-        },
-        publications.grants,
-    )?;
-
-    Ok(())
-}
-
-// Observation only: bound diagnostic output even if readiness oscillates.
-#[cfg(test)]
-fn test_readiness_diagnostic(phase: &str, reason: &str) {
-    std::thread_local! {
-        static REMAINING: std::cell::Cell<u8> = const { std::cell::Cell::new(32) };
-    }
-    if REMAINING.with(|remaining| {
-        let current = remaining.get();
-        remaining.set(current.saturating_sub(1));
-        current != 0
-    }) {
-        eprintln!(
-            "agent readiness {phase}: {}",
-            reason.chars().take(512).collect::<String>()
         );
     }
 }

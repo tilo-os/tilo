@@ -40,6 +40,7 @@ impl IncomingBudget {
             _credit: credit,
         })
     }
+    #[cfg(test)]
     pub fn copy(&self, source: &[u8]) -> Result<IncomingBuffer, String> {
         let mut held = self.buffer(source.len())?;
         held.bytes.extend_from_slice(source);

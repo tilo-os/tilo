@@ -1,20 +1,25 @@
 //! Borrowed native witnesses. Metadata and signed cursor claims are never authority.
 use super::*;
+#[cfg(any(test, feature = "media"))]
 use crate::committed_authority::CommittedView;
+#[cfg(any(test, feature = "media"))]
 use crate::delivery_planning::{
     AckPlan, ConsumerPlan, CursorCut, DeliveryPolicyBasis, PlanningCapacity, PlanningFailure,
 };
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::{
     auth,
     cursor::{CursorIssue, CursorToken},
     state::ResetReason,
 };
 
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct NativeDeliveryAuthority<'a> {
     pub(crate) view: &'a CommittedView,
     pub(crate) workspace: u64,
     pub(crate) host: &'a DeviceCert,
 }
+#[cfg(any(test, feature = "media"))]
 impl auth::Authority for NativeDeliveryAuthority<'_> {
     fn authorize(
         &self,
@@ -43,6 +48,7 @@ impl auth::Authority for NativeDeliveryAuthority<'_> {
 
 /// Only constructed from an actual committed view and a cryptographically authenticated session.
 /// The actor still owns descriptor/carrier/boot revalidation before entering this turn.
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct VerifiedDeliverySource<'a> {
     view: &'a CommittedView,
     session: &'a auth::VerifiedSession,
@@ -52,15 +58,19 @@ pub(crate) struct VerifiedDeliverySource<'a> {
 /// Original replay references and payloads borrowed without a metadata allocation.
 /// Callers finish page encoding synchronously before releasing the owner borrow.
 #[derive(Clone)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct BorrowedReplay<'a> {
     pool: &'a PublicationPool,
     publications: std::slice::Iter<'a, PublicationRef>,
 }
+#[cfg(any(test, feature = "media"))]
 impl<'a> BorrowedReplay<'a> {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn iter(&self) -> Self {
         self.clone()
     }
 }
+#[cfg(any(test, feature = "media"))]
 impl<'a> Iterator for BorrowedReplay<'a> {
     type Item = error::DataResult<PublicationView<'a>>;
     fn next(&mut self) -> Option<Self::Item> {
@@ -79,23 +89,31 @@ impl<'a> Iterator for BorrowedReplay<'a> {
         self.publications.size_hint()
     }
 }
+#[cfg(any(test, feature = "media"))]
 impl ExactSizeIterator for BorrowedReplay<'_> {}
 
 /// Copied validated cut. No borrowed ReplayCommit can cross the owner mutation.
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct ValidatedCursorCut(CursorCut);
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct VerifiedCursor<'a> {
     view: &'a CommittedView,
     cut: ValidatedCursorCut,
 }
+#[cfg(any(test, feature = "media"))]
 impl ValidatedCursorCut {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn committed(&self) -> &CommitRef {
         self.0.committed()
     }
 }
+#[cfg(any(test, feature = "media"))]
 impl VerifiedCursor<'_> {
+    #[cfg(feature = "media")]
     pub(crate) fn committed(&self) -> &CommitRef {
         self.cut.committed()
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn into_cut(self) -> ValidatedCursorCut {
         // Retain the actual native borrow until the copied cut is taken.
         let _ = self.view.generation();
@@ -103,6 +121,7 @@ impl VerifiedCursor<'_> {
     }
 }
 
+#[cfg(any(test, feature = "media"))]
 fn planning_error(failure: PlanningFailure) -> anyhow::Error {
     let kind = match failure {
         PlanningFailure::CurrentDenied => DataFailure::CurrentDenied,
@@ -119,6 +138,7 @@ fn planning_error(failure: PlanningFailure) -> anyhow::Error {
     error::failure(kind, failure)
 }
 impl SessionOwner {
+    #[cfg(any(test, feature = "media"))]
     fn matches_delivery_view(&self, view: &CommittedView) -> Result<()> {
         self.require_delivery()?;
         self.validate_media_governance_before_commit(&self.peer)
@@ -134,6 +154,7 @@ impl SessionOwner {
         )?;
         Ok(())
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn delivery_source<'a>(
         &self,
         view: &'a CommittedView,
@@ -184,6 +205,7 @@ impl SessionOwner {
             basis,
         })
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn register_delivery_consumer(
         &mut self,
         source: &VerifiedDeliverySource<'_>,
@@ -224,6 +246,7 @@ impl SessionOwner {
         self.commit(next, self.peer.clone())?;
         Ok(id)
     }
+    #[cfg(any(test, feature = "media"))]
     fn cursor_issue(
         &self,
         source: &VerifiedDeliverySource<'_>,
@@ -235,6 +258,7 @@ impl SessionOwner {
             .cursor_issue(self.delivery_ledger()?, committed)
             .map_err(planning_error)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn issue_delivery_cursor(
         &self,
         source: &VerifiedDeliverySource<'_>,
@@ -245,6 +269,7 @@ impl SessionOwner {
             &self.identity.host,
         )?)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn verify_delivery_cursor<'a>(
         &self,
         source: &VerifiedDeliverySource<'a>,
@@ -263,6 +288,7 @@ impl SessionOwner {
             cut: ValidatedCursorCut(cut),
         })
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn acknowledge_delivery(
         &mut self,
         source: &VerifiedDeliverySource<'_>,
@@ -296,6 +322,7 @@ impl SessionOwner {
         self.commit(next, self.peer.clone())?;
         Ok(())
     }
+    #[cfg(any(test, feature = "media"))]
     pub(in crate::owner) fn delivery_admission_receipt<'a>(
         &'a self,
         source: &VerifiedDeliverySource<'_>,
@@ -328,6 +355,7 @@ impl SessionOwner {
         }
         Ok(record)
     }
+    #[cfg(feature = "media")]
     pub(in crate::owner) fn validate_staged_delivery_source(
         &self,
         source: &VerifiedDeliverySource<'_>,
@@ -345,6 +373,7 @@ impl SessionOwner {
         self.delivery_admission_receipt(source, identity.delivery, identity.digest)?;
         Ok(())
     }
+    #[cfg(feature = "media")]
     pub(in crate::owner) fn admit_staged_delivery(
         &mut self,
         source: &VerifiedDeliverySource<'_>,
@@ -359,6 +388,7 @@ impl SessionOwner {
             64 * 1024 * 1024,
         )
     }
+    #[cfg(test)]
     pub(crate) fn admit_delivery(
         &mut self,
         source: &VerifiedDeliverySource<'_>,
@@ -372,6 +402,7 @@ impl SessionOwner {
             now,
         )
     }
+    #[cfg(feature = "media")]
     pub(crate) fn admit_delivery_group(
         &mut self,
         source: &VerifiedDeliverySource<'_>,
@@ -385,6 +416,7 @@ impl SessionOwner {
             now,
         )
     }
+    #[cfg(any(test, feature = "media"))]
     pub(in crate::owner) fn borrowed_delivery_replay<'a>(
         &'a self,
         source: &VerifiedDeliverySource<'_>,
@@ -405,6 +437,7 @@ impl SessionOwner {
     }
     /// Borrow original payloads only while the caller retains this committed view.
     /// HTTP page ownership/byte permits belong to the later route adapter.
+    #[cfg(test)]
     pub(crate) fn replay_delivery<'a>(
         &'a self,
         source: &VerifiedDeliverySource<'_>,

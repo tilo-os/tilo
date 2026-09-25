@@ -183,10 +183,10 @@ impl Snapshots {
                     .snapshot_directory(turn.directory(), turn.workspace())
                     .map_err(|error| anyhow!("snapshot storage unavailable: {error:?}"))?;
                 for pin in expired {
-                    if let Ok(Some(reservation)) = directory.open_existing(pin) {
-                        if let Err(error) = reservation.remove() {
-                            tracing::debug!(?error, "expired snapshot sidecar cleanup deferred");
-                        }
+                    if let Ok(Some(reservation)) = directory.open_existing(pin)
+                        && let Err(error) = reservation.remove()
+                    {
+                        tracing::debug!(?error, "expired snapshot sidecar cleanup deferred");
                     }
                 }
                 Ok(())
@@ -332,6 +332,10 @@ impl Snapshots {
     }
 
     /// Keep the new live pin, superseding the device's oldest beyond its bound.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     fn retain(
         &mut self,
         source: &CloudStoreSource,

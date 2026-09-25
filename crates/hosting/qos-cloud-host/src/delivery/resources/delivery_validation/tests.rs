@@ -347,7 +347,6 @@ fn with_held<T>(
     let result = action(&held, &peer, &work, &current);
     assert_eq!(serde_json::to_vec(held.state()).unwrap(), bytes);
     drop((peer, held, input));
-    drop(work);
     // Native backing registrations reconcile when the real peer turn ends.
     drop(turn);
     drop(registry);

@@ -89,7 +89,7 @@ impl tilo_actions::Action for MintedDocument {
     fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
         if doc
             .get(ROOT, "deferred-owner")?
-            .and_then(|(v, _)| v.to_str().map(str::to_owned))
+            .and_then(|(v, _)| v.as_str().map(str::to_owned))
             .as_deref()
             != Some(OWNER)
         {
@@ -99,7 +99,7 @@ impl tilo_actions::Action for MintedDocument {
         }
         let count = doc
             .get(ROOT, "deferred-applied")?
-            .and_then(|(v, _)| v.to_u64())
+            .and_then(|(v, _)| v.as_u64())
             .unwrap_or(0);
         doc.put(ROOT, "deferred-minted-id", self.id.to_string())?;
         doc.put(ROOT, "deferred-applied", count + 1)?;
@@ -183,7 +183,7 @@ impl Widget for Probe {
     ) {
         assert_eq!(action.type_id, TYPE);
         assert_eq!(
-            doc.get(ROOT, "deferred-owner").unwrap().unwrap().0.to_str(),
+            doc.get(ROOT, "deferred-owner").unwrap().unwrap().0.as_str(),
             Some(OWNER)
         );
         self.applied.fetch_add(1, Ordering::SeqCst);
@@ -266,7 +266,7 @@ fn minted_count(f: &mut ScopedAppFixture) -> u64 {
         .read(&id, |doc| {
             doc.get(ROOT, "deferred-applied")
                 .unwrap()
-                .and_then(|(v, _)| v.to_u64())
+                .and_then(|(v, _)| v.as_u64())
                 .unwrap_or(0)
         })
         .unwrap()
@@ -290,10 +290,10 @@ async fn submit_without_owner_pump(
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         for event in f.caller.poll() {
-            if let CollabEvent::PublishedInvocationResult { request_id, result } = event {
-                if request_id == f.request {
-                    return result.map(|id| id.0).map_err(|e| e.to_string());
-                }
+            if let CollabEvent::PublishedInvocationResult { request_id, result } = event
+                && request_id == f.request
+            {
+                return result.map(|id| id.0).map_err(|e| e.to_string());
             }
         }
         assert!(
@@ -347,7 +347,7 @@ async fn owner_mutates_once(f: &mut ScopedAppFixture, p: &Probe, id: u64) {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned())
             .unwrap(),
@@ -482,17 +482,17 @@ async fn refused_after_admission(reason: Refusal) {
             break;
         }
         result.unwrap();
-        if let Some(update) = f.invocation_status(id) {
-            if update.is_terminal() {
-                let tilo_actions::InvocationUpdate::Failed { error, .. } = update else {
-                    panic!("expired signed invocation returned {update:?}");
-                };
-                assert!(
-                    error.message.contains("certificate expired"),
-                    "actual expiry refusal: {error:?}"
-                );
-                break;
-            }
+        if let Some(update) = f.invocation_status(id)
+            && update.is_terminal()
+        {
+            let tilo_actions::InvocationUpdate::Failed { error, .. } = update else {
+                panic!("expired signed invocation returned {update:?}");
+            };
+            assert!(
+                error.message.contains("certificate expired"),
+                "actual expiry refusal: {error:?}"
+            );
+            break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

@@ -47,6 +47,10 @@ fn current(
     Ok(())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 pub(super) async fn fetch(
     origin: &str,
     path: &str,
@@ -91,8 +95,8 @@ pub(super) async fn fetch(
         .map_err(|_| "AbortController unavailable")?;
     let controller = Reflect::construct(&constructor, &js_sys::Array::new())
         .map_err(|_| "AbortController unavailable")?;
-    *cancel.controller.borrow_mut() = Some(controller.clone().into());
-    let timer_controller: JsValue = controller.clone().into();
+    *cancel.controller.borrow_mut() = Some(controller.clone());
+    let timer_controller: JsValue = controller.clone();
     let timeout =
         wasm_bindgen::closure::Closure::<dyn FnMut()>::new(move || abort(&timer_controller));
     let mut timer = None;

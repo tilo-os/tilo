@@ -9,7 +9,7 @@ use tilo_relay::delivery_v3::{onboarding_wire as wire, state::canonical_item_dig
 mod handoff;
 mod local;
 mod preflight;
-pub(crate) use local::{BoundLocal, GovernanceReply, LocalContext, bind_local};
+pub(crate) use local::{GovernanceReply, LocalContext, bind_local};
 pub(crate) use preflight::preflight_completion;
 #[cfg(target_arch = "wasm32")]
 mod wasm;
@@ -132,6 +132,10 @@ fn encode<T: Serialize>(
 
 pub(crate) struct PreparedJoin {
     encoded: ChargedBytes,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     key: SigningKey,
     budget: IncomingBudget,
 }

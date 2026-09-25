@@ -95,20 +95,28 @@ pub(super) fn disk_preflight(directory: &File, bytes: u64) -> Result<(), HostWor
         return Err(HostWorkFailure::Unavailable);
     }
     let stats = unsafe { stats.assume_init() };
-    let fragment = stats.f_frsize as u64;
+    let fragment = stats.f_frsize;
     if fragment == 0 {
         return Err(HostWorkFailure::Unavailable);
     }
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "the statvfs block counts are u32 on macOS and u64 on Linux"
+    )]
     let available = (stats.f_bavail as u64)
         .checked_mul(fragment)
         .ok_or(HostWorkFailure::Unavailable)?;
+    #[allow(
+        clippy::unnecessary_cast,
+        reason = "the statvfs block counts are u32 on macOS and u64 on Linux"
+    )]
     let total = (stats.f_blocks as u64)
         .checked_mul(fragment)
         .ok_or(HostWorkFailure::Unavailable)?;
     crate::store::check_space(
         available,
         total,
-        stats.f_bsize as u64,
+        stats.f_bsize,
         bytes.try_into().map_err(|_| HostWorkFailure::Capacity)?,
     )
     .map_err(|e| match e {
@@ -140,7 +148,7 @@ impl HostWorkInventory {
         if !created && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists {
             return Err(HostWorkFailure::Unavailable);
         }
-        let directory = open_at(&root, c"staging-v1", libc::O_RDONLY | libc::O_DIRECTORY)?;
+        let directory = open_at(root, c"staging-v1", libc::O_RDONLY | libc::O_DIRECTORY)?;
         private(&directory, true)?;
         // A previous mkdir may have succeeded before its parent sync failed.
         // Existing visibility is not evidence that this entry is durable.
@@ -209,6 +217,7 @@ impl HostWorkInventory {
     }
 }
 impl SessionStore {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn staging_directory(
         &self,
         inventory: &HostWorkInventory,
@@ -219,6 +228,7 @@ impl SessionStore {
         }
         inventory.staging_directory(&self.directory, workspace)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn reserve_staging(
         &self,
         inventory: &HostWorkInventory,
@@ -229,13 +239,14 @@ impl SessionStore {
     }
 }
 impl StagingDirectory {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "media"))]
     pub(crate) fn with_barrier_fault<T>(&self, callback: impl FnOnce() -> T) -> T {
         files::barrier_fault::with(&self.directory, callback)
     }
     /// Stage identities of one device with no live lease (no worker, file or
     /// idle handle holds them), for the owner's scoped reclamation of expired
     /// or already admitted staging. Listing grants no custody or authority.
+    #[cfg(feature = "media")]
     pub(crate) fn idle_stages(
         &self,
         device: [u8; 32],

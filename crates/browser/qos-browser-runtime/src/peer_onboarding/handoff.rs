@@ -152,6 +152,7 @@ impl Handoff {
     pub fn remaining(&self) -> usize {
         self.output.bytes.len() - self.position
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn expires_at_ns(&self) -> u64 {
         self.expires_at_ns
     }

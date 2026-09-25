@@ -15,6 +15,10 @@ pub struct CommittedDesktopNotice {
     pub opened: OpenedDesktopTab,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub enum Admission {
     Ignored,
     Ready {

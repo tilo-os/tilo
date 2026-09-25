@@ -365,6 +365,10 @@ fn worker_commit_capture_keeps_exact_canonical_bytes_and_the_writer_caret() {
     clippy::needless_pass_by_value,
     reason = "type-checks the proposed hook shapes without calling them"
 )]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 fn proposed_hook_shapes(
     owner: &crate::agent_runtime_adapter::RuntimeOwner,
     attempt: std::sync::Arc<crate::agent_runtime_adapter::LiveAttempt>,

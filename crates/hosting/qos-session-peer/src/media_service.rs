@@ -48,6 +48,7 @@ struct Submission {
     signature: [[u8; 32]; 2],
 }
 /// Untrusted wire submission, never evidence of verified identity.
+#[cfg(test)]
 pub(crate) fn encode_relay_proof(
     session: [u8; 32],
     nonce: [u8; 32],
@@ -133,6 +134,7 @@ impl<S: MediaAuthoritySource> Clone for MediaService<S> {
         Self(self.0.clone())
     }
 }
+#[cfg(test)]
 pub(crate) struct RelayChallenge {
     pub session_id: [u8; 32],
     pub challenge: MediaChallenge,
@@ -201,6 +203,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
             clock: Instant::now(),
         })))
     }
+    #[cfg(test)]
     fn turn<T>(
         &self,
         action: impl FnOnce(
@@ -337,6 +340,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
         )
         .map_err(TurnFailure::Media)
     }
+    #[cfg(test)]
     pub(crate) fn challenge(
         &self,
         request: GrantRequest,
@@ -347,6 +351,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                 .challenge(peer, policy, request, operation, now)
         })
     }
+    #[cfg(test)]
     pub(crate) fn relay_challenge(&self, grant: &[u8]) -> Result<RelayChallenge, MediaError> {
         let mut session_id = [0; 32];
         rand::rngs::SysRng
@@ -361,6 +366,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
             })
         })
     }
+    #[cfg(test)]
     pub(crate) fn refresh_challenge(
         &self,
         id: [u8; 32],
@@ -372,6 +378,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
                 .refresh_challenge(peer, policy, &slot.session, grant, now)
         })
     }
+    #[cfg(test)]
     pub(crate) fn refresh(
         &self,
         id: [u8; 32],
@@ -397,6 +404,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
     }
     /// Trusted native-control close. No public bearer close-by-ID endpoint is
     /// exposed; the eventual control router must bind caller and session.
+    #[cfg(test)]
     pub(crate) fn close(&self, id: [u8; 32]) -> Result<(), MediaError> {
         self.turn(|_, _, core, _| {
             let slot = core
@@ -410,6 +418,7 @@ impl<S: MediaAuthoritySource> MediaService<S> {
 impl MediaService {
     /// Called only by the serialized owner control turn. The key never leaves
     /// native custody and is requested only after device proof validation.
+    #[cfg(test)]
     pub(crate) fn complete(
         &self,
         owner: &SessionOwner,
@@ -432,6 +441,7 @@ impl MediaService {
     /// Same lock order as reads; the projection is unavailable throughout the
     /// owner turn. Publish the owner's actual durability state even when an
     /// operation rejects input without changing the committed generation.
+    #[cfg(test)]
     pub(crate) fn owner_update<T>(
         &self,
         owner: &mut SessionOwner,
@@ -449,6 +459,7 @@ impl MediaService {
         update_guard.publish(owner)?;
         result
     }
+    #[cfg(test)]
     pub(crate) fn invalidate(&self) {
         self.0.source.committed.invalidate();
     }

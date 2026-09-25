@@ -22,11 +22,19 @@ pub struct PendingOperation {
     pub outcome_unknown: bool,
 }
 /// Only the native verifier can mint the exceptional security-only turn.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum CommitMode {
     Mutation,
     DeliveryActivation,
     /// Snapshot + suffix retention: the certified checkpoint is the first
     /// entry of a new store incarnation (see `retention.rs`).
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     DeliveryRotation,
     PolicyFenced(OwnerPolicyFence),
     VerifiedSecurityMetadataOnly {
@@ -45,8 +53,8 @@ pub(crate) use policy_fence::{OwnerPolicyFence, OwnerPolicyRefused};
 mod media;
 mod native_credit;
 /// Test-only thread-local allocation meter (peak/net requested bytes).
-#[cfg(test)]
-pub(crate) use native_credit::{Stats as AllocationStats, allocations_only};
+#[cfg(all(test, feature = "media"))]
+pub(crate) use native_credit::allocations_only;
 pub(crate) mod resources;
 pub(crate) mod retention;
 mod schema;
@@ -158,8 +166,7 @@ fn document_causal_proofs() -> usize {
 fn publication_time() -> SystemTime {
     #[cfg(test)]
     {
-        return TEST_PUBLICATION_TIME
-            .with(|time| time.borrow().clone().unwrap_or_else(SystemTime::now));
+        TEST_PUBLICATION_TIME.with(|time| (*time.borrow()).unwrap_or_else(SystemTime::now))
     }
     #[cfg(not(test))]
     SystemTime::now()
@@ -686,6 +693,10 @@ impl SessionOwner {
         }
         result
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     pub(crate) fn commit_join_redemption(
         &mut self,
         mut candidate: StatePeer,
@@ -1508,10 +1519,9 @@ impl SessionOwner {
             },
             NeighbourMsg::SyncResp { changes: after, .. },
         ) = (self.peer.room_message(), candidate.room_message())
+            && before.iter().any(|change| !after.contains(change))
         {
-            if before.iter().any(|change| !after.contains(change)) {
-                bail!("admission discards room governance history");
-            }
+            bail!("admission discards room governance history");
         }
         let floors = candidate.replay_floors();
         if self
@@ -2595,7 +2605,7 @@ mod desktop_migration_tests {
         .unwrap();
         legacy
             .install_seed(
-                crate::seed::seed(&room, &cert, &[cert.clone()]).unwrap(),
+                crate::seed::seed(&room, &cert, std::slice::from_ref(&cert)).unwrap(),
                 &owner.identity.native,
                 now,
             )

@@ -8,7 +8,7 @@ use crate::peer_live::{self, GrantBinding, LiveCustody, VerifiedGrant};
 use tilo_relay::delivery_v3::live_wire::{self, LiveDirections};
 
 thread_local! {
-    static LIVE: RefCell<BTreeMap<u32, LiveCustody>> = RefCell::new(BTreeMap::new());
+    static LIVE: RefCell<BTreeMap<u32, LiveCustody>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 fn owner(id: u32) -> Result<Rc<Peer>, JsValue> {
@@ -353,10 +353,10 @@ pub(super) fn after_durable_install(peer: &Peer) {
                 }),
         )
     });
-    if let Some(rebased) = rebased {
-        if let Err(failure) = apply_rebased(peer, rebased) {
-            mark_failure(peer.id, failure);
-        }
+    if let Some(rebased) = rebased
+        && let Err(failure) = apply_rebased(peer, rebased)
+    {
+        mark_failure(peer.id, failure);
     }
 }
 
@@ -375,7 +375,7 @@ pub(super) fn promote_for_local_publication(peer: &Peer) {
 thread_local! {
     /// Per-Peer JavaScript listener for this Peer's own publications
     /// (`peer_live_author_listen`): `(frame: Uint8Array, app, record)`.
-    static AUTHOR_LISTENERS: RefCell<BTreeMap<u32, js_sys::Function>> = RefCell::new(BTreeMap::new());
+    static AUTHOR_LISTENERS: RefCell<BTreeMap<u32, js_sys::Function>> = const { RefCell::new(BTreeMap::new()) };
 }
 
 /// Register (or with `null` remove) the live client's listener for this

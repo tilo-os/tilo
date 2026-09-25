@@ -1,18 +1,17 @@
 //! Private media participation over shared delivery authority.
-pub(crate) use crate::peer_delivery_auth::{
-    Bootstrap, OwnerView, PreparedRequest, VerifiedBootstrap,
-};
+#[cfg(test)]
+pub(crate) use crate::peer_delivery_auth::Bootstrap;
 use crate::peer_delivery_auth::{DeliveryAuthority, HttpStep, fail, time};
+pub(crate) use crate::peer_delivery_auth::{OwnerView, PreparedRequest};
 use ed25519_dalek::Signer;
 #[cfg(test)]
 use ed25519_dalek::SigningKey;
 #[cfg(test)]
 use qos_peer_state::StatePeer;
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
-use tilo_relay::delivery_v3::{
-    descriptor::{self, VerifiedDescriptor},
-    media_wire,
-};
+#[cfg(test)]
+use tilo_relay::delivery_v3::descriptor::VerifiedDescriptor;
+use tilo_relay::delivery_v3::{descriptor, media_wire};
 #[cfg(test)]
 use tilo_user_identity::{DeviceCert, RevocationList};
 
@@ -26,6 +25,10 @@ pub(crate) enum Step {
     Left,
     RelayClosed,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Pending {
     Control {
         intent: u32,
@@ -46,6 +49,7 @@ pub(crate) struct PeerMedia {
     ending: Option<control::Participation>,
 }
 impl PeerMedia {
+    #[cfg(test)]
     pub fn new(
         lease: &str,
         descriptor: VerifiedDescriptor,
@@ -112,6 +116,7 @@ impl PeerMedia {
             }
         }
     }
+    #[cfg(test)]
     pub fn start_http(&mut self, view: &OwnerView<'_>) -> Result<PreparedRequest, String> {
         self.check(view)?;
         if !self.pending.is_empty() {
@@ -154,6 +159,7 @@ impl PeerMedia {
             }
         }
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn forget(&mut self, id: u32) {
         if let Some(Pending::Http { request }) = self.pending.remove(&id) {
             self.authority.borrow_mut().forget(request);
@@ -167,6 +173,7 @@ impl PeerMedia {
             && self.authority.borrow().descriptor.media_capabilities() & descriptor::MEDIA_VOICE_V1
                 != 0
     }
+    #[cfg(test)]
     pub fn http_ready(&self) -> bool {
         !self.closed && !self.suspended && self.authority.borrow().http_ready()
     }

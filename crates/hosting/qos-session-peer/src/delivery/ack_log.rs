@@ -47,6 +47,7 @@ impl SessionOwner {
     /// Durably record an advanced ACK without an aggregate commit. Returns
     /// `Ok(false)` when the side log is unavailable or full (nothing written);
     /// the caller then commits the aggregate, which also folds the log.
+    #[cfg(any(test, feature = "media"))]
     pub(super) fn record_ack_side(
         &mut self,
         device: [u8; 32],
@@ -155,6 +156,6 @@ fn still_current(delivery: &DeliveryLedgerV1, room: &str, record: &AckRecordV1) 
             .is_none_or(|ack| ack.sequence < record.committed.sequence)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "media"))]
 #[path = "ack_log_tests.rs"]
 mod tests;

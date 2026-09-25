@@ -385,6 +385,10 @@ impl TestClock {
     }
 }
 impl HttpSessions {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     pub(super) fn admit_revalidating<'a>(
         &'a mut self,
         owner: &SessionOwner,
@@ -410,6 +414,10 @@ impl HttpSessions {
             self.native_clock()?,
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     #[cfg(test)]
     pub(super) fn admit_revalidating_at<'a>(
         &'a mut self,
@@ -437,6 +445,10 @@ impl HttpSessions {
             Clock::Test(clock.clone()),
         )
     }
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each argument is a distinct piece of custody or context the caller already holds"
+    )]
     fn admit_with_clock<'a>(
         &'a mut self,
         owner: &SessionOwner,

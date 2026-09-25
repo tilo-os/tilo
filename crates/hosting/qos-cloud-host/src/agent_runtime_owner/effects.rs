@@ -1,8 +1,10 @@
 //! Store effect facts and live, single-use runtime custody. Stored labels grant no authority.
 use super::*;
+#[cfg(target_os = "linux")]
+use launcher::managed::VerifiedManagedExit;
 use launcher::managed::{
-    ChannelProcessFacts, ManagedBinding, ManagedRuntimeFacts, VerifiedManagedExit,
-    VerifiedManagedProcess, VerifiedManagedRuntime,
+    ChannelProcessFacts, ManagedBinding, ManagedRuntimeFacts, VerifiedManagedProcess,
+    VerifiedManagedRuntime,
 };
 use qos_action_broker::enrolled_dispatch::{
     TaskRunUpdate, VerifiedEnrolledDispatch, VerifiedRecipientAcceptance, VerifiedTaskUpdate,
@@ -125,6 +127,10 @@ impl AgentDispatchPermit {
         store.runtime_receipt(self.receipt.binding)
     }
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum PreparedEffectFact {
     Existing(CommitBinding),
     Fresh {
@@ -1116,6 +1122,7 @@ impl Store {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn fail_agent_before_effect(
         &mut self,
         id: &AgentControlId,
@@ -1164,6 +1171,7 @@ impl Store {
         )
         .map(FactCommit::receipt)
     }
+    #[cfg(target_os = "linux")]
     pub(crate) fn record_agent_process_exit(
         &mut self,
         id: &AgentControlId,
@@ -1259,16 +1267,17 @@ fn process_to_data(p: &ChannelProcessFacts) -> ChannelProcessFactsV2 {
         channel_id: p.channel_id.clone(),
     }
 }
+#[cfg(test)]
+pub(crate) mod enrolled_fixture;
 mod scope_audit;
 mod steps;
 #[cfg(test)]
 mod tests;
-pub(crate) use steps::CommittedStep;
-#[cfg(test)]
-pub(crate) mod enrolled_fixture;
 
 mod launch;
-pub(crate) use launch::{FailedLaunchAppend, RuntimeLaunchClaim};
+pub(crate) use launch::FailedLaunchAppend;
+#[cfg(any(target_os = "linux", test))]
+pub(crate) use launch::RuntimeLaunchClaim;
 
 #[cfg(test)]
 pub(crate) use launch::LaunchCandidateTestClaim;

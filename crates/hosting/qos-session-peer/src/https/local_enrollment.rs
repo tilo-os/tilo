@@ -9,6 +9,7 @@ pub(crate) struct LocalEnrollment {
     commands: mpsc::Sender<EnrollmentCommand>,
 }
 impl LocalEnrollment {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn new(
         origin: &str,
         authorization: Arc<Authorization>,
@@ -21,6 +22,7 @@ impl LocalEnrollment {
             commands,
         })
     }
+    #[cfg(any(test, feature = "media"))]
     pub(super) fn origin(&self) -> &str {
         &self.origin
     }

@@ -1117,7 +1117,7 @@ fn room_media_policy_removed_or_revoked_member_cannot_renew_or_forward() {
                     let device = hex::encode(cert.device_public_key);
                     let (row, _) = room.get(&identities, &device).unwrap().unwrap();
                     let mut row: serde_json::Value =
-                        serde_json::from_slice(row.to_bytes().unwrap()).unwrap();
+                        serde_json::from_slice(row.as_bytes().unwrap()).unwrap();
                     row["revocations"] = serde_json::json!([revoked]);
                     room.put(
                         &identities,

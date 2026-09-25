@@ -37,6 +37,10 @@ pub(crate) struct H3Service {
 }
 
 /// Result of classifying one accepted QUIC connection.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub(crate) enum Accepted {
     /// Extended CONNECT: continue exactly as `web_transport_quinn` would.
     WebTransport(web_transport_quinn::Request),

@@ -72,6 +72,7 @@ fn refused(reason: impl Into<String>) -> HostDocumentTurnError {
 }
 
 impl Store {
+    #[cfg(test)]
     pub(crate) fn commit_agent_document(
         &mut self,
         route: &RouteSpec,

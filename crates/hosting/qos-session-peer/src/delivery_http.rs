@@ -276,7 +276,7 @@ impl HttpSessions {
             let guard = current.read().map_err(anyhow::Error::msg)?;
             let now = clock.sample(guard.view())?;
             self.advance(now)?;
-            let context = self.context_clock(owner, guard.view(), identity, &clock)?;
+            let context = self.context_clock(owner, guard.view(), identity, clock)?;
             self.finish_in(body, &context.verification())
         })();
         // Failure still consumes the challenge even when the concrete owner

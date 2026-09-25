@@ -19,6 +19,10 @@ pub(super) enum CommandKind {
     /// Fresh retained status of the evidence's own invocation (read-only).
     Observe(InvocationId),
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub(super) enum CommandReply {
     Action(Option<ActionMessage>),
     Binding(AgentReadBinding),
@@ -69,6 +73,7 @@ impl CloudAgentCommands {
             policy: runtime.owner.policy_context(),
         }
     }
+    #[cfg(test)]
     pub(crate) fn policy_clock(&self) -> qos_action_broker::peer_actions::OwnerPolicyClock {
         self.policy.clock()
     }
@@ -76,6 +81,7 @@ impl CloudAgentCommands {
     pub(crate) fn policy_context(&self) -> Arc<crate::agent_owner::RuntimePolicyClock> {
         self.policy.clone()
     }
+    #[cfg(test)]
     pub(crate) fn bind_source_policy_time(
         &self,
         time: qos_action_broker::peer_actions::PolicyTime,
@@ -467,6 +473,10 @@ pub(super) fn read_current(
     }
     Ok(result)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 pub(super) async fn dispatch(
     command: Command,
     root: &Path,

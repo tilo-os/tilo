@@ -1,5 +1,10 @@
 //! Explicit administrative storage selection. No selected owner or runtime
 //! capability is returned by this API.
+#![expect(
+    clippy::result_large_err,
+    clippy::large_enum_variant,
+    reason = "administrative errors carry the owned operation by value: the error path must not allocate"
+)]
 use super::{Identity, SessionOwner, SignedAggregate, schema};
 use anyhow::Result;
 use atomic_file::{ExistingCommitError, PublicationError, bounded::BoundedOwnerDirectory};
@@ -419,6 +424,10 @@ impl Operation {
         let credit = self.physical_credit.take().expect("prepaid physical work");
         #[cfg(test)]
         tests::boundary(Boundary::BeforePhysical, &self.store);
+        #[expect(
+            clippy::result_large_err,
+            reason = "the closure only forwards AdministrativeFile::open, whose error type the toolkit owns"
+        )]
         let open = || AdministrativeFile::open(directory, scope, instance, expectation, credit);
         #[cfg(test)]
         let result = tests::physical(open);

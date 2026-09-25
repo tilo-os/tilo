@@ -481,7 +481,7 @@ pub fn peer_delivery_stage_opened(
     let offset = next_offset as u64;
     let width = u64::from(transfer.pin.issue().chunk_size);
     let total = transfer.pin.issue().stream_bytes;
-    if offset != total && offset % width != 0 {
+    if offset != total && !offset.is_multiple_of(width) {
         return Err(error("unaligned durable stage progress"));
     }
     // Re-fetch the last chunk to recover its exact signed boundary after a
@@ -679,6 +679,10 @@ pub fn peer_delivery_stage_read(
         .transfer
         .take()
         .ok_or_else(|| error("transfer missing"))?;
+    #[expect(
+        clippy::large_enum_variant,
+        reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+    )]
     enum Step {
         Continue,
         Restart,

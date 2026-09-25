@@ -22,6 +22,7 @@ pub(crate) type EarlySink = Arc<dyn Fn([u8; 32], &[u8]) + Send + Sync>;
 /// Largest canonical item worth arming: a forwarded frame must fit one
 /// `OpsFrame` (`MAX_STREAM_FRAME_BYTES`) including record and digest, so
 /// larger items are never copied here and reach members by durable replay.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const MAX_FORWARD_BYTES: usize =
     tilo_relay::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
 
@@ -30,7 +31,9 @@ thread_local! {
     static ARMED: RefCell<Vec<([u8; 32], Vec<u8>)>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(any(test, feature = "media"))]
 struct Restore(Option<EarlySink>);
+#[cfg(any(test, feature = "media"))]
 impl Drop for Restore {
     fn drop(&mut self) {
         SINK.with(|sink| *sink.borrow_mut() = self.0.take());
@@ -39,13 +42,16 @@ impl Drop for Restore {
 }
 
 /// Run one synchronous owner admission with `sink` installed for this thread.
+#[cfg(any(test, feature = "media"))]
 pub(crate) fn scoped<T>(sink: Option<&EarlySink>, operation: impl FnOnce() -> T) -> T {
     let _restore = Restore(SINK.with(|slot| slot.replace(sink.cloned())));
     operation()
 }
 
 /// Clears an armed item when its commit attempt ends (success or failure).
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct Disarm(());
+#[cfg(any(test, feature = "media"))]
 impl Drop for Disarm {
     fn drop(&mut self) {
         ARMED.with(|armed| armed.borrow_mut().clear());
@@ -54,12 +60,14 @@ impl Drop for Disarm {
 
 /// Arm a newly accepted item for the next [`fire`]. Without an installed sink,
 /// or for an item too large to forward, nothing is copied.
+#[cfg(any(test, feature = "media"))]
 pub(crate) fn arm(device: [u8; 32], canonical: &[u8]) -> Disarm {
     arm_group(device, &[canonical])
 }
 
 /// Arm every newly accepted item of one multi-item commit group, in request
 /// order; the group's single [`fire`] forwards each of them before its barrier.
+#[cfg(any(test, feature = "media"))]
 pub(crate) fn arm_group(device: [u8; 32], items: &[&[u8]]) -> Disarm {
     let installed = SINK.with(|sink| sink.borrow().is_some());
     if installed {

@@ -35,7 +35,9 @@ struct Enrollment {
     certificate: DeviceCert,
     root_public_key: [u8; 32],
     host_certificate: DeviceCert,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     relay_address: iroh_base::EndpointAddr,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     packet_relay: iroh_base::RelayUrl,
     revocations: Vec<RevocationEntry>,
     bootstrap: Bootstrap,
@@ -499,7 +501,7 @@ async fn connect_validated(
     let cursor_identity = CursorIdentity {
         workspace,
         room: config.room.clone(),
-        workspace_root: workspace_root,
+        workspace_root,
         device,
         device_root: config.certificate.user_public_key,
         host: config.delivery_host.device_public_key,
@@ -589,10 +591,10 @@ async fn connect_validated(
         )
         .map_err(error)?;
     }
-    if let Some(peer) = &owner {
-        if !config.governance.is_empty() {
-            install_candidate(peer, state.clone()).map_err(error)?;
-        }
+    if let Some(peer) = &owner
+        && !config.governance.is_empty()
+    {
+        install_candidate(peer, state.clone()).map_err(error)?;
     }
     // Identity, StatePeer and durable cache exist before any network proof.
     // JS binds the actual storage lease and ACKs the floor before HTTP setup.
@@ -696,7 +698,7 @@ fn receive_private_action(
     }
     // The closed HTTPS owner admitted this correlated native response.
     // Current membership/certificate validity is rechecked for every response.
-    if let Ok(identity) = action_context(&peer) {
+    if let Ok(identity) = action_context(peer) {
         if matches!(&event, tilo_relay::transport_v2::EnvelopeV2::Delivered { action, .. }
                         if matches!(action.message, tilo_relay::peer_actions::ActionMessage::CommittedDesktop { .. }))
         {
@@ -721,9 +723,9 @@ fn receive_private_action(
             match admission {
                 Ok(crate::committed_desktop::Admission::Ready { candidate, notice }) => {
                     peer.last_peer_contact.set(Some(js_sys::Date::now()));
-                    if let Err(e) = install_candidate(&peer, candidate) {
+                    if let Err(e) = install_candidate(peer, candidate) {
                         *peer.admission_failure.borrow_mut() = Some(e.clone());
-                        report(&peer, "incomplete", Some(e));
+                        report(peer, "incomplete", Some(e));
                     } else if let Some(notice) = notice {
                         emit_notice(&notice);
                     }
@@ -749,19 +751,18 @@ fn receive_private_action(
             }
             _ => None,
         };
-        if peer.actions.borrow_mut().receive(event, root) {
-            if let Some(message) = catalogue {
-                if let tilo_relay::peer_actions::ActionMessage::BrokerCatalogue { host, .. } =
-                    &message
-                {
-                    peer.delivery.borrow_mut().broker = Some(*host);
-                }
-                peer.agent_reads.borrow_mut().observe_catalogue(
-                    &message,
-                    &identity,
-                    transport_generation,
-                );
+        if peer.actions.borrow_mut().receive(event, root)
+            && let Some(message) = catalogue
+        {
+            if let tilo_relay::peer_actions::ActionMessage::BrokerCatalogue { host, .. } = &message
+            {
+                peer.delivery.borrow_mut().broker = Some(*host);
             }
+            peer.agent_reads.borrow_mut().observe_catalogue(
+                &message,
+                &identity,
+                transport_generation,
+            );
         }
         // Wake command waiters as soon as the authenticated response
         // is installed. The JS host keeps only a deadline timer.
@@ -1290,7 +1291,7 @@ fn health(
         let receipt=coverage.map(|(receipt,_)|receipt);
         let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();
         let durable_outgoing=journal.as_ref().map(|journal|journal.outbox.iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count()).unwrap_or(0);
-        serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed_revision).and_then(|r|revision(r)),"journalRevision":journal_status.as_ref().and_then(|status|status.committed_revision).and_then(|r|revision(r)),"pendingWrites":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).map(|(_,bytes)|*bytes).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
+        serde_json::json!({"record":{"roomId":state.room(),"appId":row.app_id,"recordId":row.record_id},"admission":if state.check_document_read(peer._key.verifying_key().to_bytes(),&row.app_id,&row.record_id,SystemTime::now()).is_ok(){"admitted"}else{"unavailable"},"current":{"heads":row.heads},"editing":{"mode":if durable_failure.is_some(){"blocked"}else if peer.transport_connected.get(){"online"}else{"offline-queued"}},"local":{"state":if failed{"failed"}else if is_durable{"durable"}else{"pending"},"durableBasis":durable_basis,"recordRevision":status.as_ref().and_then(|status|status.committed_revision).and_then(&revision),"journalRevision":journal_status.as_ref().and_then(|status|status.committed_revision).and_then(&revision),"pendingWrites":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).count(),"pendingBytes":pending.iter().filter(|(write_key,_)|*write_key==key||matches!(write_key,StorageKey::Admission{..})).map(|(_,bytes)|*bytes).sum::<usize>(),"committedAtMs":peer.committed_at.get()},"outgoing":{"pendingOperations":outgoing,"durableOperations":durable_outgoing},"acknowledgement":{"state":if covered{"covered"}else if receipt.is_some(){"pending"}else{"unknown"},"targetPeerId":receipt.as_ref().map(|receipt|receipt.coverage.author.iter().map(|byte|format!("{byte:02x}")).collect::<String>()),"coveredBasis":receipt.as_ref().map(|receipt|serde_json::json!({"heads":receipt.coverage.heads})),"coversCurrentBasis":covered,"receiptId":receipt.map(|receipt|receipt.receipt_id),"observedAtMs":if covered{peer.committed_at.get()}else{None}},"failureIds":[]})
     }).collect::<Vec<_>>();
     let admission_phase =
         crate::admission_health::admission_phase(state, ready, durable_failure.as_deref());
@@ -1353,7 +1354,7 @@ fn install_candidate(peer: &Peer, mut candidate: StatePeer) -> Result<(), String
     let install = if candidate.incomplete_reason().is_some() {
         Ok(())
     } else {
-        install_records(&peer, &candidate)
+        install_records(peer, &candidate)
     };
     install?;
     stage_journal(peer, &candidate, &outbox)?;

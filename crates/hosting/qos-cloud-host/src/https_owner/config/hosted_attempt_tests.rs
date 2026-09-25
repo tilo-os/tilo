@@ -3,6 +3,10 @@ use super::OperatorConfig;
 use qos_relay as relay;
 use qos_user_identity as identity;
 #[path = "../../../../../browser/qos-browser-runtime/src/peer_cloud/protocol.rs"]
+#[allow(
+    dead_code,
+    reason = "the browser's protocol module is shared; these tests drive only its first membership exchange"
+)]
 mod protocol;
 use automerge::resource_limits::NativeAllowance;
 use ed25519_dalek::SigningKey;
@@ -652,8 +656,7 @@ fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
             f.store
                 .owner_membership_complete(endpoint, request.clone(), 25)
         })
-        .err()
-        .expect("actual barrier must return failure without a response");
+        .expect_err("actual barrier must return failure without a response");
         assert!(failure.is::<crate::StoreCommitFailure>());
         assert!(f.store.peer_at(25).is_err());
         assert_eq!(

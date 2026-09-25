@@ -341,12 +341,12 @@ pub struct Store {
 /// 20 ms logs one content-free `store_held` line (thread name and duration)
 /// in the long-running host, to attribute lock waits.
 struct HeldLock(
-    #[allow(dead_code, reason = "held only to keep the lock file open")] File,
+    #[allow(dead_code, reason = "held only to keep the lock until drop")] advisory_lock::FileLock,
     std::time::Instant,
     Option<&'static std::panic::Location<'static>>,
 );
 impl HeldLock {
-    fn new(lock: File) -> Self {
+    fn new(lock: advisory_lock::FileLock) -> Self {
         Self(lock, std::time::Instant::now(), None)
     }
 }
@@ -562,7 +562,7 @@ impl Store {
             .read(true)
             .write(true)
             .open(root.join("state.lock"))?;
-        lock.lock()?;
+        let lock = advisory_lock::FileLock::exclusive(lock)?;
         let directory = File::open(root)?;
         let storage_directory = atomic_file::StorageDirectory::from_file(directory.try_clone()?)?;
         let persisted = storage::read_reconciled(&storage_directory, root)?;
@@ -579,7 +579,7 @@ impl Store {
         root: &Path,
         machine: &str,
         directory: File,
-        lock: File,
+        lock: advisory_lock::FileLock,
         persisted: Option<storage::Persisted>,
         mode: StoreOpenMode,
     ) -> Result<Self> {
@@ -712,15 +712,13 @@ impl Store {
                             intent,
                             ..
                         } = &receipt.change.fact
-                        {
-                            if intent.scope.machine != state.machine_id
+                            && (intent.scope.machine != state.machine_id
                                 || intent.scope.host != state.room
                                 || intent.scope.caller.user_public_key != bound.root
                                 || intent.route.app_peer
-                                    != qos_relay::room_workspace_id(&state.room)?.to_string()
-                            {
-                                bail!("private runtime admission differs from retained Store owner")
-                            }
+                                    != qos_relay::room_workspace_id(&state.room)?.to_string())
+                        {
+                            bail!("private runtime admission differs from retained Store owner")
                         }
                     }
                 }
@@ -885,10 +883,10 @@ impl Store {
     }
     pub fn inspect(&mut self, now: u64) -> Result<Challenge> {
         self.ensure_reconciled()?;
-        if let Some(c) = &self.state.challenge {
-            if c.expires_at_ns > now {
-                return Ok(c.clone());
-            }
+        if let Some(c) = &self.state.challenge
+            && c.expires_at_ns > now
+        {
+            return Ok(c.clone());
         }
         let mut nonce = [0; 32];
         rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);

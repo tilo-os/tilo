@@ -225,7 +225,6 @@ fn callback_ack_uses_real_cursor_and_persists_once_without_relocking_current() {
             )
             .unwrap()
     };
-    drop(admitted);
     drop(turn);
     let expected = token
         .authenticate(&f.owner.identity.host.verifying_key())
@@ -649,7 +648,6 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
     let mut registry = HttpSessions::new(&f.owner, &f.current, f.now).unwrap();
     let session = f.handshake(&mut registry, [110; 32]);
     register_consumer(&mut f, &mut registry, session, &budget);
-    let mut preceding = None;
     for index in 0_u8..6 {
         // Rebase the real native author after each admitted operation/checkpoint.
         let mut author = f.owner.peer().clone();
@@ -679,17 +677,6 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
             )
             .unwrap();
         let canonical = postcard::to_stdvec(&message).unwrap();
-        let (sequence, entry) = f
-            .owner
-            .delivery_ledger()
-            .unwrap()
-            .replay
-            .last_key_value()
-            .unwrap();
-        preceding = Some(CommitRef {
-            sequence: *sequence,
-            digest: entry.digest,
-        });
         let receipt = send_state(
             &mut f,
             &mut registry,
@@ -714,16 +701,15 @@ fn oversized_real_replay_group_answers_snapshot_reset_without_page_or_ack_advanc
         .replay
         .last_key_value()
         .unwrap();
-    preceding = Some(CommitRef {
+    let preceding = CommitRef {
         sequence: *sequence,
         digest: entry.digest,
-    });
+    };
     f.owner.permit_unscoped_legacy_commits().unwrap();
     f.current
         .with_owner_view(&mut f.owner, |_, owner| owner.refresh_checkpoint())
         .unwrap()
         .unwrap();
-    let preceding = preceding.unwrap();
     let token = {
         let request = Request::new("GET", "/peer/v3/events?mode=poll", b"").unwrap();
         let proof = RequestProof::sign(
@@ -985,7 +971,6 @@ fn stops_between_items(cause: BetweenItems) {
         f.current.read().is_ok(),
         "ordinary denial must not poison committed authority"
     );
-    drop(admitted);
     drop(checker);
     if !matches!(cause, BetweenItems::SessionExpiry) {
         assert!(
@@ -1345,7 +1330,6 @@ fn journaled_ack_is_a_durable_side_record_recovered_after_crash() {
                 )
                 .unwrap()
         };
-        drop(admitted);
         drop(turn);
         let expected = token
             .authenticate(&f.owner.identity.host.verifying_key())
@@ -2032,7 +2016,6 @@ fn long_session_state_and_replay_turns_stay_within_measured_reservations() {
             )
         });
         response.unwrap();
-        drop(admitted);
         let peak = usize::try_from(stats.peak).unwrap_or(0);
         assert!(
             peak <= reserved,

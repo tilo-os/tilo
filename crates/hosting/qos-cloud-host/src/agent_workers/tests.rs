@@ -587,12 +587,15 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
                     let before = durable.get_heads();
                     match &mutation {
                         DocumentMutation::Snapshot(bytes) => {
-                            durable
-                                .merge(&mut ui::automerge::AutoCommit::load(bytes).unwrap())
-                                .unwrap();
+                            tilo_automerge::ApplyIncoming::merge_incoming(
+                                &mut durable,
+                                &mut ui::automerge::AutoCommit::load(bytes).unwrap(),
+                            )
+                            .unwrap();
                         }
                         DocumentMutation::Incremental(bytes) => {
-                            durable.load_incremental(bytes).unwrap();
+                            tilo_automerge::ApplyIncoming::load_incoming(&mut durable, bytes)
+                                .unwrap();
                         }
                     }
                     assert_eq!(
@@ -1049,14 +1052,14 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
             apply_document(&mut workers, pending);
         }
         while network.try_recv().is_ok() {}
-        if let Some(status) = broker.status(job.id) {
-            if status.is_terminal() {
-                assert!(
-                    matches!(status, qos_actions::InvocationUpdate::Succeeded { .. }),
-                    "{status:?}"
-                );
-                break;
-            }
+        if let Some(status) = broker.status(job.id)
+            && status.is_terminal()
+        {
+            assert!(
+                matches!(status, qos_actions::InvocationUpdate::Succeeded { .. }),
+                "{status:?}"
+            );
+            break;
         }
         assert!(
             tokio::time::Instant::now() < deadline,

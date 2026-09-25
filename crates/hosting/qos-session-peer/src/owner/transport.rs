@@ -1,7 +1,10 @@
 //! Durable delivery transport bootstrap, owned by the existing SessionOwner.
 use super::*;
+#[cfg(any(test, feature = "media"))]
 use crate::committed_authority::CommittedView;
+#[cfg(any(test, feature = "media"))]
 use qos_peer_state::join::TransportHint;
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::descriptor::{
     self, DescriptorAuthority, DescriptorSettings, GenerationExpectation, VerifiedDescriptor,
 };
@@ -22,6 +25,7 @@ impl SessionOwner {
 
     /// Called on the serialized owner before readiness, or under its publication
     /// update guard. Host admission/delegation completes its real barrier first.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn install_delivery_transport(
         &mut self,
         origin: &str,
@@ -56,6 +60,7 @@ impl SessionOwner {
         )
     }
 
+    #[cfg(any(test, feature = "media"))]
     fn install_delivery_transport_mask(
         &mut self,
         origin: &str,
@@ -103,13 +108,12 @@ impl SessionOwner {
         });
         if let Some(hint) = old.as_ref().filter(|_| !renewal_due) {
             let current = self.transport_authority(&self.peer, floor, now, capabilities);
-            if let Ok(verified) = descriptor::verify_transport_hint(hint, &current) {
-                if verified.origin() == origin
-                    && verified.delivery_capabilities() == capabilities
-                    && verified.media_capabilities() == media_capabilities
-                {
-                    return Ok(hint.clone());
-                }
+            if let Ok(verified) = descriptor::verify_transport_hint(hint, &current)
+                && verified.origin() == origin
+                && verified.delivery_capabilities() == capabilities
+                && verified.media_capabilities() == media_capabilities
+            {
+                return Ok(hint.clone());
             }
         }
         let generation = previous
@@ -148,6 +152,7 @@ impl SessionOwner {
         self.commit(next, self.peer.clone())?;
         Ok(hint)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn stored_delivery_hint(&self) -> Result<&TransportHint> {
         self.require_delivery()?;
         let PublicationStorage::V5 {
@@ -159,6 +164,7 @@ impl SessionOwner {
         };
         Ok(hint)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn verified_delivery_transport(
         &self,
         view: &CommittedView,
@@ -186,6 +192,7 @@ impl SessionOwner {
         );
         Ok(descriptor::verify_transport_hint(hint, &current)?)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn transport_authority<'a>(
         &'a self,
         peer: &'a StatePeer,
@@ -207,6 +214,7 @@ impl SessionOwner {
 /// Signed descriptor lifetime (the delivery contract maximum is 15 minutes).
 /// Debug builds accept a shorter lifetime for renewal fault runs; a shorter
 /// lifetime only narrows authority. Release builds always use the maximum.
+#[cfg(any(test, feature = "media"))]
 fn descriptor_lifetime_ns() -> u64 {
     const MAXIMUM_NS: u64 = 900_000_000_000;
     #[cfg(debug_assertions)]

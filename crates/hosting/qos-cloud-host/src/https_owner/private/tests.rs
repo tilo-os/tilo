@@ -393,7 +393,7 @@ impl HttpFixture {
             )
             .unwrap()
         });
-        let client = reqwest::Client::builder()
+        let client = tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap();

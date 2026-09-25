@@ -13,9 +13,14 @@ use std::{
     },
 };
 
+#[cfg(test)]
 mod held;
 
 pub(crate) enum Current<T> {
+    #[expect(
+        clippy::enum_variant_names,
+        reason = "matched as Current::Current throughout the owner; renaming would obscure the call sites"
+    )]
     Current(T),
     Busy,
     Denied,
@@ -296,6 +301,7 @@ impl CloudStoreSource {
     pub(crate) fn owns_turn(&self, turn: &CloudStoreTurn) -> bool {
         Arc::ptr_eq(&self.0, &turn.source.0)
     }
+    #[cfg(test)]
     pub(crate) fn validate_store(&self, store: &Store, time: &PolicyTime) -> Result<()> {
         self.checked_peer(store, time).map(|_| ())
     }
@@ -439,18 +445,17 @@ impl CloudStoreSource {
     /// A reused decode whose cached peer had lapsed: keep the peer just
     /// restored from that same validated generation.
     fn refresh_opened_peer(&self, store: &Store, peer: StatePeer, at_ns: u64) {
-        if let Ok(mut opened) = self.0.opened.lock() {
-            if let Some(opened) = opened
+        if let Ok(mut opened) = self.0.opened.lock()
+            && let Some(opened) = opened
                 .as_mut()
                 .filter(|opened| opened.state.generation == store.state.generation)
-            {
-                opened.peer = Some(CachedPeer {
-                    until_ns: peer_reuse_until(&store.state, at_ns),
-                    peer,
-                    generation: store.state.generation,
-                    at_ns,
-                });
-            }
+        {
+            opened.peer = Some(CachedPeer {
+                until_ns: peer_reuse_until(&store.state, at_ns),
+                peer,
+                generation: store.state.generation,
+                at_ns,
+            });
         }
     }
     #[cfg(test)]

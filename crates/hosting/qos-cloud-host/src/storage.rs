@@ -235,12 +235,16 @@ impl Aggregate {
     /// Cheap unlocked hint that the directory still names both retained
     /// files at their retained lengths. The next turn re-proves it locked.
     pub(crate) fn matches_unlocked(&self, directory: &std::fs::File) -> bool {
+        #[allow(
+            clippy::unnecessary_cast,
+            reason = "dev_t is i32 on macOS and u64 on Linux"
+        )]
         let named = |name: &std::ffi::CStr, file: &std::fs::File, length: u64| {
             use std::os::unix::fs::MetadataExt;
             let (Some(stat), Ok(held)) = (stat_at(directory, name), file.metadata()) else {
                 return false;
             };
-            stat.st_ino as u64 == held.ino()
+            stat.st_ino == held.ino()
                 && stat.st_dev as u64 == held.dev()
                 && stat.st_size as u64 == held.len()
                 && held.len() == length
@@ -331,18 +335,18 @@ impl Aggregate {
     pub(crate) fn reconcile(&self, directory: &atomic_file::StorageDirectory) -> Result<()> {
         use atomic_file::{FileIdentity, Privacy};
         use std::ffi::OsStr;
-        if let Some((_, identity, len)) = &self.journal {
-            if *len > 0 {
-                let writable = directory
-                    .open_append_existing(OsStr::new(journal::NAME), Privacy::OwnerOnly)?;
-                ensure!(
-                    FileIdentity::of(&writable)? == *identity,
-                    "cloud state journal changed while locked"
-                );
-                writable
-                    .sync_all()
-                    .context("cloud observed journal durability reconciliation failed")?;
-            }
+        if let Some((_, identity, len)) = &self.journal
+            && *len > 0
+        {
+            let writable =
+                directory.open_append_existing(OsStr::new(journal::NAME), Privacy::OwnerOnly)?;
+            ensure!(
+                FileIdentity::of(&writable)? == *identity,
+                "cloud state journal changed while locked"
+            );
+            writable
+                .sync_all()
+                .context("cloud observed journal durability reconciliation failed")?;
         }
         self.reconcile_checkpoint(directory)
     }
@@ -361,10 +365,12 @@ impl Aggregate {
             .context("cloud observed state durability reconciliation failed")?;
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn checkpoint_file(&mut self) -> &mut std::fs::File {
         &mut self.checkpoint
     }
     /// The journal file when it holds any bytes.
+    #[cfg(test)]
     pub(crate) fn journal_file(&mut self) -> Option<&mut std::fs::File> {
         self.journal
             .as_mut()
@@ -385,6 +391,7 @@ fn read_exact_len(file: &std::fs::File, len: u64) -> Result<Vec<u8>> {
 }
 /// The state a checkpoint plus its journal bytes reconstruct (for readers
 /// that read both files through their own paid buffers).
+#[cfg(test)]
 pub(crate) fn reconstruct(checkpoint: &[u8], journal: &[u8]) -> Vec<u8> {
     let digest = *blake3::hash(checkpoint).as_bytes();
     journal::replay_fast(checkpoint.to_vec(), &digest, journal, MAX_STATE_BYTES).state
@@ -692,7 +699,7 @@ pub(crate) fn write(
     counters::add(&counters::COMMITS, 1);
     counters::add(&counters::COMMIT_NS, started.elapsed().as_nanos() as u64);
     let commits = counters::load(&counters::COMMITS);
-    if commits % 256 == 0 {
+    if commits.is_multiple_of(256) {
         tracing::info!(summary = %io_summary(), "cloud store io");
     }
     result
@@ -1085,6 +1092,10 @@ pub(crate) mod test_journal {
     }
     /// Journal-specific failure points (atomic publications keep using
     /// `atomic_file::test_support` through `test_support::with_save_failure`).
+    #[expect(
+        clippy::enum_variant_names,
+        reason = "the names spell the protocol phases; renaming them would obscure the call sites"
+    )]
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub(crate) enum Point {
         /// Append: before the journal is changed.

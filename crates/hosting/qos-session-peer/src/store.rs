@@ -21,6 +21,7 @@ use std::{
 mod journal;
 #[path = "store/side_log.rs"]
 mod side_log;
+#[cfg(any(test, feature = "media"))]
 pub(crate) use side_log::SideLogFull;
 
 /// Journal bound before the next commit checkpoints: the larger of this and
@@ -119,6 +120,10 @@ impl Drop for Custody {
     fn drop(&mut self) {
         // An inherited guard must not unlock a still-live acquiring process.
         if self.acquired_by == std::process::id() {
+            #[expect(
+                clippy::disallowed_methods,
+                reason = "Custody unlocks explicitly like advisory_lock::FileLock, and also skips the unlock in a forked child that inherited it"
+            )]
             let _ = self.file.unlock();
         }
     }
@@ -162,6 +167,10 @@ pub(crate) fn custody(path: &Path) -> Result<Custody> {
     if !file.metadata()?.is_file() {
         bail!("custody path must be a regular file");
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "Custody unlocks explicitly like advisory_lock::FileLock, and also skips the unlock in a forked child that inherited it"
+    )]
     file.try_lock()
         .context("another process owns this native session or identity")?;
     Ok(Custody {
@@ -237,6 +246,10 @@ impl SessionStore {
             }
             Err(error) => return Err(error.into()),
         };
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "Custody unlocks explicitly like advisory_lock::FileLock, and also skips the unlock in a forked child that inherited it"
+        )]
         file.try_lock()
             .context("another process owns this native session or identity")?;
         Ok(Custody {
@@ -290,11 +303,19 @@ impl SessionStore {
                 return Err(StorePreflightFailure::Unavailable);
             }
             let stats = unsafe { stats.assume_init() };
-            let fragment = stats.f_frsize as u64;
-            let unit = stats.f_bsize as u64;
+            let fragment = stats.f_frsize;
+            let unit = stats.f_bsize;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "the statvfs block counts are u32 on macOS and u64 on Linux"
+            )]
             let available = (stats.f_bavail as u64)
                 .checked_mul(fragment)
                 .ok_or(StorePreflightFailure::Unavailable)?;
+            #[allow(
+                clippy::unnecessary_cast,
+                reason = "the statvfs block counts are u32 on macOS and u64 on Linux"
+            )]
             let total = (stats.f_blocks as u64)
                 .checked_mul(fragment)
                 .ok_or(StorePreflightFailure::Unavailable)?;
@@ -461,7 +482,7 @@ impl SessionStore {
             // record. (`compact` re-publishes older bytes and never gets here.)
             self.truncate_folded_side_log();
         }
-        if COMMITS.load(Ordering::Relaxed) % 256 == 0 {
+        if COMMITS.load(Ordering::Relaxed).is_multiple_of(256) {
             tracing::info!(summary = %io_summary(), "session store io");
         }
         result
@@ -717,10 +738,9 @@ impl Drop for SessionStore {
                 .journal
                 .as_ref()
                 .is_some_and(|state| state.valid_len > 0)
+            && let Err(error) = self.compact()
         {
-            if let Err(error) = self.compact() {
-                tracing::warn!(%error, "session journal compaction deferred to next open");
-            }
+            tracing::warn!(%error, "session journal compaction deferred to next open");
         }
         if COMMITS.load(Ordering::Relaxed) > 0 {
             tracing::info!(summary = %io_summary(), "session store io");
@@ -836,6 +856,7 @@ pub(crate) mod test_fault {
     }
     /// Arm one fault on this thread until it fires (for async tests whose
     /// owner runs on the current-thread runtime).
+    #[cfg(feature = "media")]
     pub(crate) fn arm(root: &Path, point: Point) {
         FAULT.with(|fault| *fault.borrow_mut() = Some((root.to_owned(), point)));
     }

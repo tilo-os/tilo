@@ -252,6 +252,10 @@ fn policy_system_time(now_ns: u64) -> web_time::SystemTime {
 }
 pub(crate) struct ActionHost {
     pub broker: BrokerHandle,
+    #[cfg_attr(
+        not(feature = "media"),
+        expect(dead_code, reason = "read only by the media ingress's private lane")
+    )]
     policy_clock: OwnerPolicyClock,
     policy_time: PolicyTime,
     authority: Authority,
@@ -273,6 +277,7 @@ impl ActionHost {
     pub(crate) fn registered_policy_time(&self) -> &PolicyTime {
         &self.policy_time
     }
+    #[cfg(feature = "media")]
     pub(crate) fn policy_clock(&self) -> Result<OwnerPolicyClock, String> {
         self.policy_clock
             .now_ns()
@@ -1382,7 +1387,10 @@ mod tests {
         report.view_retry = None;
         let error = runtime.setup_error(ui::launch::LaunchError::ComponentSetup {
             source: Box::new(ui::launch::LaunchError::Operation("mount failed".into())),
-            record: RecordCheckout::new(record, word_processor::definition().record_kind.clone()),
+            record: Box::new(RecordCheckout::new(
+                record,
+                word_processor::definition().record_kind.clone(),
+            )),
             recovery: ui::launch::LaunchRecovery::new(Some(records), vec![report]),
         });
         assert!(

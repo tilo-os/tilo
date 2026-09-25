@@ -62,12 +62,11 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
             Instant::now() < deadline,
             "isolated native host did not become ready"
         );
-        if let Ok(bytes) = fs::read(ready) {
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if value["pid"].as_u64() == Some(u64::from(pid)) {
-                    break value;
-                }
-            }
+        if let Ok(bytes) = fs::read(ready)
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && value["pid"].as_u64() == Some(u64::from(pid))
+        {
+            break value;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     };

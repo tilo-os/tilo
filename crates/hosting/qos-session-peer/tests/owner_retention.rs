@@ -70,6 +70,7 @@ async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription
                 }
                 Inbound::Ready { .. } => {}
                 Inbound::Presence { .. } => panic!("unexpected presence"),
+                Inbound::RemoteAction { .. } => {}
             }
         }
     })
@@ -169,6 +170,7 @@ async fn replay(session: &RelayCoeditSession, peers: &mut [&mut StatePeer]) -> O
                 }
                 Inbound::Ready { .. } => return output,
                 Inbound::Presence { .. } => panic!("unexpected presence"),
+                Inbound::RemoteAction { .. } => {}
             }
         }
     })

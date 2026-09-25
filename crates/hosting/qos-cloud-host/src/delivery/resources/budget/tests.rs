@@ -25,8 +25,6 @@ fn cloud_aggregate_budget_peer_keeps_original_current_credit() {
         Err(ResourceError::Capacity)
     ));
     drop(exhausted);
-    drop(budget);
-    drop(work);
     drop(operation);
     drop(registry);
     assert_eq!(current.retained_bytes(), baseline + 128);
@@ -161,7 +159,6 @@ fn cloud_aggregate_budget_peer_reborrow_spans_native_restore_candidate_and_outpu
         output.as_bytes(),
         serde_json::to_vec(candidate.state()).unwrap()
     );
-    drop(work);
     drop(operation);
     drop(registry);
     drop(native);

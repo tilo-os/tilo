@@ -1,4 +1,5 @@
 //! Narrow current-policy hooks used only by the authenticated native control owner.
+#![cfg(feature = "media")]
 use super::*;
 impl MediaAuthority {
     pub(crate) fn pending_control_request(

@@ -100,7 +100,8 @@ fn owner_bootstrap(scope: &EnrolledOwner, admit: bool, now: u64) -> join::OwnerB
     native
         .install_seed(
             qos_peer_state::SeedState {
-                room_changes: qos_peer_state::seed_room(ROOM, &host, &[host.clone()]).unwrap(),
+                room_changes: qos_peer_state::seed_room(ROOM, &host, std::slice::from_ref(&host))
+                    .unwrap(),
                 documents: vec![],
             },
             &host_key(),

@@ -28,6 +28,7 @@ use super::*;
 pub(super) const NAME: &str = "session.acks";
 /// Appends beyond this bound are refused (without writing or poisoning) so
 /// the caller folds the log with one ordinary aggregate commit instead.
+#[cfg(any(test, feature = "media"))]
 pub(super) const MAX_BYTES: u64 = 256 * 1024;
 const MAX_RECORD: usize = 4096;
 
@@ -39,14 +40,18 @@ pub(super) struct SideLog {
 
 /// An append refused before any write; the store stays healthy.
 #[derive(Debug)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct SideLogFull;
+#[cfg(any(test, feature = "media"))]
 impl std::fmt::Display for SideLogFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("session side log is full; fold it with an aggregate commit")
     }
 }
+#[cfg(any(test, feature = "media"))]
 impl std::error::Error for SideLogFull {}
 
+#[cfg(any(test, feature = "media"))]
 pub(super) fn frame(payload: &[u8]) -> Vec<u8> {
     let mut framed = Vec::with_capacity(4 + payload.len() + 32);
     framed.extend_from_slice(&(payload.len() as u32).to_le_bytes());
@@ -119,11 +124,13 @@ impl SessionStore {
     /// Whether side records may replace aggregate commits (same switch as the
     /// journal; `QOS_HOST_PERF_BASELINE=1` keeps whole aggregate commits,
     /// `QOS_HOST_PERF2_BASELINE=1` keeps journaled aggregate ACK commits).
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn side_log_enabled(&self) -> bool {
         self.journal_enabled && self.side_log.is_some() && !self.poisoned && !perf2_baseline()
     }
     /// Durably append one record: returns only after its file barrier.
     /// `SideLogFull` performs no write; any other failure poisons the store.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn append_side_record(&mut self, payload: &[u8]) -> Result<()> {
         if self.poisoned {
             bail!("durable barrier failed; reopen the owner before proceeding");
@@ -151,6 +158,7 @@ impl SessionStore {
         }
         result
     }
+    #[cfg(any(test, feature = "media"))]
     fn append_side_inner(&mut self, framed: &[u8]) -> Result<()> {
         let directory = self.checked_directory()?;
         #[cfg(test)]
@@ -214,6 +222,7 @@ impl SessionStore {
     }
 }
 
+#[cfg(any(test, feature = "media"))]
 fn perf2_baseline() -> bool {
     #[cfg(test)]
     {

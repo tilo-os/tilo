@@ -1,6 +1,10 @@
 //! Actual committed owner, installed media descriptor, HTTP registry and grant service.
 //! Imports only the portable protocol child; no test witness enters production.
 #[path = "../../../../session/shell/src/network/native_media/protocol.rs"]
+#[allow(
+    dead_code,
+    reason = "the shell's protocol module is shared; these tests drive only part of it"
+)]
 mod protocol;
 use super::*;
 use crate::{

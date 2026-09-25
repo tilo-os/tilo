@@ -302,5 +302,5 @@ fn require(condition: bool, failure: PlanningFailure) -> Result<()> {
     if condition { Ok(()) } else { Err(failure) }
 }
 mod policy;
-#[cfg(test)]
+#[cfg(all(test, feature = "media"))]
 mod tests;

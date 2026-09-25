@@ -66,6 +66,8 @@ pub(crate) struct ScopedAppFixture {
     network: tokio::sync::mpsc::Receiver<NeighbourMsg>,
     request: u64,
 }
+/// Mutates a scoped fixture document before it is first published.
+type Seed = Box<dyn FnOnce(&mut ui::automerge::AutoCommit)>;
 impl ScopedAppFixture {
     pub(crate) fn with_uncommitted_factory_data(app: &str) -> Self {
         struct Restore(Option<String>);
@@ -93,11 +95,7 @@ impl ScopedAppFixture {
     ) -> Self {
         Self::new_seeded(app, Some(Box::new(seed)), false)
     }
-    fn new_seeded(
-        app: &str,
-        seed: Option<Box<dyn FnOnce(&mut ui::automerge::AutoCommit)>>,
-        delivery: bool,
-    ) -> Self {
+    fn new_seeded(app: &str, seed: Option<Seed>, delivery: bool) -> Self {
         let _ = tracing_subscriber::fmt()
             .with_env_filter("qos_action_broker=debug,tilo_ui=debug")
             .with_test_writer()
@@ -388,10 +386,10 @@ impl ScopedAppFixture {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             for event in self.caller.poll() {
-                if let CollabEvent::PublishedInvocationResult { request_id, result } = event {
-                    if request_id == self.request {
-                        return result.expect("genuine original caller RPC admission").0;
-                    }
+                if let CollabEvent::PublishedInvocationResult { request_id, result } = event
+                    && request_id == self.request
+                {
+                    return result.expect("genuine original caller RPC admission").0;
                 }
             }
             if apply_documents {
@@ -425,10 +423,9 @@ impl ScopedAppFixture {
                     request_id: id,
                     result,
                 } = event
+                    && id == request_id
                 {
-                    if id == request_id {
-                        return result;
-                    }
+                    return result;
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -462,10 +459,9 @@ impl ScopedAppFixture {
                     request_id: id,
                     result,
                 } = event
+                    && id == request_id
                 {
-                    if id == request_id {
-                        return result;
-                    }
+                    return result;
                 }
             }
             if tokio::time::Instant::now() >= deadline {
@@ -505,10 +501,9 @@ impl ScopedAppFixture {
                     request_id: id,
                     result,
                 } = event
+                    && id == request_id
                 {
-                    if id == request_id {
-                        return result.map(|(id, _)| id);
-                    }
+                    return result.map(|(id, _)| id);
                 }
             }
             if tokio::time::Instant::now() >= deadline {

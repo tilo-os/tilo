@@ -151,10 +151,7 @@ impl PendingAgentReads {
                     } if host == expected_host
                         && invocation == expected_invocation
                         && *binding == pending.binding
-                        && tilo_relay::agent_reads::matches_request(request, response) =>
-                    {
-                        ()
-                    }
+                        && tilo_relay::agent_reads::matches_request(request, response) => {}
                     ActionMessage::Rejected { .. } => (),
                     _ => return false,
                 }
@@ -191,9 +188,7 @@ impl PendingAgentReads {
             self.entries.remove(&id);
             return None;
         }
-        if pending.response.is_none() {
-            return None;
-        }
+        pending.response.as_ref()?;
         self.entries
             .remove(&id)
             .and_then(|pending| pending.response)

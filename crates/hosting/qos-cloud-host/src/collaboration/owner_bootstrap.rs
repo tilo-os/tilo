@@ -337,39 +337,35 @@ impl Store {
         )?;
         // Nothing changed since the last owner bootstrap was built from this
         // exact governed state: reuse its signed governance without a commit.
-        if crate::live_room_publication(&before, &peer)?.is_none() {
-            if let Some((generation, messages)) =
+        if crate::live_room_publication(&before, &peer)?.is_none()
+            && let Some((generation, messages)) =
                 reuse::lookup(&self.root, reuse_key(&self.state)?, self.state.generation)
-            {
-                let bootstrap = self.owner_bootstrap(
-                    &device_cert,
-                    membership.workspace_id(),
-                    &peer,
-                    messages,
-                    generation,
-                );
-                peer.verify_current_owner(
-                    &bootstrap.device_cert,
-                    now_time(self.policy_now_or(now)?),
-                )
+        {
+            let bootstrap = self.owner_bootstrap(
+                &device_cert,
+                membership.workspace_id(),
+                &peer,
+                messages,
+                generation,
+            );
+            peer.verify_current_owner(&bootstrap.device_cert, now_time(self.policy_now_or(now)?))
                 .map_err(anyhow::Error::msg)?;
-                if !replay {
-                    // No commit: bind the one-use challenge to this exact proof.
-                    super::issued::complete(&self.root, &challenge_key, proof_digest);
-                }
-                audit(
-                    "collaboration_owner_membership_refreshed",
-                    serde_json::json!({
-                        "room": self.state.room,
-                        "request_id": hex::encode(request_id),
-                        "caller_device": hex::encode(remote_endpoint),
-                        "caller_root": hex::encode(bootstrap.device_cert.user_public_key),
-                        "generation": generation.to_string(),
-                        "result": if replay { "replayed" } else { "reused" },
-                    }),
-                );
-                return Ok(bootstrap);
+            if !replay {
+                // No commit: bind the one-use challenge to this exact proof.
+                super::issued::complete(&self.root, &challenge_key, proof_digest);
             }
+            audit(
+                "collaboration_owner_membership_refreshed",
+                serde_json::json!({
+                    "room": self.state.room,
+                    "request_id": hex::encode(request_id),
+                    "caller_device": hex::encode(remote_endpoint),
+                    "caller_root": hex::encode(bootstrap.device_cert.user_public_key),
+                    "generation": generation.to_string(),
+                    "result": if replay { "replayed" } else { "reused" },
+                }),
+            );
+            return Ok(bootstrap);
         }
         let generation = self.next_generation()?;
         let messages = crate::durable_bootstrap_messages(

@@ -24,6 +24,7 @@ impl FailedLaunchAppend {
             .and_then(Weak::upgrade)
             .is_some_and(|original| Arc::ptr_eq(&original, attempt))
     }
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn error(&self) -> &anyhow::Error {
         &self.error
     }
@@ -53,12 +54,20 @@ impl FailedLaunchAppend {
     }
 }
 
+#[cfg(any(target_os = "linux", test))]
 pub(crate) enum RuntimeLaunchClaim {
     Fresh {
         permit: AgentLaunchPermit,
+        #[expect(
+            dead_code,
+            reason = "the launch path acts on the permit; the receipt stays with the claim"
+        )]
         receipt: OwnerCommitReceipt,
     },
-    Existing(AgentRuntimeObservation),
+    Existing(
+        #[expect(dead_code, reason = "an existing launch is reported by status only")]
+        AgentRuntimeObservation,
+    ),
     Refused {
         error: AgentCommitError,
         retry: Option<QuiescentLaunchRetry>,
@@ -70,6 +79,13 @@ pub(super) enum LaunchCandidateClaim {
     Committed(FactCommit, ManagedBinding),
     Refused {
         error: AgentCommitError,
+        #[cfg_attr(
+            not(any(target_os = "linux", test)),
+            expect(
+                dead_code,
+                reason = "read only by the Linux agent runtime's launch claim"
+            )
+        )]
         retry: Option<QuiescentLaunchRetry>,
     },
     Failed(FailedLaunchAppend),
@@ -79,13 +95,18 @@ pub(super) enum LaunchCandidateClaim {
 pub(crate) enum LaunchCandidateTestClaim {
     Committed(bool, ManagedBinding),
     Refused {
+        #[expect(dead_code, reason = "tests match the refusal without reading it")]
         error: AgentCommitError,
         retry: Option<QuiescentLaunchRetry>,
     },
     Failed(FailedLaunchAppend),
-    PostCommit(AgentCommitError),
+    PostCommit(
+        #[expect(dead_code, reason = "tests match the failure without reading it")]
+        AgentCommitError,
+    ),
 }
 impl Store {
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn claim_agent_launch_for_runtime(
         &mut self,
         caller: &VerifiedAgentCaller,

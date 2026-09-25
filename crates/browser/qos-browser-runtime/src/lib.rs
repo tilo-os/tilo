@@ -67,7 +67,7 @@ mod peer_media;
 #[cfg(any(target_arch = "wasm32", test))]
 mod peer_live;
 
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(test)]
 mod post_ready_repair;
 
 mod desktop;

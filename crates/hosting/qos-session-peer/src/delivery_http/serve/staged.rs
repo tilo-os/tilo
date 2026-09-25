@@ -63,6 +63,10 @@ fn at(now: u64) -> web_time::SystemTime {
 }
 
 /// Result of the synchronous admission step.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Prepared {
     Receipt(Vec<u8>),
     Stage {
@@ -108,6 +112,10 @@ impl Uploads {
     /// Admit one partial chunk. A durable receipt for the same item answers at
     /// once (the lost-final-reply probe); otherwise disk work is handed off and
     /// the original request is parked on its continuation.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back unmoved; boxing would allocate per hand-back"
+    )]
     pub(super) fn start(
         &mut self,
         sessions: &mut HttpSessions,
@@ -220,7 +228,6 @@ impl Uploads {
                 Err(owner.reserve_upload_staging(&self.work, identity)?)
             }
         };
-        drop(source);
         drop(guard);
         let ticket = checker.capture_continuation(&admitted, request)?;
         Ok(Prepared::Stage {

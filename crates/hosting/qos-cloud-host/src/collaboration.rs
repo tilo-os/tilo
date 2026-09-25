@@ -488,11 +488,11 @@ impl Store {
         let request_digest = *blake3::hash(&postcard::to_stdvec(&request)?).as_bytes();
         let key = hex::encode(request.request_id);
         let stored = self.state.join_challenges.get(&key).cloned();
-        if let Some(stored) = &stored {
-            if stored.request_digest != request_digest || stored.device_cert != request.device_cert
-            {
-                bail!("join request ID substitution")
-            }
+        if let Some(stored) = &stored
+            && (stored.request_digest != request_digest
+                || stored.device_cert != request.device_cert)
+        {
+            bail!("join request ID substitution")
         }
         let verified = match self.verified_join(&request.signed_invitation, now) {
             Ok(verified) => verified,
@@ -782,41 +782,40 @@ impl Store {
         // (lane M). The proof above was fully verified against the host-held
         // one-use challenge and current membership; the challenge is now bound
         // to this exact proof.
-        if crate::live_room_publication(&before, &peer)?.is_none() {
-            if let Some((generation, governance_messages)) =
+        if crate::live_room_publication(&before, &peer)?.is_none()
+            && let Some((generation, governance_messages)) =
                 owner_bootstrap::reused_governance(&self.root, &self.state)?
-            {
-                let bootstrap = JoinBootstrap {
-                    version: 1,
-                    invite_id,
-                    device_cert: issued.device_cert,
-                    role,
-                    room: self.state.room.clone(),
-                    workspace_id: qos_relay::room_workspace_id(&self.state.room)?,
-                    authority: peer.authority().clone(),
-                    certified_roster: peer.certificates(),
-                    revocations: peer.revocations(),
-                    records: peer.rows(),
-                    governance_messages,
-                    generation,
-                };
-                self.verify_cached_membership(remote_endpoint, &bootstrap, now)?;
-                issued::complete(&self.root, &key, proof_digest);
-                audit(
-                    "collaboration_membership_refreshed",
-                    serde_json::json!({
-                        "room": self.state.room,
-                        "request_id": hex::encode(request_id),
-                        "invite_id": hex::encode(bootstrap.invite_id),
-                        "caller_device": hex::encode(remote_endpoint),
-                        "caller_root": hex::encode(bootstrap.device_cert.user_public_key),
-                        "role": bootstrap.role,
-                        "generation": generation.to_string(),
-                        "result": "reused",
-                    }),
-                );
-                return Ok(bootstrap);
-            }
+        {
+            let bootstrap = JoinBootstrap {
+                version: 1,
+                invite_id,
+                device_cert: issued.device_cert,
+                role,
+                room: self.state.room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&self.state.room)?,
+                authority: peer.authority().clone(),
+                certified_roster: peer.certificates(),
+                revocations: peer.revocations(),
+                records: peer.rows(),
+                governance_messages,
+                generation,
+            };
+            self.verify_cached_membership(remote_endpoint, &bootstrap, now)?;
+            issued::complete(&self.root, &key, proof_digest);
+            audit(
+                "collaboration_membership_refreshed",
+                serde_json::json!({
+                    "room": self.state.room,
+                    "request_id": hex::encode(request_id),
+                    "invite_id": hex::encode(bootstrap.invite_id),
+                    "caller_device": hex::encode(remote_endpoint),
+                    "caller_root": hex::encode(bootstrap.device_cert.user_public_key),
+                    "role": bootstrap.role,
+                    "generation": generation.to_string(),
+                    "result": "reused",
+                }),
+            );
+            return Ok(bootstrap);
         }
         let generation = self.next_generation()?;
         let messages =

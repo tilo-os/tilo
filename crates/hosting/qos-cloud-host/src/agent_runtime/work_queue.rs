@@ -2,11 +2,16 @@
 use qos_peer_state::owner_commit::MAX_PRIVATE_AGENT_ADMISSIONS;
 use std::collections::{BTreeSet, VecDeque};
 use uuid::Uuid;
+#[cfg(target_os = "linux")]
 pub(super) const RECOVERY_BATCH: usize = 8;
 #[derive(Default)]
 pub(super) struct AgentWorkQueue {
     pending: VecDeque<Uuid>,
     running: BTreeSet<Uuid>,
+    #[cfg_attr(
+        not(target_os = "linux"),
+        expect(dead_code, reason = "used only by the Linux agent runtime")
+    )]
     cursor: Option<Uuid>,
 }
 impl AgentWorkQueue {
@@ -29,6 +34,7 @@ impl AgentWorkQueue {
     pub(super) fn pop_front(&mut self) -> Option<Uuid> {
         self.pending.pop_front()
     }
+    #[cfg(target_os = "linux")]
     pub(super) fn rescan(&mut self, owner: &super::RuntimeOwner) -> Result<(), String> {
         let candidates = owner.pending_spawns(self.cursor, RECOVERY_BATCH)?;
         self.cursor = candidates.last().copied(); // Empty suffix wraps on the next bounded pass.

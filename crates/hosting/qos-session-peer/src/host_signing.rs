@@ -315,6 +315,15 @@ impl PendingSignature {
 }
 
 #[cfg(test)]
+fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
+    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
+}
+#[cfg(test)]
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
+    owner.outgoing().iter().map(|p| p.kind).collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::owner_commit::OwnerCommitMailbox;
@@ -1051,13 +1060,4 @@ mod tests {
         drop(owner);
         assert_eq!(SessionOwner::open(&state).unwrap().status(), committed);
     }
-}
-
-#[cfg(test)]
-fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
-    owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
-}
-#[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<qos_peer_state::transport::Retention> {
-    owner.outgoing().iter().map(|p| p.kind).collect()
 }

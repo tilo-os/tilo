@@ -86,6 +86,7 @@ impl DescriptorFloorV1 {
         }
         Ok(())
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn expectation(&self) -> tilo_relay::delivery_v3::descriptor::GenerationExpectation {
         tilo_relay::delivery_v3::descriptor::GenerationExpectation::Current {
             generation: self.generation,
@@ -116,14 +117,13 @@ impl JournalStorage {
         {
             return Err("descriptor floor cursor identity mismatch".into());
         }
-        if let Some(old) = &self.descriptor {
-            if old.identity != floor.identity
+        if let Some(old) = &self.descriptor
+            && (old.identity != floor.identity
                 || floor.generation < old.generation
                 || (floor.generation == old.generation
-                    && floor.descriptor_digest != old.descriptor_digest)
-            {
-                return Err("descriptor floor rollback or scope mismatch".into());
-            }
+                    && floor.descriptor_digest != old.descriptor_digest))
+        {
+            return Err("descriptor floor rollback or scope mismatch".into());
         }
         self.format = JournalFormat::V4;
         self.descriptor = Some(floor);
@@ -370,8 +370,9 @@ pub(crate) fn committed_storage(
     cache: &ui::portable_storage::PortableStorage,
     room: &str,
 ) -> Option<Result<JournalStorage, String>> {
+    type CommittedJournal = (Vec<u8>, Result<JournalStorage, String>);
     thread_local! {
-        static COMMITTED: std::cell::RefCell<Option<(Vec<u8>, Result<JournalStorage, String>)>> =
+        static COMMITTED: std::cell::RefCell<Option<CommittedJournal>> =
             const { std::cell::RefCell::new(None) };
     }
     let key = ui::portable_storage::StorageKey::Admission {

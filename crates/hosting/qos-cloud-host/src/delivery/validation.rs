@@ -121,6 +121,7 @@ pub(super) fn revision(delivery: &DeliveryState, actual: &str) -> Result<(), Che
 /// owner credential, and no caller-defined membership function is accepted.
 pub(super) enum Admissions<'index, 'peer, 'work> {
     Legacy(&'index BTreeSet<Digest>),
+    #[cfg_attr(not(test), expect(dead_code, reason = "constructed only by tests"))]
     Bounded(&'index qos_peer_state::PeerRead<'peer, 'work>),
 }
 impl Admissions<'_, '_, '_> {

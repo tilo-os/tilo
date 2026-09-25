@@ -297,10 +297,10 @@ impl OwnerCommitService for CloudAgentAuthority {
         // The policy clock/source must still be current on every probe.
         self.policy.capture()?;
         let stamp = StoreStamp::of(&self.root);
-        if let (Some(stamp), Ok(retained)) = (stamp, self.reads.health.lock()) {
-            if retained.is_some_and(|(seen, at)| seen == stamp && at.elapsed() < STORE_READ_REUSE) {
-                return Ok(());
-            }
+        if let (Some(stamp), Ok(retained)) = (stamp, self.reads.health.lock())
+            && retained.is_some_and(|(seen, at)| seen == stamp && at.elapsed() < STORE_READ_REUSE)
+        {
+            return Ok(());
         }
         let store = self.store()?;
         store.peer_shared().map_err(|e| e.to_string())?;
@@ -352,12 +352,11 @@ impl qos_action_broker::services::WorkspaceAuthority for CloudAgentAuthority {
         self.policy.capture()?;
         if let (Some(stamp), Ok(retained)) =
             (StoreStamp::of(&self.root), self.reads.snapshot.lock())
+            && let Some((seen, at, tree)) = retained.as_ref()
+            && *seen == stamp
+            && at.elapsed() < STORE_READ_REUSE
         {
-            if let Some((seen, at, tree)) = retained.as_ref() {
-                if *seen == stamp && at.elapsed() < STORE_READ_REUSE {
-                    return Ok(tree.clone());
-                }
-            }
+            return Ok(tree.clone());
         }
         let store = self.store()?;
         let peers = store.peer_shared().map_err(|e| e.to_string())?;

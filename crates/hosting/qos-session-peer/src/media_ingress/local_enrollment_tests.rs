@@ -215,7 +215,6 @@ async fn local_owner_reenrollment_after_hundreds_of_publications_uses_chunked_ha
         outgoing.len(),
         outgoing.iter().map(|p| p.bytes.len()).sum::<usize>(),
     );
-    drop(outgoing);
     // Owner reconnects repeatedly (reload, second tab, renewal) and each gets
     // its own bounded handoff; none needs a transport sync.
     for seed in [211u8, 221] {

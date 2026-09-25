@@ -26,6 +26,10 @@ fn worker_threads() -> usize {
     std::thread::available_parallelism().map_or(4, |count| count.get().clamp(4, 8))
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "the CLI error carries the owned administrative operation; the error path must not allocate"
+)]
 fn main() -> Result<()> {
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads())
@@ -120,6 +124,10 @@ async fn run() -> Result<()> {
 }
 
 /// Inert administrative output is streamed; no new JSON String is allocated.
+#[expect(
+    clippy::result_large_err,
+    reason = "the CLI error carries the owned administrative operation; the error path must not allocate"
+)]
 fn print_admin_status(status: &AdminStatus) -> Result<()> {
     let mut output = std::io::stdout().lock();
     serde_json::to_writer(&mut output, status)?;

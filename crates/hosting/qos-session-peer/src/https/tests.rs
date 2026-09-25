@@ -1032,6 +1032,7 @@ pub(crate) struct HeldPollTestClient {
     _response: oneshot::Receiver<Reply>,
     _cancel: watch::Sender<bool>,
 }
+#[cfg(all(test, feature = "media"))]
 impl HeldPollTestClient {
     /// Whether the held request has been answered (any reply sent).
     pub(crate) fn answered(&mut self) -> bool {
@@ -1524,6 +1525,7 @@ fn descriptor_discovery_reply_rejects_capacity_over_24_kib() {
 }
 
 /// Sibling owner tests use actual parser and reservations from their attached ingress.
+#[cfg(all(test, feature = "media"))]
 pub(crate) fn data_test_request(
     ingress: &Ingress,
     method: &str,
@@ -1578,6 +1580,7 @@ pub(crate) fn data_test_request(
         },
     )
 }
+#[cfg(all(test, feature = "media"))]
 impl HeldPollTestClient {
     pub(crate) async fn receive_body(
         self,

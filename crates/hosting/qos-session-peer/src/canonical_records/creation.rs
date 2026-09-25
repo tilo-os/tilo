@@ -381,10 +381,7 @@ impl CreationRowV1 {
                 match &command.command {
                     qos_peer_state::desktop_command::DesktopCommand::OpenTab { app, .. }
                     | qos_peer_state::desktop_command::DesktopCommand::OpenApp { app }
-                        if app == &intent.app =>
-                    {
-                        ()
-                    }
+                        if app == &intent.app => {}
                     qos_peer_state::desktop_command::DesktopCommand::DuplicateTab { .. } => (),
                     _ => return Err("original desktop command has no checked creation".into()),
                 }
@@ -410,10 +407,10 @@ impl CreationRowV1 {
                 }
             },
         }
-        if let CreationTerminalV1::Created(created) = &self.result.body.terminal {
-            if created.publication_sequence == 0 || created.publication_author == [0; 32] {
-                return Err("invalid creation publication identity".into());
-            }
+        if let CreationTerminalV1::Created(created) = &self.result.body.terminal
+            && (created.publication_sequence == 0 || created.publication_author == [0; 32])
+        {
+            return Err("invalid creation publication identity".into());
         }
         Ok(())
     }

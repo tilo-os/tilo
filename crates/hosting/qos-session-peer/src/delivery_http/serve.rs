@@ -346,6 +346,10 @@ impl DataRoutes {
     /// Answer a poll now when a complete group exists; otherwise hold the
     /// original request until a commit, cancellation or its deadline.
     /// A PIPELINED_POLL_V1 chain poll is answered only in chain order.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back unmoved; boxing would allocate per hand-back"
+    )]
     fn poll(
         &mut self,
         sessions: &mut HttpSessions,
@@ -565,7 +569,7 @@ impl DataRoutes {
                     owner,
                     current,
                     &pending,
-                    &session,
+                    session,
                     floor.as_ref(),
                     |owner, view, session| checker.check(owner, view, session),
                     turn,

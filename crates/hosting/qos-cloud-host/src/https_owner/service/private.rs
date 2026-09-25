@@ -243,16 +243,15 @@ pub(in crate::https_owner) async fn observe_transitions<O: ObserveInvocation>(
                 kept.push(watch);
                 continue;
             };
-            if message != watch.last {
-                if let ActionMessage::Observation {
+            if message != watch.last
+                && let ActionMessage::Observation {
                     update: Some(update),
                     uncertain: false,
                     ..
                 } = &message
-                {
-                    queue.publish(watch.evidence.clone(), update.clone());
-                    published();
-                }
+            {
+                queue.publish(watch.evidence.clone(), update.clone());
+                published();
             }
             if active(&message).is_some() {
                 watch.last = message;
@@ -271,15 +270,15 @@ async fn answer(
     register: &tokio::sync::mpsc::Sender<Watched>,
 ) {
     let result = answer_inner(&request, root, machine, commands, policy).await;
-    if let (Ok(message), Some(evidence)) = (&result, request.evidence.as_ref()) {
-        if let Some(invocation) = active(message).filter(|_| request.notification.is_none()) {
-            let _ = register.try_send(Watched {
-                evidence: evidence.clone(),
-                invocation,
-                last: message.clone(),
-                until: Instant::now() + WATCH_TTL,
-            });
-        }
+    if let (Ok(message), Some(evidence)) = (&result, request.evidence.as_ref())
+        && let Some(invocation) = active(message).filter(|_| request.notification.is_none())
+    {
+        let _ = register.try_send(Watched {
+            evidence: evidence.clone(),
+            invocation,
+            last: message.clone(),
+            until: Instant::now() + WATCH_TTL,
+        });
     }
     let QueueRequest { reply, _permit, .. } = request;
     // The queue slot is released only after the reply leaves this consumer;

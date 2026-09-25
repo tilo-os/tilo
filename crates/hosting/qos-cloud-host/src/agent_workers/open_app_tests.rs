@@ -6,6 +6,10 @@ use super::*;
 
 const NOTES: &str = "so.tilo.notes";
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn run_step(
     workers: &mut AgentWorkers,
     documents: &mut mpsc::Receiver<PendingHostDocument>,
@@ -151,7 +155,7 @@ async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
         })
         .expect("desktop publishes Open Notes");
     let catalogue = qos_action_broker::agent_control::scoped::filter_scoped_catalogue(
-        &catalogue_json(&[desktop.clone()]),
+        &catalogue_json(std::slice::from_ref(&desktop)),
         &workers.publications().unwrap().grants,
     )
     .unwrap();

@@ -231,10 +231,18 @@ impl EnrollmentAuthority {
 }
 /// Minted only after the existing challenge was consumed and its exact issuance
 /// crossed the real owner barrier. Wire facts cannot construct this receipt.
+#[cfg_attr(
+    not(feature = "media"),
+    expect(
+        dead_code,
+        reason = "read only by the media ingress's HTTPS onboarding"
+    )
+)]
 pub(crate) struct LocalOnboardingProof {
     challenge: qos_peer_state::enrollment::EnrollmentChallenge,
     request_digest: [u8; 32],
 }
+#[cfg(feature = "media")]
 impl LocalOnboardingProof {
     pub(crate) fn challenge(&self) -> &qos_peer_state::enrollment::EnrollmentChallenge {
         &self.challenge
@@ -329,9 +337,9 @@ pub(crate) fn bootstrap_metadata(
 }
 
 mod governance;
-pub(crate) use governance::{
-    append_inline_governance, encode_handoff_bootstrap, encode_inline_bootstrap,
-};
+pub(crate) use governance::append_inline_governance;
+#[cfg(feature = "media")]
+pub(crate) use governance::{encode_handoff_bootstrap, encode_inline_bootstrap};
 
 /// Optional discovery only: the concrete installed ingress must still match the
 /// exact current stored descriptor. Independent governor bootstrap verification

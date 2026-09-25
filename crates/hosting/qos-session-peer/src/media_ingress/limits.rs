@@ -106,9 +106,10 @@ mod tests {
         );
     }
 
+    const _: () = assert!(HTTP_CONNECTIONS > 16 && LIVE_SESSIONS > 16 && MEDIA_SESSIONS >= 16);
+
     #[test]
     fn production_bounds_exceed_the_former_shared_sixteen() {
-        assert!(HTTP_CONNECTIONS > 16 && LIVE_SESSIONS > 16 && MEDIA_SESSIONS >= 16);
         assert_eq!(MAX_TASKS, 192);
     }
 }

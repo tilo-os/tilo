@@ -1,36 +1,40 @@
 //! Temporary immutable roots; byte custody, never snapshot authority.
 use super::*;
+#[cfg(any(test, feature = "media"))]
 use crate::publication_custody::{PublicationCustody, PublicationCustodyFailure};
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::commit::{MAX_REFERENCES, PublicationRef};
 /// Native generation remains an owner fact; the neutral holder conveys bytes only.
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct OwnedPublicationPin {
     custody: PublicationCustody,
     generation: u64,
 }
+#[cfg(any(test, feature = "media"))]
 impl OwnedPublicationPin {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn len(&self) -> usize {
         self.custody.len()
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
-    pub(crate) fn same_pool(&self, pool: &HostBytes) -> bool {
-        self.custody.same_pool(pool)
-    }
-    pub(crate) fn reference(&self, index: usize) -> Option<&PublicationRef> {
-        self.custody.reference(index)
-    }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn get(&self, index: usize) -> Option<PublicationView<'_>> {
         self.custody.get(index)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn custody(&self) -> &PublicationCustody {
         &self.custody
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn into_custody(self) -> PublicationCustody {
         self.custody
     }
 }
 impl SessionOwner {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn pin_publication(&self, host: &HostBytes) -> DataResult<OwnedPublicationPin> {
         let PublicationStorage::V5 { roots, .. } = &self.aggregate.publication else {
             return Err(OwnerDataFailure::new(
@@ -51,6 +55,7 @@ impl SessionOwner {
             4096,
         )
     }
+    #[cfg(any(test, feature = "media"))]
     pub(in crate::owner) fn pin_snapshot_publications<'a>(
         &self,
         host: &HostBytes,
@@ -58,6 +63,7 @@ impl SessionOwner {
     ) -> DataResult<OwnedPublicationPin> {
         self.pin_references(host, references, MAX_REFERENCES)
     }
+    #[cfg(any(test, feature = "media"))]
     fn pin_references<'a>(
         &self,
         host: &HostBytes,

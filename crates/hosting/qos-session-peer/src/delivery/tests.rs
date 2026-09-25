@@ -686,7 +686,6 @@ fn delivery_authenticated_replay_requires_actual_native_coverage_not_response_me
         !replica.covers(&original),
         "an incremental group is not coverage"
     );
-    drop(source);
     drop(current);
     // Coverage comes only from the next actual native certified checkpoint.
     committed

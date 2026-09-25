@@ -412,7 +412,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
     // Ready is published only after the complete service is installed.
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -690,7 +690,7 @@ async fn cloud_https_upload_and_private_replies_are_answered_without_ticks() {
     super::quiet_ticks::quiet(&root);
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -930,7 +930,7 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
     };
     qos_user_identity::sign_device_cert(&mut guest_cert, &guest_root).unwrap();
     let mut guest = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -1026,7 +1026,7 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
     let cert = enrollment.browser_certificate.clone();
     assert_eq!(cert.device_public_key, device.verifying_key().to_bytes());
     let owner = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -1209,7 +1209,7 @@ async fn cloud_https_descriptor_renewal_keeps_live_sessions() {
     let (_transport_root, store_root, config, ready) = deployment().await;
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
-    let http = reqwest::Client::builder()
+    let http = tilo_net::http::client()
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
@@ -1382,7 +1382,7 @@ async fn cloud_https_oversized_replay_group_resets_to_a_snapshot_instead_of_refu
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -1492,7 +1492,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -1712,7 +1712,7 @@ async fn cloud_https_private_lane_with_actual_agent_runtime_answers_every_operat
     let record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&ready).unwrap()).unwrap();
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -1824,7 +1824,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -2033,7 +2033,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
     };
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -2243,7 +2243,7 @@ async fn h3_get(origin: &str, target: &str) -> (String, Vec<u8>) {
 async fn cloud_https_routes_are_served_over_h3_and_advertised_with_alt_svc() {
     let (_transport_root, _store_root, config, ready) = deployment().await;
     let (stop, server, origin) = started(&config, &ready).await;
-    let http = reqwest::Client::builder()
+    let http = tilo_net::http::client()
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap();
@@ -2286,7 +2286,7 @@ async fn cloud_https_multi_item_upload_is_one_group_and_new_sessions_catch_up_in
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -2407,7 +2407,7 @@ async fn cloud_https_held_poll_is_woken_by_a_commit_made_under_a_held_lock() {
     let root = store_root.path().to_owned();
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),
@@ -2485,7 +2485,7 @@ async fn cloud_https_held_poll_is_woken_at_once_by_another_components_commit() {
     super::quiet_ticks::quiet(&root);
     let (stop, server, origin) = started(&config, &ready).await;
     let mut client = Client {
-        http: reqwest::Client::builder()
+        http: tilo_net::http::client()
             .danger_accept_invalid_certs(true)
             .build()
             .unwrap(),

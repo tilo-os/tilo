@@ -64,12 +64,11 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
             Instant::now() < deadline,
             "isolated native host did not become ready"
         );
-        if let Ok(bytes) = fs::read(ready) {
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                if value["pid"].as_u64() == Some(u64::from(pid)) {
-                    break value;
-                }
-            }
+        if let Ok(bytes) = fs::read(ready)
+            && let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes)
+            && value["pid"].as_u64() == Some(u64::from(pid))
+        {
+            break value;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     };
@@ -813,7 +812,6 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
                 && name.to_string_lossy().ends_with(".delta")
                 && !name.to_string_lossy().starts_with("gc-")
         })
-        .into_iter()
         .map(|entry| {
             let raw = fs::read(entry.path()).unwrap();
             let tilo_relay::transport::Envelope::Delta {
@@ -1227,16 +1225,15 @@ async fn checked_application_catalogue(
             host: broker_host,
             catalogue,
         }) = response
-        {
-            if catalogue["surfaces"].as_array().is_some_and(|s| {
+            && catalogue["surfaces"].as_array().is_some_and(|s| {
                 s.iter()
                     .filter(|s| s["app_id"] == "so.tilo.word-processor")
                     .count()
                     >= if multiple_writers { 5 } else { 1 }
-            }) {
-                assert!(!broker_host.is_nil());
-                break (broker_host, catalogue);
-            }
+            })
+        {
+            assert!(!broker_host.is_nil());
+            break (broker_host, catalogue);
         }
         if Instant::now() >= deadline {
             panic!(
@@ -1681,18 +1678,17 @@ async fn checked_application_catalogue(
                 action,
                 source_user,
             } = client.recv_action().await.unwrap()
+                && action.request_id == refresh
             {
-                if action.request_id == refresh {
-                    assert_eq!(source_user, native.user_public_key);
-                    assert_eq!(action.source, native.device_public_key);
-                    assert_eq!(action.target, cert.device_public_key);
-                    assert_eq!(action.room, room);
-                    if let ActionMessage::BrokerCatalogue { host, catalogue } = action.message {
-                        assert_eq!(host, broker_host);
-                        break catalogue;
-                    } else {
-                        panic!("catalogue response missing");
-                    }
+                assert_eq!(source_user, native.user_public_key);
+                assert_eq!(action.source, native.device_public_key);
+                assert_eq!(action.target, cert.device_public_key);
+                assert_eq!(action.room, room);
+                if let ActionMessage::BrokerCatalogue { host, catalogue } = action.message {
+                    assert_eq!(host, broker_host);
+                    break catalogue;
+                } else {
+                    panic!("catalogue response missing");
                 }
             }
         }
@@ -1751,7 +1747,7 @@ async fn checked_application_catalogue(
             "actual owner barrier failure did not withdraw actions: {status}"
         );
         tokio::select! {
-            event = client.recv_action() => if let Some(EnvelopeV2::Delivered { action, .. }) = event { if action.request_id == request_id { assert!(!matches!(action.message, ActionMessage::Rejected { .. }), "fault invocation rejected before reaching actual owner: {:?}", action.message); } },
+            event = client.recv_action() => if let Some(EnvelopeV2::Delivered { action, .. }) = event && action.request_id == request_id { assert!(!matches!(action.message, ActionMessage::Rejected { .. }), "fault invocation rejected before reaching actual owner: {:?}", action.message); },
             _ = tokio::time::sleep(Duration::from_millis(20)) => {},
         }
     }
@@ -1806,19 +1802,17 @@ fn apply_state(peer: &mut qos_peer_state::StatePeer, event: tilo_relay::transpor
         delta,
         ..
     } = event
-    {
-        if let Some(
+        && let Some(
             CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
         ) = CoeditPayload::decode(&delta)
-        {
-            let message = postcard::from_bytes(&body).unwrap();
-            peer.receive_from(
-                qos_peer_state::TransportOrigin::RelayDelta(author_device_public_key),
-                message,
-                web_time::SystemTime::now(),
-            )
-            .unwrap();
-        }
+    {
+        let message = postcard::from_bytes(&body).unwrap();
+        peer.receive_from(
+            qos_peer_state::TransportOrigin::RelayDelta(author_device_public_key),
+            message,
+            web_time::SystemTime::now(),
+        )
+        .unwrap();
     }
 }
 fn table_cells(peer: &qos_peer_state::StatePeer) -> usize {
@@ -1923,6 +1917,10 @@ async fn invoke_and_expect_closed_publication(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn invoke_and_observe(
     client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
@@ -1947,6 +1945,10 @@ async fn invoke_and_observe(
     .await;
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn invoke_and_observe_until(
     client: &tilo_relay::RelayClient,
     remote: &mut qos_peer_state::StatePeer,
@@ -1985,7 +1987,7 @@ async fn invoke_and_observe_until(
                     match pending.take(request_id).unwrap() {
                         ActionMessage::Observation { host: got, invocation: id, update, uncertain, .. } => {
                             assert_eq!(got, host); assert_eq!(id, invocation); assert!(!uncertain);
-                            if let Some(update)=update {if update.is_terminal(){assert!(matches!(update,tilo_actions::InvocationUpdate::Succeeded{..}),"actual operation failed: {update:?}");success=true;}}
+                            if let Some(update)=update&& update.is_terminal(){assert!(matches!(update,tilo_actions::InvocationUpdate::Succeeded{..}),"actual operation failed: {update:?}");success=true;}
                             if !success {
                                 // Same original full UUID: lost/pending response recovery is Status,
                                 // never another Invoke or another confirmation grant.
@@ -2106,6 +2108,10 @@ struct ObserverBinding {
     key: SigningKey,
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 #[cfg(feature = "test-support")]
 enum ObserverEvent {
     State(tilo_relay::transport::Envelope),
@@ -2427,6 +2433,10 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
     host.shutdown().await.unwrap();
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 #[cfg(feature = "test-support")]
 async fn active_replacement(
     host: &mut Host,
@@ -2488,14 +2498,13 @@ async fn active_replacement(
         );
         tokio::select! {
             state = client.recv() => apply_state(remote, state.unwrap()),
-            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
-                if action.request_id == request_id {
+            event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap()
+                && action.request_id == request_id {
                     assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
                     if let ActionMessage::Observation { host, invocation: id, update: Some(update), uncertain, .. } = action.message {
                         assert_eq!(host, broker_host); assert_eq!(id, invocation); assert!(!uncertain); assert!(!update.is_terminal(), "held action completed prematurely: {update:?}"); accepted = true;
                     } else { panic!("held action was not admitted"); }
-                }
-            },
+                },
             _ = tokio::time::sleep(Duration::from_millis(5)) => {},
         }
     };
@@ -2571,12 +2580,11 @@ async fn active_replacement(
             );
             tokio::select! {
                 state = client.recv() => apply_state(remote, state.unwrap()),
-                event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap() {
-                    if action.request_id == request_id {
+                event = client.recv_action() => if let EnvelopeV2::Delivered { action, source_user } = event.unwrap()
+                    && action.request_id == request_id {
                         assert_eq!(source_user, native.user_public_key); assert_eq!(action.source, native.device_public_key); assert_eq!(action.target, cert.device_public_key); assert_eq!(action.room, room);
                         assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()), "held old-generation invocation completed or lost custody: {:?}", action.message);
-                    }
-                },
+                    },
                 _ = tokio::time::sleep(Duration::from_millis(5)) => {},
             }
         }
@@ -2615,8 +2623,8 @@ async fn active_replacement(
             match event {
                 Some(ObserverEvent::State(state)) => apply_state(remote, state),
                 Some(ObserverEvent::Action(event)) => {
-                    if let EnvelopeV2::Delivered { action, source_user } = &event {
-                        if action.request_id == request_id {
+                    if let EnvelopeV2::Delivered { action, source_user } = &event
+                        && action.request_id == request_id {
                             assert_eq!(*source_user, native.user_public_key);
                             assert_eq!(action.source, native.device_public_key);
                             assert_eq!(action.target, cert.device_public_key);
@@ -2624,7 +2632,6 @@ async fn active_replacement(
                             assert!(matches!(action.message, ActionMessage::Observation { update: Some(ref update), uncertain: false, .. } if !update.is_terminal()),
                                 "held old-generation invocation completed or lost custody: {:?}", action.message);
                         }
-                    }
                     if pending.receive(event, native.user_public_key) {
                         let message = pending.take(status_request.unwrap()).unwrap();
                         if let ActionMessage::Observation {
@@ -2676,6 +2683,10 @@ async fn active_replacement(
     client
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 async fn owner_and_room_isolation(
     origin: &str,
     capability: &str,
@@ -2762,27 +2773,26 @@ async fn owner_and_room_isolation(
                     action,
                     source_user,
                 } = second.recv_action().await.unwrap()
+                    && action.request_id == query
                 {
-                    if action.request_id == query {
-                        assert_eq!(source_user, native.user_public_key);
-                        assert_eq!(action.source, native.device_public_key);
-                        assert_eq!(action.target, cert.device_public_key);
-                        assert_eq!(action.room, room);
-                        // Unknown status reveals only the public host and caller's
-                        // own requested ID, identically for absent and foreign IDs.
-                        assert_eq!(
-                            action.message,
-                            ActionMessage::Observation {
-                                host: broker_host,
-                                invocation: foreign_or_absent,
-                                update: None,
-                                uncertain: false,
-                                cancellation_requested: false,
-                            },
-                            "another device learned original invocation state"
-                        );
-                        break;
-                    }
+                    assert_eq!(source_user, native.user_public_key);
+                    assert_eq!(action.source, native.device_public_key);
+                    assert_eq!(action.target, cert.device_public_key);
+                    assert_eq!(action.room, room);
+                    // Unknown status reveals only the public host and caller's
+                    // own requested ID, identically for absent and foreign IDs.
+                    assert_eq!(
+                        action.message,
+                        ActionMessage::Observation {
+                            host: broker_host,
+                            invocation: foreign_or_absent,
+                            update: None,
+                            uncertain: false,
+                            cancellation_requested: false,
+                        },
+                        "another device learned original invocation state"
+                    );
+                    break;
                 }
             }
         })
@@ -2885,6 +2895,10 @@ async fn observe_native_publication(
     .expect("observer did not admit the fixed native publication within five seconds");
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 #[cfg(feature = "test-support")]
 async fn selective_publication_failure_after_commit(
     host: &mut Host,
@@ -3024,8 +3038,8 @@ async fn selective_publication_failure_after_commit(
         tokio::select! {
             state = client.recv() => apply_state(remote, state.expect("observer state stream ended")),
             event = client.recv_action() => {
-                if let EnvelopeV2::Delivered { action, source_user } = event.expect("observer action stream ended") {
-                    if action.request_id == invoke_request || Some(action.request_id) == status_request {
+                if let EnvelopeV2::Delivered { action, source_user } = event.expect("observer action stream ended")
+                    && (action.request_id == invoke_request || Some(action.request_id) == status_request) {
                         assert_eq!(source_user, native.user_public_key);
                         assert_eq!(action.source, native.device_public_key);
                         assert_eq!(action.target, cert.device_public_key);
@@ -3039,7 +3053,6 @@ async fn selective_publication_failure_after_commit(
                             }
                         }
                     }
-                }
             },
             _ = tokio::time::sleep(Duration::from_millis(10)) => {},
         }

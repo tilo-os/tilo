@@ -140,15 +140,14 @@ impl CloudStoreTurn {
             .stored_hint()
             .map(|hint| descriptor::inspect_persisted_hint(hint, &host))
             .transpose()?;
-        if let (Some(metadata), Ok(verified)) = (previous, self.verified_descriptor(capabilities)) {
-            if verified.origin() == origin
-                && verified.delivery_capabilities() == capabilities
-                && verified.media_capabilities() == media
-                && metadata.expires_at_ns.saturating_sub(now) > RENEW_MARGIN_NS
-                && !renewal_forced(origin)
-            {
-                return Ok((verified, metadata.expires_at_ns));
-            }
+        if let (Some(metadata), Ok(verified)) = (previous, self.verified_descriptor(capabilities))
+            && verified.origin() == origin
+            && verified.delivery_capabilities() == capabilities
+            && verified.media_capabilities() == media
+            && metadata.expires_at_ns.saturating_sub(now) > RENEW_MARGIN_NS
+            && !renewal_forced(origin)
+        {
+            return Ok((verified, metadata.expires_at_ns));
         }
         let generation = previous
             .map_or(Some(1), |metadata| metadata.generation.checked_add(1))

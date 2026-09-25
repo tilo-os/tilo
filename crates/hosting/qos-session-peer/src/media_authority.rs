@@ -50,6 +50,10 @@ pub enum MediaError {
 #[derive(Clone, Debug, Serialize)]
 pub struct MediaChallenge {
     #[serde(skip)]
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     pub(crate) transcript: ChallengeTranscript,
     pub nonce: [u8; 32],
     pub signing_digest: [u8; 32],
@@ -72,6 +76,10 @@ impl MediaGrant {
     }
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub enum GrantCompletion {
     Granted(MediaGrant),
     Left,
@@ -191,6 +199,7 @@ impl MediaAuthority {
     /// Reserve a nonzero generation for an authenticated fresh participation intent.
     /// Caller identity is checked by control before this method; native permissions
     /// are rechecked here. Intent fences are bounded and never evicted during boot.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn reserve_join(
         &mut self,
         peer: &StatePeer,

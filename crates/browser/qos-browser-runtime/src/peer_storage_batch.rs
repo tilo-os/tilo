@@ -73,6 +73,7 @@ impl PeerStorageBatches {
         }
         Ok(())
     }
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn lease_epoch(&self) -> Option<&str> {
         self.lease_epoch.as_deref()
     }
@@ -116,6 +117,7 @@ impl PeerStorageBatches {
         }
     }
     /// Roll back a synchronous failed candidate installation, before capture.
+    #[cfg(target_arch = "wasm32")]
     pub(crate) fn cancel_transfer(&mut self, id: &str) -> Result<(), String> {
         let transfer = self.transfer.as_ref().ok_or("transfer custody absent")?;
         if transfer.id != id || transfer.captured.is_some() {

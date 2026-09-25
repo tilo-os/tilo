@@ -10,6 +10,7 @@ pub(crate) mod commit_wake;
 pub(crate) mod early_forward;
 pub(crate) mod relay;
 pub(crate) mod replay_digest;
+#[cfg(test)]
 pub(crate) mod resources;
 pub(crate) mod retention;
 mod schema;

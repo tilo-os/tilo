@@ -273,6 +273,7 @@ pub(super) enum PhaseView<'a> {
         signed_at_ns: u64,
         request: &'a [u8],
     },
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     MembershipComplete {
         enrollment: &'a [u8],
         signed_at_ns: u64,

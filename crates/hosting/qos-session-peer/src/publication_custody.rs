@@ -47,6 +47,10 @@ struct PinnedPublication {
     reference: PublicationRef,
 }
 enum BackingCredit {
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     Native {
         _original: Arc<RetainedSerializedBytes>,
         /// Pays for the pinned payloads after the owner's pool drops them.
@@ -135,6 +139,7 @@ impl PublicationCustody {
     }
     /// Only the actual native owner calls this after validating its active
     /// resource scope, original pool, and retained-credit custody.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn from_native<'a>(
         pool: &PublicationPool,
         references: impl ExactSizeIterator<Item = &'a PublicationRef>,

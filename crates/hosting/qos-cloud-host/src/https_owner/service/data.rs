@@ -534,6 +534,10 @@ impl Polls {
     pub(super) fn needs_retry(&self) -> bool {
         self.retry && !self.parked.is_empty()
     }
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back; boxing would allocate on every refusal"
+    )]
     fn park(
         &mut self,
         held: Held,
@@ -573,11 +577,6 @@ impl Polls {
     }
     pub(super) fn fence(&mut self, session: [u8; 16]) {
         for parked in self.take(|parked| parked.session == session) {
-            refuse(parked.pending.into_request());
-        }
-    }
-    pub(super) fn refuse_all(&mut self) {
-        for parked in self.take(|_| true) {
             refuse(parked.pending.into_request());
         }
     }

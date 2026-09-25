@@ -97,7 +97,6 @@ async fn live_grant_route_issues_host_signed_grants_advertises_live_and_renews()
     let (live, _) = h.ingress.live.as_ref().unwrap();
     let session = live
         .try_admit(&bytes)
-        .ok()
         .expect("the relay admits the issued grant");
     assert!(session.publish() && session.subscribe());
     assert_eq!(session.publisher(), hex::encode(wanted.device));

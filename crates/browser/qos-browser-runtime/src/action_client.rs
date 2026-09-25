@@ -126,17 +126,17 @@ pub fn browser_response(message: ActionMessage) -> serde_json::Value {
         .and_then(|v| v.as_array_mut())
     {
         for surface in surfaces {
-            if let Some(peer) = surface.get_mut("peer_id") {
-                if let Some(id) = peer.as_u64() {
-                    *peer = serde_json::Value::String(id.to_string());
-                }
+            if let Some(peer) = surface.get_mut("peer_id")
+                && let Some(id) = peer.as_u64()
+            {
+                *peer = serde_json::Value::String(id.to_string());
             }
         }
     }
-    if let Some(sequence) = value.get_mut("update").and_then(|v| v.get_mut("sequence")) {
-        if let Some(id) = sequence.as_u64() {
-            *sequence = serde_json::Value::String(id.to_string());
-        }
+    if let Some(sequence) = value.get_mut("update").and_then(|v| v.get_mut("sequence"))
+        && let Some(id) = sequence.as_u64()
+    {
+        *sequence = serde_json::Value::String(id.to_string());
     }
     value
 }

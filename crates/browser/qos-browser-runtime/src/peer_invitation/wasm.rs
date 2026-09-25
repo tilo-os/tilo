@@ -375,44 +375,46 @@ pub async fn invited_complete(id: u32, material: Vec<u8>) -> Result<String, JsVa
             _ => return Err(error("Membership challenge response mismatch")),
         };
         drop(response);
-        let identity = value.identity.borrow();
-        let expected = join::MembershipChallenge::new(
-            &value.host.room,
-            value.host.workspace_id,
-            &value.host.governing_authority,
-            identity.certificate(),
-            request_id,
-            challenge.nonce,
-            challenge.expires_at_ns,
-            now(),
-        )
-        .map_err(error)?;
-        if expected != challenge
+        let proof = {
+            let identity = value.identity.borrow();
+            let expected = join::MembershipChallenge::new(
+                &value.host.room,
+                value.host.workspace_id,
+                &value.host.governing_authority,
+                identity.certificate(),
+                request_id,
+                challenge.nonce,
+                challenge.expires_at_ns,
+                now(),
+            )
+            .map_err(error)?;
+            if expected != challenge
             || challenge.nonce == [0; 32]
             // 60 s host TTL plus the bounded browser/host clock tolerance.
             || challenge.expires_at_ns.saturating_sub(now()) > 180_000_000_000
-        {
-            return Err(error(
-                "Membership challenge does not match retained identity",
-            ));
-        }
-        let proof =
-            join::sign_membership_proof(challenge, &identity.device_key()).map_err(error)?;
-        drop(identity);
+            {
+                return Err(error(
+                    "Membership challenge does not match retained identity",
+                ));
+            }
+            join::sign_membership_proof(challenge, &identity.device_key()).map_err(error)?
+        };
         request(
             &value,
             Request::MembershipComplete(join::MembershipCompleteRequest { proof }),
         )
         .await?
     } else {
-        let identity = value.identity.borrow();
-        let bytes = identity
-            .completion()
-            .ok_or_else(|| error("No ACKed redemption completion"))?;
-        let charge = crate::peer_onboarding::preflight_completion(bytes).map_err(error)?;
-        let _completion_credit = value.incoming.reserve(charge).map_err(error)?;
-        let complete: join::JoinCompleteRequest = postcard::from_bytes(bytes).map_err(error)?;
-        drop(identity);
+        let (_completion_credit, complete) = {
+            let identity = value.identity.borrow();
+            let bytes = identity
+                .completion()
+                .ok_or_else(|| error("No ACKed redemption completion"))?;
+            let charge = crate::peer_onboarding::preflight_completion(bytes).map_err(error)?;
+            let credit = value.incoming.reserve(charge).map_err(error)?;
+            let complete: join::JoinCompleteRequest = postcard::from_bytes(bytes).map_err(error)?;
+            (credit, complete)
+        };
         request(&value, Request::Complete(complete)).await?
     };
     let bootstrap = match response.response() {
@@ -420,13 +422,13 @@ pub async fn invited_complete(id: u32, material: Vec<u8>) -> Result<String, JsVa
         Response::MembershipComplete(value) if already_admitted => value,
         _ => return Err(error("Workspace completion response mismatch")),
     };
-    if value.host.validate_bootstrap(&bootstrap).map_err(error)? != value.trust {
+    if value.host.validate_bootstrap(bootstrap).map_err(error)? != value.trust {
         return Err(error("Workspace bootstrap transport trust changed"));
     }
     let state = value
         .identity
         .borrow_mut()
-        .admit_bootstrap(&bootstrap, now())
+        .admit_bootstrap(bootstrap, now())
         .map_err(error)?;
     if !state
         .certificates()

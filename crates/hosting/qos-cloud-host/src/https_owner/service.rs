@@ -1016,10 +1016,8 @@ impl CloudService {
             .polls
             .next_deadline()
             .is_some_and(|deadline| deadline <= Instant::now());
-        if committed {
-            if let Some(private) = self.private.as_ref() {
-                private.notify_commit();
-            }
+        if committed && let Some(private) = self.private.as_ref() {
+            private.notify_commit();
         }
         if committed || due || self.polls.needs_retry() {
             // `self.probe` stays the observation taken before this wake: a
@@ -1133,10 +1131,8 @@ impl CloudService {
         if let Some(deadline) = self.polls.next_deadline() {
             next = next.min(deadline.max(now));
         }
-        if !baseline {
-            if let Some(deadline) = private.and_then(|p| p.next_deadline()) {
-                next = next.min(deadline.max(now));
-            }
+        if !baseline && let Some(deadline) = private.and_then(|p| p.next_deadline()) {
+            next = next.min(deadline.max(now));
         }
         next
     }

@@ -570,6 +570,7 @@ pub(crate) fn ended(agent_id: &str, invocation: Uuid, succeeded: bool) {
 /// The agent's managed process exited: its member-visible status becomes
 /// `completed` (or `failed`), matching the owner's agent reads. The runtime
 /// calls this when it observes the exit (lane G hook).
+#[cfg(target_os = "linux")]
 pub(crate) fn process_exited(agent_id: &str, failed: bool) {
     emit(AgentLiveEvent::Exited {
         agent_id: agent_id.to_owned(),
@@ -706,7 +707,7 @@ pub(crate) fn commit_caret(before: Option<&[u8]>, after: &[u8]) -> Option<Caret>
                 .map_or(text.len(), |(at, _)| at);
             Some(Caret { block, offset })
         })
-        .last()
+        .next_back()
 }
 
 /// End of the last block of a Writer document (the caret before any commit).

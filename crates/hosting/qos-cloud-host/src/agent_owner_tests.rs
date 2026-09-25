@@ -156,10 +156,10 @@ fn agent_owner_private_admission_reopens_same_ids_without_publication_or_replay(
     assert_eq!(record.ids.run, "run:one");
     assert_eq!(record.phase, AgentControlPhase::Admitted);
     let mut changed = request.clone();
-    if let CommitOperation::Agent { change } = &mut changed.operation {
-        if let AgentMutation::Prepare { request, .. } = &mut change.mutation {
-            request.push(b' ');
-        }
+    if let CommitOperation::Agent { change } = &mut changed.operation
+        && let AgentMutation::Prepare { request, .. } = &mut change.mutation
+    {
+        request.push(b' ');
     }
     assert!(store.commit_agent_request(&changed, &fresh).is_err());
     assert_eq!(store.state.generation, generation);

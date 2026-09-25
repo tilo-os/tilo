@@ -1,9 +1,9 @@
 //! Actual ingress credit for native allocation custody. Not installed as readiness.
 use crate::host_bytes::{ByteCredit, HostBytes};
 use std::sync::Mutex;
-use ui::automerge::resource_limits::{
-    NativeAllocationSet, NativeAllowance, NativeHostCredit, NativeResourceError, NativeWorkTurn,
-};
+#[cfg(test)]
+use ui::automerge::resource_limits::{NativeAllocationSet, NativeWorkTurn};
+use ui::automerge::resource_limits::{NativeAllowance, NativeHostCredit, NativeResourceError};
 
 /// Additional work, independently of allocations retained from earlier turns.
 const NATIVE_TURN_BYTES: usize = 64 * 1024 * 1024;
@@ -67,10 +67,10 @@ impl NativeHostCredit for HostNativeCredit {
             .credit
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        if let Some(credit) = guard.as_mut() {
-            if let Some(surplus) = credit.bytes().checked_sub(retain) {
-                drop(credit.split(surplus));
-            }
+        if let Some(credit) = guard.as_mut()
+            && let Some(surplus) = credit.bytes().checked_sub(retain)
+        {
+            drop(credit.split(surplus));
         }
     }
 
@@ -112,10 +112,12 @@ impl HostBytes {
 
 /// One private registry for a future bounded SessionOwner. This budget alone
 /// does not qualify a peer, authorize an operation, or enable a data route.
+#[cfg(test)]
 pub(super) struct OwnerNativeBudget {
     allocations: NativeAllocationSet,
     pool: HostBytes,
 }
+#[cfg(test)]
 impl OwnerNativeBudget {
     pub(super) fn new(pool: &HostBytes) -> Result<Self, NativeResourceError> {
         let allowance = host_allowance(pool)?;
@@ -152,11 +154,13 @@ impl OwnerNativeBudget {
 }
 
 /// Exclusive work against the owner's stable registry; never an authority token.
+#[cfg(test)]
 pub(super) struct OwnerNativeTurn<'a> {
     allocations: &'a mut NativeAllocationSet,
     work: NativeWorkTurn,
     allowance: NativeAllowance,
 }
+#[cfg(test)]
 impl OwnerNativeTurn<'_> {
     pub(super) fn native(&mut self) -> (&mut NativeAllocationSet, &NativeWorkTurn) {
         (self.allocations, &self.work)
@@ -166,6 +170,7 @@ impl OwnerNativeTurn<'_> {
     }
 }
 
+#[cfg(test)]
 impl Drop for OwnerNativeTurn<'_> {
     fn drop(&mut self) {
         // Seal all allowance aliases before returning unused real permits.

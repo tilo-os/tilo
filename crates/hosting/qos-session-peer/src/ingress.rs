@@ -7,11 +7,14 @@ pub use crate::media_service::{
     MediaAuthoritySource, MediaAuthorityTurn, MediaObservation, MediaService, MediaSigningInput,
     RoomMediaPolicy,
 };
+#[cfg(feature = "media")]
 pub use crate::private_http::{
     PendingPrivate, PrivateError, PrivateService as PrivateCarrier, WatchId, WatchUpdate,
 };
 
+#[cfg(feature = "media")]
 pub use crate::delivery_http::HttpSessions as CarrierRegistry;
+#[cfg(feature = "media")]
 pub use crate::delivery_http::carrier::{CarrierFinish, CarrierIntent, CarrierReady};
 
 #[cfg(feature = "media")]
@@ -28,19 +31,23 @@ pub use qos_moq::relay::{
     AuthorizationStatus, Denied, Direction, RelayAuthority, SessionAuthorization,
 };
 
+#[cfg(feature = "media")]
 pub use crate::delivery_http::revalidation::continuation::{
     AdmissionContinuation as CarrierTicket, PendingOperation as PendingCarrier,
 };
 
+#[cfg(feature = "media")]
 pub use crate::delivery_http::upload::{CompletedUpload, UploadChunk, UploadFailure, UploadStage};
 
 pub use crate::publication_custody::{PublicationCustody, PublicationCustodyFailure};
 
 // Resource and signed-byte custody only; concrete owners retain pin authority.
+#[cfg(feature = "media")]
 pub use crate::delivery_http::snapshot::pair::{
     AuthenticatedPair as AuthenticatedSnapshotPair, ManifestPair as SnapshotManifestPair,
     RetainedAuthenticatedPair as RetainedAuthenticatedSnapshotPair,
 };
+#[cfg(feature = "media")]
 pub use crate::delivery_http::snapshot::{SnapshotFailure, SnapshotStream};
 
 pub mod delivery_planning {

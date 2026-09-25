@@ -30,7 +30,7 @@ struct Record {
 }
 impl SnapshotStream {
     pub fn prepare(pin: PublicationCustody, pool: &HostBytes) -> Result<Self, SnapshotFailure> {
-        if !pin.same_pool(pool) || pin.len() == 0 || pin.len() > MAX_TRANSFER_ITEMS as usize {
+        if !pin.same_pool(pool) || pin.is_empty() || pin.len() > MAX_TRANSFER_ITEMS as usize {
             return Err(SnapshotFailure::Invalid);
         }
         // Count from actual original roots before allocating any index or copy.

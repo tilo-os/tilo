@@ -1,5 +1,6 @@
 //! Original Store lock and publication mechanics. No decoded owner or readiness.
 use crate::StoreCommitFailure;
+use advisory_lock::FileLock;
 use anyhow::Result;
 use qos_action_broker::peer_actions::PolicyTime;
 use std::{
@@ -20,9 +21,10 @@ pub(crate) enum TypedLockFailure {
 }
 
 pub(crate) struct ExistingStoreLock {
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     root: PathBuf,
     directory: File,
-    lock: File,
+    lock: FileLock,
 }
 
 impl ExistingStoreLock {
@@ -50,15 +52,15 @@ impl ExistingStoreLock {
         let lock = admitted
             .open_read(OsStr::new("state.lock"), Privacy::Inherit)
             .map_err(deny)?;
-        if wait {
-            lock.lock().map_err(deny)?;
+        let lock = if wait {
+            FileLock::exclusive(lock).map_err(deny)?
         } else {
-            match lock.try_lock() {
-                Ok(()) => (),
+            match FileLock::try_exclusive(lock) {
+                Ok(lock) => lock,
                 Err(TryLockError::WouldBlock) => return Err(TypedLockFailure::Busy),
                 Err(TryLockError::Error(error)) => return Err(deny(error)),
             }
-        }
+        };
         Ok(Self {
             root: root.into(),
             directory,
@@ -69,10 +71,11 @@ impl ExistingStoreLock {
     pub(crate) fn directory(&self) -> &File {
         &self.directory
     }
+    #[cfg(test)]
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
-    pub(crate) fn into_parts(self) -> (File, File) {
+    pub(crate) fn into_parts(self) -> (File, FileLock) {
         (self.directory, self.lock)
     }
 }

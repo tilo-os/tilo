@@ -109,11 +109,12 @@ impl QualificationHold {
             return true;
         }
         if let Some(route) = line.strip_prefix("qualification hold ") {
-            if let Some((app, record)) = route.split_once(' ') {
-                if self.route.is_none() && self.completion.is_none() {
-                    self.route = Some((app.into(), record.into()));
-                    self.expired = false;
-                }
+            if let Some((app, record)) = route.split_once(' ')
+                && self.route.is_none()
+                && self.completion.is_none()
+            {
+                self.route = Some((app.into(), record.into()));
+                self.expired = false;
             }
             return true;
         }
@@ -439,11 +440,11 @@ impl NativeSubscription {
             .into_client()
     }
     async fn detach_actions(&mut self) {
-        if let Some(mut attached) = self.actions.take() {
-            if let Some(task) = attached.task.take() {
-                task.abort();
-                let _ = task.await;
-            }
+        if let Some(mut attached) = self.actions.take()
+            && let Some(task) = attached.task.take()
+        {
+            task.abort();
+            let _ = task.await;
         }
     }
     async fn close(mut self) {
@@ -503,10 +504,10 @@ impl NativeSubscription {
                     }
                 };
                 tokio::pin!(serving);
-                return tokio::select! {
+                tokio::select! {
                     result = &mut serving => result,
                     result = forced_exit => Err(result.unwrap_or(qos_action_broker::peer_actions::PeerActionAttachmentError::Failed)),
-                };
+                }
             }
             #[cfg(not(feature = "test-support"))]
             queue
@@ -1603,6 +1604,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
         },
         None => None,
     };
+    #[cfg_attr(
+        not(feature = "media"),
+        expect(unused_mut, reason = "only the media ingress adds its origin hint")
+    )]
     let mut invitation_transports = vec![collaboration_hint.clone()];
     #[cfg(feature = "media")]
     if let Some(installed) = delivery_ingress.as_ref() {
@@ -1688,12 +1693,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             installed.maintain(&mut owner);
             // Completed staged uploads commit here, outside any request arm.
             if owner.committed_generation() != before && owner.permits_publication() {
-                if let Some(runtime) = action_runtime.current_actions() {
-                    if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
-                }
-                if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                    if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
-                }
+                if let Some(runtime) = action_runtime.current_actions()
+                    && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                    && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
             }
         }
         #[cfg(feature = "media")]
@@ -1739,12 +1742,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     // HTTPS data, onboarding and staged admissions commit on the
                     // owner; follow up exactly as other inbound commits do.
                     if owner.committed_generation() != before && owner.permits_publication() {
-                        if let Some(runtime) = action_runtime.current_actions() {
-                            if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
-                        }
-                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                            if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
-                        }
+                        if let Some(runtime) = action_runtime.current_actions()
+                            && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                            && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
                     }
                 }
                 #[cfg(not(feature="media"))]
@@ -1777,9 +1778,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             atomic_file::write_with_mode(ready_path,&serde_json::to_vec_pretty(&metadata)?,0o600)?;
                             crate::store::sync_dir(ready_path.parent().context("ready file requires parent directory")?)?;
                         }
-                        if let Some(runtime)=action_runtime.current_actions(){
-                            if let Err(problem)=runtime.committed(&owner){ action_error=Some(action_runtime.signing.fail(problem)); }
-                        }
+                        if let Some(runtime)=action_runtime.current_actions()
+                            && let Err(problem)=runtime.committed(&owner){ action_error=Some(action_runtime.signing.fail(problem)); }
                     }
                 }
             }
@@ -1802,9 +1802,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             action_runtime.authority.set_ready(false);
                         }
                         if let Some(problem) = followup.relay_error { error = Some(problem); }
-                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                            if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
-                        }
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                            && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
                     }
                 }
             }
@@ -1820,16 +1819,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         command.request,
                     ).await;
                     if owner.committed_generation() != before && owner.permits_publication() {
-                        if let Some(runtime) = action_runtime.current_actions() {
-                            if let Err(problem) = runtime.committed(&owner) {
+                        if let Some(runtime) = action_runtime.current_actions()
+                            && let Err(problem) = runtime.committed(&owner) {
                                 action_error = Some(action_runtime.signing.fail(problem));
                             }
-                        }
-                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                            if let Err(problem) = publish(&owner, current) {
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                            && let Err(problem) = publish(&owner, current) {
                                 error = Some(problem.to_string());
                             }
-                        }
                     }
                     let _ = command.reply.send(response);
                 }
@@ -1845,16 +1842,14 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         command.request,
                     ).await;
                     if owner.committed_generation() != before && owner.permits_publication() {
-                        if let Some(runtime) = action_runtime.current_actions() {
-                            if let Err(problem) = runtime.committed(&owner) {
+                        if let Some(runtime) = action_runtime.current_actions()
+                            && let Err(problem) = runtime.committed(&owner) {
                                 action_error = Some(action_runtime.signing.fail(problem));
                             }
-                        }
-                        if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                            if let Err(problem) = publish(&owner, current) {
+                        if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                            && let Err(problem) = publish(&owner, current) {
                                 error = Some(problem.to_string());
                             }
-                        }
                     }
                     let _ = command.reply.send(response);
                 }
@@ -1869,8 +1864,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 // A recovery-basis replacement and every following tail stay
                 // ordered behind this idle flush. Ordinary selective tails do
                 // not reach this path because they publish in their commit turn.
-                if owner.permits_publication() && cadence.due_on_idle(std::time::Instant::now()) {
-                    if let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
+                if owner.permits_publication() && cadence.due_on_idle(std::time::Instant::now())
+                    && let Some(current) = session.as_ref().filter(|s| s.is_ready()) {
                         tracing::debug!(site = "idle_flush", "publish site");
                         match publish(&owner, current) {
                             Ok(()) => cadence.mark_published(std::time::Instant::now()),
@@ -1881,13 +1876,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Err(problem) => action_error = Some(action_runtime.signing.fail(problem.to_string())),
                         }
                     }
-                }
 
                 if let Some(runtime) = action_runtime.actions.as_mut().filter(|_| !action_runtime.retired && action_pump.due(std::time::Instant::now(), owner.committed_generation())) {
                     if let Err(problem) = pump_ready_actions(&owner, runtime) { action_error.get_or_insert(problem); }
-                    if owner.permits_publication() && action_error.is_none() && runtime.ready() {
-                        if let Some(current) = session.as_mut().filter(|s| s.is_ready()) {
-                            if current.actions.is_none() {
+                    if owner.permits_publication() && action_error.is_none() && runtime.ready()
+                        && let Some(current) = session.as_mut().filter(|s| s.is_ready())
+                            && current.actions.is_none() {
                                 #[cfg(feature = "test-support")]
                                 let action_registration_barrier = qualification.take_action_registration_barrier();
                                 #[cfg(feature = "test-support")]
@@ -1901,8 +1895,6 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                     action_attachment_exit,
                                 ) { action_error = Some(problem.to_string()); }
                             }
-                        }
-                    }
                 }
                 let attachment_exit = if action_error.is_none() {
                     if let Some(current) = session.as_mut().filter(|current| current.actions.as_ref().is_some_and(|attached| attached.task.as_ref().is_some_and(|task| task.is_finished()))) {
@@ -1938,13 +1930,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     continue;
                 }
                 let result = complete();
-                if let Ok(Some(delivery)) = &result {
-                    if let Some(session) = session.as_ref() {
-                        if let Err(problem) = session.send_action(delivery.clone()) {
+                if let Ok(Some(delivery)) = &result
+                    && let Some(session) = session.as_ref()
+                        && let Err(problem) = session.send_action(delivery.clone()) {
                             tracing::debug!(%problem, "direct desktop delivery unavailable; retained publication follows");
                         }
-                    }
-                }
                 let published = dispatch_owner_commit_publication(
                     &mut cadence,
                     &owner,
@@ -1965,7 +1955,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             .and_then(|s| if transition_ready { publish_committed(&owner, s) } else { publish(&owner, s) })
                     },
                 );
-                if let Some(runtime) = action_runtime.current_actions() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); } }
+                if let Some(runtime) = action_runtime.current_actions() && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
                 if let Err(problem) = result { action_error = Some(problem); }
                 let reconnect_publication = match published {
                     Err(problem) if committed_publication_failure(&problem) == PublicationFailureAction::Reconnect => {
@@ -1979,9 +1969,8 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                     Ok(_) => None,
                 };
                 action_runtime.authority.set_ready(action_error.is_none());
-                if let Some(problem) = reconnect_publication {
-                    if let Some(old) = session.take() { close_session(old, &format!("owner publication transport failed: {problem}")).await; }
-                }
+                if let Some(problem) = reconnect_publication
+                    && let Some(old) = session.take() { close_session(old, &format!("owner publication transport failed: {problem}")).await; }
             },
             pending = action_runtime.signatures.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() && owner.permits_publication() && session.as_ref().is_some_and(|current| current.is_ready()) => if let Some(pending) = pending {
                 let timing = pending.diagnostic_timing();
@@ -2025,7 +2014,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 );
                 timing.mark("publication_end");
                 timing.mark("runtime_committed_start");
-                if let Some(runtime) = action_runtime.current_actions() { if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); } }
+                if let Some(runtime) = action_runtime.current_actions() && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
                 timing.mark("runtime_committed_end");
                 if let Err(problem) = result { action_error = Some(problem); }
                 let reconnect_publication = match published {
@@ -2048,15 +2037,12 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 } else { complete(); }
                 #[cfg(not(feature = "test-support"))]
                 complete();
-                if let Some(problem) = reconnect_publication {
-                    if let Some(old) = session.take() { close_session(old, &format!("signed publication transport failed: {problem}")).await; }
-                }
+                if let Some(problem) = reconnect_publication
+                    && let Some(old) = session.take() { close_session(old, &format!("signed publication transport failed: {problem}")).await; }
             },
-            message = action_runtime.network.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() => if let Some(message) = message {
-                if let Some(current) = session.as_ref().filter(|s| owner.permits_publication() && s.is_ready()) {
-                    if let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(action_runtime.signing.fail(problem.to_string())); }
-                }
-            },
+            message = action_runtime.network.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() => if let Some(message) = message
+                && let Some(current) = session.as_ref().filter(|s| owner.permits_publication() && s.is_ready())
+                    && let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(action_runtime.signing.fail(problem.to_string())); },
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
                 reconnect.take();
                 match connection {
@@ -2286,12 +2272,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                                 };
                                 let response = handle_collaboration_admin(&mut owner, &committed, &host, &collaboration, request).await;
                                 if owner.committed_generation() != before && owner.permits_publication() {
-                                    if let Some(runtime) = action_runtime.current_actions() {
-                                        if let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
-                                    }
-                                    if let Some(current) = session.as_ref().filter(|session| session.is_ready()) {
-                                        if let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
-                                    }
+                                    if let Some(runtime) = action_runtime.current_actions()
+                                        && let Err(problem) = runtime.committed(&owner) { action_error = Some(action_runtime.signing.fail(problem)); }
+                                    if let Some(current) = session.as_ref().filter(|session| session.is_ready())
+                                        && let Err(problem) = publish(&owner, current) { error = Some(problem.to_string()); }
                                 }
                                 match response { Ok(value) => json!({"ok": true, "result": value}), Err(problem) => json!({"ok": false, "error": format!("{problem:?}")}) }
                             }

@@ -232,6 +232,7 @@ impl SelectedSnapshot {
     }
 }
 impl PreparedSnapshot {
+    #[cfg(test)]
     pub(in crate::https_owner) fn revalidate(
         &self,
         turn: &CloudStoreTurn,
@@ -356,9 +357,4 @@ mod create;
 mod tests;
 
 // Opaque phases only; parent routing cannot manufacture selection or commitment.
-pub(super) use create::{
-    ChunkPrepareRefusal, ChunkReply, CommittedSnapshot, DraftSnapshot, LiveSnapshot,
-    PendingSnapshot, PreparedChunk, RecoveryJob, RecoveryPrepared, RecoveryRead, RecoveryReady,
-    RecoverySelected, ReleasedSnapshot, Renewal, RenewalCommitted, RenewalDraft, RenewalPending,
-    open_recovery,
-};
+pub(super) use create::{LiveSnapshot, Renewal, open_recovery};

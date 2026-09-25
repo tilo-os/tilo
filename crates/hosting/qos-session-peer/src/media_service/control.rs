@@ -267,6 +267,10 @@ impl<S: MediaAuthoritySource> MediaService<S> {
         })
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 fn context(
     host: [u8; 32],
     http: &VerifiedRequest<'_>,
@@ -322,6 +326,10 @@ fn context(
         expires_at_ns: expires,
     })
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 fn signed_challenge(
     host: [u8; 32],
     sign: &mut impl FnMut(MediaSigningInput) -> Result<[u8; 64], MediaError>,
@@ -352,6 +360,10 @@ fn signed_challenge(
     )?);
     Ok(ControlResult::Challenge(signed))
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each argument is a distinct piece of custody or context the caller already holds"
+)]
 fn signed_presence(
     host: [u8; 32],
     sign: &mut impl FnMut(MediaSigningInput) -> Result<[u8; 64], MediaError>,

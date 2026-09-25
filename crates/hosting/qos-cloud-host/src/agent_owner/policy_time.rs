@@ -24,6 +24,7 @@ impl RuntimePolicyClock {
             started: AtomicBool::new(false),
         }
     }
+    #[cfg(test)]
     pub(crate) fn clock(&self) -> OwnerPolicyClock {
         self.clock.clone()
     }

@@ -173,6 +173,7 @@ struct AgentTestSource {
 }
 
 #[cfg(test)]
+#[cfg(target_os = "linux")]
 async fn serve_with_test_source<F>(
     root: &Path,
     machine: &str,
@@ -206,8 +207,7 @@ where
         .read(true)
         .write(true)
         .open(root.join("daemon.lock"))?;
-    lease
-        .try_lock()
+    let _lease = advisory_lock::FileLock::try_exclusive(lease)
         .context("another cloud host is already serving this state directory")?;
     let (bound, key, room) = loop {
         let store = Store::open(root, machine)?;
@@ -462,12 +462,11 @@ fn checkpoint_outbox(messages: &[StoredPublication]) -> Vec<StoredPublication> {
     // The matching latest governance update remains ahead of its app snapshots.
     let mut latest = std::collections::BTreeMap::new();
     for (index, publication) in messages.iter().enumerate() {
-        if publication.kind == PublicationKind::Checkpoint {
-            if let Some((channel, _)) =
+        if publication.kind == PublicationKind::Checkpoint
+            && let Some((channel, _)) =
                 qos_peer_state::transport::retention(&publication.message, true)
-            {
-                latest.insert(channel, index);
-            }
+        {
+            latest.insert(channel, index);
         }
     }
     messages
@@ -673,18 +672,16 @@ mod publication_tests {
                 })
                 .unwrap();
             tokio::time::timeout(Duration::from_secs(10), async {
-                loop {
-                    match client.recv_action().await {
-                        Some(
-                            EnvelopeV2::Delivered { action, .. }
-                            | EnvelopeV2::CertifiedDelivered { action, .. },
-                        ) if action.request_id == request_id => {
-                            assert_eq!(action.source, host);
-                            assert_eq!(action.target, source);
-                            return action.message;
-                        }
-                        other => panic!("unexpected actual client action event: {other:?}"),
+                match client.recv_action().await {
+                    Some(
+                        EnvelopeV2::Delivered { action, .. }
+                        | EnvelopeV2::CertifiedDelivered { action, .. },
+                    ) if action.request_id == request_id => {
+                        assert_eq!(action.source, host);
+                        assert_eq!(action.target, source);
+                        action.message
                     }
+                    other => panic!("unexpected actual client action event: {other:?}"),
                 }
             })
             .await

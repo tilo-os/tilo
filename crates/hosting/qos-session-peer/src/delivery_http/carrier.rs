@@ -414,7 +414,6 @@ mod tests {
             .admit_buffered_in(&proof, &exact, &original, &context.verification())
             .unwrap();
         assert_eq!(verified.session().session_id(), id);
-        drop(verified);
         let pending = ticket.park(original).unwrap();
         registry
             .resume_buffered_in(&pending, &context.verification())

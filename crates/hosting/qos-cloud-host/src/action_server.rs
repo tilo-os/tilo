@@ -204,6 +204,52 @@ async fn await_access_reconciliation(
     Ok(receipt)
 }
 
+/// Authenticated request handling; only the certificate handshake supplies source.
+pub(crate) async fn respond(
+    root: &Path,
+    machine: &str,
+    gateway: &gateway::Gateway,
+    source: [u8; 32],
+    request: &ActionRequest,
+) -> Result<ActionReceipt> {
+    if matches!(request.operation, NativeOperation::ModelComplete { .. }) {
+        model::invoke(root,machine,source,request,qos_relay::clock::now_ns(),|pending,text| async move {
+                gateway.complete(machine,&pending.gateway_id,&text).await
+            }).await
+    } else {
+        let mut store = Store::open(root, machine)?;
+        let mut result = store.action(source, request, qos_relay::clock::now_ns());
+        if matches!(request.operation, NativeOperation::Catalogue)
+            && gateway.available(machine, qos_relay::clock::now_ns() / 1_000_000_000)
+            && store
+                .authorize_model(source, qos_relay::clock::now_ns())
+                .is_ok()
+            && let Ok(receipt) = &mut result
+            && let Some(operations) = receipt
+                .output
+                .as_mut()
+                .and_then(|v| v.get_mut("operations"))
+                .and_then(|v| v.as_array_mut())
+        {
+            operations.push(serde_json::json!({"kind":"model_complete","parameters":{"text":"string"},"max_input_bytes":32768,"max_output_tokens":2048}));
+        }
+        if matches!(request.operation, NativeOperation::Catalogue)
+            && store
+                .authorize_model(source, qos_relay::clock::now_ns())
+                .is_ok()
+            && let Ok(receipt) = &mut result
+            && let Some(operations) = receipt
+                .output
+                .as_mut()
+                .and_then(|v| v.get_mut("operations"))
+                .and_then(|v| v.as_array_mut())
+        {
+            operations.extend(store.remote_descriptors()?);
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod access_update_tests {
     use super::*;
@@ -237,57 +283,5 @@ mod access_update_tests {
         );
         update.completion.send(Ok(())).unwrap();
         assert_eq!(waiting.await.unwrap().status, "completed");
-    }
-}
-
-/// Authenticated request handling; only the certificate handshake supplies source.
-pub(crate) async fn respond(
-    root: &Path,
-    machine: &str,
-    gateway: &gateway::Gateway,
-    source: [u8; 32],
-    request: &ActionRequest,
-) -> Result<ActionReceipt> {
-    if matches!(request.operation, NativeOperation::ModelComplete { .. }) {
-        model::invoke(root,machine,source,&request,qos_relay::clock::now_ns(),|pending,text| async move {
-                gateway.complete(machine,&pending.gateway_id,&text).await
-            }).await
-    } else {
-        let mut store = Store::open(root, machine)?;
-        let mut result = store.action(source, &request, qos_relay::clock::now_ns());
-        if matches!(request.operation, NativeOperation::Catalogue)
-            && gateway.available(machine, qos_relay::clock::now_ns() / 1_000_000_000)
-            && store
-                .authorize_model(source, qos_relay::clock::now_ns())
-                .is_ok()
-        {
-            if let Ok(receipt) = &mut result {
-                if let Some(operations) = receipt
-                    .output
-                    .as_mut()
-                    .and_then(|v| v.get_mut("operations"))
-                    .and_then(|v| v.as_array_mut())
-                {
-                    operations.push(serde_json::json!({"kind":"model_complete","parameters":{"text":"string"},"max_input_bytes":32768,"max_output_tokens":2048}));
-                }
-            }
-        }
-        if matches!(request.operation, NativeOperation::Catalogue)
-            && store
-                .authorize_model(source, qos_relay::clock::now_ns())
-                .is_ok()
-        {
-            if let Ok(receipt) = &mut result {
-                if let Some(operations) = receipt
-                    .output
-                    .as_mut()
-                    .and_then(|v| v.get_mut("operations"))
-                    .and_then(|v| v.as_array_mut())
-                {
-                    operations.extend(store.remote_descriptors()?);
-                }
-            }
-        }
-        result
     }
 }

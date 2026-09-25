@@ -433,13 +433,13 @@ impl Speculations {
             entry.confirmed_at = Some(now);
             changed = true;
         }
-        if let (Some(open), Some(opened)) = (entry.open.as_mut(), opened) {
-            if open.bound != Some(opened) {
-                open.bound = Some(opened);
-                // The placeholder moves to (or disappears at) the bound window.
-                self.snap |= entry.applied;
-                changed = true;
-            }
+        if let (Some(open), Some(opened)) = (entry.open.as_mut(), opened)
+            && open.bound != Some(opened)
+        {
+            open.bound = Some(opened);
+            // The placeholder moves to (or disappears at) the bound window.
+            self.snap |= entry.applied;
+            changed = true;
         }
         changed
     }
@@ -685,7 +685,7 @@ pub(crate) fn preview(
                 .iter()
                 .filter(|candidate| candidate.id != *group)
                 .filter_map(|candidate| rect(candidate.id))
-                .last()?;
+                .next_back()?;
             last.x1 - own.width()
         }
         Some(anchor) => {

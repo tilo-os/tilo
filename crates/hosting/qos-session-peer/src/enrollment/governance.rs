@@ -1,9 +1,8 @@
 //! The existing owner's committed, signed recovery basis. No room reconstruction.
 use super::{EnrollmentError, SessionOwner};
-use serde::{
-    Serialize,
-    ser::{SerializeMap, SerializeSeq},
-};
+#[cfg(feature = "media")]
+use serde::ser::SerializeMap;
+use serde::{Serialize, ser::SerializeSeq};
 use std::io::{self, Write};
 
 pub(crate) const LOCAL_REPLY_BYTES: usize = 1024 * 1024;
@@ -92,6 +91,7 @@ pub(crate) fn append_inline_governance(
 
 /// HTTPS encodes borrowed original bytes directly, avoiding per-byte JSON Value
 /// allocation. The caller's existing response lease covers this <=1MiB buffer.
+#[cfg(feature = "media")]
 pub(crate) fn encode_inline_bootstrap(
     value: &serde_json::Value,
     owner: &SessionOwner,
@@ -123,11 +123,13 @@ pub(crate) fn encode_inline_bootstrap(
     }
     Ok(Some(bytes))
 }
+#[cfg(feature = "media")]
 struct WithGovernance<'a> {
     metadata: &'a serde_json::Value,
     owner: &'a SessionOwner,
     nested: bool,
 }
+#[cfg(feature = "media")]
 impl Serialize for WithGovernance<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let object = self
@@ -162,6 +164,7 @@ impl Serialize for WithGovernance<'_> {
     }
 }
 
+#[cfg(feature = "media")]
 pub(crate) fn encode_handoff_bootstrap(
     metadata: &serde_json::Value,
     manifest: &[u8],
@@ -190,12 +193,14 @@ pub(crate) fn encode_handoff_bootstrap(
     }
     Ok(bytes)
 }
+#[cfg(feature = "media")]
 struct WithHandoff<'a> {
     metadata: &'a serde_json::Value,
     manifest: &'a [u8],
     generation: &'a str,
     nested: bool,
 }
+#[cfg(feature = "media")]
 impl Serialize for WithHandoff<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let object = self

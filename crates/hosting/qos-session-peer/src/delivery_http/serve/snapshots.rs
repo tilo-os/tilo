@@ -58,10 +58,10 @@ impl Transfer {
         }
     }
     fn release(mut self) {
-        if let Some(sidecar) = self.sidecar.take() {
-            if let Err(error) = sidecar.remove() {
-                tracing::debug!(?error, "snapshot sidecar cleanup deferred to the sweep");
-            }
+        if let Some(sidecar) = self.sidecar.take()
+            && let Err(error) = sidecar.remove()
+        {
+            tracing::debug!(?error, "snapshot sidecar cleanup deferred to the sweep");
         }
     }
 }
@@ -150,10 +150,8 @@ impl Snapshots {
                             && pair.current().issue().expires_at_ns > now
                     })
             });
-            if !live {
-                if let Err(error) = sidecar.remove() {
-                    tracing::debug!(?error, "orphan snapshot sidecar cleanup deferred");
-                }
+            if !live && let Err(error) = sidecar.remove() {
+                tracing::debug!(?error, "orphan snapshot sidecar cleanup deferred");
             }
         }
     }
@@ -217,7 +215,6 @@ impl Snapshots {
             .data_reselect_snapshot(&mut turn, &source, &issue, budget)
             .map_err(anyhow::Error::from)?;
         // Selection and revalidation are separate owner turns, as for a new pin.
-        drop(source);
         drop(turn);
         let stream = SnapshotStream::prepare(custody.into_custody(), budget)
             .map_err(|error| anyhow::anyhow!("snapshot stream refused: {error:?}"))?;
@@ -231,7 +228,6 @@ impl Snapshots {
         let now = checker.check(owner, guard.view(), session)?;
         let source = owner.data_source(&mut turn, guard.view(), session, now)?;
         owner.data_revalidate_snapshot(&mut turn, &source, &selection, stream.custody(), budget)?;
-        drop(source);
         drop(guard);
         drop(bytes);
         self.live.push(Transfer {
@@ -261,6 +257,10 @@ impl Snapshots {
     /// Owner-loop entry for a snapshot request (see serve.rs). Answers
     /// synchronously today; the hook lets manifest hashing move off the owner
     /// loop, answering later from `pump`, without changing the dispatcher.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back unmoved; boxing would allocate per hand-back"
+    )]
     pub(super) fn start(
         &mut self,
         sessions: &mut HttpSessions,
@@ -392,7 +392,6 @@ impl Snapshots {
                 )
                 .map_err(anyhow::Error::from)
             {
-                drop(source);
                 drop(guard);
                 let reason = reset_reason(&error).context("snapshot renewal refused")?;
                 Transfer::release(self.live.remove(index));
@@ -406,7 +405,6 @@ impl Snapshots {
             } else {
                 SnapshotManifest::from_bytes(transfer.manifest.as_bytes())?
             };
-            drop(source);
             drop(guard);
             let transfer = &mut self.live[index];
             if manifest.digest() != transfer.manifest.digest() {
@@ -453,7 +451,6 @@ impl Snapshots {
             .checked_add(LIFETIME_NS)
             .context("pin deadline overflow")?;
         let manifest = owner.sign_snapshot_manifest(&selection, &stream, expires, now)?;
-        drop(source);
         drop(guard);
         self.prune(now);
         self.sweep(owner, now);
@@ -554,7 +551,6 @@ impl Snapshots {
         if end == transfer.stream.stream_bytes() {
             // The boundary cursor is issued in its own replay turn for the
             // exact pinned cut, so the client resumes replay after it.
-            drop(source);
             let committed = transfer.selection.scope().committed.clone();
             let mut replay = owner.prepare_data_turn(budget, OwnerDataOperation::Replay)?;
             let source = owner.data_source(&mut replay, guard.view(), session, now)?;

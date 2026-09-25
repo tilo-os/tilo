@@ -12,6 +12,10 @@ use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
 pub struct RoomMediaPolicy(State);
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum State {
     Disabled,
     Invalid,

@@ -144,7 +144,9 @@ pub(crate) fn admission_phase(
 pub(crate) enum ReportSource {
     Runtime,
     Transport,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     ReceiveRejection,
+    #[cfg_attr(not(test), expect(dead_code, reason = "read only by tests"))]
     StaleReceive,
 }
 
@@ -154,7 +156,7 @@ pub(crate) fn reported_failure<'a>(
     source: ReportSource,
     usable: bool,
 ) -> Option<&'a str> {
-    durable.or_else(|| {
+    durable.or({
         if matches!(source, ReportSource::StaleReceive) && usable {
             None
         } else {
@@ -224,6 +226,7 @@ pub(crate) fn failure_policy(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn receive_source(message: &str) -> ReportSource {
     // These are concrete receive validation errors, not arbitrary runtime text.
     match message {
@@ -542,7 +545,8 @@ mod tests {
         native
             .install_seed(
                 SeedState {
-                    room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+                    room_changes: seed_room(room, &authority, std::slice::from_ref(&authority))
+                        .unwrap(),
                     documents: vec![],
                 },
                 &authority_key,
@@ -787,7 +791,8 @@ mod tests {
         denied
             .install_seed(
                 SeedState {
-                    room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+                    room_changes: seed_room(room, &authority, std::slice::from_ref(&authority))
+                        .unwrap(),
                     documents: vec![],
                 },
                 &authority_key,
@@ -873,7 +878,8 @@ mod tests {
         denied
             .install_seed(
                 SeedState {
-                    room_changes: seed_room(room, &authority, &[authority.clone()]).unwrap(),
+                    room_changes: seed_room(room, &authority, std::slice::from_ref(&authority))
+                        .unwrap(),
                     documents: vec![document()],
                 },
                 &authority_key,

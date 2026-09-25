@@ -217,6 +217,10 @@ pub(crate) enum PageContents<'a> {
     /// one unless the session negotiated `MULTI_GROUP_REPLAY_V1`.
     Cuts(Vec<ReplayCut>),
     /// The only frame: a signed snapshot manifest payload.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     Manifest(&'a [u8]),
     /// The only frame: a checked snapshot reset.
     Reset,

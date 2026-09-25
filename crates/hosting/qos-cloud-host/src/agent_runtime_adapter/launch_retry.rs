@@ -2,11 +2,25 @@
 use super::*;
 use crate::agent_runtime_owner::FailedLaunchAppend;
 use qos_peer_state::owner_commit::AgentCommitError;
-use std::{os::unix::net::UnixStream, sync::Weak};
+#[cfg(any(target_os = "linux", test))]
+use std::os::unix::net::UnixStream;
+use std::sync::Weak;
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub(crate) enum LiveLaunchSlot {
     Empty,
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "only the Linux agent runtime launches")
+    )]
     Permit(AgentLaunchPermit),
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "only the Linux agent runtime launches")
+    )]
     Retry(QuiescentLaunchRetry),
 }
 /// No Clone, data constructor, or public conversion from a failed write.
@@ -44,6 +58,7 @@ pub(super) fn take_permit(attempt: &Arc<LiveAttempt>) -> Result<AgentLaunchPermi
     };
     Ok(permit)
 }
+#[cfg(any(target_os = "linux", test))]
 fn take_retry(attempt: &Arc<LiveAttempt>) -> Result<Option<QuiescentLaunchRetry>, String> {
     let mut slot = attempt.launch.lock().map_err(|_| "launch slot poisoned")?;
     match &*slot {
@@ -58,6 +73,7 @@ fn take_retry(attempt: &Arc<LiveAttempt>) -> Result<Option<QuiescentLaunchRetry>
         }
     }
 }
+#[cfg(any(target_os = "linux", test))]
 fn restore_retry(attempt: &Arc<LiveAttempt>, retry: QuiescentLaunchRetry) -> Result<(), String> {
     if !retry
         .attempt
@@ -75,10 +91,28 @@ fn restore_retry(attempt: &Arc<LiveAttempt>, retry: QuiescentLaunchRetry) -> Res
 }
 
 /// Errors retain failed-call provenance until the joined descriptor owner handles it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
+#[cfg(any(target_os = "linux", test))]
 enum PrepareLaunchError {
-    Unavailable(String),
-    Failed(FailedLaunchAppend),
+    Unavailable(
+        #[cfg_attr(
+            all(test, not(target_os = "linux")),
+            expect(dead_code, reason = "read only by the Linux agent runtime")
+        )]
+        String,
+    ),
+    Failed(
+        #[cfg_attr(
+            all(test, not(target_os = "linux")),
+            expect(dead_code, reason = "read only by the Linux agent runtime")
+        )]
+        FailedLaunchAppend,
+    ),
 }
+#[cfg(any(target_os = "linux", test))]
 impl RuntimeOwner {
     fn original_attempt(&self, attempt: &Arc<LiveAttempt>) -> Result<(), String> {
         let live = self.live.lock().map_err(|_| "live registry poisoned")?;
@@ -99,6 +133,10 @@ impl RuntimeOwner {
         self.original_attempt(attempt)?;
         restore_retry(attempt, retry)
     }
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own value back; boxing would allocate on every refusal"
+    )]
     fn prepare_launch(
         &self,
         attempt: &Arc<LiveAttempt>,
@@ -183,11 +221,14 @@ impl RuntimeOwner {
 /// The connect runs on the dedicated gateway I/O runtime, never on the busy
 /// runtime-owner executor, so owner ticks cannot starve its deadline. Abort
 /// still drops the task (and any connected descriptor) before `join` returns.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) struct GatewayConnector {
     attempt: Arc<LiveAttempt>,
     task: tokio::task::JoinHandle<Result<UnixStream, String>>,
 }
+#[cfg(any(target_os = "linux", test))]
 impl GatewayConnector {
+    #[cfg(target_os = "linux")]
     pub(crate) fn start(
         attempt: Arc<LiveAttempt>,
         config: crate::agent_runtime_config::ManagedConfig,
@@ -212,11 +253,14 @@ impl GatewayConnector {
     }
 }
 /// Only joining the matching connector can create this descriptor/attempt pair.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) struct JoinedGateway {
     attempt: Arc<LiveAttempt>,
     model: UnixStream,
 }
+#[cfg(any(target_os = "linux", test))]
 impl JoinedGateway {
+    #[cfg(target_os = "linux")]
     pub(crate) fn prepare(
         self,
         owner: &RuntimeOwner,

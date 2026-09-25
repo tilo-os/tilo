@@ -41,7 +41,7 @@ fn deserialize_secret<'de, D: serde::Deserializer<'de>>(
 }
 impl Gateway {
     pub fn new(path: PathBuf) -> Self {
-        let client = reqwest::Client::builder()
+        let client = tilo_net::http::client()
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(Duration::from_secs(4))

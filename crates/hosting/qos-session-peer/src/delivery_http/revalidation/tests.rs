@@ -337,7 +337,6 @@ fn current_operation_clock_rejection_advances_shared_high_water_after_authority_
             .to_string(),
         "clock rollback"
     );
-    drop(admitted);
     drop(check);
     assert_eq!(registry.high_water, f.now + 10);
 }
@@ -477,7 +476,6 @@ fn current_poll_resume_requires_original_registry_entry_boot_descriptor_and_life
         let ticket = polls
             .capture(&admitted, &original, check.entry_serial())
             .unwrap();
-        drop(admitted);
         drop(check);
         drop(turn);
         let poll_id = polls.park(ticket, original).unwrap();
@@ -569,7 +567,6 @@ fn current_operation_uses_real_turn_and_revalidates_without_second_nonce_admissi
         f.now + 1
     );
     drop(guard);
-    drop(admitted);
     drop(check);
     drop(turn);
     assert!(
@@ -594,7 +591,6 @@ fn current_poll_rejects_actual_owner_committed_descriptor_renewal() {
         .unwrap();
     let mut polls = poll::Polls::new();
     let ticket = polls.capture(&admitted, &original, entry).unwrap();
-    drop(admitted);
     let poll_id = polls.park(ticket, original).unwrap();
     let pending = polls.take(poll_id).unwrap();
     f.current
@@ -662,7 +658,6 @@ fn operation_continuation_captures_only_the_original_admitted_lifecycle() {
     let wrong_lifecycle = check.capture_continuation(&admitted, &original).unwrap();
     assert!(wrong_lifecycle.park(other).is_err());
     let original_lifecycle = check.capture_continuation(&admitted, &original).unwrap();
-    drop(admitted);
     drop(check);
     let _pending = original_lifecycle.park(original).unwrap();
 }
@@ -687,7 +682,6 @@ fn operation_continuation_revalidates_without_second_nonce_and_fences_entry_canc
             )
             .unwrap();
         let ticket = check.capture_continuation(&admitted, &original).unwrap();
-        drop(admitted);
         drop(check);
         drop(turn);
         let pending = ticket.park(original).unwrap();

@@ -24,7 +24,6 @@ fn capture(
         .admit(&f.owner, &f.current, &proof, &request, f.now)
         .unwrap();
     let ticket = polls.capture(&verified, original, 1).unwrap();
-    drop(verified);
     // Capturing a continuation never returns the consumed request nonce to service.
     assert!(
         registry

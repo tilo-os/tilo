@@ -205,6 +205,7 @@ struct Parsed {
     proof: Option<Vec<u8>>,
 }
 
+#[cfg(test)]
 fn check_origin(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     if parts.headers.contains_key("cookie") {
         return Err(Rejection::invalid());
@@ -280,6 +281,7 @@ fn check_origin_base(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     Ok(())
 }
 
+#[cfg(test)]
 fn parse_head(parts: &Parts, origin: &Origin) -> Result<Parsed, Rejection> {
     check_origin(parts, origin)?;
     parse_head_checked(parts)
@@ -535,6 +537,7 @@ impl BufferedRequest {
 /// the last outgoing backing clone. There is no independent capacity pool.
 #[derive(Default)]
 pub struct ResponseCredits {
+    #[cfg(feature = "media")]
     pub private_reply: Option<crate::private_http::PendingPrivate>,
     pub agent_read: Option<qos_action_broker::agent_reads::AgentReadCustody>,
     pub private_slot: Option<OwnedSemaphorePermit>,
@@ -558,6 +561,10 @@ pub struct Ingress {
     media: mpsc::Sender<BufferedRequest>,
     data: mpsc::Sender<BufferedRequest>,
     bytes: HostBytes,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     work: crate::store::HostWorkInventory,
     data_requests: Arc<Semaphore>,
     control_requests: Arc<Semaphore>,
@@ -579,6 +586,10 @@ pub struct IngressReceiver {
     media: mpsc::Receiver<BufferedRequest>,
     data: mpsc::Receiver<BufferedRequest>,
     bytes: HostBytes,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     work: crate::store::HostWorkInventory,
     priority_batches: u8,
     #[cfg(test)]
@@ -631,6 +642,7 @@ impl IngressReceiver {
     pub(crate) fn host_bytes(&self) -> HostBytes {
         self.bytes.clone()
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn host_work(&self) -> crate::store::HostWorkInventory {
         self.work.clone()
     }
@@ -665,10 +677,10 @@ impl IngressReceiver {
         self.record(request)
     }
     pub fn try_recv(&mut self) -> Option<BufferedRequest> {
-        if self.priority_batches >= 8 {
-            if let Ok(request) = self.data.try_recv() {
-                return self.record(Some(request));
-            }
+        if self.priority_batches >= 8
+            && let Ok(request) = self.data.try_recv()
+        {
+            return self.record(Some(request));
         }
         let request = self
             .control
@@ -684,9 +696,11 @@ impl IngressReceiver {
     }
 }
 impl Ingress {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn host_work(&self) -> crate::store::HostWorkInventory {
         self.work.clone()
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn host_bytes(&self) -> HostBytes {
         self.bytes.clone()
     }
@@ -802,6 +816,7 @@ impl HttpsAdapter {
             local_enrollment: self.local_enrollment.clone(),
         }
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn with_local_enrollment(
         mut self,
         gateway: Arc<LocalEnrollment>,
@@ -1397,5 +1412,5 @@ pub(crate) mod h3;
 
 #[cfg(test)]
 mod data_routes_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "media"))]
 pub(crate) mod onboarding_tests;

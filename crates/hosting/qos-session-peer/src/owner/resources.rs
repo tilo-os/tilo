@@ -12,27 +12,39 @@ use std::sync::{
 
 pub(super) const POLICY_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) enum OwnerDataOperation {
     RegisterConsumer,
     ReceiptLookup,
     SnapshotPrepare,
-    SnapshotCreate,
-    SnapshotRenew,
+    #[cfg(test)]
     SnapshotRelease,
-    PrivateContext { input_len: usize },
-    State { input_len: usize },
-    StateStaged { input_len: usize },
+    PrivateContext {
+        input_len: usize,
+    },
+    State {
+        input_len: usize,
+    },
+    #[cfg_attr(
+        not(feature = "media"),
+        expect(dead_code, reason = "only the media ingress stages uploads")
+    )]
+    StateStaged {
+        input_len: usize,
+    },
     Ack,
     Replay,
 }
 /// These caps constrain owner serialized buffers only. Native decode/save/clone
 /// needs its separate qps qualifier before a route can become data-ready.
 #[derive(Clone, Copy)]
+#[cfg(any(test, feature = "media"))]
 struct SerializedCaps {
     _aggregate: usize,
     _transient: usize,
     _retained: usize,
 }
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct OwnerResourceTurn {
     retained: Arc<RetainedSerializedBytes>,
     generation: u64,
@@ -137,6 +149,7 @@ pub(crate) struct RetainedSerializedBytes {
 impl RetainedSerializedBytes {
     /// The credit paying for the current generation's retained buffers and
     /// publication payloads; a pin holds it for the payloads it borrows.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn current_generation(&self) -> Arc<AccountedCredit> {
         self.generation
             .lock()
@@ -180,6 +193,7 @@ fn disk(error: crate::store::StorePreflightFailure) -> OwnerDataFailure {
 impl SessionOwner {
     /// Attach existing raw owner buffers before any candidate allocation. This
     /// intentionally confers no readiness for native structures/caches.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn attach_data_resources(&mut self, budget: &HostBytes) -> DataResult<()> {
         if let Some(resources) = &self.resources {
             return if resources.budget.same_pool(budget) {
@@ -236,6 +250,7 @@ impl SessionOwner {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn prepare_data_turn(
         &self,
         budget: &HostBytes,
@@ -249,6 +264,7 @@ impl SessionOwner {
         }
         self.prepare_data_turn_inner(budget, operation, None)
     }
+    #[cfg(any(test, feature = "media"))]
     fn prepare_data_turn_inner(
         &self,
         budget: &HostBytes,
@@ -309,9 +325,8 @@ impl SessionOwner {
                 // must still fit; this is not a native heap estimate/qualifier.
                 add(add(multiply(current, 2)?, multiply(input, 4)?)?, 512 * 1024)?
             }
-            OwnerDataOperation::SnapshotCreate
-            | OwnerDataOperation::SnapshotRenew
-            | OwnerDataOperation::SnapshotRelease => {
+            #[cfg(test)]
+            OwnerDataOperation::SnapshotRelease => {
                 add(current, tilo_relay::delivery_v3::commit::MAX_LEDGER_BYTES)?
             }
             OwnerDataOperation::RegisterConsumer | OwnerDataOperation::Ack => {
@@ -520,17 +535,21 @@ fn retained_capacity(aggregate: &Aggregate) -> Result<usize> {
     Ok(bytes)
 }
 
+#[cfg(any(test, feature = "media"))]
 use super::delivery::consumer::{
     BorrowedReplay, ValidatedCursorCut, VerifiedCursor, VerifiedDeliverySource,
 };
+#[cfg(any(test, feature = "media"))]
 use super::delivery::{AdmissionOutcome, CompleteStateItem};
 use crate::committed_authority::CommittedView;
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::{
     auth::VerifiedSession,
     commit::{CommitRef, ConsumerId},
     cursor::CursorToken,
 };
 impl SessionOwner {
+    #[cfg(any(test, feature = "media"))]
     pub(in crate::owner) fn validate_data_turn(
         &self,
         turn: &OwnerResourceTurn,
@@ -552,6 +571,7 @@ impl SessionOwner {
         }
         Ok(())
     }
+    #[cfg(any(test, feature = "media"))]
     pub(in crate::owner) fn with_data_operation<T>(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -583,6 +603,7 @@ impl SessionOwner {
         self.reconcile_pending_input_credits();
         result
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_source<'a>(
         &self,
         turn: &mut OwnerResourceTurn,
@@ -609,6 +630,7 @@ impl SessionOwner {
         self.delivery_source(view, session, now_ns)
             .map_err(|e| self.classify_data_error(e))
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_admission_receipt<'a>(
         &'a self,
         turn: &mut OwnerResourceTurn,
@@ -620,6 +642,7 @@ impl SessionOwner {
         self.delivery_admission_receipt(source, delivery, digest)
             .map_err(|e| self.classify_data_error(e))
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_register_consumer(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -629,6 +652,7 @@ impl SessionOwner {
             owner.register_delivery_consumer(source)
         })
     }
+    #[cfg(test)]
     pub(crate) fn data_admit(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -644,10 +668,10 @@ impl SessionOwner {
                 let pending_credit = owner.split_retained_bytes(length)?;
                 let before = owner.peer.pending_count();
                 let outcome = owner.admit_delivery(source, item, now)?;
-                if owner.peer.pending_count() > before {
-                    if let Some(credit) = pending_credit {
-                        owner.store_pending_input_credit(credit);
-                    }
+                if owner.peer.pending_count() > before
+                    && let Some(credit) = pending_credit
+                {
+                    owner.store_pending_input_credit(credit);
                 }
                 Ok(outcome)
             },
@@ -656,6 +680,7 @@ impl SessionOwner {
     /// Admit a non-empty prefix of `items` under one turn reserved for their
     /// total length; consecutive new document items share one commit group
     /// (`SessionOwner::receive_delivery_group`).
+    #[cfg(feature = "media")]
     pub(crate) fn data_admit_group(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -695,15 +720,16 @@ impl SessionOwner {
                 let pending_credit = owner.split_retained_bytes(length)?;
                 let before = owner.peer.pending_count();
                 let outcome = owner.admit_delivery_group(source, items, now)?;
-                if owner.peer.pending_count() > before {
-                    if let Some(credit) = pending_credit {
-                        owner.store_pending_input_credit(credit);
-                    }
+                if owner.peer.pending_count() > before
+                    && let Some(credit) = pending_credit
+                {
+                    owner.store_pending_input_credit(credit);
                 }
                 Ok(outcome)
             },
         )
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_verify_cursor<'a>(
         &self,
         turn: &mut OwnerResourceTurn,
@@ -723,6 +749,7 @@ impl SessionOwner {
         self.verify_delivery_cursor(source, token)
             .map_err(|e| self.classify_data_error(e))
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_acknowledge(
         &mut self,
         turn: &mut OwnerResourceTurn,
@@ -733,6 +760,7 @@ impl SessionOwner {
             owner.acknowledge_delivery(source, cut)
         })
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_replay<'a>(
         &'a self,
         turn: &mut OwnerResourceTurn,
@@ -743,6 +771,7 @@ impl SessionOwner {
         self.borrowed_delivery_replay(source, committed)
             .map_err(|e| self.classify_data_error(e))
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_issue_cursor(
         &self,
         turn: &mut OwnerResourceTurn,
@@ -754,7 +783,7 @@ impl SessionOwner {
             .map_err(|e| self.classify_data_error(e))
     }
     /// Test observation: the committed aggregate's encoded length.
-    #[cfg(test)]
+    #[cfg(all(test, feature = "media"))]
     pub(crate) fn aggregate_encoded_len(&self) -> usize {
         self.aggregate.encoded_payload_len().unwrap()
     }
@@ -789,6 +818,7 @@ impl SessionOwner {
     /// workers, descriptor refresh) working after the ingress pool attaches:
     /// outside a turn they keep the pre-attachment aggregate bound and stage
     /// no turn credit. Data routes still commit inside their reserved turns.
+    #[cfg(feature = "media")]
     pub(crate) fn permit_unscoped_legacy_commits(&mut self) -> Result<()> {
         self.resources
             .as_mut()
@@ -842,6 +872,7 @@ impl SessionOwner {
         Ok(Some(credit))
     }
     /// Keep an input's credit while the native deferred queue retains it.
+    #[cfg(any(test, feature = "media"))]
     fn store_pending_input_credit(&self, credit: ByteCredit) {
         self.resources
             .as_ref()
@@ -1000,12 +1031,14 @@ impl SessionOwner {
 
 #[path = "resources/scopes.rs"]
 mod scopes;
-pub(crate) use scopes::{OwnerOperation, OwnerScope};
+pub(crate) use scopes::OwnerOperation;
 
 #[path = "resources/publication_pin.rs"]
 mod publication_pin;
+#[cfg(any(test, feature = "media"))]
 pub(crate) use publication_pin::OwnedPublicationPin;
 
+#[cfg(feature = "media")]
 #[path = "resources/staged.rs"]
 mod staged;
 

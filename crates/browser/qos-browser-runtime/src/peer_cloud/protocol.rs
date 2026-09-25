@@ -22,6 +22,10 @@ pub(super) enum HostedAttemptError {
     Phase,
     Cancelled,
     Capacity,
+    #[allow(
+        dead_code,
+        reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+    )]
     Response,
     Signature,
     /// The Store is bound to another owner root; this identity cannot enroll it.
@@ -40,6 +44,10 @@ pub(super) struct ApplyRequest<'a> {
     pub payload: &'a [u8],
 }
 /// Unqualified DTO custody only. No StatePeer/admitted/ready conversion exists.
+#[allow(
+    dead_code,
+    reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+)]
 pub(super) struct PendingHostedBootstrap {
     _held: qos_peer_state::resources::BoundedJoinResponse,
 }
@@ -265,6 +273,10 @@ impl HostedAttempt {
         Ok(self.checkpoint())
     }
 
+    #[allow(
+        dead_code,
+        reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+    )]
     pub(super) fn membership_challenge_request(&self) -> Result<&[u8]> {
         self.ready()?;
         let Phase::MembershipChallenge { request, .. } = &self.current.material.value.phase else {
@@ -272,6 +284,10 @@ impl HostedAttempt {
         };
         Ok(request)
     }
+    #[allow(
+        dead_code,
+        reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+    )]
     pub(super) fn prepare_membership(&mut self, bytes: &[u8], now: u64) -> Result<Checkpoint<'_>> {
         self.live()?;
         if !matches!(
@@ -339,6 +355,10 @@ impl HostedAttempt {
         Ok(self.checkpoint())
     }
 
+    #[allow(
+        dead_code,
+        reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+    )]
     pub(super) fn membership_complete_request(&self) -> Result<&[u8]> {
         self.ready()?;
         let Phase::MembershipComplete { proof, .. } = &self.current.material.value.phase else {
@@ -346,6 +366,10 @@ impl HostedAttempt {
         };
         Ok(proof)
     }
+    #[allow(
+        dead_code,
+        reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+    )]
     pub(super) fn accept_membership(
         &mut self,
         bytes: &[u8],
@@ -630,6 +654,10 @@ impl HostedAttempt {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
+)]
 fn bounded_reply(
     bytes: &[u8],
     budget: &NativeAllowance,

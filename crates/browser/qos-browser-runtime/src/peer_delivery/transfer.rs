@@ -145,7 +145,7 @@ impl PinnedTransfer {
         now: u64,
     ) -> Result<(), String> {
         self.current(generation, now)?;
-        if offset % u64::from(self.issue().chunk_size) != 0 {
+        if !offset.is_multiple_of(u64::from(self.issue().chunk_size)) {
             return Err("unaligned staged transfer read".into());
         }
         let index = u32::try_from(offset / u64::from(self.issue().chunk_size))

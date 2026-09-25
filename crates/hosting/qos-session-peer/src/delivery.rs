@@ -1,30 +1,46 @@
 //! Native delivery state shares the signed SessionOwner barrier.
 use super::*;
 use anyhow::ensure;
-use error::{OwnerCapacityKind as DataCapacity, OwnerDataFailureKind as DataFailure};
+#[cfg(any(test, feature = "media"))]
+use error::OwnerCapacityKind as DataCapacity;
+use error::OwnerDataFailureKind as DataFailure;
+#[cfg(any(test, feature = "media"))]
 use qos_peer_state::{InputDisposition, MissingPrerequisite};
 use tilo_relay::delivery_v3::commit::*;
 
 /// First local owner slice accepts complete small items; no chunk staging owner exists yet.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const MAX_DELIVERY_ITEM_BYTES: usize = 1024 * 1024;
 /// A complete replay group that cannot be one page is answered with the
 /// contract's reset: the consumer installs a snapshot (whose chunked transfer
 /// has no page bound) and continues with the suffix. Never a denial.
+#[cfg(feature = "media")]
 pub(crate) fn oversized_replay_group(diagnostic: &'static str) -> anyhow::Error {
     error::failure(
         DataFailure::Reset(tilo_relay::delivery_v3::state::ResetReason::HistoryUnavailable),
         anyhow::anyhow!(diagnostic),
     )
 }
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct CompleteStateItem<'a> {
     pub(crate) delivery_id: DeliveryId,
     pub(crate) canonical: &'a [u8],
 }
 /// Response data only. Native signed coverage remains the sender-retirement proof.
 #[derive(Debug)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) enum AdmissionOutcome {
     Durable(AdmissionRecord),
-    RetryLater(MissingPrerequisite),
+    RetryLater(
+        #[cfg_attr(
+            not(test),
+            allow(
+                dead_code,
+                reason = "tests inspect the prerequisite; responses need only the variant"
+            )
+        )]
+        MissingPrerequisite,
+    ),
     MetadataOnly,
 }
 /// Receipts bound by one commit: a single item, or every item of one
@@ -275,6 +291,7 @@ impl SessionOwner {
     }
     /// The scheduler supplies authenticated transport origin, never an item field.
     /// Every primary result comes from StatePeer's exact native admission path.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn receive_delivery(
         &mut self,
         origin: TransportOrigin,
@@ -283,6 +300,7 @@ impl SessionOwner {
     ) -> Result<AdmissionOutcome> {
         self.receive_delivery_with_bound(origin, item, now, MAX_DELIVERY_ITEM_BYTES)
     }
+    #[cfg(any(test, feature = "media"))]
     fn receive_delivery_with_bound(
         &mut self,
         origin: TransportOrigin,
@@ -438,6 +456,7 @@ impl SessionOwner {
     /// single-item path against the committed group. A refused item therefore
     /// never enters a commit, and earlier items stay committed exactly as
     /// before. A leading incompatible item takes the single-item path alone.
+    #[cfg(feature = "media")]
     pub(crate) fn receive_delivery_group(
         &mut self,
         origin: TransportOrigin,
@@ -447,7 +466,7 @@ impl SessionOwner {
         let first = items.first().context("empty delivery group")?;
         let single = |owner: &mut Self| -> Result<Vec<AdmissionOutcome>> {
             Ok(vec![owner.receive_delivery(
-                origin.clone(),
+                origin,
                 CompleteStateItem {
                     delivery_id: first.delivery_id,
                     canonical: first.canonical,
@@ -518,6 +537,7 @@ impl SessionOwner {
     }
     /// Admit one more item onto a group candidate, or `None` when it must take
     /// the single-item path. Never mutates the owner or the given candidate.
+    #[cfg(feature = "media")]
     fn try_group_item(
         &self,
         candidate: &StatePeer,
@@ -552,9 +572,7 @@ impl SessionOwner {
         }
         schema::canonical(&message, item.canonical).ok()?;
         let mut trial = candidate.clone();
-        let report = trial
-            .receive_from_report(origin.clone(), message, now)
-            .ok()?;
+        let report = trial.receive_from_report(*origin, message, now).ok()?;
         let InputDisposition::Accepted(op) = report.primary() else {
             return None;
         };
@@ -683,7 +701,7 @@ impl SessionOwner {
                 "rotation must start an empty incarnation without a new receipt"
             );
             let all = super::retention::all_admitted_operations(candidate)?;
-            if all.len() <= MAX_REFERENCES / 2 {
+            if all.len() <= super::retention::ROTATION_OPERATIONS {
                 operations.extend(all);
             }
             for record in delivery.admissions.values() {
@@ -780,6 +798,7 @@ pub(crate) mod error;
 #[cfg(test)]
 #[path = "delivery/resource_tests.rs"]
 mod resource_tests;
+#[cfg(any(test, feature = "media"))]
 pub(crate) use consumer::NativeDeliveryAuthority;
 
 #[cfg(all(test, feature = "media"))]
@@ -789,7 +808,7 @@ mod media_tests;
 #[path = "delivery/tests.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "media"))]
 #[path = "delivery/staged_tests.rs"]
 mod staged_tests;
 

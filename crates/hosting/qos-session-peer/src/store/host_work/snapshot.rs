@@ -133,6 +133,7 @@ pub(super) fn recover(
     Ok(records)
 }
 impl crate::store::SessionStore {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn snapshot_directory(
         &self,
         inventory: &HostWorkInventory,
@@ -143,6 +144,7 @@ impl crate::store::SessionStore {
         }
         inventory.snapshot_directory(&self.directory, workspace)
     }
+    #[cfg(test)]
     pub(crate) fn matches_snapshot_reservation(
         &self,
         reservation: &SnapshotReservation,

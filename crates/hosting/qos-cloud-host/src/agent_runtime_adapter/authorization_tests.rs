@@ -150,7 +150,7 @@ fn agent_authorization_store_change_reproves_every_retained_verdict() {
         "one locked re-proof after a Store change"
     );
     // A route whose record does not exist is refused and never retained.
-    let absent = CrdtRoute::record("so.tilo.notes", &w.room.to_string(), "tab:ffffffffffffffff");
+    let absent = CrdtRoute::record("so.tilo.notes", w.room.to_string(), "tab:ffffffffffffffff");
     let before = opens();
     for _ in 0..2 {
         assert!(w.owner.authorize_host_worker(&absent, &w.host).is_err());

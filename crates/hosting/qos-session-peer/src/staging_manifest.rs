@@ -41,6 +41,7 @@ impl StageManifest {
         Ok(())
     }
     /// Encode fixed widths without architecture-dependent padding or native-endian fields.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn encode(&self) -> Result<[u8; 148], StageManifestError> {
         self.validate()?;
         let mut bytes = [0; 148];

@@ -267,6 +267,10 @@ impl Bootstrap {
 /// Prepared exact bytes only. JS cannot choose a signing preimage or identity.
 pub(crate) struct PreparedRequest {
     pub id: u32,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub origin: String,
     pub target: &'static str,
     pub body: Vec<u8>,
@@ -278,6 +282,10 @@ pub(crate) struct HttpSession {
     pub(crate) nonce: [u8; 32],
     pub(crate) digest: [u8; 32],
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Pending {
     Server {
         nonce: [u8; 32],
@@ -326,7 +334,7 @@ struct VerificationMemo {
 }
 impl VerificationMemo {
     fn new(view: &OwnerView<'_>, subject: [u8; 32], capabilities: u64) -> Option<Self> {
-        (view.state_revision != 0).then(|| Self {
+        (view.state_revision != 0).then_some(Self {
             state_revision: view.state_revision,
             subject,
             capabilities,
@@ -456,6 +464,7 @@ impl DeliveryAuthority {
         self.required_capabilities = capabilities::PRODUCT_DATA_V1;
         self.start_http(view)
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn product_ready(&self, view: &OwnerView<'_>) -> bool {
         self.current(view)
             && self.session.as_ref().is_some_and(|session| {
@@ -470,12 +479,14 @@ impl DeliveryAuthority {
         capabilities::pipelined_policy(self.required_capabilities)
     }
     /// Whether this session's host serves PIPELINED_POLL_V1 chained polls.
+    #[cfg(target_arch = "wasm32")]
     pub fn pipelined_polls(&self) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.proof.transcript.negotiated_capabilities & capabilities::PIPELINED_POLL_V1 != 0
         })
     }
     /// Whether this session's host may answer a poll with several groups.
+    #[cfg(target_arch = "wasm32")]
     pub fn multi_group_replay(&self) -> bool {
         self.session.as_ref().is_some_and(|session| {
             session.proof.transcript.negotiated_capabilities & capabilities::MULTI_GROUP_REPLAY_V1

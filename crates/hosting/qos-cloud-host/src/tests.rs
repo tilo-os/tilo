@@ -1243,7 +1243,7 @@ async fn model_network_releases_store_lock_and_reuses_request_id_until_terminal(
                     .write(true)
                     .open(dir.path().join("state.lock"))
                     .unwrap();
-                lock.try_lock()
+                let lock = advisory_lock::FileLock::try_exclusive(lock)
                     .expect("model network must run outside Store lock");
                 drop(lock);
                 assert_eq!(text, "Hello");

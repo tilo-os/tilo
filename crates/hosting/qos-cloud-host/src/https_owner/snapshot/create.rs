@@ -222,9 +222,5 @@ mod renew;
 #[path = "create/tests.rs"]
 mod tests;
 
-pub(in crate::https_owner) use chunk::{ChunkPrepareRefusal, ChunkReply, PreparedChunk};
-pub(in crate::https_owner) use recover::{
-    RecoveryJob, RecoveryPrepared, RecoveryRead, RecoveryReady, RecoverySelected, open_recovery,
-};
-pub(in crate::https_owner) use release::ReleasedSnapshot;
-pub(in crate::https_owner) use renew::{Renewal, RenewalCommitted, RenewalDraft, RenewalPending};
+pub(in crate::https_owner) use recover::open_recovery;
+pub(in crate::https_owner) use renew::Renewal;

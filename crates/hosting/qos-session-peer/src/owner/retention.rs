@@ -31,27 +31,38 @@
 //! Every retention step is an ordinary signed owner commit, crash consistent
 //! through the store journal/checkpoint like any other commit. ACK side
 //! records name their store incarnation and become inert after a rotation.
+#[cfg(any(test, feature = "media"))]
 use super::delivery::error::{self, OwnerDataFailureKind as DataFailure};
 use super::*;
+#[cfg(any(test, feature = "media"))]
 use std::collections::BTreeSet;
+#[cfg(any(test, feature = "media"))]
 use tilo_relay::delivery_v3::commit::{
-    DeliveryLedgerV1, Digest, MAX_ADMISSIONS, MAX_REFERENCES, PublicationPool, PublicationRef,
-    ReceiptKey,
+    DeliveryLedgerV1, MAX_ADMISSIONS, PublicationPool, PublicationRef, ReceiptKey,
 };
+use tilo_relay::delivery_v3::commit::{Digest, MAX_REFERENCES};
+#[cfg(any(test, feature = "media"))]
 use ui::automerge::transaction::Transactable as _;
 
 /// Tail publications after which a checkpoint is due (inline cap is 64).
+#[cfg(any(test, feature = "media"))]
 pub(crate) const CHECKPOINT_TAIL_ENTRIES: usize = 32;
 /// Tail payload bytes after which a checkpoint is due (inline cap is 4 MiB).
+#[cfg(any(test, feature = "media"))]
 pub(crate) const CHECKPOINT_TAIL_BYTES: usize = 256 * 1024;
 /// While a snapshot download is active, checkpoints wait up to these bounds.
+#[cfg(any(test, feature = "media"))]
 const DEFERRED_TAIL_ENTRIES: usize = 48;
+#[cfg(any(test, feature = "media"))]
 const DEFERRED_TAIL_BYTES: usize = 2 * 1024 * 1024;
 /// Quiet period after the last commit before uncovered commits are covered.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const CHECKPOINT_IDLE_NS: u64 = 3_000_000_000;
 /// Oldest uncovered commit age that forces a checkpoint during activity.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const CHECKPOINT_MAX_AGE_NS: u64 = 30_000_000_000;
 /// A checkpoint whose publications exceed this cannot be one replay page.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const ROTATE_CHECKPOINT_BYTES: usize =
     tilo_relay::delivery_v3::capabilities::PAGE_BYTES - 64 * 1024;
 /// History (retained replay payloads outside the current roots) that makes a
@@ -59,26 +70,33 @@ pub(crate) const ROTATE_CHECKPOINT_BYTES: usize =
 /// aggregate is re-encoded on every commit and scales the per-turn byte
 /// reservations, while a rotation only costs each consumer one snapshot of
 /// the (certified) roots.
+#[cfg(any(test, feature = "media"))]
 pub(crate) const HISTORY_BYTES: usize = 1024 * 1024;
 /// Payload budget of one owner pool (the aggregate cap).
+#[cfg(any(test, feature = "media"))]
 const POOL_LIMIT: usize = crate::store::MAX_AGGREGATE_BYTES;
 /// Rotation receipts list every admitted operation up to this bound.
-const ROTATION_OPERATIONS: usize = MAX_REFERENCES / 2;
+pub(super) const ROTATION_OPERATIONS: usize = MAX_REFERENCES / 2;
 
+#[cfg(any(test, feature = "media"))]
 fn over(value: usize, limit: usize, (numerator, denominator): (usize, usize)) -> bool {
     value.saturating_mul(denominator) >= limit.saturating_mul(numerator)
 }
+#[cfg(any(test, feature = "media"))]
 const DUE: (usize, usize) = (1, 2);
+#[cfg(any(test, feature = "media"))]
 const CRITICAL: (usize, usize) = (9, 10);
 
 /// Room governance deltas are `SyncResp` (postcard variant 1); every other
 /// retained `Delta` publication is an author's incremental document item.
+#[cfg(any(test, feature = "media"))]
 fn is_author_delta(bytes: &[u8], kind: Retention) -> bool {
     kind == Retention::Delta && bytes.first() != Some(&1)
 }
 
 /// Observed budget use of the committed delivery storage.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct Pressure {
     /// All payload bytes owned by the pool, referenced or not.
     pub(crate) pool_bytes: usize,
@@ -97,7 +115,9 @@ pub(crate) struct Pressure {
     pub(crate) last_commit_ns: u64,
     pub(crate) first_uncovered_ns: Option<u64>,
 }
+#[cfg(any(test, feature = "media"))]
 impl Pressure {
+    #[cfg(any(test, feature = "media"))]
     fn rotation(&self, fraction: (usize, usize)) -> bool {
         // Pool pressure counts only when history holds at least as much as
         // the roots: a rotation would otherwise not free space.
@@ -107,11 +127,13 @@ impl Pressure {
             || over(self.replay, MAX_REFERENCES, fraction)
     }
     /// Whether a snapshot + suffix rotation is due now.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn rotation_due(&self, busy: bool) -> bool {
         let history = self.history_bytes >= HISTORY_BYTES.max(self.root_bytes.saturating_mul(2));
         self.rotation(CRITICAL) || (!busy && (history || self.rotation(DUE)))
     }
     /// Whether a certified checkpoint of the tail is due now.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn checkpoint_due(&self, now_ns: u64, busy: bool) -> bool {
         if self.tail_entries == 0 {
             return false;
@@ -132,6 +154,7 @@ impl Pressure {
                     .first_uncovered_ns
                     .is_some_and(|first| now_ns.saturating_sub(first) >= CHECKPOINT_MAX_AGE_NS))
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn receipts_due(&self) -> bool {
         over(self.receipts, MAX_ADMISSIONS, DUE) && self.prunable_receipts > 0
     }
@@ -139,6 +162,7 @@ impl Pressure {
 
 /// The retention commit a maintenance turn should make.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) enum RetentionAction {
     Rotate,
     Checkpoint,
@@ -146,6 +170,7 @@ pub(crate) enum RetentionAction {
 }
 /// What one retention commit changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg(any(test, feature = "media"))]
 pub(crate) struct RetentionReport {
     pub(crate) action: RetentionAction,
     /// Whether the commit rotated the store incarnation.
@@ -155,6 +180,7 @@ pub(crate) struct RetentionReport {
     pub(crate) after: Pressure,
 }
 
+#[cfg(any(test, feature = "media"))]
 fn acknowledged(ledger: &DeliveryLedgerV1, device: &[u8; 32]) -> Option<u64> {
     ledger
         .consumers
@@ -162,10 +188,12 @@ fn acknowledged(ledger: &DeliveryLedgerV1, device: &[u8; 32]) -> Option<u64> {
         .and_then(|consumer| consumer.acknowledged.as_ref())
         .map(|cut| cut.sequence)
 }
+#[cfg(any(test, feature = "media"))]
 fn releasable(ledger: &DeliveryLedgerV1, key: &ReceiptKey, sequence: u64) -> bool {
     acknowledged(ledger, &key.device).is_some_and(|ack| ack >= sequence)
 }
 /// Release receipts whose sending device durably acknowledged their commit.
+#[cfg(any(test, feature = "media"))]
 fn prune_receipts(ledger: &mut DeliveryLedgerV1) -> usize {
     let before = ledger.admissions.len();
     let keep = ledger
@@ -177,6 +205,7 @@ fn prune_receipts(ledger: &mut DeliveryLedgerV1) -> usize {
     ledger.admissions.retain(|key, _| keep.contains(key));
     before - ledger.admissions.len()
 }
+#[cfg(any(test, feature = "media"))]
 fn now_ns(now: SystemTime) -> Result<u64> {
     Ok(now
         .duration_since(SystemTime::UNIX_EPOCH)?
@@ -206,6 +235,7 @@ pub(super) fn all_admitted_operations(peer: &StatePeer) -> Result<Vec<Digest>> {
 impl SessionOwner {
     /// Delivery budget use of the committed storage. Cheap: metadata and
     /// payload lengths only, no payload decode.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn delivery_pressure(&self) -> Result<Pressure> {
         let PublicationStorage::V5 {
             pool,
@@ -261,6 +291,7 @@ impl SessionOwner {
     }
     /// The retention commit due now, if any. `busy` reports an active client
     /// snapshot download: optional checkpoints and rotations wait for it.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn delivery_retention_due(
         &self,
         now: SystemTime,
@@ -288,6 +319,7 @@ impl SessionOwner {
     }
     /// Commit the retention step due now. Returns `None` without committing
     /// when nothing is due.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn maintain_delivery(
         &mut self,
         now: SystemTime,
@@ -299,6 +331,7 @@ impl SessionOwner {
         self.retain_delivery(action, now).map(Some)
     }
     /// Commit one explicit retention step.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn retain_delivery(
         &mut self,
         action: RetentionAction,
@@ -336,6 +369,7 @@ impl SessionOwner {
     /// Certify the committed peer as a new publication baseline. A checkpoint
     /// too large for one replay page becomes a rotation. Returns whether the
     /// store rotated.
+    #[cfg(any(test, feature = "media"))]
     fn checkpoint_delivery(&mut self, now: SystemTime) -> Result<bool> {
         let generation = self
             .aggregate
@@ -361,6 +395,7 @@ impl SessionOwner {
     /// Commit a certified checkpoint as the first entry of a new store
     /// incarnation, preserving consumer registrations and the receipts of
     /// devices that have not acknowledged them.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn rotate_delivery(&mut self, now: SystemTime) -> Result<CommitReceipt> {
         let generation = self
             .aggregate
@@ -371,6 +406,7 @@ impl SessionOwner {
         let messages = self.prepare_certified_bootstrap_at(&mut candidate, generation, now)?;
         self.rotate_with(candidate, &messages)
     }
+    #[cfg(any(test, feature = "media"))]
     fn rotate_with(
         &mut self,
         candidate: StatePeer,
@@ -432,6 +468,7 @@ impl SessionOwner {
     /// untouched, when the caller must use the certified snapshot path: the
     /// admission changed more than these items, the state is incomplete, or
     /// the tail would exceed its inline caps.
+    #[cfg(any(test, feature = "media"))]
     pub(super) fn append_incremental_publication(
         &self,
         next: &mut Aggregate,
@@ -531,6 +568,7 @@ impl SessionOwner {
     }
     /// Incremental publication for an exactly admitted upload, or the
     /// certified snapshot path when it does not apply.
+    #[cfg(any(test, feature = "media"))]
     pub(super) fn append_delivery_publication(
         &self,
         next: &mut Aggregate,

@@ -71,6 +71,7 @@ impl ActionPumpCadence {
 
     /// A data-plane request woke the loop. Before this lane it counted as
     /// action activity; it now pumps only through committed generation changes.
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn data_request(&mut self, now: Instant) {
         if self.baseline {
             self.activity(now);

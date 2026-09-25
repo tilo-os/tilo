@@ -2,9 +2,10 @@
 use launcher::managed::{InstalledManagedPackage, ManagedLauncher, ManagedRuntime, PackageTrust};
 use launcher::services::ManagedProviderSelection;
 use serde::Deserialize;
+#[cfg(any(target_os = "linux", test))]
+use std::os::unix::net::UnixStream;
 use std::{
     io::Read,
-    os::unix::net::UnixStream,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -201,10 +202,12 @@ impl ManagedConfig {
         .await
         .map_err(|_| "gateway configuration deadline exceeded".to_string())?
     }
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) async fn model_connection(&self) -> Result<UnixStream, String> {
         self.model_connection_until(tokio::time::Instant::now() + Duration::from_secs(5))
             .await
     }
+    #[cfg(any(target_os = "linux", test))]
     async fn model_connection_until(
         &self,
         deadline: tokio::time::Instant,

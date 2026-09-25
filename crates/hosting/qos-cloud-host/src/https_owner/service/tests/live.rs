@@ -14,7 +14,7 @@ use tokio::time::timeout;
 const T: Duration = Duration::from_secs(10);
 
 fn http() -> reqwest::Client {
-    reqwest::Client::builder()
+    tilo_net::http::client()
         .danger_accept_invalid_certs(true)
         .build()
         .unwrap()
@@ -365,10 +365,9 @@ async fn forwarded(
             uploaded.push(upload(author, root, *delivery).await);
             if let Ok(Ok(Some(mut group))) =
                 timeout(Duration::from_millis(300), ops.recv_group()).await
+                && let Ok(Some(frame)) = group.read_frame().await
             {
-                if let Ok(Some(frame)) = group.read_frame().await {
-                    return frame.payload.to_vec();
-                }
+                return frame.payload.to_vec();
             }
         }
     })

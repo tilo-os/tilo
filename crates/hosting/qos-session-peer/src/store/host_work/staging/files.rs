@@ -1,6 +1,8 @@
 use super::*;
 use crate::staging_manifest::StageManifest;
-use std::io::{Read, Write};
+use std::io::Read;
+#[cfg(any(test, feature = "media"))]
+use std::io::Write;
 struct Name {
     bytes: [u8; 107],
     len: usize,
@@ -244,6 +246,7 @@ pub(super) fn recover(
     Ok(recovered)
 }
 impl StagingReservation {
+    #[cfg(feature = "media")]
     pub(crate) fn validate_completed_file(
         &self,
         store: &SessionStore,
@@ -318,6 +321,7 @@ impl StagingReservation {
         }
         Ok(())
     }
+    #[cfg(feature = "media")]
     pub(crate) fn same_decode_inventory(&self, lease: &LargeDecodeLease) -> bool {
         Arc::ptr_eq(
             self.directory
@@ -342,6 +346,7 @@ impl StagingReservation {
             .disk;
         disk_preflight(&self.directory.directory, bytes)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn identity(&self) -> &StageIdentity {
         &self.identity
     }
@@ -362,6 +367,7 @@ impl StagingReservation {
         }
         Ok(file)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn read_manifest(&self) -> Result<Option<StageManifest>, HostWorkFailure> {
         let value = read_manifest(
             &self.directory.directory,
@@ -373,6 +379,7 @@ impl StagingReservation {
         }
         Ok(value)
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn write_manifest(&self, manifest: &StageManifest) -> Result<(), HostWorkFailure> {
         self.sole()?;
         self.preflight()?;

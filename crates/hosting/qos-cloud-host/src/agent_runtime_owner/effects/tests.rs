@@ -679,8 +679,7 @@ fn agent_message_after_policy_narrowing_cannot_revive_spawn_grants() {
             uuid::Uuid::from_u128(90),
             &message_intent(&custody, "more"),
         )
-        .err()
-        .expect("narrowed grants must refuse the Message");
+        .expect_err("narrowed grants must refuse the Message");
     assert!(
         error.to_string().contains("grants no longer permitted"),
         "{error}"

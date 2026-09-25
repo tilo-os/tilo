@@ -1,6 +1,10 @@
 //! Actual owner-root binding for opaque snapshot sidecars, not pin authority.
 use super::*;
-use crate::store::{HostWorkFailure, HostWorkInventory, SnapshotDirectory, SnapshotReservation};
+#[cfg(test)]
+use crate::store::SnapshotReservation;
+#[cfg(any(test, feature = "media"))]
+use crate::store::{HostWorkFailure, HostWorkInventory, SnapshotDirectory};
+#[cfg(any(test, feature = "media"))]
 fn failure(error: HostWorkFailure) -> OwnerDataFailure {
     OwnerDataFailure::new(
         match error {
@@ -12,6 +16,7 @@ fn failure(error: HostWorkFailure) -> OwnerDataFailure {
     )
 }
 impl SessionOwner {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn snapshot_directory(
         &self,
         inventory: &HostWorkInventory,
@@ -32,6 +37,7 @@ impl SessionOwner {
             .snapshot_directory(inventory, self.workspace_id)
             .map_err(failure)
     }
+    #[cfg(test)]
     pub(crate) fn validate_snapshot_reservation(
         &self,
         reservation: &SnapshotReservation,

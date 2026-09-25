@@ -136,6 +136,7 @@ const PUBLICATION_HOLD: std::time::Duration = std::time::Duration::from_secs(10)
 /// pass). Mounting a worker takes tens to hundreds of milliseconds; a whole
 /// workspace (dozens of records) mounted in one owner tick held that thread
 /// for seconds, and every command queued behind it.
+#[cfg(not(test))]
 const MOUNT_BUDGET: std::time::Duration = std::time::Duration::from_millis(25);
 /// A worker whose record lost its last window (and is used by no active
 /// agent task) stays mounted this long, so a quick reopen is instant; then
@@ -443,9 +444,6 @@ impl AgentWorkers {
             }
         }
         Ok((this, requests))
-    }
-    pub(crate) fn broker(&self) -> &BrokerHandle {
-        &self.broker
     }
     pub(crate) fn app_broker(&self) -> Result<AppActionBroker, String> {
         self.broker
@@ -790,10 +788,9 @@ impl AgentWorkers {
                 .workers
                 .iter()
                 .find(|w| w.app == row.app_id && w.record == row.record_id)
+                && !worker.records.can_merge_admitted(&checkout)?
             {
-                if !worker.records.can_merge_admitted(&checkout)? {
-                    return Err("worker record is busy; committed refresh pending".into());
-                }
+                return Err("worker record is busy; committed refresh pending".into());
             }
             plans.push((row.app_id, row.record_id, definition, checkout, bytes));
         }
@@ -1472,15 +1469,14 @@ impl AgentWorkers {
         // A committed refresh or a worker surface republish is in progress, with
         // a live transport and no owner failure: keep the last good publication
         // (with its original governance revision) instead of flapping readiness.
-        if live && snapshot.peer.admission_v5_selected() {
-            if let Some((at, held)) = last_good.as_ref() {
-                if at.elapsed() < PUBLICATION_HOLD
-                    && held.room == publication.room
-                    && held.host_device == publication.host_device
-                {
-                    return Ok(held.clone());
-                }
-            }
+        if live
+            && snapshot.peer.admission_v5_selected()
+            && let Some((at, held)) = last_good.as_ref()
+            && at.elapsed() < PUBLICATION_HOLD
+            && held.room == publication.room
+            && held.host_device == publication.host_device
+        {
+            return Ok(held.clone());
         }
         *last_good = None;
         self.owner.stop_readiness();
@@ -1858,7 +1854,7 @@ fn permission(
         if !current.certificates().contains(&certificate)
             || role != retained_role
             || person != retained_person
-            || PrivatePolicyBasis::from_peer(&current)
+            || PrivatePolicyBasis::from_peer(current)
                 .map_err(|e| e.to_string())?
                 .revision()
                 != basis.revision()

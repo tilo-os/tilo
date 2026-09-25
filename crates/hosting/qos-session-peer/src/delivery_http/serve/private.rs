@@ -97,6 +97,10 @@ impl Private {
 
     /// Submit one private command/read. The original request is parked until
     /// the broker replies; returns the request back on refusal.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back unmoved; boxing would allocate per hand-back"
+    )]
     pub(super) fn command(
         &mut self,
         sessions: &mut HttpSessions,
@@ -151,6 +155,10 @@ impl Private {
     }
 
     /// Answer a ready private event now, or hold the original poll.
+    #[expect(
+        clippy::result_large_err,
+        reason = "the error hands the caller its own request back unmoved; boxing would allocate per hand-back"
+    )]
     pub(super) fn poll(
         &mut self,
         sessions: &mut HttpSessions,

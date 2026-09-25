@@ -516,13 +516,6 @@ impl OwnerCommitHandle {
     }
 }
 impl SessionOwner {
-    fn commit_local_owner_request(
-        &mut self,
-        request: &OwnerCommitRequest,
-    ) -> Result<OwnerCommitReceipt, String> {
-        self.commit_local_owner_request_clock(request, None)
-            .map_err(LocalOwnerTurnError::into_string)
-    }
     fn commit_local_owner_request_clock(
         &mut self,
         request: &OwnerCommitRequest,

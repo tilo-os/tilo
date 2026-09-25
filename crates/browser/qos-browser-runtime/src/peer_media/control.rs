@@ -27,6 +27,10 @@ pub(super) struct Participation {
     pub leaving: bool,
     pub presence_expires_at_ns: u64,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 pub(super) enum ControlStage {
     GrantChallenge(GrantOperation),
     GrantComplete(GrantOperation),
@@ -41,19 +45,47 @@ pub(crate) struct GrantView {
     pub expires_in_ns: u64,
     pub presence_in_ns: u64,
     pub directions: MediaDirections,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub namespace: media_wire::MediaNamespace,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub inventory: media_wire::PublisherInventory,
 }
 pub(crate) struct RelayView {
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub handle: u32,
     pub carrier: u32,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub endpoint: String,
     pub setup: Vec<u8>,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub namespace: media_wire::MediaNamespace,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub inventory: media_wire::PublisherInventory,
 }
 pub(crate) struct PresenceView {
     pub expires_in_ns: u64,
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        expect(dead_code, reason = "read only by the browser (wasm32) build")
+    )]
     pub inventory: media_wire::PublisherInventory,
 }
 
@@ -469,15 +501,14 @@ impl PeerMedia {
         {
             return Err("media inventory exceeds exact remote call scope".into());
         }
-        if let Some(previous) = &part.context {
-            if context.media_boot != previous.media_boot
+        if let Some(previous) = &part.context
+            && (context.media_boot != previous.media_boot
                 || context.epoch != previous.epoch
                 || context.inventory.revision < previous.inventory.revision
                 || (context.inventory.revision == previous.inventory.revision
-                    && context.inventory != previous.inventory)
-            {
-                return Err("media boot or inventory continuity changed".into());
-            }
+                    && context.inventory != previous.inventory))
+        {
+            return Err("media boot or inventory continuity changed".into());
         }
         Ok(())
     }

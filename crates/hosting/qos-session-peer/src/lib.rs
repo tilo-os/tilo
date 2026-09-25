@@ -34,8 +34,11 @@ pub(crate) mod media_service;
 #[cfg(feature = "media")]
 mod room_media_policy;
 
+#[cfg(feature = "media")]
 mod delivery_http;
+#[cfg(feature = "media")]
 mod onboarding_http;
+#[cfg(feature = "media")]
 mod private_http;
 
 #[cfg(feature = "media")]

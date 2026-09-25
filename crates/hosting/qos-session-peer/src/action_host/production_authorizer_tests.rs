@@ -217,10 +217,10 @@ impl Fixture {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         loop {
             for event in self.caller.poll() {
-                if let CollabEvent::ActionDirectoryPage { request_id, result } = event {
-                    if request_id == id {
-                        return result;
-                    }
+                if let CollabEvent::ActionDirectoryPage { request_id, result } = event
+                    && request_id == id
+                {
+                    return result;
                 }
             }
             if tokio::time::Instant::now() >= deadline {

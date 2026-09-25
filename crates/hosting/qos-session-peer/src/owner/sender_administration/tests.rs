@@ -133,8 +133,9 @@ fn sender_admin_managed_init_commits_active_real_file() {
 
 use atomic_file::test_support::{self, Checkpoint};
 use std::cell::RefCell;
+type BoundaryAction = (Boundary, Box<dyn FnOnce(&crate::store::SessionStore)>);
 thread_local! {
-    static ACTION: RefCell<Option<(Boundary, Box<dyn FnOnce(&crate::store::SessionStore)>)>> = const { RefCell::new(None) };
+    static ACTION: RefCell<Option<BoundaryAction>> = const { RefCell::new(None) };
     static COMMIT: RefCell<Option<(u8, Checkpoint)>> = const { RefCell::new(None) };
     static PHYSICAL: RefCell<Option<(Checkpoint, usize)>> = const { RefCell::new(None) };
 }

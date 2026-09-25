@@ -13,6 +13,7 @@ pub(crate) fn empty_workspace(
     roster: &[DeviceCert],
     name: &str,
 ) -> Result<SeedState, String> {
+    use tilo_automerge::ApplyIncoming as _;
     use ui::automerge::{AutoCommit, Change, ObjType, ROOT, transaction::Transactable};
 
     let mut doc = AutoCommit::new().with_actor(ui::automerge::ActorId::from(
@@ -23,7 +24,7 @@ pub(crate) fn empty_workspace(
         .map(Change::from_bytes)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    doc.apply_changes(changes).map_err(|e| e.to_string())?;
+    doc.apply_incoming(changes).map_err(|e| e.to_string())?;
     doc.put(ROOT, "name", name).map_err(|e| e.to_string())?;
     doc.put_object(ROOT, "contents", ObjType::Map)
         .map_err(|e| e.to_string())?;
@@ -145,11 +146,11 @@ fn legacy_writer_notes_split(
                 .tabs
                 .iter()
                 .position(|tab| app_is(&tab.tile, "so.tilo.notes"));
-            if writer.is_some() && notes.is_some() {
+            if let (Some(_), Some(notes)) = (writer, notes) {
                 if matched.is_some() {
                     return Err("multiple legacy Writer and Notes groups".into());
                 }
-                matched = Some((strip_index, group_index, notes.unwrap()));
+                matched = Some((strip_index, group_index, notes));
             }
         }
     }

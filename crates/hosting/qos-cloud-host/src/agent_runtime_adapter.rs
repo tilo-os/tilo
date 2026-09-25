@@ -31,12 +31,17 @@ use uuid::Uuid;
 pub(crate) struct LiveAttempt {
     policy_time: PolicyTime,
     pub(crate) ids: AgentExecutionIdsV2,
+    #[cfg_attr(
+        not(any(target_os = "linux", test)),
+        expect(dead_code, reason = "used only by the Linux agent runtime and tests")
+    )]
     pub(crate) caller: DeviceCert,
     pub(crate) intent: AgentIntentV2,
     custody: AgentAttemptCustody,
     launch: Mutex<launch_retry::LiveLaunchSlot>,
 }
 impl LiveAttempt {
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn launch_custody(&self) -> &AgentAttemptCustody {
         &self.custody
     }
@@ -325,10 +330,10 @@ impl RuntimeOwner {
         Ok(())
     }
     pub(crate) fn stop_readiness(&self) {
-        if let Ok(mut live) = self.live.lock() {
-            if let Some(state) = live.provider.as_mut() {
-                state.required_services_ready = false;
-            }
+        if let Ok(mut live) = self.live.lock()
+            && let Some(state) = live.provider.as_mut()
+        {
+            state.required_services_ready = false;
         }
     }
     /// Store for one task's step ledger: the live attempt's original policy
@@ -355,6 +360,10 @@ impl RuntimeOwner {
     /// Whether any agent task is live (a live process whose task has no
     /// terminal progress) — the same filter as [`Self::active_agent_tasks`],
     /// without building its list. In-memory only.
+    #[expect(
+        dead_code,
+        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+    )]
     pub(crate) fn has_active_agent_tasks(&self) -> bool {
         let Ok(live) = self.live.lock() else {
             return true;
@@ -405,6 +414,10 @@ impl RuntimeOwner {
     /// terminal fact for each of its live tasks (only the tasks' own owner
     /// may), then close its enrolled connection so no queued step leaves.
     /// Wire from the owner's agents panel (HTTPS owner route).
+    #[expect(
+        dead_code,
+        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+    )]
     pub(crate) fn revoke_agent(
         &self,
         caller: &DeviceCert,
@@ -583,6 +596,7 @@ impl RuntimeOwner {
         )
     }
     /// Same closed door for newly admitted, retried and scanned Spawn work.
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn recover_before_launch(&self, invocation: Uuid) -> Result<bool, String> {
         let time = self.policy.capture_installed()?;
         let store = self.store_for(&time)?;
@@ -647,6 +661,7 @@ impl RuntimeOwner {
         }
         Ok(())
     }
+    #[cfg(any(target_os = "linux", test))]
     pub(crate) fn pending_spawns(
         &self,
         after: Option<Uuid>,
@@ -657,6 +672,10 @@ impl RuntimeOwner {
             .pending_spawn_ids(after, limit)
             .map_err(|e| e.to_string())
     }
+    #[expect(
+        dead_code,
+        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+    )]
     pub(crate) fn observe(
         &self,
         caller: &VerifiedAgentCaller,
@@ -771,6 +790,10 @@ impl RuntimeOwner {
         }
         Ok(())
     }
+    #[expect(
+        dead_code,
+        reason = "wired by the owner agents-panel route (lane S), not merged yet"
+    )]
     pub(crate) fn progress_for(
         &self,
         caller: &VerifiedAgentCaller,
@@ -951,12 +974,11 @@ impl EnrolledAgentOwner for RuntimeOwner {
         if live.progress.len() >= 32 && !live.progress.contains_key(&update.invocation()) {
             return Err("private progress capacity reached".into());
         }
-        if let Some(prior) = live.progress.get(&update.invocation()) {
-            if update.sequence() < prior.sequence
-                || (update.sequence() == prior.sequence && update.update() != &prior.update)
-            {
-                return Err("private progress sequence conflict".into());
-            }
+        if let Some(prior) = live.progress.get(&update.invocation())
+            && (update.sequence() < prior.sequence
+                || (update.sequence() == prior.sequence && update.update() != &prior.update))
+        {
+            return Err("private progress sequence conflict".into());
         }
         live.progress.insert(
             update.invocation(),

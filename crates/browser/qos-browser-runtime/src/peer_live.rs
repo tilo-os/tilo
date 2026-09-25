@@ -34,7 +34,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 fn unhex(text: &str, max: usize) -> Result<Vec<u8>, String> {
-    if text.is_empty() || text.len() % 2 != 0 || text.len() / 2 > max {
+    if text.is_empty() || !text.len().is_multiple_of(2) || text.len() / 2 > max {
         return Err("invalid live hex bytes".into());
     }
     (0..text.len())

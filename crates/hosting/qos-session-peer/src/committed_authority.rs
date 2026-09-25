@@ -45,11 +45,19 @@ impl Held {
 
 pub(crate) struct CommittedView {
     peer: StatePeer,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     committed_peer_identity: [u8; 32],
     _serialized_credit: Option<Arc<crate::owner::resources::RetainedSerializedBytes>>,
     generation: u64,
     continuity: u64,
     private_policy: Option<qos_action_broker::peer_actions::PrivatePolicyBasis>,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     policy_epoch: u64,
     policy_origin: Arc<AtomicBool>,
     time_origin: Option<Arc<qos_action_broker::peer_actions::PolicyOrigin>>,
@@ -60,21 +68,29 @@ impl CommittedView {
     pub(crate) fn peer(&self) -> &StatePeer {
         &self.peer
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn generation(&self) -> u64 {
         self.generation
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn retained_serialized_credit(
         &self,
     ) -> Option<&Arc<crate::owner::resources::RetainedSerializedBytes>> {
         self._serialized_credit.as_ref()
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn committed_peer_identity(&self) -> [u8; 32] {
         self.committed_peer_identity
     }
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn continuity(&self) -> u64 {
         self.continuity
     }
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum State {
     Current(CommittedView),
     Updating,
@@ -97,6 +113,10 @@ struct Shared {
 #[derive(Clone)]
 pub(crate) struct CommittedAuthority(Arc<Shared>);
 pub(crate) enum Observation<'a> {
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     Current(Current<'a>),
     Updating,
     Denied,
@@ -109,6 +129,7 @@ impl Current<'_> {
             _ => unreachable!("current guard only constructed for committed state"),
         }
     }
+    #[cfg(feature = "media")]
     pub(crate) fn continuity(&self) -> u64 {
         self.view().continuity()
     }
@@ -152,7 +173,7 @@ impl CommittedAuthority {
             qos_action_broker::peer_actions::OwnerPolicyClock::new(),
         )
     }
-    #[cfg(test)]
+    #[cfg(all(test, feature = "test-support"))]
     pub(crate) fn new_with_test_clock(
         owner: &SessionOwner,
         clock: &qos_action_broker::peer_actions::OwnerPolicyClock,
@@ -200,10 +221,10 @@ impl CommittedAuthority {
             !owner.durability_healthy() || capture_failed,
             Ordering::Release,
         );
-        if !owner.permits_publication() || capture_failed {
-            if let Some(time) = &policy_time {
-                time.invalidate();
-            }
+        if (!owner.permits_publication() || capture_failed)
+            && let Some(time) = &policy_time
+        {
+            time.invalidate();
         }
         Self(Arc::new(Shared {
             #[cfg(test)]
@@ -508,4 +529,5 @@ pub(crate) fn enter_test_recovery(authority: &CommittedAuthority) {
 }
 
 mod private_policy;
+#[cfg(feature = "media")]
 pub(crate) use private_policy::NativeDisclosureFence;

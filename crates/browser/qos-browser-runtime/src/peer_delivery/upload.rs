@@ -238,6 +238,7 @@ impl UploadWindow {
     pub fn abandon(&mut self, batch: u64) {
         self.flights.remove(&batch);
     }
+    #[cfg(target_arch = "wasm32")]
     pub fn clear(&mut self) {
         *self = Self::default();
     }

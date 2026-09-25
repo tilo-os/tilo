@@ -5,20 +5,47 @@ pub(crate) type DataResult<T> = std::result::Result<T, OwnerDataFailure>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnerCapacityKind {
     Bytes,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     NativeQuota,
     Disk,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     Consumer,
-    ReplaySize,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum OwnerDataFailureKind {
     CurrentDenied,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     UnsupportedPolicy,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     UnsupportedNativeFamily,
     WriterNotSelected,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     ExactIdConflict,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     NativeSequenceConflict,
     InvalidNativeInput,
+    #[cfg_attr(
+        not(any(test, feature = "media")),
+        expect(dead_code, reason = "only the media ingress uses this")
+    )]
     Reset(ResetReason),
     Capacity(OwnerCapacityKind),
     Unavailable,
@@ -30,6 +57,7 @@ pub(crate) struct OwnerDataFailure {
     _diagnostic: anyhow::Error,
 }
 impl OwnerDataFailure {
+    #[cfg(any(test, feature = "media"))]
     pub(crate) fn kind(&self) -> OwnerDataFailureKind {
         self.kind
     }
@@ -67,6 +95,7 @@ pub(in crate::owner) fn require(
         Err(failure(kind, anyhow::anyhow!(diagnostic)))
     }
 }
+#[cfg(any(test, feature = "media"))]
 pub(in crate::owner) fn admission(error: qos_peer_state::AdmissionError) -> anyhow::Error {
     use qos_peer_state::AdmissionError;
     let kind = match &error {

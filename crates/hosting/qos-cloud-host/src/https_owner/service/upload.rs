@@ -30,6 +30,10 @@ pub(super) fn partial_chunk(body: &[u8]) -> Option<StateItemChunk<'_>> {
 
 /// Worker output. Complete bytes were read back and digest-checked from the
 /// durable stage; they remain inert until the Store admission turn.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Staged {
     Partial(UploadStage),
     Complete {
@@ -48,6 +52,10 @@ struct InFlight {
     session: [u8; 16],
     pending: PendingCarrier,
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "short-lived or singly owned; boxing the large variant would add an allocation per value"
+)]
 enum Prepared {
     Receipt(Vec<u8>),
     Stage {
