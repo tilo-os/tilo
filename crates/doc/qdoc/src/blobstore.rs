@@ -230,15 +230,7 @@ struct FsState {
 /// lock is separate from `FsState`: two `FsBlobStore`s (or two processes) can
 /// point at one configured root and must not each admit a write from a stale
 /// local total.
-struct RootWriteLock(std::fs::File);
-
-impl Drop for RootWriteLock {
-    fn drop(&mut self) {
-        // The OS also releases this lock when a process dies. std selects
-        // flock/LockFileEx for the host while retaining the same quota boundary.
-        let _ = self.0.unlock();
-    }
-}
+type RootWriteLock = advisory_lock::FileLock;
 
 impl FsBlobStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
@@ -261,16 +253,8 @@ impl FsBlobStore {
         std::fs::create_dir_all(&self.root)
             .map_err(|error| BlobStoreError::Io(error.to_string()))?;
         let path = self.root.join(".qdoc-blob-store.lock");
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
-        file.lock()
-            .map_err(|error| BlobStoreError::Io(error.to_string()))?;
-        Ok(RootWriteLock(file))
+        advisory_lock::FileLock::open(&path, advisory_lock::LockMode::Exclusive)
+            .map_err(|error| BlobStoreError::Io(error.to_string()))
     }
 
     /// The store this machine uses unless told otherwise. `TILO_BLOB_STORE` overrides it, letting two

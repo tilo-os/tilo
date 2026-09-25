@@ -17,4 +17,13 @@ disallowed-methods = [
     # explicitly (`*_at(root)`/`*_in(root)`), or in tests use tilo-test-env.
     { path = "std::env::set_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
     { path = "std::env::remove_var", reason = "inject the path, or use tilo_test_env::ScopedEnv/TestHome in tests (see DEVELOPMENT.md)" },
+    # A lock that merely closes stays held while a spawned child still shares
+    # the descriptor. `advisory_lock::FileLock` unlocks explicitly on drop.
+    { path = "std::fs::File::lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::try_lock_shared", reason = "use advisory_lock::FileLock" },
+    { path = "std::fs::File::unlock", reason = "use advisory_lock::FileLock" },
+    { path = "libc::flock", reason = "use advisory_lock::FileLock" },
+    { path = "rustix::fs::flock", reason = "use advisory_lock::FileLock" },
 ]
