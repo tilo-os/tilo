@@ -144,14 +144,30 @@ class SourceTemplateTests(unittest.TestCase):
                 prep.create_template(SimpleNamespace(plan=plan_path, output=raw))
                 self.guided_vm_install(raw, plan, final)
                 prep.finalize_source(SimpleNamespace(plan=plan_path, source_raw=raw))
+                with raw.open("rb") as source:
+                    disk_guid, _ = prep.direct.read_gpt(source, disk_size)
+                proof_path = work / "checked.json"
+                proof_path.write_text("{}")
                 args = SimpleNamespace(plan=plan_path, source_raw=raw,
                                        ci_image="registry.example/tilo@sha256:" + "a" * 64,
-                                       verify_key=work / "key.pub", output=receipt_path)
-                with patch.object(prep, "verified_ci_image", return_value="b" * 64):
+                                       verify_key=work / "key.pub", output=receipt_path,
+                                       ci_index_manifest=work / "index.json",
+                                       ci_child_manifest=work / "child.json",
+                                       vm_proof_checked=proof_path)
+                checked = {"guest_proof": {"disk_guid": disk_guid,
+                           "composefs_digest": "c" * 128,
+                           "target_uki_sha256": "d" * 64}}
+                with (patch.object(prep, "verified_ci_image", return_value="b" * 64),
+                      patch.object(prep.provenance, "signed_ci_child",
+                                   return_value=("sha256:" + "a" * 64,
+                                                 "sha256:" + "e" * 64)),
+                      patch.object(prep.provenance, "checked_guest_proof", return_value=checked),
+                      patch.object(prep.provenance, "installed_uki_sha256", return_value="d" * 64)):
                     prep.make_receipt(args)
             receipt = json.loads(receipt_path.read_text())
             self.assertEqual(receipt["ci_image"], args.ci_image)
             self.assertEqual(receipt["ci_verification_key_sha256"], "b" * 64)
+            self.assertEqual(receipt["ci_child_digest"], "sha256:" + "e" * 64)
             self.assertEqual(set(receipt["final_sha256"]), set(prep.direct.ROLES))
             self.assertEqual(prep.direct.source_preflight(raw, receipt, rows, final, disk_size),
                              receipt["final_sha256"])

@@ -66,8 +66,8 @@ python os/dev/prepare-windows-direct-source.py verify-template --manifest source
 # Run the CI installer in WHPX against source.raw; verify first VM boot; shut it down.
 python os/dev/prepare-windows-direct-source.py verify-template --manifest source.raw.manifest.json --source-raw source.raw
 python os/dev/prepare-windows-direct-source.py finalize --plan realized-plan.json --source-raw source.raw
-python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image <repo@sha256:digest> --verify-key keys/cosign.pub --output source-receipt.json
-python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image <repo@sha256:digest> --verify-key keys/cosign.pub --output final-readback.json
+python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json --source-raw source.raw --ci-image <repo@sha256:digest> --ci-index-manifest ci-index.json --ci-child-manifest ci-arm64-child.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output source-receipt.json
+python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image <repo@sha256:digest> --ci-index-manifest ci-index.json --ci-child-manifest ci-arm64-child.json --vm-proof-checked vm-install-proof-checked.json --verify-key keys/cosign.pub --cosign-command-json cosign-runner.json --cosign-key-arg /mnt/c/path/to/keys/cosign.pub --output final-readback.json
 ```
 
 For a guest image built with the VM install-proof helper, the WHPX scenario
@@ -105,6 +105,22 @@ are lowercase hyphenated UUIDs.
 empty; after the install it contains the guest-created GPT identities. The
 scenario must compare them to the guest's install proof before `finalize`
 rewrites the final PARTUUIDs to the Windows-assigned values.
+The receipt and physical copier require the host-checked proof from the WHPX
+scenario. They verify that the checked guest image digest equals the unique
+Linux ARM64 child of the signed CI index, then independently hash the
+installed target UKI by reading its FAT32 path in the source ESP. The provided
+index and child JSON files must be exact raw OCI manifest bytes; their SHA256
+digests are checked against the CI pin and child descriptor.
+
+On this Windows ARM64 host, Cosign runs in Fedora WSL. Pass
+`--cosign-command-json cosign-runner.json` to both `receipt` and `execute`,
+where the JSON is an argv array such as
+`["wsl.exe","-d","FedoraLinux-42","--exec","/home/xemmerling/.local/bin/cosign"]`.
+Also pass `--cosign-key-arg /mnt/c/path/to/cosign.pub` while `--verify-key`
+continues to name the same native Windows file for SHA256 binding. The
+WSL key path must be the exact `/mnt/<drive>/...` translation of that
+resolved Windows path. The command is executed as an argument vector without
+a shell.
 
 The allocator command above is an authorized physical mutation and must run
 only after the matching BitLocker recovery key has actually been backed up.
