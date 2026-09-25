@@ -1035,6 +1035,22 @@ cargo test -p shell --lib room_activity      # scope it; the compile dominates
 cargo check -p shell --tests                 # before finishing
 ```
 
+### The whole suite, as CI runs it
+
+The developer image (`dist/dev/Containerfile.fedora44`) carries the suite's
+runtime — GStreamer plugins, fonts, lavapipe, PulseAudio, PDFium, the test
+subjects and `cargo-nextest` — from `dist/ci/install-build-deps.sh fedora test`.
+`tools/test-env.sh COMMAND...` gives the command CI's test environment: no
+desktop session, a private `XDG_RUNTIME_DIR`, lavapipe as the only Vulkan
+adapter, cached native NTFS fixtures and a private audio endpoint. CI's test
+jobs call it too. The visual goldens run separately on an idle renderer:
+
+```bash
+golden='(package(tilo-ui) and test(typography_visual_regression::)) or (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))'
+tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "not ($golden)"
+tools/test-env.sh cargo nextest run --workspace --locked --profile ci -E "$golden"
+```
+
 ### Tests and the process environment
 
 `cargo test` runs a binary's tests as threads of one process, so an
