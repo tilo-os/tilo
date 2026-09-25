@@ -136,6 +136,8 @@ static TRUSTED_SERVICE_LAUNCHES: std::sync::LazyLock<Mutex<HashMap<u32, TrustedS
 static WINDOWS_COMPAT_ENTRY_IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static WINDOWS_COMPAT_ENTRY_GENERATION: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+static SURFACE_LAUNCH_KEYS: std::sync::LazyLock<Mutex<HashMap<u64, String>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 #[cfg(target_os = "linux")]
 fn proc_stat(pid: u32) -> Option<(u32, u64)> {
@@ -799,6 +801,15 @@ struct PendingPlacement {
     /// actual GUI process maps a window. Keep the destination until this
     /// deadline; a truly windowless launch is retired once it passes.
     retire_after: Option<Instant>,
+    /// A started launcher must produce a toplevel within a bounded interval.
+    /// This is independent of `retire_after`: the latter handles a process
+    /// that already exited after daemonising, while this deadline prevents a
+    /// still-running but windowless process from pinning "Opening…" forever.
+    present_before: Instant,
+    /// Opaque id in the small startup-metrics crate. Placement remains the
+    /// authoritative FIFO; metrics never guesses by app id during failures.
+    launch_metric_id: u64,
+    metric_spawned: bool,
 }
 
 impl PendingPlacement {
@@ -1048,6 +1059,13 @@ pub fn runtime_dir() -> PathBuf {
 /// Returns [`LaunchError::RegistryUnreadable`] if the app registry file
 /// cannot be read or parsed.
 pub fn read_installed_apps() -> Result<Vec<InstalledApp>, LaunchError> {
+    tracing::info!(
+        target: "tilo::app_registry",
+        system_registry = ?launcher::registry::system_registry_path(),
+        system_payload = ?std::env::var_os("TILO_APPS_SYSTEM_PAYLOAD_DIR"),
+        user_registry = ?launcher::registry::default_registry_path().ok(),
+        "reading installed application registry"
+    );
     let entries =
         launcher::registry::list_installed().map_err(|e| LaunchError::RegistryUnreadable {
             detail: e.to_string(),
@@ -1830,7 +1848,7 @@ fn launch_with_context(
             package_id: package_id.to_string(),
         });
     }
-    execute_installed(app, room, document, uri, tool_intent, media_handoff)
+    execute_installed(app, room, document, uri, tool_intent, media_handoff, None)
 }
 
 #[cfg(test)]
@@ -1867,13 +1885,16 @@ fn execute_installed(
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
     media_handoff: Option<MediaHandoffLaunch>,
+    capability_snapshot: Option<Vec<CapOverride>>,
 ) -> Result<InstalledApp, LaunchError> {
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch preflight begin");
     let socket = wayland_socket().ok_or(LaunchError::NoDisplay)?;
     let launcher_bin = selected_execution_program()?;
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launcher and display resolved");
 
     // A failure to write the capability file is not a launch failure —
     // the app starts with manifest-only permissions, the safe direction.
-    let capabilities = capabilities_for_app(&app.package_id);
+    let capabilities = capability_snapshot.unwrap_or_else(|| capabilities_for_app(&app.package_id));
     let capabilities_file = match write_capabilities_file(&app.package_id, &capabilities) {
         Ok(path) => path,
         Err(e) => {
@@ -1890,6 +1911,7 @@ fn execute_installed(
         .map_err(|error| LaunchError::IdentityUnavailable {
             detail: error.to_string(),
         })?;
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "identity selection resolved");
 
     let mut command = build_launch_command_for(
         &app,
@@ -1920,7 +1942,12 @@ fn execute_installed(
         "TILO_CONTINUITY_INSTANCE".to_string(),
         continuity_instance.to_string(),
     ));
+    command.env.push((
+        "TILO_STARTUP_METRICS_PATH".to_string(),
+        format!("/run/tilo/app/startup-{continuity_instance}.json"),
+    ));
     attach_continuity_instance(&app.package_id, continuity_instance);
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "continuity staged");
     if let Some((Some((schema, resume)), _)) = staged_resume {
         command.env.push((
             "TILO_CONTINUITY_RESUME_SCHEMA".to_string(),
@@ -1955,8 +1982,10 @@ fn execute_installed(
             app.package_id
         );
     }
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "governance projection staged");
     remember_launch(&app);
     let _ = spawn_detached(app.clone(), command);
+    tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "launch worker queued");
     Ok(app)
 }
 
@@ -1971,6 +2000,55 @@ pub fn launch_in_workspace(
     workspace: &Workspace,
 ) -> Result<InstalledApp, LaunchError> {
     launch_document_in_workspace(package_id, workspace, None)
+}
+
+/// Queue a GUI launch without doing registry, identity, or filesystem work on
+/// the compositor thread.  The workspace inputs are cloned before the worker
+/// starts, so a later workspace switch cannot redirect this launch or widen
+/// its capabilities.
+///
+/// The ordinary synchronous helpers remain available to non-interactive
+/// callers that need their immediate error.  Desktop activation must use this
+/// path: registry verification and identity lookup can involve cold storage or
+/// D-Bus and must never stall input or presentation.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::AgentLaunchWorkerUnavailable`] when the preflight
+/// worker thread cannot be started. Later failures arrive as launch events.
+pub fn queue_launch_in_workspace(
+    app: InstalledApp,
+    workspace: &Workspace,
+) -> Result<(), LaunchError> {
+    let package_id = app.package_id.clone();
+    let display_name = app.display_name.clone();
+    let room = workspace.room;
+    let capabilities = workspace.capabilities.clone();
+    std::thread::Builder::new()
+        .name("tilo-launch-preflight".to_string())
+        .spawn(move || {
+            let app_capabilities = capabilities
+                .into_iter()
+                .filter(|capability| capability.subject == Subject::app(&package_id))
+                .collect();
+            let outcome =
+                execute_installed(app, room, None, None, None, None, Some(app_capabilities));
+            if let Err(error) = outcome {
+                push_event(LaunchEvent {
+                    package_id,
+                    display_name,
+                    managed_agent_id: None,
+                    managed_workspace_id: None,
+                    kind: LaunchEventKind::SpawnFailed {
+                        detail: error.user_message(),
+                    },
+                });
+            }
+        })
+        .map_err(|error| LaunchError::AgentLaunchWorkerUnavailable {
+            detail: error.to_string(),
+        })?;
+    Ok(())
 }
 
 /// [`launch_in_workspace`], additionally asking the app to open
@@ -2156,6 +2234,7 @@ pub fn spawn_launch(
             workspace_id,
             command.service_identity.is_some(),
         );
+        mark_launch_spawned(&app.package_id, child.id());
         // The child cannot exec the launcher (and therefore cannot reach the
         // public Wayland socket) until both registries above are complete.
         let _ = launch_gate.write_all(&[1]);
@@ -2250,6 +2329,31 @@ pub(crate) fn push_event(event: LaunchEvent) {
     lock(&EVENTS).push(event);
 }
 
+fn mark_launch_spawned(package_id: &str, pid: u32) {
+    let mut pending = lock(&PENDING_PLACEMENT);
+    if let Some(note) = pending
+        .iter_mut()
+        .find(|note| note.key == package_id && !note.metric_spawned)
+    {
+        note.metric_spawned = true;
+        tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
+    }
+}
+
+/// Finish every launch-bound surface that has captured its first frame.
+/// The compositor calls this once per tick; `frame_seq` reads the capture
+/// store, and the scan is over launches still waiting for a first frame.
+pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
+    for surface_id in tilo_startup_metrics::launches_awaiting_first_present() {
+        record_first_present(surface_id, frame_seq(surface_id));
+    }
+}
+
+/// Record the first captured frame for a launch-bound surface exactly once.
+pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
+    tilo_startup_metrics::launch_first_present(surface_id, frame_seq);
+}
+
 /// Take every launch event queued since the last call. Called once per
 /// frame by the chrome.
 pub fn drain_events() -> Vec<LaunchEvent> {
@@ -2279,12 +2383,61 @@ pub fn remember_launch_named(key: &str, identities: &[String], display_name: &st
     ));
 }
 
+/// Return the durable launch key recorded for a mapped window identity.
+///
+/// This is stronger than desktop-entry inference: some real host entries do
+/// not declare `StartupWMClass` even though their process announces a
+/// different toolkit app-id. The launch table records the exact relationship
+/// at the user action that started the app, so persistence can retain the
+/// desktop-file id accepted by `run-host` on the next login.
+pub(crate) fn launch_key_for_app_id(app_id: &str) -> Option<String> {
+    let launched = lock(&LAUNCHED);
+    launched
+        .iter()
+        .find(|(_, identities, _)| identities_match(identities, app_id))
+        .map(|(key, _, _)| key.clone())
+}
+
+/// Return the durable launch key claimed by this exact mapped surface.
+///
+/// Unlike textual identity matching, this also works for host applications
+/// whose desktop file omits `StartupWMClass`: the pending launch destination
+/// is claimed by the concrete surface during adoption, so the relationship is
+/// authoritative even when the runtime toolkit id was undeclared.
+pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
+    let attributed = lock(&SURFACE_LAUNCH_KEYS).get(&surface_id).cloned();
+    if attributed.is_some() {
+        return attributed;
+    }
+    let pending = lock(&PENDING_PLACEMENT);
+    pending
+        .iter()
+        .find(|note| note.claimed_by == Some(surface_id))
+        .map(|note| note.key.clone())
+}
+
+/// Bind an accepted surface to the kernel-authenticated launch identity of
+/// its Wayland connection. Host applications may announce an undeclared
+/// toolkit app-id, so this mapping is intentionally independent of protocol
+/// strings and pending-placement matching.
+pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
+    lock(&SURFACE_LAUNCH_KEYS).insert(surface_id, launch_key.to_string());
+}
+
+pub(crate) fn forget_surface_launch(surface_id: u64) {
+    lock(&SURFACE_LAUNCH_KEYS).remove(&surface_id);
+}
+
 /// Forget every launch this session has recorded — for tests asserting
 /// the fallback resolution rather than a name a neighbouring test left,
 /// since the table is process-wide and append-only.
 #[cfg(test)]
 pub(crate) fn clear_launched_for_test() {
     LAUNCHED.lock().expect("LAUNCHED poisoned").clear();
+    SURFACE_LAUNCH_KEYS
+        .lock()
+        .expect("SURFACE_LAUNCH_KEYS poisoned")
+        .clear();
 }
 
 /// Matched textually: either the app-id is the package id, or its trailing
@@ -2352,6 +2505,9 @@ pub fn set_pending_placement_for_identities(
         continuity_instance: None,
         claimed_by: None,
         retire_after: None,
+        present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
+        launch_metric_id: tilo_startup_metrics::launch_requested(key),
+        metric_spawned: false,
     });
 }
 
@@ -2389,6 +2545,7 @@ pub fn placement_and_instance_for_toplevel(
             None => {
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
+                    tilo_startup_metrics::launch_mapped(entry.launch_metric_id, surface_id);
                     // Both compositor trees ask for the same launch note,
                     // so keep a claimed answer briefly rather than consume
                     // it on the first lookup. Bound that duplication window
@@ -2434,6 +2591,9 @@ fn attach_continuity_instance(package_id: &str, instance: u64) {
             continuity_instance: Some(instance),
             claimed_by: None,
             retire_after: None,
+            present_before: pending_placement_deadline(PENDING_PRESENTATION_TIMEOUT),
+            launch_metric_id: tilo_startup_metrics::launch_requested(package_id),
+            metric_spawned: false,
         });
     }
 }
@@ -2489,11 +2649,13 @@ pub(crate) fn take_staged_resume_for_package(
 /// created without destroying older concurrent launches' destinations.
 pub fn clear_pending_placement(package_id: &str) {
     let mut pending = lock(&PENDING_PLACEMENT);
-    if let Some(index) = pending
+    let note = pending
         .iter()
         .rposition(|p| p.key == package_id && p.claimed_by.is_none())
-    {
-        pending.remove(index);
+        .map(|index| pending.remove(index));
+    drop(pending);
+    if let Some(note) = note {
+        tilo_startup_metrics::launch_failed(note.launch_metric_id);
     }
 }
 
@@ -2514,12 +2676,13 @@ pub(crate) fn take_sole_claimed_surface_for_failed_launch(package_id: &str) -> O
         .filter(|(_, note)| note.key == package_id)
         .map(|(index, _)| index)
         .collect();
-    if matching.len() != 1 {
+    let [index] = matching[..] else {
         return None;
-    }
-    let index = matching[0];
+    };
     let surface_id = pending.get(index)?.claimed_by?;
-    pending.remove(index);
+    let note = pending.remove(index);
+    drop(pending);
+    tilo_startup_metrics::launch_failed(note.launch_metric_id);
     Some(surface_id)
 }
 
@@ -2554,13 +2717,31 @@ fn retire_pending_placement_at(package_id: &str, deadline: Instant) {
 
 /// Retire windowless clean launches without waiting for another application
 /// with the same identity to map.
-pub fn expire_pending_placements() {
-    expire_pending_placements_at(Instant::now());
+pub fn expire_pending_placements() -> Vec<String> {
+    expire_pending_placements_at(Instant::now())
 }
 
-fn expire_pending_placements_at(now: Instant) {
-    lock(&PENDING_PLACEMENT).retain(|note| note.retire_after.is_none_or(|deadline| now < deadline));
+fn expire_pending_placements_at(now: Instant) -> Vec<String> {
+    let mut expired = Vec::new();
+    lock(&PENDING_PLACEMENT).retain(|note| {
+        let presentation_timed_out = note.claimed_by.is_none() && now >= note.present_before;
+        let retired = note.retire_after.is_some_and(|deadline| now >= deadline);
+        let keep = !presentation_timed_out && !retired;
+        if presentation_timed_out {
+            expired.push(note.key.clone());
+        }
+        if !keep {
+            tilo_startup_metrics::launch_failed(note.launch_metric_id);
+        }
+        keep
+    });
+    expired
 }
+
+/// A normal desktop application should announce its first surface promptly.
+/// Keep enough headroom for cold Electron startup and VM software rendering,
+/// while still turning a dead launch into actionable feedback.
+const PENDING_PRESENTATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Long enough for a daemonising desktop entry to hand off to its GUI child,
 /// while keeping a genuinely windowless launch from steering a later app.
@@ -2573,7 +2754,10 @@ const PENDING_PLACEMENT_CLAIM_GRACE: Duration = Duration::from_secs(10);
 /// Drop every placement note. Used by tests, which share this
 /// process-wide state.
 pub fn clear_pending_placements() {
-    lock(&PENDING_PLACEMENT).clear();
+    let mut pending = lock(&PENDING_PLACEMENT);
+    for note in pending.drain(..) {
+        tilo_startup_metrics::launch_failed(note.launch_metric_id);
+    }
 }
 
 /// Test hook: publish a socket path directly (production goes through
@@ -2730,6 +2914,31 @@ mod tests {
 
     #[test]
     #[serial_test::serial(pending_placement)]
+    fn launch_latency_tracks_fifo_surface_until_first_frame_once() {
+        clear_pending_placements();
+        set_pending_placement(
+            "dev.tilo.timed",
+            crate::shell::tab_binding::Placement::NewGroup,
+        );
+        mark_launch_spawned("dev.tilo.timed", 4242);
+        assert_eq!(
+            placement_for_toplevel("timed", 909),
+            Some(crate::shell::tab_binding::Placement::NewGroup)
+        );
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].1, "dev.tilo.timed");
+        assert!(metrics[0].2);
+        assert_eq!(metrics[0].3, Some(909));
+        record_first_present(909, 1);
+        assert!(tilo_startup_metrics::launch_snapshot().is_empty());
+        record_first_present(909, 2);
+        assert!(tilo_startup_metrics::launch_snapshot().is_empty());
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
     fn failed_newest_same_app_launch_keeps_older_destination() {
         clear_pending_placements();
         set_pending_placement(
@@ -2740,7 +2949,15 @@ mod tests {
             "so.tilo.same-app",
             crate::shell::tab_binding::Placement::IntoTab(22),
         );
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 2);
+        let older_metric = metrics[0].0;
+        let newer_metric = metrics[1].0;
         clear_pending_placement("so.tilo.same-app");
+        let metrics = tilo_startup_metrics::launch_snapshot();
+        assert_eq!(metrics.len(), 1);
+        assert_eq!(metrics[0].0, older_metric);
+        assert_ne!(metrics[0].0, newer_metric);
 
         assert_eq!(
             placement_for_toplevel("same-app", 101),
@@ -2777,8 +2994,24 @@ mod tests {
 
         let now = Instant::now();
         retire_pending_placement_at(package, now);
-        expire_pending_placements_at(now);
+        assert_eq!(expire_pending_placements_at(now), Vec::<String>::new());
         assert_eq!(placement_for_toplevel("windowless", 702), None);
+        clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(pending_placement)]
+    fn live_windowless_launch_reports_its_key_at_the_presentation_deadline() {
+        clear_pending_placements();
+        let package = "dev.tilo.never-mapped";
+        set_pending_placement(package, crate::shell::tab_binding::Placement::IntoTab(57));
+        let deadline = lock(&PENDING_PLACEMENT)[0].present_before;
+
+        assert_eq!(
+            expire_pending_placements_at(deadline),
+            vec![package.to_string()]
+        );
+        assert_eq!(placement_for_toplevel("never-mapped", 704), None);
         clear_pending_placements();
     }
 

@@ -38,8 +38,14 @@ OUT="${OUT:-$RUN/secureboot-results}"
 mkdir -p "$OUT"
 
 say() { printf '\n### %s\n' "$*"; }
-SSHOPTS=(-p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
-         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR)
+SSHOPTS=(-F /dev/null -p "${TILO_SSH_PORT:-2222}" -o StrictHostKeyChecking=no
+         -o UserKnownHostsFile=/dev/null -o ConnectTimeout=8 -o LogLevel=ERROR
+         -o BatchMode=no -o NumberOfPasswordPrompts=1
+         -o PreferredAuthentications=password -o PubkeyAuthentication=no
+         -o KbdInteractiveAuthentication=no)
+# Automation must never fall through to the desktop's graphical askpass
+# helper; sshpass owns the one permitted password prompt.
+unset SSH_ASKPASS SSH_ASKPASS_REQUIRE
 GUEST="${TILO_VM_USER:-tester}@127.0.0.1"
 GUEST_PW="${TILO_VM_PASS:-tilo}"
 gssh() { sshpass -p "$GUEST_PW" ssh "${SSHOPTS[@]}" "$GUEST" "$@"; }
