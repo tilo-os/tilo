@@ -8,6 +8,8 @@ are attributed to the packages they reach when the difference can be proved;
 other repository-wide build inputs fall back to the complete workspace.
 Ordinary feedback checks the closure on x86 and tests changed packages plus
 contract suites; --full qualifies both native architectures.
+The hermetic suites outside Cargo declared in tools/ci/suites.toml are selected
+by the paths they read.
 The emitted matrix is consumed directly by Forgejo Actions.
 """
 
@@ -31,6 +33,7 @@ from ci.workspace_graph import (
     cargo_metadata, changed_files, closure, comparison_merge_base, file_at,
     lockfile_change, owner_for, package_maps, reverse_dependencies, run,
 )
+from ci import suites as path_suites
 
 
 # Preserve the existing wire/document/package contract suites, including
@@ -70,6 +73,8 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
     "tools/ci/workflow_applicability.py": "tools/tests/test_workflow_applicability.py",
+    "tools/ci/suites.py": "tools/tests/test_suites.py",
+    "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
     "tools/policy/check_workspace_members.py": "tools/tests/test_check_workspace_members.py",
     "tools/policy/check_repository_layout.py": "tools/tests/test_check_repository_layout.py",
@@ -432,6 +437,8 @@ def make_plan(
     builder_only_external_assets: bool = False,
     allow_security_skip: bool = False,
     resolved_inputs: dict[str, ResolvedInput] | None = None,
+    suite_manifest: path_suites.Manifest | None = None,
+    all_suites: bool = False,
 ) -> dict:
     packages, by_dir = package_maps(metadata, root)
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
@@ -540,12 +547,18 @@ def make_plan(
             )
             matrix.append({**shard, "arch": arch, "runner": selected_runner, "check_runner": runner,
                            "test_packages": " ".join(f"-p {name}" for name in test_names)})
+    # Hermetic suites outside Cargo follow their declared inputs; explicit full
+    # runs and pushes to main (all_suites) run every one of them.
+    suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
+              if suite_manifest is not None else [])
     return {
         "full": full,
         "rust_required": bool(selected),
         "security_required": not security_not_applicable,
         "native_dependencies_required": native_dependencies_required(
             root, changes, force_full, resolved_inputs),
+        "suites_required": bool(suites),
+        "suites": suites,
         "reason": reason,
         "changed_files": changes,
         "selected_count": len(selected),
@@ -573,6 +586,8 @@ def emit_github(plan: dict, output: Path) -> None:
         handle.write(f"rust_required={'true' if plan['rust_required'] else 'false'}\n")
         handle.write(f"security_required={'true' if plan['security_required'] else 'false'}\n")
         handle.write(f"native_dependencies_required={str(plan['native_dependencies_required']).lower()}\n")
+        handle.write(f"suites_required={'true' if plan['suites_required'] else 'false'}\n")
+        handle.write(f"suites={' '.join(plan['suites'])}\n")
         handle.write(f"selected_count={plan['selected_count']}\n")
         handle.write(f"workspace_count={plan['workspace_count']}\n")
         handle.write(f"estimated_cost={plan['estimated_cost']}\n")
@@ -589,6 +604,11 @@ def main() -> int:
         "--allow-security-skip",
         action="store_true",
         help="allow audited pull-request-only inputs to omit security invariants",
+    )
+    parser.add_argument(
+        "--all-suites",
+        action="store_true",
+        help="run every declared hermetic suite regardless of changed paths",
     )
     parser.add_argument("--github-output", type=Path)
     parser.add_argument("--metadata", type=Path, help="read metadata JSON instead of invoking Cargo")
@@ -616,6 +636,8 @@ def main() -> int:
         builder_only_external_assets=builder_only_external_assets,
         allow_security_skip=args.allow_security_skip,
         resolved_inputs=resolved_inputs,
+        suite_manifest=path_suites.load(root),
+        all_suites=args.all_suites,
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:
