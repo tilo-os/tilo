@@ -123,10 +123,6 @@ def find_cmdline(data):
     raise SystemExit("this PE has no .cmdline section, so it is not a UKI")
 
 
-def cmdline_whitespace(byte):
-    return byte in b" \n\t"
-
-
 def find_cmdline_room(data):
     """Return cmdline header/raw geometry without moving another PE section."""
     entries = list(section_table(data))
@@ -391,18 +387,12 @@ def main(argv):
             # The token to replace, taken from the command line as it stands rather
             # than assembled here: its length is what has to be preserved, and only
             # the file knows it.
-            starts = [index for index in range(len(cmdline))
-                      if (index == 0 or cmdline_whitespace(cmdline[index - 1]))
-                      and cmdline.startswith(key + b"=", index)]
-            if not starts:
+            start = cmdline.find(key + b"=")
+            if start < 0:
                 raise SystemExit(f"{key.decode()}= is not on the sealed command line:\n  "
                                  + cmdline.rstrip(b"\0").decode("utf-8", "replace"))
-            if len(starts) != 1:
-                raise SystemExit(f"expected exactly one {key.decode()} token, found {len(starts)}")
-            start = starts[0]
             end = start
-            while (end < len(cmdline) and cmdline[end] != 0
-                   and not cmdline_whitespace(cmdline[end])):
+            while end < len(cmdline) and cmdline[end : end + 1] not in (b" ", b"\0", b"\n"):
                 end += 1
             token = cmdline[start:end]
             if action == "replace" and token != old:

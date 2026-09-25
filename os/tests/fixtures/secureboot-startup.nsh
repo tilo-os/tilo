@@ -1,1 +1,2 @@
+echo TILO_SECURE_BOOT_SIGNED_EFI_PASS
 reset -s
