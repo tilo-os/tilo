@@ -1,6 +1,6 @@
 //! Exact retained admission facts; no authority or mutation surface.
 use super::PeerRead;
-impl PeerRead<'_, '_> {
+impl PeerRead<'_> {
     /// Whether this actual restored peer selected the V5 admission format.
     pub fn admission_v5_selected(&self) -> bool {
         self.peer.core.admission_v5

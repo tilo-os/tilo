@@ -8,151 +8,35 @@ use qos_user_identity as identity;
     reason = "the browser's protocol module is shared; these tests drive only its first membership exchange"
 )]
 mod protocol;
-use automerge::resource_limits::NativeAllowance;
 use ed25519_dalek::SigningKey;
 use protocol::*;
 use qos_peer_state::join::{JoinTransportRequest as Request, JoinTransportResponse as Response};
 
 #[test]
-fn hosted_attempt_allocator_refuses_oversized_phase_before_unfunded_content() {
+fn hosted_attempt_refuses_oversized_phase() {
     let fixture = Fixture::new();
     let mut material: serde_json::Value = serde_json::from_slice(&fixture.material).unwrap();
-    // Bounded, valid JSON whose byte array must be refused without first
-    // buffering an uncharged Vec<Serde Content>. This is a negative material
-    // input, never a signed request or positive authority fixture.
+    // Bounded, valid JSON whose enrollment array is far larger than any real
+    // enrollment. This is a negative material input, never a signed request
+    // or positive authority fixture.
     material["phase"] = serde_json::json!({
         "step": "apply", "enrollment": vec![0u8; 400_000], "signed_at_ns": 20
     });
     let bytes = serde_json::to_vec(&material).unwrap();
     assert!(bytes.len() < 1024 * 1024);
-    let initial = fixture.budget.available_bytes();
-    let result = crate::delivery::resources::precharged_test(&fixture.budget, || {
-        // The observer spans these test-owned input strings too. Their
-        // backing is funded independently of the component under test.
-        let _selection = fixture
-            .budget
-            .reserve("account".len() + "hosted-machine".len())
-            .unwrap();
-        HostedAttempt::restore(
-            &bytes,
-            Selection {
-                account_id: "account".into(),
-                machine_id: "hosted-machine".into(),
-            },
-            &fixture.budget,
-            20,
-        )
-    });
+    let result = HostedAttempt::restore(
+        &bytes,
+        Selection {
+            account_id: "account".into(),
+            machine_id: "hosted-machine".into(),
+        },
+        20,
+    );
     assert!(result.is_err());
-    assert_eq!(fixture.budget.available_bytes(), initial);
 }
 
 #[test]
-fn hosted_attempt_allocator_funds_full_pinned_store_checkpoint_lifecycle() {
-    // Obtain all remote inputs from the real pinned Store before observation.
-    // Store persistence and test fixture storage have their own ownership;
-    // the measured operation below is the complete actual browser protocol.
-    let mut fixture = Fixture::new();
-    let challenge = serde_json::to_vec(&fixture.store.inspect(20).unwrap()).unwrap();
-    let mut original = fixture.restore(&fixture.material, 20);
-    let apply_checkpoint = original
-        .prepare_enrollment(&challenge, 20)
-        .unwrap()
-        .material
-        .to_vec();
-    original.acknowledge(&apply_checkpoint, 20).unwrap();
-    let apply = original.apply_request().unwrap();
-    let apply_key = apply.operation_key;
-    let apply_bytes = apply.payload.to_vec();
-    let request = serde_json::from_slice(&apply_bytes).unwrap();
-    let enrolled = serde_json::to_vec(&fixture.store.apply(&request, 21).unwrap()).unwrap();
-    let challenge_checkpoint = original
-        .accept_enrollment(&enrolled, 22)
-        .unwrap()
-        .material
-        .to_vec();
-    original.acknowledge(&challenge_checkpoint, 22).unwrap();
-    let Request::MembershipChallenge(request) =
-        postcard::from_bytes(original.membership_challenge_request().unwrap()).unwrap()
-    else {
-        panic!("wrong request")
-    };
-    let membership = fixture
-        .store
-        .membership_challenge(fixture.device.verifying_key().to_bytes(), request, 23)
-        .unwrap();
-    let expired = membership.challenge.expires_at_ns + 1;
-    let membership = postcard::to_stdvec(&Response::MembershipChallenge(membership)).unwrap();
-    let proof_checkpoint = original
-        .prepare_membership(&membership, 24)
-        .unwrap()
-        .material
-        .to_vec();
-    original.acknowledge(&proof_checkpoint, 24).unwrap();
-    let proof_bytes = original.membership_complete_request().unwrap().to_vec();
-    let Request::MembershipComplete(request) = postcard::from_bytes(&proof_bytes).unwrap() else {
-        panic!("wrong request")
-    };
-    let bootstrap = fixture
-        .store
-        .owner_membership_complete(fixture.device.verifying_key().to_bytes(), request, 25)
-        .unwrap();
-    let bootstrap = postcard::to_stdvec(&Response::OwnerMembershipComplete(bootstrap)).unwrap();
-    drop(original);
-
-    let initial = fixture.budget.available_bytes();
-    crate::delivery::resources::precharged_test(&fixture.budget, || {
-        // Both restore calls consume these independently paid fixture inputs.
-        let _selection = fixture
-            .budget
-            .reserve(2 * ("account".len() + "hosted-machine".len()))
-            .unwrap();
-        let mut attempt = fixture.restore(&fixture.material, 20);
-        let retained = fixture.budget.available_bytes();
-        let pressure = fixture.budget.reserve(retained - 64).unwrap();
-        assert!(matches!(
-            attempt.prepare_enrollment(&challenge, 20),
-            Err(HostedAttemptError::Capacity)
-        ));
-        drop(pressure);
-        assert_eq!(fixture.budget.available_bytes(), retained);
-        assert_eq!(
-            attempt.prepare_enrollment(&challenge, 20).unwrap().material,
-            apply_checkpoint
-        );
-        assert!(attempt.apply_request().is_err());
-        attempt.acknowledge(&apply_checkpoint, 20).unwrap();
-        let apply = attempt.apply_request().unwrap();
-        assert_eq!(apply.operation_key, apply_key);
-        assert_eq!(apply.payload, apply_bytes);
-        assert_eq!(
-            attempt.accept_enrollment(&enrolled, 22).unwrap().material,
-            challenge_checkpoint
-        );
-        attempt.acknowledge(&challenge_checkpoint, 22).unwrap();
-        assert_eq!(
-            attempt
-                .prepare_membership(&membership, 24)
-                .unwrap()
-                .material,
-            proof_checkpoint
-        );
-        attempt.acknowledge(&proof_checkpoint, 24).unwrap();
-        let mut retry = fixture.restore(&proof_checkpoint, expired);
-        assert_eq!(retry.membership_complete_request().unwrap(), proof_bytes);
-        retry.cancel();
-        assert!(retry.membership_complete_request().is_err());
-        drop(retry);
-        let pending = attempt.accept_membership(&bootstrap, 25).unwrap();
-        drop(attempt);
-        assert!(fixture.budget.available_bytes() < initial);
-        drop(pending);
-    });
-    assert_eq!(fixture.budget.available_bytes(), initial);
-}
-
-#[test]
-fn hosted_attempt_allocator_funds_parser_and_signature_refusals() {
+fn hosted_attempt_refuses_malformed_json_and_signatures() {
     let fixture = Fixture::new();
     let mut broken_signature: serde_json::Value =
         serde_json::from_slice(&fixture.material).unwrap();
@@ -193,25 +77,16 @@ fn hosted_attempt_allocator_funds_parser_and_signature_refusals() {
         format!("{}0{}", "[".repeat(65), "]".repeat(65)).into_bytes(),
         serde_json::to_vec(&too_deep).unwrap(),
     ];
-    let initial = fixture.budget.available_bytes();
     for input in inputs {
-        crate::delivery::resources::precharged_test(&fixture.budget, || {
-            let _selection = fixture
-                .budget
-                .reserve("account".len() + "hosted-machine".len())
-                .unwrap();
-            let result = HostedAttempt::restore(
-                &input,
-                Selection {
-                    account_id: "account".into(),
-                    machine_id: "hosted-machine".into(),
-                },
-                &fixture.budget,
-                20,
-            );
-            assert!(result.is_err());
-        });
-        assert_eq!(fixture.budget.available_bytes(), initial);
+        let result = HostedAttempt::restore(
+            &input,
+            Selection {
+                account_id: "account".into(),
+                machine_id: "hosted-machine".into(),
+            },
+            20,
+        );
+        assert!(result.is_err());
     }
 }
 
@@ -220,7 +95,6 @@ struct Fixture {
     store: crate::Store,
     root: SigningKey,
     device: SigningKey,
-    budget: NativeAllowance,
     material: Vec<u8>,
 }
 impl Fixture {
@@ -265,7 +139,6 @@ impl Fixture {
             store,
             root,
             device,
-            budget: NativeAllowance::new(64 * 1024 * 1024).unwrap(),
             material,
         }
     }
@@ -276,7 +149,6 @@ impl Fixture {
                 account_id: "account".into(),
                 machine_id: "hosted-machine".into(),
             },
-            &self.budget,
             now,
         )
         .unwrap()
@@ -569,7 +441,6 @@ fn hosted_attempt_membership_scope_and_saved_proof_cannot_be_substituted() {
                 account_id: "account".into(),
                 machine_id: "hosted-machine".into()
             },
-            &f.budget,
             24
         )
         .is_err()
@@ -647,7 +518,6 @@ fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
     use atomic_file::test_support::Checkpoint;
     for point in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let mut f = Fixture::new();
-        let available = f.budget.available_bytes();
         let (attempt, saved, request) = f.pending_membership();
         let exact_request = attempt.membership_complete_request().unwrap().to_vec();
         let endpoint = f.device.verifying_key().to_bytes();
@@ -696,12 +566,7 @@ fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
         );
         let pending = attempt.accept_membership(&response_bytes, 27).unwrap();
         drop(attempt);
-        assert!(
-            f.budget.available_bytes() < available,
-            "pending DTO retains its original charged backing"
-        );
         drop(pending);
-        assert_eq!(f.budget.available_bytes(), available);
     }
 }
 
@@ -747,7 +612,6 @@ fn hosted_attempt_mismatched_scope_ack_expiry_and_cancel_are_closed() {
                 account_id: "other".into(),
                 machine_id: "hosted-machine".into()
             },
-            &f.budget,
             20
         )
         .is_err()

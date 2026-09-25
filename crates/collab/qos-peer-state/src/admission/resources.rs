@@ -1,54 +1,34 @@
-//! Retained decoding of the existing exact-admission wire index.
+//! Limited decoding of the existing exact-admission wire index.
 use super::{
     AdmissionError, AdmissionKey, Deserialize, DocumentAdmission, ExactAdmissions,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, Serialize,
 };
-use crate::resources::{Held, OuterLimits, PeerResourceError};
+use crate::resources::{OuterLimits, PeerResourceError};
 
 pub(crate) struct BoundedExactAdmissions {
-    held: Held<WireIndex>,
+    index: WireIndex,
 }
 impl BoundedExactAdmissions {
-    pub(crate) fn decode_in_turn(
-        bytes: &[u8],
-        limits: OuterLimits,
-        turn: &automerge::resource_limits::NativeWorkTurn,
-    ) -> Result<Self, PeerResourceError> {
+    pub(crate) fn decode(bytes: &[u8], limits: OuterLimits) -> Result<Self, PeerResourceError> {
         if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
             return Err(PeerResourceError::Capacity);
         }
-        let held = Held::<WireIndex>::decode_in_turn(bytes, limits, turn)?;
-        if !matches_wire(&held.value, bytes) {
+        let index: WireIndex = crate::resources::decode(bytes, limits)?;
+        if !matches_wire(&index, bytes) {
             return Err(PeerResourceError::Malformed);
         }
-        Ok(Self { held })
-    }
-    #[cfg(test)]
-    pub(crate) fn decode(
-        bytes: &[u8],
-        limits: OuterLimits,
-        allowance: &crate::resources::NativeAllowance,
-    ) -> Result<Self, PeerResourceError> {
-        if bytes.len() > MAX_EXACT_ADMISSION_BYTES {
-            return Err(PeerResourceError::Capacity);
-        }
-        let held = Held::<WireIndex>::decode(bytes, limits, allowance)?;
-        if !matches_wire(&held.value, bytes) {
-            return Err(PeerResourceError::Malformed);
-        }
-        Ok(Self { held })
+        Ok(Self { index })
     }
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&AdmissionKey, &[u8; 32])> {
-        self.held.value.0.iter()
+        self.index.0.iter()
     }
     #[cfg(test)]
     pub(crate) fn get(&self, key: &AdmissionKey) -> Option<&[u8; 32]> {
-        self.held.value.0.get(key)
+        self.index.0.get(key)
     }
 }
 
-// This single visitor is used by legacy restore and the guarded decoder. Keys
-// enter the map by move: a second clone outside the guard would be unaccounted.
+// This single visitor is used by legacy restore and the limited decoder.
 struct WireIndex(ExactAdmissions);
 impl Serialize for WireIndex {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {

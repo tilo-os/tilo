@@ -16,8 +16,6 @@ exclude = [
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
-    "vendor/automerge",
-    "vendor/hexane",
 ]
 # Build `runtime-dylib` with `cargo build -p runtime-dylib --profile thin-app`;
 # it requires unwind support, unlike the default release profile.
@@ -154,6 +152,7 @@ members = [
     "crates/doc/qdoc-codecs",
     "crates/doc/qdoc-pdf",
     "crates/doc/tilo-automerge",
+    "crates/doc/tilo-automerge-isolate",
 
     # Hosting
     "crates/hosting/tilo-relay",
@@ -333,6 +332,7 @@ winit = "0.30.13"
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
 tilo-automerge = { path = "crates/doc/tilo-automerge" }
+tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
 cosmic-text = { version = "0.19.0", default-features = false }
@@ -624,7 +624,3 @@ wayland-backend = { path = "vendor/wayland-backend" }
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
-# automerge 0.12 plus bounded, checked admission of untrusted storage
-# (`automerge::resource_limits`). See vendor/automerge/README.qos.md.
-automerge = { path = "vendor/automerge" }
-hexane = { path = "vendor/hexane" }

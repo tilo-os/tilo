@@ -29,7 +29,6 @@ pub(super) struct TransferState {
     stored_resume: [u8; 32],
     original_stage: Staged,
     renewal_index: Option<u32>,
-    _manifest_credit: automerge::resource_limits::NativeReservation,
 }
 enum Phase {
     Opening,
@@ -121,9 +120,7 @@ pub(super) fn begin(peer: &Peer) -> Result<String, JsValue> {
     }
     if !delivery.recovery.scanned {
         delivery.recovery.scanned = true;
-        let id = delivery
-            .retain(Pending::StageList, &peer.incoming)
-            .map_err(error)?;
+        let id = delivery.retain(Pending::StageList).map_err(error)?;
         return Ok(serde_json::json!({"kind":"stage-list","id":id}).to_string());
     }
     drop(delivery);
@@ -266,7 +263,6 @@ fn manifest_inner(peer: &Peer, bytes: &[u8], original: Option<&Staged>) -> Resul
     if peer.delivery.borrow().transfer.is_some() {
         return Err(error("overlapping pinned transfer"));
     }
-    let manifest_credit = peer.incoming.reserve(128 * 1024).map_err(error)?;
     let pin = PinnedTransfer::open(
         identity(peer),
         peer.transport_generation.get(),
@@ -309,7 +305,6 @@ fn manifest_inner(peer: &Peer, bytes: &[u8], original: Option<&Staged>) -> Resul
         stored_resume,
         original_stage: staged.clone(),
         renewal_index: None,
-        _manifest_credit: manifest_credit,
     });
     Ok(value)
 }
@@ -567,9 +562,7 @@ pub(super) fn chunk(peer: &Peer, index: u32, bytes: &[u8]) -> Result<String, JsV
     }
     transfer.phase = Phase::Writing(end);
     let id = transfer.id.clone();
-    let operation = state
-        .retain(Pending::StageWrite, &peer.incoming)
-        .map_err(error)?;
+    let operation = state.retain(Pending::StageWrite).map_err(error)?;
     Ok(serde_json::json!({"kind":"stage-write","id":operation,"transferId":id,"offset":offset,"bytes":chunk.bytes()}).to_string())
 }
 #[wasm_bindgen]
@@ -620,23 +613,16 @@ fn begin_read(peer: &Rc<Peer>) -> Result<String, JsValue> {
         .current(peer.transport_generation.get(), now())
         .map_err(error)?;
     transfer.decoder = Some(
-        StreamDecoder::with_incoming(
+        StreamDecoder::new(
             transfer.pin.issue().item_count,
             transfer.pin.issue().stream_bytes,
             64 * 1024 * 1024,
-            peer.incoming.clone(),
         )
         .map_err(error)?,
     );
     // The candidate starts from the fenced basis; any live change restarts it.
-    transfer.admission = Some(
-        CutAdmission::begin(
-            &peer.state.borrow(),
-            peer.incoming.clone(),
-            SystemTime::now(),
-        )
-        .map_err(error)?,
-    );
+    transfer.admission =
+        Some(CutAdmission::begin(&peer.state.borrow(), SystemTime::now()).map_err(error)?);
     transfer.basis = Some(basis);
     transfer.read_offset = 0;
     transfer.phase = Phase::Reading;
@@ -654,11 +640,11 @@ fn read_step(peer: &Peer) -> Result<String, JsValue> {
     if length == 0 {
         return Err(error("staged decoder completion missing"));
     }
-    // A storage read carries the same raw-overlap reservation as a fetch. The
-    // executor releases it only after its raw async read and Rust call settle.
+    // A storage read holds a request handle like a fetch until its raw async
+    // read and Rust call settle.
     let id = transfer.id.clone();
     let offset = transfer.read_offset;
-    let operation = state.retain(Pending::StageRead, &peer.incoming)?;
+    let operation = state.retain(Pending::StageRead)?;
     Ok(serde_json::json!({"kind":"stage-read","id":operation,"transferId":id,"offset":offset,"length":length}).to_string())
 }
 #[wasm_bindgen]

@@ -1,4 +1,6 @@
 //! Actual SessionOwner barriers, behind the bounded standalone broker handoff.
+tilo_automerge_isolate::test_worker!();
+
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use qos_session_peer::{SessionOwner, owner_commit::OwnerCommitMailbox};
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};

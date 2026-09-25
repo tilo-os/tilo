@@ -1,38 +1,14 @@
 use super::*;
-use automerge::resource_limits::NativeAllowance;
 use std::sync::{MutexGuard, TryLockError, mpsc};
 use std::time::Duration;
 
 pub(super) mod allocations;
 
-fn budget() -> NativeAllowance {
-    NativeAllowance::new(64 * 1024).unwrap()
+fn domain() -> RetirementDomain {
+    RetirementDomain::new().unwrap()
 }
-fn domain(budget: &NativeAllowance) -> RetirementDomain {
-    RetirementDomain::new(
-        budget
-            .reserve(RetirementDomain::allocation_bytes().unwrap())
-            .unwrap(),
-    )
-    .unwrap()
-}
-fn owner(domain: &RetirementDomain, budget: &NativeAllowance) -> RetirementOwner {
-    domain
-        .marker(
-            budget
-                .reserve(RetirementOwner::allocation_bytes().unwrap())
-                .unwrap(),
-        )
-        .unwrap()
-}
-fn handle(owner: &RetirementOwner, budget: &NativeAllowance) -> RetirementHandle {
-    owner
-        .handle(
-            budget
-                .reserve(RetirementHandle::allocation_bytes().unwrap())
-                .unwrap(),
-        )
-        .unwrap()
+fn owner(domain: &RetirementDomain) -> RetirementOwner {
+    domain.marker().unwrap()
 }
 
 // Fixed private synchronization probe, not a document/owner/positive sink API.
@@ -53,25 +29,12 @@ pub(crate) fn probe(handle: &RetirementHandle) -> Result<MutexGuard<'_, ()>, Ret
 }
 
 #[test]
-fn retirement_rejects_short_credit_before_allocation_and_refunds() {
-    let budget = budget();
-    let baseline = budget.retained_bytes();
-    let (result, stats) = allocations::measure(&budget, || {
-        RetirementDomain::new(budget.reserve(1).unwrap())
-    });
-    assert!(matches!(result, Err(RetirementError::CreditTooSmall)));
-    assert_eq!(stats.allocations, 0);
-    assert_eq!(budget.retained_bytes(), baseline);
-}
-
-#[test]
 fn retirement_marker_drop_denies_retained_handles_without_retiring_sibling() {
-    let budget = budget();
-    let domain = domain(&budget);
-    let first = owner(&domain, &budget);
-    let retained = handle(&first, &budget);
-    let sibling = owner(&domain, &budget);
-    let sibling_handle = handle(&sibling, &budget);
+    let domain = domain();
+    let first = owner(&domain);
+    let retained = first.handle();
+    let sibling = owner(&domain);
+    let sibling_handle = sibling.handle();
     drop(probe(&retained).unwrap());
     drop(first);
     assert!(matches!(probe(&retained), Err(RetirementError::Retired)));
@@ -85,29 +48,23 @@ fn retirement_marker_drop_denies_retained_handles_without_retiring_sibling() {
 
 #[test]
 fn retirement_negative_handle_and_finish_alone_are_idempotent() {
-    let budget = budget();
-    let domain = domain(&budget);
-    let owner = owner(&domain, &budget);
-    let handle = handle(&owner, &budget);
+    let domain = domain();
+    let owner = owner(&domain);
+    let handle = owner.handle();
     handle.finish_retirement();
     handle.retire();
     owner.finish_retirement();
     assert!(matches!(probe(&handle), Err(RetirementError::Retired)));
     domain.finish_retirement();
-    let result = domain.marker(
-        budget
-            .reserve(RetirementOwner::allocation_bytes().unwrap())
-            .unwrap(),
-    );
+    let result = domain.marker();
     assert!(matches!(result, Err(RetirementError::Retired)));
 }
 
 #[test]
 fn retirement_waits_for_entered_probe_before_finishing() {
-    let budget = budget();
-    let domain = domain(&budget);
-    let owner = owner(&domain, &budget);
-    let observer = handle(&owner, &budget);
+    let domain = domain();
+    let owner = owner(&domain);
+    let observer = owner.handle();
     let entered = probe(&observer).unwrap();
     let (requested_tx, requested_rx) = mpsc::sync_channel(0);
     let (finished_tx, finished_rx) = mpsc::sync_channel(0);
@@ -132,22 +89,17 @@ fn retirement_waits_for_entered_probe_before_finishing() {
 
 #[test]
 fn retirement_poison_is_permanent_and_cleanup_does_not_panic() {
-    let budget = budget();
-    let domain = domain(&budget);
-    let owner = owner(&domain, &budget);
-    let handle = handle(&owner, &budget);
-    // Only the fixed mutex probe runs here; no NativeHostCredit callback runs.
+    let domain = domain();
+    let owner = owner(&domain);
+    let handle = owner.handle();
+    // Only the fixed mutex probe runs here; no callback runs.
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let _held = probe(&handle).unwrap();
         panic!("intentional private fixed-probe poison");
     }));
     assert!(poisoned.is_err());
     assert!(matches!(probe(&handle), Err(RetirementError::Poisoned)));
-    let result = domain.marker(
-        budget
-            .reserve(RetirementOwner::allocation_bytes().unwrap())
-            .unwrap(),
-    );
+    let result = domain.marker();
     assert!(matches!(result, Err(RetirementError::Poisoned)));
     owner.retire();
     domain.retire();
@@ -157,40 +109,25 @@ fn retirement_poison_is_permanent_and_cleanup_does_not_panic() {
 }
 
 #[test]
-fn retirement_all_allocations_and_last_reference_deallocation_remain_paid() {
-    let budget = budget();
-    let baseline = budget.retained_bytes();
-    let ((), stats) = allocations::measure(&budget, || {
-        let domain = domain(&budget);
-        let owner = owner(&domain, &budget);
-        let first = handle(&owner, &budget);
-        let last = first
-            .copy_with_credit(
-                budget
-                    .reserve(RetirementHandle::allocation_bytes().unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
-        drop(owner);
-        drop(first);
-        drop(domain);
-        // Only a funded observer remains; it keeps backing, never logical life.
-        assert!(matches!(probe(&last), Err(RetirementError::Retired)));
-        drop(last);
-    });
-    assert!(stats.allocations >= 2);
-    assert_eq!(stats.live, 0);
-    assert!(!stats.underfunded, "{stats:?}");
-    assert_eq!(budget.retained_bytes(), baseline);
+fn retirement_last_observer_outlives_owners_without_keeping_them_live() {
+    let domain = domain();
+    let owner = owner(&domain);
+    let first = owner.handle();
+    let last = first.clone();
+    drop(owner);
+    drop(first);
+    drop(domain);
+    // Only an observer remains; it keeps backing, never logical life.
+    assert!(matches!(probe(&last), Err(RetirementError::Retired)));
+    drop(last);
 }
 
 #[test]
 fn retirement_and_drop_allocate_nothing_after_eager_mutex_initialization() {
-    let budget = budget();
     let (domain, owner, handle) = {
-        let domain = domain(&budget);
-        let owner = owner(&domain, &budget);
-        let handle = handle(&owner, &budget);
+        let domain = domain();
+        let owner = owner(&domain);
+        let handle = owner.handle();
         (domain, owner, handle)
     };
     let ((), stats) = allocations::allocations_only(|| {
@@ -201,41 +138,6 @@ fn retirement_and_drop_allocate_nothing_after_eager_mutex_initialization() {
         drop(domain);
     });
     assert_eq!(stats.allocations, 0);
-}
-
-#[test]
-fn retirement_credit_exhaustion_sealing_and_failed_copy_preserve_original() {
-    let budget = budget();
-    let domain = domain(&budget);
-    let owner = owner(&domain, &budget);
-    let handle = handle(&owner, &budget);
-    let baseline = budget.retained_bytes();
-    let too_small = handle.copy_with_credit(budget.reserve(1).unwrap());
-    assert!(matches!(too_small, Err(RetirementError::CreditTooSmall)));
-    assert_eq!(budget.retained_bytes(), baseline);
-    drop(probe(&handle).unwrap());
-    let all = budget.reserve(budget.available_bytes()).unwrap();
-    assert!(
-        budget
-            .reserve(RetirementHandle::allocation_bytes().unwrap())
-            .is_err()
-    );
-    drop(all);
-    budget.finish_turn();
-    assert!(
-        budget
-            .reserve(RetirementHandle::allocation_bytes().unwrap())
-            .is_err()
-    );
-    // Existing paid backing and negative cleanup remain valid after sealing.
-    handle.retire();
-    drop(handle);
-    drop(owner);
-    drop(domain);
-    assert_eq!(
-        budget.retained_bytes(),
-        NativeAllowance::new(64 * 1024).unwrap().retained_bytes()
-    );
 }
 
 // Fixed negative observation for actual SDK lifecycle synchronization tests.

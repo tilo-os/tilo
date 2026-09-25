@@ -7,6 +7,7 @@ use crate::{
 use automerge::{AutoCommit, ChangeHash, transaction::Transactable};
 use collab_types::DocumentMutation;
 use std::collections::{HashSet, VecDeque};
+use tilo_automerge::ApplyIncoming;
 
 const MAX_PENDING_ITEMS: usize = 64;
 /// A single remote change can be as large as the transport carries, so a
@@ -28,18 +29,43 @@ impl RemoteApplyError {
     }
 }
 
+/// Apply a mutation the host has already committed. Bytes from peers reach an
+/// app only after the host admitted them through `tilo_automerge_isolate`, so
+/// this applies in the app's own process.
 pub(crate) fn merge_committed(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
 ) -> Result<bool, RemoteApplyError> {
-    qos_peer_state::document::merge_committed(doc, mutation).map_err(|error| match error {
-        qos_peer_state::document::MergeError::Busy => RemoteApplyError::Unavailable(
+    if doc.pending_ops() != 0 {
+        return Err(RemoteApplyError::Unavailable(
             "Finish the current edit before receiving remote changes".into(),
-        ),
-        qos_peer_state::document::MergeError::Invalid(error) => {
-            RemoteApplyError::InvalidMutation(error)
+        ));
+    }
+    // Decode into a clone first so malformed incremental data cannot partly
+    // mutate the real owner. Merge preserves actor, causal history and identity.
+    let mut incoming = match mutation {
+        DocumentMutation::Snapshot(bytes) => AutoCommit::load(bytes)
+            .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?,
+        DocumentMutation::Incremental(bytes) => {
+            // Automerge's incremental loader accepts a valid prefix on partial
+            // parse errors, so the whole stream is first loaded strictly on its
+            // own. MissingDeps comes only after a complete parse and is
+            // expected for deltas that need the receiver's history.
+            match AutoCommit::load(bytes) {
+                Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
+                Err(error) => return Err(RemoteApplyError::InvalidMutation(error.to_string())),
+            }
+            let mut incoming = doc.clone();
+            incoming
+                .load_incoming(bytes)
+                .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+            incoming
         }
-    })
+    };
+    let before = super::sorted_heads(doc.base_heads());
+    doc.merge_incoming(&mut incoming)
+        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
+    Ok(before != super::sorted_heads(doc.base_heads()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {
     match mutation {

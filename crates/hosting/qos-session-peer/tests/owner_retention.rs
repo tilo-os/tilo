@@ -1,5 +1,7 @@
 //! Qualification through the actual owner, native publication cursor, Coedit,
 //! authenticated local relay, selected store, and fresh/offline StatePeer admission.
+tilo_automerge_isolate::test_worker!();
+
 use ed25519_dalek::SigningKey;
 use qos_peer_state::{StatePeer, TransportOrigin};
 use qos_session_peer::{

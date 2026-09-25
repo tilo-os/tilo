@@ -1,6 +1,5 @@
-//! Known-schema DTO guard: decodes a closed serde type while debiting every
-//! allocation its visitors make from a caller-supplied budget. The parser's
-//! own scratch is reserved separately by the caller.
+//! Known-schema DTO guard: decodes a closed serde type while counting every
+//! allocation its visitors make against the caller's limits.
 use serde::de::{self, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess, Visitor};
 use std::{alloc::Layout, fmt};
 
@@ -119,7 +118,6 @@ pub fn json<T: de::DeserializeOwned>(bytes: &[u8], limits: GuardLimits) -> Resul
         inner: &mut decoder,
         budget: &mut budget,
     });
-    // Decoder and any parser error are dropped before the parent's scratch credit.
     match value {
         Ok(value) => decoder
             .end()
@@ -163,7 +161,7 @@ struct Seed<'a, S> {
     inner: S,
     budget: &'a mut Budget,
     // Increment only when the parser actually invokes the seed. EOF probes
-    // at an exact collection limit do not spend entries or allocation credit.
+    // at an exact collection limit do not spend entries or allocation bytes.
     count: Option<&'a mut usize>,
     vector: bool,
 }
@@ -283,8 +281,7 @@ impl<'de, V: Visitor<'de>> Visitor<'de> for Visit<'_, V> {
             .map_err(boundary)
     }
     // SliceRead lends scratch/unescaped strings. Any owned callback (including
-    // arbitrary_precision's private Number machinery) stays unsupported; the
-    // parser reservation still covers its allocation before this refusal.
+    // arbitrary_precision's private Number machinery) stays unsupported.
     fn visit_string<E: de::Error>(self, _: String) -> Result<Self::Value, E> {
         Err(boundary(GuardError::Malformed))
     }

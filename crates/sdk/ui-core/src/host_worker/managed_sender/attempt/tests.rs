@@ -3,7 +3,6 @@ use crate::host_worker::managed_sender::{
     NativeSenderOutboxV1,
     tests::{pending_payload, pending_row},
 };
-use automerge::resource_limits::NativeAllowance;
 fn route() -> RouteSpec {
     RouteSpec::record(
         "caller-app",
@@ -12,14 +11,12 @@ fn route() -> RouteSpec {
     )
 }
 #[test]
-fn managed_sender_attempt_single_claim_result_and_last_clone_keep_credit() {
-    // Budget primitive only. No CurrentPrivateState or physical receipt exists.
+fn managed_sender_attempt_single_claim_result_and_last_clone_keep_backing() {
+    // No CurrentPrivateState or physical receipt exists.
     let bytes = pending_payload(&[pending_row(8, Some(""))]);
     let view = NativeSenderOutboxV1::decode(&bytes).unwrap();
     let row = view.find(&[8; 16]).unwrap().unwrap();
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let baseline = allowance.available_bytes();
-    let needed = AttemptOwner::required_bytes(&row, "{}").unwrap();
+    let needed = AttemptOwner::queued_bytes(&row, "{}").unwrap();
     let (owner, attempt) = AttemptOwner::new(
         &row,
         [9; 16],
@@ -27,9 +24,9 @@ fn managed_sender_attempt_single_claim_result_and_last_clone_keep_credit() {
         Operation::Invoke,
         "{}",
         Instant::now(),
-        allowance.reserve(needed).unwrap(),
     )
     .unwrap();
+    assert_eq!(attempt.meter_bytes(), needed);
     let duplicate = attempt.clone();
     assert!(!owner.quiescent());
     let Some(Ok(RequestView::Invoke {
@@ -62,29 +59,23 @@ fn managed_sender_attempt_single_claim_result_and_last_clone_keep_credit() {
     drop(duplicate);
     drop(last);
     assert!(owner.quiescent());
-    assert_eq!(allowance.available_bytes(), baseline - needed);
-    drop(owner);
-    assert_eq!(allowance.available_bytes(), baseline);
 }
 #[test]
-fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
+fn managed_sender_attempt_wrong_route_retirement_and_oversized_confirmation_refuse() {
     let bytes = pending_payload(&[pending_row(8, None)]);
     let row = NativeSenderOutboxV1::decode(&bytes)
         .unwrap()
         .find(&[8; 16])
         .unwrap()
         .unwrap();
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let needed = AttemptOwner::required_bytes(&row, "").unwrap();
     assert!(
         AttemptOwner::new(
             &row,
             [9; 16],
             route().cluster_id,
             Operation::Observe,
-            "",
+            &"x".repeat(4097),
             Instant::now(),
-            allowance.reserve(needed - 1).unwrap()
         )
         .is_err()
     );
@@ -95,7 +86,6 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
         Operation::Observe,
         "",
         Instant::now(),
-        allowance.reserve(needed).unwrap(),
     )
     .unwrap();
     let mut foreign = route();
@@ -115,7 +105,6 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
         Operation::Cancel,
         "",
         Instant::now(),
-        allowance.reserve(needed).unwrap(),
     )
     .unwrap();
     drop(owner);
@@ -126,7 +115,7 @@ fn managed_sender_attempt_wrong_route_retirement_and_underfunding_refuse() {
 }
 
 #[test]
-fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
+fn managed_sender_attempt_all_backings_are_released_after_last_result_drop() {
     use crate::semantic_document_read::retirement::measure_test_allocations;
     let bytes = pending_payload(&[pending_row(8, Some("original"))]);
     let row = NativeSenderOutboxV1::decode(&bytes)
@@ -135,10 +124,7 @@ fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
         .unwrap()
         .unwrap();
     let selected_route = route();
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let needed = AttemptOwner::required_bytes(&row, "{}").unwrap();
-    let ((), allocations) = measure_test_allocations(&allowance, || {
-        let credit = allowance.reserve(needed).unwrap();
+    let ((), allocations) = measure_test_allocations(|| {
         let (owner, attempt) = AttemptOwner::new(
             &row,
             [9; 16],
@@ -146,7 +132,6 @@ fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
             Operation::Invoke,
             "{}",
             Instant::now(),
-            credit,
         )
         .unwrap();
         assert!(matches!(attempt.claim(&selected_route), Some(Ok(_))));
@@ -169,18 +154,17 @@ fn managed_sender_attempt_all_backings_remain_paid_until_last_result_drop() {
         drop(last);
     });
     assert!(allocations.allocations > 0);
-    assert!(!allocations.underfunded, "{allocations:?}");
     assert_eq!(allocations.live, 0);
-    let ((), allocations) = measure_test_allocations(&allowance, || {
+    let oversized = "x".repeat(4097);
+    let ((), allocations) = measure_test_allocations(|| {
         assert!(
             AttemptOwner::new(
                 &row,
                 [9; 16],
                 selected_route.cluster_id,
                 Operation::Invoke,
-                "{}",
+                &oversized,
                 Instant::now(),
-                allowance.reserve(needed - 1).unwrap()
             )
             .is_err()
         );

@@ -1,124 +1,54 @@
-//! Closed mechanical sources. Neither variant is a caller/record authority witness.
+//! Mechanical projection source over a committed document. It is not a caller/record
+//! authority witness.
 use super::{
     AutoCommit, Basis, Limits, ObjId, ObjType, ReadDoc, ReadError, ScalarValueRef, TextPosition,
     Transactable, ValueRef, Work, escaped_bytes, field, object_fingerprint, validate_limits,
 };
-use automerge::resource_limits::{
-    NativeObject, NativeReadError, NativeReadSession, NativeScalar, NativeSelection, NativeValue,
-};
 use std::ops::ControlFlow;
 
-pub struct Source<'a, 'doc, 'turn>(Kind<'a, 'doc, 'turn>);
-enum Kind<'a, 'doc, 'turn> {
-    Legacy {
-        doc: &'doc AutoCommit,
-        heads: &'a [automerge::ChangeHash],
-    },
-    Native(&'a NativeReadSession<'doc, 'turn>),
+/// Maximum operations a projected document may hold.
+const MAX_OPERATIONS: u64 = 1_000_000;
+/// Maximum heads a projection basis may bind.
+const MAX_HEADS: usize = 64;
+
+pub struct Source<'a> {
+    doc: &'a AutoCommit,
+    heads: &'a [automerge::ChangeHash],
 }
-#[derive(Clone, Debug)]
-pub struct Object<'doc>(ObjectKind<'doc>);
-#[derive(Clone, Debug)]
-enum ObjectKind<'doc> {
-    Legacy(ObjId),
-    Native(NativeObject<'doc>),
+/// A visited value: an object of a known kind, or a scalar borrowed for the visit.
+pub enum Value<'v> {
+    Object(ObjType, ObjId),
+    Scalar(&'v ScalarValueRef<'v>),
 }
-pub enum Value<'value, 'doc> {
-    Object(ObjType, Object<'doc>),
-    Scalar(NativeScalar<'value>),
-}
-impl<'doc> Value<'_, 'doc> {
-    pub fn object(self, wanted: ObjType) -> Option<Object<'doc>> {
+impl Value<'_> {
+    pub fn object(self, wanted: ObjType) -> Option<ObjId> {
         match self {
             Self::Object(kind, object) if kind == wanted => Some(object),
-            _ => None,
+            Self::Object(..) | Self::Scalar(_) => None,
         }
     }
 }
-pub struct Entry<'value, 'doc> {
+pub struct Entry<'v> {
     pub index: usize,
-    pub is_mark: bool,
-    pub value: Value<'value, 'doc>,
+    pub value: Value<'v>,
 }
-fn native_value<'v, 'doc>(value: NativeValue<'v, 'doc>) -> Value<'v, 'doc> {
+fn value<'v>(value: &'v ValueRef<'_>, object: ObjId) -> Value<'v> {
     match value {
-        NativeValue::Object { kind, object } => {
-            Value::Object(kind, Object(ObjectKind::Native(object)))
-        }
-        NativeValue::Scalar(value) => Value::Scalar(value),
+        ValueRef::Object(kind) => Value::Object(*kind, object),
+        ValueRef::Scalar(scalar) => Value::Scalar(scalar),
     }
-}
-fn legacy_value<'v, 'doc>(value: &'v ValueRef<'_>, object: ObjId) -> Value<'v, 'doc> {
-    use ScalarValueRef as S;
-    let value = match value {
-        ValueRef::Object(kind) => return Value::Object(*kind, Object(ObjectKind::Legacy(object))),
-        ValueRef::Scalar(value) => value,
-    };
-    Value::Scalar(match value {
-        S::Bytes(v) => NativeScalar::Bytes(v),
-        S::Str(v) => NativeScalar::Str(v),
-        S::Int(v) => NativeScalar::Int(*v),
-        S::Uint(v) => NativeScalar::Uint(*v),
-        S::F64(v) => NativeScalar::F64(*v),
-        S::Counter(v) => NativeScalar::Counter(*v),
-        S::Timestamp(v) => NativeScalar::Timestamp(*v),
-        S::Boolean(v) => NativeScalar::Boolean(*v),
-        S::Unknown { type_code, bytes } => NativeScalar::Unknown {
-            type_code: *type_code,
-            bytes,
-        },
-        S::Null => NativeScalar::Null,
-    })
 }
 /// Lowercase hexadecimal digit of a nibble (`0..16`).
 fn hex_digit(nibble: u8) -> char {
     char::from_digit(u32::from(nibble), 16).unwrap_or('0')
 }
-fn read_error(error: NativeReadError<ReadError>) -> ReadError {
-    match error {
-        NativeReadError::Resource(e) => e.into(),
-        NativeReadError::Visitor(e) => e,
+impl<'a> Source<'a> {
+    /// Supplied heads are data, not a binding witness.
+    pub fn new(doc: &'a AutoCommit, heads: &'a [automerge::ChangeHash]) -> Self {
+        Self { doc, heads }
     }
-}
-impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
-    /// Legacy mechanics only; supplied heads are data, not a binding witness.
-    pub fn legacy(doc: &'doc AutoCommit, heads: &'a [automerge::ChangeHash]) -> Self {
-        Self(Kind::Legacy { doc, heads })
-    }
-    /// Uses only an actual retained session and its complete native frontier.
-    pub fn native(read: &'a NativeReadSession<'doc, 'turn>) -> Self {
-        Self(Kind::Native(read))
-    }
-    pub fn root(&self) -> Object<'doc> {
-        match self.0 {
-            Kind::Legacy { .. } => Object(ObjectKind::Legacy(automerge::ROOT)),
-            Kind::Native(read) => Object(ObjectKind::Native(read.root())),
-        }
-    }
-    /// Wrap a legacy object id.
-    ///
-    /// # Errors
-    ///
-    /// [`ReadError::Malformed`] when this is a native source.
-    pub fn legacy_object(&self, object: &ObjId) -> Result<Object<'doc>, ReadError> {
-        match self.0 {
-            Kind::Legacy { .. } => Ok(Object(ObjectKind::Legacy(object.clone()))),
-            Kind::Native(_) => Err(ReadError::Malformed),
-        }
-    }
-    /// Wrap a native object after checking it resolves in this session.
-    ///
-    /// # Errors
-    ///
-    /// [`ReadError::Malformed`] when this is a legacy source, or the session's resource error.
-    pub fn native_object(&self, object: NativeObject<'doc>) -> Result<Object<'doc>, ReadError> {
-        match self.0 {
-            Kind::Native(read) => {
-                read.visit_id_parts(object.id(), |_| ())?;
-                Ok(Object(ObjectKind::Native(object)))
-            }
-            Kind::Legacy { .. } => Err(ReadError::Malformed),
-        }
+    pub fn root(&self) -> ObjId {
+        automerge::ROOT
     }
     /// Bind a projection basis to the source's complete head set.
     ///
@@ -128,41 +58,16 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     /// oversized documents or more than 64 heads, and [`ReadError::Malformed`] for duplicate heads.
     pub fn begin(&self, limits: Limits, max_items: usize) -> Result<(Basis, Work), ReadError> {
         validate_limits(limits, max_items)?;
-        let mut heads = [automerge::ChangeHash([0; 32]); 64];
-        let count = match self.0 {
-            Kind::Legacy { doc, heads: input } => {
-                if doc.pending_ops() != 0 {
-                    return Err(ReadError::Pending);
-                }
-                if doc.stats().num_ops > 1_000_000 || input.len() > 64 {
-                    return Err(ReadError::Limit);
-                }
-                heads
-                    .get_mut(..input.len())
-                    .ok_or(ReadError::Limit)?
-                    .copy_from_slice(input);
-                input.len()
-            }
-            Kind::Native(read) => {
-                if read.pending_ops() != 0 {
-                    return Err(ReadError::Pending);
-                }
-                if read.operation_count() > 1_000_000 {
-                    return Err(ReadError::Limit);
-                }
-                let mut index = 0;
-                read.visit_heads(64, |head| {
-                    // More heads than slots leaves `index` past the end, which
-                    // the bounded slice below refuses.
-                    if let Some(slot) = heads.get_mut(index) {
-                        *slot = head;
-                    }
-                    index = index.saturating_add(1);
-                })?;
-                index
-            }
-        };
+        if self.doc.pending_ops() != 0 {
+            return Err(ReadError::Pending);
+        }
+        if self.doc.stats().num_ops > MAX_OPERATIONS || self.heads.len() > MAX_HEADS {
+            return Err(ReadError::Limit);
+        }
+        let mut heads = [automerge::ChangeHash([0; 32]); MAX_HEADS];
+        let count = self.heads.len();
         let heads = heads.get_mut(..count).ok_or(ReadError::Limit)?;
+        heads.copy_from_slice(self.heads);
         heads.sort_unstable();
         if heads
             .windows(2)
@@ -187,76 +92,30 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
                 heads: encoded,
                 fingerprint: *hasher.finalize().as_bytes(),
             },
-            Work {
-                steps: automerge::resource_limits::NativeReadSteps::new(limits.scan_entries)?,
-            },
+            Work::new(limits.scan_entries),
         ))
     }
     /// Canonical cursor scope of `object` (see [`object_fingerprint`]).
     ///
     /// # Errors
     ///
-    /// [`ReadError::Malformed`] when `object` belongs to the other source kind, and
     /// [`ReadError::Limit`] for an actor id over 256 bytes.
-    pub fn fingerprint(&self, object: &Object<'doc>) -> Result<[u8; 32], ReadError> {
-        match (&self.0, &object.0) {
-            (Kind::Legacy { .. }, ObjectKind::Legacy(object)) => object_fingerprint(object),
-            (Kind::Native(read), ObjectKind::Native(object)) => {
-                read.visit_id_parts(object.id(), |parts| {
-                    let mut hash = blake3::Hasher::new();
-                    hash.update(b"qdoc-semantic-object-v1\0");
-                    match parts {
-                        None => {
-                            hash.update(&[0]);
-                        }
-                        Some((counter, actor)) => {
-                            if actor.len() > 256 {
-                                return Err(ReadError::Limit);
-                            }
-                            hash.update(&[1]);
-                            hash.update(&counter.to_le_bytes());
-                            hash.update(actor);
-                        }
-                    }
-                    Ok(*hash.finalize().as_bytes())
-                })?
-            }
-            _ => Err(ReadError::Malformed),
-        }
+    pub fn fingerprint(&self, object: &ObjId) -> Result<[u8; 32], ReadError> {
+        object_fingerprint(object)
     }
     /// Visit the winning value under `key`, if any.
     ///
     /// # Errors
     ///
-    /// [`ReadError::Limit`] when `key` exceeds 256 bytes, [`ReadError::Malformed`] for an object of
-    /// the other source kind, or any error returned by `visitor`.
+    /// [`ReadError::Limit`] when `key` exceeds 256 bytes, or any error returned by `visitor`.
     pub fn field(
         &self,
-        object: &Object<'doc>,
+        object: &ObjId,
         key: &str,
-        work: &Work,
-        mut visitor: impl for<'v> FnMut(Value<'v, 'doc>) -> Result<(), ReadError>,
+        mut visitor: impl for<'v> FnMut(Value<'v>) -> Result<(), ReadError>,
     ) -> Result<(), ReadError> {
-        if key.len() > 256 {
-            return Err(ReadError::Limit);
-        }
-        match (&self.0, &object.0) {
-            (Kind::Legacy { doc, .. }, ObjectKind::Legacy(object)) => {
-                if let Some(item) = field(doc, object, key)? {
-                    visitor(legacy_value(&item.value, item.id()))?;
-                }
-            }
-            (Kind::Native(read), ObjectKind::Native(object)) => {
-                read.visit_property_with_steps(
-                    *object,
-                    key,
-                    NativeSelection::Winner,
-                    &work.steps,
-                    |value, _| visitor(native_value(value)),
-                )
-                .map_err(read_error)?;
-            }
-            _ => return Err(ReadError::Malformed),
+        if let Some(item) = field(self.doc, object, key)? {
+            visitor(value(&item.value, item.id()))?;
         }
         Ok(())
     }
@@ -267,13 +126,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     /// As [`Source::field`].
     pub fn object(
         &self,
-        object: &Object<'doc>,
+        object: &ObjId,
         key: &str,
         kind: ObjType,
-        work: &Work,
-    ) -> Result<Option<Object<'doc>>, ReadError> {
+    ) -> Result<Option<ObjId>, ReadError> {
         let mut result = None;
-        self.field(object, key, work, |value| {
+        self.field(object, key, |value| {
             result = value.object(kind);
             Ok(())
         })?;
@@ -284,16 +142,10 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     /// # Errors
     ///
     /// As [`Source::field`], and [`ReadError::Limit`] when the string exceeds `maximum` bytes.
-    pub fn string(
-        &self,
-        object: &Object<'doc>,
-        key: &str,
-        maximum: usize,
-        work: &Work,
-    ) -> Result<String, ReadError> {
+    pub fn string(&self, object: &ObjId, key: &str, maximum: usize) -> Result<String, ReadError> {
         let mut result = String::new();
-        self.field(object, key, work, |value| {
-            if let Value::Scalar(NativeScalar::Str(text)) = value {
+        self.field(object, key, |value| {
+            if let Value::Scalar(ScalarValueRef::Str(text)) = value {
                 if text.len() > maximum {
                     return Err(ReadError::Limit);
                 }
@@ -310,13 +162,12 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     /// As [`Source::field`].
     pub fn bytes(
         &self,
-        object: &Object<'doc>,
+        object: &ObjId,
         key: &str,
-        work: &Work,
-        mut visitor: impl for<'v> FnMut(&'v [u8]) -> Result<(), ReadError>,
+        mut visitor: impl FnMut(&[u8]) -> Result<(), ReadError>,
     ) -> Result<(), ReadError> {
-        self.field(object, key, work, |value| {
-            if let Value::Scalar(NativeScalar::Bytes(bytes)) = value {
+        self.field(object, key, |value| {
+            if let Value::Scalar(ScalarValueRef::Bytes(bytes)) = value {
                 visitor(bytes)?;
             }
             Ok(())
@@ -326,49 +177,18 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     ///
     /// # Errors
     ///
-    /// [`ReadError::Malformed`] for an object of the other source kind, [`ReadError::Limit`] when
-    /// the scan budget is exhausted, or any error returned by `visitor`.
+    /// [`ReadError::Limit`] when the scan budget is exhausted, or any error returned by `visitor`.
     pub fn map(
         &self,
-        object: &Object<'doc>,
+        object: &ObjId,
         work: &Work,
-        mut visitor: impl for<'k, 'v> FnMut(
-            &'k str,
-            Value<'v, 'doc>,
-        ) -> Result<ControlFlow<()>, ReadError>,
+        mut visitor: impl for<'k, 'v> FnMut(&'k str, Value<'v>) -> Result<ControlFlow<()>, ReadError>,
     ) -> Result<(), ReadError> {
-        match (&self.0, &object.0) {
-            (Kind::Legacy { doc, .. }, ObjectKind::Legacy(object)) => {
-                for item in doc.map_range(object, ..) {
-                    work.visit()?;
-                    if visitor(&item.key, legacy_value(&item.value, item.id()))?.is_break() {
-                        break;
-                    }
-                }
+        for item in self.doc.map_range(object, ..) {
+            work.visit()?;
+            if visitor(&item.key, value(&item.value, item.id()))?.is_break() {
+                break;
             }
-            (Kind::Native(read), ObjectKind::Native(native)) => {
-                read.visit_keys_with_steps(*native, &work.steps, |key| {
-                    work.visit()?;
-                    let mut flow = ControlFlow::Continue(());
-                    // Map keys remain borrowed. Let the app inspect the actual
-                    // winner before enforcing metadata limits: malformed rows
-                    // with long keys must retain legacy skip semantics.
-                    read.visit_property_with_steps(
-                        *native,
-                        key,
-                        NativeSelection::Winner,
-                        &work.steps,
-                        |value, _| {
-                            flow = visitor(key, native_value(value))?;
-                            Ok(())
-                        },
-                    )
-                    .map_err(read_error)?;
-                    Ok(flow)
-                })
-                .map_err(read_error)?;
-            }
-            _ => return Err(ReadError::Malformed),
         }
         Ok(())
     }
@@ -379,48 +199,35 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
     /// As [`Source::map`].
     pub fn list(
         &self,
-        object: &Object<'doc>,
+        object: &ObjId,
         work: &Work,
-        mut visitor: impl for<'v> FnMut(Entry<'v, 'doc>) -> Result<ControlFlow<()>, ReadError>,
+        mut visitor: impl for<'v> FnMut(Entry<'v>) -> Result<ControlFlow<()>, ReadError>,
     ) -> Result<(), ReadError> {
-        match (&self.0, &object.0) {
-            (Kind::Legacy { doc, .. }, ObjectKind::Legacy(object)) => {
-                for item in doc.list_range(object, ..) {
-                    work.visit()?;
-                    let entry = Entry {
-                        index: item.index,
-                        is_mark: item.is_mark(),
-                        value: legacy_value(&item.value, item.id()),
-                    };
-                    if visitor(entry)?.is_break() {
-                        break;
-                    }
-                }
+        for item in self.doc.list_range(object, ..) {
+            work.visit()?;
+            let entry = Entry {
+                index: item.index,
+                value: value(&item.value, item.id()),
+            };
+            if visitor(entry)?.is_break() {
+                break;
             }
-            (Kind::Native(read), ObjectKind::Native(object)) => {
-                read.visit_list(*object, &work.steps, |entry| {
-                    work.visit()?;
-                    visitor(Entry {
-                        index: entry.index,
-                        is_mark: entry.is_mark,
-                        value: native_value(entry.value),
-                    })
-                })
-                .map_err(read_error)?;
-            }
-            _ => return Err(ReadError::Malformed),
         }
         Ok(())
     }
     /// A bounded text fragment from `position` (see [`super::text_fragment`]).
     ///
+    /// Elements are addressed by their text index, so the read seeks straight to the cursor and
+    /// never visits mark boundaries, which occupy no text index.
+    ///
     /// # Errors
     ///
-    /// [`ReadError::InvalidCursor`] for a cursor outside the text and [`ReadError::Limit`] when the
-    /// scan or escaped budget cannot make progress.
+    /// [`ReadError::InvalidCursor`] for a cursor outside the text or not at an element start,
+    /// [`ReadError::Limit`] when the scan or escaped budget cannot make progress, and
+    /// [`ReadError::Malformed`] for a grapheme-indexed document or an unreadable text object.
     pub fn text_fragment(
         &self,
-        text: Option<&Object<'doc>>,
+        text: Option<&ObjId>,
         position: TextPosition,
         escaped_budget: usize,
         work: &Work,
@@ -432,28 +239,45 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
                 Err(ReadError::InvalidCursor)
             };
         };
+        let encoding = self.doc.text_encoding();
+        let length = self.doc.length(text);
+        if position.element >= length {
+            return if position == TextPosition::default() {
+                Ok((String::new(), position, true))
+            } else {
+                Err(ReadError::InvalidCursor)
+            };
+        }
+        let element = |index: usize| {
+            self.doc
+                .get(text, index)
+                .map_err(|_| ReadError::Malformed)?
+                .ok_or(ReadError::Malformed)
+        };
+        if let Some(previous) = position.element.checked_sub(1)
+            && element(previous)?.1 == element(position.element)?.1
+        {
+            return Err(ReadError::InvalidCursor);
+        }
         let mut output = String::new();
         let mut spent = 0usize;
-        let mut next = TextPosition::default();
-        let mut found = position == TextPosition::default();
-        let mut complete = true;
-        self.list(text, work, |item| {
-            if item.index < position.element || item.is_mark {
-                return Ok(ControlFlow::Continue(()));
-            }
-            let value = match item.value {
-                Value::Scalar(NativeScalar::Str(s)) => s,
-                _ => "\u{fffc}",
+        let mut at = position.element;
+        while at < length {
+            work.visit()?;
+            let (value, _) = element(at)?;
+            let value = match &value {
+                automerge::Value::Scalar(scalar) => match scalar.as_ref() {
+                    automerge::ScalarValue::Str(s) => s.as_str(),
+                    _ => OBJECT_REPLACEMENT,
+                },
+                automerge::Value::Object(_) => OBJECT_REPLACEMENT,
             };
-            let start = if item.index == position.element {
+            let width = text_width(encoding, value)?;
+            let start = if at == position.element {
                 position.byte
             } else {
                 0
             };
-            if !value.is_char_boundary(start) {
-                return Err(ReadError::InvalidCursor);
-            }
-            found = true;
             let suffix = value.get(start..).ok_or(ReadError::InvalidCursor)?;
             for (offset, c) in suffix.char_indices() {
                 work.visit()?;
@@ -463,25 +287,42 @@ impl<'a, 'doc, 'turn> Source<'a, 'doc, 'turn> {
                     if output.is_empty() {
                         return Err(ReadError::Limit);
                     }
-                    next = TextPosition {
-                        element: item.index,
+                    let next = TextPosition {
+                        element: at,
                         byte: start.checked_add(offset).ok_or(ReadError::Limit)?,
                     };
-                    complete = false;
-                    return Ok(ControlFlow::Break(()));
+                    return Ok((output, next, false));
                 };
                 output.push(c);
                 spent = total;
             }
-            next = TextPosition {
-                element: item.index.checked_add(1).ok_or(ReadError::Limit)?,
-                byte: 0,
-            };
-            Ok(ControlFlow::Continue(()))
-        })?;
-        if !found && position != next {
-            return Err(ReadError::InvalidCursor);
+            at = at.checked_add(width).ok_or(ReadError::Limit)?;
         }
-        Ok((output, next, complete))
+        Ok((
+            output,
+            TextPosition {
+                element: at,
+                byte: 0,
+            },
+            true,
+        ))
     }
+}
+
+/// How Automerge renders a text element that is not a string.
+const OBJECT_REPLACEMENT: &str = "\u{fffc}";
+
+/// Text-index width of one element under the document's encoding. A visible element is never
+/// zero-width: the index seek skips such elements.
+fn text_width(encoding: automerge::TextEncoding, value: &str) -> Result<usize, ReadError> {
+    let width = match encoding {
+        automerge::TextEncoding::UnicodeCodePoint => value.chars().count(),
+        automerge::TextEncoding::Utf8CodeUnit => value.len(),
+        automerge::TextEncoding::Utf16CodeUnit => value.encode_utf16().count(),
+        automerge::TextEncoding::GraphemeCluster => return Err(ReadError::Malformed),
+    };
+    if width == 0 {
+        return Err(ReadError::Malformed);
+    }
+    Ok(width)
 }

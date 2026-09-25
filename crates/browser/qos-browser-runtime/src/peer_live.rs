@@ -528,6 +528,69 @@ pub(crate) fn signed_change(bytes: &[u8]) -> Result<([u8; 32], LiveRecord, Vec<u
     }
 }
 
+/// The Automerge bytes of a forwarded signed change and the saved document
+/// they apply to. Frames from other browsers are untrusted Automerge input, so
+/// the page checks `incoming` against `base` in a Web Worker
+/// (`automerge-check-worker.mjs`) before it calls `peer_live_admit` with
+/// `base_heads`; admission refuses a frame whose document moved in between.
+pub(crate) struct AutomergeInput {
+    /// The document the frame applies to, saved; empty when it is new.
+    pub base: Vec<u8>,
+    /// The frame's Automerge change bytes or snapshot.
+    pub incoming: Vec<u8>,
+    /// The base's heads, as [`base_heads`] returns them.
+    pub base_heads: String,
+}
+
+pub(crate) fn automerge_input(
+    state: &qos_peer_state::StatePeer,
+    canonical: &[u8],
+) -> Result<AutomergeInput, String> {
+    let qos_peer_state::NeighbourMsg::AppDocument {
+        app_id,
+        record_id,
+        envelope,
+        ..
+    } = postcard::from_bytes(canonical).map_err(fail)?
+    else {
+        return Err("forwarded change is not a document publication".into());
+    };
+    let incoming =
+        match qos_peer_state::DocumentMutation::decode(&envelope.payload).map_err(fail)? {
+            qos_peer_state::DocumentMutation::Snapshot(bytes)
+            | qos_peer_state::DocumentMutation::Incremental(bytes) => bytes,
+        };
+    Ok(AutomergeInput {
+        base: state.document(&app_id, &record_id).unwrap_or_default(),
+        incoming,
+        base_heads: heads_text(state, &app_id, &record_id),
+    })
+}
+
+/// The current heads of the document a forwarded change applies to, as text;
+/// empty when that document does not exist yet.
+pub(crate) fn base_heads(
+    state: &qos_peer_state::StatePeer,
+    canonical: &[u8],
+) -> Result<String, String> {
+    match postcard::from_bytes(canonical).map_err(fail)? {
+        qos_peer_state::NeighbourMsg::AppDocument {
+            app_id, record_id, ..
+        } => Ok(heads_text(state, &app_id, &record_id)),
+        _ => Err("forwarded change is not a document publication".into()),
+    }
+}
+
+fn heads_text(state: &qos_peer_state::StatePeer, app: &str, record: &str) -> String {
+    let mut heads = state.document_heads(app, record).unwrap_or_default();
+    heads.sort_unstable();
+    heads
+        .iter()
+        .map(|head| hex(&head.0))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 #[path = "peer_live/speculation.rs"]
 pub(crate) mod speculation;
 

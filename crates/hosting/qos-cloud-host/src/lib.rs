@@ -52,6 +52,8 @@ mod durability_tests;
 mod mesh_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 const STATE_VERSION: u32 = 4;
 const AGENT_STATE_VERSION: u32 = 5;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

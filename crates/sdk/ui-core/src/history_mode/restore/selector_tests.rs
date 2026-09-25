@@ -12,9 +12,6 @@ const STRING: HistoryRestoreNode = HistoryRestoreNode::Whole {
 const WHOLE_MAP: HistoryRestoreNode = HistoryRestoreNode::Whole {
     expected_type: RestoreValueType::Object(ObjType::Map),
 };
-const WHOLE_TABLE: HistoryRestoreNode = HistoryRestoreNode::Whole {
-    expected_type: RestoreValueType::Object(ObjType::Table),
-};
 const WHOLE_MAP_FIELD: HistoryRestoreNode = HistoryRestoreNode::MapOverlay(&HistoryMapOverlay {
     fields: &[HistoryMapField {
         key: "payload",
@@ -32,24 +29,6 @@ const WHOLE_MAP_ENTRIES: HistoryRestoreNode = HistoryRestoreNode::MapOverlay(&Hi
         on_create: PreservedOnCreate::Omit,
     }),
 });
-const WHOLE_TABLE_FIELD: HistoryRestoreNode = HistoryRestoreNode::MapOverlay(&HistoryMapOverlay {
-    fields: &[HistoryMapField {
-        key: "payload",
-        required: true,
-        node: WHOLE_TABLE,
-    }],
-    entries: None,
-});
-const WHOLE_TABLE_ENTRIES: HistoryRestoreNode =
-    HistoryRestoreNode::MapOverlay(&HistoryMapOverlay {
-        fields: &[],
-        entries: Some(&HistoryMapEntries {
-            key_limit_bytes: 45,
-            node: WHOLE_TABLE,
-            membership: HistoryMembership::TargetAuthoritative,
-            on_create: PreservedOnCreate::Omit,
-        }),
-    });
 const CONTENT_EXCEPT_RUNTIME: HistoryRestoreNode = HistoryRestoreNode::MapContentExcept {
     preserved_fields: &["presence", "last_used", "historic_missing", "runtime_text"],
 };
@@ -1223,12 +1202,6 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
     let profile = doc.put_object(ROOT, "profile", ObjType::Map).unwrap();
     let nested_map = doc.put_object(&profile, "map", ObjType::Map).unwrap();
     doc.put(&nested_map, "value", "map").unwrap();
-    let nested_table = doc.put_object(&profile, "table", ObjType::Table).unwrap();
-    let table_map = doc
-        .put_object(&nested_table, "nested-map", ObjType::Map)
-        .unwrap();
-    doc.put(&nested_table, "value", "target-table").unwrap();
-    doc.put(&table_map, "value", "target-nested-map").unwrap();
     let list = doc.put_object(&profile, "list", ObjType::List).unwrap();
     doc.insert(&list, 0, "first").unwrap();
     doc.insert(&list, 1, "second").unwrap();
@@ -1260,8 +1233,6 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
     doc.put(&profile, "target-only", "target").unwrap();
     let target = doc.get_heads();
     doc.put(&nested_map, "value", "live").unwrap();
-    doc.put(&nested_table, "value", "live-table").unwrap();
-    doc.put(&table_map, "value", "live-nested-map").unwrap();
     doc.put(&list, 0, "live").unwrap();
     doc.splice_text(&text, 0, 4, "live").unwrap();
     doc.delete(&profile, "target-only").unwrap();
@@ -1275,16 +1246,6 @@ fn complement_heterogeneous_authored_content_is_exact_and_unbounded_by_registrat
         target_projection
     );
     assert_eq!(object(&doc, &profile, "map"), nested_map);
-    assert_eq!(object(&doc, &profile, "table"), nested_table);
-    assert_eq!(object(&doc, &nested_table, "nested-map"), table_map);
-    assert_eq!(
-        doc.get(&nested_table, "value").unwrap().unwrap().0.as_str(),
-        Some("target-table")
-    );
-    assert_eq!(
-        doc.get(&table_map, "value").unwrap().unwrap().0.as_str(),
-        Some("target-nested-map")
-    );
     assert_eq!(
         doc.get(&profile, long_key.as_str())
             .unwrap()
@@ -1400,7 +1361,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
         .put(&replacement_target, "value", "target-map")
         .unwrap();
     let presence = boundary
-        .put_object(&profile, "presence", ObjType::Table)
+        .put_object(&profile, "presence", ObjType::Map)
         .unwrap();
     boundary
         .put(&presence, "status", "target-protected")
@@ -1577,7 +1538,7 @@ fn complement_codec_depth_and_exact_map_shape_are_enforced_inner() {
     ));
     assert_eq!(far_over.clone().save(), before);
 
-    for wrong in [ObjType::Table, ObjType::List, ObjType::Text] {
+    for wrong in [ObjType::List, ObjType::Text] {
         let mut doc = AutoCommit::new();
         doc.put_object(ROOT, "profile", wrong).unwrap();
         let heads = doc.get_heads();
@@ -1833,7 +1794,7 @@ fn deep_owned_state_restore_stamps_once_undoes_and_refuses_without_action_inner(
     state.doc.put(&deepest, "leaf", "target").unwrap();
     let presence = state
         .doc
-        .put_object(&profile, "presence", ObjType::Table)
+        .put_object(&profile, "presence", ObjType::Map)
         .unwrap();
     state.doc.put(&presence, "status", "protected").unwrap();
     state.commit_action(None, None);
@@ -2064,73 +2025,4 @@ fn whole_identity_reconciliation_applies_under_fields_entries_and_family_roots()
     family_doc.put(&family_root, "value", "live").unwrap();
     restore(&mut family_doc, family_schema, &target);
     assert_eq!(object(&family_doc, &ROOT, "whole:item"), family_root);
-
-    let fixed_table = schema(vec![HistoryRootSelector {
-        pattern: HistoryRootPattern::Exact("table-outer"),
-        required: true,
-        node: WHOLE_TABLE_FIELD,
-    }]);
-    let mut fixed_table_doc = AutoCommit::new();
-    let outer = fixed_table_doc
-        .put_object(ROOT, "table-outer", ObjType::Map)
-        .unwrap();
-    let payload = fixed_table_doc
-        .put_object(&outer, "payload", ObjType::Table)
-        .unwrap();
-    fixed_table_doc.put(&payload, "value", "target").unwrap();
-    let target = fixed_table_doc.get_heads();
-    fixed_table_doc.put(&payload, "value", "live").unwrap();
-    restore(&mut fixed_table_doc, fixed_table, &target);
-    assert_eq!(object(&fixed_table_doc, &outer, "payload"), payload);
-    assert_eq!(
-        fixed_table_doc.object_type(&payload).unwrap(),
-        ObjType::Table
-    );
-    assert_eq!(
-        fixed_table_doc
-            .get(&payload, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
-        Some("target")
-    );
-
-    let table_entries = schema(vec![HistoryRootSelector {
-        pattern: HistoryRootPattern::Exact("table-rows"),
-        required: true,
-        node: WHOLE_TABLE_ENTRIES,
-    }]);
-    let mut entry_table_doc = AutoCommit::new();
-    let rows = entry_table_doc
-        .put_object(ROOT, "table-rows", ObjType::Map)
-        .unwrap();
-    let row = entry_table_doc
-        .put_object(&rows, "a", ObjType::Table)
-        .unwrap();
-    entry_table_doc.put(&row, "value", "target").unwrap();
-    let target = entry_table_doc.get_heads();
-    entry_table_doc.put(&row, "value", "live").unwrap();
-    restore(&mut entry_table_doc, table_entries, &target);
-    assert_eq!(object(&entry_table_doc, &rows, "a"), row);
-    assert_eq!(entry_table_doc.object_type(&row).unwrap(), ObjType::Table);
-
-    let table_family_schema = schema(vec![family("table:", "", 45, WHOLE_TABLE)]);
-    let mut family_table_doc = AutoCommit::new();
-    let family_table = family_table_doc
-        .put_object(ROOT, "table:item", ObjType::Table)
-        .unwrap();
-    family_table_doc
-        .put(&family_table, "value", "target")
-        .unwrap();
-    let target = family_table_doc.get_heads();
-    family_table_doc
-        .put(&family_table, "value", "live")
-        .unwrap();
-    restore(&mut family_table_doc, table_family_schema, &target);
-    assert_eq!(object(&family_table_doc, &ROOT, "table:item"), family_table);
-    assert_eq!(
-        family_table_doc.object_type(&family_table).unwrap(),
-        ObjType::Table
-    );
 }

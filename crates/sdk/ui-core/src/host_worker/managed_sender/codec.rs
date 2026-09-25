@@ -1,7 +1,6 @@
 //! Borrowed bounded native sender payload. Independent of browser outbox JSON.
 
 use super::observation::{self, Facts, Lifecycle};
-use automerge::resource_limits::NativeReservation;
 
 pub const MAX_ROWS: usize = 256;
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
@@ -60,35 +59,19 @@ impl ObservationView<'_> {
     }
 }
 
-/// Inert validated view; the caller retains the original bytes and their credit.
+/// Inert validated view; the caller retains the original bytes.
 pub struct NativeSenderOutboxV1<'a> {
     bytes: &'a [u8],
     rows: usize,
-    scratch: Option<&'a NativeReservation>,
     capacity_bound: usize,
 }
 
 impl<'a> NativeSenderOutboxV1<'a> {
-    pub(crate) const fn validation_scratch_bytes() -> usize {
-        super::observation::SCRATCH_BYTES
-    }
-    pub(crate) fn decode_with_scratch(
-        bytes: &'a [u8],
-        scratch: &'a NativeReservation,
-    ) -> Result<Self, OutboxFailure> {
-        Self::decode_inner(bytes, Some(scratch))
-    }
     pub const fn empty_bytes() -> &'static [u8] {
         EMPTY
     }
 
     pub fn decode(bytes: &'a [u8]) -> Result<Self, OutboxFailure> {
-        Self::decode_inner(bytes, None)
-    }
-    fn decode_inner(
-        bytes: &'a [u8],
-        scratch: Option<&'a NativeReservation>,
-    ) -> Result<Self, OutboxFailure> {
         if bytes.len() > MAX_BYTES {
             return Err(OutboxFailure::Capacity);
         }
@@ -104,7 +87,7 @@ impl<'a> NativeSenderOutboxV1<'a> {
         let mut capacity_bound = EMPTY.len();
         for _ in 0..rows {
             let before = cursor.0.len();
-            let row = cursor.row(scratch)?;
+            let row = cursor.row()?;
             let base = before - cursor.0.len() - row.observation.map_or(0, |v| v.extra_bytes());
             capacity_bound = capacity_bound
                 .checked_add(base + MAX_OBSERVATION + 14)
@@ -121,7 +104,6 @@ impl<'a> NativeSenderOutboxV1<'a> {
         Ok(Self {
             bytes,
             rows,
-            scratch,
             capacity_bound,
         })
     }
@@ -140,12 +122,12 @@ impl<'a> NativeSenderOutboxV1<'a> {
 
     pub(super) fn rows(&self) -> impl Iterator<Item = Result<RowView<'a>, OutboxFailure>> + '_ {
         let mut cursor = Cursor(&self.bytes[EMPTY.len()..]);
-        (0..self.rows).map(move |_| cursor.row(self.scratch))
+        (0..self.rows).map(move |_| cursor.row())
     }
     pub(crate) fn find(&self, invocation: &[u8; 16]) -> Result<Option<RowView<'a>>, OutboxFailure> {
         let mut cursor = Cursor(&self.bytes[EMPTY.len()..]);
         for _ in 0..self.rows {
-            let row = cursor.row(self.scratch)?;
+            let row = cursor.row()?;
             if &row.invocation == invocation {
                 return Ok(Some(row));
             }
@@ -207,7 +189,7 @@ impl<'a> Cursor<'a> {
             Err(OutboxFailure::Invalid)
         }
     }
-    fn row(&mut self, scratch: Option<&NativeReservation>) -> Result<RowView<'a>, OutboxFailure> {
+    fn row(&mut self) -> Result<RowView<'a>, OutboxFailure> {
         let length = usize::try_from(u32::from_le_bytes(self.number()?))
             .map_err(|_| OutboxFailure::Capacity)?;
         if length > MAX_BYTES {
@@ -281,13 +263,8 @@ impl<'a> Cursor<'a> {
                 let length = usize::try_from(u32::from_le_bytes(row.number()?))
                     .map_err(|_| OutboxFailure::Capacity)?;
                 let json = row.text(length, MAX_OBSERVATION, false, false)?;
-                let facts = observation::validate(
-                    json,
-                    &invocation,
-                    uncertain,
-                    cancellation_requested,
-                    scratch.ok_or(OutboxFailure::Invalid)?,
-                )?;
+                let facts =
+                    observation::validate(json, &invocation, uncertain, cancellation_requested)?;
                 Some(ObservationView {
                     id,
                     uncertain,
@@ -312,18 +289,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
-/// Paid immutable mutation bytes. Decoding/encoding is not a storage receipt.
+/// Immutable mutation bytes. Decoding/encoding is not a storage receipt.
 pub(crate) struct EncodedOutbox {
     bytes: Vec<u8>,
-    credit: automerge::resource_limits::NativeReservation,
 }
 impl EncodedOutbox {
     #[cfg(test)]
     pub(crate) fn bytes(&self) -> &[u8] {
         &self.bytes
     }
-    pub(crate) fn into_parts(self) -> (Vec<u8>, automerge::resource_limits::NativeReservation) {
-        (self.bytes, self.credit)
+    pub(crate) fn into_bytes(self) -> Vec<u8> {
+        self.bytes
     }
 }
 fn checked_text(
@@ -453,16 +429,9 @@ impl NativeSenderOutboxV1<'_> {
         }
         Ok(length)
     }
-    pub(crate) fn insert(
-        &self,
-        row: &RowView<'_>,
-        credit: automerge::resource_limits::NativeReservation,
-    ) -> Result<EncodedOutbox, OutboxFailure> {
+    pub(crate) fn insert(&self, row: &RowView<'_>) -> Result<EncodedOutbox, OutboxFailure> {
         let needed = self.insertion_bytes(row)?;
-        if credit.bytes() < needed {
-            return Err(OutboxFailure::Capacity);
-        }
-        // No strings or payloads have been copied before the actual credit check.
+        // No strings or payloads are copied before the capacity checks above.
         let mut bytes = Vec::new();
         bytes
             .try_reserve_exact(needed)
@@ -473,7 +442,7 @@ impl NativeSenderOutboxV1<'_> {
         let mut inserted = false;
         for _ in 0..self.rows {
             let start = cursor.0;
-            let old = cursor.row(self.scratch)?;
+            let old = cursor.row()?;
             if !inserted && old.invocation > row.invocation {
                 row.encode(&mut bytes, needed - self.bytes.len());
                 inserted = true;
@@ -484,7 +453,7 @@ impl NativeSenderOutboxV1<'_> {
             row.encode(&mut bytes, needed - self.bytes.len());
         }
         debug_assert_eq!(bytes.len(), needed);
-        Ok(EncodedOutbox { bytes, credit })
+        Ok(EncodedOutbox { bytes })
     }
 }
 
@@ -493,7 +462,6 @@ impl NativeSenderOutboxV1<'_> {
         &'b self,
         id: &[u8; 16],
         response: &'b runtime_collab::PublishedInvocationResult,
-        scratch: &NativeReservation,
     ) -> Result<RowView<'b>, OutboxFailure> {
         let mut row = self.find(id)?.ok_or(OutboxFailure::Invalid)?;
         if response.id == 0 {
@@ -504,7 +472,6 @@ impl NativeSenderOutboxV1<'_> {
             id,
             response.uncertain,
             response.cancellation_requested,
-            scratch,
         )?;
         let new = ObservationView {
             id: response.id,
@@ -540,24 +507,22 @@ impl NativeSenderOutboxV1<'_> {
             })
             .ok_or(OutboxFailure::Capacity)
     }
+    #[cfg(test)]
     pub(crate) fn observation_bytes(
         &self,
         id: &[u8; 16],
         response: &runtime_collab::PublishedInvocationResult,
-        scratch: &NativeReservation,
     ) -> Result<usize, OutboxFailure> {
-        let replacement = self.replacement(id, response, scratch)?;
+        let replacement = self.replacement(id, response)?;
         self.mutation_bytes(id, Some(&replacement))
     }
     pub(crate) fn with_observation(
         &self,
         id: &[u8; 16],
         response: &runtime_collab::PublishedInvocationResult,
-        scratch: &NativeReservation,
-        credit: NativeReservation,
     ) -> Result<EncodedOutbox, OutboxFailure> {
-        let replacement = self.replacement(id, response, scratch)?;
-        self.mutate(id, Some(&replacement), credit)
+        let replacement = self.replacement(id, response)?;
+        self.mutate(id, Some(&replacement))
     }
     pub(crate) fn consumption_bytes(&self, id: &[u8; 16]) -> Result<usize, OutboxFailure> {
         let row = self.find(id)?.ok_or(OutboxFailure::Invalid)?;
@@ -566,22 +531,17 @@ impl NativeSenderOutboxV1<'_> {
         }
         self.mutation_bytes(id, None)
     }
-    pub(crate) fn consume(
-        &self,
-        id: &[u8; 16],
-        credit: NativeReservation,
-    ) -> Result<EncodedOutbox, OutboxFailure> {
+    pub(crate) fn consume(&self, id: &[u8; 16]) -> Result<EncodedOutbox, OutboxFailure> {
         self.consumption_bytes(id)?;
-        self.mutate(id, None, credit)
+        self.mutate(id, None)
     }
     fn mutate(
         &self,
         id: &[u8; 16],
         replacement: Option<&RowView<'_>>,
-        credit: NativeReservation,
     ) -> Result<EncodedOutbox, OutboxFailure> {
         let needed = self.mutation_bytes(id, replacement)?;
-        if needed > MAX_BYTES || credit.bytes() < needed {
+        if needed > MAX_BYTES {
             return Err(OutboxFailure::Capacity);
         }
         let mut bytes = Vec::new();
@@ -595,7 +555,7 @@ impl NativeSenderOutboxV1<'_> {
         let mut cursor = Cursor(&self.bytes[EMPTY.len()..]);
         for _ in 0..self.rows {
             let start = cursor.0;
-            let old = cursor.row(self.scratch)?;
+            let old = cursor.row()?;
             if &old.invocation == id {
                 if let Some(row) = replacement {
                     row.encode(&mut bytes, row.encoded_len()?);
@@ -605,6 +565,6 @@ impl NativeSenderOutboxV1<'_> {
             }
         }
         debug_assert_eq!(bytes.len(), needed);
-        Ok(EncodedOutbox { bytes, credit })
+        Ok(EncodedOutbox { bytes })
     }
 }

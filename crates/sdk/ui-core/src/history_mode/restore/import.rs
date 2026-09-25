@@ -1,7 +1,8 @@
 //! Explicit content copy between independent records; never merges source history.
 use super::{
     AutoCommit, ChangeHash, HistoryRestoreSchema, PreparedContentRestore, ReadDoc, RestoreError,
-    committed_heads, schema, selection, sorted_heads, validated_content, write_and_check,
+    committed_heads, refuse_tables, schema, selection, sorted_heads, validated_content,
+    write_and_check,
 };
 use tilo_automerge::ApplyIncoming;
 
@@ -23,7 +24,9 @@ pub fn prepare_external_content_import(
     if committed_heads(destination)? != current_heads || committed_heads(source)? != target_heads {
         return Err(RestoreError::StaleReview);
     }
+    refuse_tables(&mut destination.clone())?;
     let mut target_doc = source.clone();
+    refuse_tables(&mut target_doc)?;
     if source.text_encoding() != destination.text_encoding() {
         let mut encoded = AutoCommit::new_with_encoding(destination.text_encoding());
         encoded

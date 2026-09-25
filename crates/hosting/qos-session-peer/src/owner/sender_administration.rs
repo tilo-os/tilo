@@ -11,12 +11,9 @@ use atomic_file::{ExistingCommitError, PublicationError, bounded::BoundedOwnerDi
 use ed25519_dalek::Signer;
 use serde::Serialize;
 use std::{ffi::OsStr, path::Path};
-use ui::{
-    automerge::resource_limits::{NativeAllowance, NativeReservation},
-    host_worker::private_actions::{
-        SenderScope, SenderStorageCode,
-        administration::{AdministrativeExpectation, AdministrativeFailure, AdministrativeFile},
-    },
+use ui::host_worker::private_actions::{
+    SenderScope, SenderStorageCode,
+    administration::{AdministrativeExpectation, AdministrativeFailure, AdministrativeFile},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -52,7 +49,6 @@ enum Cause {
     Io(std::io::Error),
     Admission(atomic_file::bounded::AdmissionError),
     Child(atomic_file::bounded::ChildOpenError),
-    Resource(ui::automerge::resource_limits::NativeResourceError),
     Encoding(postcard::Error),
     Allocation(std::collections::TryReserveError),
 }
@@ -68,10 +64,6 @@ macro_rules! inline_cause {
 inline_cause!(std::io::Error, Io);
 inline_cause!(atomic_file::bounded::AdmissionError, Admission);
 inline_cause!(atomic_file::bounded::ChildOpenError, Child);
-inline_cause!(
-    ui::automerge::resource_limits::NativeResourceError,
-    Resource
-);
 inline_cause!(postcard::Error, Encoding);
 inline_cause!(std::collections::TryReserveError, Allocation);
 
@@ -138,7 +130,6 @@ impl std::fmt::Display for AdminError {
             Cause::Io(e) => std::fmt::Display::fmt(e, f),
             Cause::Admission(e) => std::fmt::Display::fmt(e, f),
             Cause::Child(e) => std::fmt::Display::fmt(e, f),
-            Cause::Resource(e) => std::fmt::Display::fmt(e, f),
             Cause::Encoding(e) => std::fmt::Display::fmt(e, f),
             Cause::Allocation(e) => std::fmt::Display::fmt(e, f),
         }
@@ -152,7 +143,6 @@ impl std::error::Error for AdminError {
             Cause::Io(e) => Some(e),
             Cause::Admission(e) => Some(e),
             Cause::Child(e) => Some(e),
-            Cause::Resource(e) => Some(e),
             Cause::Encoding(e) => Some(e),
             Cause::Allocation(e) => Some(e),
             Cause::Physical => {
@@ -213,35 +203,8 @@ impl std::fmt::Debug for CliError {
     }
 }
 
-/// One actual ingress inventory, retained for this administrative invocation.
-/// Ordinary identity/owner admission and its native heaps remain unqualified.
-struct AdminInventory {
-    allowance: NativeAllowance,
-    _ingress: crate::https::Ingress,
-    _receiver: crate::https::IngressReceiver,
-}
-impl AdminInventory {
-    fn new() -> Result<Self> {
-        let (ingress, receiver) = crate::https::try_ingress_channel()?;
-        let allowance = receiver.host_bytes().native_allowance()?;
-        Ok(Self {
-            allowance,
-            _ingress: ingress,
-            _receiver: receiver,
-        })
-    }
-}
-impl Drop for AdminInventory {
-    fn drop(&mut self) {
-        self.allowance.finish_turn();
-    }
-}
-
-// Backing precedes its original reservation on every success/error drop.
 struct Encoded {
-    _payload: Vec<u8>,
     signed: Vec<u8>,
-    _credit: NativeReservation,
 }
 #[derive(Serialize)]
 struct SignedView<'a> {
@@ -256,11 +219,9 @@ enum Intent {
     Status,
 }
 struct Operation {
-    // Physical errors and backing must die before their credits and inventory.
     output: Option<Encoded>,
     physical_failure: Option<AdministrativeFailure>,
     physical: Option<AdministrativeFile>,
-    physical_credit: Option<NativeReservation>,
     store: crate::store::SessionStore,
     identity: Identity,
     original: Vec<u8>,
@@ -268,14 +229,9 @@ struct Operation {
     selection: Option<schema::SenderSelection>,
     room: uuid::Uuid,
     generation: u64,
-    inventory: AdminInventory,
 }
 impl Operation {
-    fn admit(
-        store: crate::store::SessionStore,
-        identity: Identity,
-        inventory: AdminInventory,
-    ) -> Result<Self> {
+    fn admit(store: crate::store::SessionStore, identity: Identity) -> Result<Self> {
         let original = store.read()?;
         let signed: SignedAggregate = postcard::from_bytes(&original)?;
         schema::canonical(&signed, &original)?;
@@ -288,7 +244,6 @@ impl Operation {
             output: None,
             physical_failure: None,
             physical: None,
-            physical_credit: None,
             store,
             identity,
             original,
@@ -296,10 +251,9 @@ impl Operation {
             selection: aggregate.sender,
             room,
             generation: aggregate.generation,
-            inventory,
         })
     }
-    fn existing(root: &Path, inventory: AdminInventory) -> Result<Self> {
+    fn existing(root: &Path) -> Result<Self> {
         let store = crate::store::SessionStore::open(root)?;
         let original = store.read()?;
         // Borrow paths from the one existing decode while loading its genuine
@@ -315,7 +269,6 @@ impl Operation {
             output: None,
             physical_failure: None,
             physical: None,
-            physical_credit: None,
             store,
             identity,
             original,
@@ -323,7 +276,6 @@ impl Operation {
             selection: aggregate.sender,
             room,
             generation: aggregate.generation,
-            inventory,
         })
     }
     fn scope(&self) -> std::result::Result<SenderScope, Cause> {
@@ -399,8 +351,6 @@ impl Operation {
             return Ok(());
         }
         let scope = self.scope()?;
-        let required = AdministrativeFile::required_bytes(&scope).map_err(Cause::Code)?;
-        self.physical_credit = Some(self.inventory.allowance.reserve(required)?);
         if intent == Intent::Select {
             let mut selected = [0; 187];
             selected[0] = 1;
@@ -421,14 +371,13 @@ impl Operation {
             AdminPhase::Active => AdministrativeExpectation::Active,
         };
         let directory = self.store.administrative_directory()?;
-        let credit = self.physical_credit.take().expect("prepaid physical work");
         #[cfg(test)]
         tests::boundary(Boundary::BeforePhysical, &self.store);
         #[expect(
             clippy::result_large_err,
             reason = "the closure only forwards AdministrativeFile::open, whose error type the toolkit owns"
         )]
-        let open = || AdministrativeFile::open(directory, scope, instance, expectation, credit);
+        let open = || AdministrativeFile::open(directory, scope, instance, expectation);
         #[cfg(test)]
         let result = tests::physical(open);
         #[cfg(not(test))]
@@ -485,13 +434,8 @@ impl Operation {
             return Err(Cause::Refused("initial sender phase must be Prepared"));
         }
         let base = schema::administrative_base(&self.signed.payload)?;
-        self.output = Some(encode_selected(
-            base,
-            &selected,
-            &self.identity,
-            &self.inventory.allowance,
-        )?);
-        let bytes = &self.output.as_ref().expect("funded output").signed;
+        self.output = Some(encode_selected(base, &selected, &self.identity)?);
+        let bytes = &self.output.as_ref().expect("encoded output").signed;
         #[cfg(test)]
         tests::commit(selected.0[1], &mut self.store, bytes)?;
         #[cfg(not(test))]
@@ -512,7 +456,6 @@ fn encode_selected(
     base: &[u8],
     selected: &schema::SenderSelection,
     identity: &Identity,
-    allowance: &NativeAllowance,
 ) -> std::result::Result<Encoded, Cause> {
     let wire = schema::AggregateV7 {
         version: 7,
@@ -527,14 +470,6 @@ fn encode_selected(
             "selected aggregate exceeds total signed size limit",
         ));
     }
-    // Original ordinary Store publication is not a paid-owner claim. Its
-    // generated name backing is nevertheless retained with the new output.
-    let name = BoundedOwnerDirectory::publication_allocation_bytes(OsStr::new("session.bin"))?;
-    let total = payload_len
-        .checked_add(signed_len)
-        .and_then(|n| n.checked_add(name))
-        .ok_or(Cause::Refused("selected output size overflow"))?;
-    let credit = allowance.reserve(total)?;
     let payload = encode_exact(&wire, payload_len)?;
     let digest = blake3::Hasher::new_derive_key("qOS native session aggregate v1")
         .update(&payload)
@@ -547,11 +482,7 @@ fn encode_selected(
         },
         signed_len,
     )?;
-    Ok(Encoded {
-        _payload: payload,
-        signed,
-        _credit: credit,
-    })
+    Ok(Encoded { signed })
 }
 fn encode_exact<T: Serialize>(value: &T, length: usize) -> std::result::Result<Vec<u8>, Cause> {
     let mut bytes = Vec::new();
@@ -564,33 +495,28 @@ fn encode_exact<T: Serialize>(value: &T, length: usize) -> std::result::Result<V
 }
 
 pub fn initialize(root: &Path) -> std::result::Result<AdminStatus, AdminError> {
-    let inventory = AdminInventory::new()?;
     let SessionOwner {
         store, identity, ..
     } = SessionOwner::initialize(root)?;
-    Operation::admit(store, identity, inventory)?.execute(Intent::Select)
+    Operation::admit(store, identity)?.execute(Intent::Select)
 }
 pub fn initialize_workspace(
     root: &Path,
     name: &str,
 ) -> std::result::Result<AdminStatus, AdminError> {
-    let inventory = AdminInventory::new()?;
     let SessionOwner {
         store, identity, ..
     } = SessionOwner::initialize_workspace(root, name)?;
-    Operation::admit(store, identity, inventory)?.execute(Intent::Select)
+    Operation::admit(store, identity)?.execute(Intent::Select)
 }
 pub fn select(root: &Path) -> std::result::Result<AdminStatus, AdminError> {
-    let inventory = AdminInventory::new()?;
-    Operation::existing(root, inventory)?.execute(Intent::Select)
+    Operation::existing(root)?.execute(Intent::Select)
 }
 pub fn resume(root: &Path) -> std::result::Result<AdminStatus, AdminError> {
-    let inventory = AdminInventory::new()?;
-    Operation::existing(root, inventory)?.execute(Intent::Resume)
+    Operation::existing(root)?.execute(Intent::Resume)
 }
 pub fn status(root: &Path) -> std::result::Result<AdminStatus, AdminError> {
-    let inventory = AdminInventory::new()?;
-    Operation::existing(root, inventory)?.execute(Intent::Status)
+    Operation::existing(root)?.execute(Intent::Status)
 }
 
 #[cfg(test)]

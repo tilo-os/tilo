@@ -1,6 +1,4 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
 #[derive(Debug, PartialEq, Eq)]
@@ -9,15 +7,15 @@ enum Failure {
     CurrentDenied,
     UnsupportedPolicy,
     Capacity,
-    Resource,
+    Decode,
 }
-fn failure(e: &Error) -> Failure {
+fn failure(e: Error) -> Failure {
     match e {
         Error::Unavailable => Failure::Unavailable,
         Error::CurrentDenied => Failure::CurrentDenied,
         Error::UnsupportedPolicy => Failure::UnsupportedPolicy,
         Error::Capacity => Failure::Capacity,
-        _ => Failure::Resource,
+        Error::Decode(_) => Failure::Decode,
     }
 }
 // Literal historical winner/count/encoded-byte sorting/tuple oracle. Deliberately
@@ -197,36 +195,22 @@ fn compare(
             Err(Error::CurrentDenied)
         }
     };
-    let got = legacy(&LegacyRead(doc), meta(), check).map_err(|error| failure(&error));
+    let got = legacy(&LegacyRead(doc), meta(), check).map_err(failure);
     assert_eq!(got, expected);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut set = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let turn = set.work_turn(current.clone()).unwrap();
-    let candidate = doc.clone_bounded(&mut set, &turn).unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
-    let before = current.retained_bytes();
-    let got = assert_precharged(&current, || {
-        native(
-            &read,
-            meta(),
-            &turn,
-            Limits {
-                collections: 8 * 1024 * 1024,
-                json: JsonLimits {
-                    allocation_bytes: 2 * 1024 * 1024,
-                    collection_entries: 65536,
-                },
+    let got = native(
+        &LegacyRead(doc),
+        meta(),
+        Limits {
+            collections: 8 * 1024 * 1024,
+            json: JsonLimits {
+                allocation_bytes: 2 * 1024 * 1024,
+                collection_entries: 65536,
             },
-            check,
-        )
-    })
-    .map_err(|error| failure(&error));
+        },
+        check,
+    )
+    .map_err(failure);
     assert_eq!(got, expected);
-    assert_eq!(
-        current.retained_bytes(),
-        before,
-        "all projection scratch is dropped"
-    );
     expected
 }
 #[test]

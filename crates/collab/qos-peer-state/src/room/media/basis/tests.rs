@@ -1,7 +1,5 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::resources::native::NativeBatch;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_automerge::ApplyIncoming;
@@ -47,30 +45,21 @@ fn native(
     extra: &[RevocationEntry],
     collection_bytes: usize,
 ) -> Result<[u8; 32], Error> {
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    let doc = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&doc.save())
-        .unwrap();
-    assert_precharged(&allowance, || {
-        bounded(
-            &doc.read(&turn).unwrap(),
-            extra,
-            &turn,
-            BasisLimits {
-                collection_bytes,
-                json: JsonLimits {
-                    allocation_bytes: 2 * 1024 * 1024,
-                    collection_entries: 4096,
-                },
+    let doc = NativeBatch::new(8 * 1024 * 1024).load(&doc.save()).unwrap();
+    bounded(
+        &doc.read(),
+        extra,
+        BasisLimits {
+            collection_bytes,
+            json: JsonLimits {
+                allocation_bytes: 2 * 1024 * 1024,
+                collection_entries: 4096,
             },
-        )
-    })
+        },
+    )
 }
 #[test]
-fn media_basis_matches_original_signed_room_and_charges_all_intermediate_allocations() {
+fn media_basis_matches_original_signed_room() {
     let (mut doc, _, _) = fixture();
     let expected = historical_basis(&doc, &[]).unwrap();
     assert_eq!(native(&mut doc, &[], 4 * 1024 * 1024), Ok(expected));
@@ -111,10 +100,7 @@ fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() 
         native(&mut doc, &[invalid], 4 * 1024 * 1024),
         Err(Error::Policy(MediaPolicyError::Binding))
     );
-    assert!(matches!(
-        native(&mut doc, &[], 16),
-        Err(Error::Resource(NativeResourceError::WorkBytes))
-    ));
+    assert_eq!(native(&mut doc, &[], 16), Err(Error::Capacity));
 }
 #[test]
 fn media_basis_matches_original_malformed_container_conflict_and_certificate_rejections() {
@@ -214,42 +200,30 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
 }
 
 #[test]
-fn media_basis_work_and_json_limits_refuse_without_mutating_original_document() {
+fn media_basis_collection_and_json_limits_refuse_without_mutating_original_document() {
     let (mut doc, _, _) = fixture();
     let original = doc.save();
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&original)
-        .unwrap();
-    let available = allowance.available_bytes();
-    for (collection_bytes, json_bytes) in [(0, 2 * 1024 * 1024), (4 * 1024 * 1024, 1)] {
-        let refused = assert_precharged(&allowance, || {
-            bounded(
-                &native.read(&turn).unwrap(),
-                &[],
-                &turn,
-                BasisLimits {
-                    collection_bytes,
-                    json: JsonLimits {
-                        allocation_bytes: json_bytes,
-                        collection_entries: 4096,
-                    },
+    let native = NativeBatch::new(8 * 1024 * 1024).load(&original).unwrap();
+    for (collection_bytes, json_bytes, refusal) in [
+        (0, 2 * 1024 * 1024, Error::Capacity),
+        (
+            4 * 1024 * 1024,
+            1,
+            Error::Decode(PeerResourceError::Capacity),
+        ),
+    ] {
+        let refused = bounded(
+            &native.read(),
+            &[],
+            BasisLimits {
+                collection_bytes,
+                json: JsonLimits {
+                    allocation_bytes: json_bytes,
+                    collection_entries: 4096,
                 },
-            )
-        });
-        assert!(matches!(
-            refused,
-            Err(Error::Resource(NativeResourceError::WorkBytes)
-                | Error::Decode(PeerResourceError::Capacity))
-        ));
-        assert_eq!(
-            allowance.available_bytes(),
-            available,
-            "all failed work credit returned"
+            },
         );
+        assert_eq!(refused, Err(refusal));
     }
     assert_eq!(doc.save(), original);
     let foreign = SigningKey::from_bytes(&[44; 32]);

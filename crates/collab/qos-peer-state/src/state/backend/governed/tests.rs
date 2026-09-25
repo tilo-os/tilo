@@ -1,10 +1,8 @@
 use super::*;
 use crate::StatePeer;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::resources::native::NativeBatch;
 use crate::room;
 use crate::state::err;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 
@@ -45,42 +43,28 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
     )
     .unwrap();
     room.commit();
-    let allowance = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    let baseline = allowance.retained_bytes();
-    let certificates = roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let certificates =
+        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
+            .unwrap();
     let revocations = revocations::BoundedRevocations::restore(
         &[],
         &RevocationList::new(),
         &certificates,
         peer.authority().device_public_key,
-        &turn,
     )
     .unwrap();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
+    let native = NativeBatch::new(8 * 1024 * 1024)
         .load(&room.save())
         .unwrap();
-    let read = native.read(&turn).unwrap();
-    let imported = assert_precharged(&allowance, || {
-        bounded(
-            &read,
-            &certificates,
-            &revocations,
-            peer.authority(),
-            now,
-            &turn,
-            limits(),
-        )
-    })
+    let read = native.read();
+    let imported = bounded(
+        &read,
+        &certificates,
+        &revocations,
+        peer.authority(),
+        now,
+        limits(),
+    )
     .unwrap();
     let changed = original_import(&mut peer, &room, now).unwrap();
     assert_eq!(imported.changed, changed);
@@ -108,15 +92,10 @@ fn bounded_governed_import_matches_real_legacy_import_and_retains_fresh_certific
     drop(revocations);
     drop(peer);
     drop(room);
-    registry.reconcile();
-    allowance.finish_turn();
     assert_eq!(
         imported.certificates.certificate(&added.device_public_key),
         Some(&added)
     );
-    assert!(allowance.retained_bytes() > baseline);
-    drop(imported);
-    assert_eq!(allowance.retained_bytes(), baseline);
 }
 
 #[test]
@@ -126,41 +105,28 @@ fn bounded_governed_import_ignores_legacy_malformed_identity_container() {
     room.put(automerge::ROOT, "peer_identities_v1", "not a map")
         .unwrap();
     room.commit();
-    let allowance = NativeAllowance::new(16 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    let certificates = roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let certificates =
+        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
+            .unwrap();
     let revocations = revocations::BoundedRevocations::restore(
         &[],
         &RevocationList::new(),
         &certificates,
         peer.authority().device_public_key,
-        &turn,
     )
     .unwrap();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
+    let native = NativeBatch::new(8 * 1024 * 1024)
         .load(&room.save())
         .unwrap();
-    let read = native.read(&turn).unwrap();
-    let imported = assert_precharged(&allowance, || {
-        bounded(
-            &read,
-            &certificates,
-            &revocations,
-            peer.authority(),
-            now,
-            &turn,
-            limits(),
-        )
-    })
+    let read = native.read();
+    let imported = bounded(
+        &read,
+        &certificates,
+        &revocations,
+        peer.authority(),
+        now,
+        limits(),
+    )
     .unwrap();
     assert!(!imported.changed);
 }
@@ -264,42 +230,29 @@ fn compare_case(
     assert_eq!(got, expected);
     assert_eq!(actual.certificates(), oracle.certificates());
     assert_eq!(actual.revocations(), oracle.revocations());
-    let allowance = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    let certificates = roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let certificates =
+        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
+            .unwrap();
     let revocations = revocations::BoundedRevocations::restore(
         &peer.revocations(),
         &RevocationList::new(),
         &certificates,
         peer.authority().device_public_key,
-        &turn,
     )
     .unwrap();
     let mut saved = room.clone();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
+    let native = NativeBatch::new(8 * 1024 * 1024)
         .load(&saved.save())
         .unwrap();
-    let read = native.read(&turn).unwrap();
-    let result = assert_precharged(&allowance, || {
-        bounded(
-            &read,
-            &certificates,
-            &revocations,
-            peer.authority(),
-            now,
-            &turn,
-            limits(),
-        )
-    });
+    let read = native.read();
+    let result = bounded(
+        &read,
+        &certificates,
+        &revocations,
+        peer.authority(),
+        now,
+        limits(),
+    );
     match (&result, &expected) {
         (Ok(imported), Ok(changed)) => {
             assert_eq!(imported.changed, *changed);
@@ -529,50 +482,54 @@ fn governed_import_keeps_verified_earliest_revocations_and_refuses_bad_root_or_s
 }
 
 #[test]
-fn governed_import_pays_current_turn_and_cleans_up_after_refusal() {
+fn governed_import_refuses_collection_and_certificate_limits() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let first = NativeAllowance::new(16 * 1024 * 1024).unwrap();
-    let mut registry = NativeAllocationSet::new(first.clone()).unwrap();
-    let turn = registry.work_turn(first.clone()).unwrap();
-    let certificates = roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let certificates =
+        roster::BoundedRoster::restore(&peer.certificates(), &[], peer.authority(), now_ns(now))
+            .unwrap();
     let revocations = revocations::BoundedRevocations::restore(
         &[],
         &RevocationList::new(),
         &certificates,
         peer.authority().device_public_key,
-        &turn,
     )
     .unwrap();
     let mut room = peer.admitted_room().unwrap().clone();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
+    let native = NativeBatch::new(8 * 1024 * 1024)
         .load(&room.save())
         .unwrap();
-    first.finish_turn();
-    let first_retained = first.retained_bytes();
-    let current = NativeAllowance::new(64 * 1024).unwrap();
-    let turn = registry.work_turn(current.clone()).unwrap();
-    let read = native.read(&turn).unwrap();
-    let before = current.retained_bytes();
-    assert!(matches!(
-        assert_precharged(&current, || bounded(
+    let read = native.read();
+    for limits in [
+        ImportLimits {
+            collection_bytes: 64,
+            ..limits()
+        },
+        ImportLimits {
+            certificate_bytes: 64,
+            ..limits()
+        },
+    ] {
+        assert!(matches!(
+            bounded(
+                &read,
+                &certificates,
+                &revocations,
+                peer.authority(),
+                now,
+                limits,
+            ),
+            Err(ImportError::Capacity)
+        ));
+    }
+    assert!(
+        bounded(
             &read,
             &certificates,
             &revocations,
             peer.authority(),
             now,
-            &turn,
-            limits()
-        )),
-        Err(ImportError::Resource(NativeResourceError::WorkBytes))
-    ));
-    assert_eq!(current.retained_bytes(), before);
-    assert_eq!(first.retained_bytes(), first_retained);
+            limits(),
+        )
+        .is_ok()
+    );
 }

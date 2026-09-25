@@ -7,6 +7,8 @@ pub mod protocol;
 pub use protocol::NeighbourMsg;
 #[cfg(test)]
 mod admission_tests;
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 mod cached_document;
 pub mod document;
 #[cfg(test)]
@@ -18,9 +20,9 @@ pub use state::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, DocumentRow, GovernedAccess,
     GovernedMember, LocalRecoveryReservation, NativePublicationCut, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRegistry, PeerRevocations, PeerRoomAccess, PeerTurn,
-    PeerWork, ReceiveOutcome, SeedDocument, SeedState, StatePeer, TransportOrigin,
-    VerifiedSecurityMetadataOnly, peer_handle, seed_room,
+    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess, ReceiveOutcome,
+    SeedDocument, SeedState, StatePeer, TransportOrigin, VerifiedSecurityMetadataOnly, peer_handle,
+    seed_room,
 };
 pub mod coverage;
 mod governed_routes;
@@ -46,25 +48,8 @@ pub mod retained_proof;
 pub mod desktop_delivery;
 
 mod admission;
-#[cfg(test)]
-mod native_footprint_vendor_tests;
-#[cfg(any(test, doctest))]
-mod native_read_vendor_tests;
-#[cfg(test)]
-mod native_reconstruction_tests;
-#[cfg(test)]
-mod native_resource_vendor_tests;
 pub mod resources;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, InputDisposition,
     MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite,
 };
-
-#[cfg(test)]
-mod native_mutation_vendor_tests;
-
-#[cfg(any(test, doctest))]
-mod native_identity_vendor_tests;
-
-#[cfg(test)]
-mod native_scalar_debug_vendor_tests;

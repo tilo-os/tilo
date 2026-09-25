@@ -1,4 +1,4 @@
-//! Borrowed current access facts; never an owner or caller credential.
+//! Current access facts; never an owner or caller credential.
 use super::{BoundedPeerError, PeerRead, SystemTime, backend};
 /// Data from actual current membership and the unchanged capability evaluator.
 /// The embedding owner still binds its authenticated caller, route and time.
@@ -18,13 +18,13 @@ impl PeerRoomAccess {
         self.user_root
     }
 }
-impl PeerRead<'_, '_> {
+impl PeerRead<'_> {
     /// Rechecks actual current membership, then the same canonical record
     /// capability decision. This is data, not a durable receipt or caller proof.
     ///
     /// # Errors
     ///
-    /// Returns a [`BoundedPeerError`] if membership cannot be read within the work budget.
+    /// Returns a [`BoundedPeerError`] if membership cannot be read within its limits.
     pub fn document_read_allowed(
         &self,
         device: [u8; 32],
@@ -33,12 +33,6 @@ impl PeerRead<'_, '_> {
         now: SystemTime,
     ) -> Result<bool, BoundedPeerError> {
         let member = self.member(device, now)?;
-        let bytes = backend::access::temporary_bytes(member.person(), self.room(), Some(app))
-            .map_err(BoundedPeerError::Resource)?;
-        let _scratch = self
-            .work
-            .reserve(bytes)
-            .map_err(BoundedPeerError::Resource)?;
         Ok(backend::access::document_read(
             member.role(),
             member.capabilities(),
@@ -54,19 +48,13 @@ impl PeerRead<'_, '_> {
     ///
     /// # Errors
     ///
-    /// Returns a [`BoundedPeerError`] if membership cannot be read within the work budget.
+    /// Returns a [`BoundedPeerError`] if membership cannot be read within its limits.
     pub fn room_access(
         &self,
         device: [u8; 32],
         now: SystemTime,
     ) -> Result<PeerRoomAccess, BoundedPeerError> {
         let member = self.member(device, now)?;
-        let bytes = backend::access::temporary_bytes(member.person(), self.room(), None)
-            .map_err(BoundedPeerError::Resource)?;
-        let _scratch = self
-            .work
-            .reserve(bytes)
-            .map_err(BoundedPeerError::Resource)?;
         let (read, write) = backend::access::room(
             member.role(),
             member.capabilities(),

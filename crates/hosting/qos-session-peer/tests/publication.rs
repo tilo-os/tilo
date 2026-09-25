@@ -1,4 +1,6 @@
 //! Real owner publication fixtures: unchanged frozen NeighbourMsg wire bodies.
+tilo_automerge_isolate::test_worker!();
+
 use qos_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use qos_session_peer::SessionOwner;
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};

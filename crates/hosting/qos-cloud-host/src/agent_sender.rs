@@ -9,7 +9,6 @@
 //! the host-local transport and its task-owned durable child path, so a lost
 //! reply or restart observes the original UUID instead of re-executing.
 use crate::agent_runtime_adapter::RuntimeOwner;
-use automerge::resource_limits::NativeAllowance;
 use qos_action_broker::{
     collab_broker::AppActionBroker,
     collab_broker_capnp::{EnrolledChildOwner, EnrolledChildRequest},
@@ -34,7 +33,6 @@ use ui::{
 
 const SENDER_DIRECTORY: &str = "actions/sender";
 const SENDER_APP: &str = "so.tilo.agent";
-const WORK_BYTES: usize = 32 * 1024 * 1024;
 
 /// The parent's next-step continuation, derived only from the exact
 /// committed child observation (never an in-memory copy of a reply).
@@ -73,7 +71,6 @@ pub(crate) enum StepProgress {
 
 pub(crate) struct CloudSender {
     runtime: SenderRuntime,
-    work: NativeAllowance,
     _cache: PortableStorage,
 }
 impl CloudSender {
@@ -122,51 +119,30 @@ impl CloudSender {
                 );
             }
         };
-        let work = NativeAllowance::new(WORK_BYTES).map_err(storage)?;
-        let scoped = scope().map_err(storage)?;
-        let credit = work
-            .reserve(AdministrativeFile::required_bytes(&scoped).map_err(storage)?)
-            .map_err(storage)?;
         let administrative = AdministrativeFile::open(
             atomic_file::StorageDirectory::open(&directory).map_err(|e| e.to_string())?,
-            scoped,
+            scope().map_err(storage)?,
             instance,
             expectation,
-            credit,
         )
         .map_err(|e| storage(e.code()))?;
         drop(administrative);
         let cache = PortableStorage::new("cloud-agent-sender", &hex::encode(device))?;
-        let scoped = scope().map_err(storage)?;
-        let credit = work
-            .reserve(PrivateActionsFile::required_bytes(&scoped).map_err(storage)?)
-            .map_err(storage)?;
         let file = PrivateActionsFile::from_held(
             atomic_file::StorageDirectory::open(&directory).map_err(|e| e.to_string())?,
-            scoped,
+            scope().map_err(storage)?,
             &cache,
-            credit,
         )
         .map_err(|e| storage(e.code()))?;
-        let credit = work
-            .reserve(file.read_required_bytes().map_err(storage)?)
-            .map_err(storage)?;
-        let read = match file.read_existing(credit) {
+        let read = match file.read_existing() {
             PrivateReadOutcome::Committed(read) => read,
             PrivateReadOutcome::Failed(error) => return Err(storage(error.code())),
         };
-        let credit = work
-            .reserve(read.hydrate_required_bytes().map_err(storage)?)
-            .map_err(storage)?;
-        let state = read
-            .hydrate_current(credit)
-            .map_err(|e| storage(e.code()))?;
+        let state = read.hydrate_current().map_err(|e| storage(e.code()))?;
         let caller = SenderCaller::new(host_root, device, SENDER_APP, "", None).map_err(storage)?;
-        let runtime =
-            SenderRuntime::install(state, caller, &work).map_err(|e| storage(e.error()))?;
+        let runtime = SenderRuntime::install(state, caller).map_err(|e| storage(e.error()))?;
         Ok(Self {
             runtime,
-            work,
             _cache: cache,
         })
     }
@@ -251,7 +227,7 @@ impl CloudSender {
             })
             .ok_or(SenderError::Busy)?;
         self.runtime
-            .accept(result, &self.work)
+            .accept(result)
             .map_err(|refusal| refusal.error().clone())
     }
 
@@ -270,20 +246,15 @@ impl CloudSender {
     ) -> Result<StepProgress, SenderError> {
         use qos_action_broker::agent_timing::us;
         let began = Instant::now();
-        let child = match self.runtime.begin_step(parent, step, intent, &self.work)? {
+        let child = match self.runtime.begin_step(parent, step, intent)? {
             StepStart::Committed(_) => return self.settled(parent, step),
             StepStart::Fresh(child) | StepStart::Recovered(child) => child,
         };
         let begin_us = us(began);
         let stage = Instant::now();
-        let attempt = self.runtime.attempt(
-            parent,
-            step,
-            AttemptKind::Invoke,
-            "",
-            Self::deadline(),
-            &self.work,
-        )?;
+        let attempt =
+            self.runtime
+                .attempt(parent, step, AttemptKind::Invoke, "", Self::deadline())?;
         let attempt_us = us(stage);
         let stage = Instant::now();
         self.deliver(attempt, broker, Some(dispatch), Some(owner))?;
@@ -324,14 +295,9 @@ impl CloudSender {
         }
         let lookup_us = us(began);
         let stage = Instant::now();
-        let attempt = self.runtime.attempt(
-            parent,
-            step,
-            AttemptKind::Observe,
-            "",
-            Self::deadline(),
-            &self.work,
-        )?;
+        let attempt =
+            self.runtime
+                .attempt(parent, step, AttemptKind::Observe, "", Self::deadline())?;
         let attempt_us = us(stage);
         let stage = Instant::now();
         self.deliver(attempt, broker, None, Some(owner))?;
@@ -362,10 +328,7 @@ impl CloudSender {
         step: ParentStep,
         child: ChildTicket,
     ) -> Result<StepProgress, SenderError> {
-        match self
-            .runtime
-            .settle(parent, step, &mut continuation, &self.work)
-        {
+        match self.runtime.settle(parent, step, &mut continuation) {
             Ok(_) => self.settled(parent, step),
             Err(SenderError::NotTerminal) => Ok(StepProgress::Pending(child)),
             Err(error) => Err(error),
@@ -380,9 +343,7 @@ impl CloudSender {
         let record = parent.lookup(step)?.ok_or(SenderError::Unmapped)?;
         let committed = record.committed.ok_or(SenderError::NotTerminal)?;
         // A committed step whose row is still retained is released here.
-        let receipt = self
-            .runtime
-            .settle(parent, step, &mut continuation, &self.work)?;
+        let receipt = self.runtime.settle(parent, step, &mut continuation)?;
         Ok(StepProgress::Settled {
             receipt,
             continuation: committed.continuation,
@@ -400,7 +361,7 @@ impl CloudSender {
         let mut parent = owner.recovery_parent();
         let recovery = self
             .runtime
-            .recover(&mut parent, &mut continuation, &self.work)
+            .recover(&mut parent, &mut continuation)
             .map_err(|e| format!("{e:?}"))?;
         let mut progress = vec![];
         for recovered in recovery.iter() {

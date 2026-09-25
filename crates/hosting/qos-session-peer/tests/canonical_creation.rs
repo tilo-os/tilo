@@ -1,4 +1,6 @@
 //! Actual governor OpenTab tests for the shared canonical creation leaf.
+tilo_automerge_isolate::test_worker!();
+
 use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
 use qos_peer_state::{NeighbourMsg, TransportOrigin, desktop_command::*, owner_commit::*};
 use qos_session_peer::SessionOwner;

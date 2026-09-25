@@ -1,7 +1,7 @@
 //! Same-peer current route checks feeding an inline delivery data projection.
 use super::{BoundedPeerError, DeviceCert, PeerRead, SystemTime, backend};
 pub use backend::delivery_policy::{PeerDeliveryPolicy, PeerDeliveryPolicyError};
-impl<'peer> PeerRead<'peer, '_> {
+impl<'peer> PeerRead<'peer> {
     /// Computes the historical delivery digest with every actual route read
     /// check. Parent retains current authenticated host/session, lock and clock.
     /// Arguments are host then device; neither becomes caller authority here.
@@ -19,7 +19,6 @@ impl<'peer> PeerRead<'peer, '_> {
     ) -> Result<PeerDeliveryPolicy<'peer>, PeerDeliveryPolicyError> {
         backend::delivery_policy::bounded(
             &self.peer.core,
-            self.work,
             self.limits,
             workspace,
             host,
@@ -39,9 +38,7 @@ impl<'peer> PeerRead<'peer, '_> {
                         Ok(false) | Err(BoundedPeerError::Invalid(_)) => {
                             return Err(Error::CurrentDenied);
                         }
-                        Err(BoundedPeerError::Resource(error)) => {
-                            return Err(Error::Resource(error));
-                        }
+                        Err(BoundedPeerError::Capacity) => return Err(Error::Capacity),
                         Err(BoundedPeerError::Decode(error)) => return Err(Error::Decode(error)),
                     }
                 }

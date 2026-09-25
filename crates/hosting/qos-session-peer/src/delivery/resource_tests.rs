@@ -893,7 +893,7 @@ fn delivery_resource_receipt_lookup_returns_only_original_durable_outcome() {
 /// accumulating a whole-aggregate charge per commit.
 #[test]
 fn delivery_resource_long_run_retained_credit_tracks_actual_bytes() {
-    use crate::owner::native_credit::allocations_only;
+    use crate::owner::allocation_meter::allocations_only;
     use crate::owner::resources::OwnerDataOperation;
     let writes: usize = std::env::var("QOS_LONG_RUN_WRITES")
         .ok()

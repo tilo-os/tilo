@@ -1,6 +1,5 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use crate::resources::native::NativeBatch;
 use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ScalarValue, Value, transaction::Transactable,
 };
@@ -59,24 +58,21 @@ fn compare(doc: &AutoCommit) {
         },
         expected
     );
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let turn = allocations.work_turn(current.clone()).unwrap();
-    let candidate = doc.clone_bounded(&mut allocations, &turn).unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
-    let before = current.retained_bytes();
+    // The same fingerprints from the document as the isolated loader admits it.
+    let admitted = NativeBatch::new(usize::MAX)
+        .load(&doc.clone().save())
+        .unwrap();
     let mut hashes = [[0; 32]; 8];
     let mut index = 0;
-    let count = assert_precharged(&current, || {
-        read.visit_media_fingerprints(|hash| {
+    let count = admitted
+        .read()
+        .visit_media_fingerprints(|hash| {
             hashes[index] = hash;
             index = index.checked_add(1).unwrap();
             Ok::<_, ()>(())
         })
-    })
-    .unwrap();
+        .unwrap();
     assert_eq!(count, index);
-    assert_eq!(current.retained_bytes(), before);
     let result = if count == 0 {
         super::super::MediaGovernanceValue::Absent
     } else {
@@ -137,19 +133,11 @@ fn shared_fingerprint_preserves_actual_conflicts_and_visitor_refusal() {
     doc.merge_incoming(&mut a).unwrap();
     doc.merge_incoming(&mut b).unwrap();
     compare(&doc);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let turn = allocations.work_turn(current.clone()).unwrap();
-    let candidate = doc.clone_bounded(&mut allocations, &turn).unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
+    let admitted = NativeBatch::new(usize::MAX)
+        .load(&doc.clone().save())
+        .unwrap();
     assert_eq!(
-        read.visit_media_fingerprints(|_| Err(7u8)),
+        admitted.read().visit_media_fingerprints(|_| Err(7u8)),
         Err(ReadError::Visitor(7))
     );
-    let all = current.reserve(current.available_bytes()).unwrap();
-    assert!(matches!(
-        read.visit_media_fingerprints(|_| Ok::<_, ()>(())),
-        Err(ReadError::Resource(NativeResourceError::WorkBytes))
-    ));
-    drop(all);
 }

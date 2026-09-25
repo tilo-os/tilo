@@ -41,8 +41,8 @@ impl NativeDocumentReads for NativeOwnerCommitService {
     ) -> Result<NativeDocumentRead, String> {
         self.authorize(context)?;
         // This seam deliberately cannot call StatePeer::document (clone/save).
-        // Installation awaits the actual owner's BoundedStatePeer + same-domain
-        // NativeWorkTurn capture. A nominal broker byte token is not a substitute.
+        // Installation awaits a capture from the actual owner's
+        // BoundedStatePeer. A nominal broker byte token is not a substitute.
         Err("bounded native document capture is not installed".into())
     }
 }

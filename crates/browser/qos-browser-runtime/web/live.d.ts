@@ -82,7 +82,7 @@ export interface LiveV1 {
   onPublish(cb: (value: {kind: 'presence' | 'preview'; seq: number; publishedAtMs: number; sentAtMs?: number; publishedWallMs?: number}) => void): Unsubscribe;
   onRemotePresence(cb: (value: {publisher: string; frame: LivePresenceFrame; receivedAtMs: number; receivedWallMs: number}) => void): Unsubscribe;
   onPreview(cb: (value: {publisher: string; record: LiveRecord; seq: number; ops: LivePreviewOp[]; receivedAtMs: number; receivedWallMs: number}) => void): Unsubscribe;
-  onSignedChange(cb: (value: {publisher: string; record: LiveRecord; digest: string; result: 'admitted' | 'duplicate' | 'deferred'; receivedAtMs: number; receivedWallMs: number; admittedAtMs: number}) => void): Unsubscribe;
+  onSignedChange(cb: (value: {publisher: string; record: LiveRecord; digest: string; result: 'admitted' | 'duplicate' | 'deferred' | 'rejected'; receivedAtMs: number; receivedWallMs: number; admittedAtMs: number}) => void): Unsubscribe;
   onMember(cb: (value: {publisher: string; active: boolean}) => void): Unsubscribe;
   onDurable(cb: (value: {record: LiveRecord}) => void): Unsubscribe;
   /** Agents with verified activity in the last 15 s. */

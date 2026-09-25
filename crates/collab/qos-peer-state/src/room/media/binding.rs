@@ -1,31 +1,25 @@
-//! Exact Chat binding data shared by legacy and retained native documents.
+//! Exact Chat binding data, read from any admitted document.
 use super::{CallPhaseV1, ChatCallBindingV1, MediaPolicyError, RoomMediaV1, read::Error};
 use crate::resources::native::NativeDocument;
-use crate::room::read::{
-    self, Copied, CopyValue, LegacyCopy, LegacyRead, ReadError, RoomRead, RoomValue, Selection,
-    TurnCopy,
-};
-use automerge::resource_limits::{NativeReadSession, NativeWorkTurn};
+use crate::room::read::{self, LegacyRead, ReadError, RoomRead, RoomValue, Selection};
 use automerge::{ObjId, ReadDoc};
 
-/// Every retained string carries its own destination guard. No Clone/extraction.
-pub(crate) struct Binding<T> {
-    app: T,
-    record: T,
-    channel: T,
-    object: T,
-    workspace: T,
+pub(crate) struct Binding {
+    app: String,
+    record: String,
+    channel: String,
+    object: String,
+    workspace: String,
 }
-impl<T: AsRef<str>> Binding<T> {
+impl Binding {
     pub(crate) fn matches(&self, value: &ChatCallBindingV1) -> bool {
-        self.app.as_ref() == value.app_id
-            && self.record.as_ref() == value.record_id
-            && self.channel.as_ref() == value.channel_id
-            && self.object.as_ref() == value.channel_object
-            && self.workspace.as_ref() == value.chat_workspace_id
+        self.app == value.app_id
+            && self.record == value.record_id
+            && self.channel == value.channel_id
+            && self.object == value.channel_object
+            && self.workspace == value.chat_workspace_id
     }
-}
-impl Binding<String> {
+
     pub(super) fn into_legacy(self) -> ChatCallBindingV1 {
         ChatCallBindingV1 {
             app_id: self.app,
@@ -42,14 +36,14 @@ fn policy(error: MediaPolicyError) -> Error {
 fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Resource(error) => Error::Resource(error),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => policy(error),
     }
 }
 fn visit_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Resource(error) => Error::Resource(error),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => error,
     }
 }
@@ -99,30 +93,15 @@ impl<D: ReadDoc> ObjectIdWrite for LegacyRead<'_, D> {
         Ok(Some(length))
     }
 }
-impl ObjectIdWrite for NativeReadSession<'_, '_> {
-    fn object_id(&self, object: &Self::Object, sink: &mut [u8]) -> Result<Option<usize>, Error> {
-        let id = object.id();
-        let length = self.id_len(id).map_err(Error::Resource)?;
-        if length > sink.len() {
-            return Ok(None);
-        }
-        self.write_id(id, sink).map(Some).map_err(Error::Resource)
-    }
-}
-fn resolve<R: ObjectIdWrite, C: CopyValue>(
+fn resolve<R: ObjectIdWrite>(
     app: &str,
     record: &str,
     channel: &str,
     room: &R,
-    copies: &C,
-) -> Result<Binding<C::Text>, Error> {
+) -> Result<Binding, Error> {
     let channels = read::strict_map(room, &room.root(), "channels").map_err(strict_error)?;
     let object = read::strict_map(room, &channels, channel).map_err(strict_error)?;
-    if read::strict_string(room, copies, &object, "kind")
-        .map_err(strict_error)?
-        .as_ref()
-        != "voice"
-    {
+    if read::strict_string(room, &object, "kind").map_err(strict_error)? != "voice" {
         return Err(policy(MediaPolicyError::Binding));
     }
     let count = room
@@ -137,9 +116,9 @@ fn resolve<R: ObjectIdWrite, C: CopyValue>(
     if count > 1 {
         return Err(policy(MediaPolicyError::Binding));
     }
-    let app = copies.text(app).map_err(Error::Resource)?;
-    let record = copies.text(record).map_err(Error::Resource)?;
-    let channel = copies.text(channel).map_err(Error::Resource)?;
+    let app = app.to_owned();
+    let record = record.to_owned();
+    let channel = channel.to_owned();
     let mut buffer = [0; super::MAX_OBJECT_BYTES];
     let length = room.object_id(&object, &mut buffer)?;
     let object_text = length
@@ -150,20 +129,10 @@ fn resolve<R: ObjectIdWrite, C: CopyValue>(
                 .ok_or_else(|| policy(MediaPolicyError::Malformed))
         })
         .transpose()?;
-    let object_copy = object_text
-        .map(|text| copies.text(text).map_err(Error::Resource))
-        .transpose()?;
-    let workspace =
-        read::strict_string(room, copies, &object, "workspace").map_err(strict_error)?;
+    let object_copy = object_text.map(str::to_owned);
+    let workspace = read::strict_string(room, &object, "workspace").map_err(strict_error)?;
     let object = object_copy.ok_or_else(|| policy(MediaPolicyError::Binding))?;
-    validate_fields(
-        app.as_ref(),
-        record.as_ref(),
-        channel.as_ref(),
-        object.as_ref(),
-        workspace.as_ref(),
-    )
-    .map_err(policy)?;
+    validate_fields(&app, &record, &channel, &object, &workspace).map_err(policy)?;
     Ok(Binding {
         app,
         record,
@@ -177,36 +146,28 @@ pub(super) fn resolve_legacy(
     record: &str,
     channel: &str,
     doc: &impl ReadDoc,
-) -> Result<Binding<String>, MediaPolicyError> {
+) -> Result<Binding, MediaPolicyError> {
     if !doc.get_missing_deps(&[]).is_empty() {
         return Err(MediaPolicyError::Binding);
     }
-    resolve(app, record, channel, &LegacyRead(doc), &LegacyCopy)
-        .map_err(|error| super::read::legacy_error(&error))
+    resolve(app, record, channel, &LegacyRead(doc)).map_err(super::read::legacy_error)
 }
 pub(crate) fn resolve_native(
     app: &str,
     record: &str,
     channel: &str,
     doc: &NativeDocument,
-    turn: &NativeWorkTurn,
-) -> Result<Binding<Copied<String>>, Error> {
+) -> Result<Binding, Error> {
     if doc.has_missing_dependencies() {
         return Err(policy(MediaPolicyError::Binding));
     }
-    resolve(
-        app,
-        record,
-        channel,
-        &doc.read(turn).map_err(Error::Resource)?,
-        &TurnCopy(turn),
-    )
+    resolve(app, record, channel, &doc.read())
 }
-fn validate_selected<T: AsRef<str>>(
+fn validate_selected(
     policy_value: &RoomMediaV1,
     app: &str,
     record: &str,
-    mut resolve: impl FnMut(&str) -> Result<Binding<T>, Error>,
+    mut resolve: impl FnMut(&str) -> Result<Binding, Error>,
 ) -> Result<(), Error> {
     for call in policy_value.calls.values().filter(|call| {
         call.phase == CallPhaseV1::Active
@@ -228,17 +189,16 @@ pub(super) fn validate_legacy(
     validate_selected(policy_value, app, record, |channel| {
         resolve_legacy(app, record, channel, doc).map_err(policy)
     })
-    .map_err(|error| super::read::legacy_error(&error))
+    .map_err(super::read::legacy_error)
 }
 pub(crate) fn validate_native(
     policy: &RoomMediaV1,
     app: &str,
     record: &str,
     doc: &NativeDocument,
-    turn: &NativeWorkTurn,
 ) -> Result<(), Error> {
     validate_selected(policy, app, record, |channel| {
-        resolve_native(app, record, channel, doc, turn)
+        resolve_native(app, record, channel, doc)
     })
 }
 pub(super) fn validate_fields(

@@ -1,17 +1,15 @@
-//! One governed identity import algorithm, with independently retained native outputs.
+//! One governed identity import algorithm for both storage modes.
 use super::{
-    AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, NativeReservation, RedemptionReceipt,
-    RevocationList, SystemTime, VerifiedCertificate, now_ns, revocations, roster,
+    AutoCommit, BTreeMap, DeviceCert, GovernedIdentity, RedemptionReceipt, RevocationList,
+    SystemTime, VerifiedCertificate, now_ns, revocations, roster,
 };
 use crate::resources::{
     PeerResourceError,
-    json::{JsonHeld, JsonLimits},
+    json::{self, JsonLimits},
 };
 use crate::room::read::{
-    self, CopyValue, GovernanceEntry, LegacyCopy, LegacyRead, ReadError, RoomRead, RoomValue,
-    Selection, TurnCopy,
+    self, GovernanceEntry, LegacyRead, ReadError, RoomRead, RoomValue, Selection,
 };
-use automerge::resource_limits::{NativeResourceError, NativeWorkTurn};
 use tilo_user_identity::{DeviceCertError, RevocationError};
 
 #[derive(Clone, Copy)]
@@ -22,7 +20,7 @@ pub(super) struct ImportLimits {
 }
 #[derive(Debug)]
 pub(in crate::state) enum ImportError {
-    Resource(NativeResourceError),
+    Capacity,
     Decode(PeerResourceError),
     LegacyJson(serde_json::Error),
     Certificate(DeviceCertError),
@@ -57,7 +55,7 @@ impl std::fmt::Display for ImportError {
             }
             Self::RevocationRoot => f.write_str("revocation root mismatch"),
             Self::RevocationCrossRoot => f.write_str("revocation cannot cross identity roots"),
-            Self::Resource(error) => write!(f, "governed import resource refusal: {error:?}"),
+            Self::Capacity => f.write_str("governed import exceeds its limit"),
             Self::Decode(error) => write!(f, "governed import decode refusal: {error:?}"),
             Self::Read => f.write_str("governed import read failed"),
         }
@@ -65,72 +63,44 @@ impl std::fmt::Display for ImportError {
 }
 fn read_error(error: ReadError<ImportError>) -> ImportError {
     match error {
-        ReadError::Resource(error) => ImportError::Resource(error),
+        ReadError::Capacity => ImportError::Capacity,
         ReadError::Visitor(error) => error,
         ReadError::Malformed => ImportError::Read,
     }
 }
-trait View<T> {
-    fn value(&self) -> &T;
-}
-impl View<GovernedIdentity> for GovernedIdentity {
-    fn value(&self) -> &Self {
-        self
-    }
-}
-impl View<RedemptionReceipt> for RedemptionReceipt {
-    fn value(&self) -> &Self {
-        self
-    }
-}
-impl<T: crate::resources::json::Schema> View<T> for JsonHeld<T> {
-    fn value(&self) -> &T {
-        self.value()
-    }
-}
 trait Decode {
-    type Identity: View<GovernedIdentity>;
-    type Receipt: View<RedemptionReceipt>;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, ImportError>;
-    fn receipt(&self, bytes: &[u8]) -> Result<Self::Receipt, ImportError>;
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError>;
+    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError>;
 }
 struct Legacy;
 impl Decode for Legacy {
-    type Identity = GovernedIdentity;
-    type Receipt = RedemptionReceipt;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, ImportError> {
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError> {
         serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)
     }
-    fn receipt(&self, bytes: &[u8]) -> Result<Self::Receipt, ImportError> {
+    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError> {
         serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)
     }
 }
-struct Bounded<'a> {
-    turn: &'a NativeWorkTurn,
+struct Bounded {
     limits: JsonLimits,
 }
-impl Decode for Bounded<'_> {
-    type Identity = JsonHeld<GovernedIdentity>;
-    type Receipt = JsonHeld<RedemptionReceipt>;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, ImportError> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(ImportError::Decode)
+impl Decode for Bounded {
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, ImportError> {
+        json::decode(bytes, self.limits).map_err(ImportError::Decode)
     }
-    fn receipt(&self, bytes: &[u8]) -> Result<Self::Receipt, ImportError> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(ImportError::Decode)
+    fn receipt(&self, bytes: &[u8]) -> Result<RedemptionReceipt, ImportError> {
+        json::decode(bytes, self.limits).map_err(ImportError::Decode)
     }
 }
 
-/// Inputs have their own guards. `Work` precedes these collections and remains
-/// alive until their maps, vector backing and copied keys have been destroyed.
-struct Inputs<I> {
-    identities: BTreeMap<String, I>,
+struct Inputs {
+    identities: BTreeMap<String, GovernedIdentity>,
 }
-fn inputs<R: RoomRead, C: CopyValue, D: Decode>(
+fn inputs<R: RoomRead, D: Decode>(
     room: &R,
-    copies: &C,
     decoder: &D,
     work: &mut Work,
-) -> Result<Inputs<D::Identity>, ImportError> {
+) -> Result<Inputs, ImportError> {
     let mut identities = BTreeMap::new();
     read::visit_governance_entries(room, |entry| {
         if let GovernanceEntry::Identity { key, bytes } = entry {
@@ -138,7 +108,7 @@ fn inputs<R: RoomRead, C: CopyValue, D: Decode>(
             // before checking any receipt, key, certificate or revocation.
             let value = decoder.identity(bytes)?;
             let key = work.text(key)?;
-            work.tree::<String, D::Identity>()?;
+            work.tree::<String, GovernedIdentity>()?;
             identities.insert(key, value);
         }
         Ok(())
@@ -164,7 +134,7 @@ fn inputs<R: RoomRead, C: CopyValue, D: Decode>(
         },
     )
     .map_err(read_error)?;
-    let mut receipts = BTreeMap::<String, Vec<C::Bytes>>::new();
+    let mut receipts = BTreeMap::<String, Vec<Vec<u8>>>::new();
     room.visit_property(
         &room.root(),
         "invitation_receipts_v1",
@@ -179,19 +149,19 @@ fn inputs<R: RoomRead, C: CopyValue, D: Decode>(
             };
             room.visit_keys(&object, |key| {
                 // Keep all raw values in the same sorted-key/ledger order as the
-                // original collector. Copied native bytes retain separate credit.
+                // original collector.
                 let mut values = Vec::new();
                 room.visit_property(&object, key, Selection::All, |value| {
                     let RoomValue::Bytes(bytes) = value else {
                         return Err(ImportError::ReceiptShape);
                     };
-                    let bytes = copies.bytes(bytes).map_err(ImportError::Resource)?;
-                    work.push(&mut values, bytes)
+                    work.debit(Some(bytes.len()))?;
+                    work.push(&mut values, bytes.to_vec())
                 })
                 .map_err(read_error)?;
                 if !receipts.contains_key(key) {
                     let key = work.text(key)?;
-                    work.tree::<String, Vec<C::Bytes>>()?;
+                    work.tree::<String, Vec<Vec<u8>>>()?;
                     receipts.insert(key, Vec::new());
                 }
                 let destination = receipts.get_mut(key).ok_or(ImportError::Read)?;
@@ -208,16 +178,14 @@ fn inputs<R: RoomRead, C: CopyValue, D: Decode>(
     let mut redemptions = BTreeMap::new();
     for (key, values) in &receipts {
         for bytes in values {
-            let receipt = decoder.receipt(bytes.as_ref())?;
-            let receipt = receipt.value();
+            let receipt = decoder.receipt(bytes)?;
             if !is_key(key, &receipt.invite_id) {
                 return Err(ImportError::ReceiptKey);
             }
-            insert_receipt(&mut redemptions, receipt, work)?;
+            insert_receipt(&mut redemptions, &receipt, work)?;
         }
     }
     for identity in identities.values() {
-        let identity = identity.value();
         for receipt in identity.admission.iter().chain(&identity.admissions) {
             insert_receipt(&mut redemptions, receipt, work)?;
         }
@@ -243,8 +211,8 @@ fn is_key(text: &str, key: &[u8; 32]) -> bool {
     hex::encode_to_slice(key, &mut encoded).is_ok() && text.as_bytes() == encoded
 }
 
-fn apply<I: View<GovernedIdentity>>(
-    inputs: &Inputs<I>,
+fn apply(
+    inputs: &Inputs,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     certificates: &mut BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &mut RevocationList,
@@ -253,8 +221,7 @@ fn apply<I: View<GovernedIdentity>>(
     cert_work: &mut Work,
 ) -> Result<bool, ImportError> {
     let mut changed = false;
-    for (id, held) in &inputs.identities {
-        let identity = held.value();
+    for (id, identity) in &inputs.identities {
         let cert = &identity.device_cert;
         if !is_key(id, &cert.device_public_key) {
             return Err(ImportError::IdentityKey);
@@ -263,8 +230,6 @@ fn apply<I: View<GovernedIdentity>>(
             if known.as_ref() != cert {
                 return Err(ImportError::CertificateConflict);
             }
-            // This shares only a backing already owned by THIS candidate's
-            // retained roster, never an unqualified source certificate Arc.
             known.clone()
         } else {
             cert_work.certificate(cert, Some(now_ns(now)))?
@@ -309,8 +274,8 @@ pub(in crate::state) fn legacy(
     authority: &DeviceCert,
     now: SystemTime,
 ) -> Result<LegacyImport, ImportError> {
-    let mut work = Work::legacy();
-    let inputs = inputs(&LegacyRead(room), &LegacyCopy, &Legacy, &mut work)?;
+    let mut work = Work::unlimited();
+    let inputs = inputs(&LegacyRead(room), &Legacy, &mut work)?;
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(
@@ -342,37 +307,23 @@ pub(super) fn bounded<R: RoomRead>(
     revocations: &revocations::BoundedRevocations,
     authority: &DeviceCert,
     now: SystemTime,
-    turn: &NativeWorkTurn,
     limits: ImportLimits,
 ) -> Result<Imported, ImportError> {
-    let mut work = Work::bounded(turn, limits.collection_bytes)?;
+    let mut work = Work::limited(limits.collection_bytes);
     let inputs = inputs(
         room,
-        &TurnCopy(turn),
         &Bounded {
-            turn,
             limits: limits.json,
         },
         &mut work,
     )?;
-    let mut cert_work = Work::bounded(turn, limits.certificate_bytes)?;
+    let mut cert_work = Work::limited(limits.certificate_bytes);
     let mut certificates = BTreeMap::new();
     for (key, certificate) in original.map() {
         let copied = cert_work.certificate(certificate, None)?;
         cert_work.tree::<[u8; 32], VerifiedCertificate>()?;
         certificates.insert(*key, copied);
     }
-    let mut count = revocations.list().len();
-    for held in inputs.identities.values() {
-        count = count
-            .checked_add(held.value().revocations.len())
-            .ok_or(ImportError::Resource(NativeResourceError::WorkBytes))?;
-    }
-    let bytes = revocations::insertion_bytes(count).map_err(|error| match error {
-        revocations::RestoreRevocationsError::Resource(error) => ImportError::Resource(error),
-        _ => ImportError::Resource(NativeResourceError::Unaccounted),
-    })?;
-    let revocation_retention = turn.reserve(bytes).map_err(ImportError::Resource)?;
     let mut candidate_revocations = RevocationList::new();
     for entry in revocations.iter() {
         candidate_revocations
@@ -388,52 +339,35 @@ pub(super) fn bounded<R: RoomRead>(
         now,
         &mut cert_work,
     )?;
-    // These are closed transfers of fields allocated by the engine above, not
-    // arbitrary map/DTO qualification APIs. The private holders drop fields first.
     Ok(Imported {
-        certificates: roster::BoundedRoster::imported(
-            certificates,
-            cert_work.retention.take().ok_or(ImportError::Read)?,
-        ),
-        revocations: revocations::BoundedRevocations::imported(
-            candidate_revocations,
-            revocation_retention,
-        ),
+        certificates: roster::BoundedRoster::imported(certificates),
+        revocations: revocations::BoundedRevocations::imported(candidate_revocations),
         changed,
     })
 }
 
+/// A byte limit on the collections one import builds.
 struct Work {
     remaining: usize,
-    retention: Option<NativeReservation>,
 }
 impl Work {
-    fn legacy() -> Self {
+    fn unlimited() -> Self {
         Self {
             remaining: usize::MAX,
-            retention: None,
         }
     }
-    fn bounded(turn: &NativeWorkTurn, bytes: usize) -> Result<Self, ImportError> {
-        Ok(Self {
-            remaining: bytes,
-            retention: Some(turn.reserve(bytes).map_err(ImportError::Resource)?),
-        })
+    fn limited(bytes: usize) -> Self {
+        Self { remaining: bytes }
     }
     fn debit(&mut self, bytes: Option<usize>) -> Result<(), ImportError> {
         self.remaining = self
             .remaining
-            .checked_sub(bytes.ok_or(ImportError::Resource(NativeResourceError::WorkBytes))?)
-            .ok_or(ImportError::Resource(NativeResourceError::WorkBytes))?;
+            .checked_sub(bytes.ok_or(ImportError::Capacity)?)
+            .ok_or(ImportError::Capacity)?;
         Ok(())
     }
     fn tree<K, V>(&mut self) -> Result<(), ImportError> {
-        // Pinned std1.97.1: 11 slots and12 child pointers per internal node;
-        // fewer than3 nodes per insertion bounds splits/root overlap. <=16
-        // alignment and256 bytes per header bound these concrete map types.
-        if align_of::<K>() > 16 || align_of::<V>() > 16 {
-            return Err(ImportError::Resource(NativeResourceError::Unaccounted));
-        }
+        // An estimate of a BTreeMap node's share per insertion.
         self.debit(
             size_of::<K>()
                 .checked_add(size_of::<V>())
@@ -443,26 +377,15 @@ impl Work {
     }
     fn text(&mut self, value: &str) -> Result<String, ImportError> {
         self.debit(Some(value.len()))?;
-        let mut text = String::new();
-        text.try_reserve_exact(value.len())
-            .map_err(|_| ImportError::Resource(NativeResourceError::WorkBytes))?;
-        if text.capacity() > value.len() {
-            return Err(ImportError::Resource(NativeResourceError::Unaccounted));
-        }
-        text.push_str(value);
-        Ok(text)
+        Ok(value.to_owned())
     }
     fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), ImportError> {
         if values.len() == values.capacity() {
             let next = values.capacity().saturating_mul(2).max(4);
-            // Cumulative reservations retain old+new allocations during growth.
             self.debit(next.checked_mul(size_of::<T>()))?;
             values
                 .try_reserve_exact(next.saturating_sub(values.len()))
-                .map_err(|_| ImportError::Resource(NativeResourceError::WorkBytes))?;
-            if values.capacity() > next {
-                return Err(ImportError::Resource(NativeResourceError::Unaccounted));
-            }
+                .map_err(|_| ImportError::Capacity)?;
         }
         values.push(value);
         Ok(())
@@ -472,13 +395,7 @@ impl Work {
         value: &DeviceCert,
         now: Option<u64>,
     ) -> Result<VerifiedCertificate, ImportError> {
-        let arc = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
-            .extend(std::alloc::Layout::new::<DeviceCert>())
-            .map_err(|_| ImportError::Resource(NativeResourceError::WorkBytes))?
-            .0
-            .pad_to_align()
-            .size();
-        self.debit(Some(arc))?;
+        self.debit(Some(size_of::<DeviceCert>()))?;
         let value = DeviceCert {
             user_public_key: value.user_public_key,
             device_public_key: value.device_public_key,

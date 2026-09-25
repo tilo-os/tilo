@@ -145,7 +145,15 @@ fn workspace_store(
         .map_err(Into::into)
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Cmd::HomePeerRetryRemovals { identity_root } => retry_pending_removals(&identity_root),

@@ -1,8 +1,7 @@
 //! Guarded original durable DTO storage, before semantic peer restoration.
-use super::{Durable, DurableV2, DurableV4, DurableV5, NativeReservation};
+use super::{Durable, DurableV2, DurableV4, DurableV5};
 use crate::admission::BoundedExactAdmissions;
 use crate::resources::{OuterLimits, PeerResourceError};
-use automerge::resource_limits::NativeWorkTurn;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum DurableDecodeError {
@@ -12,8 +11,7 @@ pub(super) enum DurableDecodeError {
     Pending(super::pending::PendingError),
 }
 
-// Keep each actual historical schema intact; especially V2's document vector
-// is not converted by an uncharged collect. No native/identity authority here.
+// Keep each actual historical schema intact. No identity authority here.
 pub(super) enum DurableWire {
     V2(DurableV2),
     V3(Durable),
@@ -23,41 +21,23 @@ pub(super) struct DecodedDurable {
     pub(super) wire: DurableWire,
     pub(super) exact: Option<BoundedExactAdmissions>,
     pub(super) version: u32,
-    // All owned wire fields are destroyed before their retained reservation.
-    pub(super) retention: NativeReservation,
 }
 impl DecodedDurable {
     pub(super) fn decode(
         bytes: &[u8],
         outer: OuterLimits,
         exact_limits: OuterLimits,
-        turn: &NativeWorkTurn,
     ) -> Result<Self, DurableDecodeError> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes)
             .map_err(|_| DurableDecodeError::Resource(PeerResourceError::Malformed))?;
         if !matches!(version, 2..=5) {
             return Err(DurableDecodeError::UnsupportedVersion);
         }
-        let retention = turn
-            .reserve(outer.allocation_bytes)
-            .map_err(|_| DurableDecodeError::Resource(PeerResourceError::Capacity))?;
-        // Every path below is one of the already audited closed schemas. The
-        // held reservation precedes the decoder and every resulting allocation.
+        // Every path below is one of the closed schemas.
         macro_rules! decode {
             ($ty:ty) => {
-                crate::resources::outer::decode::<$ty>(
-                    bytes,
-                    crate::resources::outer::Limits {
-                        allocation: outer.allocation_bytes,
-                        collection_entries: outer.collection_entries,
-                    },
-                )
-                .map_err(|error| {
-                    DurableDecodeError::Resource(match error {
-                        crate::resources::outer::Error::Capacity => PeerResourceError::Capacity,
-                        crate::resources::outer::Error::Invalid => PeerResourceError::Malformed,
-                    })
-                })?
+                crate::resources::decode::<$ty>(bytes, outer)
+                    .map_err(DurableDecodeError::Resource)?
             };
         }
         let (wire, exact) = match version {
@@ -69,10 +49,9 @@ impl DecodedDurable {
                 if value.version != 5 || value.base.version != 4 {
                     return Err(DurableDecodeError::Envelope);
                 }
-                // The original input borrow cannot escape. Decode its canonical
-                // exact index now, under the SAME current work turn, then move
-                // the owned V4 base without reallocating or cloning its fields.
-                let exact = BoundedExactAdmissions::decode_in_turn(value.exact, exact_limits, turn)
+                // The input borrow cannot escape: decode the canonical exact
+                // index now, then move the owned V4 base.
+                let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
                     .map_err(DurableDecodeError::Resource)?;
                 (DurableWire::V4(value.base), Some(exact))
             }
@@ -98,7 +77,6 @@ impl DecodedDurable {
             wire,
             exact,
             version,
-            retention,
         })
     }
 }

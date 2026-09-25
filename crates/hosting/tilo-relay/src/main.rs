@@ -86,7 +86,15 @@ fn load_or_default(path: &std::path::Path) -> anyhow::Result<RelayConfig> {
     }
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     install_logging();
     let cli = Cli::parse();
 

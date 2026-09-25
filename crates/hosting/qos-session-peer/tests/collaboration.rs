@@ -1,3 +1,5 @@
+tilo_automerge_isolate::test_worker!();
+
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::{
     JoinChallengeRequest, JoinCompleteRequest, JoinInspection, JoinTransportRequest,

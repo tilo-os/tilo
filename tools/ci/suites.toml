@@ -563,16 +563,6 @@ inputs = ["crates/session/shell/src/portal/lockdown/state.rs"]
 readers = ["crates/collab/qos-action-broker/src/collab_broker_capnp/native_media.rs"]
 
 [[cargo]]
-package = "tilo-automerge"
-# The vendored automerge's resource-limit suites run as this crate's tests.
-inputs = ["vendor/automerge/"]
-readers = [
-  "crates/doc/tilo-automerge/tests/am012_admission.rs", "crates/doc/tilo-automerge/tests/am012_api_surface.rs",
-  "crates/doc/tilo-automerge/tests/am012_apply.rs", "crates/doc/tilo-automerge/tests/am012_compat_08.rs",
-  "crates/doc/tilo-automerge/tests/am012_read.rs", "crates/doc/tilo-automerge/tests/am012_storage.rs",
-]
-
-[[cargo]]
 package = "qos-cloud-host"
 # Owner-commit fixtures and the browser runtime's Cloud protocol are shared
 # contracts with qos-peer-state and the browser.
@@ -583,7 +573,6 @@ inputs = [
 readers = [
   "crates/hosting/qos-cloud-host/src/agent_runtime_owner/effects/tests.rs",
   "crates/hosting/qos-cloud-host/src/agent_runtime_owner/tests.rs",
-  "crates/hosting/qos-cloud-host/src/delivery/resources/private_validation/tests.rs",
   "crates/hosting/qos-cloud-host/src/https_owner/config/hosted_attempt_tests.rs",
 ]
 

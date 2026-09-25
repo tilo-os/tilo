@@ -1,40 +1,27 @@
-//! Signature-verified enrollment union with retained backing, not authority.
-use super::{BoundedPeerError, BoundedPeerInvalid, PeerWork, RevocationList, backend};
+//! Signature-verified enrollment union, not authority.
+use super::{BoundedPeerError, BoundedPeerInvalid, RevocationList, backend};
 use tilo_user_identity::RevocationEntry;
 
-/// Retains the verified enrollment union's allocation credit. This does not bind
-/// its roots to an admitted roster or prove a caller/owner/transport identity.
-/// The actual restore still performs those root and pinned-authority checks.
+/// A verified enrollment union. This does not bind its roots to an admitted
+/// roster or prove a caller/owner/transport identity; restore still performs
+/// those root and pinned-authority checks.
 pub struct PeerRevocations {
     inner: backend::revocations::BoundedRevocations,
 }
 impl PeerRevocations {
-    /// Borrow the original verified union without extracting its owned backing.
     pub fn list(&self) -> &RevocationList {
         self.inner.list()
     }
-}
-impl PeerWork<'_> {
-    /// Verify every original signature and form the earliest-entry union using
-    /// this exact turn. Input rows remain caller-owned; output credit stays with
-    /// the returned holder. No roster filter, authority or domain is inferred.
+    /// Verify every signature and form the earliest-entry union. No roster
+    /// filter, authority or domain is inferred.
     ///
     /// # Errors
     ///
-    /// Returns a [`BoundedPeerError`] if a signature does not verify or the turn cannot pay
-    /// the union.
-    pub fn verified_revocations(
-        &self,
-        entries: &[RevocationEntry],
-    ) -> Result<PeerRevocations, BoundedPeerError> {
-        let inner = backend::revocations::BoundedRevocations::verified(entries, self.turn)
-            .map_err(|error| match error {
-                backend::revocations::RestoreRevocationsError::Resource(error) => {
-                    BoundedPeerError::Resource(error)
-                }
-                _ => BoundedPeerError::Invalid(BoundedPeerInvalid::Revocation),
-            })?;
-        Ok(PeerRevocations { inner })
+    /// Returns a [`BoundedPeerError`] if a signature does not verify.
+    pub fn verified(entries: &[RevocationEntry]) -> Result<Self, BoundedPeerError> {
+        let inner = backend::revocations::BoundedRevocations::verified(entries)
+            .map_err(|_| BoundedPeerError::Invalid(BoundedPeerInvalid::Revocation))?;
+        Ok(Self { inner })
     }
 }
 #[cfg(test)]

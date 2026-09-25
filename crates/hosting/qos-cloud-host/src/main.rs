@@ -1,7 +1,15 @@
 use anyhow::{Context, Result, bail};
 use std::{io::Read, path::PathBuf};
+fn main() -> Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them before any
+    // runtime threads start.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn run() -> Result<()> {
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()

@@ -366,18 +366,6 @@ impl Aggregate {
             .context("cloud observed state durability reconciliation failed")?;
         Ok(())
     }
-    #[cfg(test)]
-    pub(crate) fn checkpoint_file(&mut self) -> &mut std::fs::File {
-        &mut self.checkpoint
-    }
-    /// The journal file when it holds any bytes.
-    #[cfg(test)]
-    pub(crate) fn journal_file(&mut self) -> Option<&mut std::fs::File> {
-        self.journal
-            .as_mut()
-            .filter(|(_, _, len)| *len > 0)
-            .map(|(file, _, _)| file)
-    }
 }
 #[cfg(unix)]
 fn read_exact_len(file: &std::fs::File, len: u64) -> Result<Vec<u8>> {
@@ -389,13 +377,6 @@ fn read_exact_len(file: &std::fs::File, len: u64) -> Result<Vec<u8>> {
     file.take(len.saturating_add(1)).read_to_end(&mut bytes)?;
     ensure!(bytes.len() as u64 == len, "aggregate changed while locked");
     Ok(bytes)
-}
-/// The state a checkpoint plus its journal bytes reconstruct (for readers
-/// that read both files through their own paid buffers).
-#[cfg(test)]
-pub(crate) fn reconstruct(checkpoint: &[u8], journal: &[u8]) -> Vec<u8> {
-    let digest = *blake3::hash(checkpoint).as_bytes();
-    journal::replay_fast(checkpoint.to_vec(), &digest, journal, MAX_STATE_BYTES).state
 }
 /// `fstatat` relative to the bound Store directory; never an ambient lookup.
 #[cfg(unix)]

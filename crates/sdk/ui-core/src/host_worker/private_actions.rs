@@ -1,6 +1,5 @@
 //! Existing-only, resource-only private sender storage. No owner or send authority.
 pub use crate::portable_storage::PrivateActionsCapture;
-use automerge::resource_limits::NativeReservation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SenderStorageCode {
@@ -121,14 +120,12 @@ pub struct PrivateActionsFile {
     selected_pending_revision: Option<u64>,
     cursor: Option<Cursor>,
     cursor_identity: Option<atomic_file::FileIdentity>,
-    _credit: NativeReservation,
 }
 pub struct PreparedPrivateWrite {
     capture: PrivateActionsCapture,
     encoded: Vec<u8>,
     file: PrivateActionsFile,
     proposed: Cursor,
-    _credit: NativeReservation,
 }
 pub struct CommittedPrivateWrite {
     prepared: PreparedPrivateWrite,
@@ -146,7 +143,6 @@ pub struct CommittedPrivateRead {
     input: std::fs::File,
     bytes: Vec<u8>,
     file: PrivateActionsFile,
-    _credit: Option<NativeReservation>,
 }
 pub struct FailedPrivateRead {
     input: Option<std::fs::File>,
@@ -155,7 +151,6 @@ pub struct FailedPrivateRead {
     error: Option<OpenError>,
     bytes: Vec<u8>,
     file: PrivateActionsFile,
-    _credit: NativeReservation,
     code: SenderStorageCode,
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -183,14 +178,11 @@ pub enum PrivateQueueOutcome {
 pub struct QueueRefusal {
     state: CurrentPrivateState,
     payload: Vec<u8>,
-    credit: Option<NativeReservation>,
     code: SenderStorageCode,
 }
 pub struct HydrateRefusal {
-    // Native error custody drops before original file/data and metadata guards.
     error: Option<OpenError>,
     read: CommittedPrivateRead,
-    credit: Option<NativeReservation>,
     code: SenderStorageCode,
 }
 
@@ -223,7 +215,6 @@ pub struct FileOpenRefusal {
     cache: PortableStorage,
     scope: SenderScope,
     code: SenderStorageCode,
-    _credit: NativeReservation,
 }
 enum OpenError {
     Io(io::Error),
@@ -262,22 +253,10 @@ impl FileOpenRefusal {
     }
 }
 impl PrivateActionsFile {
-    pub fn required_bytes(_scope: &SenderScope) -> Result<usize, SenderStorageCode> {
-        // Inline scope/FDs/Rc/identity; supported bounded recurring opens allocate no heap.
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        {
-            Ok(0)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            Err(SenderStorageCode::Capacity)
-        }
-    }
     pub fn from_held(
         directory: StorageDirectory,
         scope: SenderScope,
         cache: &PortableStorage,
-        credit: NativeReservation,
     ) -> Result<Self, FileOpenRefusal> {
         let mut held = FileOpenRefusal {
             error: None,
@@ -288,7 +267,6 @@ impl PrivateActionsFile {
             cache: cache.clone(),
             scope,
             code: SenderStorageCode::Capacity,
-            _credit: credit,
         };
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         {
@@ -367,7 +345,6 @@ impl PrivateActionsFile {
                 selected_pending_revision: None,
                 cursor: None,
                 cursor_identity: None,
-                _credit: held._credit,
             })
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -468,12 +445,7 @@ impl PrivateActionsFile {
         self.bindings()?;
         Ok(identity)
     }
-    pub fn read_required_bytes(&self) -> Result<usize, SenderStorageCode> {
-        (codec::MAX_FILE + 1)
-            .checked_add(FILE_NAME.len())
-            .ok_or(SenderStorageCode::Capacity)
-    }
-    pub fn read_existing(self, credit: NativeReservation) -> PrivateReadOutcome {
+    pub fn read_existing(self) -> PrivateReadOutcome {
         let mut phase = FailedPrivateRead {
             input: None,
             candidate: None,
@@ -481,13 +453,9 @@ impl PrivateActionsFile {
             error: None,
             bytes: Vec::new(),
             file: self,
-            _credit: credit,
             code: SenderStorageCode::Capacity,
         };
         let result = (|| -> Result<(), SenderStorageCode> {
-            if phase._credit.bytes() < phase.file.read_required_bytes()? {
-                return Err(SenderStorageCode::Capacity);
-            }
             phase
                 .bytes
                 .try_reserve_exact(codec::MAX_FILE + 1)
@@ -540,24 +508,12 @@ impl PrivateActionsFile {
         }
         phase.complete()
     }
-    pub fn capture_required_bytes(&self) -> Result<usize, SenderStorageCode> {
-        PrivateActionsCapture::required_for_revision(
-            &self.cache,
-            self.workspace(),
-            self.selected_pending_revision
-                .ok_or(SenderStorageCode::StaleCapture)?,
-        )
-    }
-    pub fn capture(
-        &self,
-        credit: NativeReservation,
-    ) -> Result<PrivateActionsCapture, SenderStorageCode> {
+    pub fn capture(&self) -> Result<PrivateActionsCapture, SenderStorageCode> {
         PrivateActionsCapture::capture_for_revision(
             &self.cache,
             self.workspace(),
             self.selected_pending_revision
                 .ok_or(SenderStorageCode::StaleCapture)?,
-            credit,
         )
     }
     fn stamp(
@@ -574,18 +530,9 @@ impl PrivateActionsFile {
             payload_digest: *blake3::hash(payload).as_bytes(),
         })
     }
-    pub fn prepare_required_bytes(
-        &self,
-        capture: &PrivateActionsCapture,
-    ) -> Result<usize, SenderStorageCode> {
-        codec::required_bytes(&self.scope, capture.bytes().len())?
-            .checked_add(FILE_NAME.len() + 37)
-            .ok_or(SenderStorageCode::Capacity)
-    }
     pub fn prepare(
         self,
         capture: PrivateActionsCapture,
-        credit: NativeReservation,
     ) -> Result<PreparedPrivateWrite, PrepareRefusal> {
         let result = (|| {
             if !capture.bound_to(&self.cache, self.workspace()) {
@@ -595,9 +542,6 @@ impl PrivateActionsFile {
                 return Err(SenderStorageCode::StaleCapture);
             }
             capture.check_current()?;
-            if credit.bytes() < self.prepare_required_bytes(&capture)? {
-                return Err(SenderStorageCode::Capacity);
-            }
             let cursor = self.cursor.ok_or(SenderStorageCode::InvalidFile)?;
             if self.cursor_identity.is_none() {
                 return Err(SenderStorageCode::InvalidFile);
@@ -626,7 +570,6 @@ impl PrivateActionsFile {
                 encoded,
                 file: self,
                 proposed,
-                _credit: credit,
             }),
             Err(code) => Err(PrepareRefusal {
                 file: self,
@@ -811,7 +754,6 @@ impl FailedPrivateRead {
             input,
             bytes: self.bytes,
             file: self.file,
-            _credit: Some(self._credit),
         })
     }
     pub fn retry_commit(mut self) -> PrivateReadOutcome {
@@ -850,15 +792,10 @@ impl CurrentPrivateState {
     pub fn into_file(self) -> PrivateActionsFile {
         self.file
     }
-    pub fn queue_owned(
-        self,
-        payload: Vec<u8>,
-        credit: NativeReservation,
-    ) -> Result<PrivateQueueOutcome, QueueRefusal> {
+    pub fn queue_owned(self, payload: Vec<u8>) -> Result<PrivateQueueOutcome, QueueRefusal> {
         let mut phase = QueueRefusal {
             state: self,
             payload,
-            credit: Some(credit),
             code: SenderStorageCode::StaleCapture,
         };
         if let Err(code) = phase.state.borrow_current().map(|_| ()) {
@@ -870,7 +807,6 @@ impl CurrentPrivateState {
             phase.state.revision,
             &phase.state.stamp,
             &mut phase.payload,
-            &mut phase.credit,
         );
         match result {
             Ok(Some(revision)) => {
@@ -879,7 +815,6 @@ impl CurrentPrivateState {
             }
             Ok(None) => {
                 drop(phase.payload);
-                drop(phase.credit);
                 Ok(PrivateQueueOutcome::Unchanged(phase.state))
             }
             Err(code) => {
@@ -904,21 +839,9 @@ impl QueueRefusal {
     pub fn code(&self) -> SenderStorageCode {
         self.code
     }
-    /// Returns the state, payload and pending credit the refused queue kept.
-    ///
-    /// # Panics
-    ///
-    /// Never: a refused queue retains its credit; only an accepted one spends it.
-    #[expect(
-        clippy::expect_used,
-        reason = "the cache spends the credit only when it accepts the queue, never on refusal"
-    )]
-    pub fn into_parts(self) -> (CurrentPrivateState, Vec<u8>, NativeReservation) {
-        (
-            self.state,
-            self.payload,
-            self.credit.expect("retained pending credit"),
-        )
+    /// Returns the state and payload the refused queue kept.
+    pub fn into_parts(self) -> (CurrentPrivateState, Vec<u8>) {
+        (self.state, self.payload)
     }
 }
 impl HydrateRefusal {
@@ -950,18 +873,9 @@ impl CommittedPrivateRead {
             .expect("validated cursor")
             .instance
     }
-    pub fn hydrate_required_bytes(&self) -> Result<usize, SenderStorageCode> {
-        self.file
-            .cache
-            .private_hydrate_required(self.file.workspace())
-    }
-    pub fn hydrate_current(
-        self,
-        credit: NativeReservation,
-    ) -> Result<CurrentPrivateState, HydrateRefusal> {
+    pub fn hydrate_current(self) -> Result<CurrentPrivateState, HydrateRefusal> {
         let mut phase = HydrateRefusal {
             read: self,
-            credit: Some(credit),
             error: None,
             code: SenderStorageCode::Capacity,
         };
@@ -992,9 +906,7 @@ impl CommittedPrivateRead {
             phase.read.file.workspace(),
             &mut phase.read.bytes,
             codec::HEADER..end,
-            &mut phase.read._credit,
             stamp,
-            &mut phase.credit,
         );
         match result {
             Ok(()) => Ok(CurrentPrivateState {
@@ -1032,7 +944,6 @@ impl FinishRefusal {
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn committed_test_fixture(
     payload: &[u8],
-    budget: &automerge::resource_limits::NativeAllowance,
 ) -> (tempfile::TempDir, CurrentPrivateState, PortableStorage) {
-    tests::consuming::actual_state_fixture(payload, budget)
+    tests::consuming::actual_state_fixture(payload)
 }

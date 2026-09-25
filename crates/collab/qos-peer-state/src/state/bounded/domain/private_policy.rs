@@ -23,18 +23,18 @@ impl PeerPolicyBasis {
         self.value.next_expiry_after(unix_seconds)
     }
 }
-impl PeerRead<'_, '_> {
+impl PeerRead<'_> {
     /// Retains the same strict persistent capability checks and exact revision
     /// as the legacy private basis. The parent still binds caller, lock, clock,
     /// generation and publication lineage. This does not authorize an action.
     ///
     /// # Errors
     ///
-    /// Returns a [`BoundedPeerError`] if a persistent capability is malformed or the work
-    /// budget is exhausted.
+    /// Returns a [`BoundedPeerError`] if a persistent capability is malformed or a limit
+    /// is reached.
     pub fn private_policy_basis(&self) -> Result<PeerPolicyBasis, BoundedPeerError> {
         Ok(PeerPolicyBasis {
-            value: backend::private_policy::bounded(&self.peer.core, self.work, self.limits)?,
+            value: backend::private_policy::bounded(&self.peer.core, self.limits)?,
         })
     }
 }

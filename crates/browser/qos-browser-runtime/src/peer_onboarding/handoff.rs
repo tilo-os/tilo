@@ -12,32 +12,22 @@ pub(super) struct ManifestContext<'a> {
 }
 
 pub(super) struct Handoff {
-    manifest: ChargedBytes,
-    output: ChargedBytes,
+    manifest: Vec<u8>,
+    output: Vec<u8>,
     position: usize,
     segment: usize,
     segment_start: usize,
     failed: bool,
     expires_at_ns: u64,
-    // At most one shared decoder lives per call. Its bounded Vec growth can
-    // overlap its old allocation; this reservation covers both capacities.
-    _metadata: NativeReservation,
 }
 impl Handoff {
-    pub fn start(
-        bytes: &[u8],
-        context: ManifestContext<'_>,
-        budget: &IncomingBudget,
-        now: u64,
-    ) -> Result<Self, String> {
+    pub fn start(bytes: &[u8], context: ManifestContext<'_>, now: u64) -> Result<Self, String> {
         if now >= context.expires_at_ns {
             return Err("original onboarding context expired".into());
         }
         if bytes.len() > wire::MAX_MANIFEST_BYTES {
             return Err("onboarding manifest exceeds bound".into());
         }
-        let metadata =
-            budget.reserve(3 * wire::MAX_SEGMENTS * std::mem::size_of::<wire::HandoffSegment>())?;
         let manifest = wire::HandoffManifest::decode(bytes).map_err(|e| e.to_string())?;
         manifest
             .verify_host_signature(
@@ -51,11 +41,12 @@ impl Handoff {
         if manifest.purpose != context.purpose {
             return Err("onboarding manifest purpose mismatch".into());
         }
+        // The manifest decoder bounds `total_bytes` by its purpose's limit.
         let length =
             usize::try_from(manifest.total_bytes).map_err(|_| "onboarding size overflow")?;
-        let output = ChargedBytes::zeroed(length, budget)?;
+        let output = zeroed(length)?;
         let expires_at_ns = context.expires_at_ns.min(manifest.expires_at_ns);
-        let manifest = ChargedBytes::copy(bytes, budget)?;
+        let manifest = copy(bytes)?;
         Ok(Self {
             manifest,
             output,
@@ -64,15 +55,13 @@ impl Handoff {
             segment_start: 0,
             failed: false,
             expires_at_ns,
-            _metadata: metadata,
         })
     }
     pub fn request(&self, key: &SigningKey, now: u64) -> Result<wire::HandoffRequest, String> {
         if self.failed || self.remaining() == 0 {
             return Err("onboarding transfer is closed".into());
         }
-        let manifest =
-            wire::HandoffManifest::decode(&self.manifest.bytes).map_err(|e| e.to_string())?;
+        let manifest = wire::HandoffManifest::decode(&self.manifest).map_err(|e| e.to_string())?;
         if key.verifying_key().to_bytes() != manifest.device
             || now < manifest.issued_at_ns
             || now >= manifest.expires_at_ns
@@ -117,8 +106,7 @@ impl Handoff {
         if request.offset != self.position as u64 {
             return Err("onboarding range is not sequential".into());
         }
-        let manifest =
-            wire::HandoffManifest::decode(&self.manifest.bytes).map_err(|e| e.to_string())?;
+        let manifest = wire::HandoffManifest::decode(&self.manifest).map_err(|e| e.to_string())?;
         let chunk = wire::HandoffChunk::decode(bytes).map_err(|e| e.to_string())?;
         chunk
             .verify_host_signature(&manifest, request, now)
@@ -126,9 +114,9 @@ impl Handoff {
         let end = self
             .position
             .checked_add(chunk.body.len())
-            .filter(|end| *end <= self.output.bytes.len())
+            .filter(|end| *end <= self.output.len())
             .ok_or("onboarding range overflow")?;
-        self.output.bytes[self.position..end].copy_from_slice(chunk.body);
+        self.output[self.position..end].copy_from_slice(chunk.body);
         self.position = end;
         while let Some(segment) = manifest.segments.get(self.segment) {
             let segment_end = self
@@ -138,7 +126,7 @@ impl Handoff {
             if segment_end > end {
                 break;
             }
-            if canonical_item_digest(&self.output.bytes[self.segment_start..segment_end])
+            if canonical_item_digest(&self.output[self.segment_start..segment_end])
                 != segment.digest
             {
                 return Err("onboarding segment digest mismatch".into());
@@ -150,20 +138,19 @@ impl Handoff {
         Ok(())
     }
     pub fn remaining(&self) -> usize {
-        self.output.bytes.len() - self.position
+        self.output.len() - self.position
     }
     #[cfg(target_arch = "wasm32")]
     pub fn expires_at_ns(&self) -> u64 {
         self.expires_at_ns
     }
-    pub fn finish(self, now: u64) -> Result<ChargedBytes, String> {
-        let manifest =
-            wire::HandoffManifest::decode(&self.manifest.bytes).map_err(|e| e.to_string())?;
+    pub fn finish(self, now: u64) -> Result<Vec<u8>, String> {
+        let manifest = wire::HandoffManifest::decode(&self.manifest).map_err(|e| e.to_string())?;
         if now >= self.expires_at_ns
             || self.failed
             || self.remaining() != 0
             || self.segment != manifest.segments.len()
-            || canonical_item_digest(&self.output.bytes) != manifest.content_digest
+            || canonical_item_digest(&self.output) != manifest.content_digest
         {
             return Err("onboarding transfer is incomplete or corrupt".into());
         }

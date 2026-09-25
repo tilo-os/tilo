@@ -1,3 +1,5 @@
+tilo_automerge_isolate::test_worker!();
+
 use qos_peer_state::{desktop_command::*, owner_commit::*};
 use qos_session_peer::SessionOwner;
 use std::{path::Path, process::Command};

@@ -1,19 +1,16 @@
-//! Test-only requested-allocation meter. Checks credit before allocation AND free.
-use automerge::resource_limits::NativeAllowance;
+//! Test-only requested-allocation meter.
 use std::{
     alloc::{GlobalAlloc, Layout, System},
-    cell::{Cell, RefCell},
+    cell::Cell,
 };
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Stats {
     pub allocations: usize,
     pub live: usize,
-    pub underfunded: bool,
 }
 thread_local! {
     static STATS: Cell<Option<Stats>> = const { Cell::new(None) };
-    static CREDIT: RefCell<Option<(NativeAllowance, usize)>> = const { RefCell::new(None) };
 }
 struct Meter;
 fn observe(bytes: usize, allocation: bool) {
@@ -22,14 +19,7 @@ fn observe(bytes: usize, allocation: bool) {
             if allocation {
                 state.allocations += 1;
                 state.live = state.live.saturating_add(bytes);
-            }
-            let _ = CREDIT.try_with(|credit| {
-                if let Some((credit, baseline)) = credit.borrow().as_ref() {
-                    state.underfunded |=
-                        state.live > credit.retained_bytes().saturating_sub(*baseline);
-                }
-            });
-            if !allocation {
+            } else {
                 state.live = state.live.saturating_sub(bytes);
             }
             slot.set(Some(state));
@@ -68,7 +58,7 @@ unsafe impl GlobalAlloc for Meter {
 #[global_allocator]
 static ALLOCATOR: Meter = Meter;
 
-pub(super) fn allocations_only<T>(operation: impl FnOnce() -> T) -> (T, Stats) {
+pub(crate) fn allocations_only<T>(operation: impl FnOnce() -> T) -> (T, Stats) {
     struct Reset;
     impl Drop for Reset {
         fn drop(&mut self) {
@@ -82,18 +72,4 @@ pub(super) fn allocations_only<T>(operation: impl FnOnce() -> T) -> (T, Stats) {
     let _reset = Reset;
     let output = operation();
     (output, STATS.with(|v| v.take().unwrap()))
-}
-pub(crate) fn measure<T>(credit: &NativeAllowance, operation: impl FnOnce() -> T) -> (T, Stats) {
-    struct Reset;
-    impl Drop for Reset {
-        fn drop(&mut self) {
-            CREDIT.with(|v| *v.borrow_mut() = None);
-        }
-    }
-    CREDIT.with(|v| {
-        assert!(v.borrow().is_none());
-        *v.borrow_mut() = Some((credit.clone(), credit.retained_bytes()));
-    });
-    let _reset = Reset;
-    allocations_only(operation)
 }

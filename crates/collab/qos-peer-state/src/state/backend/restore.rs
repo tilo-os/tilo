@@ -1,25 +1,18 @@
-//! Closed composition of authenticated durable input into retained peer storage.
-use super::super::bounded::{BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerWork};
+//! Closed composition of authenticated durable input into bounded peer storage.
+use super::super::bounded::{BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerLimits};
 use super::{
     BTreeMap, BoundedNative, ChannelState, DeviceCert, DurableDocument, DurableDocumentV2,
-    Ed25519PublicKey, NativeCheckpoint, NativeReservation, PeerCore, PeerDocument, RevocationList,
-    Route, SystemTime, VecDeque, durable, governed, now_ns, revocations, roster,
+    Ed25519PublicKey, NativeCheckpoint, PeerCore, PeerDocument, RevocationList, Route, SystemTime,
+    VecDeque, durable, governed, now_ns, revocations, roster,
 };
 use crate::coverage::read::{BoundedCoverage, WireVersionError, snapshot_wire_version};
 use crate::resources::json::JsonLimits;
+use crate::resources::native::NativeBatch;
 use crate::room::media::{
     self,
     read::{BoundedDecode, PolicyValue},
 };
-use crate::room::read::TurnCopy;
-use automerge::resource_limits::NativeResourceError;
 
-// This is retained with the Core, after all moved original DTO fields. The
-// private constructor below is the only place their custody can be transferred.
-pub(in crate::state) struct CoreRetention {
-    _durable: NativeReservation,
-    _metadata: NativeReservation,
-}
 enum Documents {
     V2(std::vec::IntoIter<DurableDocumentV2>),
     Current(std::vec::IntoIter<DurableDocument>),
@@ -44,41 +37,34 @@ impl Iterator for Documents {
 fn invalid(value: BoundedPeerInvalid) -> BoundedPeerError {
     BoundedPeerError::Invalid(value)
 }
-fn resource(value: NativeResourceError) -> BoundedPeerError {
-    BoundedPeerError::Resource(value)
-}
 fn policy_error(value: media::read::Error) -> BoundedPeerError {
     match value {
-        media::read::Error::Resource(error) => resource(error),
+        media::read::Error::Capacity => BoundedPeerError::Capacity,
         media::read::Error::Decode(error) => BoundedPeerError::Decode(error),
         media::read::Error::Policy(_) => invalid(BoundedPeerInvalid::Media),
     }
 }
-fn roster_error(value: roster::RosterError) -> BoundedPeerError {
-    match value {
-        roster::RosterError::Resource(error) => resource(error),
-        _ => invalid(BoundedPeerInvalid::Certificate),
-    }
+fn roster_error(_: roster::RosterError) -> BoundedPeerError {
+    invalid(BoundedPeerInvalid::Certificate)
 }
-fn revocation_error(value: revocations::RestoreRevocationsError) -> BoundedPeerError {
+fn revocation_error(value: &revocations::RestoreRevocationsError) -> BoundedPeerError {
     match value {
-        revocations::RestoreRevocationsError::Resource(error) => resource(error),
         revocations::RestoreRevocationsError::AuthorityRevoked => {
             invalid(BoundedPeerInvalid::AuthorityRevoked)
         }
         _ => invalid(BoundedPeerInvalid::Revocation),
     }
 }
-fn governance_error(value: governed::ImportError) -> BoundedPeerError {
+fn governance_error(value: &governed::ImportError) -> BoundedPeerError {
     match value {
-        governed::ImportError::Resource(error) => resource(error),
-        governed::ImportError::Decode(error) => BoundedPeerError::Decode(error),
+        governed::ImportError::Capacity => BoundedPeerError::Capacity,
+        governed::ImportError::Decode(error) => BoundedPeerError::Decode(*error),
         _ => invalid(BoundedPeerInvalid::Governance),
     }
 }
 #[expect(
     clippy::too_many_lines,
-    reason = "one durable restore whose steps share the work turn"
+    reason = "one durable restore whose steps share its limits"
 )]
 pub(in crate::state) fn restore(
     bytes: &[u8],
@@ -87,21 +73,23 @@ pub(in crate::state) fn restore(
     roster: &[DeviceCert],
     revocations: &RevocationList,
     now: SystemTime,
-    work: &mut PeerWork<'_>,
+    limits: &PeerLimits,
 ) -> Result<BoundedStatePeer, BoundedPeerError> {
     let decoded =
-        durable::DecodedDurable::decode(bytes, work.limits.durable, work.limits.exact, work.turn)
-            .map_err(|error| match error {
-            durable::DurableDecodeError::Resource(error) => BoundedPeerError::Decode(error),
-            durable::DurableDecodeError::UnsupportedVersion => invalid(BoundedPeerInvalid::Version),
-            durable::DurableDecodeError::Envelope => invalid(BoundedPeerInvalid::Envelope),
-            durable::DurableDecodeError::Pending(_) => invalid(BoundedPeerInvalid::Pending),
+        durable::DecodedDurable::decode(bytes, limits.durable, limits.exact).map_err(|error| {
+            match error {
+                durable::DurableDecodeError::Resource(error) => BoundedPeerError::Decode(error),
+                durable::DurableDecodeError::UnsupportedVersion => {
+                    invalid(BoundedPeerInvalid::Version)
+                }
+                durable::DurableDecodeError::Envelope => invalid(BoundedPeerInvalid::Envelope),
+                durable::DurableDecodeError::Pending(_) => invalid(BoundedPeerInvalid::Pending),
+            }
         })?;
     let durable::DecodedDurable {
         wire,
         exact,
         version,
-        retention,
     } = decoded;
     let (
         stored_room,
@@ -153,48 +141,42 @@ pub(in crate::state) fn restore(
     }
     let uuid = uuid::Uuid::parse_str(room).map_err(|_| invalid(BoundedPeerInvalid::Namespace))?;
     let mut metadata = Metadata {
-        remaining: work.limits.metadata_bytes,
-        retention: Some(
-            work.turn
-                .reserve(work.limits.metadata_bytes)
-                .map_err(resource)?,
-        ),
+        remaining: limits.metadata_bytes,
     };
+    let mut remaining_document_bytes = limits.normalized_bytes;
+    let mut batch = NativeBatch::continuing(&mut remaining_document_bytes);
     let mut buffer = [0; 36];
     let room = metadata.text(uuid.hyphenated().encode_lower(&mut buffer))?;
     let certificates =
-        roster::BoundedRoster::restore(&certificates, roster, authority, now_ns(now), work.turn)
+        roster::BoundedRoster::restore(&certificates, roster, authority, now_ns(now))
             .map_err(roster_error)?;
     let revocations = revocations::BoundedRevocations::restore(
         &stored_revocations,
         revocations,
         &certificates,
         authority.device_public_key,
-        work.turn,
     )
-    .map_err(revocation_error)?;
+    .map_err(|error| revocation_error(&error))?;
     let room_doc = room_bytes
         .as_deref()
-        .map(|bytes| work.batch.load(bytes).map_err(resource))
+        .map(|bytes| batch.load(bytes))
         .transpose()?;
     let mut admitted_documents = BTreeMap::new();
     for document in documents {
         let read = room_doc
             .as_ref()
-            .map(|room| room.read(work.turn).map_err(resource))
-            .transpose()?;
+            .map(crate::resources::native::NativeDocument::read);
         let governed = snapshot_wire_version(
             read.as_ref(),
             &document.route.app,
             &document.route.record,
             document.covered_snapshot.as_deref(),
             &BoundedCoverage {
-                turn: work.turn,
-                limits: work.limits.policy,
+                limits: limits.policy,
             },
         )
         .map_err(|error| match error {
-            WireVersionError::Resource(error) => resource(error),
+            WireVersionError::Capacity => BoundedPeerError::Capacity,
             WireVersionError::Decode(error) => BoundedPeerError::Decode(error),
             _ => invalid(BoundedPeerInvalid::Coverage),
         })?;
@@ -213,7 +195,7 @@ pub(in crate::state) fn restore(
                 .last_seq_per_author
                 .insert(Ed25519PublicKey::from_bytes(key), sequence);
         }
-        let doc = work.batch.load(&document.bytes).map_err(resource)?;
+        let doc = batch.load(&document.bytes)?;
         metadata.tree::<Route, PeerDocument<BoundedNative>>()?;
         admitted_documents.insert(
             document.route,
@@ -243,23 +225,15 @@ pub(in crate::state) fn restore(
         exact_admissions: exact,
         admission_v5: version == 5,
         native_cut_publisher: None,
-        _retention: CoreRetention {
-            _durable: retention,
-            _metadata: metadata
-                .retention
-                .take()
-                .ok_or_else(|| resource(NativeResourceError::Unaccounted))?,
-        },
+        _retention: (),
     };
     let mut media_policy = None;
     if let Some(doc) = &core.room_doc {
-        let read = doc.read(work.turn).map_err(resource)?;
+        let read = doc.read();
         let policy = media::read::parse(
             &read,
-            &TurnCopy(work.turn),
             &BoundedDecode {
-                turn: work.turn,
-                limits: work.limits.policy,
+                limits: limits.policy,
             },
         )
         .map_err(policy_error)?;
@@ -272,17 +246,16 @@ pub(in crate::state) fn restore(
         if let Some(policy) = &policy {
             let policy = policy.policy();
             let json = JsonLimits {
-                allocation_bytes: work.limits.governance_json.allocation_bytes,
-                collection_entries: work.limits.governance_json.collection_entries,
+                allocation_bytes: limits.governance_json.allocation_bytes,
+                collection_entries: limits.governance_json.collection_entries,
             };
             if doc.has_missing_dependencies()
                 || policy.authorization_basis
                     != media::basis::bounded(
                         &read,
                         &[],
-                        work.turn,
                         media::basis::BasisLimits {
-                            collection_bytes: work.limits.governance_collection_bytes,
+                            collection_bytes: limits.governance_collection_bytes,
                             json,
                         },
                     )
@@ -296,14 +269,13 @@ pub(in crate::state) fn restore(
                 &core.revocations,
                 &core.authority,
                 now,
-                work.turn,
                 governed::ImportLimits {
-                    collection_bytes: work.limits.governance_collection_bytes,
-                    certificate_bytes: work.limits.governance_collection_bytes,
+                    collection_bytes: limits.governance_collection_bytes,
+                    certificate_bytes: limits.governance_collection_bytes,
                     json,
                 },
             )
-            .map_err(governance_error)?;
+            .map_err(|error| governance_error(&error))?;
             core.certificates = imported.certificates;
             core.revocations = imported.revocations;
             if core
@@ -315,7 +287,7 @@ pub(in crate::state) fn restore(
             // Shared partial-binding semantics preserve data restore when an
             // exact plaintext Chat has not arrived yet.
             super::media::bindings(policy, false, |app, record| {
-                super::media::native_binding(&core, policy, app, record, work.turn)
+                super::media::native_binding(&core, policy, app, record)
             })
             .map_err(|error| match error {
                 super::media::ReadinessError::Source(error) => policy_error(error),
@@ -342,37 +314,26 @@ pub(in crate::state) fn restore(
             }
         }
     }
-    let media = super::media::cache(&core, media_policy, work)?;
-    Ok(BoundedStatePeer::from_core(core, media, work))
+    let media = super::media::cache(&core, media_policy, limits)?;
+    Ok(BoundedStatePeer::from_core(core, media, *limits))
 }
+/// Bytes left for restored metadata, from `metadata_bytes`.
 struct Metadata {
     remaining: usize,
-    retention: Option<NativeReservation>,
 }
 impl Metadata {
     fn debit(&mut self, bytes: Option<usize>) -> Result<(), BoundedPeerError> {
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes.ok_or_else(|| resource(NativeResourceError::WorkBytes))?)
-            .ok_or_else(|| resource(NativeResourceError::WorkBytes))?;
+        self.remaining = bytes
+            .and_then(|bytes| self.remaining.checked_sub(bytes))
+            .ok_or(BoundedPeerError::Capacity)?;
         Ok(())
     }
     fn text(&mut self, value: &str) -> Result<String, BoundedPeerError> {
         self.debit(Some(value.len()))?;
-        let mut out = String::new();
-        out.try_reserve_exact(value.len())
-            .map_err(|_| resource(NativeResourceError::WorkBytes))?;
-        if out.capacity() > value.len() {
-            return Err(resource(NativeResourceError::Unaccounted));
-        }
-        out.push_str(value);
-        Ok(out)
+        Ok(value.to_owned())
     }
     fn tree<K, V>(&mut self) -> Result<(), BoundedPeerError> {
-        // Same pinned11-slot/12-child std1.97.1 bound as the reviewed roster.
-        if align_of::<K>() > 16 || align_of::<V>() > 16 {
-            return Err(resource(NativeResourceError::Unaccounted));
-        }
+        // An estimate of a BTreeMap node's share per insertion.
         self.debit(
             size_of::<K>()
                 .checked_add(size_of::<V>())
@@ -381,38 +342,7 @@ impl Metadata {
         )
     }
     fn watermarks(&mut self, count: usize) -> Result<(), BoundedPeerError> {
-        type Entry = (Ed25519PublicKey, u64);
-        if count == 0 {
-            return Ok(());
-        }
-        // Fresh std/hashbrown0.17.1 HashMap<(fixed key),u64>, no deletions:
-        //4/8/16 initial buckets then7/8 load. Two maximum allocations cover
-        // old/new rehash overlap; no uncharged Vec/collect is constructed.
-        let capacity = || resource(NativeResourceError::WorkBytes);
-        let buckets = if count < 4 {
-            4
-        } else if count < 8 {
-            8
-        } else if count < 15 {
-            16
-        } else {
-            (count.checked_mul(8).ok_or_else(capacity)? / 7)
-                .checked_next_power_of_two()
-                .ok_or_else(capacity)?
-        };
-        let alignment = align_of::<Entry>().max(16);
-        let data = size_of::<Entry>()
-            .checked_mul(buckets)
-            .ok_or_else(capacity)?;
-        let padded = data
-            .checked_next_multiple_of(alignment)
-            .ok_or_else(capacity)?;
-        self.debit(
-            padded
-                .checked_add(buckets)
-                .and_then(|n| n.checked_add(16))
-                .and_then(|n| n.checked_mul(2)),
-        )
+        self.debit(count.checked_mul(size_of::<(Ed25519PublicKey, u64)>().saturating_mul(2)))
     }
 }
 #[cfg(test)]

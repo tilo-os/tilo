@@ -1,13 +1,8 @@
 use super::*;
 use crate::BoundedStatePeer;
 use crate::PeerLimits;
-use crate::PeerRegistry;
 use crate::StatePeer;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::NativeAllowance;
-use automerge::resource_limits::NativeResourceError;
 use automerge::{ROOT, ReadDoc, transaction::Transactable};
-use collab_types::Role;
 use collab_types::caps::{
     Actor, CapDecision, CapOverride, Principal, ResourceRef, Scope, Subject, Verb,
     decide_capability,
@@ -100,12 +95,6 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
         let (peer, device, now) = fixture(verb);
         let bytes = peer.durable().unwrap();
         let expected = old_room(&peer, device, now);
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
         let restored = BoundedStatePeer::restore(
             &bytes,
             peer.room(),
@@ -113,11 +102,11 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
             &[],
             &RevocationList::new(),
             now,
-            &mut work,
+            &PeerLimits::default(),
         )
         .unwrap();
-        let read = restored.read(&work).unwrap();
-        let access = assert_precharged(&current, || read.room_access(device, now)).unwrap();
+        let read = restored.read();
+        let access = read.room_access(device, now).unwrap();
         assert_eq!((access.read(), access.write()), expected);
         assert_eq!(
             access.user_root(),
@@ -129,15 +118,14 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
                 old_document(&peer, device, app, record, now)
             );
             assert_eq!(
-                assert_precharged(&current, || read
-                    .document_read_allowed(device, app, record, now))
-                .unwrap(),
+                read.document_read_allowed(device, app, record, now)
+                    .unwrap(),
                 old_document(&peer, device, app, record, now).is_ok()
             );
         }
         let later = now + Duration::from_secs(2);
         assert!(peer.permissions(device, later).is_err());
-        assert!(assert_precharged(&current, || read.room_access(device, later)).is_err());
+        assert!(read.room_access(device, later).is_err());
         assert!(
             read.document_read_allowed(device, "test.app", "tab:1", later)
                 .is_err()
@@ -145,139 +133,30 @@ fn native_current_access_matches_actual_legacy_room_and_record_decisions() {
     }
 }
 #[test]
-fn access_uses_current_credit_and_prepays_large_actor_outputs_before_evaluation() {
+fn access_evaluates_long_routes_and_refuses_unknown_devices() {
     let (peer, device, now) = fixture(Verb::Write);
     let bytes = peer.durable().unwrap();
-    let resident = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let restored = {
-        let mut turn = registry
-            .begin_turn(resident.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-        .unwrap()
-    };
-    let resident_before = resident.retained_bytes();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let work = turn.work().unwrap();
-    let read = restored.read(&work).unwrap();
+    let restored = BoundedStatePeer::restore(
+        &bytes,
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        &PeerLimits::default(),
+    )
+    .unwrap();
+    let read = restored.read();
     let app = "long-app".repeat(4000);
     let record = "long-record".repeat(4000);
-    let before = current.retained_bytes();
     assert!(
-        assert_precharged(&current, || read
-            .document_read_allowed(device, &app, &record, now))
-        .unwrap()
+        read.document_read_allowed(device, &app, &record, now)
+            .unwrap()
     );
-    assert_eq!(current.retained_bytes(), before);
-    assert_eq!(resident.retained_bytes(), resident_before);
-    let all = work.reserve_output(current.available_bytes()).unwrap();
-    assert!(read.room_access(device, now).is_err());
-    drop(all);
     assert!(read.room_access(device, now).unwrap().write());
     assert!(read.room_access([0x77; 32], now).is_err());
     assert_eq!(
         peer.check_document_read([0x77; 32], "a", "b", now),
         old_document(&peer, [0x77; 32], "a", "b", now)
-    );
-}
-
-#[test]
-fn shared_evaluator_actor_growth_and_subject_temporary_fit_exact_source_budget() {
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let person = "ab".repeat(32);
-    let room = "room-☺".repeat(4000);
-    let app = "app-☺".repeat(4000);
-    let caps = vec![CapOverride::grant(
-        Subject::User(Ed25519PublicKey::from_bytes([0xab; 32])),
-        Scope::Workspace,
-        Verb::Write,
-    )];
-    let now = SystemTime::UNIX_EPOCH;
-    for selected_app in [Some(app.as_str()), None] {
-        let bytes = backend::access::temporary_bytes(&person, &room, selected_app).unwrap();
-        assert_precharged(&current, || {
-            let _retention = current.reserve(bytes).unwrap();
-            if let Some(app) = selected_app {
-                assert!(backend::access::document_read(
-                    Role::Editor,
-                    &caps,
-                    &person,
-                    &room,
-                    app,
-                    "record",
-                    now
-                ));
-            } else {
-                assert_eq!(
-                    backend::access::room(Role::Editor, &caps, &person, &room, now),
-                    (true, true)
-                );
-            }
-        });
-    }
-}
-
-#[test]
-fn actor_copy_quota_refuses_large_route_before_growth_and_leaves_current_view_usable() {
-    let (peer, device, now) = fixture(Verb::Write);
-    let bytes = peer.durable().unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let restored = {
-        let mut turn = registry
-            .begin_turn(
-                NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-                PeerLimits::default(),
-            )
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-        .unwrap()
-    };
-    let current = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let limits = PeerLimits {
-        governance_collection_bytes: 4096,
-        ..PeerLimits::default()
-    };
-    let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
-    let work = turn.work().unwrap();
-    let read = restored.read(&work).unwrap();
-    assert!(
-        read.document_read_allowed(device, "small", "record", now)
-            .unwrap()
-    );
-    let large = "x".repeat(2 * 1024 * 1024);
-    let before = current.retained_bytes();
-    let error = assert_precharged(&current, || {
-        read.document_read_allowed(device, &large, "record", now)
-    });
-    assert!(matches!(
-        error,
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-    ));
-    assert_eq!(current.retained_bytes(), before);
-    assert!(
-        read.document_read_allowed(device, "small", "record", now)
-            .unwrap()
     );
 }

@@ -1,6 +1,5 @@
 use super::protocol::*;
 use super::{identity, relay};
-use automerge::resource_limits::NativeAllowance;
 use ed25519_dalek::SigningKey;
 
 fn selection() -> Selection {
@@ -54,8 +53,6 @@ fn challenge() -> identity::cloud_enrollment::Challenge {
 #[test]
 fn hosted_errors_are_fixed_inline_and_never_contain_material() {
     assert!(std::mem::size_of::<HostedAttemptError>() <= 1);
-    let budget = NativeAllowance::new(8 * 1024 * 1024).unwrap();
-    let before = budget.available_bytes();
     assert!(
         HostedAttempt::restore(
             b"secret",
@@ -63,43 +60,29 @@ fn hosted_errors_are_fixed_inline_and_never_contain_material() {
                 account_id: "account".into(),
                 machine_id: "machine".into()
             },
-            &budget,
             10
         )
         .is_err()
     );
-    assert_eq!(budget.available_bytes(), before);
 }
 
 #[test]
-fn hosted_attempt_owns_original_allowance_through_parse_stage_ack_and_drop() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let before = budget.available_bytes();
-    let mut attempt = HostedAttempt::restore(&material(), selection(), &budget, 100).unwrap();
-    let parsed = budget.available_bytes();
-    assert!(parsed < before);
-    let saved = attempt
-        .prepare_enrollment(&serde_json::to_vec(&challenge()).unwrap(), 100)
-        .unwrap()
-        .material
-        .to_vec();
-    assert!(budget.available_bytes() < parsed);
-    attempt.acknowledge(&saved, 101).unwrap();
-    assert!(budget.available_bytes() < before);
+fn cancelled_attempt_refuses_every_later_step() {
+    let mut attempt = HostedAttempt::restore(&material(), selection(), 100).unwrap();
     attempt.cancel();
-    assert!(
-        budget.available_bytes() < before,
-        "cancel retains owned backing until caller releases attempt"
+    assert_eq!(
+        attempt
+            .prepare_enrollment(&serde_json::to_vec(&challenge()).unwrap(), 100)
+            .err(),
+        Some(HostedAttemptError::Cancelled)
     );
-    drop(attempt);
-    assert_eq!(budget.available_bytes(), before);
+    assert!(attempt.apply_request().is_err());
 }
 
 #[test]
 fn hosted_checkpoint_is_exact_and_does_not_fresh_sign_after_expiry() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let initial = material();
-    let mut attempt = HostedAttempt::restore(&initial, selection(), &budget, 100).unwrap();
+    let mut attempt = HostedAttempt::restore(&initial, selection(), 100).unwrap();
     let request = challenge();
     let bytes = serde_json::to_vec(&request).unwrap();
     let saved = attempt
@@ -120,11 +103,9 @@ fn hosted_checkpoint_is_exact_and_does_not_fresh_sign_after_expiry() {
         .acknowledge(&saved, request.expires_at_ns + 1)
         .unwrap();
     let expected = attempt.apply_request().unwrap().payload.to_vec();
-    let restored =
-        HostedAttempt::restore(&saved, selection(), &budget, request.expires_at_ns + 2).unwrap();
+    let restored = HostedAttempt::restore(&saved, selection(), request.expires_at_ns + 2).unwrap();
     assert_eq!(restored.apply_request().unwrap().payload, expected);
-    let mut old =
-        HostedAttempt::restore(&initial, selection(), &budget, request.expires_at_ns + 1).unwrap();
+    let mut old = HostedAttempt::restore(&initial, selection(), request.expires_at_ns + 1).unwrap();
     assert!(
         old.prepare_enrollment(&bytes, request.expires_at_ns + 1)
             .is_err()
@@ -134,8 +115,6 @@ fn hosted_checkpoint_is_exact_and_does_not_fresh_sign_after_expiry() {
 
 #[test]
 fn hosted_restore_rejects_corrupt_identity_and_legacy_tags() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let initial = budget.available_bytes();
     let original: serde_json::Value = serde_json::from_slice(&material()).unwrap();
     for (field, value) in [
         ("version", serde_json::json!(2)),
@@ -150,13 +129,8 @@ fn hosted_restore_rejects_corrupt_identity_and_legacy_tags() {
         let mut changed = original.clone();
         changed[field] = value;
         assert!(
-            HostedAttempt::restore(
-                &serde_json::to_vec(&changed).unwrap(),
-                selection(),
-                &budget,
-                100
-            )
-            .is_err(),
+            HostedAttempt::restore(&serde_json::to_vec(&changed).unwrap(), selection(), 100)
+                .is_err(),
             "{field}"
         );
     }
@@ -164,20 +138,12 @@ fn hosted_restore_rejects_corrupt_identity_and_legacy_tags() {
     changed["certificate"]["signature"][0] =
         serde_json::json!(changed["certificate"]["signature"][0].as_u64().unwrap() ^ 1);
     assert!(
-        HostedAttempt::restore(
-            &serde_json::to_vec(&changed).unwrap(),
-            selection(),
-            &budget,
-            100
-        )
-        .is_err()
+        HostedAttempt::restore(&serde_json::to_vec(&changed).unwrap(), selection(), 100).is_err()
     );
-    assert_eq!(budget.available_bytes(), initial);
 }
 
 #[test]
 fn hosted_challenge_has_no_first_claim_or_scope_substitution() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let original = challenge();
     let mut changes = Vec::new();
     let mut changed = original.clone();
@@ -202,7 +168,7 @@ fn hosted_challenge_has_no_first_claim_or_scope_substitution() {
     changed.host_certificate.as_mut().unwrap().signature[0] ^= 1;
     changes.push(changed);
     for changed in changes {
-        let mut attempt = HostedAttempt::restore(&material(), selection(), &budget, 100).unwrap();
+        let mut attempt = HostedAttempt::restore(&material(), selection(), 100).unwrap();
         assert!(
             attempt
                 .prepare_enrollment(&serde_json::to_vec(&changed).unwrap(), 100)
@@ -213,41 +179,12 @@ fn hosted_challenge_has_no_first_claim_or_scope_substitution() {
 }
 
 #[test]
-fn hosted_bounds_precede_decode_and_pressure_does_not_reset_allowance() {
-    let budget = NativeAllowance::new(64).unwrap();
-    let initial = budget.available_bytes();
-    let oversized = vec![b' '; 1024 * 1024 + 1];
-    assert!(matches!(
-        HostedAttempt::restore(&oversized, selection(), &budget, 100),
-        Err(HostedAttemptError::Material)
-    ));
-    assert!(matches!(
-        HostedAttempt::restore(&material(), selection(), &budget, 100),
-        Err(HostedAttemptError::Capacity)
-    ));
-    assert_eq!(budget.available_bytes(), initial);
-    let budget = NativeAllowance::new(5 * 1024 * 1024).unwrap();
-    let initial = budget.available_bytes();
-    let mut attempt = HostedAttempt::restore(&material(), selection(), &budget, 100).unwrap();
-    let retained = budget.available_bytes();
-    assert!(matches!(
-        attempt.prepare_enrollment(&serde_json::to_vec(&challenge()).unwrap(), 100),
-        Err(HostedAttemptError::Capacity)
-    ));
-    assert_eq!(budget.available_bytes(), retained);
-    assert!(attempt.apply_request().is_err());
-    drop(attempt);
-    assert_eq!(budget.available_bytes(), initial);
-}
-
-#[test]
 fn hosted_material_and_challenge_exact_limits_are_accepted_then_rejected() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let mut full = material();
     full.resize(1024 * 1024, b' ');
-    let mut attempt = HostedAttempt::restore(&full, selection(), &budget, 100).unwrap();
+    let mut attempt = HostedAttempt::restore(&full, selection(), 100).unwrap();
     full.push(b' ');
-    assert!(HostedAttempt::restore(&full, selection(), &budget, 100).is_err());
+    assert!(HostedAttempt::restore(&full, selection(), 100).is_err());
     let mut input = serde_json::to_vec(&challenge()).unwrap();
     input.resize(12 * 1024 + 1, b' ');
     assert!(attempt.prepare_enrollment(&input, 100).is_err());

@@ -14,7 +14,7 @@ pub(crate) struct CompleteEvent {
     pub ordinal: u32,
     pub kind: EventKind,
     pub digest: [u8; 32],
-    pub bytes: incoming::IncomingBuffer,
+    pub bytes: Vec<u8>,
 }
 struct PartialEvent {
     event: CompleteEvent,
@@ -33,7 +33,6 @@ pub(crate) struct ReplayBatch {
     identity: CursorIdentity,
     generation: u64,
     budget: usize,
-    incoming: incoming::IncomingBudget,
     retained: usize,
     committed: Option<CommitRef>,
     events: Vec<CompleteEvent>,
@@ -41,21 +40,7 @@ pub(crate) struct ReplayBatch {
     failed: bool,
 }
 impl ReplayBatch {
-    #[cfg(test)]
     pub fn new(identity: CursorIdentity, generation: u64, budget: usize) -> Result<Self, String> {
-        Self::with_incoming(
-            identity,
-            generation,
-            budget,
-            incoming::IncomingBudget::new(16 * 1024 * 1024)?,
-        )
-    }
-    pub fn with_incoming(
-        identity: CursorIdentity,
-        generation: u64,
-        budget: usize,
-        incoming: incoming::IncomingBudget,
-    ) -> Result<Self, String> {
         if generation == 0 || budget == 0 || budget > MAX_ENVELOPE_BYTES {
             return Err("invalid replay collection budget or generation".into());
         }
@@ -63,7 +48,6 @@ impl ReplayBatch {
             identity,
             generation,
             budget,
-            incoming,
             retained: 0,
             committed: None,
             events: Vec::new(),
@@ -107,10 +91,10 @@ impl ReplayBatch {
             {
                 return Err("replay event exceeds bounds or order".into());
             }
-            let bytes = self.incoming.buffer(size)?;
+            let bytes = incoming::buffer(size)?;
             let retained = self
                 .retained
-                .checked_add(bytes.bytes.capacity())
+                .checked_add(bytes.capacity())
                 .ok_or("replay allocation overflow")?;
             if retained > self.budget {
                 return Err("replay backing exceeds budget".into());
@@ -142,7 +126,7 @@ impl ReplayBatch {
         {
             return Err("replay range continuity mismatch".into());
         }
-        partial.event.bytes.bytes.extend_from_slice(chunk.bytes());
+        partial.event.bytes.extend_from_slice(chunk.bytes());
         if partial.event.bytes.len() == partial.size {
             if canonical_item_digest(&partial.event.bytes) != partial.event.digest {
                 return Err("replay canonical digest mismatch".into());
@@ -232,7 +216,6 @@ pub(crate) enum PageContents<'a> {
 pub(crate) fn collect_page<'a>(
     identity: &CursorIdentity,
     generation: u64,
-    incoming: &incoming::IncomingBudget,
     bytes: &'a [u8],
     (max_groups, max_frames): (usize, usize),
 ) -> Result<PageContents<'a>, String> {
@@ -261,12 +244,9 @@ pub(crate) fn collect_page<'a>(
                 let chunk = state::EventChunk::decode(payload).map_err(|e| e.to_string())?;
                 let batch = match &mut batch {
                     Some(batch) => batch,
-                    None => batch.insert(ReplayBatch::with_incoming(
-                        identity.clone(),
-                        generation,
-                        PAGE_BYTES,
-                        incoming.clone(),
-                    )?),
+                    None => {
+                        batch.insert(ReplayBatch::new(identity.clone(), generation, PAGE_BYTES)?)
+                    }
                 };
                 batch.push(generation, chunk)?;
             }
@@ -277,12 +257,7 @@ pub(crate) fn collect_page<'a>(
                 let boundary = state::CommitBoundary::decode(payload).map_err(|e| e.to_string())?;
                 let collected = match batch.take() {
                     Some(batch) => batch,
-                    None => ReplayBatch::with_incoming(
-                        identity.clone(),
-                        generation,
-                        PAGE_BYTES,
-                        incoming.clone(),
-                    )?,
+                    None => ReplayBatch::new(identity.clone(), generation, PAGE_BYTES)?,
                 };
                 if cuts
                     .last()
@@ -333,27 +308,12 @@ pub(crate) struct StreamDecoder {
     item_limit: usize,
     header: [u8; 45],
     header_len: usize,
-    item: Option<(state::TransferRecordHeader, incoming::IncomingBuffer)>,
-    incoming: incoming::IncomingBudget,
+    item: Option<(state::TransferRecordHeader, Vec<u8>)>,
     failed: bool,
 }
 use tilo_relay::delivery_v3::state;
 impl StreamDecoder {
-    #[cfg(test)]
     pub fn new(items: u32, stream_bytes: u64, item_limit: usize) -> Result<Self, String> {
-        Self::with_incoming(
-            items,
-            stream_bytes,
-            item_limit,
-            incoming::IncomingBudget::new(16 * 1024 * 1024)?,
-        )
-    }
-    pub fn with_incoming(
-        items: u32,
-        stream_bytes: u64,
-        item_limit: usize,
-        incoming: incoming::IncomingBudget,
-    ) -> Result<Self, String> {
         if stream_bytes == 0
             || stream_bytes > 256 * 1024 * 1024
             || item_limit == 0
@@ -369,7 +329,6 @@ impl StreamDecoder {
             header: [0; 45],
             header_len: 0,
             item: None,
-            incoming,
             failed: false,
         })
     }
@@ -418,13 +377,13 @@ impl StreamDecoder {
                 self.order
                     .push(header.ordinal(), header.canonical_digest())
                     .map_err(|e| e.to_string())?;
-                let body = self.incoming.buffer(size)?;
+                let body = incoming::buffer(size)?;
                 self.item = Some((header, body));
                 self.header_len = 0;
             }
             let (header, body) = self.item.as_mut().ok_or("staged item missing")?;
             let take = (header.canonical_size() as usize - body.len()).min(bytes.len());
-            body.bytes.extend_from_slice(&bytes[..take]);
+            body.extend_from_slice(&bytes[..take]);
             bytes = &bytes[take..];
             if body.len() == header.canonical_size() as usize {
                 if canonical_item_digest(body) != header.canonical_digest() {

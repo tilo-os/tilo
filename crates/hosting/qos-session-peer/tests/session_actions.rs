@@ -1,3 +1,5 @@
+tilo_automerge_isolate::test_worker!();
+
 use ed25519_dalek::SigningKey;
 use qos_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use qos_session_peer::SessionOwner;

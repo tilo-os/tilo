@@ -1,18 +1,18 @@
-//! Resource-qualified peer storage, separate from authenticated owner authority.
+//! Peer state restored within explicit limits, separate from authenticated
+//! owner authority.
 mod domain;
 mod revocations;
 use super::backend::BoundedNative;
 pub use super::backend::member::PeerMember;
 use super::{DeviceCert, PeerCore, RevocationList, Route, SystemTime, backend, room};
-use crate::resources::{OuterLimits, PeerResourceError, native::NativeBatch};
-use automerge::resource_limits::{NativeAllocationSet, NativeResourceError, NativeWorkTurn};
+use crate::resources::{OuterLimits, PeerResourceError};
 pub use domain::{
     PeerDeliveryPolicy, PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError,
-    PeerMediaCall, PeerPolicyBasis, PeerRead, PeerRegistry, PeerRoomAccess, PeerTurn,
+    PeerMediaCall, PeerPolicyBasis, PeerRead, PeerRoomAccess,
 };
 pub use revocations::PeerRevocations;
 
-/// Refusal ceilings. They do not promise every input beneath them fits native work.
+/// Refusal limits for one restore and the reads made from it.
 #[derive(Clone, Copy, Debug)]
 pub struct PeerLimits {
     pub normalized_bytes: usize,
@@ -48,38 +48,6 @@ impl Default for PeerLimits {
         }
     }
 }
-/// One resource-only context for an entire embedding owner's operation. The
-/// caller holds its actual host credit and original owner scope. Keep this same
-/// value across all documents/phases; constructing it confers no authority.
-///
-/// Work can only be borrowed from the registry's current operation.
-/// ```compile_fail
-/// use qos_peer_state::PeerWork;
-/// let constructor = PeerWork::new;
-/// ```
-pub struct PeerWork<'turn> {
-    pub(super) batch: NativeBatch<'turn>,
-    pub(super) turn: &'turn NativeWorkTurn,
-    pub(super) limits: PeerLimits,
-    domain: &'turn domain::DomainRef,
-}
-impl PeerWork<'_> {
-    /// Pays caller-owned outer data or output before allocation, using this
-    /// operation's exact current ledger. Retain the reservation until all
-    /// covered backing has been deallocated. This lends no native input path,
-    /// registry, admission credential or owner/domain authority. The embedding
-    /// owner still validates its actual `HostBytes` pool and operation scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns a [`BoundedPeerError`] if the current turn cannot pay `bytes`.
-    pub fn reserve_output(
-        &self,
-        bytes: usize,
-    ) -> Result<automerge::resource_limits::NativeReservation, BoundedPeerError> {
-        self.turn.reserve(bytes).map_err(BoundedPeerError::Resource)
-    }
-}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BoundedPeerInvalid {
     Version,
@@ -94,10 +62,12 @@ pub enum BoundedPeerInvalid {
     Governance,
     AuthorityRevoked,
     ExactFloor,
+    Document,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum BoundedPeerError {
-    Resource(NativeResourceError),
+    /// An explicit limit in [`PeerLimits`] was reached.
+    Capacity,
     Decode(PeerResourceError),
     Invalid(BoundedPeerInvalid),
 }
@@ -107,8 +77,23 @@ impl std::fmt::Display for BoundedPeerError {
     }
 }
 impl std::error::Error for BoundedPeerError {}
-/// Opaque actual retained native and metadata storage. No Clone, raw peer,
-/// native document extraction, or owner/transport installation credential.
+impl From<crate::room::read::Capacity> for BoundedPeerError {
+    fn from(_: crate::room::read::Capacity) -> Self {
+        Self::Capacity
+    }
+}
+impl From<crate::resources::native::LoadError> for BoundedPeerError {
+    fn from(error: crate::resources::native::LoadError) -> Self {
+        use crate::resources::native::LoadError;
+        match error {
+            LoadError::Capacity
+            | LoadError::Rejected(tilo_automerge_isolate::Rejected::TooLarge) => Self::Capacity,
+            LoadError::Rejected(_) => Self::Invalid(BoundedPeerInvalid::Document),
+        }
+    }
+}
+/// Restored peer storage. No Clone, raw peer, document extraction, or
+/// owner/transport installation credential.
 /// ```compile_fail
 /// use qos_peer_state::BoundedStatePeer;
 /// fn duplicate(peer: BoundedStatePeer) -> BoundedStatePeer { peer.clone() }
@@ -116,28 +101,28 @@ impl std::error::Error for BoundedPeerError {}
 pub struct BoundedStatePeer {
     pub(super) core: PeerCore<BoundedNative>,
     media: backend::media::Cache,
-    domain: domain::DomainRef,
+    limits: PeerLimits,
 }
 impl BoundedStatePeer {
     pub(super) fn from_core(
         core: PeerCore<BoundedNative>,
         media: backend::media::Cache,
-        work: &PeerWork<'_>,
+        limits: PeerLimits,
     ) -> Self {
         Self {
             core,
             media,
-            domain: work.domain.copy(),
+            limits,
         }
     }
     /// The embedding owner authenticates the original durable bytes and pins
     /// room/authority/enrollment under its actual barrier. This checks the same
-    /// durable admission semantics while paying native and metadata storage.
+    /// durable admission semantics within `limits`.
     ///
     /// # Errors
     ///
-    /// Returns a [`BoundedPeerError`] if the bytes are refused, the room or authority does
-    /// not match, or the work budget cannot pay for the restored state.
+    /// Returns a [`BoundedPeerError`] if the bytes are refused, the room or
+    /// authority does not match, or a limit is reached.
     pub fn restore(
         bytes: &[u8],
         room: &str,
@@ -145,8 +130,8 @@ impl BoundedStatePeer {
         roster: &[DeviceCert],
         revocations: &RevocationList,
         now: SystemTime,
-        work: &mut PeerWork<'_>,
+        limits: &PeerLimits,
     ) -> Result<Self, BoundedPeerError> {
-        backend::restore::restore(bytes, room, authority, roster, revocations, now, work)
+        backend::restore::restore(bytes, room, authority, roster, revocations, now, limits)
     }
 }

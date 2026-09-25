@@ -157,30 +157,22 @@ fn compare(doc: &AutoCommit, peer: &crate::StatePeer) -> Result<(String, Vec<u64
     .map(|value| (value.revision, value.expiries))
     .map_err(Error::legacy);
     assert_eq!(got, expected);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let turn = allocations.work_turn(current.clone()).unwrap();
-    let candidate = doc.clone_bounded(&mut allocations, &turn).unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
-    let result = assert_precharged(&current, || {
-        native(
-            &read,
-            Metadata {
-                room: peer.room(),
-                authority: peer.authority(),
-                certificates: certificates.iter(),
-                revocations: revocations.iter(),
+    let result = native(
+        &LegacyRead(doc),
+        Metadata {
+            room: peer.room(),
+            authority: peer.authority(),
+            certificates: certificates.iter(),
+            revocations: revocations.iter(),
+        },
+        Limits {
+            collections: 4 * 1024 * 1024,
+            json: JsonLimits {
+                allocation_bytes: 128 * 1024,
+                collection_entries: 65536,
             },
-            &turn,
-            Limits {
-                collections: 4 * 1024 * 1024,
-                json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536,
-                },
-            },
-        )
-    });
+        },
+    );
     let got = result
         .map(|value| (value.revision.clone(), value.expiries))
         .map_err(Error::legacy);

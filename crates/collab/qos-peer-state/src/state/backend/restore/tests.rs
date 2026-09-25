@@ -5,17 +5,14 @@ use crate::SeedDocument;
 use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::seed_room;
 use crate::state::DurableV4;
 use crate::state::DurableV5;
 use crate::state::GovernedIdentity;
-use crate::state::bounded::PeerRegistry;
 use automerge::AutoCommit;
 use automerge::ObjType;
 use automerge::ROOT;
 use automerge::ReadDoc;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
 
@@ -46,25 +43,16 @@ fn complete_bounded_restore_preserves_actual_v2_v3_v4_v5_documents_and_metadata(
             now,
         )
         .unwrap();
-        let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let baseline = allowance.retained_bytes();
-        let mut turn = registry
-            .begin_turn(allowance.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
         let roster = peer.certificates();
-        let restored = assert_precharged(&allowance, || {
-            BoundedStatePeer::restore(
-                &bytes,
-                peer.room(),
-                peer.authority(),
-                &roster,
-                &RevocationList::new(),
-                now,
-                &mut work,
-            )
-        })
+        let restored = BoundedStatePeer::restore(
+            &bytes,
+            peer.room(),
+            peer.authority(),
+            &roster,
+            &RevocationList::new(),
+            now,
+            &PeerLimits::default(),
+        )
         .unwrap();
         assert_eq!(restored.core.room, expected.room());
         assert_eq!(&restored.core.authority, expected.authority());
@@ -73,8 +61,7 @@ fn complete_bounded_restore_preserves_actual_v2_v3_v4_v5_documents_and_metadata(
         assert_eq!(restored.core.admission_v5, expected.core.admission_v5);
         for (route, doc) in &restored.core.documents {
             let mut old = expected.core.documents[route].doc.clone();
-            let heads = doc.doc.heads(work.turn).unwrap();
-            assert_eq!(heads.as_slice(), old.get_heads());
+            assert_eq!(doc.doc.heads(), old.get_heads());
             assert_eq!(
                 doc.channel.last_seq_per_author,
                 expected.core.documents[route].channel.last_seq_per_author
@@ -83,12 +70,7 @@ fn complete_bounded_restore_preserves_actual_v2_v3_v4_v5_documents_and_metadata(
         drop(bytes);
         drop(roster);
         drop(expected);
-        drop(turn);
         assert_eq!(restored.core.room, peer.room());
-        assert!(allowance.retained_bytes() > baseline);
-        drop(restored);
-        registry.reconcile();
-        assert_eq!(allowance.retained_bytes(), baseline);
     }
 }
 
@@ -104,23 +86,15 @@ fn complete_bounded_restore_retains_an_actual_empty_enrolled_peer() {
     )
     .unwrap();
     let bytes = empty.durable().unwrap();
-    let allowance = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(allowance.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let restored = assert_precharged(&allowance, || {
-        BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-    })
+    let restored = BoundedStatePeer::restore(
+        &bytes,
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        &PeerLimits::default(),
+    )
     .unwrap();
     assert!(restored.core.room_doc.is_none());
     assert!(restored.core.documents.is_empty());
@@ -129,7 +103,7 @@ fn complete_bounded_restore_retains_an_actual_empty_enrolled_peer() {
 
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "test helper: asserts the precharge before returning the restore result"
+    reason = "test helper: asserts legacy parity before returning the restore result"
 )]
 fn checked(
     bytes: &[u8],
@@ -144,23 +118,15 @@ fn checked(
         RevocationList::new(),
         now,
     );
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(allowance.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = assert_precharged(&allowance, || {
-        BoundedStatePeer::restore(
-            bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-    });
+    let native = BoundedStatePeer::restore(
+        bytes,
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        &PeerLimits::default(),
+    );
     assert_eq!(
         native.is_ok(),
         legacy.is_ok(),
@@ -357,11 +323,7 @@ fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_
     checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).unwrap();
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restore_calls() {
+fn complete_bounded_restore_document_byte_limit_spans_room_and_all_documents() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
     let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
     let first = &durable.base.documents[0];
@@ -389,55 +351,14 @@ fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restor
         )
         .is_ok()
     );
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let probe = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let probe_set = NativeAllocationSet::new(probe.clone()).unwrap();
-    let probe_turn = probe_set.work_turn(probe).unwrap();
     let total = durable
         .base
         .room_bytes
         .iter()
-        .map(Vec::as_slice)
-        .chain(durable.base.documents.iter().map(|d| d.bytes.as_slice()))
-        .map(|bytes| {
-            probe_turn
-                .normalize_input(bytes, &automerge::resource_limits::NativeLimits::default())
-                .unwrap()
-                .shape()
-                .normalized_bytes()
-        })
+        .map(Vec::len)
+        .chain(durable.base.documents.iter().map(|d| d.bytes.len()))
         .sum::<usize>();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let baseline = allowance.retained_bytes();
-    let mut limits = PeerLimits {
-        normalized_bytes: total - 1,
-        ..PeerLimits::default()
-    };
-    let mut turn = registry.begin_turn(allowance.clone(), limits).unwrap();
-    let mut work = turn.work().unwrap();
-    assert!(matches!(
-        assert_precharged(&allowance, || BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work
-        )),
-        Err(BoundedPeerError::Resource(
-            NativeResourceError::NormalizedBytes
-        ))
-    ));
-    drop(turn);
-    registry.reconcile();
-    assert_eq!(allowance.retained_bytes(), baseline);
-    limits.normalized_bytes = total * 2 - 1;
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let baseline = allowance.retained_bytes();
-    let mut turn = registry.begin_turn(allowance.clone(), limits).unwrap();
-    let mut work = turn.work().unwrap();
-    let first = assert_precharged(&allowance, || {
+    let restore = |normalized_bytes| {
         BoundedStatePeer::restore(
             &bytes,
             peer.room(),
@@ -445,29 +366,17 @@ fn complete_bounded_restore_one_work_counter_spans_multiple_documents_and_restor
             &[],
             &RevocationList::new(),
             now,
-            &mut work,
+            &PeerLimits {
+                normalized_bytes,
+                ..PeerLimits::default()
+            },
         )
-    })
-    .unwrap();
-    assert_eq!(first.core.documents.len(), 2);
+    };
     assert!(matches!(
-        assert_precharged(&allowance, || BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work
-        )),
-        Err(BoundedPeerError::Resource(
-            NativeResourceError::NormalizedBytes
-        ))
+        restore(total - 1),
+        Err(BoundedPeerError::Capacity)
     ));
-    drop(first);
-    drop(turn);
-    registry.reconcile();
-    assert_eq!(allowance.retained_bytes(), baseline);
+    assert_eq!(restore(total).unwrap().core.documents.len(), 2);
 }
 
 #[test]

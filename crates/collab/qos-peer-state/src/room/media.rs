@@ -259,7 +259,7 @@ fn strict_map(
     key: &str,
 ) -> Result<automerge::ObjId, MediaPolicyError> {
     super::read::strict_map(&super::read::LegacyRead(doc), parent, key)
-        .map_err(|error| super::read::legacy_policy_error(&error))
+        .map_err(super::read::legacy_policy_error)
 }
 #[cfg(test)]
 fn strict_string(
@@ -267,26 +267,16 @@ fn strict_string(
     parent: &automerge::ObjId,
     key: &str,
 ) -> Result<String, MediaPolicyError> {
-    super::read::strict_string(
-        &super::read::LegacyRead(doc),
-        &super::read::LegacyCopy,
-        parent,
-        key,
-    )
-    .map_err(|error| super::read::legacy_policy_error(&error))
+    super::read::strict_string(&super::read::LegacyRead(doc), parent, key)
+        .map_err(super::read::legacy_policy_error)
 }
 fn strict_bytes(
     doc: &impl ReadDoc,
     parent: &automerge::ObjId,
     key: &str,
 ) -> Result<Vec<u8>, MediaPolicyError> {
-    super::read::strict_bytes(
-        &super::read::LegacyRead(doc),
-        &super::read::LegacyCopy,
-        parent,
-        key,
-    )
-    .map_err(|error| super::read::legacy_policy_error(&error))
+    super::read::strict_bytes(&super::read::LegacyRead(doc), parent, key)
+        .map_err(super::read::legacy_policy_error)
 }
 
 /// Canonical encoding of a validated room media policy.
@@ -308,12 +298,7 @@ pub fn encode(value: &RoomMediaV1) -> Result<Vec<u8>, MediaPolicyError> {
 ///
 /// Returns a [`MediaPolicyError`] if a present policy is malformed or invalid.
 pub fn parse(doc: &AutoCommit) -> Result<Option<RoomMediaV1>, MediaPolicyError> {
-    read::parse(
-        &super::read::LegacyRead(doc),
-        &super::read::LegacyCopy,
-        &read::LegacyPolicy,
-    )
-    .map_err(|error| read::legacy_error(&error))
+    read::parse(&super::read::LegacyRead(doc), &read::LegacyPolicy).map_err(read::legacy_error)
 }
 
 /// Structural validation of a room media policy.

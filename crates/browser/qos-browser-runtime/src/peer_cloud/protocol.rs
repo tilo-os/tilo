@@ -1,6 +1,5 @@
 //! Portable closed protocol, also exercised against the actual Cloud Store.
 use super::{identity, relay};
-use automerge::resource_limits::NativeAllowance;
 use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use qos_peer_state::join::{
     self, JoinTransportRequest as Request, JoinTransportResponse as Response,
@@ -9,8 +8,8 @@ use serde::Deserialize;
 #[path = "material.rs"]
 mod material;
 use material::{
-    Bytes, CLOCK_TOLERANCE_NS, Held, MAX_APPLY_RETRIES, MAX_JOIN, MAX_MATERIAL, MAX_REQUEST,
-    MaterialV4, Phase, PhaseView, allocation, verify_certificate,
+    CLOCK_TOLERANCE_NS, MAX_APPLY_RETRIES, MAX_JOIN, MAX_MATERIAL, MAX_REQUEST, MaterialV4, Phase,
+    PhaseView, verify_certificate,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -52,37 +51,29 @@ pub(super) struct PendingHostedBootstrap {
     _held: qos_peer_state::resources::BoundedJoinResponse,
 }
 struct Saved {
-    material: Held<MaterialV4>,
-    bytes: Bytes,
+    material: MaterialV4,
+    bytes: Vec<u8>,
 }
 pub(super) struct HostedAttempt {
     current: Saved,
     staged: Option<Saved>,
-    budget: NativeAllowance,
     cancelled: bool,
     completed: bool,
 }
 impl HostedAttempt {
-    pub(super) fn restore(
-        bytes: &[u8],
-        selected: Selection,
-        budget: &NativeAllowance,
-        now: u64,
-    ) -> Result<Self> {
-        let material: Held<MaterialV4> = material::read_json(bytes, budget)?;
-        material.value.validate(now, budget)?;
-        if material.value.account_id != selected.account_id
-            || material.value.machine_id != selected.machine_id
+    pub(super) fn restore(bytes: &[u8], selected: Selection, now: u64) -> Result<Self> {
+        let material: MaterialV4 = material::read_json(bytes)?;
+        material.validate(now)?;
+        if material.account_id != selected.account_id || material.machine_id != selected.machine_id
         {
             return Err(HostedAttemptError::Scope);
         }
         Ok(Self {
             current: Saved {
                 material,
-                bytes: Bytes::copy(bytes, budget)?,
+                bytes: bytes.to_vec(),
             },
             staged: None,
-            budget: budget.clone(),
             cancelled: false,
             completed: false,
         })
@@ -104,94 +95,72 @@ impl HostedAttempt {
         Ok(())
     }
     fn stage(&self, phase: PhaseView<'_>, now: u64) -> Result<Saved> {
-        self.stage_view(self.current.material.value.with_phase(phase), now)
+        self.stage_view(self.current.material.with_phase(phase), now)
     }
     fn stage_view(&self, view: material::MaterialView<'_>, now: u64) -> Result<Saved> {
-        let bytes = material::encode_json(&view, MAX_MATERIAL, &self.budget)?;
-        let material: Held<MaterialV4> = material::read_json(&bytes.value, &self.budget)?;
-        material.value.validate(now, &self.budget)?;
+        let bytes = material::encode_json(&view, MAX_MATERIAL)?;
+        let material: MaterialV4 = material::read_json(&bytes)?;
+        material.validate(now)?;
         Ok(Saved { material, bytes })
     }
     fn checkpoint(&self) -> Checkpoint<'_> {
         Checkpoint {
-            material: &self.staged.as_ref().expect("staged checkpoint").bytes.value,
+            material: &self.staged.as_ref().expect("staged checkpoint").bytes,
         }
     }
-    fn enrollment(&self) -> Result<Held<identity::cloud_enrollment::EnrollmentRequest>> {
+    fn enrollment(&self) -> Result<identity::cloud_enrollment::EnrollmentRequest> {
         let (bytes, _) = self
             .current
             .material
-            .value
             .phase
             .enrollment()
             .ok_or(HostedAttemptError::Phase)?;
-        material::read_json(bytes, &self.budget)
+        material::read_json(bytes)
     }
     pub(super) fn prepare_enrollment(&mut self, bytes: &[u8], now: u64) -> Result<Checkpoint<'_>> {
         self.live()?;
-        if !matches!(self.current.material.value.phase, Phase::Initial) {
+        if !matches!(self.current.material.phase, Phase::Initial) {
             return Err(HostedAttemptError::Phase);
         }
-        let challenge: Held<identity::cloud_enrollment::Challenge> =
-            material::read_json(bytes, &self.budget)?;
+        let challenge: identity::cloud_enrollment::Challenge = material::read_json(bytes)?;
         if let Some(staged) = &self.staged {
-            let Some((bytes, _)) = staged.material.value.phase.enrollment() else {
+            let Some((bytes, _)) = staged.material.phase.enrollment() else {
                 return Err(HostedAttemptError::Phase);
             };
-            let request: Held<identity::cloud_enrollment::EnrollmentRequest> =
-                material::read_json(bytes, &self.budget)?;
-            if request.value.challenge != challenge.value {
+            let request: identity::cloud_enrollment::EnrollmentRequest =
+                material::read_json(bytes)?;
+            if request.challenge != challenge {
                 return Err(HostedAttemptError::Scope);
             }
             return Ok(self.checkpoint());
         }
-        let candidate = &self.current.material.value;
-        candidate.validate(now, &self.budget)?;
-        candidate.check_challenge(&challenge.value, now, &self.budget)?;
-        let _errors = allocation::helper_errors(&self.budget)?;
+        let candidate = &self.current.material;
+        candidate.validate(now)?;
+        candidate.check_challenge(&challenge, now)?;
         // check_challenge admitted either this root's stable host certificate
         // or an unbound Store for explicit first-claim custody.
-        let first = match &challenge.value.host_certificate {
-            Some(_) => None,
-            None => Some(candidate.first_host_certificate(&challenge.value, &self.budget)?),
-        };
-        let host = first
-            .as_ref()
-            .or(challenge.value.host_certificate.as_ref())
-            .ok_or(HostedAttemptError::Scope)?;
-        let _request = allocation::enrollment_backing(
-            &challenge.value,
-            host,
-            &candidate.certificate,
-            &self.budget,
-        )?;
-        let host_certificate = match first {
-            Some(host) => host,
-            None => challenge
-                .value
-                .host_certificate
-                .clone()
-                .ok_or(HostedAttemptError::Scope)?,
+        let host_certificate = match &challenge.host_certificate {
+            Some(host) => host.clone(),
+            None => candidate.first_host_certificate(&challenge)?,
         };
         let mut request = identity::cloud_enrollment::EnrollmentRequest {
             version: 1,
             host_certificate,
             browser_certificate: candidate.certificate.clone(),
-            challenge: challenge.value.clone(),
+            challenge: challenge.clone(),
             root_signature: Vec::new(),
             device_signature: Vec::new(),
         };
-        let _transcript = allocation::enrollment_transcript(&request, &self.budget)?;
         identity::cloud_enrollment::sign_request(
             &mut request,
             &SigningKey::from_bytes(&candidate.root_secret),
             &candidate.device(),
         )
         .map_err(|_| HostedAttemptError::Signature)?;
-        let bytes = material::encode_json(&request, MAX_REQUEST, &self.budget)?;
+        let bytes = material::encode_json(&request, MAX_REQUEST)?;
         let staged = self.stage(
             PhaseView::Apply {
-                enrollment: &bytes.value,
+                enrollment: &bytes,
                 signed_at_ns: now,
             },
             now,
@@ -202,58 +171,50 @@ impl HostedAttempt {
     pub(super) fn acknowledge(&mut self, saved: &[u8], now: u64) -> Result<()> {
         self.live()?;
         let staged = self.staged.as_ref().ok_or(HostedAttemptError::Checkpoint)?;
-        if staged.bytes.value != saved {
+        if staged.bytes != saved {
             return Err(HostedAttemptError::Checkpoint);
         }
         // Exact byte ACK refers to this already-parsed immutable value.
         // Fresh validation precedes moving custody; there is no third copy.
-        staged.material.value.validate(now, &self.budget)?;
+        staged.material.validate(now)?;
         let staged = self.staged.take().ok_or(HostedAttemptError::Checkpoint)?;
         self.current = staged;
         Ok(())
     }
     pub(super) fn apply_request(&self) -> Result<ApplyRequest<'_>> {
         self.ready()?;
-        let Phase::Apply { enrollment, .. } = &self.current.material.value.phase else {
+        let Phase::Apply { enrollment, .. } = &self.current.material.phase else {
             return Err(HostedAttemptError::Phase);
         };
         Ok(ApplyRequest {
-            operation_key: self.current.material.value.operation_id(&self.budget)?,
+            operation_key: self.current.material.operation_id()?,
             payload: enrollment,
         })
     }
     pub(super) fn accept_enrollment(&mut self, bytes: &[u8], now: u64) -> Result<Checkpoint<'_>> {
         self.live()?;
-        if !matches!(self.current.material.value.phase, Phase::Apply { .. }) {
+        if !matches!(self.current.material.phase, Phase::Apply { .. }) {
             return Err(HostedAttemptError::Phase);
         }
         let enrollment = self.enrollment()?;
-        let reply: Held<EnrollmentReply> = material::read_json(bytes, &self.budget)?;
-        reply.value.verify(&enrollment.value, now, &self.budget)?;
+        let reply: EnrollmentReply = material::read_json(bytes)?;
+        reply.verify(&enrollment, now)?;
         if self.staged.is_some() {
             return Ok(self.checkpoint());
         }
-        let candidate = &self.current.material.value;
-        candidate.validate(now, &self.budget)?;
-        let _request = allocation::reserve(
-            &self.budget,
-            allocation::sum(&[
-                enrollment.value.challenge.room.len(),
-                candidate.certificate.device_label.len(),
-            ])?,
-        )?;
+        let candidate = &self.current.material;
+        candidate.validate(now)?;
         let request = Request::MembershipChallenge(join::MembershipChallengeRequest {
-            room: enrollment.value.challenge.room.clone(),
+            room: enrollment.challenge.room.clone(),
             workspace_id: enrollment
-                .value
                 .challenge
                 .workspace_id
                 .parse()
                 .map_err(|_| HostedAttemptError::Scope)?,
             device_cert: candidate.certificate.clone(),
-            request_id: candidate.request_id(&self.budget)?,
+            request_id: candidate.request_id()?,
         });
-        let encoded = material::encode_postcard(&request, MAX_JOIN, &self.budget)?;
+        let encoded = material::encode_postcard(&request, MAX_JOIN)?;
         let Phase::Apply {
             enrollment,
             signed_at_ns,
@@ -265,7 +226,7 @@ impl HostedAttempt {
             PhaseView::MembershipChallenge {
                 enrollment,
                 signed_at_ns: *signed_at_ns,
-                request: &encoded.value,
+                request: &encoded,
             },
             now,
         )?;
@@ -279,7 +240,7 @@ impl HostedAttempt {
     )]
     pub(super) fn membership_challenge_request(&self) -> Result<&[u8]> {
         self.ready()?;
-        let Phase::MembershipChallenge { request, .. } = &self.current.material.value.phase else {
+        let Phase::MembershipChallenge { request, .. } = &self.current.material.phase else {
             return Err(HostedAttemptError::Phase);
         };
         Ok(request)
@@ -291,21 +252,21 @@ impl HostedAttempt {
     pub(super) fn prepare_membership(&mut self, bytes: &[u8], now: u64) -> Result<Checkpoint<'_>> {
         self.live()?;
         if !matches!(
-            self.current.material.value.phase,
+            self.current.material.phase,
             Phase::MembershipChallenge { .. }
         ) {
             return Err(HostedAttemptError::Phase);
         }
-        let response = bounded_reply(bytes, &self.budget)?;
+        let response = bounded_reply(bytes)?;
         let Response::MembershipChallenge(response) = response.response() else {
             return Err(HostedAttemptError::Response);
         };
         if let Some(staged) = &self.staged {
-            let Phase::MembershipComplete { proof, .. } = &staged.material.value.phase else {
+            let Phase::MembershipComplete { proof, .. } = &staged.material.phase else {
                 return Err(HostedAttemptError::Phase);
             };
-            let held = material::read_request(proof, &self.budget)?;
-            let Request::MembershipComplete(proof) = &held.value else {
+            let held = material::read_request(proof)?;
+            let Request::MembershipComplete(proof) = &held else {
                 return Err(HostedAttemptError::Phase);
             };
             if proof.proof.challenge != response.challenge {
@@ -313,25 +274,20 @@ impl HostedAttempt {
             }
             return Ok(self.checkpoint());
         }
-        let candidate = &self.current.material.value;
-        candidate.validate(now, &self.budget)?;
+        let candidate = &self.current.material;
+        candidate.validate(now)?;
         let enrollment = self.enrollment()?;
         candidate.check_membership(
             &response.challenge,
-            &enrollment.value.host_certificate,
-            &enrollment.value.challenge,
+            &enrollment.host_certificate,
+            &enrollment.challenge,
             now,
-            &self.budget,
         )?;
-        let _errors = allocation::helper_errors(&self.budget)?;
-        let _proof = allocation::reserve(&self.budget, response.challenge.room.len())?;
-        let _transcript = allocation::transcript(&response.challenge, &self.budget)?;
         let proof = join::sign_membership_proof(response.challenge.clone(), &candidate.device())
             .map_err(|_| HostedAttemptError::Signature)?;
         let encoded = material::encode_postcard(
             &Request::MembershipComplete(join::MembershipCompleteRequest { proof }),
             MAX_JOIN,
-            &self.budget,
         )?;
         let Phase::MembershipChallenge {
             enrollment,
@@ -346,7 +302,7 @@ impl HostedAttempt {
                 enrollment,
                 signed_at_ns: *signed_at_ns,
                 request,
-                proof: &encoded.value,
+                proof: &encoded,
                 proof_at_ns: now,
             },
             now,
@@ -361,7 +317,7 @@ impl HostedAttempt {
     )]
     pub(super) fn membership_complete_request(&self) -> Result<&[u8]> {
         self.ready()?;
-        let Phase::MembershipComplete { proof, .. } = &self.current.material.value.phase else {
+        let Phase::MembershipComplete { proof, .. } = &self.current.material.phase else {
             return Err(HostedAttemptError::Phase);
         };
         Ok(proof)
@@ -376,13 +332,13 @@ impl HostedAttempt {
         now: u64,
     ) -> Result<PendingHostedBootstrap> {
         self.membership_complete_request()?;
-        self.current.material.value.validate(now, &self.budget)?;
-        let held = bounded_reply(bytes, &self.budget)?;
+        self.current.material.validate(now)?;
+        let held = bounded_reply(bytes)?;
         let Response::OwnerMembershipComplete(reply) = held.response() else {
             return Err(HostedAttemptError::Response);
         };
         let enrollment = self.enrollment()?;
-        self.owner_reply_scope(reply, &enrollment.value)?;
+        self.owner_reply_scope(reply, &enrollment)?;
         self.completed = true;
         Ok(PendingHostedBootstrap { _held: held })
     }
@@ -395,7 +351,7 @@ impl HostedAttempt {
         enrollment: &identity::cloud_enrollment::EnrollmentRequest,
     ) -> Result<()> {
         if reply.version != 1
-            || reply.device_cert != self.current.material.value.certificate
+            || reply.device_cert != self.current.material.certificate
             || reply.authority != enrollment.host_certificate
             || reply.room != enrollment.challenge.room
             || reply.workspace_id
@@ -425,7 +381,6 @@ pub(super) struct EnrolledScope {
     pub workspace: u64,
     pub host: identity::DeviceCert,
     pub certificate: identity::DeviceCert,
-    _credit: automerge::resource_limits::NativeReservation,
 }
 
 // Browser owner continuation after the verified Store reply. The host protocol
@@ -437,12 +392,7 @@ pub(super) struct EnrolledScope {
 impl HostedAttempt {
     /// Fresh custody for an unbound Store: root, device and attempt keys are
     /// generated here and never leave serialized custody.
-    pub(super) fn create_material(
-        selected: &Selection,
-        label: &str,
-        now: u64,
-        budget: &NativeAllowance,
-    ) -> Result<Vec<u8>> {
+    pub(super) fn create_material(selected: &Selection, label: &str, now: u64) -> Result<Vec<u8>> {
         if label.trim().is_empty() || label.len() > 128 || now == 0 {
             return Err(HostedAttemptError::Material);
         }
@@ -477,25 +427,19 @@ impl HostedAttempt {
             first_claim: true,
             apply_retry: 0,
         };
-        material.validate(now, budget)?;
-        let bytes = material::encode_json(&material, MAX_MATERIAL, budget)?;
+        material.validate(now)?;
+        let bytes = material::encode_json(&material, MAX_MATERIAL)?;
         // Round-trip through the one restore reader before custody is offered.
         let restored = Self::restore(
-            &bytes.value,
+            &bytes,
             Selection {
                 account_id: selected.account_id.clone(),
                 machine_id: selected.machine_id.clone(),
             },
-            budget,
             now,
         )?;
         drop(restored);
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(bytes.value.len())
-            .map_err(|_| HostedAttemptError::Capacity)?;
-        output.extend_from_slice(&bytes.value);
-        Ok(output)
+        Ok(bytes)
     }
     /// Store.apply was refused for this signed request (lost first-claim
     /// race, expired or replaced challenge, certificate not yet valid). Stage
@@ -503,11 +447,11 @@ impl HostedAttempt {
     /// key. Like every checkpoint it moves custody only after its exact ACK.
     pub(super) fn reset_apply(&mut self, now: u64) -> Result<Checkpoint<'_>> {
         self.live()?;
-        if !matches!(self.current.material.value.phase, Phase::Apply { .. }) {
+        if !matches!(self.current.material.phase, Phase::Apply { .. }) {
             return Err(HostedAttemptError::Phase);
         }
         if let Some(staged) = &self.staged {
-            if matches!(staged.material.value.phase, Phase::Initial) {
+            if matches!(staged.material.phase, Phase::Initial) {
                 return Ok(self.checkpoint());
             }
             return Err(HostedAttemptError::Checkpoint);
@@ -515,7 +459,6 @@ impl HostedAttempt {
         let retry = self
             .current
             .material
-            .value
             .apply_retry
             .checked_add(1)
             .filter(|retry| *retry <= MAX_APPLY_RETRIES)
@@ -523,7 +466,6 @@ impl HostedAttempt {
         let view = self
             .current
             .material
-            .value
             .with_phase_retry(PhaseView::Initial, retry);
         let staged = self.stage_view(view, now)?;
         self.staged = Some(staged);
@@ -531,7 +473,7 @@ impl HostedAttempt {
     }
     pub(super) fn step(&self) -> Result<HostedStep> {
         self.ready()?;
-        Ok(match &self.current.material.value.phase {
+        Ok(match &self.current.material.phase {
             Phase::Initial => HostedStep::Inspect,
             Phase::Apply { .. } => HostedStep::Apply,
             Phase::MembershipChallenge { .. } | Phase::MembershipComplete { .. } => {
@@ -540,18 +482,18 @@ impl HostedAttempt {
         })
     }
     pub(super) fn certificate(&self) -> &identity::DeviceCert {
-        &self.current.material.value.certificate
+        &self.current.material.certificate
     }
     pub(super) fn attempt_binding(&self) -> ([u8; 32], u64) {
         (
-            self.current.material.value.attempt_id,
-            self.current.material.value.created_at_ns,
+            self.current.material.attempt_id,
+            self.current.material.created_at_ns,
         )
     }
     pub(super) fn current_material(&self) -> &[u8] {
-        &self.current.bytes.value
+        &self.current.bytes
     }
-    fn enrolled_enrollment(&self) -> Result<Held<identity::cloud_enrollment::EnrollmentRequest>> {
+    fn enrolled_enrollment(&self) -> Result<identity::cloud_enrollment::EnrollmentRequest> {
         if self.step()? != HostedStep::Enrolled {
             return Err(HostedAttemptError::Phase);
         }
@@ -559,32 +501,22 @@ impl HostedAttempt {
     }
     pub(super) fn enrolled(&self) -> Result<EnrolledScope> {
         let enrollment = self.enrolled_enrollment()?;
-        let certificate = &self.current.material.value.certificate;
-        let credit = allocation::reserve(
-            &self.budget,
-            allocation::sum(&[
-                enrollment.value.challenge.room.len(),
-                enrollment.value.host_certificate.device_label.len(),
-                certificate.device_label.len(),
-            ])?,
-        )?;
+        let certificate = &self.current.material.certificate;
         Ok(EnrolledScope {
-            room: enrollment.value.challenge.room.clone(),
+            room: enrollment.challenge.room.clone(),
             workspace: enrollment
-                .value
                 .challenge
                 .workspace_id
                 .parse()
                 .map_err(|_| HostedAttemptError::Scope)?,
-            host: enrollment.value.host_certificate.clone(),
+            host: enrollment.host_certificate.clone(),
             certificate: certificate.clone(),
-            _credit: credit,
         })
     }
     /// The enrolled device key signs only closed onboarding wrappers/proofs.
     pub(super) fn device_key(&self) -> Result<SigningKey> {
         self.enrolled_enrollment()?;
-        Ok(self.current.material.value.device())
+        Ok(self.current.material.device())
     }
     /// A membership refresh uses a fresh request identifier; it never reuses
     /// the checkpointed first exchange whose challenge may have expired.
@@ -593,19 +525,11 @@ impl HostedAttempt {
             return Err(HostedAttemptError::Scope);
         }
         let enrollment = self.enrolled_enrollment()?;
-        let certificate = &self.current.material.value.certificate;
-        let _request = allocation::reserve(
-            &self.budget,
-            allocation::sum(&[
-                enrollment.value.challenge.room.len(),
-                certificate.device_label.len(),
-            ])?,
-        )?;
+        let certificate = &self.current.material.certificate;
         Ok(Request::MembershipChallenge(
             join::MembershipChallengeRequest {
-                room: enrollment.value.challenge.room.clone(),
+                room: enrollment.challenge.room.clone(),
                 workspace_id: enrollment
-                    .value
                     .challenge
                     .workspace_id
                     .parse()
@@ -622,19 +546,15 @@ impl HostedAttempt {
         now: u64,
     ) -> Result<Request> {
         let enrollment = self.enrolled_enrollment()?;
-        let candidate = &self.current.material.value;
-        candidate.validate(now, &self.budget)?;
+        let candidate = &self.current.material;
+        candidate.validate(now)?;
         candidate.check_membership_for(
             challenge,
-            &enrollment.value.host_certificate,
-            &enrollment.value.challenge,
+            &enrollment.host_certificate,
+            &enrollment.challenge,
             request_id,
             now,
-            &self.budget,
         )?;
-        let _errors = allocation::helper_errors(&self.budget)?;
-        let _proof = allocation::reserve(&self.budget, challenge.room.len())?;
-        let _transcript = allocation::transcript(challenge, &self.budget)?;
         let proof = join::sign_membership_proof(challenge.clone(), &candidate.device())
             .map_err(|_| HostedAttemptError::Signature)?;
         Ok(Request::MembershipComplete(
@@ -649,8 +569,8 @@ impl HostedAttempt {
         now: u64,
     ) -> Result<()> {
         let enrollment = self.enrolled_enrollment()?;
-        self.current.material.value.validate(now, &self.budget)?;
-        self.owner_reply_scope(reply, &enrollment.value)
+        self.current.material.validate(now)?;
+        self.owner_reply_scope(reply, &enrollment)
     }
 }
 
@@ -658,10 +578,7 @@ impl HostedAttempt {
     dead_code,
     reason = "the first membership exchange is driven by the Cloud host's hosted-attempt tests, which include this file"
 )]
-fn bounded_reply(
-    bytes: &[u8],
-    budget: &NativeAllowance,
-) -> Result<qos_peer_state::resources::BoundedJoinResponse> {
+fn bounded_reply(bytes: &[u8]) -> Result<qos_peer_state::resources::BoundedJoinResponse> {
     use relay::delivery_v3::onboarding_wire::MAX_RESPONSE_BYTES;
     if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
         return Err(HostedAttemptError::Response);
@@ -672,7 +589,6 @@ fn bounded_reply(
             allocation_bytes: 32 * 1024 * 1024,
             collection_entries: MAX_RESPONSE_BYTES,
         },
-        budget,
     )
     .map_err(|_| HostedAttemptError::Capacity)
 }
@@ -707,9 +623,7 @@ impl EnrollmentReply {
         &self,
         request: &identity::cloud_enrollment::EnrollmentRequest,
         now: u64,
-        budget: &NativeAllowance,
     ) -> Result<()> {
-        let _errors = allocation::helper_errors(budget)?;
         if self.version != 1
             || self.certificate != request.browser_certificate
             || self.host_certificate != request.host_certificate

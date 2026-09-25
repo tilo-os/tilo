@@ -310,9 +310,7 @@ fn resource_capacity_counts_unique_retained_backing_including_spare_capacity() {
     let mut backing = Vec::with_capacity(97);
     backing.extend_from_slice(b"abc");
     let capacity = backing.capacity();
-    pool.wire
-        .payloads
-        .insert(id, resources::PayloadBacking::legacy(backing));
+    pool.wire.payloads.insert(id, Arc::new(backing));
     assert_eq!(pool.retained_payload_capacity().unwrap(), capacity);
     assert_eq!(pool.intern(b"abc").unwrap(), id);
     assert_eq!(pool.retained_payload_capacity().unwrap(), capacity);
@@ -398,4 +396,47 @@ fn resource_encode_budget_rejects_before_output_pass_and_count_cannot_wrap() {
     };
     assert!(count.add(1).is_err());
     assert_eq!(count.bytes, usize::MAX);
+}
+
+#[test]
+fn literal_empty_wire_and_maximum_vector_decode_while_one_more_is_refused() {
+    let literal = [
+        1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0,
+    ];
+    let mut ledger = DeliveryLedgerV1::decode(&literal).unwrap();
+    assert_eq!(ledger.encode().unwrap(), literal);
+    let literal_pool = [1, 0];
+    let pool = PublicationPool::decode(&literal_pool, 1).unwrap();
+    assert_eq!(pool.encode(2).unwrap(), literal_pool);
+
+    ledger.resolved_through = u64::MAX;
+    ledger.replay.insert(
+        u64::MAX,
+        ReplayCommit {
+            owner_generation: u64::MAX,
+            previous: None,
+            digest: [2; 32],
+            publications: vec![PublicationRef {
+                payload: [3; 32],
+                kind: Retention::Delta,
+            }],
+            admitted_operations: vec![[4; 32]; MAX_REFERENCES],
+            committed_at_ns: u64::MAX,
+        },
+    );
+    assert_eq!(
+        DeliveryLedgerV1::decode(&ledger.encode().unwrap()).unwrap(),
+        ledger
+    );
+    ledger
+        .replay
+        .get_mut(&u64::MAX)
+        .unwrap()
+        .admitted_operations
+        .push([4; 32]);
+    let oversized = postcard::to_allocvec(&ledger).unwrap();
+    assert!(matches!(
+        DeliveryLedgerV1::decode(&oversized),
+        Err(CommitError::Codec)
+    ));
 }

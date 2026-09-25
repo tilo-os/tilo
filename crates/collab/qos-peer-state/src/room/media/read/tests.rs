@@ -1,9 +1,7 @@
 use super::super::{CallPhaseV1, CallV1, ChatCallBindingV1, DirectionsV1, FIELD};
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::native::NativeBatch;
-use crate::room::read::{LegacyCopy, LegacyRead, TurnCopy};
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use crate::resources::native::{NativeBatch, NativeDocument};
+use crate::room::read::LegacyRead;
 use automerge::{ActorId, AutoCommit, ROOT, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
 use tilo_automerge::ApplyIncoming;
@@ -57,65 +55,32 @@ fn limits() -> OuterLimits {
         collection_entries: 4096,
     }
 }
-fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    (allowance, registry, turn)
+fn admitted(room: &mut AutoCommit) -> NativeDocument {
+    NativeBatch::new(8 * 1024 * 1024)
+        .load(&room.save())
+        .unwrap()
+}
+fn parse_within(
+    native: &NativeDocument,
+    limits: OuterLimits,
+) -> Result<Option<BoundedPolicy>, Error> {
+    parse(&native.read(), &BoundedDecode { limits })
 }
 fn bounded(room: &mut AutoCommit) -> Result<Option<RoomMediaV1>, Error> {
-    let (allowance, mut registry, turn) = context();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&room.save())
-        .unwrap();
-    let read = native.read(&turn).unwrap();
-    let held = assert_precharged(&allowance, || {
-        parse(
-            &read,
-            &TurnCopy(&turn),
-            &BoundedDecode {
-                turn: &turn,
-                limits: limits(),
-            },
-        )
-    })?;
-    // Test comparison is explicitly outside the measured production operation.
+    let held = parse_within(&admitted(room), limits())?;
     Ok(held.map(|held| held.policy().clone()))
 }
 
 #[test]
-fn media_reader_retains_real_decoded_policy_after_source_and_work_turn_drop() {
+fn media_reader_retains_decoded_policy_after_source_drop() {
     let expected = policy();
     let mut room = room(Some(super::super::encode(&expected).unwrap()));
-    let (allowance, mut registry, turn) = context();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&room.save())
-        .unwrap();
-    let initial = allowance.available_bytes();
-    let held = assert_precharged(&allowance, || {
-        parse(
-            &native.read(&turn).unwrap(),
-            &TurnCopy(&turn),
-            &BoundedDecode {
-                turn: &turn,
-                limits: limits(),
-            },
-        )
-    })
-    .unwrap()
-    .unwrap();
+    let native = admitted(&mut room);
+    let held = parse_within(&native, limits()).unwrap().unwrap();
     assert_eq!(held.policy(), &expected);
-    assert!(initial - allowance.available_bytes() >= limits().allocation_bytes);
     drop(native);
-    drop(turn);
-    drop(registry);
     drop(room);
     assert_eq!(held.policy(), &expected);
-    let before = allowance.available_bytes();
-    drop(held);
-    assert!(allowance.available_bytes() - before >= limits().allocation_bytes);
 }
 
 #[test]
@@ -195,7 +160,7 @@ fn media_reader_conflict_precedes_decoding_and_equal_conflicts_remain_valid() {
 }
 
 #[test]
-fn media_reader_validation_uses_no_unreserved_binding_or_decimal_allocations() {
+fn media_reader_validation_refuses_noncanonical_counters_and_duplicate_objects() {
     let mut value = policy();
     let call = value.calls.values().next().unwrap().clone();
     value.calls.clear();
@@ -204,19 +169,15 @@ fn media_reader_validation_uses_no_unreserved_binding_or_decimal_allocations() {
         call.binding.channel_object = format!("{id}@01");
         value.calls.insert([id; 32], call);
     }
-    let (allowance, _, _) = context();
-    assert_precharged(&allowance, || super::super::validate(&value)).unwrap();
+    super::super::validate(&value).unwrap();
     for counter in ["0", "00", "01", "+1", "-1", "18446744073709551616", ""] {
         let mut invalid = call.binding.clone();
         invalid.channel_object = format!("{counter}@01");
-        assert_eq!(
-            assert_precharged(&allowance, || invalid.validate()),
-            Err(MediaPolicyError::Binding)
-        );
+        assert_eq!(invalid.validate(), Err(MediaPolicyError::Binding));
     }
     let mut valid = call.binding;
     valid.channel_object = "18446744073709551615@01".into();
-    assert_precharged(&allowance, || valid.validate()).unwrap();
+    valid.validate().unwrap();
     value
         .calls
         .get_mut(&[64; 32])
@@ -224,39 +185,28 @@ fn media_reader_validation_uses_no_unreserved_binding_or_decimal_allocations() {
         .binding
         .channel_object = "1@01".into();
     assert_eq!(
-        assert_precharged(&allowance, || super::super::validate(&value)),
+        super::super::validate(&value),
         Err(MediaPolicyError::Binding)
     );
 }
 
 #[test]
-fn media_reader_quota_refusal_does_not_replace_disabled_rooms_with_invalid_policy() {
+fn media_reader_limit_refusal_does_not_replace_disabled_rooms_with_invalid_policy() {
     let mut doc = room(Some(super::super::encode(&policy()).unwrap()));
-    let (allowance, mut registry, turn) = context();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&doc.save())
-        .unwrap();
-    let result = assert_precharged(&allowance, || {
-        parse(
-            &native.read(&turn).unwrap(),
-            &TurnCopy(&turn),
-            &BoundedDecode {
-                turn: &turn,
-                limits: OuterLimits {
-                    allocation_bytes: 16,
-                    ..limits()
-                },
-            },
-        )
-    });
+    let result = parse_within(
+        &admitted(&mut doc),
+        OuterLimits {
+            allocation_bytes: 16,
+            ..limits()
+        },
+    );
     assert!(matches!(
         result,
         Err(Error::Decode(PeerResourceError::Capacity))
     ));
     let absent = room(None);
     assert!(
-        parse(&LegacyRead(&absent), &LegacyCopy, &LegacyPolicy)
+        parse(&LegacyRead(&absent), &LegacyPolicy)
             .unwrap()
             .is_none()
     );
@@ -284,24 +234,13 @@ fn media_reader_checks_maximum_maps_and_noncanonical_varints_against_original_pa
     }
     let bytes = historical_encode(&value).unwrap();
     let mut doc = room(Some(bytes));
-    let (allowance, mut registry, turn) = context();
-    let native = NativeBatch::new(&mut registry, &turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&doc.save())
-        .unwrap();
-    let parsed = assert_precharged(&allowance, || {
-        parse(
-            &native.read(&turn).unwrap(),
-            &TurnCopy(&turn),
-            &BoundedDecode {
-                turn: &turn,
-                limits: OuterLimits {
-                    allocation_bytes: 8 * 1024 * 1024,
-                    ..limits()
-                },
-            },
-        )
-    })
+    let parsed = parse_within(
+        &admitted(&mut doc),
+        OuterLimits {
+            allocation_bytes: 8 * 1024 * 1024,
+            ..limits()
+        },
+    )
     .unwrap()
     .unwrap();
     assert_eq!(parsed.policy(), &value);

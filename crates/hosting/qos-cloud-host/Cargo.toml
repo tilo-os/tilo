@@ -29,6 +29,7 @@ zeroize.workspace = true
 libc.workspace = true
 uuid.workspace = true
 automerge.workspace = true
+tilo-automerge-isolate.workspace = true
 tokio = {workspace=true,features=["macros","rt-multi-thread","signal","time"]}
 tracing.workspace = true
 tracing-subscriber = {workspace=true, features=["env-filter"]}

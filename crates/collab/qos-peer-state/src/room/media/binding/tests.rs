@@ -1,8 +1,6 @@
 use super::super::{CallPhaseV1, CallV1, DirectionsV1, MediaPolicyError};
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::native::NativeBatch;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
+use crate::resources::native::{NativeBatch, NativeDocument};
 use automerge::{
     ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable,
 };
@@ -18,41 +16,19 @@ fn fixture() -> AutoCommit {
     doc.commit();
     doc
 }
-fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    (allowance, registry, turn)
-}
-fn stored(
-    doc: &mut AutoCommit,
-    registry: &mut NativeAllocationSet,
-    turn: &NativeWorkTurn,
-) -> NativeDocument {
-    NativeBatch::new(registry, turn, 8 * 1024 * 1024)
-        .unwrap()
-        .load(&doc.save())
-        .unwrap()
+fn stored(doc: &mut AutoCommit) -> NativeDocument {
+    NativeBatch::new(8 * 1024 * 1024).load(&doc.save()).unwrap()
 }
 #[test]
-fn media_binding_retains_exact_native_object_strings_after_document_drop() {
+fn media_binding_retains_exact_object_strings_after_document_drop() {
     let mut doc = fixture();
     let expected = historical_resolve("so.tilo.chat", "tab:voice", "voice", &doc).unwrap();
-    let (allowance, mut registry, turn) = context();
-    let native = stored(&mut doc, &mut registry, &turn);
-    let binding = assert_precharged(&allowance, || {
-        resolve_native("so.tilo.chat", "tab:voice", "voice", &native, &turn)
-    })
-    .unwrap();
+    let native = stored(&mut doc);
+    let binding = resolve_native("so.tilo.chat", "tab:voice", "voice", &native).unwrap();
     assert!(binding.matches(&expected));
     drop(native);
-    drop(turn);
-    drop(registry);
     drop(doc);
     assert!(binding.matches(&expected));
-    let before = allowance.available_bytes();
-    drop(binding);
-    assert!(allowance.available_bytes() > before);
 }
 #[test]
 fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors() {
@@ -93,11 +69,8 @@ fn media_binding_matches_original_archival_wrong_type_conflict_and_route_errors(
             "so.tilo.chat"
         };
         let expected = historical_resolve(app, "", "voice", &doc);
-        let (allowance, mut registry, turn) = context();
-        let native = stored(&mut doc, &mut registry, &turn);
-        let actual = assert_precharged(&allowance, || {
-            resolve_native(app, "", "voice", &native, &turn)
-        });
+        let native = stored(&mut doc);
+        let actual = resolve_native(app, "", "voice", &native);
         match expected {
             Ok(expected) => assert!(actual.unwrap().matches(&expected)),
             Err(error) => assert!(matches!(actual,Err(Error::Policy(actual)) if actual==error)),
@@ -132,37 +105,18 @@ fn media_binding_active_exact_route_rejects_replaced_object_but_ignores_ended_un
     doc.put(&voice, "kind", "voice").unwrap();
     doc.put(&voice, "workspace", "main").unwrap();
     doc.commit();
-    let (allowance, mut registry, turn) = context();
-    let native = stored(&mut doc, &mut registry, &turn);
+    let native = stored(&mut doc);
     assert_eq!(
-        assert_precharged(&allowance, || validate_native(
-            &policy,
-            "so.tilo.chat",
-            "",
-            &native,
-            &turn
-        )),
+        validate_native(&policy, "so.tilo.chat", "", &native),
         Err(Error::Policy(MediaPolicyError::Binding))
     );
     assert_eq!(
-        assert_precharged(&allowance, || validate_native(
-            &policy,
-            "so.tilo.chat",
-            "other",
-            &native,
-            &turn
-        )),
+        validate_native(&policy, "so.tilo.chat", "other", &native),
         Ok(())
     );
     policy.calls.values_mut().next().unwrap().phase = CallPhaseV1::Ended;
     assert_eq!(
-        assert_precharged(&allowance, || validate_native(
-            &policy,
-            "so.tilo.chat",
-            "",
-            &native,
-            &turn
-        )),
+        validate_native(&policy, "so.tilo.chat", "", &native),
         Ok(())
     );
 }
@@ -182,17 +136,10 @@ fn media_binding_rejects_actual_native_orphan_history_before_channel_lookup() {
         historical_resolve("so.tilo.chat", "", "voice", &orphan),
         Err(MediaPolicyError::Binding)
     );
-    let (allowance, mut registry, turn) = context();
-    let native = stored(&mut orphan, &mut registry, &turn);
+    let native = stored(&mut orphan);
     assert!(native.has_missing_dependencies());
     assert!(matches!(
-        assert_precharged(&allowance, || resolve_native(
-            "so.tilo.chat",
-            "",
-            "voice",
-            &native,
-            &turn
-        )),
+        resolve_native("so.tilo.chat", "", "voice", &native),
         Err(Error::Policy(MediaPolicyError::Binding))
     ));
 }
@@ -211,11 +158,8 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
         }
         doc.commit();
         let expected = historical_resolve("so.tilo.chat", "", "voice", &doc);
-        let (allowance, mut registry, turn) = context();
-        let native = stored(&mut doc, &mut registry, &turn);
-        let actual = assert_precharged(&allowance, || {
-            resolve_native("so.tilo.chat", "", "voice", &native, &turn)
-        });
+        let native = stored(&mut doc);
+        let actual = resolve_native("so.tilo.chat", "", "voice", &native);
         match expected {
             Ok(expected) => {
                 assert_eq!(expected.channel_object.len(), 256);
@@ -235,24 +179,6 @@ fn media_binding_exact_object_limit_preserves_workspace_error_precedence() {
         }
     }
 }
-#[test]
-fn media_binding_new_turn_quota_refuses_without_spending_document_residence_credit() {
-    let mut doc = fixture();
-    let (residence, mut registry, turn) = context();
-    let native = stored(&mut doc, &mut registry, &turn);
-    let residence_before = residence.available_bytes();
-    let current = NativeAllowance::new(512).unwrap();
-    let current_turn = registry.work_turn(current.clone()).unwrap();
-    let before = current.available_bytes();
-    let result = assert_precharged(&current, || {
-        resolve_native("so.tilo.chat", "", "voice", &native, &current_turn)
-    });
-    assert!(matches!(result, Err(Error::Resource(_))));
-    assert_eq!(residence.available_bytes(), residence_before);
-    assert_eq!(current.available_bytes(), before);
-    assert!(resolve_native("so.tilo.chat", "", "voice", &native, &turn).is_ok());
-}
-
 // Original public resolver retained as independent identity/shape oracle.
 use super::super::{strict_map, strict_string};
 fn historical_resolve(

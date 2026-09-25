@@ -75,8 +75,6 @@ notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/D
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
 advisory-lock = { path = "../../system/advisory-lock" }
-# Canonical committed-document merge shared with the Cloud peer runtime.
-qos-peer-state = { path = "../../collab/qos-peer-state" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
 atomic-file = { path = "../../system/atomic-file" }
 settings-store = { path = "../../system/settings-store" }

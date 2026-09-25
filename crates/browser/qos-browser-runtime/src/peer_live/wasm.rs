@@ -185,7 +185,7 @@ fn admit_forwarded(
     canonical: &[u8],
     now: SystemTime,
 ) -> Result<StatePeer, String> {
-    let mut admitted = CutAdmission::begin(state, peer.incoming.clone(), now)?;
+    let mut admitted = CutAdmission::begin(state, now)?;
     admitted.push_retained(canonical, now)?;
     admitted.finish_complete(now)
 }
@@ -442,15 +442,47 @@ pub(super) fn author_published(peer: &Peer, canonical: Option<Vec<u8>>) {
     );
 }
 
+/// The Automerge input of a forwarded `OpsFrame::SignedChange` and the saved
+/// document it applies to, for the page's Web Worker check
+/// (`automerge-check-worker.mjs`) that precedes `peer_live_admit`. Returns
+/// `{base: Uint8Array, incoming: Uint8Array, baseHeads: string}`.
+#[wasm_bindgen]
+pub fn peer_live_check_input(id: u32, frame: Vec<u8>) -> Result<JsValue, JsValue> {
+    let peer = owner(id)?;
+    let (_, _, canonical) = peer_live::signed_change(&frame).map_err(error)?;
+    // Admission merges the mounted apps' local edits first; so does the base.
+    crate::browser::prepare_peer_remote(peer.id).map_err(error)?;
+    let input = peer_live::automerge_input(&peer.state.borrow(), &canonical).map_err(error)?;
+    let value = js_sys::Object::new();
+    for (name, field) in [
+        (
+            "base",
+            js_sys::Uint8Array::from(input.base.as_slice()).into(),
+        ),
+        (
+            "incoming",
+            js_sys::Uint8Array::from(input.incoming.as_slice()).into(),
+        ),
+        ("baseHeads", JsValue::from_str(&input.base_heads)),
+    ] {
+        js_sys::Reflect::set(&value, &JsValue::from_str(name), &field)?;
+    }
+    Ok(value.into())
+}
+
 /// Admit a forwarded `OpsFrame::SignedChange` through the same checked
 /// native publication path as replay, as a speculative change: it is shown
 /// (Peer state, records, mounts) but never enters a durable cut, the
 /// admission journal or the cursor until durable state covers it; unconfirmed
 /// changes are withdrawn at their deadline (`peer_live_reconcile`).
+///
+/// `checked_base` is the `baseHeads` of the `peer_live_check_input` whose
+/// bytes the page's Web Worker accepted. A frame whose document has moved
+/// since is deferred, so the page checks it again against the new base.
 /// Returns `{"kind": "admitted"|"duplicate"|"deferred", "digest": hex,
 /// "speculative": bool, "confirmByMs": wall ms}`.
 #[wasm_bindgen]
-pub fn peer_live_admit(id: u32, frame: Vec<u8>) -> Result<String, JsValue> {
+pub fn peer_live_admit(id: u32, frame: Vec<u8>, checked_base: String) -> Result<String, JsValue> {
     let peer = owner(id)?;
     let (digest, _record, canonical) = peer_live::signed_change(&frame).map_err(error)?;
     let result = |kind: &str| {
@@ -473,13 +505,9 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>) -> Result<String, JsValue> {
     let held = qos_peer_state::resources::BoundedPeerMessage::decode(
         &canonical,
         qos_peer_state::resources::OuterLimits {
-            allocation_bytes: peer
-                .incoming
-                .available()
-                .min(live_wire::MAX_STREAM_FRAME_BYTES * 64),
+            allocation_bytes: live_wire::MAX_STREAM_FRAME_BYTES * 64,
             collection_entries: 65536,
         },
-        peer.incoming.allowance(),
     )
     .map_err(|e| error(format!("bounded live change decode: {e:?}")))?;
     if peer.state.borrow().covers(held.message()) {
@@ -488,6 +516,9 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>) -> Result<String, JsValue> {
     }
     drop(held);
     crate::browser::prepare_peer_remote(peer.id).map_err(error)?;
+    if peer_live::base_heads(&peer.state.borrow(), &canonical).map_err(error)? != checked_base {
+        return result("deferred");
+    }
     let now = SystemTime::now();
     let item = crate::peer_live::speculation::Speculative {
         digest,

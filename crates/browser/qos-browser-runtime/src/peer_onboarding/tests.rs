@@ -82,10 +82,7 @@ fn prepared_wrapper_preserves_durable_complete_and_pins_distinct_delivery_host()
         postcard::from_bytes(identity.completion().unwrap()).unwrap();
     let request = JoinTransportRequest::Complete(complete);
     let expected_legacy = postcard::to_stdvec(&request).unwrap();
-    let budget = IncomingBudget::new(4 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let prepared =
-        prepare_invited(&identity, request.clone(), &budget, NOW + 31_000_000_000).unwrap();
+    let prepared = prepare_invited(&identity, request.clone(), NOW + 31_000_000_000).unwrap();
     let wire = OnboardingRequest::decode(prepared.request_bytes()).unwrap();
     assert_eq!(wire.operation, OnboardingOperation::Complete);
     assert_eq!(wire.scope.origin, ORIGIN);
@@ -96,30 +93,19 @@ fn prepared_wrapper_preserves_durable_complete_and_pins_distinct_delivery_host()
     assert_eq!(wire.device_certificate().unwrap(), *identity.certificate());
     wire.verify_device_signature(wire.scope, identity.certificate(), NOW + 31_000_000_000)
         .unwrap();
-    assert!(
-        budget.available() < before,
-        "prepared backing retains real incoming credit"
-    );
-    let retry = prepare_invited(&identity, request, &budget, NOW + 32_000_000_000).unwrap();
+    let retry = prepare_invited(&identity, request, NOW + 32_000_000_000).unwrap();
     let retried = OnboardingRequest::decode(retry.request_bytes()).unwrap();
     assert_ne!(wire.nonce, retried.nonce);
     assert_eq!(wire.body, retried.body);
     drop(retry);
     drop(prepared);
-    assert_eq!(budget.available(), before);
 }
 
 #[test]
-fn retained_completion_preflight_counts_actual_owned_fields_and_rejects_hostile_lengths() {
+fn retained_completion_preflight_accepts_canonical_and_rejects_hostile_lengths() {
     let (identity, _, _) = invited();
     let original = identity.completion().unwrap();
-    let complete: JoinCompleteRequest = postcard::from_bytes(original).unwrap();
-    // The string and invitation own payloads; legacy bytes64 temporarily owns
-    // 64 signature bytes while decoding its fixed final array.
-    assert_eq!(
-        preflight_completion(original).unwrap(),
-        complete.proof.challenge.signed_invitation.len() + 36 + 64
-    );
+    assert!(preflight_completion(original).is_ok());
     let mut trailing = original.to_vec();
     trailing.push(0);
     assert!(preflight_completion(&trailing).is_err());
@@ -132,14 +118,8 @@ fn signed_reply_must_match_the_original_prepared_request_not_only_its_host() {
     use tilo_relay::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
     let (identity, _, _) = invited();
     let complete = postcard::from_bytes(identity.completion().unwrap()).unwrap();
-    let budget = IncomingBudget::new(4 * 1024 * 1024).unwrap();
-    let prepared = prepare_invited(
-        &identity,
-        JoinTransportRequest::Complete(complete),
-        &budget,
-        NOW,
-    )
-    .unwrap();
+    let prepared =
+        prepare_invited(&identity, JoinTransportRequest::Complete(complete), NOW).unwrap();
     let request = OnboardingRequest::decode(prepared.request_bytes()).unwrap();
     let inner = postcard::to_stdvec(&join::JoinTransportResponse::Error {
         code: 403,
@@ -267,7 +247,7 @@ fn bootstrap(
 }
 
 #[test]
-fn handoff_reassembles_exact_signed_native_bootstrap_under_shared_credit() {
+fn handoff_reassembles_exact_signed_native_bootstrap() {
     use super::handoff::{Handoff, ManifestContext};
     use wire::{HandoffChunk, HandoffManifest, HandoffPurpose, HandoffSegment};
     let (identity, governor, host) = invited();
@@ -276,15 +256,9 @@ fn handoff_reassembles_exact_signed_native_bootstrap_under_shared_credit() {
     )))
     .unwrap();
     assert!(inner.len() > wire::MAX_HANDOFF_RANGE_BYTES);
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
     let complete = postcard::from_bytes(identity.completion().unwrap()).unwrap();
-    let prepared = prepare_invited(
-        &identity,
-        JoinTransportRequest::Complete(complete),
-        &budget,
-        NOW,
-    )
-    .unwrap();
+    let prepared =
+        prepare_invited(&identity, JoinTransportRequest::Complete(complete), NOW).unwrap();
     let request = OnboardingRequest::decode(prepared.request_bytes()).unwrap();
     let context = ManifestContext {
         scope: request.scope,
@@ -323,9 +297,7 @@ fn handoff_reassembles_exact_signed_native_bootstrap_under_shared_credit() {
     manifest.signature[0].copy_from_slice(&signature[..32]);
     manifest.signature[1].copy_from_slice(&signature[32..]);
     let encoded = manifest.encode().unwrap();
-    let before = budget.available();
-    let mut transfer = Handoff::start(&encoded, context, &budget, NOW).unwrap();
-    assert!(budget.available() < before);
+    let mut transfer = Handoff::start(&encoded, context, NOW).unwrap();
     assert!(
         Handoff::start(
             &encoded,
@@ -333,12 +305,10 @@ fn handoff_reassembles_exact_signed_native_bootstrap_under_shared_credit() {
                 request_nonce: [4; 32],
                 ..context
             },
-            &budget,
             NOW
         )
         .is_err()
     );
-    assert!(Handoff::start(&encoded, context, &IncomingBudget::new(4096).unwrap(), NOW).is_err());
     while transfer.remaining() != 0 {
         let fetch = transfer.request(&identity.device_key(), NOW).unwrap();
         assert!(fetch.length as usize <= 240 * 1024);
@@ -360,13 +330,8 @@ fn handoff_reassembles_exact_signed_native_bootstrap_under_shared_credit() {
             .unwrap();
     }
     let held = transfer.finish(NOW).unwrap();
-    assert_eq!(held.bytes, inner);
-    assert!(
-        budget.available() < before,
-        "complete output still owns its credit"
-    );
+    assert_eq!(held, inner);
     drop(held);
-    assert_eq!(budget.available(), before);
 }
 
 fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) {
@@ -472,12 +437,10 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
 }
 
 #[test]
-fn local_governance_requires_exact_durable_binding_and_retains_credit() {
+fn local_governance_requires_exact_durable_binding() {
     use qos_peer_state::transport::Retention;
     let (material, challenge, raw, small) = local_fixture(NOW + 60_000_000_000);
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let bound = bind_local(&material, &challenge, &raw, budget.clone(), NOW).unwrap();
+    let bound = bind_local(&material, &challenge, &raw, NOW).unwrap();
     assert_eq!(
         bound.material(),
         crate::identity::bind(&material, &challenge, &raw).unwrap()
@@ -493,35 +456,28 @@ fn local_governance_requires_exact_durable_binding_and_retains_credit() {
         context.inline_governance(&durable, &raw, NOW).is_err(),
         "context consumes once"
     );
-    assert!(budget.available() < before);
     drop(reply);
     drop(context);
-    assert_eq!(budget.available(), before);
 }
 
 #[test]
-fn decoded_reply_keeps_nested_bootstrap_credit_until_holder_drops() {
+fn decoded_reply_round_trips_the_nested_bootstrap() {
     let (identity, governor, host) = invited();
     let inner = postcard::to_stdvec(&join::JoinTransportResponse::Complete(bootstrap(
         &identity, &governor, &host,
     )))
     .unwrap();
-    let budget = IncomingBudget::new(64 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let held = OnboardingReply::decode(&inner, &budget).unwrap();
+    let held = OnboardingReply::decode(&inner).unwrap();
     let join::JoinTransportResponse::Complete(value) = held.response() else {
         panic!("wrong response");
     };
     assert!(!value.governance_messages.is_empty());
     assert_eq!(postcard::to_stdvec(held.response()).unwrap(), inner);
-    assert!(budget.available() < before);
-    assert!(OnboardingReply::decode(&inner, &IncomingBudget::new(4096).unwrap()).is_err());
     drop(held);
-    assert_eq!(budget.available(), before);
 }
 
 #[test]
-fn governance_bundle_lends_exact_paired_messages_without_escaping_custody() {
+fn governance_bundle_lends_exact_paired_messages() {
     use qos_peer_state::transport::Retention;
     let (identity, governor, host) = invited();
     let data = bootstrap(&identity, &governor, &host).governance_messages;
@@ -535,11 +491,7 @@ fn governance_bundle_lends_exact_paired_messages_without_escaping_custody() {
             .collect(),
     };
     let encoded = postcard::to_stdvec(&bundle).unwrap();
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let reply =
-        GovernanceReply::bundle(ChargedBytes::copy(&encoded, &budget).unwrap(), 42, &budget)
-            .unwrap();
+    let reply = GovernanceReply::bundle(encoded, 42).unwrap();
     assert_eq!(reply.generation(), 42);
     assert_eq!(
         reply.messages().collect::<Vec<_>>(),
@@ -547,9 +499,7 @@ fn governance_bundle_lends_exact_paired_messages_without_escaping_custody() {
             .map(|b| (b.as_slice(), Retention::Delta))
             .collect::<Vec<_>>()
     );
-    assert!(budget.available() < before);
     drop(reply);
-    assert_eq!(budget.available(), before);
 }
 
 #[test]
@@ -573,8 +523,6 @@ fn handoff_rejects_host_signed_bad_digests_and_replayed_ranges() {
     };
     let host_key = SigningKey::from_bytes(&[3; 32]);
     for mode in 0..3 {
-        let budget = IncomingBudget::new(4 * 1024 * 1024).unwrap();
-        let before = budget.available();
         let mut manifest = wire::HandoffManifest {
             version: 1,
             purpose: context.purpose,
@@ -610,8 +558,7 @@ fn handoff_rejects_host_signed_bad_digests_and_replayed_ranges() {
             .to_bytes();
         manifest.signature[0].copy_from_slice(&sign[..32]);
         manifest.signature[1].copy_from_slice(&sign[32..]);
-        let mut transfer =
-            Handoff::start(&manifest.encode().unwrap(), context, &budget, NOW).unwrap();
+        let mut transfer = Handoff::start(&manifest.encode().unwrap(), context, NOW).unwrap();
         loop {
             let request = transfer.request(&identity.device_key(), NOW).unwrap();
             let body =
@@ -644,11 +591,6 @@ fn handoff_rejects_host_signed_bad_digests_and_replayed_ranges() {
             }
         }
         assert!(transfer.finish(NOW).is_err());
-        assert_eq!(
-            budget.available(),
-            before,
-            "failure drops all backing before credit"
-        );
     }
 }
 
@@ -709,8 +651,7 @@ fn signed_deadline_chunk(
 fn original_deadline_local_descriptor_survives_claim_but_not_expiry() {
     let deadline = NOW + 1_000_000_000;
     let (material, challenge, raw, _) = local_fixture(deadline);
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let bound = bind_local(&material, &challenge, &raw, budget, NOW).unwrap();
+    let bound = bind_local(&material, &challenge, &raw, NOW).unwrap();
     let durable = bound.material().to_vec();
     let context = bound.into_context();
     let _reply = context.inline_governance(&durable, &raw, NOW).unwrap();
@@ -726,8 +667,7 @@ fn original_deadline_caps_signed_ranges_and_completed_output_for_local_and_invit
     use handoff::{Handoff, ManifestContext};
     let deadline = NOW + 1_000_000_000;
     let (material, challenge, raw, body) = local_fixture(deadline);
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let bound = bind_local(&material, &challenge, &raw, budget.clone(), NOW).unwrap();
+    let bound = bind_local(&material, &challenge, &raw, NOW).unwrap();
     let key = crate::identity::key(bound.material(), &raw).unwrap();
     let local = bound.into_context();
     let (identity, _, _) = invited();
@@ -736,7 +676,6 @@ fn original_deadline_caps_signed_ranges_and_completed_output_for_local_and_invit
         JoinTransportRequest::Complete(
             postcard::from_bytes(identity.completion().unwrap()).unwrap(),
         ),
-        &budget,
         NOW,
     )
     .unwrap();
@@ -769,8 +708,7 @@ fn original_deadline_caps_signed_ranges_and_completed_output_for_local_and_invit
             )
             .unwrap();
         let encoded = manifest.encode().unwrap();
-        let before = budget.available();
-        let mut positive = Handoff::start(&encoded, context, &budget, now).unwrap();
+        let mut positive = Handoff::start(&encoded, context, now).unwrap();
         let range = positive.request(&key, now).unwrap();
         assert_eq!(
             range.expires_at_ns, deadline,
@@ -778,13 +716,13 @@ fn original_deadline_caps_signed_ranges_and_completed_output_for_local_and_invit
         );
         let chunk = signed_deadline_chunk(&manifest, &range, &body);
         positive.push(&range, &chunk, deadline - 1).unwrap();
-        assert_eq!(positive.finish(deadline - 1).unwrap().bytes, body);
-        let mut late = Handoff::start(&encoded, context, &budget, now).unwrap();
+        assert_eq!(positive.finish(deadline - 1).unwrap(), body);
+        let mut late = Handoff::start(&encoded, context, now).unwrap();
         let range = late.request(&key, now).unwrap();
         let chunk = signed_deadline_chunk(&manifest, &range, &body);
         assert!(late.push(&range, &chunk, deadline).is_err());
         assert!(late.finish(deadline).is_err());
-        let mut finished = Handoff::start(&encoded, context, &budget, now).unwrap();
+        let mut finished = Handoff::start(&encoded, context, now).unwrap();
         let range = finished.request(&key, now).unwrap();
         finished
             .push(
@@ -797,7 +735,6 @@ fn original_deadline_caps_signed_ranges_and_completed_output_for_local_and_invit
             finished.finish(deadline).is_err(),
             "final output remains fenced after successful last range"
         );
-        assert!(Handoff::start(&encoded, context, &budget, deadline).is_err());
-        assert_eq!(budget.available(), before);
+        assert!(Handoff::start(&encoded, context, deadline).is_err());
     }
 }

@@ -1,4 +1,4 @@
-//! Fixed-layout opaque envelope. All allocation callers prepay `required_bytes`.
+//! Fixed-layout opaque envelope. `required_bytes` is the exact encoded size of a payload.
 use super::{SenderScope, SenderStorageCode as Code};
 pub(super) const MAX_PAYLOAD: usize = 4 * 1024 * 1024;
 pub(super) const MAX_FILE: usize = MAX_PAYLOAD + 4096;

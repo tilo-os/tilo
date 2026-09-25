@@ -1,8 +1,6 @@
 //! Immutable body-text pages over the actual qdoc layout. Not a public action or authority witness.
 pub mod action;
-mod native;
 use automerge::AutoCommit;
-pub use native::{NativePage, read_text_native};
 use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -29,15 +27,12 @@ pub struct Page {
     pub next: Option<Cursor>,
 }
 use automerge::{ObjId, ObjType, ROOT};
-use qdoc::semantic_read::{
-    json_len,
-    source::{Object, Source},
-};
+use qdoc::semantic_read::{json_len, source::Source};
 use std::{cmp::Ordering, ops::ControlFlow};
-struct Candidate<'doc> {
+struct Candidate {
     id: String,
     order: Vec<u8>,
-    object: Object<'doc>,
+    object: ObjId,
 }
 fn compare(order: &[u8], id: &str, other_order: &[u8], other_id: &str) -> Ordering {
     qdoc::order::cmp_keys(order, other_order).then(id.cmp(other_id))
@@ -71,17 +66,15 @@ pub fn read_text_at(
     cursor: Option<&Cursor>,
     limits: Limits,
 ) -> Result<Page, ReadError> {
-    let source = Source::legacy(doc, owner_heads);
-    let root = source.legacy_object(root)?;
-    read_source(&source, &root, cursor, limits)
+    read_source(&Source::new(doc, owner_heads), root, cursor, limits)
 }
 #[expect(
     clippy::too_many_lines,
     reason = "one bounded page scan; cursor, lookahead and limit accounting share its state"
 )]
-fn read_source<'doc>(
-    source: &Source<'_, 'doc, '_>,
-    root: &Object<'doc>,
+fn read_source(
+    source: &Source<'_>,
+    root: &ObjId,
     cursor: Option<&Cursor>,
     limits: Limits,
 ) -> Result<Page, ReadError> {
@@ -103,7 +96,7 @@ fn read_source<'doc>(
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
     let blocks = source
-        .object(root, qdoc::schema::KEY_BLOCKS, ObjType::Map, &work)?
+        .object(root, qdoc::schema::KEY_BLOCKS, ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
     for key in [
         qdoc::schema::KEY_STYLES,
@@ -111,7 +104,7 @@ fn read_source<'doc>(
         qdoc::schema::KEY_META,
     ] {
         source
-            .object(root, key, ObjType::Map, &work)?
+            .object(root, key, ObjType::Map)?
             .ok_or(ReadError::Malformed)?;
     }
     let capacity = limits.items + 1;
@@ -121,7 +114,7 @@ fn read_source<'doc>(
         let Some(block) = value.object(ObjType::Map) else {
             return Ok(ControlFlow::Continue(()));
         };
-        source.bytes(&block, qdoc::schema::BLOCK_ORDER, &work, |order| {
+        source.bytes(&block, qdoc::schema::BLOCK_ORDER, |order| {
             if order.len() > 256 || key.len() > 256 {
                 return Err(ReadError::Limit);
             }
@@ -171,16 +164,11 @@ fn read_source<'doc>(
             .filter(|c| c.block == candidate.id && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text = source.object(
-            &candidate.object,
-            qdoc::schema::BLOCK_TEXT,
-            ObjType::Text,
-            &work,
-        )?;
+        let text = source.object(&candidate.object, qdoc::schema::BLOCK_TEXT, ObjType::Text)?;
         let previous = page.next.take();
         page.segments.push(Segment {
             block: candidate.id.clone(),
-            kind: source.string(&candidate.object, qdoc::schema::BLOCK_KIND, 64, &work)?,
+            kind: source.string(&candidate.object, qdoc::schema::BLOCK_KIND, 64)?,
             text: String::new(),
             complete: false,
         });

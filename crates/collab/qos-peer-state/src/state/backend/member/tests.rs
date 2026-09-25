@@ -1,14 +1,12 @@
 use super::*;
 use crate::StatePeer;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::state::err;
 use crate::state::now_ns;
 use crate::verified_certificate::VerifiedCertificate;
-use crate::{BoundedStatePeer, PeerLimits, PeerRegistry};
+use crate::{BoundedStatePeer, PeerLimits};
 use automerge::ObjType;
 use automerge::ROOT;
 use automerge::ReadDoc;
-use automerge::resource_limits::NativeAllowance;
 use automerge::transaction::Transactable;
 use collab_types::ArtifactKind;
 use collab_types::Ed25519PublicKey;
@@ -38,78 +36,35 @@ fn fixture() -> (StatePeer, [u8; 32], SystemTime) {
     room.commit();
     (peer, cert.device_public_key, now)
 }
+fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
+    BoundedStatePeer::restore(
+        &peer.durable().unwrap(),
+        peer.room(),
+        peer.authority(),
+        &[],
+        &RevocationList::new(),
+        now,
+        limits,
+    )
+    .unwrap()
+}
 #[test]
 fn bounded_current_member_matches_actual_legacy_membership_and_rechecks_expiry() {
     let (peer, source, now) = fixture();
     let bytes = peer.durable().unwrap();
     let expected = peer.permissions(source, now).unwrap();
     assert_eq!(expected.0, Role::Editor);
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let restored = BoundedStatePeer::restore(
-        &bytes,
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        &mut work,
-    )
-    .unwrap();
-    let read = restored.read(&work).unwrap();
-    let member = assert_precharged(&current, || read.member(source, now)).unwrap();
+    let restored = restore(&peer, now, &PeerLimits::default());
+    let read = restored.read();
+    let member = read.member(source, now).unwrap();
     assert_eq!(member.role(), expected.0);
     assert_eq!(member.capabilities(), expected.1);
     assert_eq!(member.person(), expected.2);
     let later = now + Duration::from_secs(2);
     assert!(peer.permissions(source, later).is_err());
-    assert!(assert_precharged(&current, || read.member(source, later)).is_err());
+    assert!(read.member(source, later).is_err());
+    assert_eq!(peer.durable().unwrap(), bytes);
 }
-#[test]
-fn bounded_current_member_queries_use_later_turn_credit_and_keep_owned_output_custody() {
-    let (peer, source, now) = fixture();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let resident = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let restored = {
-        let mut turn = registry
-            .begin_turn(resident.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        BoundedStatePeer::restore(
-            &peer.durable().unwrap(),
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-        .unwrap()
-    };
-    let resident_before = resident.retained_bytes();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let work = turn.work().unwrap();
-    let read = restored.read(&work).unwrap();
-    let before = current.retained_bytes();
-    let member = assert_precharged(&current, || read.member(source, now)).unwrap();
-    assert_eq!(member.role(), Role::Editor);
-    assert!(current.retained_bytes() > before);
-    assert_eq!(resident.retained_bytes(), resident_before);
-    drop(member);
-    assert_eq!(current.retained_bytes(), before);
-    let exhausted = work.reserve_output(current.available_bytes()).unwrap();
-    assert!(assert_precharged(&current, || read.member(source, now)).is_err());
-    assert_eq!(resident.retained_bytes(), resident_before);
-    drop(exhausted);
-}
-
 // Literal pre-extraction role body, with the historical projection oracle.
 fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result<Role, String> {
     let cert = peer.certificate(source, now)?;
@@ -159,24 +114,9 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
 fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
     assert_eq!(peer.role(&source, now), original_role(peer, &source, now));
     let expected = peer.permissions(source, now);
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let restored = BoundedStatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.room(),
-        peer.authority(),
-        &[],
-        &RevocationList::new(),
-        now,
-        &mut work,
-    )
-    .unwrap();
-    let view = restored.read(&work).unwrap();
-    let actual = assert_precharged(&current, || view.member(source, now));
+    let restored = restore(peer, now, &PeerLimits::default());
+    let view = restored.read();
+    let actual = view.member(source, now);
     match (expected, actual) {
         (Ok((role, caps, person)), Ok(member)) => {
             assert_eq!(member.role(), role);
@@ -192,7 +132,7 @@ fn compare_native(peer: &StatePeer, source: [u8; 32], now: SystemTime) {
 }
 #[test]
 fn bounded_current_member_preserves_malformed_container_and_conflict_winner_semantics() {
-    for kind in [ObjType::List, ObjType::Text, ObjType::Map, ObjType::Table] {
+    for kind in [ObjType::List, ObjType::Text, ObjType::Map] {
         let (mut peer, source, now) = fixture();
         let room = peer.core.room_doc.as_mut().unwrap();
         let object = room.put_object(ROOT, "capabilities", kind).unwrap();
@@ -268,7 +208,7 @@ fn bounded_current_member_preserves_malformed_container_and_conflict_winner_sema
     }
 }
 #[test]
-fn bounded_current_member_copies_all_capability_fields_under_retained_output_credit() {
+fn bounded_current_member_copies_all_capability_fields() {
     let (mut peer, source, now) = fixture();
     let room = peer.core.room_doc.as_mut().unwrap();
     let caps = room.get(ROOT, "capabilities").unwrap().unwrap().1;
@@ -451,63 +391,21 @@ fn bounded_current_member_preserves_restriction_role_semantics_and_current_certi
     compare_native(&expiring, source, now + Duration::from_nanos(1));
 }
 #[test]
-fn bounded_current_member_output_capacity_and_sealed_turn_refuse_without_changing_peer() {
+fn bounded_current_member_refuses_a_small_governance_limit_without_changing_peer() {
     let (peer, source, now) = fixture();
     let bytes = peer.durable().unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let restored = {
-        let mut turn = registry
-            .begin_turn(
-                NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-                PeerLimits::default(),
-            )
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            &RevocationList::new(),
-            now,
-            &mut work,
-        )
-        .unwrap()
-    };
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
     let limits = PeerLimits {
         governance_collection_bytes: 1,
         ..PeerLimits::default()
     };
-    let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
-    let work = turn.work().unwrap();
-    let read = restored.read(&work).unwrap();
-    let before = current.retained_bytes();
+    let restored = restore(&peer, now, &limits);
     assert!(matches!(
-        assert_precharged(&current, || read.member(source, now)),
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
+        restored.read().member(source, now),
+        Err(BoundedPeerError::Capacity)
     ));
-    assert_eq!(current.retained_bytes(), before);
-    current.finish_turn();
-    assert!(matches!(
-        read.member(source, now),
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-    ));
-    drop(turn);
-    let mut later = registry
-        .begin_turn(
-            NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-            PeerLimits::default(),
-        )
-        .unwrap();
-    let work = later.work().unwrap();
+    let restored = restore(&peer, now, &PeerLimits::default());
     assert_eq!(
-        restored
-            .read(&work)
-            .unwrap()
-            .member(source, now)
-            .unwrap()
-            .role(),
+        restored.read().member(source, now).unwrap().role(),
         Role::Editor
     );
     assert_eq!(peer.durable().unwrap(), bytes);

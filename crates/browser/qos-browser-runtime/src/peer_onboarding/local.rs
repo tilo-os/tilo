@@ -8,12 +8,12 @@ use serde::{
 use std::{cell::Cell, fmt, ops::Range};
 
 pub(crate) struct BoundLocal {
-    material: ChargedBytes,
+    material: Vec<u8>,
     context: LocalContext,
 }
 impl BoundLocal {
     pub(crate) fn material(&self) -> &[u8] {
-        &self.material.bytes
+        &self.material
     }
     pub(crate) fn into_context(self) -> LocalContext {
         self.context
@@ -33,15 +33,10 @@ pub(crate) struct LocalContext {
     expires: u64,
     consumed: Cell<bool>,
     cancel: OnboardingCancel,
-    budget: IncomingBudget,
-    _metadata: NativeReservation,
 }
 impl LocalContext {
     pub(crate) fn expires_at_ns(&self) -> u64 {
         self.expires
-    }
-    pub(crate) fn budget(&self) -> &IncomingBudget {
-        &self.budget
     }
     pub(crate) fn cancel(&self) -> &OnboardingCancel {
         &self.cancel
@@ -65,7 +60,7 @@ impl LocalContext {
         now: u64,
     ) -> Result<GovernanceReply, String> {
         self.claim(material, raw, now)?;
-        let extracted = extract(raw, &self.budget)?;
+        let extracted = extract(raw)?;
         if extracted.manifest {
             return Err("local governance requires HTTPS handoff".into());
         }
@@ -99,11 +94,10 @@ impl LocalContext {
     }
 }
 pub(crate) struct GovernanceReply {
-    bytes: ChargedBytes,
+    bytes: Vec<u8>,
     ranges: Vec<Range<usize>>,
     kinds: Vec<Retention>,
     generation: u64,
-    _metadata: NativeReservation,
 }
 impl GovernanceReply {
     #[cfg(test)]
@@ -114,7 +108,7 @@ impl GovernanceReply {
         self.ranges
             .iter()
             .zip(&self.kinds)
-            .map(|(range, kind)| (&self.bytes.bytes[range.clone()], *kind))
+            .map(|(range, kind)| (&self.bytes[range.clone()], *kind))
     }
 }
 #[derive(Deserialize)]
@@ -135,24 +129,13 @@ pub(crate) fn bind_local(
     material: &[u8],
     challenge: &str,
     raw: &str,
-    budget: IncomingBudget,
     now: u64,
 ) -> Result<BoundLocal, String> {
     if material.len() > 4096 || challenge.len() > 8192 || raw.len() > 1024 * 1024 || now == 0 {
         return Err("local onboarding input exceeds bound".into());
     }
     // Only the fixed metadata schemas own strings: their total decoded bytes
-    // per pass cannot exceed the input. Keep this projection plus identity::bind's
-    // second projection covered while legacy certificate hashing builds its
-    // Postcard Vec (including old/new growth overlap). Six input capacities
-    // cover those phases; bounded proof/material scratch uses 64 KiB. This
-    // does not qualify the later legacy StatePeer admission allocator.
-    let metadata = budget.reserve(
-        raw.len()
-            .checked_mul(6)
-            .and_then(|n| n.checked_add(64 * 1024))
-            .ok_or("local charge overflow")?,
-    )?;
+    // per pass cannot exceed the 1 MiB input bound above.
     let info: Metadata =
         serde_json::from_str(raw).map_err(|_| "invalid local onboarding metadata")?;
     let workspace = decimal(&info.bootstrap.workspace_id)?;
@@ -198,13 +181,13 @@ pub(crate) fn bind_local(
     {
         return Err("local delivery descriptor scope or lifetime mismatch".into());
     }
-    let original = encode(&proof, 8192, &budget)?;
+    let original = encode(&proof, 8192)?;
     let bound = crate::identity::bind(material, challenge, raw)?;
-    let held = ChargedBytes::copy(&bound, &budget)?;
+    let held = bound;
     let context = LocalContext {
-        material_digest: canonical_item_digest(&held.bytes),
+        material_digest: canonical_item_digest(&held),
         raw_digest: canonical_item_digest(raw.as_bytes()),
-        request_digest: canonical_item_digest(&original.bytes),
+        request_digest: canonical_item_digest(&original),
         nonce: verified.nonce,
         root: verified.root_public_key,
         device: verified.device_public_key,
@@ -215,8 +198,6 @@ pub(crate) fn bind_local(
         expires: verified.expires_at_ns.min(pin.metadata.expires_at_ns),
         consumed: Cell::new(false),
         cancel: OnboardingCancel::new(),
-        budget,
-        _metadata: metadata,
     };
     Ok(BoundLocal {
         material: held,
@@ -252,7 +233,7 @@ struct Extracted {
     reply: GovernanceReply,
     manifest: bool,
 }
-fn extract(raw: &str, budget: &IncomingBudget) -> Result<Extracted, String> {
+fn extract(raw: &str) -> Result<Extracted, String> {
     let mut shape = Shape::default();
     scan(raw, &mut shape, None)?;
     if shape.generation.is_none()
@@ -266,18 +247,14 @@ fn extract(raw: &str, budget: &IncomingBudget) -> Result<Extracted, String> {
     {
         return Err("missing or ambiguous local governance fields".into());
     }
-    let metadata = budget.reserve(
-        shape
-            .count
-            .checked_mul(std::mem::size_of::<Range<usize>>() + std::mem::size_of::<Retention>())
-            .ok_or("governance metadata overflow")?,
-    )?;
+    // The scan bounds `total` and `count` by the wire limits.
     let mut reply = GovernanceReply {
-        bytes: ChargedBytes::zeroed(shape.total, budget)?,
+        bytes: zeroed(shape.total)?,
         ranges: Vec::new(),
         kinds: Vec::new(),
-        generation: shape.generation.unwrap(),
-        _metadata: metadata,
+        generation: shape
+            .generation
+            .ok_or("missing local governance generation")?,
     };
     reply
         .ranges
@@ -287,9 +264,6 @@ fn extract(raw: &str, budget: &IncomingBudget) -> Result<Extracted, String> {
         .kinds
         .try_reserve_exact(shape.count)
         .map_err(|_| "governance allocation unavailable")?;
-    if reply.ranges.capacity() > shape.count || reply.kinds.capacity() > shape.count {
-        return Err("governance metadata exceeds credit".into());
-    }
     let mut second = Shape::default();
     scan(raw, &mut second, Some(&mut reply))?;
     Ok(Extracted {
@@ -450,7 +424,6 @@ impl<'de> Visitor<'de> for Bytes<'_> {
             }
             if let Some(out) = self.output.as_deref_mut() {
                 *out.bytes
-                    .bytes
                     .get_mut(self.shape.total)
                     .ok_or_else(|| A::Error::custom("changed byte count"))? = byte;
             }
@@ -489,23 +462,13 @@ impl<'de> Visitor<'de> for Kinds<'_> {
 }
 
 impl GovernanceReply {
-    pub(super) fn bundle(
-        bytes: ChargedBytes,
-        generation: u64,
-        budget: &IncomingBudget,
-    ) -> Result<Self, String> {
+    pub(super) fn bundle(bytes: Vec<u8>, generation: u64) -> Result<Self, String> {
         if generation == 0 {
             return Err("invalid governance generation".into());
         }
-        let _decode = budget.reserve(
-            3 * wire::MAX_GOVERNANCE_ITEMS * std::mem::size_of::<wire::GovernanceItem<'_>>(),
-        )?;
-        let decoded = wire::GovernanceBundle::decode(&bytes.bytes)
+        let decoded = wire::GovernanceBundle::decode(&bytes)
             .map_err(|_| "invalid canonical governance bundle")?;
         let count = decoded.items.len();
-        let metadata = budget.reserve(
-            count * (std::mem::size_of::<Range<usize>>() + std::mem::size_of::<Retention>()),
-        )?;
         let mut ranges = Vec::new();
         let mut kinds = Vec::new();
         ranges
@@ -514,16 +477,13 @@ impl GovernanceReply {
         kinds
             .try_reserve_exact(count)
             .map_err(|_| "governance metadata unavailable")?;
-        if ranges.capacity() > count || kinds.capacity() > count {
-            return Err("governance metadata exceeds credit".into());
-        }
         for item in &decoded.items {
             let start = (item.bytes.as_ptr() as usize)
-                .checked_sub(bytes.bytes.as_ptr() as usize)
+                .checked_sub(bytes.as_ptr() as usize)
                 .ok_or("governance backing mismatch")?;
             let end = start
                 .checked_add(item.bytes.len())
-                .filter(|end| *end <= bytes.bytes.len())
+                .filter(|end| *end <= bytes.len())
                 .ok_or("governance range mismatch")?;
             ranges.push(start..end);
             kinds.push(item.retention);
@@ -534,7 +494,6 @@ impl GovernanceReply {
             ranges,
             kinds,
             generation,
-            _metadata: metadata,
         })
     }
 }
@@ -552,27 +511,20 @@ pub(crate) async fn local_governance(
     };
     live()?;
     context.claim(material, raw, tilo_relay::clock::now_ns())?;
-    let extracted = extract(raw, &context.budget)?;
+    let extracted = extract(raw)?;
     if !extracted.manifest {
         live()?;
         return Ok(extracted.reply);
     }
     let purpose = context.manifest_context();
-    let _decode = context
-        .budget
-        .reserve(3 * wire::MAX_SEGMENTS * std::mem::size_of::<wire::HandoffSegment>())?;
-    let manifest = wire::HandoffManifest::decode(&extracted.reply.bytes.bytes)
+    let manifest = wire::HandoffManifest::decode(&extracted.reply.bytes)
         .map_err(|_| "invalid local manifest")?;
     if manifest.owner_generation != extracted.reply.generation {
         return Err("local governance generation mismatch".into());
     }
     drop(manifest);
-    let transfer = handoff::Handoff::start(
-        &extracted.reply.bytes.bytes,
-        purpose,
-        &context.budget,
-        tilo_relay::clock::now_ns(),
-    )?;
+    let transfer =
+        handoff::Handoff::start(&extracted.reply.bytes, purpose, tilo_relay::clock::now_ns())?;
     let deadline = transfer.expires_at_ns();
     let transfer_live = || {
         live()?;
@@ -586,13 +538,12 @@ pub(crate) async fn local_governance(
         transfer,
         &context.origin,
         &key,
-        &context.budget,
         &context.cancel,
         &transfer_live,
     )
     .await?;
     transfer_live()?;
-    let reply = GovernanceReply::bundle(bytes, extracted.reply.generation, &context.budget)?;
+    let reply = GovernanceReply::bundle(bytes, extracted.reply.generation)?;
     transfer_live()?;
     Ok(reply)
 }
@@ -602,8 +553,6 @@ mod validation_tests {
     use super::*;
     #[test]
     fn inline_fields_reject_duplicates_unpaired_kinds_and_noncanonical_generation() {
-        let budget = IncomingBudget::new(1024 * 1024).unwrap();
-        let before = budget.available();
         for fields in [
             r#""governance_messages":[[1]],"governance_messages":[[1]],"governance_retention":["Checkpoint"],"governance_generation":"1""#,
             r#""governance_messages":[[1]],"governance_retention":[],"governance_generation":"1""#,
@@ -611,8 +560,7 @@ mod validation_tests {
             r#""governance_messages":[[256]],"governance_retention":["Checkpoint"],"governance_generation":"1""#,
             r#""governance_handoff":[1],"governance_messages":[[1]],"governance_retention":["Checkpoint"],"governance_generation":"1""#,
         ] {
-            assert!(extract(&format!("{{\"bootstrap\":{{{fields}}}}}"), &budget).is_err());
-            assert_eq!(budget.available(), before);
+            assert!(extract(&format!("{{\"bootstrap\":{{{fields}}}}}")).is_err());
         }
         let cancel = OnboardingCancel::new();
         cancel.cancel();

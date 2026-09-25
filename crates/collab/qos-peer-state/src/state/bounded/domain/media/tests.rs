@@ -2,16 +2,11 @@ use super::*;
 use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
-use crate::PeerRegistry;
-use crate::PeerWork;
 use crate::SeedDocument;
 use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::room::media::{self as policy, read::PolicyValue};
-use automerge::resource_limits::NativeAllowance;
-use automerge::resource_limits::NativeResourceError;
 use automerge::{ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::RevocationList;
@@ -20,7 +15,7 @@ fn fixture() -> (StatePeer, SystemTime) {
     let (peer, _, now) = backend::restore::tests::media_fixture();
     (peer, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> BoundedStatePeer {
+fn restore(peer: &StatePeer, now: SystemTime) -> BoundedStatePeer {
     BoundedStatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
@@ -28,28 +23,21 @@ fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> Bounde
         &[],
         &RevocationList::new(),
         now,
-        work,
+        &PeerLimits::default(),
     )
     .unwrap()
 }
 #[test]
 fn cached_call_matches_actual_signed_complete_policy_and_current_member() {
     let (peer, now) = fixture();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let read = native.read(&work).unwrap();
+    let native = restore(&peer, now);
+    let read = native.read();
     let policy = peer.validated_media_policy().unwrap().unwrap();
     let call_id = hex::encode([7; 32]);
-    let call = assert_precharged(&current, || {
-        read.media_call(peer.authority().device_public_key, &call_id, now)
-    })
-    .unwrap()
-    .expect("actual active call");
+    let call = read
+        .media_call(peer.authority().device_public_key, &call_id, now)
+        .unwrap()
+        .expect("actual active call");
     assert_eq!(call.epoch(), policy.calls[&[7; 32]].epoch);
     assert_eq!(call.authorization_revision(), policy.authorization_revision);
     assert!(call.publish() && call.subscribe());
@@ -64,59 +52,20 @@ fn cached_call_matches_actual_signed_complete_policy_and_current_member() {
     );
 }
 #[test]
-fn cached_policy_keeps_original_credit_and_new_call_work_uses_current_turn() {
+fn cached_call_reuses_restored_readiness_without_rechecking_bindings() {
     let (peer, now) = fixture();
-    let resident = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let baseline = resident.retained_bytes();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let native = {
-        let mut turn = registry
-            .begin_turn(resident.clone(), PeerLimits::default())
-            .unwrap();
-        restore(&peer, now, &mut turn.work().unwrap())
-    };
-    let retained = resident.retained_bytes();
-    assert!(retained > 0);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    {
-        let mut limits = PeerLimits::default();
-        limits.policy.allocation_bytes = 0;
-        let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
-        let work = turn.work().unwrap();
-        let read = native.read(&work).unwrap();
-        let call_id = hex::encode([7; 32]);
-        let before = current.retained_bytes();
-        let bindings_before = backend::media::binding_checks();
+    let native = restore(&peer, now);
+    let read = native.read();
+    let call_id = hex::encode([7; 32]);
+    let bindings_before = backend::media::binding_checks();
+    for _ in 0..3 {
         assert!(
-            assert_precharged(&current, || read.media_call(
-                peer.authority().device_public_key,
-                &call_id,
-                now
-            ))
-            .unwrap()
-            .is_some()
+            read.media_call(peer.authority().device_public_key, &call_id, now)
+                .unwrap()
+                .is_some()
         );
-        assert_eq!(current.retained_bytes(), before);
-        assert_eq!(resident.retained_bytes(), retained);
-        for _ in 0..3 {
-            assert!(
-                read.media_call(peer.authority().device_public_key, &call_id, now)
-                    .unwrap()
-                    .is_some()
-            );
-        }
-        assert_eq!(backend::media::binding_checks(), bindings_before);
-        let all = work.reserve_output(current.available_bytes()).unwrap();
-        assert!(matches!(
-            read.media_call(peer.authority().device_public_key, &call_id, now),
-            Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-        ));
-        drop(all);
     }
-    drop(registry);
-    assert!(resident.retained_bytes() > 0);
-    drop(native);
-    assert_eq!(resident.retained_bytes(), baseline);
+    assert_eq!(backend::media::binding_checks(), bindings_before);
 }
 
 fn publish_policy(
@@ -185,29 +134,10 @@ fn cache_preserves_disabled_missing_encrypted_and_independent_revocation_cases()
             }
         }
         assert!(peer.validated_media_policy().ok().flatten().is_none());
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        let bytes = peer.durable().unwrap();
-        let native = assert_precharged(&current, || {
-            BoundedStatePeer::restore(
-                &bytes,
-                peer.room(),
-                peer.authority(),
-                &[],
-                &RevocationList::new(),
-                now,
-                &mut work,
-            )
-        })
-        .unwrap();
+        let native = restore(&peer, now);
         assert!(
             native
-                .read(&work)
-                .unwrap()
+                .read()
                 .media_call(
                     peer.authority().device_public_key,
                     &hex::encode([7; 32]),
@@ -239,14 +169,8 @@ fn actual_published_denial_and_ended_call_match_legacy_epoch_and_directions() {
             }
         });
         let legacy = peer.validated_media_policy().unwrap().unwrap();
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        let native = restore(&peer, now, &mut work);
-        let view = native.read(&work).unwrap();
+        let native = restore(&peer, now);
+        let view = native.read();
         let actual = view
             .media_call(
                 peer.authority().device_public_key,
@@ -264,15 +188,9 @@ fn actual_published_denial_and_ended_call_match_legacy_epoch_and_directions() {
     }
 }
 #[test]
-fn cache_basis_resource_failure_is_not_downgraded_to_unavailable() {
+fn cache_basis_capacity_failure_is_not_downgraded_to_unavailable() {
     let (peer, now) = fixture();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let mut native = restore(&peer, now, &mut work);
+    let mut native = restore(&peer, now);
     let backend::media::Cache::Ready(held) =
         std::mem::replace(&mut native.media, backend::media::Cache::Disabled)
     else {
@@ -281,19 +199,21 @@ fn cache_basis_resource_failure_is_not_downgraded_to_unavailable() {
     assert_eq!(held.policy().authorization_revision, 1);
     let encoded = policy::encode(held.policy()).unwrap();
     drop(held);
-    work.limits.governance_collection_bytes = 0;
+    let limits = PeerLimits {
+        governance_collection_bytes: 0,
+        ..PeerLimits::default()
+    };
+    let held = {
+        use policy::read::{BoundedDecode, PolicyDecode};
+        BoundedDecode {
+            limits: limits.policy,
+        }
+        .decode(&encoded)
+        .unwrap()
+    };
     assert!(matches!(
-        assert_precharged(&current, || {
-            use policy::read::{BoundedDecode, PolicyDecode};
-            let held = BoundedDecode {
-                turn: work.turn,
-                limits: work.limits.policy,
-            }
-            .decode(&encoded)
-            .unwrap();
-            backend::media::cache(&native.core, Some(held), &work)
-        }),
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
+        backend::media::cache(&native.core, Some(held), &limits),
+        Err(BoundedPeerError::Capacity)
     ));
 }
 
@@ -359,17 +279,11 @@ fn expiring_fixture(host_expires: bool) -> (StatePeer, [u8; 32], SystemTime) {
     (peer, participant.device_public_key, now)
 }
 #[test]
-fn cached_call_rechecks_real_expiring_host_and_participant_and_current_turn() {
+fn cached_call_rechecks_real_expiring_host_and_participant() {
     for host_expires in [false, true] {
         let (peer, participant, now) = expiring_fixture(host_expires);
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        let native = restore(&peer, now, &mut work);
-        let read = native.read(&work).unwrap();
+        let native = restore(&peer, now);
+        let read = native.read();
         let call_id = hex::encode([7; 32]);
         assert!(
             read.media_call(participant, &call_id, now)
@@ -392,12 +306,10 @@ fn cached_call_rechecks_real_expiring_host_and_participant_and_current_turn() {
             .is_err()
         );
         assert!(read.media_call(participant, &call_id, later).is_err());
-        let mut foreign = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut foreign_turn = foreign
-            .begin_turn(NativeAllowance::new(4096).unwrap(), PeerLimits::default())
-            .unwrap();
-        assert!(native.read(&foreign_turn.work().unwrap()).is_err());
-        current.finish_turn();
-        assert!(read.media_call(participant, &call_id, now).is_err());
+        assert!(
+            read.media_call(participant, &call_id, now)
+                .unwrap()
+                .is_some()
+        );
     }
 }

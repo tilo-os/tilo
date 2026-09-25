@@ -3,13 +3,8 @@ use crate::BoundedPeerInvalid;
 use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
-use crate::PeerRegistry;
-use crate::PeerWork;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::NativeAllowance;
-use automerge::resource_limits::NativeResourceError;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
 use tilo_user_identity::RevocationList;
@@ -60,7 +55,7 @@ fn fixture(nonpersistent: bool) -> (StatePeer, SystemTime) {
     .unwrap();
     (peer, now)
 }
-fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> BoundedStatePeer {
+fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
     BoundedStatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
@@ -68,22 +63,15 @@ fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> Bounde
         &[],
         &RevocationList::new(),
         now,
-        work,
+        limits,
     )
     .unwrap()
 }
 #[test]
 fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
     let (peer, now) = fixture(false);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let read = native.read(&work).unwrap();
-    let basis = assert_precharged(&current, || read.private_policy_basis()).unwrap();
+    let native = restore(&peer, now, &PeerLimits::default());
+    let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(
         basis.revision(),
         crate::owner_commit::governance_revision(&peer).unwrap()
@@ -94,62 +82,13 @@ fn genuine_bounded_peer_private_basis_matches_exact_legacy_revision() {
     assert_eq!(basis.next_expiry_after(8), None);
 }
 #[test]
-fn private_basis_holds_current_credit_after_actual_peer_turn_and_registry_drop() {
-    let (peer, now) = fixture(false);
-    let resident = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let native = {
-        let mut turn = registry
-            .begin_turn(resident.clone(), PeerLimits::default())
-            .unwrap();
-        restore(&peer, now, &mut turn.work().unwrap())
-    };
-    let retained = resident.retained_bytes();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let baseline = current.retained_bytes();
-    let basis = {
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let work = turn.work().unwrap();
-        let read = native.read(&work).unwrap();
-        let basis = assert_precharged(&current, || read.private_policy_basis()).unwrap();
-        assert_eq!(resident.retained_bytes(), retained);
-        let all = work.reserve_output(current.available_bytes()).unwrap();
-        assert!(matches!(
-            read.private_policy_basis(),
-            Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-        ));
-        drop(all);
-        current.finish_turn();
-        assert!(read.private_policy_basis().is_err());
-        basis
-    };
-    drop(native);
-    drop(registry);
-    assert!(current.retained_bytes() > baseline);
-    assert_eq!(basis.next_expiry_after(7), Some(8));
-    drop(basis);
-    assert_eq!(current.retained_bytes(), baseline);
-}
-#[test]
-fn actual_private_basis_rejects_nonpersistent_governed_caps_and_foreign_domain() {
+fn actual_private_basis_rejects_nonpersistent_governed_caps() {
     let (peer, now) = fixture(true);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry.begin_turn(current, PeerLimits::default()).unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let read = native.read(&work).unwrap();
+    let native = restore(&peer, now, &PeerLimits::default());
     assert!(matches!(
-        read.private_policy_basis(),
+        native.read().private_policy_basis(),
         Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
     ));
-    let mut other = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut other_turn = other
-        .begin_turn(NativeAllowance::new(4096).unwrap(), PeerLimits::default())
-        .unwrap();
-    assert!(native.read(&other_turn.work().unwrap()).is_err());
 }
 
 #[test]
@@ -202,17 +141,8 @@ fn private_basis_uses_actual_signed_roster_and_verified_sorted_revocation_union(
     assert_ne!(expected, original);
     assert_eq!(peer.certificates().len(), 4);
     assert_eq!(peer.revocations().len(), 2);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let basis = assert_precharged(&current, || {
-        native.read(&work).unwrap().private_policy_basis()
-    })
-    .unwrap();
+    let native = restore(&peer, now, &PeerLimits::default());
+    let basis = native.read().private_policy_basis().unwrap();
     assert_eq!(basis.revision(), expected);
 }
 
@@ -227,49 +157,24 @@ fn private_basis_missing_room_and_closed_decode_limits_preserve_typed_refusals()
         now,
     )
     .unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let (native, empty) = {
-        let mut turn = registry
-            .begin_turn(
-                NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-                PeerLimits::default(),
-            )
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        (
-            restore(&source, now, &mut work),
-            restore(&empty, now, &mut work),
-        )
-    };
     for decode in [false, true] {
-        let current = NativeAllowance::new(8 * 1024 * 1024).unwrap();
         let mut limits = PeerLimits::default();
         if decode {
             limits.governance_json.allocation_bytes = 1;
         } else {
             limits.governance_collection_bytes = 1;
         }
-        let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
-        let work = turn.work().unwrap();
+        let empty = restore(&empty, now, &limits);
         assert!(matches!(
-            assert_precharged(&current, || empty
-                .read(&work)
-                .unwrap()
-                .private_policy_basis()),
+            empty.read().private_policy_basis(),
             Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))
         ));
-        let baseline = current.retained_bytes();
-        let result = assert_precharged(&current, || {
-            native.read(&work).unwrap().private_policy_basis()
-        });
+        let native = restore(&source, now, &limits);
+        let result = native.read().private_policy_basis();
         if decode {
             assert!(matches!(result, Err(BoundedPeerError::Decode(_))));
         } else {
-            assert!(matches!(
-                result,
-                Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-            ));
+            assert!(matches!(result, Err(BoundedPeerError::Capacity)));
         }
-        assert_eq!(current.retained_bytes(), baseline);
     }
 }

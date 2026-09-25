@@ -1,6 +1,8 @@
 //! `OpenApp`: open an application without holding a desktop layout (an agent,
 //! the command palette). The owner places it and creates the checked record
 //! through the same factory as a person's OpenTab.
+tilo_automerge_isolate::test_worker!();
+
 use qos_peer_state::{desktop_command::*, owner_commit::*};
 use qos_session_peer::SessionOwner;
 

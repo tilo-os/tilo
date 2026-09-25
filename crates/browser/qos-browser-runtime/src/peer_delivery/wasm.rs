@@ -21,8 +21,8 @@ use tilo_relay::peer_actions::{ActionMessage, DirectedAction};
 #[path = "wasm_transfer.rs"]
 mod transfers;
 
-/// Retained request handles (each reserves its bounded response backing:
-/// 10 x ~4 MiB of the Peer's 64 MiB incoming budget).
+/// Retained request handles; each response is bounded to ~4 MiB by the
+/// carrier, so at most 10 responses are outstanding at once.
 const MAX_PENDING_REQUESTS: usize = 10;
 /// Handles a new inline state request leaves free: a held poll and one ACK or
 /// private action (the private poll is usually already held).
@@ -33,7 +33,6 @@ pub(super) struct DeliveryState {
     descriptor: Option<peer_delivery_auth::VerifiedBootstrap>,
     pub(super) authority: Option<Rc<RefCell<DeliveryAuthority>>>,
     pending: BTreeMap<u32, Pending>,
-    incoming: BTreeMap<u32, automerge::resource_limits::NativeReservation>,
     next: u32,
     actions: VecDeque<DirectedAction>,
     pub(super) broker: Option<uuid::Uuid>,
@@ -134,33 +133,19 @@ impl DeliveryState {
         self.transfer = None;
         self.recovery = Default::default();
     }
-    fn retain(
-        &mut self,
-        pending: Pending,
-        budget: &crate::peer_delivery::incoming::IncomingBudget,
-    ) -> Result<u32, String> {
-        if self.pending.len() >= MAX_PENDING_REQUESTS || self.incoming.len() >= MAX_PENDING_REQUESTS
-        {
+    fn retain(&mut self, pending: Pending) -> Result<u32, String> {
+        if self.pending.len() >= MAX_PENDING_REQUESTS {
             return Err("delivery request capacity exceeded".into());
         }
-        // Reserve before JS fetch allocation: response backing, returned JS copy,
-        // WASM copy and one bounded wire DTO overlap. Retain through raw completion.
-        let credit = budget.reserve(4 * 1048576 + 8192)?;
         self.next = self
             .next
             .checked_add(1)
             .ok_or("delivery request handles exhausted")?;
         self.pending.insert(self.next, pending);
-        self.incoming.insert(self.next, credit);
         Ok(self.next)
     }
-    fn wrap(
-        &mut self,
-        request: PreparedRequest,
-        pending: Pending,
-        budget: &crate::peer_delivery::incoming::IncomingBudget,
-    ) -> Result<String, String> {
-        let id = self.retain(pending, budget)?;
+    fn wrap(&mut self, request: PreparedRequest, pending: Pending) -> Result<String, String> {
+        let id = self.retain(pending)?;
         Ok(serde_json::json!({"kind":"request","id":id,"method":"POST","origin":request.origin,"target":request.target,"body":request.body,"proof":request.proof}).to_string())
     }
 }
@@ -257,7 +242,7 @@ pub fn peer_delivery_begin(id: u32) -> Result<String, JsValue> {
             return Err("delivery setup already pending".into());
         }
         delivery.bootstrap = Some(bootstrap);
-        delivery.wrap(request, Pending::Bootstrap, &peer.incoming)
+        delivery.wrap(request, Pending::Bootstrap)
     })
 }
 #[wasm_bindgen]
@@ -333,7 +318,7 @@ pub fn peer_delivery_resume(id: u32) -> Result<String, JsValue> {
         let inner = request.id;
         let mut delivery = peer.delivery.borrow_mut();
         delivery.authority = Some(authority);
-        delivery.wrap(request, Pending::Http(inner), &peer.incoming)
+        delivery.wrap(request, Pending::Http(inner))
     })
 }
 fn request(
@@ -348,11 +333,7 @@ fn request(
         authority.borrow().prove(view, method, &target, &body)
     })?;
     let origin = authority.borrow().descriptor.origin().to_owned();
-    let id = peer
-        .delivery
-        .borrow_mut()
-        .retain(pending, &peer.incoming)
-        .map_err(error)?;
+    let id = peer.delivery.borrow_mut().retain(pending).map_err(error)?;
     Ok(serde_json::json!({"kind":"request","id":id,"method":method,"origin":origin,"target":target,"body":body,"proof":proof}).to_string())
 }
 fn framed(kind: MessageType, payload: &[u8]) -> Result<Vec<u8>, String> {
@@ -439,7 +420,6 @@ pub fn peer_delivery_discard_session(id: u32) {
 #[wasm_bindgen]
 pub fn peer_delivery_forget(id: u32, request: u32) {
     if let Ok(peer) = owner(id) {
-        peer.delivery.borrow_mut().incoming.remove(&request);
         let pending = peer.delivery.borrow_mut().pending.remove(&request);
         if let Some(Pending::Http(inner)) = pending
             && let Some(authority) = &peer.delivery.borrow().authority
@@ -489,7 +469,6 @@ pub fn peer_delivery_retry(id: u32, request: u32) -> bool {
             return false;
         };
         if transfers::requeue(&mut delivery, &pending) {
-            delivery.incoming.remove(&request);
             return true;
         }
         delivery.pending.insert(request, pending);
@@ -509,7 +488,6 @@ pub fn peer_delivery_retry(id: u32, request: u32) -> bool {
     if !read_only {
         return false;
     }
-    delivery.incoming.remove(&request);
     if let Some(Pending::Private { action, .. }) = delivery.pending.remove(&request) {
         delivery.actions.push_front(action);
         return true;
@@ -845,7 +823,7 @@ pub fn peer_delivery_advance(
                     let inner = request.id;
                     peer.delivery
                         .borrow_mut()
-                        .wrap(request, Pending::Http(inner), &peer.incoming)
+                        .wrap(request, Pending::Http(inner))
                         .map_err(error)
                 }
             }
@@ -1096,7 +1074,6 @@ fn poll_page(peer: &Rc<Peer>, epoch: u64, bytes: Vec<u8>) -> Result<String, JsVa
     let contents = crate::peer_delivery::collect_page(
         &identity(&peer),
         peer.transport_generation.get(),
-        &peer.incoming,
         &bytes,
         bounds,
     )
@@ -1290,12 +1267,7 @@ fn install_cuts(peer: &Rc<Peer>, cuts: Vec<ReplayCut>) -> Result<String, JsValue
     let basis = super::live_api::take_durable_basis(peer);
     let candidate = {
         let current = peer.state.borrow();
-        admission::admit_cuts(
-            basis.as_ref().unwrap_or(&*current),
-            cuts,
-            &peer.incoming,
-            now,
-        )
+        admission::admit_cuts(basis.as_ref().unwrap_or(&*current), cuts, now)
     };
     let result = candidate.map_err(error).and_then(|(candidate, cursor, _)| {
         let Some(durable) = basis.as_ref() else {

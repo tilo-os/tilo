@@ -1,3 +1,5 @@
+tilo_automerge_isolate::test_worker!();
+
 use qos_session_peer::SessionOwner;
 use std::{fs, process::Command};
 use tilo_automerge::ApplyIncoming as _;

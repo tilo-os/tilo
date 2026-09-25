@@ -1,9 +1,6 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::NativeAllowance;
 use crate::resources::native::{NativeBatch, NativeDocument};
 use crate::room::read::LegacyRead;
-use automerge::resource_limits::NativeAllocationSet;
 use automerge::{AutoCommit, ROOT, ScalarValue, transaction::Transactable};
 
 fn limits() -> OuterLimits {
@@ -47,30 +44,18 @@ fn stored_v2(version: DocumentWireVersion) -> (AutoCommit, Vec<u8>) {
     assert!(crate::governed_routes::legacy_bytes(&room, super::super::LAYOUT).is_none());
     (room, snapshot)
 }
-fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let registry = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = registry.work_turn(allowance.clone()).unwrap();
-    (allowance, registry, turn)
-}
-fn native(
-    room: &mut AutoCommit,
-    registry: &mut NativeAllocationSet,
-    turn: &NativeWorkTurn,
-) -> NativeDocument {
-    NativeBatch::new(registry, turn, 8 * 1024 * 1024)
-        .unwrap()
+fn native(room: &mut AutoCommit) -> NativeDocument {
+    NativeBatch::new(8 * 1024 * 1024)
         .load(&room.save())
         .unwrap()
 }
 
 #[test]
-fn coverage_reader_resolves_all_actual_document_wire_versions_with_retained_native_work() {
+fn coverage_reader_resolves_all_actual_document_wire_versions() {
     for version in DocumentWireVersion::ALL {
         let (mut room, snapshot) = stored(version);
-        let (allowance, mut registry, turn) = context();
-        let native = native(&mut room, &mut registry, &turn);
-        let read = native.read(&turn).unwrap();
+        let native = native(&mut room);
+        let read = native.read();
         let legacy = snapshot_wire_version(
             Some(&LegacyRead(&room)),
             "test.app",
@@ -79,18 +64,13 @@ fn coverage_reader_resolves_all_actual_document_wire_versions_with_retained_nati
             &LegacyCoverage,
         )
         .unwrap();
-        let bounded = assert_precharged(&allowance, || {
-            snapshot_wire_version(
-                Some(&read),
-                "test.app",
-                "tab:1",
-                Some(&snapshot),
-                &BoundedCoverage {
-                    turn: &turn,
-                    limits: limits(),
-                },
-            )
-        })
+        let bounded = snapshot_wire_version(
+            Some(&read),
+            "test.app",
+            "tab:1",
+            Some(&snapshot),
+            &BoundedCoverage { limits: limits() },
+        )
         .unwrap();
         assert_eq!(legacy, Some(version));
         assert_eq!(bounded, legacy);
@@ -100,7 +80,6 @@ fn coverage_reader_resolves_all_actual_document_wire_versions_with_retained_nati
 #[test]
 fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint_semantics() {
     let (mut room, snapshot) = stored(DocumentWireVersion::CURRENT);
-    let (allowance, mut registry, turn) = context();
     for mode in 0..4 {
         match mode {
             0 => {
@@ -118,8 +97,8 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
             }
         }
         room.commit();
-        let native = native(&mut room, &mut registry, &turn);
-        let read = native.read(&turn).unwrap();
+        let native = native(&mut room);
+        let read = native.read();
         let payload = if mode == 3 {
             b"different snapshot".as_slice()
         } else {
@@ -132,18 +111,13 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
             Some(payload),
             &LegacyCoverage,
         );
-        let bounded = assert_precharged(&allowance, || {
-            snapshot_wire_version(
-                Some(&read),
-                "test.app",
-                "tab:1",
-                Some(payload),
-                &BoundedCoverage {
-                    turn: &turn,
-                    limits: limits(),
-                },
-            )
-        });
+        let bounded = snapshot_wire_version(
+            Some(&read),
+            "test.app",
+            "tab:1",
+            Some(payload),
+            &BoundedCoverage { limits: limits() },
+        );
         match mode {
             0 => {
                 assert_eq!(legacy, Ok(None));
@@ -167,34 +141,20 @@ fn coverage_reader_preserves_absence_wrong_shape_decode_and_unmatched_checkpoint
 #[test]
 fn coverage_reader_keeps_genuine_capacity_denial_and_does_not_decode_when_checkpoint_absent() {
     let (mut room, snapshot) = stored(DocumentWireVersion::CURRENT);
-    let (allowance, mut registry, turn) = context();
-    let native = native(&mut room, &mut registry, &turn);
-    let read = native.read(&turn).unwrap();
+    let native = native(&mut room);
+    let read = native.read();
     let decoder = BoundedCoverage {
-        turn: &turn,
         limits: OuterLimits {
             allocation_bytes: 16,
             ..limits()
         },
     };
     assert_eq!(
-        assert_precharged(&allowance, || snapshot_wire_version(
-            Some(&read),
-            "test.app",
-            "tab:1",
-            None,
-            &decoder
-        )),
+        snapshot_wire_version(Some(&read), "test.app", "tab:1", None, &decoder),
         Ok(None)
     );
     assert!(matches!(
-        assert_precharged(&allowance, || snapshot_wire_version(
-            Some(&read),
-            "test.app",
-            "tab:1",
-            Some(&snapshot),
-            &decoder
-        )),
+        snapshot_wire_version(Some(&read), "test.app", "tab:1", Some(&snapshot), &decoder),
         Err(WireVersionError::Decode(PeerResourceError::Capacity))
     ));
     assert_eq!(
@@ -221,9 +181,8 @@ fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compati
         !super::super::entries(&room).unwrap().is_empty(),
         "literal legacy prefix semantics"
     );
-    let (allowance, mut registry, turn) = context();
-    let native = native(&mut room, &mut registry, &turn);
-    let read = native.read(&turn).unwrap();
+    let native = native(&mut room);
+    let read = native.read();
     assert_eq!(
         snapshot_wire_version(
             Some(&LegacyRead(&room)),
@@ -236,16 +195,13 @@ fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compati
         Some(DocumentWireVersion::QosV1)
     );
     assert_eq!(
-        assert_precharged(&allowance, || snapshot_wire_version(
+        snapshot_wire_version(
             Some(&read),
             "test.app",
             "tab:1",
             Some(&snapshot),
-            &BoundedCoverage {
-                turn: &turn,
-                limits: limits()
-            }
-        ))
+            &BoundedCoverage { limits: limits() }
+        )
         .unwrap(),
         Some(DocumentWireVersion::QosV1)
     );
@@ -257,7 +213,7 @@ fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compati
     encoded.push(0);
     assert!(
         matches!(
-            crate::resources::BoundedPeerMessage::decode(&encoded, limits(), &allowance),
+            crate::resources::BoundedPeerMessage::decode(&encoded, limits()),
             Err(PeerResourceError::Malformed)
         ),
         "ordinary messages stay strict"
@@ -268,9 +224,8 @@ fn coverage_reader_preserves_only_this_historical_fields_trailing_suffix_compati
 fn coverage_reader_prefers_v2_route_and_matches_bounded_reads() {
     for version in DocumentWireVersion::ALL {
         let (mut room, snapshot) = stored_v2(version);
-        let (allowance, mut registry, turn) = context();
-        let native = native(&mut room, &mut registry, &turn);
-        let read = native.read(&turn).unwrap();
+        let native = native(&mut room);
+        let read = native.read();
         let legacy = snapshot_wire_version(
             Some(&LegacyRead(&room)),
             "test.app",
@@ -278,18 +233,13 @@ fn coverage_reader_prefers_v2_route_and_matches_bounded_reads() {
             Some(&snapshot),
             &LegacyCoverage,
         );
-        let bounded = assert_precharged(&allowance, || {
-            snapshot_wire_version(
-                Some(&read),
-                "test.app",
-                "tab:1",
-                Some(&snapshot),
-                &BoundedCoverage {
-                    turn: &turn,
-                    limits: limits(),
-                },
-            )
-        });
+        let bounded = snapshot_wire_version(
+            Some(&read),
+            "test.app",
+            "tab:1",
+            Some(&snapshot),
+            &BoundedCoverage { limits: limits() },
+        );
         assert_eq!(legacy, Ok(Some(version)));
         assert!(matches!(bounded, Ok(Some(found)) if found == version));
         assert_eq!(

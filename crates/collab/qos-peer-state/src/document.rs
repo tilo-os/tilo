@@ -1,4 +1,4 @@
-//! Strict shared merge: malformed incremental prefixes never mutate a live owner.
+//! Strict shared merge: a refused mutation never changes a live owner.
 use automerge::{AutoCommit, transaction::Transactable};
 use collab_types::DocumentMutation;
 #[derive(Debug, PartialEq, Eq)]
@@ -13,7 +13,7 @@ pub enum MergeOutcome {
     MissingDependencies,
 }
 
-/// Merge a committed mutation into `doc` through checked admission.
+/// Merge a committed mutation into `doc` through isolated admission.
 ///
 /// # Errors
 ///
@@ -28,50 +28,22 @@ pub fn merge_committed(
     }
 }
 
-/// Ceilings for one remote document mutation. They bound parse, semantic
-/// validation and batch work; realistic long-lived documents fit well within.
-pub fn incoming_document_limits() -> automerge::resource_limits::NativeLimits {
-    automerge::resource_limits::NativeLimits {
-        max_normalized_bytes: 48 * 1024 * 1024,
-        max_operations: 4 * 1024 * 1024,
-        max_operation_counter: u64::from(u32::MAX),
-        max_changes: 1024 * 1024,
-        max_edges: 16 * 1024 * 1024,
-        max_actors: 65_536,
-        max_heads: 65_536,
-        max_columns: 128,
-        max_chunks: 65_536,
-        max_value_bytes: 48 * 1024 * 1024,
-    }
-}
-const INCOMING_WORK_BYTES: usize = 64 * 1024 * 1024;
-
 pub(crate) fn merge_committed_with_status(
     doc: &mut AutoCommit,
     mutation: &DocumentMutation,
 ) -> Result<MergeOutcome, MergeError> {
-    use automerge::resource_limits::{
-        NativeAllowance, NativeDependencyPolicy, NativeIncomingOutcome, NativeMutationError,
-    };
+    use tilo_automerge_isolate::{Applied, Dependencies};
     if doc.pending_ops() != 0 {
         return Err(MergeError::Busy);
     }
     let bytes = match mutation {
         DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
     };
-    let allowance = NativeAllowance::new(INCOMING_WORK_BYTES)
-        .map_err(|e| MergeError::Invalid(e.to_string()))?;
-    // Inspected, fully validated against this document, then applied; any
-    // refusal leaves the live document untouched.
-    match doc.apply_incoming_checked(
-        bytes,
-        &incoming_document_limits(),
-        &allowance,
-        NativeDependencyPolicy::RequireComplete,
-    ) {
-        Ok(NativeIncomingOutcome::Applied { changed }) => Ok(MergeOutcome::Changed(changed)),
-        Ok(NativeIncomingOutcome::MissingDependencies) => Ok(MergeOutcome::MissingDependencies),
-        Err(NativeMutationError::Busy) => Err(MergeError::Busy),
+    // Decoded and applied in an isolated worker first; any refusal leaves the
+    // live document untouched.
+    match tilo_automerge_isolate::apply(doc, bytes, Dependencies::RequireComplete) {
+        Ok(Applied::Changed(changed)) => Ok(MergeOutcome::Changed(changed)),
+        Ok(Applied::MissingDependencies) => Ok(MergeOutcome::MissingDependencies),
         Err(error) => Err(MergeError::Invalid(error.to_string())),
     }
 }

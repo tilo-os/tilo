@@ -1,10 +1,6 @@
 use super::*;
 use crate::BoundedStatePeer;
 use crate::PeerLimits;
-use crate::PeerRegistry;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::NativeAllowance;
-use automerge::resource_limits::NativeResourceError;
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{RevocationReason, sign_revocation_entry};
 fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {
@@ -19,7 +15,7 @@ fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {
     entry
 }
 #[test]
-fn retained_enrollment_revocations_matches_verified_union_and_outlives_inputs_turn_registry() {
+fn retained_enrollment_revocations_matches_verified_union_and_outlives_inputs() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let other = SigningKey::from_bytes(&[7; 32]);
     let mut entries = (0u8..80)
@@ -31,14 +27,7 @@ fn retained_enrollment_revocations_matches_verified_union_and_outlives_inputs_tu
     for entry in &entries {
         expected.insert(entry.clone()).unwrap();
     }
-    let current = NativeAllowance::new(1024 * 1024).unwrap();
-    let baseline = current.retained_bytes();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let work = turn.work().unwrap();
-    let retained = assert_precharged(&current, || work.verified_revocations(&entries)).unwrap();
+    let retained = PeerRevocations::verified(&entries).unwrap();
     assert_eq!(retained.list().len(), expected.len());
     for row in expected.iter() {
         assert_eq!(
@@ -51,53 +40,20 @@ fn retained_enrollment_revocations_matches_verified_union_and_outlives_inputs_tu
     }
     drop(entries);
     drop(expected);
-    drop(turn);
-    drop(registry);
     assert_eq!(retained.list().len(), 80);
-    assert!(current.retained_bytes() > baseline);
-    drop(retained);
-    assert_eq!(current.retained_bytes(), baseline);
 }
 #[test]
-fn retained_enrollment_revocations_checks_duplicate_signatures_and_exact_preallocation_limit() {
+fn retained_enrollment_revocations_checks_duplicate_signatures() {
     let root = SigningKey::from_bytes(&[1; 32]);
     let row = signed([33; 32], 1, &root);
     let mut bad = row.clone();
     bad.signature[0] ^= 1;
-    let current = NativeAllowance::new(65536).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let work = turn.work().unwrap();
-    let baseline = current.retained_bytes();
     assert!(matches!(
-        assert_precharged(&current, || work.verified_revocations(&[row.clone(), bad])),
+        PeerRevocations::verified(&[row.clone(), bad]),
         Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Revocation))
     ));
-    assert_eq!(current.retained_bytes(), baseline);
-    let needed = backend::revocations::insertion_bytes(1).unwrap();
-    let short = work
-        .reserve_output(current.available_bytes() - needed + 1)
-        .unwrap();
-    assert!(matches!(
-        assert_precharged(&current, || work
-            .verified_revocations(std::slice::from_ref(&row))),
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-    ));
-    drop(short);
-    let exact = work
-        .reserve_output(current.available_bytes() - needed)
-        .unwrap();
-    let holder = assert_precharged(&current, || {
-        work.verified_revocations(std::slice::from_ref(&row))
-    })
-    .unwrap();
+    let holder = PeerRevocations::verified(std::slice::from_ref(&row)).unwrap();
     assert_eq!(holder.list().len(), 1);
-    assert_eq!(current.available_bytes(), 0);
-    drop(holder);
-    drop(exact);
-    assert_eq!(current.retained_bytes(), baseline);
 }
 
 #[test]
@@ -106,12 +62,17 @@ fn retained_enrollment_revocations_does_not_bypass_actual_restore_root_or_author
     let bytes = peer.durable().unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
     let other = SigningKey::from_bytes(&[7; 32]);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
+    let restore = |revocations: &RevocationList| {
+        BoundedStatePeer::restore(
+            &bytes,
+            peer.room(),
+            peer.authority(),
+            &[],
+            revocations,
+            now,
+            &PeerLimits::default(),
+        )
+    };
     for (entry, expected) in [
         (
             signed(member.device_public_key, 1, &other),
@@ -122,52 +83,23 @@ fn retained_enrollment_revocations_does_not_bypass_actual_restore_root_or_author
             BoundedPeerInvalid::AuthorityRevoked,
         ),
     ] {
-        let holder = assert_precharged(&current, || work.verified_revocations(&[entry])).unwrap();
+        let holder = PeerRevocations::verified(&[entry]).unwrap();
         assert!(
-            matches!(assert_precharged(&current,||BoundedStatePeer::restore(&bytes,peer.room(),peer.authority(),&[],holder.list(),now,&mut work)),Err(BoundedPeerError::Invalid(actual)) if actual==expected)
+            matches!(restore(holder.list()), Err(BoundedPeerError::Invalid(actual)) if actual == expected)
         );
     }
-    let valid = assert_precharged(&current, || {
-        work.verified_revocations(&[signed([99; 32], 1, &other)])
-    })
-    .unwrap();
-    let restored = assert_precharged(&current, || {
-        BoundedStatePeer::restore(
-            &bytes,
-            peer.room(),
-            peer.authority(),
-            &[],
-            valid.list(),
-            now,
-            &mut work,
-        )
-    })
-    .unwrap();
+    let valid = PeerRevocations::verified(&[signed([99; 32], 1, &other)]).unwrap();
+    let restored = restore(valid.list()).unwrap();
     assert!(restored.core.revocations.list().is_revoked(&[99; 32]));
     assert!(
         restored
-            .read(&work)
-            .unwrap()
+            .read()
             .member(member.device_public_key, now)
             .is_ok()
     );
 }
 #[test]
-fn retained_enrollment_revocations_empty_union_is_allocation_free_but_sealed_turn_refuses() {
-    let current = NativeAllowance::new(4096).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let work = turn.work().unwrap();
-    let exhausted = work.reserve_output(current.available_bytes()).unwrap();
-    let empty = assert_precharged(&current, || work.verified_revocations(&[])).unwrap();
+fn retained_enrollment_revocations_empty_union_is_empty() {
+    let empty = PeerRevocations::verified(&[]).unwrap();
     assert!(empty.list().is_empty());
-    current.finish_turn();
-    assert!(matches!(
-        work.verified_revocations(&[]),
-        Err(BoundedPeerError::Resource(NativeResourceError::WorkBytes))
-    ));
-    drop(empty);
-    drop(exhausted);
 }

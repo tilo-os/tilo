@@ -1,11 +1,10 @@
-//! Immutable payload custody only; never authority, admission, or ACK evidence.
-use super::resources::PayloadBacking;
+//! Immutable payload handles only; never authority, admission, or ACK evidence.
 use super::{CommitError, Digest, PublicationPool};
+use std::sync::Arc;
 
-/// An opaque root of an existing immutable payload allocation.
-/// Resource-aware decoded roots carry their original byte credit with this handle.
-/// Legacy roots still require the embedding owner to retain external custody.
-pub struct PublicationPayload(PayloadBacking);
+/// An opaque root of an existing immutable payload allocation. It keeps the
+/// shared bytes alive after every pool holding them has been dropped.
+pub struct PublicationPayload(Arc<Vec<u8>>);
 impl PublicationPayload {
     /// Lend the exact original payload; no raw Arc or Weak can escape.
     pub fn bytes(&self) -> &[u8] {
@@ -18,20 +17,31 @@ impl PublicationPool {
     ///
     /// # Errors
     ///
-    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
+    /// Returns `CommitError::MissingPayload` if the pool does not hold `id`.
     pub fn retained_allocation_bytes(&self, id: &Digest) -> Result<usize, CommitError> {
         let bytes = self
             .wire
             .payloads
             .get(id)
             .ok_or(CommitError::MissingPayload)?;
-        bytes.retained_allocation_bytes()
+        // ArcInner is two atomic counters followed by the Vec header; the Vec
+        // backing is its full capacity, not only its length.
+        let header = std::alloc::Layout::new::<[usize; 2]>()
+            .extend(std::alloc::Layout::new::<Vec<u8>>())
+            .map_err(|_| CommitError::Quota)?
+            .0
+            .pad_to_align()
+            .size();
+        bytes
+            .capacity()
+            .checked_add(header)
+            .ok_or(CommitError::Quota)
     }
     /// Pin one existing allocation without copying payload or map metadata.
     ///
     /// # Errors
     ///
-    /// Returns `CommitError` if the resource budget refuses the allocation or the input is invalid.
+    /// Returns `CommitError::MissingPayload` if the pool does not hold `id`.
     pub fn pin(&self, id: &Digest) -> Result<PublicationPayload, CommitError> {
         self.wire
             .payloads
@@ -74,7 +84,7 @@ mod tests {
         let mut bytes = Vec::with_capacity(97);
         bytes.extend_from_slice(b"abc");
         assert_eq!(bytes.capacity(), 97);
-        pool.wire.payloads.insert(id, PayloadBacking::legacy(bytes));
+        pool.wire.payloads.insert(id, Arc::new(bytes));
         // ArcInner has two atomic usize counters followed by the three-word Vec.
         // Every supported 64-bit host therefore retains 40 bytes plus capacity.
         let expected = 97 + 5 * size_of::<usize>();

@@ -50,11 +50,12 @@ pub(crate) mod delivery;
 mod exact_startup_replay;
 pub(crate) mod policy_fence;
 pub(crate) use policy_fence::{OwnerPolicyFence, OwnerPolicyRefused};
+#[cfg(test)]
+mod allocation_meter;
 mod media;
-mod native_credit;
 /// Test-only thread-local allocation meter (peak/net requested bytes).
 #[cfg(all(test, feature = "media"))]
-pub(crate) use native_credit::allocations_only;
+pub(crate) use allocation_meter::allocations_only;
 pub(crate) mod resources;
 pub(crate) mod retention;
 mod schema;

@@ -1,23 +1,19 @@
 //! Negative-only custody for an actual SDK mount; no Source or reader authority.
-use super::{NativeReservation, RetirementError, RetirementHandle, RetirementOwner};
+use super::{RetirementHandle, RetirementOwner};
 
-/// Paid negative custody consumed before the real component factory. The supplied
-/// credit is a budget only; the installed owner must separately bind its pool.
+/// Negative custody consumed before the real component factory.
 /// No Live association or semantic reader can be created by this value.
 pub struct MountRetirement {
     owner: RetirementOwner,
     app: Option<RootRetirementPrelude>,
 }
 impl MountRetirement {
-    pub fn new(
-        owner: RetirementOwner,
-        app_credit: NativeReservation,
-    ) -> Result<Self, RetirementError> {
-        let app = RootRetirementPrelude(owner.handle(app_credit)?);
-        Ok(Self {
+    pub fn new(owner: RetirementOwner) -> Self {
+        let app = RootRetirementPrelude(owner.handle());
+        Self {
             owner,
             app: Some(app),
-        })
+        }
     }
     pub(crate) fn retire(&self) {
         self.owner.retire();

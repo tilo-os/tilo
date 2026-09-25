@@ -23,8 +23,7 @@ mod bounded;
 pub use bounded::{
     BoundedPeerError, BoundedPeerInvalid, BoundedStatePeer, PeerDeliveryPolicy,
     PeerDeliveryPolicyError, PeerDocumentRead, PeerDocumentReadError, PeerLimits, PeerMediaCall,
-    PeerMember, PeerPolicyBasis, PeerRead, PeerRegistry, PeerRevocations, PeerRoomAccess, PeerTurn,
-    PeerWork,
+    PeerMember, PeerPolicyBasis, PeerRead, PeerRevocations, PeerRoomAccess,
 };
 #[cfg(test)]
 pub(crate) mod json_resource_tests;
@@ -251,7 +250,7 @@ fn governed_snapshot_wire_version(
     snapshot_wire_version(room.as_ref(), &route.app, &route.record, snapshot, &LegacyCoverage)
         .map_err(|error| match error {
             WireVersionError::Decode(error) => format!("invalid checkpoint coverage: {error}"),
-            WireVersionError::Resource(error) => format!("checkpoint coverage resource refusal: {error:?}"),
+            WireVersionError::Capacity => "checkpoint coverage exceeds its limit".into(),
             WireVersionError::NoMatch => format!(
                 "governed checkpoint for {}/{} does not match a supported document wire version; preserve journal and request a fresh authenticated checkpoint",
                 route.app, route.record
@@ -1953,18 +1952,15 @@ impl StatePeer {
                 return Ok(Self::superseded_checkpoint_report());
             }
             let mut snapshot = AutoCommit::new();
-            match snapshot
-                .apply_incoming_checked(
-                    bytes,
-                    &crate::document::incoming_document_limits(),
-                    &automerge::resource_limits::NativeAllowance::new(64 * 1024 * 1024)
-                        .map_err(err)?,
-                    automerge::resource_limits::NativeDependencyPolicy::RequireComplete,
-                )
-                .map_err(err)?
+            match tilo_automerge_isolate::apply(
+                &mut snapshot,
+                bytes,
+                tilo_automerge_isolate::Dependencies::RequireComplete,
+            )
+            .map_err(err)?
             {
-                automerge::resource_limits::NativeIncomingOutcome::Applied { .. } => {}
-                automerge::resource_limits::NativeIncomingOutcome::MissingDependencies => {
+                tilo_automerge_isolate::Applied::Changed(_) => {}
+                tilo_automerge_isolate::Applied::MissingDependencies => {
                     return Err("retained checkpoint snapshot is incomplete".into());
                 }
             }

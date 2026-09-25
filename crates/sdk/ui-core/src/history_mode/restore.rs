@@ -222,9 +222,10 @@ impl RestoreError {
 /// Prepare exact content restoration without mutating or committing the input.
 ///
 /// Both current and historical content must satisfy the registered schema.
-/// Targets with content conflicts or rich-text blocks are unsupported. All
+/// Targets with content conflicts or rich-text blocks are unsupported, as is
+/// any record whose history created a Table object. All
 /// replayed sequence marks use `ExpandMark::None` for their current ranges.
-/// Whole Map/Table values at map-addressed properties retain their current
+/// Whole Map values at map-addressed properties retain their current
 /// object identities when the current and target kinds match, recursively for
 /// map-addressed descendants. Other changed whole values may be recreated.
 /// Mixed structural ancestors and retained entities keep current identities.
@@ -243,6 +244,7 @@ pub fn prepare_content_restore(
     schema::validate(schema)?;
     require_committed(doc)?;
     let mut source = doc.clone();
+    refuse_tables(&mut source)?;
     let current_heads = sorted_heads(current_heads);
     if committed_heads(doc)? != current_heads {
         return Err(RestoreError::StaleReview);
@@ -337,6 +339,26 @@ fn committed_heads(doc: &AutoCommit) -> Result<Vec<ChangeHash>, RestoreError> {
         return Err(RestoreError::StaleReview);
     }
     Ok(visible)
+}
+
+/// Refuse a record whose history ever created a Table object. Stock automerge
+/// 0.12 cannot address or apply populated Tables (writes fail and applying
+/// such changes can panic), and no Tilo app creates them. The check reads the
+/// encoded history only, so it runs before any fork, merge or re-encoding.
+fn refuse_tables(doc: &mut AutoCommit) -> Result<(), RestoreError> {
+    let creates_table = doc.get_changes(&[]).iter().any(|change| {
+        change
+            .decode()
+            .operations
+            .iter()
+            .any(|op| matches!(op.action, automerge::legacy::OpType::Make(ObjType::Table)))
+    });
+    if creates_table {
+        return Err(RestoreError::UnsupportedContent(
+            "records containing Table objects cannot be restored".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn sorted_heads(heads: &[ChangeHash]) -> Vec<ChangeHash> {

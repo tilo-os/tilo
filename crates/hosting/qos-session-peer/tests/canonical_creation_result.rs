@@ -1,4 +1,6 @@
 //! Real owner retry behavior; no serialized data is treated as a live witness.
+tilo_automerge_isolate::test_worker!();
+
 use qos_peer_state::{desktop_command::*, owner_commit::*};
 use qos_session_peer::SessionOwner;
 

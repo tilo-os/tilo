@@ -7,9 +7,6 @@ const ROOM: &str = "6d3c0042-a32d-4c3d-9616-03e621da0f47";
 const ACCOUNT: &str = "account";
 const MACHINE: &str = "machine";
 
-fn budget() -> IncomingBudget {
-    IncomingBudget::new(64 * 1024 * 1024).unwrap()
-}
 fn time(now: u64) -> web_time::SystemTime {
     web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now)
 }
@@ -72,9 +69,9 @@ fn store_reply(request: &identity::cloud_enrollment::EnrollmentRequest, now: u64
 }
 
 /// Fresh identity through inspect → durable checkpoint → apply → verified reply.
-fn enrolled_owner(budget: &IncomingBudget) -> (CloudOwner, Vec<u8>) {
-    let material = create(ACCOUNT, MACHINE, "Owner browser", budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, budget, NOW).unwrap();
+fn enrolled_owner() -> (CloudOwner, Vec<u8>) {
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     assert!(matches!(owner.step().unwrap(), CloudStep::Inspect));
     let checkpoint = owner.enroll(&json(&fresh_challenge(NOW)), NOW).unwrap();
     owner.acknowledge(&checkpoint, NOW).unwrap();
@@ -134,32 +131,30 @@ fn owner_bootstrap(scope: &EnrolledOwner, admit: bool, now: u64) -> join::OwnerB
 
 #[test]
 fn fresh_owner_material_is_first_claim_custody_with_a_stable_public_binding() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
     let text: serde_json::Value = serde_json::from_slice(&material).unwrap();
     assert_eq!(text["first_claim"], true);
     assert_eq!(text["kind"], "cloud-owner");
-    let owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let public: serde_json::Value = serde_json::from_str(&owner.public().unwrap()).unwrap();
     assert_eq!(public["scope"], scope(ACCOUNT, MACHINE).unwrap());
     assert_eq!(public["step"], "inspect");
     assert!(public.get("root_secret").is_none() && public.get("device_secret").is_none());
-    assert!(CloudOwner::restore(&material, ACCOUNT, "other", &budget, NOW).is_err());
-    assert!(CloudOwner::restore(&material, "other", MACHINE, &budget, NOW).is_err());
-    let other = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
+    assert!(CloudOwner::restore(&material, ACCOUNT, "other", NOW).is_err());
+    assert!(CloudOwner::restore(&material, "other", MACHINE, NOW).is_err());
+    let other = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
     assert_ne!(
         serde_json::from_slice::<serde_json::Value>(&other).unwrap()["root_secret"],
         text["root_secret"]
     );
-    assert!(create(ACCOUNT, MACHINE, " ", &budget, NOW).is_err());
-    assert!(create("", MACHINE, "Owner", &budget, NOW).is_err());
+    assert!(create(ACCOUNT, MACHINE, " ", NOW).is_err());
+    assert!(create("", MACHINE, "Owner", NOW).is_err());
 }
 
 #[test]
 fn first_claim_root_signs_the_challenged_host_and_store_verification_accepts_it() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let challenge = fresh_challenge(NOW);
     let checkpoint = owner.enroll(&json(&challenge), NOW).unwrap();
     // Nothing may be applied before the exact checkpoint is acknowledged.
@@ -178,14 +173,13 @@ fn first_claim_root_signs_the_challenged_host_and_store_verification_accepts_it(
     assert_eq!(host.expires_at_ns, None);
     identity::cloud_enrollment::verify_request(&request, &challenge, NOW + 1).unwrap();
     // A restored checkpoint reproduces the identical signed request.
-    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, &budget, NOW + 5).unwrap();
+    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, NOW + 5).unwrap();
     assert_eq!(apply_payload(&restored), (operation_key, payload));
 }
 
 #[test]
 fn first_claim_refuses_foreign_bound_and_mixed_store_challenges() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
     let foreign = SigningKey::from_bytes(&[93; 32]);
     let mut foreign_host = identity::DeviceCert {
         user_public_key: foreign.verifying_key().to_bytes(),
@@ -207,7 +201,7 @@ fn first_claim_refuses_foreign_bound_and_mixed_store_challenges() {
     let mut machine = fresh_challenge(NOW);
     machine.machine_id = "other".into();
     for challenge in [bound, root_only, host_only, machine] {
-        let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+        let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
         assert!(owner.enroll(&json(&challenge), NOW).is_err());
         assert!(matches!(owner.step().unwrap(), CloudStep::Inspect));
     }
@@ -215,16 +209,15 @@ fn first_claim_refuses_foreign_bound_and_mixed_store_challenges() {
 
 #[test]
 fn legacy_material_without_first_claim_still_refuses_an_unbound_store() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
     let mut legacy: serde_json::Value = serde_json::from_slice(&material).unwrap();
     legacy.as_object_mut().unwrap().remove("first_claim");
     let legacy = serde_json::to_vec(&legacy).unwrap();
-    let mut owner = CloudOwner::restore(&legacy, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let mut owner = CloudOwner::restore(&legacy, ACCOUNT, MACHINE, NOW).unwrap();
     assert!(owner.enroll(&json(&fresh_challenge(NOW)), NOW).is_err());
     // A tampered first-claim checkpoint whose host certificate is not root
     // signed fails restore validation rather than being trusted.
-    let mut first = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let mut first = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let checkpoint = first.enroll(&json(&fresh_challenge(NOW)), NOW).unwrap();
     let mut changed: serde_json::Value = serde_json::from_slice(&checkpoint).unwrap();
     let bytes: Vec<u8> = serde_json::from_value(changed["phase"]["enrollment"].clone()).unwrap();
@@ -237,7 +230,6 @@ fn legacy_material_without_first_claim_still_refuses_an_unbound_store() {
             &serde_json::to_vec(&changed).unwrap(),
             ACCOUNT,
             MACHINE,
-            &budget,
             NOW
         )
         .is_err()
@@ -246,8 +238,7 @@ fn legacy_material_without_first_claim_still_refuses_an_unbound_store() {
 
 #[test]
 fn verified_store_reply_enrolls_and_owner_refresh_uses_fresh_request_ids() {
-    let budget = budget();
-    let (owner, checkpoint) = enrolled_owner(&budget);
+    let (owner, checkpoint) = enrolled_owner();
     let scope = owner.enrolled().unwrap();
     assert_eq!(scope.room(), ROOM);
     assert_eq!(
@@ -287,16 +278,15 @@ fn verified_store_reply_enrolls_and_owner_refresh_uses_fresh_request_ids() {
     .unwrap();
     // Reload much later: no inspect/apply; the retained identity refreshes.
     let later = NOW + 86_400_000_000_000;
-    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, &budget, later).unwrap();
+    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, later).unwrap();
     assert!(matches!(restored.step().unwrap(), CloudStep::Enrolled));
     assert!(restored.refresh_challenge([8; 32]).is_ok());
 }
 
 #[test]
 fn store_reply_for_another_device_or_host_is_refused() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let checkpoint = owner.enroll(&json(&fresh_challenge(NOW)), NOW).unwrap();
     owner.acknowledge(&checkpoint, NOW).unwrap();
     let (_, payload) = apply_payload(&owner);
@@ -309,8 +299,7 @@ fn store_reply_for_another_device_or_host_is_refused() {
 
 #[test]
 fn owner_bootstrap_admits_signed_governance_and_requires_the_structural_owner() {
-    let budget = budget();
-    let (owner, _) = enrolled_owner(&budget);
+    let (owner, _) = enrolled_owner();
     let scope = owner.enrolled().unwrap();
     let bootstrap = owner_bootstrap(&scope, true, NOW + 3);
     let state = owner.admit(&scope, &bootstrap, NOW + 4).unwrap();
@@ -345,8 +334,7 @@ fn owner_bootstrap_admits_signed_governance_and_requires_the_structural_owner() 
 #[test]
 fn owner_onboarding_wrapper_is_signed_for_the_enrolled_scope_and_membership_only() {
     use tilo_relay::delivery_v3::onboarding_wire as wire;
-    let budget = budget();
-    let (owner, _) = enrolled_owner(&budget);
+    let (owner, _) = enrolled_owner();
     let scope = owner.enrolled().unwrap();
     let origin = "https://cloud.example:8443";
     let prepare = |origin: &str, request: Request| {
@@ -360,7 +348,6 @@ fn owner_onboarding_wrapper_is_signed_for_the_enrolled_scope_and_membership_only
                 key: owner.device_key().unwrap(),
             },
             request,
-            &budget,
             NOW + 3,
         )
     };
@@ -414,12 +401,11 @@ const SECOND: u64 = 1_000_000_000;
 
 #[test]
 fn browser_clock_behind_or_ahead_within_tolerance_still_enrolls_and_refreshes() {
-    let budget = budget();
     // The Store clock runs 30 s ahead of this browser: its challenge carries
     // a full TTL from the Store's now and its reply is authored in our future.
     let host_now = NOW + 30 * SECOND;
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let checkpoint = owner
         .enroll(&json(&fresh_challenge(host_now)), NOW)
         .unwrap();
@@ -454,8 +440,8 @@ fn browser_clock_behind_or_ahead_within_tolerance_still_enrolls_and_refreshes() 
     // The browser runs 90 s ahead of the Store: fresh certificates are issued
     // in the past, so the Store never sees them as not yet valid.
     let host_now = NOW - 90 * SECOND;
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     assert!(owner.certificate().issued_at_ns <= host_now);
     let checkpoint = owner
         .enroll(&json(&fresh_challenge(host_now)), NOW)
@@ -468,15 +454,14 @@ fn browser_clock_behind_or_ahead_within_tolerance_still_enrolls_and_refreshes() 
 
 #[test]
 fn clock_skew_beyond_the_tolerance_or_an_expired_challenge_is_a_typed_refusal() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
     for challenge in [
         // Store 200 s ahead: freshness bound exceeded even with tolerance.
         fresh_challenge(NOW + 200 * SECOND),
         // Store far behind: the challenge already expired on this clock.
         fresh_challenge(NOW - 300 * SECOND),
     ] {
-        let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+        let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
         let refusal = owner.enroll(&json(&challenge), NOW).err().unwrap();
         assert!(refusal.starts_with(CLOCK_SKEW), "{refusal}");
         assert!(matches!(owner.step().unwrap(), CloudStep::Inspect));
@@ -485,10 +470,9 @@ fn clock_skew_beyond_the_tolerance_or_an_expired_challenge_is_a_typed_refusal() 
 
 #[test]
 fn a_store_bound_to_another_root_is_refused_as_claimed_elsewhere() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let other = create(ACCOUNT, MACHINE, "Other browser", &budget, NOW).unwrap();
-    let mut winner = CloudOwner::restore(&other, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let other = create(ACCOUNT, MACHINE, "Other browser", NOW).unwrap();
+    let mut winner = CloudOwner::restore(&other, ACCOUNT, MACHINE, NOW).unwrap();
     let checkpoint = winner.enroll(&json(&fresh_challenge(NOW)), NOW).unwrap();
     winner.acknowledge(&checkpoint, NOW).unwrap();
     let (_, payload) = apply_payload(&winner);
@@ -496,16 +480,15 @@ fn a_store_bound_to_another_root_is_refused_as_claimed_elsewhere() {
     let mut bound = fresh_challenge(NOW);
     bound.root_public_key = Some(request.host_certificate.user_public_key);
     bound.host_certificate = Some(request.host_certificate.clone());
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let refusal = owner.enroll(&json(&bound), NOW).err().unwrap();
     assert!(refusal.starts_with(CLAIMED_ELSEWHERE), "{refusal}");
 }
 
 #[test]
 fn a_refused_apply_returns_to_inspect_with_the_same_keys_and_a_fresh_operation_key() {
-    let budget = budget();
-    let material = create(ACCOUNT, MACHINE, "Owner browser", &budget, NOW).unwrap();
-    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, &budget, NOW).unwrap();
+    let material = create(ACCOUNT, MACHINE, "Owner browser", NOW).unwrap();
+    let mut owner = CloudOwner::restore(&material, ACCOUNT, MACHINE, NOW).unwrap();
     let public = owner.public().unwrap();
     let binding = serde_json::from_str::<serde_json::Value>(&public).unwrap()["binding"].clone();
     // Nothing to reset before an apply exists.
@@ -535,12 +518,12 @@ fn a_refused_apply_returns_to_inspect_with_the_same_keys_and_a_fresh_operation_k
         enrollment(&first_payload).browser_certificate
     );
     // The restored checkpoint reproduces the fresh key exactly.
-    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, &budget, NOW + 3).unwrap();
+    let restored = CloudOwner::restore(&checkpoint, ACCOUNT, MACHINE, NOW + 3).unwrap();
     assert_eq!(apply_payload(&restored), (second_key, second_payload));
     // A reset checkpoint restores as Inspect custody too.
-    let restored = CloudOwner::restore(&reset, ACCOUNT, MACHINE, &budget, NOW + 3).unwrap();
+    let restored = CloudOwner::restore(&reset, ACCOUNT, MACHINE, NOW + 3).unwrap();
     assert!(matches!(restored.step().unwrap(), CloudStep::Inspect));
     // The enrolled owner can never go back.
-    let (mut enrolled, _) = enrolled_owner(&budget);
+    let (mut enrolled, _) = enrolled_owner();
     assert!(enrolled.reset_apply(NOW + 3).is_err());
 }

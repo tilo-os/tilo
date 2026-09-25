@@ -1,6 +1,5 @@
 use super::*;
 use crate::join::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use tilo_user_identity::RevocationList;
 
 #[expect(
@@ -161,53 +160,38 @@ fn limits() -> OuterLimits {
 fn bounded_join_response_all_seven_real_variants_preserve_exact_original_bytes() {
     for response in responses() {
         let bytes = postcard::to_allocvec(&response).unwrap();
-        let allowance = NativeAllowance::new(128 * 1024).unwrap();
-        let original = allowance.available_bytes();
-        let held = assert_precharged(&allowance, || {
-            BoundedJoinResponse::decode(&bytes, limits(), &allowance)
-        })
-        .unwrap();
+        let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
         assert_eq!(held.response(), &response);
         assert_eq!(postcard::to_allocvec(held.response()).unwrap(), bytes);
-        assert!(allowance.available_bytes() < original);
-        drop(held);
-        assert_eq!(allowance.available_bytes(), original);
     }
 }
 
 #[test]
-fn bounded_join_response_nested_buffers_refuse_and_release_shared_credit() {
+fn bounded_join_response_nested_buffers_past_the_limit_are_refused() {
     let mut response = responses().remove(2);
     let JoinTransportResponse::Complete(bootstrap) = &mut response else {
         panic!()
     };
     bootstrap.governance_messages = vec![vec![42; 4096]; 8];
     let bytes = postcard::to_allocvec(&response).unwrap();
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
-    let original = allowance.available_bytes();
     let small = OuterLimits {
         allocation_bytes: 16 * 1024,
         collection_entries: 16384,
     };
     assert!(matches!(
-        assert_precharged(&allowance, || BoundedJoinResponse::decode(
-            &bytes, small, &allowance
-        )),
+        BoundedJoinResponse::decode(&bytes, small),
         Err(PeerResourceError::Capacity)
     ));
-    assert_eq!(allowance.available_bytes(), original);
-    let bytes = postcard::to_allocvec(&responses()[0]).unwrap();
-    let first = BoundedJoinResponse::decode(&bytes, limits(), &allowance).unwrap();
-    assert!(matches!(
-        BoundedJoinResponse::decode(&bytes, limits(), &allowance),
-        Err(PeerResourceError::Capacity)
-    ));
-    drop(first);
-    assert!(BoundedJoinResponse::decode(&bytes, limits(), &allowance).is_ok());
+    // Each message is a byte sequence, so every byte is a collection entry.
+    let roomy = OuterLimits {
+        allocation_bytes: 256 * 1024,
+        collection_entries: 65536,
+    };
+    assert!(BoundedJoinResponse::decode(&bytes, roomy).is_ok());
 }
 
 #[test]
-fn bounded_join_response_malformed_nested_signature_has_precharged_error_and_no_leak() {
+fn bounded_join_response_malformed_nested_signature_is_refused() {
     let response = responses().remove(0);
     let JoinTransportResponse::Inspection(inspection) = &response else {
         panic!()
@@ -217,8 +201,6 @@ fn bounded_join_response_malformed_nested_signature_has_precharged_error_and_no_
         inspection.grant.transport[0].host_signature,
         inspection.grant.delegation.as_ref().unwrap().signature,
     ];
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
-    let original = allowance.available_bytes();
     for signature in signatures {
         let mut bytes = postcard::to_allocvec(&response).unwrap();
         let mut needle = vec![64];
@@ -229,19 +211,14 @@ fn bounded_join_response_malformed_nested_signature_has_precharged_error_and_no_
             .unwrap();
         bytes.splice(position..position + needle.len(), [0]);
         assert!(matches!(
-            assert_precharged(&allowance, || BoundedJoinResponse::decode(
-                &bytes,
-                limits(),
-                &allowance
-            )),
+            BoundedJoinResponse::decode(&bytes, limits()),
             Err(PeerResourceError::Malformed)
         ));
-        assert_eq!(allowance.available_bytes(), original);
     }
 }
 
 #[test]
-fn bounded_join_response_announced_nested_length_and_trailing_bytes_fail_before_escape() {
+fn bounded_join_response_announced_nested_length_and_trailing_bytes_are_refused() {
     let response = responses().remove(2);
     let JoinTransportResponse::Complete(bootstrap) = &response else {
         panic!()
@@ -256,44 +233,19 @@ fn bounded_join_response_announced_nested_length_and_trailing_bytes_fail_before_
     huge.extend(generation);
     let mut trailing = original.clone();
     trailing.push(0);
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
-    let baseline = allowance.available_bytes();
     for bytes in [huge, trailing] {
-        assert!(
-            assert_precharged(&allowance, || BoundedJoinResponse::decode(
-                &bytes,
-                limits(),
-                &allowance
-            ))
-            .is_err()
-        );
-        assert_eq!(allowance.available_bytes(), baseline);
+        assert!(BoundedJoinResponse::decode(&bytes, limits()).is_err());
     }
     assert!(matches!(
-        assert_precharged(&allowance, || BoundedJoinResponse::decode(
+        BoundedJoinResponse::decode(
             &original,
             OuterLimits {
                 allocation_bytes: 1,
                 collection_entries: 16384
             },
-            &allowance
-        )),
+        ),
         Err(PeerResourceError::Capacity)
     ));
-}
-
-#[test]
-fn bounded_join_response_retains_decode_custody_after_allowance_seals() {
-    let bytes = postcard::to_allocvec(&responses()[0]).unwrap();
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
-    let ledger_metadata = allowance.retained_bytes();
-    let held = BoundedJoinResponse::decode(&bytes, limits(), &allowance).unwrap();
-    allowance.finish_turn();
-    assert!(allowance.retained_bytes() > ledger_metadata);
-    assert_eq!(postcard::to_allocvec(held.response()).unwrap(), bytes);
-    assert!(BoundedJoinResponse::decode(&bytes, limits(), &allowance).is_err());
-    drop(held);
-    assert_eq!(allowance.retained_bytes(), ledger_metadata);
 }
 
 #[test]
@@ -313,18 +265,8 @@ fn owner_bootstrap_wire_preserves_legacy_response_tags_and_role_bytes() {
     }
     let response = responses().pop().unwrap();
     let bytes = postcard::to_allocvec(&response).unwrap();
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
-    let baseline = allowance.retained_bytes();
-    let held = assert_precharged(&allowance, || {
-        BoundedJoinResponse::decode(&bytes, limits(), &allowance)
-    })
-    .unwrap();
-    allowance.finish_turn();
+    let held = BoundedJoinResponse::decode(&bytes, limits()).unwrap();
     assert_eq!(held.response(), &response);
-    assert!(allowance.retained_bytes() > baseline);
-    drop(held);
-    assert_eq!(allowance.retained_bytes(), baseline);
-    let allowance = NativeAllowance::new(128 * 1024).unwrap();
     for limited in [
         OuterLimits {
             allocation_bytes: 1024,
@@ -335,6 +277,6 @@ fn owner_bootstrap_wire_preserves_legacy_response_tags_and_role_bytes() {
             collection_entries: 1,
         },
     ] {
-        assert!(BoundedJoinResponse::decode(&bytes, limited, &allowance).is_err());
+        assert!(BoundedJoinResponse::decode(&bytes, limited).is_err());
     }
 }

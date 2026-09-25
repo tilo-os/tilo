@@ -10,7 +10,6 @@ use crate::host_worker::private_actions::{
     PrivateQueueOutcome, PrivateWriteOutcome, PrivateWriteRefusal, SenderStorageCode,
 };
 use crate::time::Instant;
-use automerge::resource_limits::NativeAllowance;
 use runtime_collab::PublishedInvocationBinding;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -136,12 +135,6 @@ fn invalid(error: super::OutboxFailure) -> Failure {
         super::OutboxFailure::Invalid | super::OutboxFailure::Conflict => Failure::Invalid,
     }
 }
-fn reserve(
-    work: &NativeAllowance,
-    bytes: usize,
-) -> Result<automerge::resource_limits::NativeReservation, Failure> {
-    work.reserve(bytes).map_err(|_| Failure::Capacity)
-}
 fn digest(observation: super::codec::ObservationView<'_>) -> [u8; 32] {
     let mut hash = blake3::Hasher::new();
     hash.update(b"native-managed-terminal-v1\0");
@@ -159,9 +152,9 @@ impl ManagedSender {
     }
     /// Complete the one queued physical mutation. A storage failure retains
     /// its phase; a later call resumes that same barrier, never a new write.
-    pub(super) fn complete(&mut self, work: &NativeAllowance) -> Result<Completion, Failure> {
+    pub(super) fn complete(&mut self) -> Result<Completion, Failure> {
         for _ in 0..8 {
-            if let Some(done) = self.advance(work)? {
+            if let Some(done) = self.advance()? {
                 return Ok(done);
             }
         }
@@ -173,12 +166,9 @@ impl ManagedSender {
     pub(super) fn inspect(
         &self,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<[Option<RowFacts>; RECOVERY_SLOTS], Failure> {
-        let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
         let current = self.current()?.borrow_current().map_err(storage)?;
-        let view = super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-            .map_err(invalid)?;
+        let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
         let mut output = [None; RECOVERY_SLOTS];
         let mut count = 0;
         for row in view.rows() {
@@ -214,14 +204,10 @@ impl ManagedSender {
         &self,
         ticket: Ticket,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<ObservationRead<'_>, Failure> {
-        let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
         let current = self.current()?.borrow_current().map_err(storage)?;
         let range = {
-            let view =
-                super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                    .map_err(invalid)?;
+            let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             let row = Self::row(&view, current.instance(), ticket, caller)?;
             let observation = row.observation.ok_or(Failure::NotRetained)?;
             let start = (observation.json.as_ptr() as usize)
@@ -239,12 +225,9 @@ impl ManagedSender {
     pub(super) fn recover_pending(
         &self,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<[Option<Ticket>; RECOVERY_SLOTS], Failure> {
-        let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
         let current = self.current()?.borrow_current().map_err(storage)?;
-        let view = super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-            .map_err(invalid)?;
+        let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
         let mut output = [None; RECOVERY_SLOTS];
         let mut count = 0;
         for row in view.rows() {
@@ -261,19 +244,14 @@ impl ManagedSender {
         }
         Ok(output)
     }
-    pub(super) fn open(
-        state: CurrentPrivateState,
-        work: &NativeAllowance,
-    ) -> Result<Self, OpenRefusal> {
+    pub(super) fn open(state: CurrentPrivateState) -> Result<Self, OpenRefusal> {
         let checked = (|| {
             let room = uuid::Uuid::parse_str(state.workspace()).map_err(|_| Failure::Invalid)?;
             if room.is_nil() {
                 return Err(Failure::Invalid);
             }
-            let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
             let current = state.borrow_current().map_err(storage)?;
-            super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                .map_err(invalid)?;
+            super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             Ok(room)
         })();
         match checked {
@@ -332,17 +310,15 @@ impl ManagedSender {
                 return Err(Failure::Busy);
             }
         };
-        let (bytes, credit) = encoded.into_parts();
-        match current.queue_owned(bytes, credit) {
+        match current.queue_owned(encoded.into_bytes()) {
             Ok(PrivateQueueOutcome::Pending(file)) => self.phase = Some(Phase::Capture(file)),
             Ok(PrivateQueueOutcome::Unchanged(current)) => {
                 self.phase = Some(Phase::Current(current))
             }
             Err(failure) => {
                 let code = failure.code();
-                let (state, bytes, credit) = failure.into_parts();
+                let (state, bytes) = failure.into_parts();
                 drop(bytes);
-                drop(credit);
                 self.phase = Some(Phase::Current(state));
                 return Err(storage(code));
             }
@@ -354,15 +330,11 @@ impl ManagedSender {
         &mut self,
         caller: CallerView<'_>,
         intent: Intent<'_>,
-        work: &NativeAllowance,
     ) -> Result<Ticket, Failure> {
         let (encoded, ticket) = {
             let state = self.current()?;
-            let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
             let current = state.borrow_current().map_err(storage)?;
-            let view =
-                super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                    .map_err(invalid)?;
+            let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             let id = *uuid::Uuid::new_v4().as_bytes();
             let row = RowView {
                 invocation: id,
@@ -382,8 +354,7 @@ impl ManagedSender {
                 argument: intent.argument,
                 observation: None,
             };
-            let needed = view.insertion_bytes(&row).map_err(invalid)?;
-            let encoded = view.insert(&row, reserve(work, needed)?).map_err(invalid)?;
+            let encoded = view.insert(&row).map_err(invalid)?;
             (
                 encoded,
                 Ticket {
@@ -396,53 +367,29 @@ impl ManagedSender {
         self.queue(encoded, Completion::Began(ticket))?;
         Ok(ticket)
     }
-    pub(super) fn advance(
-        &mut self,
-        work: &NativeAllowance,
-    ) -> Result<Option<Completion>, Failure> {
+    pub(super) fn advance(&mut self) -> Result<Option<Completion>, Failure> {
         let phase = self.phase.take().ok_or(Failure::Busy)?;
         let phase = match phase {
             Phase::Current(current) => {
                 self.phase = Some(Phase::Current(current));
                 return Ok(self.pending.take());
             }
-            Phase::Capture(file) => {
-                let capture = (|| {
-                    let needed = file.capture_required_bytes().map_err(storage)?;
-                    file.capture(reserve(work, needed)?).map_err(storage)
-                })();
-                match capture {
-                    Ok(capture) => Phase::Prepare(file, capture),
-                    Err(error) => {
-                        self.phase = Some(Phase::Capture(file));
-                        return Err(error);
-                    }
+            Phase::Capture(file) => match file.capture().map_err(storage) {
+                Ok(capture) => Phase::Prepare(file, capture),
+                Err(error) => {
+                    self.phase = Some(Phase::Capture(file));
+                    return Err(error);
                 }
-            }
-            Phase::Prepare(file, capture) => {
-                let credit = (|| {
-                    reserve(
-                        work,
-                        file.prepare_required_bytes(&capture).map_err(storage)?,
-                    )
-                })();
-                let credit = match credit {
-                    Ok(credit) => credit,
-                    Err(error) => {
-                        self.phase = Some(Phase::Prepare(file, capture));
-                        return Err(error);
-                    }
-                };
-                match file.prepare(capture, credit) {
-                    Ok(write) => Phase::Prepared(write),
-                    Err(error) => {
-                        let code = error.code();
-                        let (file, capture) = error.into_parts();
-                        self.phase = Some(Phase::Prepare(file, capture));
-                        return Err(storage(code));
-                    }
+            },
+            Phase::Prepare(file, capture) => match file.prepare(capture) {
+                Ok(write) => Phase::Prepared(write),
+                Err(error) => {
+                    let code = error.code();
+                    let (file, capture) = error.into_parts();
+                    self.phase = Some(Phase::Prepare(file, capture));
+                    return Err(storage(code));
                 }
-            }
+            },
             Phase::Prepared(write) => {
                 return self.published(write.publish());
             }
@@ -490,7 +437,6 @@ impl ManagedSender {
         operation: Operation,
         confirmation: &str,
         deadline: Instant,
-        work: &NativeAllowance,
     ) -> Result<ManagedAttempt, Failure> {
         let existing = self
             .active
@@ -504,13 +450,9 @@ impl ManagedSender {
             .ok_or(Failure::Capacity)?;
         let (owner, attempt) = {
             let state = self.current()?;
-            let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
             let current = state.borrow_current().map_err(storage)?;
-            let view =
-                super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                    .map_err(invalid)?;
+            let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             let row = Self::row(&view, current.instance(), ticket, caller)?;
-            let needed = AttemptOwner::required_bytes(&row, confirmation).map_err(invalid)?;
             AttemptOwner::new(
                 &row,
                 ticket.instance,
@@ -518,7 +460,6 @@ impl ManagedSender {
                 operation,
                 confirmation,
                 deadline,
-                reserve(work, needed)?,
             )
             .map_err(invalid)?
         };
@@ -529,9 +470,8 @@ impl ManagedSender {
         &mut self,
         result: ManagedAttemptResult,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<ReplyDisposition, ObserveRefusal> {
-        match self.queue_result(&result, caller, work) {
+        match self.queue_result(&result, caller) {
             Ok(disposition) => Ok(disposition),
             Err(failure) => Err(ObserveRefusal { result, failure }),
         }
@@ -540,7 +480,6 @@ impl ManagedSender {
         &mut self,
         result: &ManagedAttemptResult,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<ReplyDisposition, Failure> {
         let owner = self
             .active
@@ -551,11 +490,8 @@ impl ManagedSender {
         let ticket = owner.ticket();
         let encoded = {
             let state = self.current()?;
-            let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
             let current = state.borrow_current().map_err(storage)?;
-            let view =
-                super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                    .map_err(invalid)?;
+            let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             Self::row(&view, current.instance(), ticket, caller)?;
             let observation = match result.result() {
                 Ok(observation) => observation,
@@ -567,16 +503,8 @@ impl ManagedSender {
             let Some(response) = &observation.result else {
                 return Ok(ReplyDisposition::Absent);
             };
-            let needed = view
-                .observation_bytes(&ticket.invocation, response, &scratch)
-                .map_err(invalid)?;
-            view.with_observation(
-                &ticket.invocation,
-                response,
-                &scratch,
-                reserve(work, needed)?,
-            )
-            .map_err(invalid)?
+            view.with_observation(&ticket.invocation, response)
+                .map_err(invalid)?
         };
         self.queue(encoded, Completion::Observed(ticket))?;
         Ok(ReplyDisposition::Queued)
@@ -585,13 +513,10 @@ impl ManagedSender {
         &self,
         ticket: Ticket,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<TerminalReceipt, Failure> {
         let state = self.current()?;
-        let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
         let current = state.borrow_current().map_err(storage)?;
-        let view = super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-            .map_err(invalid)?;
+        let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
         let row = Self::row(&view, current.instance(), ticket, caller)?;
         let observation = row
             .observation
@@ -606,7 +531,6 @@ impl ManagedSender {
         &mut self,
         receipt: TerminalReceipt,
         caller: CallerView<'_>,
-        work: &NativeAllowance,
     ) -> Result<(), Failure> {
         let ticket = receipt.ticket;
         let index = self
@@ -618,11 +542,8 @@ impl ManagedSender {
         }
         let encoded = {
             let state = self.current()?;
-            let scratch = reserve(work, super::observation::SCRATCH_BYTES)?;
             let current = state.borrow_current().map_err(storage)?;
-            let view =
-                super::NativeSenderOutboxV1::decode_with_scratch(current.payload(), &scratch)
-                    .map_err(invalid)?;
+            let view = super::NativeSenderOutboxV1::decode(current.payload()).map_err(invalid)?;
             let row = Self::row(&view, current.instance(), ticket, caller)?;
             let observation = row
                 .observation
@@ -631,11 +552,7 @@ impl ManagedSender {
             if digest(observation) != receipt.digest {
                 return Err(Failure::Scope);
             }
-            let needed = view
-                .consumption_bytes(&ticket.invocation)
-                .map_err(invalid)?;
-            view.consume(&ticket.invocation, reserve(work, needed)?)
-                .map_err(invalid)?
+            view.consume(&ticket.invocation).map_err(invalid)?
         };
         if let Some(index) = index {
             self.active[index] = None;

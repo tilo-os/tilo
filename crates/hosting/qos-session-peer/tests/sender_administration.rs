@@ -1,5 +1,7 @@
 #![cfg(any(target_os = "macos", target_os = "linux"))]
 
+tilo_automerge_isolate::test_worker!();
+
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 

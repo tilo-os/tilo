@@ -1,8 +1,6 @@
 //! Immutable message pages over `ChatDoc` storage. No action publication or caller authority is minted here.
 pub mod action;
-mod native;
 use automerge::AutoCommit;
-pub use native::{NativePage, read_messages_native};
 use qdoc::semantic_read::{Basis, Limits, ReadError, TextPosition};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -31,14 +29,14 @@ pub struct Page {
     pub messages: Vec<Message>,
     pub next: Option<Cursor>,
 }
-use automerge::{ObjType, resource_limits::NativeScalar};
+use automerge::{ObjType, ScalarValueRef};
 use qdoc::semantic_read::{
     json_len,
     source::{Source, Value},
 };
 use std::ops::ControlFlow;
 /// Read only the selected channel's canonical message list. A page retains at most the requested
-/// messages plus one lookahead; text is streamed from borrowed native scalar atoms.
+/// messages plus one lookahead; text is streamed element by element.
 ///
 /// # Errors
 ///
@@ -51,14 +49,14 @@ pub fn read_messages(
     cursor: Option<&Cursor>,
     limits: Limits,
 ) -> Result<Page, ReadError> {
-    read_source(&Source::legacy(doc, owner_heads), channel, cursor, limits)
+    read_source(&Source::new(doc, owner_heads), channel, cursor, limits)
 }
 #[expect(
     clippy::too_many_lines,
     reason = "one bounded page scan; cursor, lookahead and limit accounting share its state"
 )]
 fn read_source(
-    source: &Source<'_, '_, '_>,
+    source: &Source<'_>,
     channel: &str,
     cursor: Option<&Cursor>,
     limits: Limits,
@@ -80,13 +78,13 @@ fn read_source(
         json_len(cursor, 1024).map_err(|_| ReadError::InvalidCursor)?;
     }
     let channels = source
-        .object(&source.root(), "channels", ObjType::Map, &work)?
+        .object(&source.root(), "channels", ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
     source
-        .object(&channels, channel, ObjType::Map, &work)?
+        .object(&channels, channel, ObjType::Map)?
         .ok_or(ReadError::Malformed)?;
-    let list = match source.object(&source.root(), "messages", ObjType::Map, &work)? {
-        Some(messages) => source.object(&messages, channel, ObjType::List, &work)?,
+    let list = match source.object(&source.root(), "messages", ObjType::Map)? {
+        Some(messages) => source.object(&messages, channel, ObjType::List)?,
         None => None,
     };
     let mut candidates = Vec::with_capacity(limits.items + 1);
@@ -126,30 +124,32 @@ fn read_source(
             .filter(|c| c.index == *row && !c.finished)
             .map(|c| c.position)
             .unwrap_or_default();
-        let text = source.object(message, "text", ObjType::Text, &work)?;
+        let text = source.object(message, "text", ObjType::Text)?;
         let previous = page.next.take();
         let mut ts = 0;
-        source.field(message, "ts", &work, |value| {
+        source.field(message, "ts", |value| {
             ts = match value {
                 Value::Scalar(
-                    NativeScalar::Int(ts) | NativeScalar::Counter(ts) | NativeScalar::Timestamp(ts),
-                ) => ts,
-                Value::Scalar(NativeScalar::Uint(ts)) => ts as i64,
-                Value::Scalar(NativeScalar::F64(ts)) => ts as i64,
+                    ScalarValueRef::Int(ts)
+                    | ScalarValueRef::Counter(ts)
+                    | ScalarValueRef::Timestamp(ts),
+                ) => *ts,
+                Value::Scalar(ScalarValueRef::Uint(ts)) => *ts as i64,
+                Value::Scalar(ScalarValueRef::F64(ts)) => *ts as i64,
                 _ => 0,
             };
             Ok(())
         })?;
         let mut edited = false;
-        source.field(message, "edited", &work, |value| {
-            edited = matches!(value, Value::Scalar(NativeScalar::Boolean(true)));
+        source.field(message, "edited", |value| {
+            edited = matches!(value, Value::Scalar(ScalarValueRef::Boolean(true)));
             Ok(())
         })?;
         page.messages.push(Message {
-            id: source.string(message, "id", 128, &work)?,
-            author: source.string(message, "author", 256, &work)?,
+            id: source.string(message, "id", 128)?,
+            author: source.string(message, "author", 256)?,
             ts,
-            parent: source.string(message, "parent", 128, &work)?,
+            parent: source.string(message, "parent", 128)?,
             edited,
             text: String::new(),
             complete: false,

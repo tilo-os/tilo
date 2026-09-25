@@ -1,147 +1,82 @@
-//! Native storage primitives for the private bounded peer backend.
-//! Checked native allocation is separate from certified state admission.
+//! Documents a bounded peer restores from stored or received bytes.
+//!
+//! Every document is admitted through `tilo_automerge_isolate`, and one
+//! operation's documents share an aggregate byte limit.
 use automerge::AutoCommit;
-use automerge::resource_limits::{
-    NativeAllocationSet, NativeLimits, NativeOwned, NativeResourceError, NativeWorkTurn,
-};
-#[cfg(test)]
-use automerge::{SaveOptions, resource_limits::NativeSaved};
 
-pub(crate) struct NativeBatch<'a> {
-    allocations: &'a mut NativeAllocationSet,
-    turn: &'a NativeWorkTurn,
-    remaining_normalized: NormalizedRemaining<'a>,
+use crate::room::read::LegacyRead;
+
+/// Why a document was not restored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum LoadError {
+    /// The operation's aggregate byte limit is spent.
+    Capacity,
+    /// The isolated load refused the bytes.
+    Rejected(tilo_automerge_isolate::Rejected),
 }
-enum NormalizedRemaining<'a> {
+
+/// Loads documents against one operation's remaining byte limit. Dropping a
+/// loaded document does not refund it.
+pub(crate) struct NativeBatch<'a> {
+    remaining: Remaining<'a>,
+}
+enum Remaining<'a> {
     #[cfg(test)]
     Owned(usize),
     Continuing(&'a mut usize),
 }
-impl NormalizedRemaining<'_> {
-    fn get(&mut self) -> &mut usize {
-        match self {
-            #[cfg(test)]
-            Self::Owned(value) => value,
-            Self::Continuing(value) => value,
+impl NativeBatch<'_> {
+    #[cfg(test)]
+    pub(crate) fn new(limit: usize) -> NativeBatch<'static> {
+        NativeBatch {
+            remaining: Remaining::Owned(limit),
         }
+    }
+    fn remaining(&mut self) -> &mut usize {
+        match &mut self.remaining {
+            #[cfg(test)]
+            Remaining::Owned(value) => value,
+            Remaining::Continuing(value) => value,
+        }
+    }
+    pub(crate) fn load(&mut self, bytes: &[u8]) -> Result<NativeDocument, LoadError> {
+        let remaining = self.remaining();
+        *remaining = remaining
+            .checked_sub(bytes.len())
+            .ok_or(LoadError::Capacity)?;
+        let mut document = tilo_automerge_isolate::load(bytes).map_err(LoadError::Rejected)?;
+        let heads = document.get_heads();
+        Ok(NativeDocument { document, heads })
     }
 }
 impl<'a> NativeBatch<'a> {
-    #[cfg(test)]
-    pub(crate) fn new(
-        allocations: &'a mut NativeAllocationSet,
-        turn: &'a NativeWorkTurn,
-        maximum_normalized: usize,
-    ) -> Result<Self, NativeResourceError> {
-        if maximum_normalized > 8 * 1024 * 1024 {
-            return Err(NativeResourceError::NormalizedBytes);
+    /// Draw on an operation's one continuing limit.
+    pub(crate) fn continuing(remaining: &'a mut usize) -> Self {
+        Self {
+            remaining: Remaining::Continuing(remaining),
         }
-        Ok(Self {
-            allocations,
-            turn,
-            remaining_normalized: NormalizedRemaining::Owned(maximum_normalized),
-        })
-    }
-    /// Reborrows the embedding operation's one continuing counter. Releasing
-    /// this batch never refunds work or resets the aggregate input ceiling.
-    pub(crate) fn continuing(
-        allocations: &'a mut NativeAllocationSet,
-        turn: &'a NativeWorkTurn,
-        remaining_normalized: &'a mut usize,
-    ) -> Result<Self, NativeResourceError> {
-        if *remaining_normalized > 8 * 1024 * 1024 {
-            return Err(NativeResourceError::NormalizedBytes);
-        }
-        Ok(Self {
-            allocations,
-            turn,
-            remaining_normalized: NormalizedRemaining::Continuing(remaining_normalized),
-        })
-    }
-    pub(crate) fn load(&mut self, bytes: &[u8]) -> Result<NativeDocument, NativeResourceError> {
-        // Apply the remaining aggregate ceiling BEFORE inspection/inflation.
-        // Normalization uses this turn's exact ledger by construction; neither
-        // caller-supplied alternate allowances nor per-document resets exist.
-        let limits = NativeLimits {
-            max_normalized_bytes: *self.remaining_normalized.get(),
-            ..NativeLimits::default()
-        };
-        let normalized = self.turn.normalize_input(bytes, &limits)?;
-        let remaining = self.remaining_normalized.get();
-        *remaining = remaining
-            .checked_sub(normalized.shape().normalized_bytes())
-            .ok_or(NativeResourceError::NormalizedBytes)?;
-        let document = normalized.reconstruct(self.allocations, self.turn)?;
-        Ok(NativeDocument { document })
     }
 }
-/// No Clone, Deref, extraction or raw `AutoCommit` access. Custody is native.
+
+/// An admitted document, read-only for the bounded peer.
 pub(crate) struct NativeDocument {
-    document: NativeOwned<AutoCommit>,
+    document: AutoCommit,
+    heads: Vec<automerge::ChangeHash>,
 }
 impl NativeDocument {
-    pub(crate) fn read<'doc, 'turn>(
-        &'doc self,
-        turn: &'turn NativeWorkTurn,
-    ) -> Result<automerge::resource_limits::NativeReadSession<'doc, 'turn>, NativeResourceError>
-    {
-        self.document.read(turn)
+    pub(crate) fn read(&self) -> LegacyRead<'_, AutoCommit> {
+        LegacyRead(&self.document)
     }
-    #[cfg(test)]
-    pub(crate) fn heads(
-        &self,
-        turn: &NativeWorkTurn,
-    ) -> Result<automerge::resource_limits::NativeHashes, NativeResourceError> {
-        self.document.base_heads_bounded(turn)
+    pub(crate) fn document(&self) -> &AutoCommit {
+        &self.document
     }
-    #[cfg(test)]
-    pub(crate) fn changes_since(
-        &self,
-        heads: &[automerge::ChangeHash],
-        turn: &NativeWorkTurn,
-    ) -> Result<automerge::resource_limits::NativeChanges, NativeResourceError> {
-        self.document.changes_since_bounded(heads, turn)
+    pub(crate) fn heads(&self) -> &[automerge::ChangeHash] {
+        &self.heads
     }
     pub(crate) fn has_missing_dependencies(&self) -> bool {
-        self.document.has_missing_dependencies()
-    }
-    #[cfg(test)]
-    pub(crate) fn candidate(
-        &self,
-        allocations: &mut NativeAllocationSet,
-        turn: &NativeWorkTurn,
-    ) -> Result<Self, NativeResourceError> {
-        Ok(Self {
-            document: self.document.clone_bounded(allocations, turn)?,
-        })
-    }
-    #[cfg(test)]
-    pub(crate) fn capture(
-        &self,
-        maximum_output_bytes: usize,
-        turn: &NativeWorkTurn,
-    ) -> Result<NativeCapture, NativeResourceError> {
-        Ok(NativeCapture {
-            saved: self.document.save_bounded_with_limit(
-                turn,
-                SaveOptions {
-                    deflate: true,
-                    retain_orphans: true,
-                },
-                maximum_output_bytes,
-            )?,
-        })
+        !automerge::ReadDoc::get_missing_deps(&self.document, &[]).is_empty()
     }
 }
-#[cfg(test)]
-pub(crate) struct NativeCapture {
-    saved: NativeSaved,
-}
-#[cfg(test)]
-impl NativeCapture {
-    pub(crate) fn bytes(&self) -> &[u8] {
-        self.saved.bytes()
-    }
-}
+
 #[cfg(test)]
 mod tests;

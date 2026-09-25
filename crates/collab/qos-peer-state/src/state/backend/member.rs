@@ -5,7 +5,6 @@ use super::{
 };
 use crate::room::key_hex::KeyHex;
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
-use automerge::resource_limits::{NativeReservation, NativeResourceError, NativeWorkTurn};
 mod policy;
 
 #[derive(Debug)]
@@ -21,7 +20,7 @@ pub(in crate::state) enum Error {
     RoomRevoked,
     NoMembership,
     Read,
-    Resource(NativeResourceError),
+    Capacity,
 }
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -37,7 +36,7 @@ impl std::fmt::Display for Error {
             Self::NoMembership => f.write_str("person has no room membership"),
             Self::Read => f.write_str("governed membership read failed"),
             Self::Decode(e) => write!(f, "governed membership decode refusal: {e:?}"),
-            Self::Resource(e) => write!(f, "governed membership resource refusal: {e:?}"),
+            Self::Capacity => f.write_str("governed membership exceeds its limit"),
         }
     }
 }
@@ -45,13 +44,8 @@ trait Policy {
     fn owner(&self) -> Option<&str>;
     fn caps(&self) -> &[CapOverride];
     fn identity(&self) -> &GovernedIdentity;
-    fn role(
-        &self,
-        person: &str,
-        now: u64,
-        _turn: Option<&NativeWorkTurn>,
-    ) -> Result<Option<Role>, Error> {
-        Ok(room::role_of(self.owner(), self.caps(), person, now))
+    fn role(&self, person: &str, now: u64) -> Option<Role> {
+        room::role_of(self.owner(), self.caps(), person, now)
     }
 }
 fn key_text(key: &[u8; 32]) -> KeyHex {
@@ -61,7 +55,6 @@ fn current<'peer, S: Storage, P: Policy>(
     peer: &'peer PeerCore<S>,
     source: &[u8; 32],
     now: SystemTime,
-    turn: Option<&NativeWorkTurn>,
     collect: impl FnOnce(&'peer S::Room) -> Result<P, Error>,
 ) -> Result<(Role, KeyHex, P), Error> {
     let cert = peer
@@ -89,7 +82,7 @@ fn current<'peer, S: Storage, P: Policy>(
     }
     let person = key_text(&cert.user_public_key);
     let role = policy
-        .role(person.as_str(), now_secs(now), turn)?
+        .role(person.as_str(), now_secs(now))
         .ok_or(Error::NoMembership)?;
     Ok((role, person, policy))
 }
@@ -113,7 +106,7 @@ pub(in crate::state) fn legacy(
     source: &[u8; 32],
     now: SystemTime,
 ) -> Result<Role, Error> {
-    current(peer, source, now, None, |room| {
+    current(peer, source, now, |room| {
         let data = room.policy();
         let key = key_text(source);
         let bytes = data.identities.get(key.as_str()).ok_or(Error::Absent)?;
@@ -122,16 +115,14 @@ pub(in crate::state) fn legacy(
     })
     .map(|(role, _, _)| role)
 }
-/// Current data with retained policy backing; no owner/transport credential.
-/// Borrowed capabilities must be copied under the caller's own output credit.
-pub struct PeerMember<'peer, 'work> {
+/// Current member data; no owner/transport credential.
+pub struct PeerMember<'peer> {
     role: Role,
     person: KeyHex,
     policy: policy::NativePolicy,
     _peer: &'peer PeerCore<BoundedNative>,
-    _turn: &'work NativeWorkTurn,
 }
-impl PeerMember<'_, '_> {
+impl PeerMember<'_> {
     /// Verified current member root; data rather than a caller credential.
     pub fn user_root(&self) -> [u8; 32] {
         self.policy.identity().device_cert.user_public_key
@@ -146,20 +137,17 @@ impl PeerMember<'_, '_> {
         self.policy.caps()
     }
 }
-pub(in crate::state) fn bounded<'peer, 'work>(
-    peer: &'peer PeerCore<BoundedNative>,
+pub(in crate::state) fn bounded(
+    peer: &PeerCore<BoundedNative>,
     source: [u8; 32],
     now: SystemTime,
-    turn: &'work NativeWorkTurn,
     limits: PeerLimits,
-) -> Result<PeerMember<'peer, 'work>, BoundedPeerError> {
-    turn.reserve(0).map_err(BoundedPeerError::Resource)?;
-    let (role, person, policy) = current(peer, &source, now, Some(turn), |room| {
-        let read = room.read(turn).map_err(Error::Resource)?;
-        policy::collect(&read, &source, turn, limits)
+) -> Result<PeerMember<'_>, BoundedPeerError> {
+    let (role, person, policy) = current(peer, &source, now, |room| {
+        policy::collect(&room.read(), &source, limits)
     })
     .map_err(|error| match error {
-        Error::Resource(e) => BoundedPeerError::Resource(e),
+        Error::Capacity => BoundedPeerError::Capacity,
         Error::Decode(e) => BoundedPeerError::Decode(e),
         Error::Certificate(_) | Error::CertificateMismatch => {
             BoundedPeerError::Invalid(BoundedPeerInvalid::Certificate)
@@ -171,7 +159,6 @@ pub(in crate::state) fn bounded<'peer, 'work>(
         person,
         policy,
         _peer: peer,
-        _turn: turn,
     })
 }
 #[cfg(test)]

@@ -45,6 +45,7 @@ tilo-clock = { path = "../../system/tilo-clock" }
 qos-action-broker = { path = "../../collab/qos-action-broker" }
 qos-desktop = { path = "../qos-desktop" }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
+tilo-automerge-isolate.workspace = true
 qos-moq = { path = "../../hosting/qos-moq", features = ["relay"] }
 # Native media HTTP client. TLS comes from the workspace's rustls-no-provider
 # configuration (reqwest 0.13 has no `rustls-tls-native-roots`).

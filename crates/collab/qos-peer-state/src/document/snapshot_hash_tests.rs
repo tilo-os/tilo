@@ -1,11 +1,8 @@
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::NativeAllowance;
 use collab_types::op::{DocumentMutationEncodeError, MAX_DOCUMENT_MUTATION_BYTES};
 use collab_types::{DocumentMutation, DocumentWireVersion};
 
 #[test]
-fn snapshot_hash_preserves_literal_all_four_durable_encodings_without_allocation() {
-    let allowance = NativeAllowance::new(4096).unwrap();
+fn snapshot_hash_preserves_literal_all_four_durable_encodings() {
     for (version, prefix, body) in [
         (
             DocumentWireVersion::QosV1,
@@ -37,11 +34,7 @@ fn snapshot_hash_preserves_literal_all_four_durable_encodings_without_allocation
         );
         let expected = *blake3::hash(&literal).as_bytes();
         assert_eq!(
-            assert_precharged(&allowance, || super::snapshot_hash_for(
-                &[0xde, 0xad],
-                version
-            ))
-            .unwrap(),
+            super::snapshot_hash_for(&[0xde, 0xad], version).unwrap(),
             expected
         );
     }
@@ -49,7 +42,6 @@ fn snapshot_hash_preserves_literal_all_four_durable_encodings_without_allocation
 
 #[test]
 fn snapshot_hash_matches_existing_encoder_at_varint_and_size_boundaries() {
-    let allowance = NativeAllowance::new(4096).unwrap();
     for length in [0, 1, 127, 128, 16383, 16384, MAX_DOCUMENT_MUTATION_BYTES] {
         let bytes = vec![0x83; length];
         for version in DocumentWireVersion::ALL {
@@ -59,22 +51,17 @@ fn snapshot_hash_matches_existing_encoder_at_varint_and_size_boundaries() {
                     .unwrap(),
             )
             .as_bytes();
-            assert_eq!(
-                assert_precharged(&allowance, || super::snapshot_hash_for(&bytes, version))
-                    .unwrap(),
-                expected
-            );
+            assert_eq!(super::snapshot_hash_for(&bytes, version).unwrap(), expected);
         }
     }
 }
 
 #[test]
-fn snapshot_hash_preserves_too_large_error_without_payload_copy() {
+fn snapshot_hash_preserves_too_large_error() {
     let bytes = vec![0; MAX_DOCUMENT_MUTATION_BYTES + 1];
-    let allowance = NativeAllowance::new(4096).unwrap();
     for version in DocumentWireVersion::ALL {
         assert!(
-            matches!(assert_precharged(&allowance, || super::snapshot_hash_for(&bytes,version)), Err(DocumentMutationEncodeError::TooLarge {actual,max}) if actual==bytes.len() && max==MAX_DOCUMENT_MUTATION_BYTES)
+            matches!(super::snapshot_hash_for(&bytes, version), Err(DocumentMutationEncodeError::TooLarge {actual,max}) if actual==bytes.len() && max==MAX_DOCUMENT_MUTATION_BYTES)
         );
         assert!(
             matches!(DocumentMutation::Snapshot(bytes.clone()).encode_for(version), Err(DocumentMutationEncodeError::TooLarge {actual,max}) if actual==bytes.len() && max==MAX_DOCUMENT_MUTATION_BYTES)

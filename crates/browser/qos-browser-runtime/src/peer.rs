@@ -60,7 +60,6 @@ struct Peer {
     media_enrollment: media_api::MediaEnrollment,
     media: RefCell<media_api::MediaState>,
     delivery: RefCell<delivery_api::DeliveryState>,
-    incoming: crate::peer_delivery::incoming::IncomingBudget,
     actions: RefCell<crate::action_client::PendingActions>,
     agent_reads: RefCell<crate::agent_reads::PendingAgentReads>,
     health_projection: RefCell<crate::peer_journal::HealthProjection>,
@@ -263,7 +262,6 @@ async fn connect_owner(
         })
         .map_err(error)?;
     let custody = LocalUse { id: context, entry };
-    let incoming = custody.entry.context.budget().clone();
     let current = || {
         if !custody.entry.alive.get()
             || tilo_relay::clock::now_ns() >= custody.entry.context.expires_at_ns()
@@ -279,16 +277,6 @@ async fn connect_owner(
             .await
             .map_err(error)?;
     current().map_err(error)?;
-    // This projection remains legacy authority admission; incoming outer bytes
-    // and its temporary owned DTO are retained on the same Peer ledger.
-    let _projection = incoming
-        .reserve(
-            raw.len()
-                .checked_mul(6)
-                .and_then(|n| n.checked_add(65536))
-                .ok_or_else(|| error("enrollment projection overflow"))?,
-        )
-        .map_err(error)?;
     let config: Enrollment = serde_json::from_str(&raw).map_err(error)?;
     if config.version != 2 {
         return Err(error("unsupported enrollment version"));
@@ -352,7 +340,6 @@ async fn connect_owner(
     )
     .map_err(error)?;
     let config = ValidatedOwner {
-        incoming,
         key,
         initial,
         revoked,
@@ -366,21 +353,6 @@ async fn connect_owner(
         governance: GovernanceSource::Local(Rc::new(governance)),
     };
     connect_validated(existing, config, hydrated, callback).await
-}
-
-fn incoming_for_owner(
-    existing: Option<u32>,
-) -> Result<crate::peer_delivery::incoming::IncomingBudget, JsValue> {
-    if let Some(id) = existing {
-        return PEERS.with(|all| {
-            all.borrow()
-                .get(&id)
-                .filter(|peer| !peer.closed.get())
-                .map(|peer| peer.incoming.clone())
-                .ok_or_else(|| error("closed Peer"))
-        });
-    }
-    crate::peer_delivery::incoming::IncomingBudget::new(64 * 1024 * 1024).map_err(error)
 }
 
 enum GovernanceSource {
@@ -436,7 +408,6 @@ impl GovernanceSource {
 
 // Not deserializable: each source must establish its own identity and authority.
 struct ValidatedOwner {
-    incoming: crate::peer_delivery::incoming::IncomingBudget,
     key: SigningKey,
     initial: StatePeer,
     revoked: RevocationList,
@@ -539,12 +510,8 @@ async fn connect_validated(
     // no-op, so the reconnecting owner keeps its offline edits.
     if !config.governance.is_empty() {
         let now = SystemTime::now();
-        let mut cut = crate::peer_delivery::admission::CutAdmission::begin(
-            &state,
-            config.incoming.clone(),
-            now,
-        )
-        .map_err(error)?;
+        let mut cut =
+            crate::peer_delivery::admission::CutAdmission::begin(&state, now).map_err(error)?;
         for bytes in config.governance.messages() {
             cut.push_retained(bytes, now).map_err(error)?;
         }
@@ -639,7 +606,6 @@ async fn connect_validated(
             },
             media: RefCell::default(),
             delivery: RefCell::default(),
-            incoming: config.incoming.clone(),
             health_projection: RefCell::default(),
             actions: RefCell::default(),
             agent_reads: RefCell::default(),
@@ -842,14 +808,9 @@ pub fn bind_identity_for_peer(
     existing: Option<u32>,
 ) -> Result<String, JsValue> {
     let owner = local_owner(existing)?;
-    let bound = crate::peer_onboarding::bind_local(
-        material,
-        challenge,
-        raw,
-        incoming_for_owner(existing)?,
-        tilo_relay::clock::now_ns(),
-    )
-    .map_err(error)?;
+    let bound =
+        crate::peer_onboarding::bind_local(material, challenge, raw, tilo_relay::clock::now_ns())
+            .map_err(error)?;
     let material = bound.material().to_vec();
     let context = LOCAL_CONTEXTS
         .with(|table| {

@@ -9,6 +9,8 @@ publish.workspace = true
 qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 flate2.workspace = true
 automerge.workspace = true
+# Untrusted automerge bytes are decoded in isolated workers first.
+tilo-automerge-isolate.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc", "use-std"] }

@@ -64,6 +64,7 @@ tilo-clock = { path = "../../system/tilo-clock" }
 qos-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
 qos-peer-state = { path = "../../collab/qos-peer-state" }
+tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the relay routes these frames between devices and,
 # only when an app-serving plane is supplied, answers them through ActionHost.
 tilo-actions = { path = "../../collab/actions" }

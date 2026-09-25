@@ -1,7 +1,5 @@
-//! Closed HTTPS onboarding over existing identity and incoming-byte custody.
-use crate::peer_delivery::incoming::IncomingBudget;
+//! Closed HTTPS onboarding over an existing identity, within explicit byte limits.
 use crate::peer_invitation::InvitedIdentity;
-use automerge::resource_limits::NativeReservation;
 use ed25519_dalek::{Signer, SigningKey};
 use qos_peer_state::join::JoinTransportRequest;
 use serde::Serialize;
@@ -25,7 +23,7 @@ impl OnboardingReply {
     pub(crate) fn response(&self) -> &qos_peer_state::join::JoinTransportResponse {
         self.held.response()
     }
-    fn decode(bytes: &[u8], budget: &IncomingBudget) -> Result<Self, String> {
+    fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > wire::MAX_RESPONSE_BYTES {
             return Err("onboarding nested reply exceeds bound".into());
         }
@@ -37,7 +35,6 @@ impl OnboardingReply {
                 // allocation guard limits concrete backing before growth.
                 collection_entries: wire::MAX_RESPONSE_BYTES,
             },
-            budget.allowance(),
         )
         .map_err(|_| "storage-pressure: bounded onboarding response refused")?;
         Ok(Self { held })
@@ -73,87 +70,54 @@ impl OnboardingCancel {
     }
 }
 
-struct ChargedBytes {
-    bytes: Vec<u8>,
-    _credit: NativeReservation,
-}
-
-impl ChargedBytes {
-    fn zeroed(length: usize, budget: &IncomingBudget) -> Result<Self, String> {
-        let credit = budget.reserve(length)?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(length)
-            .map_err(|_| "onboarding allocation unavailable")?;
-        if bytes.capacity() > length {
-            return Err("onboarding allocation exceeds reserved capacity".into());
-        }
-        bytes.resize(length, 0);
-        Ok(Self {
-            bytes,
-            _credit: credit,
-        })
-    }
-
-    fn copy(source: &[u8], budget: &IncomingBudget) -> Result<Self, String> {
-        let mut value = Self::zeroed(source.len(), budget)?;
-        value.bytes.copy_from_slice(source);
-        Ok(value)
-    }
-}
-
-fn encode<T: Serialize>(
-    value: &T,
-    maximum: usize,
-    budget: &IncomingBudget,
-) -> Result<ChargedBytes, String> {
-    let length = postcard::experimental::serialized_size(value).map_err(|e| e.to_string())?;
-    if length == 0 || length > maximum {
-        return Err("onboarding encoding exceeds bound".into());
-    }
-    let credit = budget.reserve(length)?;
+/// Zero-filled backing of exactly `length` bytes. Every caller bounds
+/// `length` by a wire limit first.
+fn zeroed(length: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     bytes
         .try_reserve_exact(length)
         .map_err(|_| "onboarding allocation unavailable")?;
-    if bytes.capacity() > length {
-        return Err("onboarding allocation exceeds reserved capacity".into());
-    }
     bytes.resize(length, 0);
+    Ok(bytes)
+}
+
+fn copy(source: &[u8]) -> Result<Vec<u8>, String> {
+    let mut bytes = zeroed(source.len())?;
+    bytes.copy_from_slice(source);
+    Ok(bytes)
+}
+
+fn encode<T: Serialize>(value: &T, maximum: usize) -> Result<Vec<u8>, String> {
+    let length = postcard::experimental::serialized_size(value).map_err(|e| e.to_string())?;
+    if length == 0 || length > maximum {
+        return Err("onboarding encoding exceeds bound".into());
+    }
+    let mut bytes = zeroed(length)?;
     let encoded = postcard::to_slice(value, &mut bytes).map_err(|e| e.to_string())?;
     if encoded.len() != length {
         return Err("onboarding encoding size changed".into());
     }
-    Ok(ChargedBytes {
-        bytes,
-        _credit: credit,
-    })
+    Ok(bytes)
 }
 
 pub(crate) struct PreparedJoin {
-    encoded: ChargedBytes,
+    encoded: Vec<u8>,
     #[cfg_attr(
         not(target_arch = "wasm32"),
         expect(dead_code, reason = "read only by the browser (wasm32) build")
     )]
     key: SigningKey,
-    budget: IncomingBudget,
 }
 
 impl PreparedJoin {
     pub(crate) fn request_bytes(&self) -> &[u8] {
-        &self.encoded.bytes
+        &self.encoded
     }
 
     fn verify_reply<'a>(&self, bytes: &'a [u8], now: u64) -> Result<VerifiedReply<'a>, String> {
         if bytes.len() > 1024 * 1024 {
             return Err("initial onboarding reply exceeds bound".into());
         }
-        // The shared verifier may decode up to 64 manifest descriptors with
-        // Vec growth overlap and the request's bounded owned certificate.
-        let credit = self
-            .budget
-            .reserve(3 * wire::MAX_SEGMENTS * std::mem::size_of::<wire::HandoffSegment>() + 4096)?;
         let request =
             wire::OnboardingRequest::decode(self.request_bytes()).map_err(|e| e.to_string())?;
         if now >= request.expires_at_ns {
@@ -166,7 +130,6 @@ impl PreparedJoin {
         Ok(VerifiedReply {
             body: reply.body,
             kind: reply.body_kind,
-            _credit: credit,
         })
     }
 }
@@ -174,18 +137,13 @@ impl PreparedJoin {
 struct VerifiedReply<'a> {
     body: &'a [u8],
     kind: wire::ReplyBodyKind,
-    _credit: NativeReservation,
 }
 
 pub(crate) fn prepare_invited(
     identity: &InvitedIdentity,
     request: JoinTransportRequest,
-    budget: &IncomingBudget,
     now_ns: u64,
 ) -> Result<PreparedJoin, String> {
-    // These are the existing verified identity/pin readers. Their legacy
-    // identity allocation is not upgraded to native qualification by this
-    // transport adapter; all newly encoded request backings below are charged.
     let invitation = identity.retained_invitation()?;
     let grant = invitation.grant();
     let (host, origin) = identity
@@ -233,10 +191,8 @@ pub(crate) fn prepare_invited(
         }
         _ => return Err("onboarding request differs from retained identity scope".into()),
     };
-    let body = encode(&request, wire::MAX_REQUEST_BYTES, budget)?;
-    if operation == wire::OnboardingOperation::Complete
-        && body.bytes.get(1..) != identity.completion()
-    {
+    let body = encode(&request, wire::MAX_REQUEST_BYTES)?;
+    if operation == wire::OnboardingOperation::Complete && body.get(1..) != identity.completion() {
         return Err("onboarding completion differs from durable checkpoint".into());
     }
     let scope = wire::OnboardingScope {
@@ -252,7 +208,6 @@ pub(crate) fn prepare_invited(
         scope,
         certificate,
         identity.device_key(),
-        budget,
         now_ns,
     )
 }
@@ -280,7 +235,6 @@ pub(crate) struct OwnerOnboarding<'a> {
 pub(crate) fn prepare_owner(
     owner: OwnerOnboarding<'_>,
     request: JoinTransportRequest,
-    budget: &IncomingBudget,
     now_ns: u64,
 ) -> Result<PreparedJoin, String> {
     if !canonical_https_origin(owner.origin) || now_ns == 0 {
@@ -317,7 +271,7 @@ pub(crate) fn prepare_owner(
         }
         _ => return Err("Cloud owner onboarding request differs from enrolled scope".into()),
     };
-    let body = encode(&request, wire::MAX_REQUEST_BYTES, budget)?;
+    let body = encode(&request, wire::MAX_REQUEST_BYTES)?;
     let scope = wire::OnboardingScope {
         origin: owner.origin,
         host: host.device_public_key,
@@ -325,15 +279,7 @@ pub(crate) fn prepare_owner(
         root: host.user_public_key,
         room: owner.room.parse().map_err(|_| "invalid onboarding room")?,
     };
-    wrap(
-        operation,
-        body,
-        scope,
-        certificate,
-        owner.key,
-        budget,
-        now_ns,
-    )
+    wrap(operation, body, scope, certificate, owner.key, now_ns)
 }
 
 /// `https://host[:port]` only: no path, query, fragment or credentials.
@@ -350,27 +296,26 @@ fn canonical_https_origin(origin: &str) -> bool {
 
 fn wrap(
     operation: wire::OnboardingOperation,
-    body: ChargedBytes,
+    body: Vec<u8>,
     scope: wire::OnboardingScope<'_>,
     certificate: &tilo_user_identity::DeviceCert,
     key: SigningKey,
-    budget: &IncomingBudget,
     now_ns: u64,
 ) -> Result<PreparedJoin, String> {
-    let cert = encode(certificate, 4096, budget)?;
+    let cert = encode(certificate, 4096)?;
     let (nonce, _) = tilo_user_identity::DeviceIdentity::generate("Onboarding request", now_ns);
     let mut wrapper = wire::OnboardingRequest {
         version: 3,
         operation,
         scope,
-        certificate: &cert.bytes,
+        certificate: &cert,
         nonce: nonce.to_bytes(),
         issued_at_ns: now_ns,
         expires_at_ns: now_ns
             .checked_add(60_000_000_000)
             .ok_or("onboarding time overflow")?,
-        body_digest: canonical_item_digest(&body.bytes),
-        body: &body.bytes,
+        body_digest: canonical_item_digest(&body),
+        body: &body,
         signature: [[0; 32]; 2],
     };
     let signature = key
@@ -378,12 +323,8 @@ fn wrap(
         .to_bytes();
     wrapper.signature[0].copy_from_slice(&signature[..32]);
     wrapper.signature[1].copy_from_slice(&signature[32..]);
-    let encoded = encode(&wrapper, wire::MAX_REQUEST_BYTES, budget)?;
-    Ok(PreparedJoin {
-        encoded,
-        key,
-        budget: budget.clone(),
-    })
+    let encoded = encode(&wrapper, wire::MAX_REQUEST_BYTES)?;
+    Ok(PreparedJoin { encoded, key })
 }
 
 #[cfg(test)]

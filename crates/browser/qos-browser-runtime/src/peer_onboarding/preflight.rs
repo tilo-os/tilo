@@ -53,10 +53,9 @@ impl postcard::ser_flavors::Flavor for Exact<'_> {
     }
 }
 
-/// Checks borrowed shape/canonical bytes without allocation. The returned
-/// amount must be reserved before the existing owned decode and held through
-/// its result's drop; this function supplies neither credit nor authority.
-pub(crate) fn preflight_completion(bytes: &[u8]) -> Result<usize, &'static str> {
+/// Checks borrowed shape/canonical bytes and their nested bounds without
+/// allocation, before the owned decode. It confers no authority.
+pub(crate) fn preflight_completion(bytes: &[u8]) -> Result<(), &'static str> {
     if bytes.is_empty() || bytes.len() > 256 * 1024 {
         return Err("retained completion exceeds bound");
     }
@@ -75,11 +74,5 @@ pub(crate) fn preflight_completion(bytes: &[u8]) -> Result<usize, &'static str> 
     }
     postcard::serialize_with_flavor(&value, Exact(bytes))
         .map_err(|_| "noncanonical retained completion")?;
-    // The legacy bytes64 Deserialize temporarily owns a Vec of 64 bytes.
-    challenge
-        .signed_invitation
-        .len()
-        .checked_add(challenge.room.len())
-        .and_then(|bytes| bytes.checked_add(64))
-        .ok_or("retained completion size overflow")
+    Ok(())
 }

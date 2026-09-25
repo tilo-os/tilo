@@ -161,23 +161,17 @@ fn sender_admin_managed_init_commits_active_real_file() {
     );
     assert_eq!(aggregate.generation, 1);
 
-    let inventory = AdminInventory::new().unwrap();
     let scope = SenderScope::native(
         uuid::Uuid::from_bytes(status.room),
         status.owner_root,
         status.native_device,
     )
     .unwrap();
-    let credit = inventory
-        .allowance
-        .reserve(AdministrativeFile::required_bytes(&scope).unwrap())
-        .unwrap();
     let file = AdministrativeFile::open(
         StorageDirectory::open(&root).unwrap(),
         scope,
         status.instance,
         AdministrativeExpectation::Active,
-        credit,
     )
     .unwrap();
     let facts = file.revalidate().unwrap();
@@ -517,7 +511,7 @@ fn sender_admin_final_file_change_refuses_success() {
 }
 
 #[test]
-fn sender_admin_exact_outputs_are_prepaid_from_original_inventory() {
+fn sender_admin_exact_signed_output_has_exact_capacity() {
     let container = fixture();
     let root = container.path().join("owner");
     let original = unselected(&root);
@@ -526,29 +520,10 @@ fn sender_admin_exact_outputs_are_prepaid_from_original_inventory() {
     let aggregate = schema::Aggregate::decode_payload(&prepared.base).unwrap();
     let identity =
         crate::identity::load(&aggregate.identity_root, &aggregate.host_identity_root).unwrap();
-    let inventory = AdminInventory::new().unwrap();
     let selected = schema::SenderSelection::decode(&prepared.sender).unwrap();
-    let before = inventory.allowance.available_bytes();
-    let encoded =
-        encode_selected(&signed.payload, &selected, &identity, &inventory.allowance).unwrap();
-    let required = encoded._payload.capacity() + encoded.signed.capacity() + 48;
-    assert_eq!(encoded._credit.bytes(), required);
-    assert_eq!(before - inventory.allowance.available_bytes(), required);
-    assert_eq!(encoded._payload.len(), encoded._payload.capacity());
+    let encoded = encode_selected(&signed.payload, &selected, &identity).unwrap();
     assert_eq!(encoded.signed.len(), encoded.signed.capacity());
-    let held = inventory
-        .allowance
-        .reserve(inventory.allowance.available_bytes())
-        .unwrap();
-    assert!(encode_selected(&signed.payload, &selected, &identity, &inventory.allowance).is_err());
-    drop(held);
-    drop(encoded);
-    assert_eq!(before, inventory.allowance.available_bytes());
-    eprintln!(
-        "native sender outputs: exact W+S+48={}, holder={}, original-pool allowance restored",
-        required,
-        std::mem::size_of::<Encoded>()
-    );
+    assert!(encoded.signed.len() <= crate::store::MAX_AGGREGATE_BYTES);
 }
 
 #[test]
@@ -734,7 +709,7 @@ fn sender_admin_v5_v6_exact_borrowed_base_and_delivery_generation_preserved() {
 }
 
 #[test]
-fn sender_admin_total_signed_cap_and_overlap_fail_before_output_allocation() {
+fn sender_admin_total_signed_cap_fails_before_output_allocation() {
     let container = fixture();
     let root = container.path().join("owner");
     unselected(&root);
@@ -742,40 +717,17 @@ fn sender_admin_total_signed_cap_and_overlap_fail_before_output_allocation() {
     let base = schema::Aggregate::decode_payload(&prepared.base).unwrap();
     let identity = crate::identity::load(&base.identity_root, &base.host_identity_root).unwrap();
     let selected = schema::SenderSelection::decode(&prepared.sender).unwrap();
-    let inventory = AdminInventory::new().unwrap();
-    let before = inventory.allowance.available_bytes();
     // Inert test input only: the private encoder is normally passed the actual
-    // authenticated base. Both failures occur in count/admission before output.
+    // authenticated base. The failure occurs in counting, before output.
     let large = vec![0; crate::store::MAX_AGGREGATE_BYTES];
-    assert!(encode_selected(&large, &selected, &identity, &inventory.allowance).is_err());
-    assert!(
-        encode_selected(
-            &large[..40 * 1024 * 1024],
-            &selected,
-            &identity,
-            &inventory.allowance
-        )
-        .is_err()
-    );
-    assert_eq!(before, inventory.allowance.available_bytes());
+    assert!(encode_selected(&large, &selected, &identity).is_err());
 }
 
 #[test]
-fn sender_admin_capacity_and_unexplained_unselected_artifacts_precede_prepared() {
+fn sender_admin_unexplained_unselected_artifacts_precede_prepared() {
     let container = fixture();
     let root = container.path().join("owner");
     let before = unselected(&root);
-    let inventory = AdminInventory::new().unwrap();
-    let pressure = inventory
-        .allowance
-        .reserve(inventory.allowance.available_bytes())
-        .unwrap();
-    let operation = Operation::existing(&root, inventory).unwrap();
-    let failure = operation.execute(Intent::Select).unwrap_err();
-    assert!(!root.join("private-actions-v1.writer.lock").exists());
-    assert_eq!(before, std::fs::read(root.join("session.bin")).unwrap());
-    drop(failure);
-    drop(pressure);
     std::fs::create_dir(root.join("private-actions-v1")).unwrap();
     std::fs::set_permissions(
         root.join("private-actions-v1"),
@@ -873,9 +825,9 @@ fn sender_admin_active_accepts_later_valid_payload_but_prepared_does_not() {
 }
 
 // Only new post-admission output/error work is observed. Genuine legacy owner
-// admission and the actual ingress/allowance construction precede this scope.
-// Those original values remain alive until after the observer is disabled.
-use super::super::native_credit::{Stats, allocations_only, snapshot};
+// admission precedes this scope, and its values stay alive until after the
+// observer is disabled.
+use super::super::allocation_meter::{Stats, allocations_only, snapshot};
 
 fn assert_no_new_backing(observed: Stats) {
     assert_eq!(
@@ -887,7 +839,7 @@ fn assert_no_new_backing(observed: Stats) {
 }
 
 #[test]
-fn sender_admin_actual_output_allocations_drop_before_original_credit() {
+fn sender_admin_actual_output_allocations_are_exact_and_released() {
     let container = fixture();
     let root = container.path().join("owner");
     unselected(&root);
@@ -896,80 +848,33 @@ fn sender_admin_actual_output_allocations_drop_before_original_credit() {
     let identity =
         crate::identity::load(&aggregate.identity_root, &aggregate.host_identity_root).unwrap();
     let selected = schema::SenderSelection::decode(&prepared.sender).unwrap();
-    let inventory = AdminInventory::new().unwrap();
-    let pool = inventory._receiver.host_bytes();
-    let original_idle = inventory._receiver.idle_available_bytes();
-    let _original_work = inventory._receiver.host_work();
-    let ((backing, retained), observed) = allocations_only(|| {
-        let encoded =
-            encode_selected(&prepared.base, &selected, &identity, &inventory.allowance).unwrap();
-        let backing = encoded._payload.capacity() + encoded.signed.capacity();
+    let ((), observed) = allocations_only(|| {
+        let encoded = encode_selected(&prepared.base, &selected, &identity).unwrap();
         let live = snapshot();
         assert_eq!(
             live.allocations, 2,
             "only exact wrapper and signed output allocate"
         );
-        assert_eq!(live.live, backing);
-        assert_eq!(encoded._credit.bytes(), backing + 48);
-        // This is the real keeper callback on the original ingress pool. The
-        // two live Vecs and their stage-name reserve stay withheld after seal.
-        inventory.allowance.finish_turn();
-        let retained = original_idle - pool.available_bytes();
-        assert!(retained >= backing + 48);
+        assert_eq!(live.live, encoded.signed.capacity());
         drop(encoded);
-        assert_eq!(
-            snapshot().live,
-            0,
-            "backing is freed before its reservation"
-        );
-        assert!(original_idle - pool.available_bytes() < retained);
-        (backing, retained)
+        assert_eq!(snapshot().live, 0);
     });
     assert_eq!(observed.live, 0);
     assert_eq!(observed.allocations, 2);
     assert!(!observed.unmatched_free);
-    drop(inventory);
-    assert_eq!(pool.available_bytes(), original_idle);
-    eprintln!(
-        "native admin measured W+S={backing}, sealed original-pool retention={retained}, inline Encoded={}, AdminError={}, CliError={}",
-        std::mem::size_of::<Encoded>(),
-        std::mem::size_of::<AdminError>(),
-        std::mem::size_of::<CliError>()
-    );
 }
 
 #[test]
-fn sender_admin_actual_cli_error_transport_and_pressure_allocate_nothing() {
+fn sender_admin_actual_cli_error_transport_allocates_nothing() {
     let container = fixture();
     let root = container.path().join("owner");
     unselected(&root);
-    let prepared = interrupt_prepared(&root, |_| {});
-    let inventory = AdminInventory::new().unwrap();
-    let pool = inventory._receiver.host_bytes();
-    let original_idle = inventory._receiver.idle_available_bytes();
-    let _original_work = inventory._receiver.host_work();
-    let operation = Operation::existing(&root, inventory).unwrap();
-    let selected = schema::SenderSelection::decode(&prepared.sender).unwrap();
-    let pressure = operation
-        .inventory
-        .allowance
-        .reserve(operation.inventory.allowance.available_bytes())
-        .unwrap();
+    let operation = Operation::existing(&root).unwrap();
     let (cli, observed) = allocations_only(|| {
-        let cause = match encode_selected(
-            &prepared.base,
-            &selected,
-            &operation.identity,
-            &operation.inventory.allowance,
-        ) {
-            Err(cause) => cause,
-            Ok(_) => panic!("full original allowance must refuse before allocation"),
-        };
-        assert!(matches!(cause, Cause::Resource(_)));
         // This is the same concrete From and Debug used by main's Result
         // termination, not a test-only adapter or an anyhow error box.
         let cli = CliError::from(AdminError {
-            cause,
+            cause: Cause::Refused("refused for the transport test"),
             operation: Some(operation),
         });
         use std::io::Write;
@@ -977,51 +882,29 @@ fn sender_admin_actual_cli_error_transport_and_pressure_allocate_nothing() {
         cli
     });
     assert_no_new_backing(observed);
-    drop(pressure);
-    let CliError::Administration(error) = &cli else {
-        panic!("actual native error must remain inline")
-    };
-    error
-        .operation
-        .as_ref()
-        .unwrap()
-        .inventory
-        .allowance
-        .finish_turn();
-    assert!(
-        pool.available_bytes() < original_idle,
-        "original keeper is retained by error"
-    );
     assert!(
         crate::store::SessionStore::open(&root).is_err(),
         "by-value CLI error retains original owner custody"
     );
     drop(cli);
-    assert_eq!(pool.available_bytes(), original_idle);
     drop(crate::store::SessionStore::open(&root).unwrap());
 }
 
 #[test]
-fn sender_admin_owned_final_check_keeps_actual_child_error_and_original_credit() {
+fn sender_admin_owned_final_check_keeps_actual_child_error() {
     let container = fixture();
     let root = container.path().join("owner");
     initialize(&root).unwrap();
-    let inventory = AdminInventory::new().unwrap();
-    let pool = inventory._receiver.host_bytes();
-    let original_idle = inventory._receiver.idle_available_bytes();
-    let _original_work = inventory._receiver.host_work();
-    let mut operation = Operation::existing(&root, inventory).unwrap();
+    let mut operation = Operation::existing(&root).unwrap();
     operation.run(Intent::Status).unwrap();
     let child = root.join("private-actions-v1");
     let moved = root.join("retained-child");
     std::fs::rename(&child, &moved).unwrap();
     std::fs::create_dir(&child).unwrap();
     std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).unwrap();
-    // The ordinary Store check is not reclassified as paid work; the actual
-    // immediately following production helper is observed independently.
+    // The ordinary Store check runs first; the actual immediately following
+    // production helper is observed independently.
     drop(operation.store.administrative_directory().unwrap());
-    operation.inventory.allowance.finish_turn();
-    let retained = original_idle - pool.available_bytes();
     let (cli, observed) = allocations_only(|| {
         let cause = operation.current_physical().unwrap_err();
         let cli = CliError::from(AdminError {
@@ -1033,7 +916,6 @@ fn sender_admin_owned_final_check_keeps_actual_child_error_and_original_credit()
         cli
     });
     assert_no_new_backing(observed);
-    assert_eq!(original_idle - pool.available_bytes(), retained);
     let CliError::Administration(error) = &cli else {
         panic!("wrong CLI error")
     };
@@ -1056,7 +938,6 @@ fn sender_admin_owned_final_check_keeps_actual_child_error_and_original_credit()
     ));
     assert!(crate::store::SessionStore::open(&root).is_err());
     drop(cli);
-    assert_eq!(pool.available_bytes(), original_idle);
     drop(
         FileLease::try_acquire(
             bounded

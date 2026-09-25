@@ -20,7 +20,7 @@ impl PeerMediaCall {
         self.subscribe
     }
 }
-impl PeerRead<'_, '_> {
+impl PeerRead<'_> {
     /// Uses retained media readiness, then rechecks actual authority and member
     /// at the supplied time. The parent binds its authenticated source, request
     /// room, original clock and publication guard. No policy DTO is exported.
@@ -28,7 +28,7 @@ impl PeerRead<'_, '_> {
     /// # Errors
     ///
     /// Returns a [`BoundedPeerError`] if the device is not a current member or the call
-    /// binding cannot be read within the work budget.
+    /// binding cannot be read within its limits.
     pub fn media_call(
         &self,
         device: [u8; 32],
@@ -36,7 +36,6 @@ impl PeerRead<'_, '_> {
         now: SystemTime,
     ) -> Result<Option<PeerMediaCall>, BoundedPeerError> {
         use crate::room::media::read::PolicyValue;
-        self.work.reserve(0).map_err(BoundedPeerError::Resource)?;
         let backend::media::Cache::Ready(policy) = &self.peer.media else {
             return Ok(None);
         };

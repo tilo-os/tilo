@@ -21,6 +21,10 @@ qos-cloud-host enrollment apply --request-file /run/tilo-cloud/request.json
 qos-cloud-host serve
 ```
 
+Untrusted Automerge bytes are applied in a re-executed worker process. Any binary
+that links this library must call `tilo_automerge_isolate::dispatch_early()` first
+thing in `main`, before starting threads, as `src/main.rs` does.
+
 Inspect creates only a local host device key and a five-minute public challenge.
 The browser owns its root/device keys and signs the native certificates and both
 root authorization and device-possession proofs. `qos-user-identity::cloud_enrollment`

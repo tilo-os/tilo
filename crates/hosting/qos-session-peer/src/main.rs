@@ -30,7 +30,12 @@ fn worker_threads() -> usize {
     clippy::result_large_err,
     reason = "the CLI error carries the owned administrative operation; the error path must not allocate"
 )]
-fn main() -> Result<()> {
+fn main() -> Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them before the
+    // runtime starts.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(worker_threads())
         .thread_stack_size(WORKER_STACK_BYTES)
@@ -39,6 +44,7 @@ fn main() -> Result<()> {
         .build()
         .context("building the session peer runtime")?
         .block_on(run())
+        .map(|()| std::process::ExitCode::SUCCESS)
 }
 
 async fn run() -> Result<()> {

@@ -1,5 +1,4 @@
 use super::*;
-use automerge::resource_limits::NativeAllowance;
 use qos_peer_state::transport::Retention;
 use qos_relay::delivery_v3::commit::{CommitRef, PublicationRef};
 fn reference(state: &State, store: StoreGeneration, replay: &ReplayCommit) -> Digest {
@@ -77,15 +76,11 @@ fn cloud_replay_digest_stream_matches_actual_retained_and_all_reference_fields()
     }
 }
 #[test]
-fn cloud_replay_digest_stream_needs_no_heap_encoding() {
+fn cloud_replay_digest_stream_matches_committed_digest() {
     let (_dir, store) = fixture();
     let delivery = store.state.delivery.as_ref().unwrap();
     let entry = delivery.ledger().replay.values().next().unwrap();
-    let allowance = NativeAllowance::new(4096).unwrap();
-    let _exhausted = allowance.reserve(allowance.available_bytes()).unwrap();
-    let digest = crate::delivery::resources::precharged_test(&allowance, || {
-        exact(&store.state, delivery.store_generation(), entry)
-    });
+    let digest = exact(&store.state, delivery.store_generation(), entry);
     assert_eq!(digest.unwrap(), entry.digest);
 }
 #[test]
@@ -96,11 +91,7 @@ fn cloud_replay_digest_stream_refuses_invalid_room_before_output() {
     let generation = delivery.store_generation();
     let mut state = store.state.clone();
     state.room = "invalid".into();
-    let allowance = NativeAllowance::new(4096).unwrap();
-    let _exhausted = allowance.reserve(allowance.available_bytes()).unwrap();
-    let result = crate::delivery::resources::precharged_test(&allowance, || {
-        exact(&state, generation, &entry)
-    });
+    let result = exact(&state, generation, &entry);
     assert!(matches!(result, Err(ReplayDigestError::Room(_))));
 }
 
@@ -122,17 +113,13 @@ fn cloud_replay_digest_stream_preserves_original_uuid_input_forms() {
         room.braced().to_string(),
     ];
     let mut state = store.state.clone();
-    let allowance = NativeAllowance::new(4096).unwrap();
-    let _exhausted = allowance.reserve(allowance.available_bytes()).unwrap();
     for form in forms {
         state.room = form;
         let expected = reference(&state, generation, &entry);
-        let actual = crate::delivery::resources::precharged_test(&allowance, || {
-            (
-                qos_relay::room_workspace_id(&state.room).unwrap(),
-                exact(&state, generation, &entry).unwrap(),
-            )
-        });
+        let actual = (
+            qos_relay::room_workspace_id(&state.room).unwrap(),
+            exact(&state, generation, &entry).unwrap(),
+        );
         assert_eq!(actual, (original_workspace, expected));
     }
     state.room = "invalid".into();

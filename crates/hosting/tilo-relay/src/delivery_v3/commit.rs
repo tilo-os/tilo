@@ -5,6 +5,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use std::{
     collections::{BTreeMap, BTreeSet},
     marker::PhantomData,
+    sync::Arc,
 };
 
 /// Maximum canonical encoded ledger size under provisional qualification policy.
@@ -317,10 +318,10 @@ impl DeliveryLedgerV1 {
 struct PoolWire {
     version: u8,
     #[serde(serialize_with = "shared_payloads")]
-    payloads: BTreeMap<Digest, resources::PayloadBacking>,
+    payloads: BTreeMap<Digest, Arc<Vec<u8>>>,
 }
 fn shared_payloads<S: serde::Serializer>(
-    values: &BTreeMap<Digest, resources::PayloadBacking>,
+    values: &BTreeMap<Digest, Arc<Vec<u8>>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     use serde::ser::SerializeMap;
@@ -407,9 +408,7 @@ impl PublicationPool {
         if total > self.limit || self.wire.payloads.len() >= MAX_REFERENCES {
             return Err(CommitError::Quota);
         }
-        self.wire
-            .payloads
-            .insert(id, resources::PayloadBacking::legacy(bytes.to_vec()));
+        self.wire.payloads.insert(id, Arc::new(bytes.to_vec()));
         self.bytes = total;
         Ok(id)
     }
@@ -422,7 +421,7 @@ impl PublicationPool {
         self.wire
             .payloads
             .get(id)
-            .map(resources::PayloadBacking::as_slice)
+            .map(|bytes| bytes.as_slice())
             .ok_or(CommitError::MissingPayload)
     }
     /// Number of unique retained payloads, independent of reference multiplicity.
@@ -513,7 +512,7 @@ impl PublicationPool {
         pool.wire.payloads = wire
             .payloads
             .into_iter()
-            .map(|(id, bytes)| (id, resources::PayloadBacking::legacy(bytes.to_vec())))
+            .map(|(id, bytes)| (id, Arc::new(bytes.to_vec())))
             .collect();
         pool.bytes = total;
         Ok(pool)
@@ -705,6 +704,3 @@ mod tests;
 
 mod pin;
 pub use pin::PublicationPayload;
-
-/// Typed allocation custody for this concrete storage format.
-pub mod resources;

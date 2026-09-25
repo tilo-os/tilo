@@ -1,7 +1,6 @@
 //! Actual-core adapters to the one delivery policy projection.
 use super::{BoundedNative, DeviceCert, PeerCore, StatePeer, SystemTime};
 use crate::state::bounded::{BoundedPeerError, PeerLimits};
-use automerge::resource_limits::NativeWorkTurn;
 #[derive(Debug, PartialEq, Eq)]
 pub enum PeerDeliveryPolicyError {
     Peer(BoundedPeerError),
@@ -20,7 +19,7 @@ impl std::error::Error for PeerDeliveryPolicyError {}
 /// No hash constructor, raw peer, owned buffers or native document is exposed.
 /// ```
 /// use qos_peer_state::{PeerRead,PeerDeliveryPolicy,PeerDeliveryPolicyError};
-/// fn data<'p,'w>(read:&PeerRead<'p,'w>,cert:&tilo_user_identity::DeviceCert,now:web_time::SystemTime)->Result<PeerDeliveryPolicy<'p>,PeerDeliveryPolicyError>{read.delivery_policy(1,cert,cert,now)}
+/// fn data<'p>(read:&PeerRead<'p>,cert:&tilo_user_identity::DeviceCert,now:web_time::SystemTime)->Result<PeerDeliveryPolicy<'p>,PeerDeliveryPolicyError>{read.delivery_policy(1,cert,cert,now)}
 /// fn fields(value:&PeerDeliveryPolicy<'_>) {let _=(value.room(),value.authority_root(),value.digest());}
 /// ```
 /// ```compile_fail
@@ -51,17 +50,15 @@ impl PeerDeliveryPolicy<'_> {
 fn map_error(error: crate::room::delivery_policy::Error) -> PeerDeliveryPolicyError {
     use crate::room::delivery_policy::Error;
     match error {
-        Error::Resource(error) => PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(error)),
+        Error::Capacity => PeerDeliveryPolicyError::Capacity,
         Error::Decode(error) => PeerDeliveryPolicyError::Peer(BoundedPeerError::Decode(error)),
         Error::Unavailable => PeerDeliveryPolicyError::Unavailable,
         Error::CurrentDenied => PeerDeliveryPolicyError::CurrentDenied,
         Error::UnsupportedPolicy => PeerDeliveryPolicyError::UnsupportedPolicy,
-        Error::Capacity => PeerDeliveryPolicyError::Capacity,
     }
 }
 pub(in crate::state) fn bounded<'peer>(
     core: &'peer PeerCore<BoundedNative>,
-    turn: &NativeWorkTurn,
     limits: PeerLimits,
     workspace: u64,
     host: &DeviceCert,
@@ -69,15 +66,11 @@ pub(in crate::state) fn bounded<'peer>(
     check_routes: impl FnOnce() -> Result<(), crate::room::delivery_policy::Error>,
 ) -> Result<PeerDeliveryPolicy<'peer>, PeerDeliveryPolicyError> {
     use crate::room::delivery_policy::{self, Limits, Metadata};
-    turn.reserve(0)
-        .map_err(|e| PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(e)))?;
     let room = core
         .room_doc
         .as_ref()
         .ok_or(PeerDeliveryPolicyError::Unavailable)?;
-    let read = room
-        .read(turn)
-        .map_err(|e| PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(e)))?;
+    let read = room.read();
     let digest = delivery_policy::native(
         &read,
         Metadata {
@@ -93,7 +86,6 @@ pub(in crate::state) fn bounded<'peer>(
                 .map(std::convert::AsRef::as_ref),
             revocations: core.revocations.iter(),
         },
-        turn,
         Limits {
             collections: limits.governance_collection_bytes,
             json: crate::resources::json::JsonLimits {

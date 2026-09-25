@@ -8,7 +8,6 @@ use super::{
     decide_capability, err, now_ns, now_secs, room,
 };
 use crate::resources::native::NativeDocument;
-use automerge::resource_limits::NativeReservation;
 pub(super) mod access;
 pub(super) mod delivery_policy;
 mod durable;
@@ -67,7 +66,7 @@ impl Storage for BoundedNative {
     type Room = NativeDocument;
     type Document = NativeDocument;
     type Checkpoint = NativeCheckpoint;
-    type Retention = restore::CoreRetention;
+    type Retention = ();
     type CertificateRoster = roster::BoundedRoster;
     type RevocationUnion = revocations::BoundedRevocations;
     type ExactEvidence = Option<crate::admission::BoundedExactAdmissions>;
@@ -82,16 +81,15 @@ impl Storage for BoundedNative {
     }
 }
 
-// Historical restore keeps checkpoint bytes lazy. Their original DTO backing
-// is held by CoreRetention, and any future decode must use the current native
-// work turn. No eager load rejects previously accepted opaque checkpoint bytes.
+// Historical restore keeps checkpoint bytes lazy. No eager load rejects
+// previously accepted opaque checkpoint bytes.
 // The checkpoint's wire version is its document's `PeerDocument::wire_version`.
 pub(super) struct NativeCheckpoint {
     #[cfg_attr(
         not(test),
         expect(
             dead_code,
-            reason = "retained for a future decode under the current work turn; only tests read it today"
+            reason = "kept for a later decode; only tests read it today"
         )
     )]
     pub(super) original: Vec<u8>,
@@ -133,7 +131,6 @@ pub(super) struct PeerCore<S: Storage> {
     pub(super) admission_v5: bool,
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
-    // Declared last: owned metadata and native backing drop before its credit.
     pub(super) _retention: S::Retention,
 }
 impl Clone for PeerCore<LegacyNative> {
@@ -195,17 +192,14 @@ mod tests {
     use crate::TransportOrigin;
     use ed25519_dalek::SigningKey;
     #[test]
-    fn typed_certificate_lookup_uses_real_current_roster_without_error_allocations() {
+    fn typed_certificate_lookup_uses_real_current_roster() {
         let (mut peer, _, _, member, now) = crate::admission_tests::seeded();
         let source = member.device_public_key;
-        let allowance = automerge::resource_limits::NativeAllowance::new(4096).unwrap();
-        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
-            assert_eq!(peer.core.certificate_typed(&source, now).unwrap(), &member);
-            assert_eq!(
-                peer.core.certificate_typed(&[77; 32], now),
-                Err(CertificateLookupError::Missing)
-            );
-        });
+        assert_eq!(peer.core.certificate_typed(&source, now).unwrap(), &member);
+        assert_eq!(
+            peer.core.certificate_typed(&[77; 32], now),
+            Err(CertificateLookupError::Missing)
+        );
         let mut entry = tilo_user_identity::RevocationEntry {
             user_public_key: member.user_public_key,
             revoked_device_public_key: source,
@@ -224,12 +218,10 @@ mod tests {
             now,
         )
         .unwrap();
-        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
-            assert_eq!(
-                peer.core.certificate_typed(&source, now),
-                Err(CertificateLookupError::Revoked)
-            );
-        });
+        assert_eq!(
+            peer.core.certificate_typed(&source, now),
+            Err(CertificateLookupError::Revoked)
+        );
     }
 }
 

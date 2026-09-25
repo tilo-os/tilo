@@ -1,13 +1,12 @@
-//! One security-basis algorithm, with separately charged native temporary work.
+//! One security-basis algorithm for both storage modes.
 use super::{MediaPolicyError, read::Error};
 use crate::resources::{
     PeerResourceError,
-    json::{JsonHeld, JsonLimits},
+    json::{self, JsonLimits},
 };
 use crate::room::read::collections::Collections;
-use crate::room::read::{self, CopyValue, LegacyCopy, LegacyRead, ReadError, RoomRead, TurnCopy};
+use crate::room::read::{self, Capacity, LegacyRead, ReadError, RoomRead};
 use crate::state::GovernedIdentity;
-use automerge::resource_limits::{NativeResourceError, NativeWorkTurn};
 use collab_types::caps::CapOverride;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,53 +17,28 @@ pub(crate) struct BasisLimits {
     pub(crate) collection_bytes: usize,
     pub(crate) json: JsonLimits,
 }
-trait View<T> {
-    fn value(&self) -> &T;
-}
-impl View<GovernedIdentity> for GovernedIdentity {
-    fn value(&self) -> &Self {
-        self
-    }
-}
-impl View<CapOverride> for CapOverride {
-    fn value(&self) -> &Self {
-        self
-    }
-}
-impl<T: crate::resources::json::Schema> View<T> for JsonHeld<T> {
-    fn value(&self) -> &T {
-        self.value()
-    }
-}
 trait Decode {
-    type Identity: View<GovernedIdentity>;
-    type Capability: View<CapOverride>;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, Error>;
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Capability, Error>;
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
 }
 struct Legacy;
 impl Decode for Legacy {
-    type Identity = GovernedIdentity;
-    type Capability = CapOverride;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, Error> {
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Capability, Error> {
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
 }
-struct Bounded<'a> {
-    turn: &'a NativeWorkTurn,
+struct Bounded {
     limits: JsonLimits,
 }
-impl Decode for Bounded<'_> {
-    type Identity = JsonHeld<GovernedIdentity>;
-    type Capability = JsonHeld<CapOverride>;
-    fn identity(&self, bytes: &[u8]) -> Result<Self::Identity, Error> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(decode_error)
+impl Decode for Bounded {
+    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
+        json::decode(bytes, self.limits).map_err(decode_error)
     }
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Capability, Error> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(decode_error)
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+        json::decode(bytes, self.limits).map_err(decode_error)
     }
 }
 fn decode_error(error: PeerResourceError) -> Error {
@@ -79,14 +53,14 @@ fn policy(error: MediaPolicyError) -> Error {
 fn strict_error(error: ReadError<MediaPolicyError>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Resource(error) => Error::Resource(error),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => policy(error),
     }
 }
 fn visit_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => policy(MediaPolicyError::Malformed),
-        ReadError::Resource(error) => Error::Resource(error),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => error,
     }
 }
@@ -97,41 +71,33 @@ pub(super) fn legacy(
 ) -> Result<[u8; 32], MediaPolicyError> {
     project(
         &LegacyRead(room),
-        &LegacyCopy,
         &Legacy,
         extra,
         &mut Work {
             collections: Collections::unqualified(),
         },
     )
-    .map_err(|error| super::read::legacy_error(&error))
+    .map_err(super::read::legacy_error)
 }
 pub(crate) fn bounded<R: RoomRead>(
     room: &R,
     extra: &[RevocationEntry],
-    turn: &NativeWorkTurn,
     limits: BasisLimits,
 ) -> Result<[u8; 32], Error> {
-    bounded_entries(room, extra.iter(), turn, limits)
+    bounded_entries(room, extra.iter(), limits)
 }
-/// The already verified local union can be borrowed directly; no cloned input
-/// vector is needed. The existing projection still pays all canonical work.
+/// The already verified local union is borrowed directly.
 pub(crate) fn bounded_entries<'a, R: RoomRead>(
     room: &R,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
-    turn: &NativeWorkTurn,
     limits: BasisLimits,
 ) -> Result<[u8; 32], Error> {
-    // Reserve before the first owned collection; this caller ceiling is a
-    // refusal policy, not a promise that arbitrary policy fits.
     let mut work = Work {
-        collections: Collections::native(turn, limits.collection_bytes).map_err(Error::Resource)?,
+        collections: Collections::limited(limits.collection_bytes),
     };
     project(
         room,
-        &TurnCopy(turn),
         &Bounded {
-            turn,
             limits: limits.json,
         },
         extra,
@@ -143,9 +109,8 @@ pub(crate) fn bounded_entries<'a, R: RoomRead>(
     clippy::too_many_lines,
     reason = "one canonical basis projection, in wire order"
 )]
-fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
+fn project<'a, R: RoomRead, D: Decode>(
     room: &R,
-    copies: &C,
     decoder: &D,
     extra: impl IntoIterator<Item = &'a RevocationEntry>,
     work: &mut Work,
@@ -165,14 +130,14 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
             Ok(())
         }
     }
-    let owner = read::strict_string(room, copies, &room.root(), "owner").map_err(strict_error)?;
-    let owner_key = super::canonical_key(owner.as_ref()).map_err(policy)?;
+    let owner = read::strict_string(room, &room.root(), "owner").map_err(strict_error)?;
+    let owner_key = super::canonical_key(&owner).map_err(policy)?;
     let caps = read::strict_map(room, &room.root(), "capabilities").map_err(strict_error)?;
     let mut capabilities = BTreeMap::new();
     room.visit_keys(&caps, |key| {
-        let bytes = read::strict_bytes(room, copies, &caps, key).map_err(strict_error)?;
-        let value = decoder.capability(bytes.as_ref())?;
-        let encoded = work.encoded(value.value())?;
+        let bytes = read::strict_bytes(room, &caps, key).map_err(strict_error)?;
+        let value = decoder.capability(&bytes)?;
+        let encoded = work.encoded(&value)?;
         let key = work.text(key)?;
         work.tree_entry::<String, Vec<u8>>()?;
         capabilities.insert(key, encoded);
@@ -182,7 +147,7 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     let peers = read::strict_map(room, &room.root(), "peers").map_err(strict_error)?;
     let mut roster = BTreeSet::new();
     room.visit_keys(&peers, |key| {
-        read::strict_string(room, copies, &peers, key).map_err(strict_error)?;
+        read::strict_string(room, &peers, key).map_err(strict_error)?;
         let device = super::canonical_key(key).map_err(policy)?;
         work.tree_entry::<[u8; 32], ()>()?;
         roster.insert(device);
@@ -195,9 +160,8 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     let mut certificates = BTreeMap::new();
     let mut revocations = Vec::new();
     room.visit_keys(&identities, |key| {
-        let bytes = read::strict_bytes(room, copies, &identities, key).map_err(strict_error)?;
-        let held = decoder.identity(bytes.as_ref())?;
-        let row = held.value();
+        let bytes = read::strict_bytes(room, &identities, key).map_err(strict_error)?;
+        let row = &decoder.identity(&bytes)?;
         let device = super::canonical_key(key).map_err(policy)?;
         if device != row.device_cert.device_public_key {
             return Err(policy(MediaPolicyError::Binding));
@@ -292,27 +256,22 @@ fn project<'a, R: RoomRead, C: CopyValue, D: Decode>(
     Ok(*hasher.finalize().as_bytes())
 }
 
-// Keep this work alive after all project temporaries. The shared private
-// budget preserves the reviewed cumulative debit and growth-overlap rule.
+/// The collections limit for one basis projection.
 struct Work {
     collections: Collections,
 }
 impl Work {
     fn debit(&mut self, bytes: Option<usize>) -> Result<(), Error> {
-        self.collections.debit(bytes).map_err(Error::Resource)
+        self.collections.debit(bytes).map_err(capacity)
     }
     fn tree_entry<K, V>(&mut self) -> Result<(), Error> {
-        self.collections
-            .tree_entry::<K, V>()
-            .map_err(Error::Resource)
+        self.collections.tree_entry::<K, V>().map_err(capacity)
     }
     fn text(&mut self, value: &str) -> Result<String, Error> {
-        self.collections.text(value).map_err(Error::Resource)
+        self.collections.text(value).map_err(capacity)
     }
     fn push<T>(&mut self, values: &mut Vec<T>, value: T) -> Result<(), Error> {
-        self.collections
-            .push(values, value)
-            .map_err(Error::Resource)
+        self.collections.push(values, value).map_err(capacity)
     }
     fn encoded<T: Serialize>(&mut self, value: &T) -> Result<Vec<u8>, Error> {
         struct Count(usize);
@@ -332,47 +291,18 @@ impl Work {
                 Ok(self.0)
             }
         }
-        // Only the audited certificate/proof/capability DTOs reach this helper;
-        // their Serialize implementations borrow fields without temporary heap.
         let length = postcard::serialize_with_flavor(value, Count(0))
             .map_err(|_| policy(MediaPolicyError::Malformed))?;
-        let mut bytes = self.collections.zeroed(length).map_err(Error::Resource)?;
+        let mut bytes = self.collections.zeroed(length).map_err(capacity)?;
         postcard::to_slice(value, &mut bytes).map_err(|_| policy(MediaPolicyError::Malformed))?;
         Ok(bytes)
     }
     fn revocation_table(&mut self, count: usize) -> Result<(), Error> {
-        type Entry = ([u8; 32], RevocationEntry);
-        if count == 0 {
-            return Ok(());
-        }
-        // Same pinned std/hashbrown0.17.1 concrete map layout audited by the
-        // bounded revocation restore:4/8/16 initial buckets, then7/8 loading.
-        let capacity = || Error::Resource(NativeResourceError::WorkBytes);
-        let buckets = if count < 4 {
-            4
-        } else if count < 8 {
-            8
-        } else if count < 15 {
-            16
-        } else {
-            (count.checked_mul(8).ok_or_else(capacity)? / 7)
-                .checked_next_power_of_two()
-                .ok_or_else(capacity)?
-        };
-        let alignment = align_of::<Entry>().max(16);
-        let data = size_of::<Entry>()
-            .checked_mul(buckets)
-            .ok_or_else(capacity)?;
-        let padded = data
-            .checked_next_multiple_of(alignment)
-            .ok_or_else(capacity)?;
-        self.debit(
-            padded
-                .checked_add(buckets)
-                .and_then(|n| n.checked_add(16))
-                .and_then(|n| n.checked_mul(2)),
-        )
+        self.debit(count.checked_mul(size_of::<([u8; 32], RevocationEntry)>().saturating_mul(2)))
     }
+}
+fn capacity(_: Capacity) -> Error {
+    Error::Capacity
 }
 #[cfg(test)]
 mod tests;

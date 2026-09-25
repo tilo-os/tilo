@@ -3,11 +3,10 @@ use super::*;
 use crate::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
 use crate::application_test_support::{ProbeHost, definition, runner_inputs, runner_permissions};
 use crate::semantic_document_read::retirement::{
-    MountRetirement, RetirementDomain, RetirementError, RetirementHandle, RetirementOwner,
-    retirement_test_probe, retirement_test_requested,
+    MountRetirement, RetirementDomain, RetirementError, RetirementHandle, retirement_test_probe,
+    retirement_test_requested,
 };
 use crate::widget::{AppKind, AppWidget, Container, IconDescriptor};
-use automerge::resource_limits::NativeAllowance;
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use std::{
     cell::RefCell,
@@ -17,7 +16,6 @@ use std::{
 
 struct Observations {
     handle: RetirementHandle,
-    initial_retained: usize,
     armed: Cell<bool>,
     panic_capture: Cell<bool>,
     panic_install: Cell<Option<usize>>,
@@ -45,36 +43,11 @@ fn stage(name: &'static str) {
     STAGES.with_borrow_mut(|events| events.push(name));
     assert!(PANIC_STAGE.get() != name, "constructor probe: {name}");
 }
-fn paid() -> (
-    NativeAllowance,
-    RetirementDomain,
-    MountRetirement,
-    Rc<Observations>,
-) {
-    let budget = NativeAllowance::new(64 * 1024).unwrap();
-    let initial_retained = budget.retained_bytes();
-    let domain = RetirementDomain::new(
-        budget
-            .reserve(RetirementDomain::allocation_bytes().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    let owner = domain
-        .marker(
-            budget
-                .reserve(RetirementOwner::allocation_bytes().unwrap())
-                .unwrap(),
-        )
-        .unwrap();
+fn mounted() -> (RetirementDomain, MountRetirement, Rc<Observations>) {
+    let domain = RetirementDomain::new().unwrap();
+    let owner = domain.marker().unwrap();
     let observed = Rc::new(Observations {
-        initial_retained,
-        handle: owner
-            .handle(
-                budget
-                    .reserve(RetirementHandle::allocation_bytes().unwrap())
-                    .unwrap(),
-            )
-            .unwrap(),
+        handle: owner.handle(),
         armed: Cell::new(false),
         panic_capture: Cell::new(false),
         panic_install: Cell::new(None),
@@ -82,15 +55,9 @@ fn paid() -> (
         capture_pause: RefCell::new(None),
         events: RefCell::new(vec![]),
     });
-    let mount = MountRetirement::new(
-        owner,
-        budget
-            .reserve(RetirementHandle::allocation_bytes().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
+    let mount = MountRetirement::new(owner);
     OBSERVED.with_borrow_mut(|slot| *slot = Some(observed.clone()));
-    (budget, domain, mount, observed)
+    (domain, mount, observed)
 }
 struct Root {
     inner: Container,
@@ -264,7 +231,7 @@ fn assert_retired_events(observed: &Observations, expected: &[&str]) {
 #[test]
 fn retirement_lifecycle_component_close_retires_before_capture_and_drop() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     let mut component = component(&host, mount);
     observed.armed.set(true);
     component.close();
@@ -273,7 +240,7 @@ fn retirement_lifecycle_component_close_retires_before_capture_and_drop() {
 #[test]
 fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     let mut component = component(&host, mount);
     observed.armed.set(true);
     assert!(component.checkpoint_for_close().is_empty());
@@ -286,7 +253,7 @@ fn retirement_lifecycle_checkpoint_stays_open_until_admitted_close() {
 #[test]
 fn retirement_lifecycle_capture_unwind_is_already_retired() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     let mut component = component(&host, mount);
     observed.armed.set(true);
     observed.panic_capture.set(true);
@@ -297,7 +264,7 @@ fn retirement_lifecycle_capture_unwind_is_already_retired() {
 fn retirement_lifecycle_outer_app_close_and_drop_preserve_capture_behavior() {
     for explicit in [true, false] {
         let host = ProbeHost::new();
-        let (_budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let mut app = app(component(&host, mount));
         observed.armed.set(true);
         if explicit {
@@ -317,7 +284,7 @@ fn retirement_lifecycle_outer_app_close_and_drop_preserve_capture_behavior() {
 #[test]
 fn retirement_lifecycle_native_wake_close_retires_without_tree_traversal() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     let mut app = app(component(&host, mount));
     observed.armed.set(true);
     app.close_wake_scope();
@@ -375,7 +342,7 @@ fn retirement_lifecycle_inner_initializer_unwind_retires_before_root_cleanup() {
     ];
     for (index, panic_stage) in expected.iter().enumerate() {
         let host = ProbeHost::new();
-        let (_budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let component = component(&host, mount);
         STAGES.with_borrow_mut(Vec::clear);
         PANIC_STAGE.set(panic_stage);
@@ -395,7 +362,7 @@ fn retirement_lifecycle_inner_initializer_unwind_retires_before_root_cleanup() {
 #[test]
 fn retirement_lifecycle_construction_service_unwind_retires_before_root_cleanup() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     let component = component(&host, mount);
     assert!(
         catch_unwind(AssertUnwindSafe(|| App::from_component_using(
@@ -408,24 +375,22 @@ fn retirement_lifecycle_construction_service_unwind_retires_before_root_cleanup(
     assert_retired_events(&observed, &["root-drop"]);
 }
 #[test]
-fn retirement_lifecycle_successful_transfer_does_not_retire_early_and_refunds() {
+fn retirement_lifecycle_successful_transfer_does_not_retire_early() {
     let host = ProbeHost::new();
-    let (budget, domain, mount, observed) = paid();
+    let (domain, mount, observed) = mounted();
     let app = app(component(&host, mount));
     assert!(!observed.retired());
     drop(app);
     assert_retired_events(&observed, &["root-drop"]);
     OBSERVED.with_borrow_mut(|slot| *slot = None);
-    let initial_retained = observed.initial_retained;
     drop(observed);
     drop(domain);
-    assert_eq!(budget.retained_bytes(), initial_retained);
 }
 
 #[test]
 fn retirement_lifecycle_component_constructor_control_panic_retires_before_root_drop() {
     let host = ProbeHost::new();
-    let (_budget, _domain, mount, observed) = paid();
+    let (_domain, mount, observed) = mounted();
     observed.panic_install.set(Some(0));
     assert!(catch_unwind(AssertUnwindSafe(|| component(&host, mount))).is_err());
     assert_retired_events(&observed, &["root-drop"]);
@@ -435,7 +400,7 @@ fn retirement_lifecycle_component_constructor_control_panic_retires_before_root_
 fn retirement_lifecycle_mount_and_outer_control_panic_retires_before_root_drop() {
     for index in [1, 2] {
         let host = ProbeHost::new();
-        let (_budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let component = component(&host, mount);
         observed.panic_install.set(Some(index));
         assert!(catch_unwind(AssertUnwindSafe(|| app(component))).is_err());
@@ -507,7 +472,7 @@ fn worker_fixture(
 #[test]
 fn retirement_lifecycle_actual_host_worker_close_and_drop_keep_same_marker() {
     for explicit in [false, true] {
-        let (_budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let (_dir, _owners, mut worker) = worker_fixture(mount);
         assert!(!observed.retired());
         observed.armed.set(true);
@@ -533,16 +498,9 @@ fn retirement_lifecycle_paused_capture_cannot_admit_a_late_probe() {
     let (captured_tx, captured_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let thread = std::thread::spawn(move || {
-        let (budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let (_dir, _owners, mut worker) = worker_fixture(mount);
-        let remote = observed
-            .handle
-            .copy_with_credit(
-                budget
-                    .reserve(RetirementHandle::allocation_bytes().unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
+        let remote = observed.handle.clone();
         ready_tx.send(remote).unwrap();
         observed.armed.set(true);
         *observed.capture_pause.borrow_mut() = Some((captured_tx, resume_rx));
@@ -568,16 +526,9 @@ fn retirement_lifecycle_outer_close_waits_for_entered_probe_before_wake_and_capt
     let (capture_tx, capture_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let thread = std::thread::spawn(move || {
-        let (budget, _domain, mount, observed) = paid();
+        let (_domain, mount, observed) = mounted();
         let (_dir, _owners, mut worker) = worker_fixture(mount);
-        let remote = observed
-            .handle
-            .copy_with_credit(
-                budget
-                    .reserve(RetirementHandle::allocation_bytes().unwrap())
-                    .unwrap(),
-            )
-            .unwrap();
+        let remote = observed.handle.clone();
         let wake = worker.app_mut().wake_scope.as_ref().unwrap().handle();
         ready_tx.send((remote, wake)).unwrap();
         observed.armed.set(true);

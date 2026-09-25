@@ -3,7 +3,7 @@
 //! the host's certified durable publication covers it, and withdrawn when it
 //! never becomes durable.
 use super::*;
-use crate::peer_delivery::{CompleteEvent, admission::CutAdmission, incoming::IncomingBudget};
+use crate::peer_delivery::{CompleteEvent, admission::CutAdmission};
 use automerge::{ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::TransportOrigin;
@@ -180,20 +180,16 @@ fn events(messages: Vec<NeighbourMsg>) -> Vec<(EventKind, Vec<u8>)> {
         })
         .collect()
 }
-fn budget() -> IncomingBudget {
-    IncomingBudget::new(64 * 1024 * 1024).unwrap()
-}
 /// Durable delivery: one complete native cut (as `install_cut`).
 fn cut(state: &StatePeer, events: &[(EventKind, Vec<u8>)]) -> Result<StatePeer, String> {
-    let incoming = budget();
-    let mut cut = CutAdmission::begin(state, incoming.clone(), time())?;
+    let mut cut = CutAdmission::begin(state, time())?;
     for (ordinal, (kind, bytes)) in events.iter().enumerate() {
         cut.push(
             CompleteEvent {
                 ordinal: ordinal as u32,
                 kind: *kind,
                 digest: canonical_item_digest(bytes),
-                bytes: incoming.copy(bytes)?,
+                bytes: bytes.to_vec(),
             },
             time(),
         )?;
@@ -202,7 +198,7 @@ fn cut(state: &StatePeer, events: &[(EventKind, Vec<u8>)]) -> Result<StatePeer, 
 }
 /// Forwarded change admission (as `peer_live_admit`).
 fn live(state: &StatePeer, canonical: &[u8]) -> Result<StatePeer, String> {
-    let mut cut = CutAdmission::begin(state, budget(), time())?;
+    let mut cut = CutAdmission::begin(state, time())?;
     cut.push_retained(canonical, time())?;
     cut.finish_complete(time())
 }

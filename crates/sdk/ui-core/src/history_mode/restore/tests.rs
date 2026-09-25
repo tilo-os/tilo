@@ -1,17 +1,9 @@
 use super::*;
 use automerge::{
-    AutoCommit, Automerge, Change, ObjId, ObjType, PatchLog, ROOT, ReadDoc, ScalarValue,
-    TextEncoding, Value,
+    AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, TextEncoding, Value,
     marks::{ExpandMark, Mark},
     transaction::Transactable,
 };
-
-fn change_bytes(doc: &mut AutoCommit) -> Vec<Vec<u8>> {
-    doc.get_changes(&[])
-        .into_iter()
-        .map(|change| change.raw_bytes().to_vec())
-        .collect()
-}
 
 static TEXT: HistoryRestoreSchema = HistoryRestoreSchema {
     id: "test.text",
@@ -55,287 +47,6 @@ static DEEP_MAP_WITH_PROTECTED_ROOT: HistoryRestoreSchema = HistoryRestoreSchema
     preserved_roots: &["protected"],
     validate: |_| Ok(()),
 };
-static TABLE: HistoryRestoreSchema = HistoryRestoreSchema {
-    id: "test.table",
-    version: 1,
-    roots: &[HistoryRestoreRoot {
-        key: "content",
-        required: true,
-        expected_type: RestoreValueType::Object(ObjType::Table),
-    }],
-    selectors: &[],
-    preserved: &[],
-    validate_result: |_| Ok(()),
-    preserved_roots: &[],
-    validate: |_| Ok(()),
-};
-
-#[test]
-fn automerge_public_api_supports_populated_tables() {
-    let mut doc = AutoCommit::new();
-    let table = doc.put_object(ROOT, "table", ObjType::Table).unwrap();
-    assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
-    doc.put(&table, "scalar", "original").unwrap();
-    let nested = doc.put_object(&table, "nested", ObjType::Map).unwrap();
-    doc.put(&nested, "value", 7_i64).unwrap();
-    doc.put(&table, "counter", ScalarValue::Counter(2.into()))
-        .unwrap();
-    doc.commit().unwrap();
-
-    assert_eq!(
-        doc.keys(&table).collect::<Vec<_>>(),
-        ["counter", "nested", "scalar"]
-    );
-    assert_eq!(doc.get_all(&table, "scalar").unwrap().len(), 1);
-    assert_eq!(doc.get(&table, "nested").unwrap().unwrap().1, nested);
-
-    doc.put(&table, "scalar", "changed").unwrap();
-    doc.delete(&table, "nested").unwrap();
-    doc.increment(&table, "counter", 3).unwrap();
-    assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
-        Some("changed")
-    );
-    assert!(doc.get(&table, "nested").unwrap().is_none());
-    assert_eq!(
-        doc.get(&table, "counter")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_scalar()
-            .unwrap()
-            .as_i64(),
-        Some(5)
-    );
-
-    doc.rollback();
-    assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
-        Some("original")
-    );
-    assert_eq!(doc.get(&table, "nested").unwrap().unwrap().1, nested);
-    assert_eq!(
-        doc.get(&table, "counter")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_scalar()
-            .unwrap()
-            .as_i64(),
-        Some(2)
-    );
-}
-
-#[test]
-fn automerge_imports_round_trips_forks_and_merges_populated_tables() {
-    let mut source = AutoCommit::new();
-    let map = source.put_object(ROOT, "content", ObjType::Map).unwrap();
-    source.put(&map, "same-batch", "target").unwrap();
-    source.commit().unwrap();
-    source.put(&map, "later", 7_i64).unwrap();
-    source.commit().unwrap();
-
-    let source_changes = source.get_changes(&[]);
-    let mut first_expanded = source_changes[0].decode();
-    assert!(matches!(
-        first_expanded.operations[0].action,
-        automerge::legacy::OpType::Make(ObjType::Map)
-    ));
-    first_expanded.operations[0].action = automerge::legacy::OpType::Make(ObjType::Table);
-    first_expanded.hash = None;
-    let mut first = Change::from(first_expanded.clone());
-    let first_bytes = first.bytes().into_owned();
-    let first_hash = first.hash();
-
-    let mut later_expanded = source_changes[1].decode();
-    later_expanded.deps = vec![first_hash];
-    later_expanded.hash = None;
-    let mut later = Change::from(later_expanded.clone());
-    let later_bytes = later.bytes().into_owned();
-    let later_hash = later.hash();
-
-    let mut inactive = Automerge::new();
-    let mut inactive_log = PatchLog::inactive();
-    inactive
-        .apply_changes_log_patches([first.clone(), later.clone()], &mut inactive_log)
-        .unwrap();
-    let inactive_table = inactive.get(ROOT, "content").unwrap().unwrap().1;
-    assert_eq!(
-        inactive.object_type(&inactive_table).unwrap(),
-        ObjType::Table
-    );
-    assert_eq!(
-        inactive
-            .get(&inactive_table, "later")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_i64(),
-        Some(7)
-    );
-
-    let mut active = Automerge::new();
-    let mut active_log = PatchLog::active();
-    active
-        .apply_changes_log_patches([first.clone()], &mut active_log)
-        .unwrap();
-    active
-        .apply_changes_log_patches([later.clone()], &mut active_log)
-        .unwrap();
-    assert!(!active.make_patches(&mut active_log).is_empty());
-
-    let mut doc = AutoCommit::new();
-    doc.apply_changes([first.clone(), later.clone()]).unwrap();
-    let (kind, table) = doc.get(ROOT, "content").unwrap().unwrap();
-    assert!(matches!(kind, Value::Object(ObjType::Table)));
-    assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
-    assert_eq!(
-        doc.keys(&table).collect::<Vec<_>>(),
-        ["later", "same-batch"]
-    );
-    assert_eq!(
-        doc.get(&table, "same-batch").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-    assert_eq!(
-        doc.get(&table, "later").unwrap().unwrap().0.as_i64(),
-        Some(7)
-    );
-    let applied = doc.get_changes(&[]);
-    assert_eq!(applied[0].raw_bytes(), first_bytes);
-    assert_eq!(applied[1].raw_bytes(), later_bytes);
-    assert_eq!(applied[0].decode().operations, first_expanded.operations);
-    assert_eq!(applied[1].decode().operations, later_expanded.operations);
-    assert_eq!(applied[0].hash(), first_hash);
-    assert_eq!(applied[1].hash(), later_hash);
-    assert_eq!(applied[1].deps(), &[first_hash]);
-
-    let imported_heads = doc.get_heads();
-    let historical = doc.fork_at(&[first_hash]).unwrap();
-    let historical_table = historical.get(ROOT, "content").unwrap().unwrap().1;
-    assert_eq!(
-        historical.object_type(&historical_table).unwrap(),
-        ObjType::Table
-    );
-    assert!(
-        historical
-            .get(&historical_table, "later")
-            .unwrap()
-            .is_none()
-    );
-
-    let list = doc.put_object(ROOT, "rows", ObjType::List).unwrap();
-    let row = doc.insert_object(&list, 0, ObjType::Table).unwrap();
-    doc.put(&row, "value", "row").unwrap();
-    doc.commit().unwrap();
-    let saved = doc.save();
-    let mut loaded = AutoCommit::load(&saved).unwrap();
-    let loaded_table = loaded.get(ROOT, "content").unwrap().unwrap().1;
-    let loaded_list = loaded.get(ROOT, "rows").unwrap().unwrap().1;
-    let loaded_row = loaded.get(&loaded_list, 0).unwrap().unwrap().1;
-    assert_eq!(loaded.object_type(&loaded_table).unwrap(), ObjType::Table);
-    assert_eq!(loaded.object_type(&loaded_row).unwrap(), ObjType::Table);
-    assert_eq!(
-        loaded
-            .get(&loaded_row, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
-        Some("row")
-    );
-    assert_eq!(
-        loaded.get_changes(&[])[0].raw_bytes(),
-        first_bytes.as_slice()
-    );
-    assert_eq!(loaded.get_heads(), doc.get_heads());
-
-    let mut left = doc.fork_at(&imported_heads).unwrap();
-    let mut right = doc.fork_at(&imported_heads).unwrap();
-    let left_table = left.get(ROOT, "content").unwrap().unwrap().1;
-    let right_table = right.get(ROOT, "content").unwrap().unwrap().1;
-    left.put(&left_table, "left", true).unwrap();
-    left.put(&left_table, "conflict", "left").unwrap();
-    right.put(&right_table, "right", true).unwrap();
-    right.put(&right_table, "conflict", "right").unwrap();
-    left.merge(&mut right).unwrap();
-    assert_eq!(left.object_type(&left_table).unwrap(), ObjType::Table);
-    assert_eq!(
-        left.get(&left_table, "left").unwrap().unwrap().0.as_bool(),
-        Some(true)
-    );
-    assert_eq!(
-        left.get(&left_table, "right").unwrap().unwrap().0.as_bool(),
-        Some(true)
-    );
-    assert_eq!(left.get_all(&left_table, "conflict").unwrap().len(), 2);
-}
-
-#[test]
-fn whole_restores_changed_populated_table_and_retains_current_ids() {
-    let mut doc = AutoCommit::new();
-    let table = doc.put_object(ROOT, "content", ObjType::Table).unwrap();
-    let nested_map = doc.put_object(&table, "map", ObjType::Map).unwrap();
-    let nested_table = doc.put_object(&table, "table", ObjType::Table).unwrap();
-    doc.put(&table, "scalar", "target").unwrap();
-    doc.put(&nested_map, "value", "target-map").unwrap();
-    doc.put(&nested_table, "value", "target-table").unwrap();
-    doc.put(&table, "target-only", 11_i64).unwrap();
-    let target = doc.get_heads();
-    let original_changes = change_bytes(&mut doc);
-
-    doc.put(&table, "scalar", "current").unwrap();
-    doc.put(&nested_map, "value", "current-map").unwrap();
-    doc.put(&nested_table, "value", "current-table").unwrap();
-    doc.delete(&table, "target-only").unwrap();
-    doc.put(&table, "current-only", 12_i64).unwrap();
-    let live = doc.get_heads();
-    let before_apply_changes = change_bytes(&mut doc);
-    let prepared = prepare_content_restore(&doc, &TABLE, &live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Changed
-    );
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, table);
-    assert_eq!(doc.get(&table, "map").unwrap().unwrap().1, nested_map);
-    assert_eq!(doc.get(&table, "table").unwrap().unwrap().1, nested_table);
-    assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
-    assert_eq!(doc.object_type(&nested_table).unwrap(), ObjType::Table);
-    assert_eq!(
-        doc.get(&table, "scalar").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-    assert_eq!(
-        doc.get(&nested_map, "value").unwrap().unwrap().0.as_str(),
-        Some("target-map")
-    );
-    assert_eq!(
-        doc.get(&nested_table, "value").unwrap().unwrap().0.as_str(),
-        Some("target-table")
-    );
-    assert_eq!(
-        doc.get(&table, "target-only").unwrap().unwrap().0.as_i64(),
-        Some(11)
-    );
-    assert!(doc.get(&table, "current-only").unwrap().is_none());
-    assert!(doc.pending_ops() > 0);
-    let _restore_hash = doc.commit().unwrap();
-    let after_changes = change_bytes(&mut doc);
-    assert_eq!(
-        &after_changes[..before_apply_changes.len()],
-        before_apply_changes
-    );
-    assert_eq!(&after_changes[..original_changes.len()], original_changes);
-    let saved = doc.save();
-    let loaded = AutoCommit::load(&saved).unwrap();
-    let loaded_table = loaded.get(ROOT, "content").unwrap().unwrap().1;
-    assert_eq!(loaded_table, table);
-    assert_eq!(loaded.object_type(&loaded_table).unwrap(), ObjType::Table);
-    assert_eq!(
-        loaded.get(&loaded_table, "table").unwrap().unwrap().1,
-        nested_table
-    );
-}
 
 #[test]
 fn whole_retains_same_kind_map_identity_at_map_properties() {
@@ -364,13 +75,10 @@ fn whole_retains_same_kind_map_identity_at_map_properties() {
 }
 
 #[test]
-fn whole_retains_nested_map_and_table_identities_with_exact_unknown_keys() {
+fn whole_retains_nested_map_identities_with_exact_unknown_keys() {
     let mut doc = AutoCommit::new();
     let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
     let map = doc.put_object(&root, "unknown-map", ObjType::Map).unwrap();
-    let table = doc
-        .put_object(&root, "unknown-table", ObjType::Table)
-        .unwrap();
     let untouched = doc.put_object(&root, "untouched", ObjType::Map).unwrap();
     let unchanged_list = doc
         .put_object(&root, "unchanged-list", ObjType::List)
@@ -396,7 +104,6 @@ fn whole_retains_nested_map_and_table_identities_with_exact_unknown_keys() {
     );
     assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
     assert_eq!(doc.get(&root, "unknown-map").unwrap().unwrap().1, map);
-    assert_eq!(doc.get(&root, "unknown-table").unwrap().unwrap().1, table);
     assert_eq!(doc.get(&root, "untouched").unwrap().unwrap().1, untouched);
     assert_eq!(
         doc.get(&root, "unchanged-list").unwrap().unwrap().1,
@@ -417,33 +124,6 @@ fn whole_retains_nested_map_and_table_identities_with_exact_unknown_keys() {
     let loaded = AutoCommit::load(&bytes).unwrap();
     assert_eq!(loaded.get(ROOT, "content").unwrap().unwrap().1, root);
     assert_eq!(loaded.get(&root, "unknown-map").unwrap().unwrap().1, map);
-    assert_eq!(
-        loaded.get(&root, "unknown-table").unwrap().unwrap().1,
-        table
-    );
-}
-
-#[test]
-fn whole_table_root_noop_retains_identity_across_reload() {
-    let mut doc = AutoCommit::new();
-    let root = doc.put_object(ROOT, "content", ObjType::Table).unwrap();
-    let target = doc.get_heads();
-    doc.put(ROOT, "metadata", "live").unwrap();
-    let live = doc.get_heads();
-    let actor = doc.get_actor().clone();
-    let history_len = doc.get_changes(&[]).len();
-    let prepared = prepare_content_restore(&doc, &TABLE, &live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Unchanged
-    );
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, root);
-    assert_eq!(doc.pending_ops(), 0);
-    assert_eq!(doc.get_changes(&[]).len(), history_len);
-    assert_eq!(doc.get_actor(), &actor);
-    let bytes = doc.clone().save();
-    let loaded = AutoCommit::load(&bytes).unwrap();
-    assert_eq!(loaded.get(ROOT, "content").unwrap().unwrap().1, root);
 }
 
 #[test]
@@ -452,8 +132,6 @@ fn whole_kind_replacements_copy_target_and_use_fresh_object_ids() {
     let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
     let target_map = doc.put_object(&root, "map", ObjType::Map).unwrap();
     doc.put(&target_map, "value", "map").unwrap();
-    let target_table = doc.put_object(&root, "table", ObjType::Table).unwrap();
-    doc.put(&target_table, "value", "table").unwrap();
     let target_list = doc.put_object(&root, "list", ObjType::List).unwrap();
     doc.insert(&target_list, 0, "list").unwrap();
     let target_text = doc.put_object(&root, "text", ObjType::Text).unwrap();
@@ -461,10 +139,8 @@ fn whole_kind_replacements_copy_target_and_use_fresh_object_ids() {
     doc.put(&root, "scalar", "scalar").unwrap();
     let target = doc.get_heads();
 
-    let live_map = doc.put_object(&root, "map", ObjType::Table).unwrap();
-    doc.put(&live_map, "live", true).unwrap();
-    let live_table = doc.put_object(&root, "table", ObjType::Map).unwrap();
-    doc.put(&live_table, "live", true).unwrap();
+    let live_map = doc.put_object(&root, "map", ObjType::List).unwrap();
+    doc.insert(&live_map, 0, "live").unwrap();
     doc.put(&root, "list", "live-scalar").unwrap();
     let live_text = doc.put_object(&root, "text", ObjType::List).unwrap();
     let _live_scalar = doc.put_object(&root, "scalar", ObjType::Map).unwrap();
@@ -473,59 +149,25 @@ fn whole_kind_replacements_copy_target_and_use_fresh_object_ids() {
     apply_prepared_content_restore(&mut doc, &prepared).unwrap();
 
     let (map_value, restored_map) = doc.get(&root, "map").unwrap().unwrap();
-    let (table_value, restored_table) = doc.get(&root, "table").unwrap().unwrap();
     let (list_value, restored_list) = doc.get(&root, "list").unwrap().unwrap();
     let (text_value, restored_text) = doc.get(&root, "text").unwrap().unwrap();
     assert!(matches!(map_value, Value::Object(ObjType::Map)));
-    assert!(matches!(table_value, Value::Object(ObjType::Table)));
     assert!(matches!(list_value, Value::Object(ObjType::List)));
     assert!(matches!(text_value, Value::Object(ObjType::Text)));
     assert_ne!(restored_map, live_map);
-    assert_ne!(restored_table, live_table);
     assert_ne!(restored_text, live_text);
     assert_ne!(restored_map, target_map);
-    assert_ne!(restored_table, target_table);
     assert_ne!(restored_list, target_list);
     assert_ne!(restored_text, target_text);
     assert_eq!(
-        doc.get(&restored_table, "value")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str(),
-        Some("table")
+        doc.get(&restored_map, "value").unwrap().unwrap().0.as_str(),
+        Some("map")
     );
     assert_eq!(doc.text(&restored_text).unwrap(), "text");
     assert_eq!(
         doc.get(&root, "scalar").unwrap().unwrap().0.as_str(),
         Some("scalar")
     );
-}
-
-#[test]
-fn whole_same_key_table_replacement_keeps_current_id_and_content_kind() {
-    let mut doc = AutoCommit::new();
-    let historical = doc.put_object(ROOT, "content", ObjType::Table).unwrap();
-    doc.put(&historical, "value", "target").unwrap();
-    let target = doc.get_heads();
-    doc.delete(ROOT, "content").unwrap();
-    let replacement = doc.put_object(ROOT, "content", ObjType::Table).unwrap();
-    doc.put(&replacement, "value", "current").unwrap();
-    doc.put(&replacement, "current-only", true).unwrap();
-    let live = doc.get_heads();
-    let prepared = prepare_content_restore(&doc, &TABLE, &live, &target).unwrap();
-    assert_eq!(
-        apply_prepared_content_restore(&mut doc, &prepared).unwrap(),
-        RestoreOutcome::Changed
-    );
-    assert_eq!(doc.get(ROOT, "content").unwrap().unwrap().1, replacement);
-    assert_ne!(replacement, historical);
-    assert_eq!(doc.object_type(&replacement).unwrap(), ObjType::Table);
-    assert_eq!(
-        doc.get(&replacement, "value").unwrap().unwrap().0.as_str(),
-        Some("target")
-    );
-    assert!(doc.get(&replacement, "current-only").unwrap().is_none());
 }
 
 #[test]
@@ -1171,7 +813,7 @@ fn deep_writer_fixture() -> (
     doc.put(&prior, "leaf", "target").unwrap();
     let list = doc.put_object(&parent, "z-list", ObjType::List).unwrap();
     doc.insert(&list, 0, "target-list").unwrap();
-    let protected = doc.put_object(ROOT, "protected", ObjType::Table).unwrap();
+    let protected = doc.put_object(ROOT, "protected", ObjType::Map).unwrap();
     let protected_map = doc.put_object(&protected, "map", ObjType::Map).unwrap();
     doc.put(&protected_map, "value", "protected").unwrap();
     let target = doc.get_heads();
@@ -1395,12 +1037,6 @@ fn missing_required_roots_in_live_or_target_fail_without_mutation() {
 #[test]
 fn protected_rich_text_blocks_and_marks_remain_intact() {
     let (mut doc, target, _) = text_fixture();
-    let table = doc
-        .put_object(ROOT, "future-populated-table", ObjType::Table)
-        .unwrap();
-    let table_map = doc.put_object(&table, "map", ObjType::Map).unwrap();
-    doc.put(&table, "value", "protected").unwrap();
-    doc.put(&table_map, "nested", 19_i64).unwrap();
     let text = doc
         .put_object(ROOT, "future-rich-text", ObjType::Text)
         .unwrap();
@@ -1418,20 +1054,6 @@ fn protected_rich_text_blocks_and_marks_remain_intact() {
     let prepared = prepare_content_restore(&doc, &TEXT, &live, &target).unwrap();
     apply_prepared_content_restore(&mut doc, &prepared).unwrap();
     assert_eq!(doc.get(ROOT, "future-rich-text").unwrap().unwrap().1, text);
-    assert_eq!(
-        doc.get(ROOT, "future-populated-table").unwrap().unwrap().1,
-        table
-    );
-    assert_eq!(doc.object_type(&table).unwrap(), ObjType::Table);
-    assert_eq!(doc.get(&table, "map").unwrap().unwrap().1, table_map);
-    assert_eq!(
-        doc.get(&table, "value").unwrap().unwrap().0.as_str(),
-        Some("protected")
-    );
-    assert_eq!(
-        doc.get(&table_map, "nested").unwrap().unwrap().0.as_i64(),
-        Some(19)
-    );
     assert_eq!(doc.text(&text).unwrap(), "\u{fffc}protected🦀");
     assert_eq!(doc.marks(&text).unwrap(), marks);
     assert_eq!(doc.get(&text, 0).unwrap().unwrap().1, block);
@@ -1439,4 +1061,21 @@ fn protected_rich_text_blocks_and_marks_remain_intact() {
         doc.get(&block, "kind").unwrap().unwrap().0.as_str(),
         Some("paragraph")
     );
+}
+
+#[test]
+fn records_containing_table_objects_are_refused_without_mutation() {
+    let mut doc = AutoCommit::new();
+    let root = doc.put_object(ROOT, "content", ObjType::Map).unwrap();
+    doc.put(&root, "value", "target").unwrap();
+    doc.put_object(ROOT, "table", ObjType::Table).unwrap();
+    let target = doc.get_heads();
+    doc.put(&root, "value", "live").unwrap();
+    let live = doc.get_heads();
+    let before = doc.save();
+    assert!(matches!(
+        prepare_content_restore(&doc, &MAP, &live, &target),
+        Err(RestoreError::UnsupportedContent(_))
+    ));
+    assert_eq!(doc.save(), before);
 }

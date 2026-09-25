@@ -1,4 +1,4 @@
-//! Bounded immutable app projections. These helpers confer no authorization or native-load qualification.
+//! Bounded immutable app projections. These helpers confer no authorization.
 use serde::{Deserialize, Serialize};
 pub mod source;
 
@@ -19,8 +19,6 @@ impl Default for Limits {
 }
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum ReadError {
-    #[error(transparent)]
-    Resource(#[from] automerge::resource_limits::NativeResourceError),
     #[error("document has uncommitted operations")]
     Pending,
     #[error("cursor belongs to a different committed basis")]
@@ -48,21 +46,33 @@ pub struct TextPosition {
 use automerge::{
     AutoCommit, ObjId, ObjType, ReadDoc, ScalarValueRef, ValueRef, transaction::Transactable,
 };
-use std::{borrow::Cow, io::Write};
+use std::{borrow::Cow, cell::Cell, io::Write};
 
-/// Counts visible rows/characters visited by the projection, including skipped prefixes.
-/// Native iterator internals are additionally bounded by the document operation ceiling.
+/// Counts visible rows/characters visited by the projection, including skipped prefixes,
+/// against [`Limits::scan_entries`]. Iterator internals are additionally bounded by the
+/// document operation ceiling checked in [`begin`].
 pub struct Work {
-    steps: automerge::resource_limits::NativeReadSteps,
+    remaining: Cell<usize>,
 }
 impl Work {
+    fn new(scan_entries: usize) -> Self {
+        Self {
+            remaining: Cell::new(scan_entries),
+        }
+    }
     /// Charge one visited row or character.
     ///
     /// # Errors
     ///
     /// [`ReadError::Limit`] once the scan budget is exhausted.
     pub fn visit(&self) -> Result<(), ReadError> {
-        self.steps.charge(1).map_err(|_| ReadError::Limit)
+        let remaining = self
+            .remaining
+            .get()
+            .checked_sub(1)
+            .ok_or(ReadError::Limit)?;
+        self.remaining.set(remaining);
+        Ok(())
     }
 }
 /// Validates all scalar page ceilings before any output allocation.
@@ -98,7 +108,7 @@ pub fn begin(
     limits: Limits,
     max_items: usize,
 ) -> Result<(Basis, Work), ReadError> {
-    source::Source::legacy(doc, owner_heads).begin(limits, max_items)
+    source::Source::new(doc, owner_heads).begin(limits, max_items)
 }
 
 /// Inert cursor scope for the actual bound qdoc object, using canonical counter/actor identity.
@@ -234,10 +244,11 @@ fn escaped_bytes(c: char) -> usize {
     }
 }
 
-/// A fragment's cursor is a visible text-element index plus a UTF-8 byte offset *within* that
-/// element. This handles multi-character Automerge string elements without assuming native
-/// text indices equal bytes or Unicode scalar indices. Non-string text atoms render U+FFFC,
-/// matching Automerge's plain text projection; native mark boundaries are explicitly skipped.
+/// A fragment's cursor is the text index where an element starts plus a UTF-8 byte offset
+/// *within* that element. This handles multi-character Automerge string elements without
+/// assuming text indices equal bytes or Unicode scalar indices. Non-string text atoms render
+/// U+FFFC, matching Automerge's plain text projection; marks occupy no text index and are never
+/// visited.
 ///
 /// # Errors
 ///
@@ -248,9 +259,7 @@ pub fn text_fragment(
     text: Option<&ObjId>,
     position: TextPosition,
     escaped_budget: usize,
-    work: &mut Work,
+    work: &Work,
 ) -> Result<(String, TextPosition, bool), ReadError> {
-    let source = source::Source::legacy(doc, &[]);
-    let object = text.map(|text| source.legacy_object(text)).transpose()?;
-    source.text_fragment(object.as_ref(), position, escaped_budget, work)
+    source::Source::new(doc, &[]).text_fragment(text, position, escaped_budget, work)
 }

@@ -2,7 +2,7 @@
 use super::{BoundedNative, PeerCore, Route, StatePeer, err, room};
 use crate::room::media::RoomMediaV1;
 use crate::room::media::read::{BoundedPolicy, PolicyValue};
-use crate::state::bounded::{BoundedPeerError, PeerWork};
+use crate::state::bounded::{BoundedPeerError, PeerLimits};
 
 /// Ready owns the original guarded decode, never a copied policy credential.
 pub(in crate::state) enum Cache {
@@ -15,7 +15,6 @@ pub(in crate::state) fn native_binding(
     policy: &RoomMediaV1,
     app: &str,
     record: &str,
-    turn: &automerge::resource_limits::NativeWorkTurn,
 ) -> Result<bool, room::media::read::Error> {
     #[cfg(test)]
     BINDINGS.with(|count| count.set(count.get().saturating_add(1)));
@@ -30,7 +29,6 @@ pub(in crate::state) fn native_binding(
                 &route.app,
                 &route.record,
                 &document.doc,
-                turn,
             )?;
             Ok(true)
         }
@@ -40,7 +38,7 @@ pub(in crate::state) fn native_binding(
 pub(in crate::state) fn cache(
     core: &PeerCore<BoundedNative>,
     policy: Option<BoundedPolicy>,
-    work: &PeerWork<'_>,
+    limits: &PeerLimits,
 ) -> Result<Cache, BoundedPeerError> {
     let Some(policy) = policy else {
         return Ok(Cache::Disabled);
@@ -48,20 +46,19 @@ pub(in crate::state) fn cache(
     let Some(room) = &core.room_doc else {
         return Ok(Cache::Unavailable);
     };
-    let read = room.read(work.turn).map_err(BoundedPeerError::Resource)?;
+    let read = room.read();
     let result = ready(
         policy.policy(),
-        |app, record| native_binding(core, policy.policy(), app, record, work.turn),
+        |app, record| native_binding(core, policy.policy(), app, record),
         || {
             room::media::basis::bounded_entries(
                 &read,
                 core.revocations.iter(),
-                work.turn,
                 room::media::basis::BasisLimits {
-                    collection_bytes: work.limits.governance_collection_bytes,
+                    collection_bytes: limits.governance_collection_bytes,
                     json: crate::resources::json::JsonLimits {
-                        allocation_bytes: work.limits.governance_json.allocation_bytes,
-                        collection_entries: work.limits.governance_json.collection_entries,
+                        allocation_bytes: limits.governance_json.allocation_bytes,
+                        collection_entries: limits.governance_json.collection_entries,
                     },
                 },
             )
@@ -69,8 +66,8 @@ pub(in crate::state) fn cache(
     );
     match result {
         Ok(()) => Ok(Cache::Ready(policy)),
-        Err(ReadinessError::Source(room::media::read::Error::Resource(error))) => {
-            Err(BoundedPeerError::Resource(error))
+        Err(ReadinessError::Source(room::media::read::Error::Capacity)) => {
+            Err(BoundedPeerError::Capacity)
         }
         Err(ReadinessError::Source(room::media::read::Error::Decode(error))) => {
             Err(BoundedPeerError::Decode(error))

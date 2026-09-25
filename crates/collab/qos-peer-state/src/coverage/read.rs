@@ -1,8 +1,7 @@
-//! One checkpoint wire-version resolver for legacy and retained native reads.
+//! One checkpoint wire-version resolver for both storage modes.
 use super::Coverage;
-use crate::resources::{Held, OuterLimits, PeerResourceError, outer};
+use crate::resources::{OuterLimits, PeerResourceError, outer};
 use crate::room::read::{ReadError, RoomRead, RoomValue, Selection};
-use automerge::resource_limits::{NativeResourceError, NativeWorkTurn};
 use collab_types::DocumentWireVersion;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -62,7 +61,7 @@ impl CoverageDecode for LegacyCoverage {
 }
 #[derive(Serialize, Deserialize)]
 #[serde(transparent)]
-struct CoverageRows(BTreeMap<String, Coverage>);
+pub(crate) struct CoverageRows(BTreeMap<String, Coverage>);
 impl outer::EncodeSchema for CoverageRows {}
 impl outer::Schema<'_> for CoverageRows {}
 impl outer::PrefixSchema<'_> for CoverageRows {}
@@ -75,43 +74,38 @@ pub(crate) struct BareCoverage(Coverage);
 impl outer::EncodeSchema for BareCoverage {}
 impl outer::Schema<'_> for BareCoverage {}
 pub(crate) enum BoundedCoverageRow {
-    Route(Held<super::RouteValue>),
-    Bare(Held<BareCoverage>),
+    Route(super::RouteValue),
+    Bare(BareCoverage),
 }
 impl CoverageRowView for BoundedCoverageRow {
     fn payload_hash(&self) -> [u8; 32] {
         match self {
-            Self::Route(held) => held.value.payload_hash(),
-            Self::Bare(held) => held.value.0.payload_hash,
+            Self::Route(value) => value.payload_hash(),
+            Self::Bare(value) => value.0.payload_hash,
         }
     }
 }
-pub(crate) struct BoundedCoverageRows {
-    held: Held<CoverageRows>,
-}
-impl CoverageView for BoundedCoverageRows {
+impl CoverageView for CoverageRows {
     fn route(&self, app: &str, record: &str) -> Option<&Coverage> {
-        route(&self.held.value.0, app, record)
+        route(&self.0, app, record)
     }
 }
-pub(crate) struct BoundedCoverage<'a> {
-    pub(crate) turn: &'a NativeWorkTurn,
+/// Coverage decoded within [`OuterLimits`].
+pub(crate) struct BoundedCoverage {
     pub(crate) limits: OuterLimits,
 }
-impl CoverageDecode for BoundedCoverage<'_> {
+impl CoverageDecode for BoundedCoverage {
     type Error = PeerResourceError;
-    type Rows = BoundedCoverageRows;
+    type Rows = CoverageRows;
     type Row = BoundedCoverageRow;
     fn decode(&self, bytes: &[u8]) -> Result<Self::Rows, Self::Error> {
-        Ok(BoundedCoverageRows {
-            held: Held::decode_prefix_in_turn(bytes, self.limits, self.turn)?,
-        })
+        crate::resources::decode_prefix(bytes, self.limits)
     }
     fn decode_row(&self, bytes: &[u8]) -> Result<Self::Row, Self::Error> {
-        match Held::decode_in_turn(bytes, self.limits, self.turn) {
-            Ok(held) => Ok(BoundedCoverageRow::Route(held)),
+        match crate::resources::decode(bytes, self.limits) {
+            Ok(value) => Ok(BoundedCoverageRow::Route(value)),
             Err(PeerResourceError::Malformed) => Ok(BoundedCoverageRow::Bare(
-                Held::decode_in_turn(bytes, self.limits, self.turn)?,
+                crate::resources::decode(bytes, self.limits)?,
             )),
             Err(error) => Err(error),
         }
@@ -120,7 +114,7 @@ impl CoverageDecode for BoundedCoverage<'_> {
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum WireVersionError<E> {
     Decode(E),
-    Resource(NativeResourceError),
+    Capacity,
     NoMatch,
     Ambiguous,
 }
@@ -151,8 +145,7 @@ pub(crate) fn snapshot_wire_version<R: RoomRead, D: CoverageDecode>(
         };
     // v2 per-route map first: a present route there supersedes the legacy
     // whole-map scalar (which the governor deletes when it migrates).
-    // Matched against the stored keys without allocating the route key
-    // (bounded reads must precharge every allocation).
+    // Matched against the stored keys without allocating the route key.
     let is_route = |key: &str| {
         key.as_bytes()
             .strip_prefix(app.as_bytes())
@@ -182,19 +175,19 @@ pub(crate) fn snapshot_wire_version<R: RoomRead, D: CoverageDecode>(
             });
             match inner {
                 Ok(_) | Err(ReadError::Malformed) => Ok(()),
-                Err(ReadError::Resource(error)) => Err(WireVersionError::Resource(error)),
+                Err(ReadError::Capacity) => Err(WireVersionError::Capacity),
                 Err(ReadError::Visitor(error)) => Err(error),
             }
         });
         match keys {
             Ok(_) | Err(ReadError::Malformed) => Ok(()),
-            Err(ReadError::Resource(error)) => Err(WireVersionError::Resource(error)),
+            Err(ReadError::Capacity) => Err(WireVersionError::Capacity),
             Err(ReadError::Visitor(error)) => Err(error),
         }
     });
     match v2 {
         Ok(_) | Err(ReadError::Malformed) => {}
-        Err(ReadError::Resource(error)) => return Err(WireVersionError::Resource(error)),
+        Err(ReadError::Capacity) => return Err(WireVersionError::Capacity),
         Err(ReadError::Visitor(error)) => return Err(error),
     }
     if routed {
@@ -202,7 +195,7 @@ pub(crate) fn snapshot_wire_version<R: RoomRead, D: CoverageDecode>(
     }
     let read = room.visit_property(&room.root(), super::FIELD, Selection::Winner, |value| {
         // The historical accessor decodes empty bytes for a present wrong
-        // scalar/object shape, and ignores a failed native property lookup.
+        // scalar/object shape, and ignores a failed property lookup.
         let bytes = match value {
             RoomValue::Bytes(bytes) => bytes,
             _ => &[],
@@ -216,7 +209,7 @@ pub(crate) fn snapshot_wire_version<R: RoomRead, D: CoverageDecode>(
     });
     match read {
         Ok(_) | Err(ReadError::Malformed) => Ok(version),
-        Err(ReadError::Resource(error)) => Err(WireVersionError::Resource(error)),
+        Err(ReadError::Capacity) => Err(WireVersionError::Capacity),
         Err(ReadError::Visitor(error)) => Err(error),
     }
 }

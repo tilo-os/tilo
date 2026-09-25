@@ -1,6 +1,4 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::NativeAllowance;
 
 fn actual_index() -> (ExactAdmissions, Vec<DocumentAdmission>) {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
@@ -38,27 +36,15 @@ fn limits() -> OuterLimits {
 }
 
 #[test]
-fn exact_resource_decode_preserves_actual_signed_admissions_and_retains_custody() {
+fn exact_resource_decode_preserves_actual_signed_admissions() {
     let (index, admissions) = actual_index();
     let bytes = index.encode().unwrap();
-    let allowance = NativeAllowance::new(1024 * 1024).unwrap();
-    let baseline = allowance.retained_bytes();
-    let decoded = assert_precharged(&allowance, || {
-        BoundedExactAdmissions::decode(&bytes, limits(), &allowance)
-    })
-    .unwrap();
+    let decoded = BoundedExactAdmissions::decode(&bytes, limits()).unwrap();
+    drop(bytes);
     for admission in &admissions {
         assert_eq!(decoded.get(&admission.key), Some(&admission.operation_id));
     }
-    drop(bytes);
-    allowance.finish_turn();
-    assert!(allowance.retained_bytes() >= baseline + limits().allocation_bytes);
-    assert_eq!(
-        decoded.get(&admissions[0].key),
-        Some(&admissions[0].operation_id)
-    );
-    drop(decoded);
-    assert_eq!(allowance.retained_bytes(), baseline);
+    assert_eq!(decoded.iter().count(), admissions.len());
 }
 
 #[test]
@@ -74,7 +60,6 @@ fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms(
     reversed.extend(&first);
     let mut trailing = index.encode().unwrap();
     trailing.push(0);
-    let allowance = NativeAllowance::new(1024 * 1024).unwrap();
     for bytes in [
         duplicate,
         reversed,
@@ -83,14 +68,10 @@ fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms(
         vec![1, 0xff, 0xff, 0xff, 0xff, 0x7f],
     ] {
         assert!(ExactAdmissions::decode(&bytes).is_err());
-        let before = allowance.retained_bytes();
         assert!(matches!(
-            assert_precharged(&allowance, || {
-                BoundedExactAdmissions::decode(&bytes, limits(), &allowance)
-            }),
+            BoundedExactAdmissions::decode(&bytes, limits()),
             Err(PeerResourceError::Malformed | PeerResourceError::Capacity)
         ));
-        assert_eq!(allowance.retained_bytes(), before);
     }
 }
 
@@ -98,32 +79,24 @@ fn exact_resource_rejects_duplicate_unsorted_trailing_and_announced_count_forms(
 fn exact_resource_small_output_budget_refuses_before_owned_key_growth() {
     let (index, _) = actual_index();
     let bytes = index.encode().unwrap();
-    let allowance = NativeAllowance::new(1024 * 1024).unwrap();
     assert!(matches!(
-        assert_precharged(&allowance, || {
-            BoundedExactAdmissions::decode(
-                &bytes,
-                OuterLimits {
-                    allocation_bytes: 128,
-                    ..limits()
-                },
-                &allowance,
-            )
-        }),
+        BoundedExactAdmissions::decode(
+            &bytes,
+            OuterLimits {
+                allocation_bytes: 128,
+                ..limits()
+            },
+        ),
         Err(PeerResourceError::Capacity)
     ));
 }
 
 #[test]
-fn exact_resource_canonical_entry_size_uses_no_temporary_encoded_allocation() {
+fn exact_resource_canonical_entry_size_matches_the_encoded_entry() {
     let (_, admissions) = actual_index();
     let index = ExactAdmissions::default();
     let expected = postcard::to_allocvec(&(&admissions[0].key, admissions[0].operation_id))
         .unwrap()
         .len();
-    let allowance = NativeAllowance::new(4096).unwrap();
-    assert_eq!(
-        assert_precharged(&allowance, || index.check(&admissions[0])).unwrap(),
-        expected
-    );
+    assert_eq!(index.check(&admissions[0]).unwrap(), expected);
 }

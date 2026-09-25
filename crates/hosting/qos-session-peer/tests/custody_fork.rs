@@ -1,5 +1,7 @@
 //! Process inheritance must not extend custody after the owning session drops.
 #![cfg(unix)]
+tilo_automerge_isolate::test_worker!();
+
 use qos_session_peer::SessionOwner;
 
 struct Child {

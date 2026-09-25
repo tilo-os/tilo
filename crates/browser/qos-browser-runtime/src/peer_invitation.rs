@@ -35,16 +35,7 @@ struct MaterialV3 {
     admitted: bool,
 }
 
-// Reserve the bounded MaterialV3 JSON backing and growth overlap before decode.
-// This is outer identity custody, not qualification of legacy StatePeer or
-// invitation verification internals. The owned material drops before credit.
-const MATERIAL_CREDIT: usize = 4 * MAX_MATERIAL;
-pub(crate) struct InvitedIdentity(
-    MaterialV3,
-    crate::peer_delivery::incoming::IncomingBudget,
-    #[expect(dead_code, reason = "held only to release its reservation on drop")]
-    automerge::resource_limits::NativeReservation,
-);
+pub(crate) struct InvitedIdentity(MaterialV3);
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
@@ -102,15 +93,10 @@ impl InvitedIdentity {
         })
     }
 
-    pub(crate) fn read_with_budget(
-        bytes: &[u8],
-        now: u64,
-        budget: &crate::peer_delivery::incoming::IncomingBudget,
-    ) -> Result<Self, String> {
+    pub(crate) fn read(bytes: &[u8], now: u64) -> Result<Self, String> {
         if bytes.is_empty() || bytes.len() > MAX_MATERIAL {
             return Err("Invalid invited material size".into());
         }
-        let credit = budget.reserve(MATERIAL_CREDIT)?;
         let material: MaterialV3 =
             serde_json::from_slice(bytes).map_err(|_| "Invalid invited material")?;
         if material.version != 3
@@ -137,7 +123,7 @@ impl InvitedIdentity {
         Self::scope(&material.invitation)?;
         tilo_user_identity::verify_device_cert_at(&material.certificate, now)
             .map_err(|e| e.to_string())?;
-        let identity = Self(material, budget.clone(), credit);
+        let identity = Self(material);
         // Historical verification recovers only pinned invitation/identity. A
         // live first redemption separately enforces the current invitation time.
         identity.invitation(identity.0.created_at_ns)?;
@@ -145,8 +131,7 @@ impl InvitedIdentity {
             (Some(bytes), Some(at))
                 if at >= identity.0.created_at_ns && at <= now && bytes.len() <= MAX_COMPLETION =>
             {
-                let charge = crate::peer_onboarding::preflight_completion(bytes)?;
-                let _completion_credit = budget.reserve(charge)?;
+                crate::peer_onboarding::preflight_completion(bytes)?;
                 let complete: JoinCompleteRequest =
                     postcard::from_bytes(bytes).map_err(|_| "Invalid retained completion")?;
                 identity.validate_challenge(&complete.proof.challenge, at)?;
@@ -162,13 +147,6 @@ impl InvitedIdentity {
             _ => return Err("Invalid retained completion checkpoint".into()),
         }
         Ok(identity)
-    }
-
-    // Stateless custody inspection has no existing Peer. Actual attempts use
-    // read_with_budget and carry that same allowance into the final owner.
-    pub(crate) fn read(bytes: &[u8], now: u64) -> Result<Self, String> {
-        let budget = crate::peer_delivery::incoming::IncomingBudget::new(64 * 1024 * 1024)?;
-        Self::read_with_budget(bytes, now, &budget)
     }
 
     pub(crate) fn encode(&self) -> Result<Vec<u8>, String> {
@@ -297,8 +275,7 @@ impl InvitedIdentity {
         now: u64,
     ) -> Result<Vec<u8>, String> {
         if let Some(bytes) = self.completion() {
-            let charge = crate::peer_onboarding::preflight_completion(bytes)?;
-            let _completion_credit = self.1.reserve(charge)?;
+            crate::peer_onboarding::preflight_completion(bytes)?;
             let previous: JoinCompleteRequest =
                 postcard::from_bytes(bytes).map_err(|_| "Invalid retained completion")?;
             if previous.proof.challenge != challenge {
@@ -306,9 +283,6 @@ impl InvitedIdentity {
             }
             return self.encode();
         }
-        // Covers the transient signature encoding and owned completion backing;
-        // persistent completion bytes then remain under MATERIAL_CREDIT.
-        let _completion_credit = self.1.reserve(3 * MAX_COMPLETION)?;
         self.validate_challenge(&challenge, now)?;
         let complete = JoinCompleteRequest {
             proof: join::sign_join_proof(challenge, &self.device_key())?,
@@ -358,8 +332,7 @@ impl InvitedIdentity {
         // bytes, not live writes: governor and original member publications
         // enter one bounded native cut through StatePeer's validated incoming
         // path. Current device/role checks still follow below.
-        let mut cut =
-            crate::peer_delivery::admission::CutAdmission::begin(&initial, self.1.clone(), time)?;
+        let mut cut = crate::peer_delivery::admission::CutAdmission::begin(&initial, time)?;
         for bytes in &bootstrap.governance_messages {
             cut.push_retained(bytes, time)
                 .map_err(|error| format!("Invalid bootstrap governance message: {error}"))?;

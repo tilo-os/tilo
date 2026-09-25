@@ -53,8 +53,7 @@ on:
   pull_request:
     branches: ["main"]
     paths:
-      - "vendor/automerge/**"
-      - "vendor/hexane/**"
+      - "crates/doc/tilo-automerge-isolate/**"
       - ".cargo/**"
       - "Cargo.toml"
       - "Cargo.lock"

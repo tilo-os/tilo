@@ -1,19 +1,16 @@
 //! Actual core metadata adapter to the one strict private policy engine.
 use super::{BoundedNative, PeerCore, StatePeer};
 use crate::state::bounded::{BoundedPeerError, BoundedPeerInvalid, PeerLimits};
-use automerge::resource_limits::NativeWorkTurn;
 pub(in crate::state) fn bounded(
     core: &PeerCore<BoundedNative>,
-    turn: &NativeWorkTurn,
     limits: PeerLimits,
 ) -> Result<crate::room::private_policy::NativeBasis, BoundedPeerError> {
     use crate::room::private_policy::{Error, Limits, Metadata};
-    turn.reserve(0).map_err(BoundedPeerError::Resource)?;
     let room = core
         .room_doc
         .as_ref()
         .ok_or(BoundedPeerError::Invalid(BoundedPeerInvalid::Governance))?;
-    let read = room.read(turn).map_err(BoundedPeerError::Resource)?;
+    let read = room.read();
     crate::room::private_policy::native(
         &read,
         Metadata {
@@ -26,7 +23,6 @@ pub(in crate::state) fn bounded(
                 .map(std::convert::AsRef::as_ref),
             revocations: core.revocations.iter(),
         },
-        turn,
         Limits {
             collections: limits.governance_collection_bytes,
             json: crate::resources::json::JsonLimits {
@@ -36,7 +32,7 @@ pub(in crate::state) fn bounded(
         },
     )
     .map_err(|error| match error {
-        Error::Resource(error) => BoundedPeerError::Resource(error),
+        Error::Capacity => BoundedPeerError::Capacity,
         Error::Decode(error) => BoundedPeerError::Decode(error),
         _ => BoundedPeerError::Invalid(BoundedPeerInvalid::Governance),
     })

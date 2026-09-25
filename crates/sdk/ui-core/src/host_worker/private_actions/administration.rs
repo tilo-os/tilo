@@ -12,7 +12,6 @@ use atomic_file::{
     bounded::FreshChildError,
     lease::{AcquireError, FileLease, LeaseMode},
 };
-use automerge::resource_limits::NativeReservation;
 use std::{
     ffi::OsStr,
     fs::File,
@@ -106,7 +105,6 @@ impl From<FreshChildError> for Cause {
 }
 
 struct Operation {
-    // Actual error custody, names, FDs and buffers all drop before their credit.
     physical: Option<PhysicalError>,
     diagnostic: Option<OpenError>,
     original: Option<StorageDirectory>,
@@ -127,7 +125,6 @@ struct Operation {
     expectation: AdministrativeExpectation,
     facts: Option<AdministrativeFacts>,
     step: Step,
-    credit: NativeReservation,
 }
 pub struct AdministrativeFile {
     operation: Operation,
@@ -137,8 +134,8 @@ pub struct AdministrativeFailure {
     operation: Operation,
     code: Code,
 }
-/// A current-check failure borrows the carrier: its original credit/lease cannot
-/// be released while this error (including a retained child FD) remains alive.
+/// A current-check failure borrows the carrier: its original lease cannot be
+/// released while this error (including a retained child FD) remains alive.
 pub struct AdministrativeCheckFailure<'a> {
     error: OpenError,
     _file: &'a AdministrativeFile,
@@ -214,7 +211,7 @@ impl AdministrativeFailure {
             _ => None,
         }
     }
-    /// Retry under the original root/instance/reservation. Unknown publication
+    /// Retry under the original root/instance. Unknown publication
     /// and lost fresh-child custody remain errors, never new publication/adoption.
     pub fn retry(self) -> Result<AdministrativeFile, Self> {
         self.operation.run()
@@ -350,9 +347,6 @@ impl Operation {
         let preflight = (|| {
             if !matches!(self.scope.profile, 1 | 2) || self.instance == [0; 16] {
                 return Err(Code::InvalidScope);
-            }
-            if self.credit.bytes() < AdministrativeFile::required_bytes(&self.scope)? {
-                return Err(Code::Capacity);
             }
             Ok(())
         })();
@@ -536,12 +530,10 @@ impl Operation {
                 {
                     return Err(Code::InvalidFile.into());
                 }
-                NativeSenderOutboxV1::decode_with_scratch(decoded.payload, &self.credit).map_err(
-                    |e| match e {
-                        OutboxFailure::Capacity => Code::Capacity,
-                        _ => Code::InvalidFile,
-                    },
-                )?;
+                NativeSenderOutboxV1::decode(decoded.payload).map_err(|e| match e {
+                    OutboxFailure::Capacity => Code::Capacity,
+                    _ => Code::InvalidFile,
+                })?;
                 self.facts = Some(AdministrativeFacts {
                     instance: decoded.instance,
                     sequence: decoded.sequence,
@@ -592,35 +584,11 @@ impl Operation {
     }
 }
 impl AdministrativeFile {
-    /// Exact requested capacities added here: max bounded input+overflow byte,
-    /// initial envelope, one generated publication name, one existing-commit
-    /// name, and the existing codec's streaming parser scratch. Buffers and
-    /// retained physical errors drop before this one original reservation.
-    pub fn required_bytes(scope: &SenderScope) -> Result<usize, Code> {
-        if !matches!(scope.profile, 1 | 2) {
-            return Err(Code::InvalidScope);
-        }
-        let initial = codec::required_bytes(scope, NativeSenderOutboxV1::empty_bytes().len())?;
-        let publication = OwnerDirectory::publication_allocation_bytes(OsStr::new(LOCK_NAME))
-            .map_err(|_| Code::Capacity)?
-            .max(
-                OwnerDirectory::publication_allocation_bytes(OsStr::new(FILE_NAME))
-                    .map_err(|_| Code::Capacity)?,
-            );
-        let existing = LOCK_NAME.len().max(FILE_NAME.len());
-        (codec::MAX_FILE + 1)
-            .checked_add(initial)
-            .and_then(|n| n.checked_add(publication))
-            .and_then(|n| n.checked_add(existing))
-            .and_then(|n| n.checked_add(NativeSenderOutboxV1::validation_scratch_bytes()))
-            .ok_or(Code::Capacity)
-    }
     pub fn open(
         original: StorageDirectory,
         scope: SenderScope,
         instance: [u8; 16],
         expectation: AdministrativeExpectation,
-        credit: NativeReservation,
     ) -> Result<Self, AdministrativeFailure> {
         Operation {
             physical: None,
@@ -643,7 +611,6 @@ impl AdministrativeFile {
             expectation,
             facts: None,
             step: Step::Admit,
-            credit,
         }
         .run()
     }
@@ -657,7 +624,7 @@ impl AdministrativeFile {
     }
     /// Consume this same carrier when an enclosing operation must retain an
     /// owned refusal. The original Final phase preserves its exact facts,
-    /// current-check error/failed FD, credit and lease without new allocation.
+    /// current-check error/failed FD and lease without new allocation.
     pub fn revalidate_owned(self) -> Result<Self, AdministrativeFailure> {
         let Self {
             mut operation,

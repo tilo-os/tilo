@@ -120,24 +120,15 @@ fn managed_sender_codec_refuses_duplicate_or_reordered_business_ids() {
 }
 
 #[test]
-fn managed_sender_codec_paid_insert_preserves_original_rows_and_credit() {
-    use automerge::resource_limits::NativeAllowance;
+fn managed_sender_codec_insert_preserves_original_rows() {
     let original = pending_payload(&[pending_row(9, Some("old"))]);
     let incoming = pending_payload(&[pending_row(8, Some(""))]);
     let view = NativeSenderOutboxV1::decode(&original).unwrap();
     let input = NativeSenderOutboxV1::decode(&incoming).unwrap();
     let row = input.find(&[8; 16]).unwrap().unwrap();
     let needed = view.insertion_bytes(&row).unwrap();
-    let allowance = NativeAllowance::new(1024 * 1024).unwrap();
-    let baseline = allowance.available_bytes();
-    assert!(
-        view.insert(&row, allowance.reserve(needed - 1).unwrap())
-            .is_err()
-    );
-    assert_eq!(allowance.available_bytes(), baseline);
-    let encoded = view
-        .insert(&row, allowance.reserve(needed).unwrap())
-        .unwrap();
+    let encoded = view.insert(&row).unwrap();
+    assert_eq!(encoded.bytes().len(), needed);
     assert_eq!(
         encoded.bytes(),
         pending_payload(&[pending_row(8, Some("")), pending_row(9, Some("old"))])
@@ -146,19 +137,12 @@ fn managed_sender_codec_paid_insert_preserves_original_rows_and_credit() {
         NativeSenderOutboxV1::decode(encoded.bytes()).unwrap().len(),
         2
     );
-    assert_eq!(allowance.available_bytes(), baseline - needed);
     assert!(
         NativeSenderOutboxV1::decode(encoded.bytes())
             .unwrap()
             .insertion_bytes(&row)
             .is_err()
     );
-    let (bytes, credit) = encoded.into_parts();
-    assert_eq!(credit.bytes(), needed);
-    drop(bytes);
-    assert_eq!(allowance.available_bytes(), baseline - needed);
-    drop(credit);
-    assert_eq!(allowance.available_bytes(), baseline);
 }
 
 #[test]
@@ -186,54 +170,30 @@ fn managed_sender_codec_reserves_future_terminal_bytes_before_admission() {
 
 #[test]
 fn managed_sender_codec_observation_barrier_payload_and_terminal_consumption() {
-    use automerge::resource_limits::NativeAllowance;
     use runtime_collab::PublishedInvocationResult;
-    let budget = NativeAllowance::new(4 * 1024 * 1024).unwrap();
-    let scratch = budget.reserve(super::observation::SCRATCH_BYTES).unwrap();
     let bytes = pending_payload(&[pending_row(8, None)]);
     let view = NativeSenderOutboxV1::decode(&bytes).unwrap();
     assert!(view.consumption_bytes(&[8; 16]).is_err());
     let response=PublishedInvocationResult{id:4,update_json:r#"{"state":"succeeded","invocation":"08080808-0808-0808-0808-080808080808","output":{"value":{"secret":"retained"}}}"#.into(),uncertain:false,cancellation_requested:false};
-    let needed = view
-        .observation_bytes(&[8; 16], &response, &scratch)
-        .unwrap();
-    let recorded = view
-        .with_observation(
-            &[8; 16],
-            &response,
-            &scratch,
-            budget.reserve(needed).unwrap(),
-        )
-        .unwrap();
-    let checked = NativeSenderOutboxV1::decode_with_scratch(recorded.bytes(), &scratch).unwrap();
+    let needed = view.observation_bytes(&[8; 16], &response).unwrap();
+    let recorded = view.with_observation(&[8; 16], &response).unwrap();
+    assert_eq!(recorded.bytes().len(), needed);
+    let checked = NativeSenderOutboxV1::decode(recorded.bytes()).unwrap();
     let removed_bytes = checked.consumption_bytes(&[8; 16]).unwrap();
     assert_eq!(removed_bytes, 8);
-    let removed = checked
-        .consume(&[8; 16], budget.reserve(removed_bytes).unwrap())
-        .unwrap();
+    let removed = checked.consume(&[8; 16]).unwrap();
     assert_eq!(removed.bytes(), NativeSenderOutboxV1::empty_bytes());
-    assert!(
-        checked
-            .observation_bytes(&[9; 16], &response, &scratch)
-            .is_err()
-    );
+    assert!(checked.observation_bytes(&[9; 16], &response).is_err());
     let mut changed = response.clone();
     changed.update_json = changed.update_json.replace("retained", "changed");
-    assert!(
-        checked
-            .observation_bytes(&[8; 16], &changed, &scratch)
-            .is_err()
-    );
+    assert!(checked.observation_bytes(&[8; 16], &changed).is_err());
     let mut corrupt = recorded.bytes().to_vec();
     *corrupt.last_mut().unwrap() = b'!';
-    assert!(NativeSenderOutboxV1::decode_with_scratch(&corrupt, &scratch).is_err());
+    assert!(NativeSenderOutboxV1::decode(&corrupt).is_err());
 }
 #[test]
 fn managed_sender_codec_uncertain_and_sanitized_rows_cannot_be_consumed() {
-    use automerge::resource_limits::NativeAllowance;
     use runtime_collab::PublishedInvocationResult;
-    let budget = NativeAllowance::new(4 * 1024 * 1024).unwrap();
-    let scratch = budget.reserve(super::observation::SCRATCH_BYTES).unwrap();
     let bytes = pending_payload(&[pending_row(8, None)]);
     let view = NativeSenderOutboxV1::decode(&bytes).unwrap();
     for (code, uncertain) in [
@@ -248,19 +208,8 @@ fn managed_sender_codec_uncertain_and_sanitized_rows_cannot_be_consumed() {
             uncertain,
             cancellation_requested: false,
         };
-        let needed = view
-            .observation_bytes(&[8; 16], &response, &scratch)
-            .unwrap();
-        let recorded = view
-            .with_observation(
-                &[8; 16],
-                &response,
-                &scratch,
-                budget.reserve(needed).unwrap(),
-            )
-            .unwrap();
-        let checked =
-            NativeSenderOutboxV1::decode_with_scratch(recorded.bytes(), &scratch).unwrap();
+        let recorded = view.with_observation(&[8; 16], &response).unwrap();
+        let checked = NativeSenderOutboxV1::decode(recorded.bytes()).unwrap();
         assert!(checked.consumption_bytes(&[8; 16]).is_err());
         assert_eq!(checked.find(&[8; 16]).unwrap().unwrap().argument, None);
     }
@@ -268,8 +217,6 @@ fn managed_sender_codec_uncertain_and_sanitized_rows_cannot_be_consumed() {
 
 #[test]
 fn managed_sender_codec_preserves_opaque_runtime_revision_grammar() {
-    use automerge::resource_limits::NativeAllowance;
-    let work = NativeAllowance::new(1024 * 1024).unwrap();
     let mut original = pending_payload(&[pending_row(8, None)]);
     let offset = original
         .windows(b"revision-original".len())
@@ -280,8 +227,7 @@ fn managed_sender_codec_preserves_opaque_runtime_revision_grammar() {
     let row = view.find(&[8; 16]).unwrap().unwrap();
     assert_eq!(row.revision, "\nevision-original");
     let empty = NativeSenderOutboxV1::decode(NativeSenderOutboxV1::empty_bytes()).unwrap();
-    let needed = empty.insertion_bytes(&row).unwrap();
-    let encoded = empty.insert(&row, work.reserve(needed).unwrap()).unwrap();
+    let encoded = empty.insert(&row).unwrap();
     assert_eq!(encoded.bytes(), original);
     let mut invalid = row;
     invalid.revision = "opaque\0revision";

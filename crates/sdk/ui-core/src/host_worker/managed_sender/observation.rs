@@ -1,6 +1,5 @@
 //! Full streaming lifecycle grammar. This yields inert facts, never a receipt.
 use super::OutboxFailure;
-use automerge::resource_limits::NativeReservation;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Lifecycle {
@@ -17,11 +16,8 @@ pub(super) struct Facts {
     pub sequence: Option<u64>,
     pub consumable: bool,
 }
-// Pinned serde_json 1.0.151 SliceRead uses one growing byte Vec for escaped
-// strings. Vec's old + doubled replacement are < 3 * bounded input bytes.
 // The visitor retains no strings/trees; all its diagnostic messages are fixed.
-// 256 bytes separately covers the fixed diagnostic String and boxed ErrorImpl.
-pub(super) const SCRATCH_BYTES: usize = 3 * super::codec::MAX_OBSERVATION + 256;
+// Streaming scratch is bounded by the MAX_OBSERVATION input limit.
 
 use serde::de::{DeserializeSeed, Error, MapAccess, SeqAccess, Visitor};
 use std::fmt;
@@ -260,13 +256,11 @@ pub(super) fn validate(
     invocation: &[u8; 16],
     uncertain: bool,
     _cancellation_requested: bool,
-    scratch: &NativeReservation,
 ) -> Result<Facts, OutboxFailure> {
-    if json.len() > super::codec::MAX_OBSERVATION || scratch.bytes() < SCRATCH_BYTES {
+    if json.len() > super::codec::MAX_OBSERVATION {
         return Err(OutboxFailure::Capacity);
     }
-    // Deserializer and every error are dropped before returning; caller retains
-    // the actual scratch reservation throughout both allocation and destruction.
+    // Deserializer and every error are dropped before returning.
     let parsed = {
         let mut decoder = serde_json::Deserializer::from_str(json);
         let parsed = Kind::Update

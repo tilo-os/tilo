@@ -1,11 +1,8 @@
 use super::{HostedAttemptError as Error, Result, identity, relay};
-use automerge::resource_limits::{NativeAllowance, NativeReservation};
 use ed25519_dalek::SigningKey;
 use qos_peer_state::join::{self, JoinTransportRequest as Request};
 use qos_peer_state::resources::dto_guard::{self as json_guard, GuardLimits};
 use serde::{Deserialize, Serialize};
-#[path = "allocation.rs"]
-pub(super) mod allocation;
 #[path = "phase.rs"]
 mod phase;
 use std::io::Write;
@@ -38,37 +35,14 @@ pub(super) fn verify_certificate(certificate: &identity::DeviceCert, now: u64) -
         .map_err(|_| Error::Signature)
 }
 
-// Each owner drops the backing before its charge. The same original allowance
-// funds decoded material, retained bytes, and simultaneous staged checkpoints.
-pub(super) struct Held<T> {
-    pub value: T,
-    _credit: NativeReservation,
-}
-pub(super) struct Bytes {
-    pub value: Vec<u8>,
-    _credit: NativeReservation,
-}
-impl Bytes {
-    pub fn zeroed(length: usize, budget: &NativeAllowance) -> Result<Self> {
-        let credit = budget.reserve(length).map_err(|_| Error::Capacity)?;
-        let mut value = Vec::new();
-        value
-            .try_reserve_exact(length)
-            .map_err(|_| Error::Capacity)?;
-        if value.capacity() > length {
-            return Err(Error::Capacity);
-        }
-        value.resize(length, 0);
-        Ok(Self {
-            value,
-            _credit: credit,
-        })
-    }
-    pub fn copy(bytes: &[u8], budget: &NativeAllowance) -> Result<Self> {
-        let mut held = Self::zeroed(bytes.len(), budget)?;
-        held.value.copy_from_slice(bytes);
-        Ok(held)
-    }
+/// Zero-filled backing of exactly `length` bytes; callers bound `length` first.
+fn zeroed(length: usize) -> Result<Vec<u8>> {
+    let mut value = Vec::new();
+    value
+        .try_reserve_exact(length)
+        .map_err(|_| Error::Capacity)?;
+    value.resize(length, 0);
+    Ok(value)
 }
 // These are enforced visitor ceilings, not input-size estimates. Every
 // allocating visit is debited before invocation; exceeding a ceiling refuses.
@@ -92,24 +66,18 @@ impl JsonSchema for super::EnrollmentReply {
     const MAXIMUM: usize = MAX_RESULT;
     const ALLOCATION: usize = 1024 * 1024;
 }
-pub(super) fn read_json<T: JsonSchema>(bytes: &[u8], budget: &NativeAllowance) -> Result<Held<T>> {
+pub(super) fn read_json<T: JsonSchema>(bytes: &[u8]) -> Result<T> {
     if bytes.is_empty() || bytes.len() > T::MAXIMUM {
         return Err(Error::Material);
     }
-    let _parser = allocation::parser(bytes, budget)?;
-    let credit = allocation::reserve(budget, T::ALLOCATION)?;
-    let value = json_guard::json(bytes, GuardLimits::closed(T::ALLOCATION, T::MAXIMUM)).map_err(
-        |error| match error {
+    json_guard::json(bytes, GuardLimits::closed(T::ALLOCATION, T::MAXIMUM)).map_err(|error| {
+        match error {
             json_guard::GuardError::Capacity => Error::Capacity,
             json_guard::GuardError::Malformed => Error::Material,
-        },
-    )?;
-    Ok(Held {
-        value,
-        _credit: credit,
+        }
     })
 }
-pub(super) fn read_request(bytes: &[u8], budget: &NativeAllowance) -> Result<Held<Request>> {
+pub(super) fn read_request(bytes: &[u8]) -> Result<Request> {
     if bytes.is_empty() || bytes.len() > MAX_JOIN {
         return Err(Error::Material);
     }
@@ -119,8 +87,6 @@ pub(super) fn read_request(bytes: &[u8], budget: &NativeAllowance) -> Result<Hel
         return Err(Error::Material);
     }
     const LIMIT: usize = 1024 * 1024;
-    let _diagnostic = allocation::reserve(budget, allocation::signature_diagnostic())?;
-    let credit = allocation::reserve(budget, LIMIT)?;
     let value =
         json_guard::postcard(bytes, GuardLimits::closed(LIMIT, MAX_JOIN)).map_err(|error| {
             match error {
@@ -128,14 +94,11 @@ pub(super) fn read_request(bytes: &[u8], budget: &NativeAllowance) -> Result<Hel
                 json_guard::GuardError::Malformed => Error::Material,
             }
         })?;
-    let canonical = encode_postcard(&value, MAX_JOIN, budget)?;
-    if canonical.value != bytes {
+    let canonical = encode_postcard(&value, MAX_JOIN)?;
+    if canonical != bytes {
         return Err(Error::Material);
     }
-    Ok(Held {
-        value,
-        _credit: credit,
-    })
+    Ok(value)
 }
 
 struct Count {
@@ -155,33 +118,24 @@ impl Write for Count {
         Ok(())
     }
 }
-pub(super) fn encode_json<T: Serialize>(
-    value: &T,
-    maximum: usize,
-    budget: &NativeAllowance,
-) -> Result<Bytes> {
-    let _errors = allocation::reserve(budget, allocation::error_boxes())?;
+pub(super) fn encode_json<T: Serialize>(value: &T, maximum: usize) -> Result<Vec<u8>> {
     let mut count = Count { size: 0, maximum };
     serde_json::to_writer(&mut count, value).map_err(|_| Error::Capacity)?;
-    let mut bytes = Bytes::zeroed(count.size, budget)?;
-    let mut destination = bytes.value.as_mut_slice();
+    let mut bytes = zeroed(count.size)?;
+    let mut destination = bytes.as_mut_slice();
     serde_json::to_writer(&mut destination, value).map_err(|_| Error::Capacity)?;
     if !destination.is_empty() {
         return Err(Error::Capacity);
     }
     Ok(bytes)
 }
-pub(super) fn encode_postcard<T: Serialize>(
-    value: &T,
-    maximum: usize,
-    budget: &NativeAllowance,
-) -> Result<Bytes> {
+pub(super) fn encode_postcard<T: Serialize>(value: &T, maximum: usize) -> Result<Vec<u8>> {
     let size = postcard::experimental::serialized_size(value).map_err(|_| Error::Capacity)?;
     if size == 0 || size > maximum {
         return Err(Error::Capacity);
     }
-    let mut bytes = Bytes::zeroed(size, budget)?;
-    if postcard::to_slice(value, &mut bytes.value)
+    let mut bytes = zeroed(size)?;
+    if postcard::to_slice(value, &mut bytes)
         .map_err(|_| Error::Capacity)?
         .len()
         != size
@@ -241,8 +195,8 @@ pub(super) enum Phase {
     },
 }
 
-// Serialization-only views borrow every dynamic backing. No request/candidate
-// clone can grow a decoded Held under its original visitor reservation.
+// Serialization-only views borrow every dynamic backing, so staging a phase
+// never clones the retained request or proof bytes.
 #[derive(Serialize)]
 #[serde(tag = "step", rename_all = "snake_case")]
 pub(super) enum PhaseView<'a> {
@@ -338,7 +292,6 @@ impl MaterialV4 {
     pub fn first_host_certificate(
         &self,
         challenge: &identity::cloud_enrollment::Challenge,
-        budget: &NativeAllowance,
     ) -> Result<identity::DeviceCert> {
         if !self.first_claim
             || challenge.root_public_key.is_some()
@@ -346,8 +299,6 @@ impl MaterialV4 {
         {
             return Err(Error::Scope);
         }
-        let _errors = allocation::helper_errors(budget)?;
-        let _label = allocation::reserve(budget, FIRST_HOST_LABEL.len())?;
         let mut certificate = identity::DeviceCert {
             user_public_key: self.certificate.user_public_key,
             device_public_key: challenge.host_public_key,
@@ -357,21 +308,18 @@ impl MaterialV4 {
             expires_at_ns: None,
             signature: [0; 64],
         };
-        let _transcript = allocation::transcript(&certificate, budget)?;
         identity::sign_device_cert(&mut certificate, &SigningKey::from_bytes(&self.root_secret))
             .map_err(|_| Error::Signature)?;
         Ok(certificate)
     }
-    pub fn request_id(&self, budget: &NativeAllowance) -> Result<[u8; 32]> {
-        let _errors = allocation::helper_errors(budget)?;
+    pub fn request_id(&self) -> Result<[u8; 32]> {
         identity::canonical::signing_digest(
             b"qos-cloud-browser-membership-v4\0",
             &(&self.attempt_id, &self.machine_id, &self.certificate),
         )
         .map_err(|_| Error::Signature)
     }
-    pub fn operation_id(&self, budget: &NativeAllowance) -> Result<uuid::Uuid> {
-        let _errors = allocation::helper_errors(budget)?;
+    pub fn operation_id(&self) -> Result<uuid::Uuid> {
         // The first apply keeps its original key; a restarted apply (fresh
         // challenge after a refusal) must never reuse a refused key.
         let digest = if self.apply_retry == 0 {
@@ -395,8 +343,7 @@ impl MaterialV4 {
         bytes.copy_from_slice(&digest[..16]);
         Ok(uuid::Uuid::from_bytes(bytes))
     }
-    pub fn validate(&self, now: u64, budget: &NativeAllowance) -> Result<()> {
-        let _errors = allocation::helper_errors(budget)?;
+    pub fn validate(&self, now: u64) -> Result<()> {
         if self.version != 4
             || self.kind != "cloud-owner"
             || self.created_at_ns == 0
@@ -426,44 +373,32 @@ impl MaterialV4 {
         if signed < self.created_at_ns || !not_future(signed, now) {
             return Err(Error::Material);
         }
-        let enrollment: Held<identity::cloud_enrollment::EnrollmentRequest> =
-            read_json(bytes, budget)?;
-        self.check_challenge(&enrollment.value.challenge, signed, budget)?;
-        self.check_host(
-            &enrollment.value.host_certificate,
-            &enrollment.value.challenge,
-            signed,
-            budget,
-        )?;
-        let _transcript = allocation::enrollment_transcript(&enrollment.value, budget)?;
-        if enrollment.value.browser_certificate != self.certificate {
+        let enrollment: identity::cloud_enrollment::EnrollmentRequest = read_json(bytes)?;
+        self.check_challenge(&enrollment.challenge, signed)?;
+        self.check_host(&enrollment.host_certificate, &enrollment.challenge, signed)?;
+        if enrollment.browser_certificate != self.certificate {
             return Err(Error::Scope);
         }
-        identity::cloud_enrollment::verify_request(
-            &enrollment.value,
-            &enrollment.value.challenge,
-            signed,
-        )
-        .map_err(|_| Error::Signature)?;
+        identity::cloud_enrollment::verify_request(&enrollment, &enrollment.challenge, signed)
+            .map_err(|_| Error::Signature)?;
         let request = match &self.phase {
             Phase::MembershipChallenge { request, .. }
             | Phase::MembershipComplete { request, .. } => request,
             _ => return Ok(()),
         };
-        let held = read_request(request, budget)?;
-        let Request::MembershipChallenge(request) = &held.value else {
+        let held = read_request(request)?;
+        let Request::MembershipChallenge(request) = &held else {
             return Err(Error::Material);
         };
-        if request.room != enrollment.value.challenge.room
+        if request.room != enrollment.challenge.room
             || request.workspace_id
                 != enrollment
-                    .value
                     .challenge
                     .workspace_id
                     .parse::<u64>()
                     .map_err(|_| Error::Scope)?
             || request.device_cert != self.certificate
-            || request.request_id != self.request_id(budget)?
+            || request.request_id != self.request_id()?
         {
             return Err(Error::Scope);
         }
@@ -474,25 +409,16 @@ impl MaterialV4 {
             if *proof_at_ns < signed || !not_future(*proof_at_ns, now) {
                 return Err(Error::Material);
             }
-            let held = read_request(proof, budget)?;
-            let Request::MembershipComplete(proof) = &held.value else {
+            let held = read_request(proof)?;
+            let Request::MembershipComplete(proof) = &held else {
                 return Err(Error::Material);
             };
             self.check_membership(
                 &proof.proof.challenge,
-                &enrollment.value.host_certificate,
-                &enrollment.value.challenge,
+                &enrollment.host_certificate,
+                &enrollment.challenge,
                 *proof_at_ns,
-                budget,
             )?;
-            let _returned = allocation::reserve(
-                budget,
-                allocation::sum(&[
-                    proof.proof.challenge.room.len(),
-                    self.certificate.device_label.len(),
-                ])?,
-            )?;
-            let _transcript = allocation::transcript(&proof.proof.challenge, budget)?;
             join::verify_membership_proof(
                 &proof.proof,
                 &proof.proof.challenge,
@@ -508,10 +434,7 @@ impl MaterialV4 {
         &self,
         challenge: &identity::cloud_enrollment::Challenge,
         now: u64,
-        budget: &NativeAllowance,
     ) -> Result<()> {
-        let _errors = allocation::helper_errors(budget)?;
-        let _text = allocation::reserve(budget, 36 + 20)?;
         // Expiry is strict; the freshness bound and material age tolerate a
         // browser clock that is a little behind or ahead of the Store.
         if !not_future(self.created_at_ns, now)
@@ -549,7 +472,7 @@ impl MaterialV4 {
             return Err(Error::Scope);
         }
         if let Some(host) = host {
-            self.check_host(host, challenge, now, budget)?;
+            self.check_host(host, challenge, now)?;
         }
         Ok(())
     }
@@ -560,9 +483,7 @@ impl MaterialV4 {
         host: &identity::DeviceCert,
         challenge: &identity::cloud_enrollment::Challenge,
         now: u64,
-        budget: &NativeAllowance,
     ) -> Result<()> {
-        let _errors = allocation::helper_errors(budget)?;
         if host.user_public_key != self.certificate.user_public_key
             || host.device_public_key != challenge.host_public_key
             || host.capabilities != identity::cloud_enrollment::host_capabilities()
@@ -579,10 +500,9 @@ impl MaterialV4 {
         host: &identity::DeviceCert,
         enrolled: &identity::cloud_enrollment::Challenge,
         now: u64,
-        budget: &NativeAllowance,
     ) -> Result<()> {
-        let request_id = self.request_id(budget)?;
-        self.check_membership_for(challenge, host, enrolled, request_id, now, budget)
+        let request_id = self.request_id()?;
+        self.check_membership_for(challenge, host, enrolled, request_id, now)
     }
     /// The same exact challenge check for a fresh refresh request identifier.
     pub fn check_membership_for(
@@ -592,13 +512,10 @@ impl MaterialV4 {
         enrolled: &identity::cloud_enrollment::Challenge,
         request_id: [u8; 32],
         now: u64,
-        budget: &NativeAllowance,
     ) -> Result<()> {
         if request_id == [0; 32] {
             return Err(Error::Scope);
         }
-        let _errors = allocation::helper_errors(budget)?;
-        let _expected = allocation::reserve(budget, 36)?;
         if challenge.nonce == [0; 32]
             || now >= challenge.expires_at_ns
             || challenge.expires_at_ns - now > MEMBERSHIP_TTL_NS + CLOCK_TOLERANCE_NS

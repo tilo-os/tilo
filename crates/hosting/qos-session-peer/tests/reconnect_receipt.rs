@@ -1,5 +1,7 @@
 #![cfg(feature = "test-support")]
 
+tilo_automerge_isolate::test_worker!();
+
 use qos_session_peer::SessionOwner;
 use std::{
     fs,

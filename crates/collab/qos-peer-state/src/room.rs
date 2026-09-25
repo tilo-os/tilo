@@ -1,4 +1,4 @@
-//! Native room-policy leaves shared by the shell and certified browser peer.
+//! Room-policy leaves shared by the shell and certified browser peer.
 pub(crate) mod delivery_policy;
 pub(crate) mod key_hex;
 pub mod media;
@@ -138,30 +138,22 @@ pub fn extract_governed_fields(
 ///
 /// # Errors
 ///
-/// Returns an error if a change is malformed or refused by checked admission.
+/// Returns an error if a change is malformed or refused by isolated admission.
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
-    use automerge::resource_limits::{NativeAllowance, NativeDependencyPolicy};
     // Each entry is one complete change chunk; their concatenation is ordinary
-    // storage, admitted with the same checked path as document mutations.
-    let mut storage = Vec::new();
-    for bytes in changes {
-        automerge::Change::try_from(bytes.as_slice()).map_err(|e| e.to_string())?;
-        storage.extend_from_slice(bytes);
-    }
+    // storage, admitted like any other untrusted document mutation.
+    let storage = changes.concat();
     let mut candidate = before.cloned().unwrap_or_else(AutoCommit::new);
     candidate.reset_diff_cursor();
     if storage.is_empty() {
         return Ok(candidate);
     }
-    let allowance = NativeAllowance::new(64 * 1024 * 1024).map_err(|e| e.to_string())?;
-    candidate
-        .apply_incoming_checked(
-            &storage,
-            &crate::document::incoming_document_limits(),
-            &allowance,
-            NativeDependencyPolicy::RetainOrphans,
-        )
-        .map_err(|e| e.to_string())?;
+    tilo_automerge_isolate::apply(
+        &mut candidate,
+        &storage,
+        tilo_automerge_isolate::Dependencies::RetainOrphans,
+    )
+    .map_err(|e| e.to_string())?;
     Ok(candidate)
 }
 pub fn declared_room_mismatches(candidate: &AutoCommit, room: uuid::Uuid) -> bool {

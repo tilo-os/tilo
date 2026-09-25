@@ -1,9 +1,5 @@
-//! Existing governed-value fingerprints, shared by legacy and paid readers.
+//! Existing governed-value fingerprints.
 use crate::room::read::{LegacyRead, ReadError, RoomRead};
-use automerge::resource_limits::{
-    NativeReadError, NativeReadSession, NativeResourceError, NativeScalar, NativeSelection,
-    NativeValue,
-};
 use automerge::{ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::fmt::Write;
 
@@ -27,10 +23,7 @@ enum Shape<'a> {
     InvalidScalar,
     Object(ObjType),
 }
-fn fingerprint(
-    shape: Shape<'_>,
-    extra: impl FnOnce(&mut Hash) -> Result<(), NativeResourceError>,
-) -> Result<[u8; 32], NativeResourceError> {
+fn fingerprint(shape: Shape<'_>, extra: impl FnOnce(&mut Hash)) -> [u8; 32] {
     let mut hash = Hash(blake3::Hasher::new());
     match shape {
         Shape::Bytes(bytes) => {
@@ -46,27 +39,24 @@ fn fingerprint(
         }
         Shape::Object(kind) => {
             hash.0.update(b"invalid-object\0");
-            // The hash sink never fails; only a failing Debug impl could.
-            write!(&mut hash, "{kind:?}").map_err(|_| NativeResourceError::Invalid)?;
+            // The hash sink never fails.
+            let _ = write!(&mut hash, "{kind:?}");
         }
     }
-    extra(&mut hash)?;
-    Ok(*hash.0.finalize().as_bytes())
+    extra(&mut hash);
+    *hash.0.finalize().as_bytes()
 }
-fn legacy(value: Value<'_>, object: &ObjId) -> Result<[u8; 32], NativeResourceError> {
+fn legacy(value: Value<'_>, object: &ObjId) -> [u8; 32] {
     match value {
         Value::Scalar(value) => match value.as_ref() {
-            ScalarValue::Bytes(bytes) => fingerprint(Shape::Bytes(bytes), |_| Ok(())),
-            ScalarValue::Str(text) => fingerprint(Shape::Str(text), |_| Ok(())),
+            ScalarValue::Bytes(bytes) => fingerprint(Shape::Bytes(bytes), |_| ()),
+            ScalarValue::Str(text) => fingerprint(Shape::Str(text), |_| ()),
             value => fingerprint(Shape::InvalidScalar, |hash| {
-                write!(hash, "{value:?}").map_err(|_| NativeResourceError::Invalid)
+                let _ = write!(hash, "{value:?}");
             }),
         },
         Value::Object(kind) => fingerprint(Shape::Object(kind), |hash| {
-            // Explicitly unqualified legacy adapter retains the original ID
-            // codec. Native uses that same codec with paid caller storage.
             hash.0.update(&object.to_bytes());
-            Ok(())
         }),
     }
 }
@@ -81,60 +71,9 @@ impl<D: ReadDoc> FingerprintRead for LegacyRead<'_, D> {
             .map_err(|_| ReadError::Malformed)?;
         let count = values.len();
         for (value, object) in values {
-            let fingerprint = legacy(value, &object).map_err(ReadError::Resource)?;
-            visitor(fingerprint).map_err(ReadError::Visitor)?;
+            visitor(legacy(value, &object)).map_err(ReadError::Visitor)?;
         }
         Ok(count)
-    }
-}
-impl FingerprintRead for NativeReadSession<'_, '_> {
-    fn visit_media_fingerprints<E>(
-        &self,
-        mut visitor: impl FnMut([u8; 32]) -> Result<(), E>,
-    ) -> Result<usize, ReadError<E>> {
-        self.visit_property(
-            self.root(),
-            super::FIELD,
-            NativeSelection::All,
-            |value, id| {
-                let hash = match value {
-                    NativeValue::Scalar(NativeScalar::Bytes(bytes)) => {
-                        fingerprint(Shape::Bytes(bytes), |_| Ok(()))
-                    }
-                    NativeValue::Scalar(NativeScalar::Str(text)) => {
-                        fingerprint(Shape::Str(text), |_| Ok(()))
-                    }
-                    NativeValue::Scalar(value) => fingerprint(Shape::InvalidScalar, |hash| {
-                        value
-                            .write_legacy_debug(hash)
-                            .map_err(|_| NativeResourceError::Invalid)
-                    }),
-                    NativeValue::Object { kind, .. } => fingerprint(Shape::Object(kind), |hash| {
-                        let length = self.id_bytes_len(id)?;
-                        let _retention = self.reserve_output(length)?;
-                        let mut bytes = Vec::new();
-                        // Pinned Global uses the requested exact byte layout.
-                        // The reservation precedes allocation and outlives bytes.
-                        bytes
-                            .try_reserve_exact(length)
-                            .map_err(|_| NativeResourceError::WorkBytes)?;
-                        if bytes.capacity() > length {
-                            return Err(NativeResourceError::Unaccounted);
-                        }
-                        bytes.resize(length, 0);
-                        self.write_id_bytes(id, &mut bytes)?;
-                        hash.0.update(&bytes);
-                        Ok(())
-                    }),
-                }
-                .map_err(ReadError::Resource)?;
-                visitor(hash).map_err(ReadError::Visitor)
-            },
-        )
-        .map_err(|error| match error {
-            NativeReadError::Resource(error) => ReadError::Resource(error),
-            NativeReadError::Visitor(error) => error,
-        })
     }
 }
 #[cfg(test)]

@@ -233,19 +233,14 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
     let mut expected = plain;
     expected.insert(17, '\u{fffc}');
     assert_eq!(doc.text(&text).unwrap(), expected);
-    let mut mark_count = 0;
-    let mut embedded_count = 0;
-    for item in doc.list_range(&text, ..) {
-        let is_mark = item.is_mark();
-        if is_mark {
-            mark_count += 1;
-        } else if matches!(item.value, automerge::ValueRef::Object(_)) {
-            embedded_count += 1;
-        }
-        assert_eq!(item.into_owned().is_mark(), is_mark);
-    }
-    assert_eq!(mark_count, 4); // begin/end for the real overlapping boolean and string marks
-    assert_eq!(embedded_count, 1); // actual block atom remains content
+    // Begin/end for the real overlapping boolean and string marks are list elements with no
+    // text width; the reader must skip them.
+    assert_eq!(doc.list_range(&text, ..).count(), doc.length(&text) + 4);
+    let embedded = doc
+        .list_range(&text, ..)
+        .filter(|item| matches!(item.value, automerge::ValueRef::Object(_)))
+        .count();
+    assert_eq!(embedded, 1); // actual block atom remains content
     let heads = doc.base_heads();
     let mut cursor = None;
     let mut result = String::new();
@@ -268,5 +263,3 @@ fn semantic_read_marked_text_keeps_only_text_and_real_embedded_atoms_across_page
     assert_eq!(doc.base_heads(), heads);
     assert_eq!(doc.pending_ops(), 0);
 }
-
-mod native;

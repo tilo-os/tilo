@@ -7,7 +7,6 @@ use qos_peer_state::join::{
 use tilo_relay::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
 
 struct Attempt {
-    incoming: crate::peer_delivery::incoming::IncomingBudget,
     identity: RefCell<InvitedIdentity>,
     host: IrohWorkspaceHostHintV1,
     trust: WorkspaceHostTrust,
@@ -79,8 +78,7 @@ fn acknowledge(value: &Attempt, material: &[u8]) -> Result<(), JsValue> {
     }
     // Decode the exact ACKed material again at the current clock. No unsigned
     // authority DTO is accepted at this boundary.
-    let restored =
-        InvitedIdentity::read_with_budget(material, now(), &value.incoming).map_err(error)?;
+    let restored = InvitedIdentity::read(material, now()).map_err(error)?;
     if restored.public().map_err(error)? != value.identity.borrow().public().map_err(error)? {
         return Err(error("invitation identity changed"));
     }
@@ -91,13 +89,9 @@ async fn request(
     request: Request,
 ) -> Result<crate::peer_onboarding::OnboardingReply, JsValue> {
     live(value)?;
-    let prepared = crate::peer_onboarding::prepare_invited(
-        &value.identity.borrow(),
-        request,
-        &value.incoming,
-        now(),
-    )
-    .map_err(error)?;
+    let prepared =
+        crate::peer_onboarding::prepare_invited(&value.identity.borrow(), request, now())
+            .map_err(error)?;
     let response = crate::peer_onboarding::exchange_invited(prepared, &value.cancel, || {
         live(value).map_err(|value| {
             value
@@ -172,9 +166,7 @@ fn workspace_host(
 #[wasm_bindgen]
 pub async fn invited_resume_transport(peer: u32, material: Vec<u8>) -> Result<(), JsValue> {
     let required = |reason: &str| error(format!("Invited refresh required: {reason}"));
-    let incoming = incoming_for_owner(Some(peer))?;
-    let identity = InvitedIdentity::read_with_budget(&material, now(), &incoming)
-        .map_err(|_| required("custody"))?;
+    let identity = InvitedIdentity::read(&material, now()).map_err(|_| required("custody"))?;
     if !identity.admitted() {
         return Err(required("not admitted"));
     }
@@ -218,7 +210,6 @@ pub async fn invited_resume_transport(peer: u32, material: Vec<u8>) -> Result<()
         revoked.insert(entry).map_err(error)?;
     }
     let config = ValidatedOwner {
-        incoming,
         key: identity.device_key(),
         initial: state,
         revoked,
@@ -236,8 +227,7 @@ pub async fn invited_resume_transport(peer: u32, material: Vec<u8>) -> Result<()
 }
 #[wasm_bindgen]
 pub fn invited_begin(material: Vec<u8>, existing: Option<u32>) -> Result<u32, JsValue> {
-    let incoming = incoming_for_owner(existing)?;
-    let identity = InvitedIdentity::read_with_budget(&material, now(), &incoming).map_err(error)?;
+    let identity = InvitedIdentity::read(&material, now()).map_err(error)?;
     let (host, trust, delivery_host, origin) = workspace_host(&identity)?;
     existing
         .map(|id| {
@@ -267,7 +257,6 @@ pub fn invited_begin(material: Vec<u8>, existing: Option<u32>) -> Result<u32, Js
         })
         .transpose()?;
     let value = Rc::new(Attempt {
-        incoming,
         identity: RefCell::new(identity),
         host,
         trust,
@@ -313,7 +302,6 @@ pub fn invited_cancel(id: u32) -> js_sys::Promise {
 pub async fn invited_prepare(id: u32) -> Result<String, JsValue> {
     let value = attempt(id)?;
     let _operation = operation(&value)?;
-    let _request_credit = value.incoming.reserve(2 * 262_144).map_err(error)?;
     if value.identity.borrow().admitted() || value.identity.borrow().completion().is_some() {
         return checkpoint(&value, "checkpoint");
     }
@@ -355,7 +343,6 @@ pub async fn invited_complete(id: u32, material: Vec<u8>) -> Result<String, JsVa
     let value = attempt(id)?;
     let _operation = operation(&value)?;
     acknowledge(&value, &material)?;
-    let _request_credit = value.incoming.reserve(2 * 262_144).map_err(error)?;
     if value.bootstrap.borrow().is_some() {
         return Err(error("invitation completion already admitted"));
     }
@@ -405,15 +392,13 @@ pub async fn invited_complete(id: u32, material: Vec<u8>) -> Result<String, JsVa
         )
         .await?
     } else {
-        let (_completion_credit, complete) = {
+        let complete = {
             let identity = value.identity.borrow();
             let bytes = identity
                 .completion()
                 .ok_or_else(|| error("No ACKed redemption completion"))?;
-            let charge = crate::peer_onboarding::preflight_completion(bytes).map_err(error)?;
-            let credit = value.incoming.reserve(charge).map_err(error)?;
-            let complete: join::JoinCompleteRequest = postcard::from_bytes(bytes).map_err(error)?;
-            (credit, complete)
+            crate::peer_onboarding::preflight_completion(bytes).map_err(error)?;
+            postcard::from_bytes::<join::JoinCompleteRequest>(bytes).map_err(error)?
         };
         request(&value, Request::Complete(complete)).await?
     };
@@ -513,7 +498,6 @@ fn config(value: &Attempt) -> Result<ValidatedOwner, JsValue> {
         revoked.insert(entry).map_err(error)?;
     }
     Ok(ValidatedOwner {
-        incoming: value.incoming.clone(),
         key: value.identity.borrow().device_key(),
         initial,
         revoked,
@@ -589,12 +573,8 @@ pub fn invited_refresh_media(id: u32, material: Vec<u8>, peer: u32) -> Result<()
             .clone(),
     );
     let now = SystemTime::now();
-    let mut cut = crate::peer_delivery::admission::CutAdmission::begin(
-        &peer.state.borrow(),
-        peer.incoming.clone(),
-        now,
-    )
-    .map_err(error)?;
+    let mut cut = crate::peer_delivery::admission::CutAdmission::begin(&peer.state.borrow(), now)
+        .map_err(error)?;
     for bytes in governance.messages() {
         cut.push_retained(bytes, now).map_err(error)?;
     }

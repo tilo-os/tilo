@@ -1,9 +1,8 @@
-//! Retained current policy copied from the exact native room read.
+//! Current policy copied from the admitted room, within explicit limits.
 use super::{
-    CapOverride, Error, GovernedIdentity, NativeReservation, NativeResourceError, NativeWorkTurn,
-    PeerLimits, Policy, Principal, Role, Scope, Subject, key_text, room,
+    CapOverride, Error, GovernedIdentity, PeerLimits, Policy, Principal, Scope, Subject, key_text,
 };
-use crate::resources::json::{JsonHeld, JsonLimits};
+use crate::resources::json::{self, JsonLimits};
 use crate::room::{
     policy::{self, Destination},
     read::{ReadError, RoomRead},
@@ -12,8 +11,7 @@ use crate::room::{
 pub(super) struct NativePolicy {
     owner: Option<String>,
     caps: Vec<CapOverride>,
-    identity: JsonHeld<GovernedIdentity>,
-    _retention: NativeReservation,
+    identity: GovernedIdentity,
 }
 impl Policy for NativePolicy {
     fn owner(&self) -> Option<&str> {
@@ -23,45 +21,21 @@ impl Policy for NativePolicy {
         &self.caps
     }
     fn identity(&self) -> &GovernedIdentity {
-        self.identity.value()
-    }
-    fn role(
-        &self,
-        person: &str,
-        now: u64,
-        turn: Option<&NativeWorkTurn>,
-    ) -> Result<Option<Role>, Error> {
-        // role_of's only owned temporary is hex::encode([u8;32]) for a User
-        // subject: one exact 64-byte Vec, reused/freed between rows.
-        let _scratch = turn
-            .ok_or(Error::Resource(NativeResourceError::Unaccounted))?
-            .reserve(64)
-            .map_err(Error::Resource)?;
-        Ok(room::role_of(self.owner(), self.caps(), person, now))
+        &self.identity
     }
 }
+/// Bytes left for the copied policy, from `governance_collection_bytes`.
 struct Output {
     remaining: usize,
-    retention: NativeReservation,
 }
 impl Output {
     fn pay(&mut self, bytes: usize) -> Result<(), Error> {
-        self.remaining = self
-            .remaining
-            .checked_sub(bytes)
-            .ok_or(Error::Resource(NativeResourceError::WorkBytes))?;
+        self.remaining = self.remaining.checked_sub(bytes).ok_or(Error::Capacity)?;
         Ok(())
     }
     fn text(&mut self, value: &str) -> Result<String, Error> {
         self.pay(value.len())?;
-        let mut copy = String::new();
-        copy.try_reserve_exact(value.len())
-            .map_err(|_| Error::Resource(NativeResourceError::WorkBytes))?;
-        if copy.capacity() > value.len() {
-            return Err(Error::Resource(NativeResourceError::Unaccounted));
-        }
-        copy.push_str(value);
-        Ok(copy)
+        Ok(value.to_owned())
     }
     fn principal(&mut self, value: &Principal) -> Result<Principal, Error> {
         Ok(match value {
@@ -111,9 +85,8 @@ impl Output {
 struct Collect<'a> {
     owner: Option<String>,
     caps: Vec<CapOverride>,
-    identity: Option<JsonHeld<GovernedIdentity>>,
+    identity: Option<GovernedIdentity>,
     key: &'a str,
-    turn: &'a NativeWorkTurn,
     limits: JsonLimits,
     output: Output,
 }
@@ -124,23 +97,18 @@ impl Destination for Collect<'_> {
         Ok(())
     }
     fn capability(&mut self, bytes: &[u8]) -> Result<(), Error> {
-        let parsed = match JsonHeld::<CapOverride>::decode(bytes, self.limits, self.turn) {
+        let parsed: CapOverride = match json::decode(bytes, self.limits) {
             Ok(value) => value,
             Err(crate::resources::PeerResourceError::Malformed) => return Ok(()),
             Err(error) => return Err(Error::Decode(error)),
         };
-        let cap = self.output.capability(parsed.value())?;
-        // Counted before construction. No geometric growth is permitted.
-        if self.caps.len() == self.caps.capacity() {
-            return Err(Error::Resource(NativeResourceError::Unaccounted));
-        }
+        let cap = self.output.capability(&parsed)?;
         self.caps.push(cap);
         Ok(())
     }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Error> {
         if key == self.key {
-            self.identity =
-                Some(JsonHeld::decode(bytes, self.limits, self.turn).map_err(Error::Decode)?);
+            self.identity = Some(json::decode(bytes, self.limits).map_err(Error::Decode)?);
         }
         Ok(())
     }
@@ -148,14 +116,13 @@ impl Destination for Collect<'_> {
 fn read_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => Error::Read,
-        ReadError::Resource(e) => Error::Resource(e),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(e) => e,
     }
 }
 pub(super) fn collect<R: RoomRead>(
     read: &R,
     source: &[u8; 32],
-    turn: &NativeWorkTurn,
     limits: PeerLimits,
 ) -> Result<NativePolicy, Error> {
     struct Count(usize);
@@ -168,10 +135,7 @@ pub(super) fn collect<R: RoomRead>(
             Ok(())
         }
         fn capability(&mut self, _: &[u8]) -> Result<(), Error> {
-            self.0 = self
-                .0
-                .checked_add(1)
-                .ok_or(Error::Resource(NativeResourceError::WorkBytes))?;
+            self.0 = self.0.checked_add(1).ok_or(Error::Capacity)?;
             Ok(())
         }
     }
@@ -179,22 +143,16 @@ pub(super) fn collect<R: RoomRead>(
     policy::project(read, &mut count).map_err(read_error)?;
     let mut output = Output {
         remaining: limits.governance_collection_bytes,
-        retention: turn
-            .reserve(limits.governance_collection_bytes)
-            .map_err(Error::Resource)?,
     };
     output.pay(
         count
             .0
             .checked_mul(size_of::<CapOverride>())
-            .ok_or(Error::Resource(NativeResourceError::WorkBytes))?,
+            .ok_or(Error::Capacity)?,
     )?;
     let mut caps = Vec::new();
     caps.try_reserve_exact(count.0)
-        .map_err(|_| Error::Resource(NativeResourceError::WorkBytes))?;
-    if caps.capacity() > count.0 {
-        return Err(Error::Resource(NativeResourceError::Unaccounted));
-    }
+        .map_err(|_| Error::Capacity)?;
     let key = key_text(source);
     let key = key.as_str();
     let mut collect = Collect {
@@ -202,7 +160,6 @@ pub(super) fn collect<R: RoomRead>(
         caps,
         identity: None,
         key,
-        turn,
         limits: JsonLimits {
             allocation_bytes: limits.governance_json.allocation_bytes,
             collection_entries: limits.governance_json.collection_entries,
@@ -215,6 +172,5 @@ pub(super) fn collect<R: RoomRead>(
         owner: collect.owner,
         caps: collect.caps,
         identity,
-        _retention: collect.output.retention,
     })
 }

@@ -1,6 +1,4 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
 fn fixture() -> crate::StatePeer {
@@ -61,97 +59,59 @@ fn shared_private_policy_matches_existing_exact_revision_and_expiry_order() {
     );
     assert_eq!(result.expiries, vec![3, 7, 8]);
 }
+fn limits(collections: usize) -> Limits {
+    Limits {
+        collections,
+        json: JsonLimits {
+            allocation_bytes: 128 * 1024,
+            collection_entries: 65536,
+        },
+    }
+}
 #[test]
-fn native_private_policy_pays_actual_current_work_and_retains_result() {
+fn bounded_private_policy_matches_governance_revision_and_expiries() {
     let peer = fixture();
     let certificates = peer.certificates();
     let revocations = peer.revocations();
-    let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let baseline = current.retained_bytes();
-    let turn = allocations.work_turn(current.clone()).unwrap();
-    let candidate = peer
-        .admitted_room()
-        .unwrap()
-        .clone_bounded(&mut allocations, &turn)
-        .unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
-    let result = assert_precharged(&current, || {
-        native(
-            &read,
-            Metadata {
-                room: peer.room(),
-                authority: peer.authority(),
-                certificates: certificates.iter(),
-                revocations: revocations.iter(),
-            },
-            &turn,
-            Limits {
-                collections: 4 * 1024 * 1024,
-                json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536,
-                },
-            },
-        )
-    })
+    let result = native(
+        &LegacyRead(peer.admitted_room().unwrap()),
+        Metadata {
+            room: peer.room(),
+            authority: peer.authority(),
+            certificates: certificates.iter(),
+            revocations: revocations.iter(),
+        },
+        limits(4 * 1024 * 1024),
+    )
     .unwrap();
     assert_eq!(
         result.revision(),
         crate::owner_commit::governance_revision(&peer).unwrap()
     );
     assert_eq!(result.next_expiry_after(3), Some(7));
-    drop(candidate);
-    drop(turn);
-    allocations.reconcile();
-    drop(allocations);
     assert_eq!(result.next_expiry_after(7), Some(8));
-    let before = current.retained_bytes();
-    drop(result);
-    assert!(current.retained_bytes() < before);
-    assert_eq!(current.retained_bytes(), baseline);
+    assert_eq!(result.next_expiry_after(8), None);
 }
 
 mod parity;
 #[test]
-fn native_private_policy_refuses_small_output_budget_and_sealed_turn() {
+fn bounded_private_policy_refuses_small_collection_limits() {
     let peer = fixture();
     let certificates = peer.certificates();
     let revocations = peer.revocations();
-    let mut allocations = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let turn = allocations.work_turn(current.clone()).unwrap();
-    let candidate = peer
-        .admitted_room()
-        .unwrap()
-        .clone_bounded(&mut allocations, &turn)
-        .unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
-    let run = |limit| {
+    let run = |collections| {
         native(
-            &read,
+            &LegacyRead(peer.admitted_room().unwrap()),
             Metadata {
                 room: peer.room(),
                 authority: peer.authority(),
                 certificates: certificates.iter(),
                 revocations: revocations.iter(),
             },
-            &turn,
-            Limits {
-                collections: limit,
-                json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536,
-                },
-            },
+            limits(collections),
         )
     };
-    let before = current.retained_bytes();
-    assert!(matches!(
-        assert_precharged(&current, || run(1)),
-        Err(Error::Resource(NativeResourceError::WorkBytes))
-    ));
-    assert_eq!(current.retained_bytes(), before);
-    current.finish_turn();
-    assert!(matches!(run(0), Err(Error::Resource(_))));
+    assert!(matches!(run(0), Err(Error::Capacity)));
+    assert!(matches!(run(1), Err(Error::Capacity)));
+    assert!(run(4 * 1024 * 1024).is_ok());
 }

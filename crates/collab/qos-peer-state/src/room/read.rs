@@ -1,4 +1,4 @@
-//! Shared room traversal. The legacy adapter carries no allocation qualification.
+//! Shared room traversal over any Automerge document reader.
 
 pub(crate) mod collections;
 
@@ -17,114 +17,34 @@ pub(crate) enum RoomValue<'a, O> {
     Other,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+/// A read's explicit limit was reached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Capacity;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReadError<E> {
     Malformed,
-    Resource(automerge::resource_limits::NativeResourceError),
+    Capacity,
     Visitor(E),
+}
+
+impl<E> From<Capacity> for ReadError<E> {
+    fn from(_: Capacity) -> Self {
+        Self::Capacity
+    }
 }
 
 impl<E> ReadError<ReadError<E>> {
     fn flatten(self) -> ReadError<E> {
         match self {
             Self::Malformed => ReadError::Malformed,
-            Self::Resource(error) => ReadError::Resource(error),
+            Self::Capacity => ReadError::Capacity,
             Self::Visitor(error) => error,
         }
     }
 }
 
-pub(crate) trait CopyValue {
-    type Bytes: AsRef<[u8]>;
-    type Text: AsRef<str>;
-    fn bytes(
-        &self,
-        value: &[u8],
-    ) -> Result<Self::Bytes, automerge::resource_limits::NativeResourceError>;
-    fn text(
-        &self,
-        value: &str,
-    ) -> Result<Self::Text, automerge::resource_limits::NativeResourceError>;
-}
-
-pub(crate) struct LegacyCopy;
-impl CopyValue for LegacyCopy {
-    type Bytes = Vec<u8>;
-    type Text = String;
-    fn bytes(
-        &self,
-        value: &[u8],
-    ) -> Result<Vec<u8>, automerge::resource_limits::NativeResourceError> {
-        Ok(value.to_vec())
-    }
-    fn text(&self, value: &str) -> Result<String, automerge::resource_limits::NativeResourceError> {
-        Ok(value.to_owned())
-    }
-}
-
-/// Backing drops before its current-turn reservation. No Clone or extraction.
-pub(crate) struct Copied<T> {
-    value: T,
-    _reservation: automerge::resource_limits::NativeReservation,
-}
-impl AsRef<[u8]> for Copied<Vec<u8>> {
-    fn as_ref(&self) -> &[u8] {
-        &self.value
-    }
-}
-impl AsRef<str> for Copied<String> {
-    fn as_ref(&self) -> &str {
-        &self.value
-    }
-}
-
-pub(crate) struct TurnCopy<'a>(pub(crate) &'a automerge::resource_limits::NativeWorkTurn);
-impl CopyValue for TurnCopy<'_> {
-    type Bytes = Copied<Vec<u8>>;
-    type Text = Copied<String>;
-    fn bytes(
-        &self,
-        value: &[u8],
-    ) -> Result<Self::Bytes, automerge::resource_limits::NativeResourceError> {
-        use automerge::resource_limits::NativeResourceError;
-        let reservation = self.0.reserve(value.len())?;
-        let mut bytes = Vec::new();
-        // The pinned standard Global allocator requests this exact byte layout.
-        // Reserve before its first allocation, then write without growing it.
-        bytes
-            .try_reserve_exact(value.len())
-            .map_err(|_| NativeResourceError::WorkBytes)?;
-        if bytes.capacity() > reservation.bytes() {
-            return Err(NativeResourceError::Unaccounted);
-        }
-        bytes.extend_from_slice(value);
-        Ok(Copied {
-            value: bytes,
-            _reservation: reservation,
-        })
-    }
-    fn text(
-        &self,
-        value: &str,
-    ) -> Result<Self::Text, automerge::resource_limits::NativeResourceError> {
-        use automerge::resource_limits::NativeResourceError;
-        let reservation = self.0.reserve(value.len())?;
-        let mut text = String::new();
-        text.try_reserve_exact(value.len())
-            .map_err(|_| NativeResourceError::WorkBytes)?;
-        if text.capacity() > reservation.bytes() {
-            return Err(NativeResourceError::Unaccounted);
-        }
-        text.push_str(value);
-        Ok(Copied {
-            value: text,
-            _reservation: reservation,
-        })
-    }
-}
-
-/// Callbacks may inspect a borrowed scalar but cannot retain its native backing.
-/// Owned application output needs its own allocation and custody boundary.
+/// Callbacks borrow each scalar for the duration of the call.
 pub(crate) trait RoomRead {
     type Object;
     fn root(&self) -> Self::Object;
@@ -143,7 +63,7 @@ pub(crate) trait RoomRead {
     ) -> Result<usize, ReadError<E>>;
 }
 
-/// Borrowed logical governance values. Destination copies require caller custody.
+/// Borrowed logical governance values.
 pub(crate) enum GovernanceEntry<'a> {
     Owner(&'a str),
     Capability { key: &'a str, bytes: &'a [u8] },
@@ -162,8 +82,8 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
         }
         Ok(())
     });
-    // Match the existing room projection's ignored native lookup errors.
-    // Resource and destination failures are never turned into absent policy.
+    // Match the existing room projection's ignored lookup errors. Capacity
+    // and visitor failures are never turned into absent policy.
     if let Err(error) = owner
         && !matches!(error, ReadError::Malformed)
     {
@@ -172,9 +92,8 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
     for (field, kind) in [("capabilities", 0), ("peers", 1), ("peer_identities_v1", 2)] {
         let values = read
             .visit_property(&root, field, Selection::Winner, |value| {
-                // Legacy map-key lookup ignores malformed sequence containers.
-                // Do not ask the native map query to traverse a List/Text and
-                // turn that historical absence into a resource refusal.
+                // Map-key lookup ignores malformed sequence containers: a
+                // List or Text here reads as absent, as it always has.
                 if let RoomValue::Object {
                     kind: ObjType::Map | ObjType::Table,
                     object,
@@ -216,58 +135,6 @@ pub(crate) fn visit_governance_entries<R: RoomRead, E>(
 }
 
 pub(crate) struct LegacyRead<'a, D: ReadDoc>(pub(crate) &'a D);
-
-impl<'doc> RoomRead for automerge::resource_limits::NativeReadSession<'doc, '_> {
-    type Object = automerge::resource_limits::NativeObject<'doc>;
-    fn root(&self) -> Self::Object {
-        self.root()
-    }
-
-    fn visit_keys<E>(
-        &self,
-        object: &Self::Object,
-        visitor: impl for<'a> FnMut(&'a str) -> Result<(), E>,
-    ) -> Result<usize, ReadError<E>> {
-        self.visit_keys(*object, visitor)
-            .map_err(|error| match error {
-                automerge::resource_limits::NativeReadError::Resource(error) => {
-                    ReadError::Resource(error)
-                }
-                automerge::resource_limits::NativeReadError::Visitor(error) => {
-                    ReadError::Visitor(error)
-                }
-            })
-    }
-
-    fn visit_property<E>(
-        &self,
-        object: &Self::Object,
-        key: &str,
-        selection: Selection,
-        mut visitor: impl for<'a> FnMut(RoomValue<'a, Self::Object>) -> Result<(), E>,
-    ) -> Result<usize, ReadError<E>> {
-        use automerge::resource_limits::{
-            NativeReadError, NativeScalar, NativeSelection, NativeValue,
-        };
-        let selection = match selection {
-            Selection::Winner => NativeSelection::Winner,
-            Selection::All => NativeSelection::All,
-        };
-        self.visit_property(*object, key, selection, |value, _| {
-            visitor(match value {
-                NativeValue::Object { kind, object } => RoomValue::Object { kind, object },
-                NativeValue::Scalar(NativeScalar::Bytes(bytes)) => RoomValue::Bytes(bytes),
-                NativeValue::Scalar(NativeScalar::Str(value)) => RoomValue::Str(value),
-                NativeValue::Scalar(NativeScalar::Boolean(value)) => RoomValue::Boolean(value),
-                NativeValue::Scalar(_) => RoomValue::Other,
-            })
-        })
-        .map_err(|error| match error {
-            NativeReadError::Resource(error) => ReadError::Resource(error),
-            NativeReadError::Visitor(error) => ReadError::Visitor(error),
-        })
-    }
-}
 
 impl<D: ReadDoc> RoomRead for LegacyRead<'_, D> {
     type Object = ObjId;
@@ -358,24 +225,23 @@ pub(crate) fn strict_map<R: RoomRead>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Conflict))
 }
 
-pub(crate) fn strict_string<R: RoomRead, C: CopyValue>(
+pub(crate) fn strict_string<R: RoomRead>(
     read: &R,
-    copies: &C,
     parent: &R::Object,
     key: &str,
-) -> Result<C::Text, ReadError<super::media::MediaPolicyError>> {
+) -> Result<String, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
-    let mut result: Option<C::Text> = None;
+    let mut result: Option<String> = None;
     read.visit_property(parent, key, Selection::All, |value| {
         let RoomValue::Str(value) = value else {
             return Err(ReadError::Visitor(MediaPolicyError::Malformed));
         };
         match &result {
-            Some(prior) if prior.as_ref() != value => {
+            Some(prior) if prior != value => {
                 return Err(ReadError::Visitor(MediaPolicyError::Conflict));
             }
             Some(_) => {}
-            None => result = Some(copies.text(value).map_err(ReadError::Resource)?),
+            None => result = Some(value.to_owned()),
         }
         Ok(())
     })
@@ -383,24 +249,23 @@ pub(crate) fn strict_string<R: RoomRead, C: CopyValue>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
 }
 
-pub(crate) fn strict_bytes<R: RoomRead, C: CopyValue>(
+pub(crate) fn strict_bytes<R: RoomRead>(
     read: &R,
-    copies: &C,
     parent: &R::Object,
     key: &str,
-) -> Result<C::Bytes, ReadError<super::media::MediaPolicyError>> {
+) -> Result<Vec<u8>, ReadError<super::media::MediaPolicyError>> {
     use super::media::MediaPolicyError;
-    let mut result: Option<C::Bytes> = None;
+    let mut result: Option<Vec<u8>> = None;
     read.visit_property(parent, key, Selection::All, |value| {
         let RoomValue::Bytes(value) = value else {
             return Err(ReadError::Visitor(MediaPolicyError::Malformed));
         };
         match &result {
-            Some(prior) if prior.as_ref() != value => {
+            Some(prior) if prior.as_slice() != value => {
                 return Err(ReadError::Visitor(MediaPolicyError::Conflict));
             }
             Some(_) => {}
-            None => result = Some(copies.bytes(value).map_err(ReadError::Resource)?),
+            None => result = Some(value.to_vec()),
         }
         Ok(())
     })
@@ -408,15 +273,14 @@ pub(crate) fn strict_bytes<R: RoomRead, C: CopyValue>(
     result.ok_or(ReadError::Visitor(MediaPolicyError::Binding))
 }
 
-/// Only the legacy facade erases allocation detail into its frozen error enum.
-/// Bounded callers retain `ReadError::Resource`, including Unaccounted.
+/// The policy error a read failure is reported as.
 pub(crate) fn legacy_policy_error(
-    error: &ReadError<super::media::MediaPolicyError>,
+    error: ReadError<super::media::MediaPolicyError>,
 ) -> super::media::MediaPolicyError {
     use super::media::MediaPolicyError;
-    match *error {
+    match error {
         ReadError::Malformed => MediaPolicyError::Malformed,
-        ReadError::Resource(_) => MediaPolicyError::Capacity,
+        ReadError::Capacity => MediaPolicyError::Capacity,
         ReadError::Visitor(error) => error,
     }
 }
@@ -427,171 +291,6 @@ mod tests {
     use crate::room::media::MediaPolicyError;
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
     use tilo_automerge::ApplyIncoming;
-
-    #[test]
-    fn room_read_adapter_copied_scalars_keep_current_credit_after_native_drop() {
-        use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
-        let mut document = AutoCommit::new();
-        document.put(ROOT, "title", "a retained title").unwrap();
-        document
-            .put(ROOT, "blob", ScalarValue::Bytes(vec![3; 256]))
-            .unwrap();
-        document.commit();
-        let current = NativeAllowance::new(1024 * 1024).unwrap();
-        let initial = current.available_bytes();
-        let mut allocations =
-            NativeAllocationSet::new(NativeAllowance::new(1024 * 1024).unwrap()).unwrap();
-        let turn = allocations.work_turn(current.clone()).unwrap();
-        let candidate = document.clone_bounded(&mut allocations, &turn).unwrap();
-        let read = candidate.read_unqualified(&turn).unwrap();
-        let before = current.available_bytes();
-        let title = strict_string(&read, &TurnCopy(&turn), &read.root(), "title").unwrap();
-        let blob = strict_bytes(&read, &TurnCopy(&turn), &read.root(), "blob").unwrap();
-        let retained = title.as_ref().len() + blob.as_ref().len();
-        assert_eq!(current.available_bytes(), before - retained);
-        drop(candidate);
-        drop(allocations);
-        drop(turn);
-        assert_eq!(title.as_ref(), "a retained title");
-        assert_eq!(blob.as_ref(), &[3; 256]);
-        assert_eq!(current.available_bytes(), initial - retained);
-        drop(title);
-        drop(blob);
-        assert_eq!(current.available_bytes(), initial);
-    }
-
-    #[test]
-    fn room_read_adapter_copy_refuses_before_work_and_retains_exact_boundary() {
-        use automerge::resource_limits::{
-            NativeAllocationSet, NativeAllowance, NativeResourceError,
-        };
-        let current = NativeAllowance::new(1024).unwrap();
-        let allocations = NativeAllocationSet::new(NativeAllowance::new(1024).unwrap()).unwrap();
-        let turn = allocations.work_turn(current.clone()).unwrap();
-        let remaining = turn.reserve(current.available_bytes() - 4).unwrap();
-        assert!(matches!(
-            TurnCopy(&turn).bytes(&[1; 5]),
-            Err(NativeResourceError::WorkBytes)
-        ));
-        assert_eq!(current.available_bytes(), 4);
-        let exact = TurnCopy(&turn).text("four").unwrap();
-        assert_eq!(exact.as_ref(), "four");
-        assert_eq!(current.available_bytes(), 0);
-        drop(exact);
-        assert_eq!(current.available_bytes(), 4);
-        drop(remaining);
-    }
-
-    #[test]
-    fn room_read_adapter_scalar_conflicts_share_semantics_and_release_discarded_credit() {
-        use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
-        for other in ["same", "different"] {
-            let mut document = AutoCommit::new();
-            let mut remote = document.fork();
-            document.put(ROOT, "value", "same").unwrap();
-            document.commit();
-            remote.put(ROOT, "value", other).unwrap();
-            remote.commit();
-            document.merge_incoming(&mut remote).unwrap();
-            assert_eq!(document.get_all(ROOT, "value").unwrap().len(), 2);
-            let current = NativeAllowance::new(1024 * 1024).unwrap();
-            let mut allocations =
-                NativeAllocationSet::new(NativeAllowance::new(1024 * 1024).unwrap()).unwrap();
-            let turn = allocations.work_turn(current.clone()).unwrap();
-            let candidate = document.clone_bounded(&mut allocations, &turn).unwrap();
-            let read = candidate.read_unqualified(&turn).unwrap();
-            let before = current.available_bytes();
-            let result = strict_string(&read, &TurnCopy(&turn), &read.root(), "value");
-            if other == "same" {
-                let value = result.unwrap();
-                assert_eq!(value.as_ref(), "same");
-                assert_eq!(
-                    current.available_bytes(),
-                    before - 4,
-                    "one copy despite two identical native values"
-                );
-                drop(value);
-            } else {
-                assert!(matches!(
-                    result,
-                    Err(ReadError::Visitor(MediaPolicyError::Conflict))
-                ));
-            }
-            assert_eq!(current.available_bytes(), before);
-        }
-    }
-
-    #[test]
-    fn room_read_adapter_preserves_native_work_refusal_without_policy_reclassification() {
-        use automerge::resource_limits::{
-            NativeAllocationSet, NativeAllowance, NativeResourceError,
-        };
-        let mut document = AutoCommit::new();
-        document.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        document.commit();
-        let current = NativeAllowance::new(1024 * 1024).unwrap();
-        let mut allocations =
-            NativeAllocationSet::new(NativeAllowance::new(1024 * 1024).unwrap()).unwrap();
-        let turn = allocations.work_turn(current.clone()).unwrap();
-        let candidate = document.clone_bounded(&mut allocations, &turn).unwrap();
-        let read = candidate.read_unqualified(&turn).unwrap();
-        let exhausted = turn.reserve(current.available_bytes()).unwrap();
-        assert_eq!(
-            strict_map(&read, &read.root(), "channels"),
-            Err(ReadError::Resource(NativeResourceError::WorkBytes))
-        );
-        assert_eq!(candidate.pending_ops(), 0);
-        drop(exhausted);
-        assert!(strict_map(&read, &read.root(), "channels").is_ok());
-    }
-
-    fn native_candidate(
-        document: &AutoCommit,
-    ) -> (
-        automerge::resource_limits::NativeCloneCandidate<AutoCommit>,
-        automerge::resource_limits::NativeWorkTurn,
-    ) {
-        use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
-        let mut allocations =
-            NativeAllocationSet::new(NativeAllowance::new(1024 * 1024).unwrap()).unwrap();
-        let turn = allocations
-            .work_turn(NativeAllowance::new(1024 * 1024).unwrap())
-            .unwrap();
-        let candidate = document.clone_bounded(&mut allocations, &turn).unwrap();
-        (candidate, turn)
-    }
-
-    #[test]
-    fn room_read_adapter_native_preserves_actual_map_identity() {
-        let mut document = AutoCommit::new();
-        let object = document.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        document.commit();
-        let (candidate, turn) = native_candidate(&document);
-        let read = candidate.read_unqualified(&turn).unwrap();
-        let result = strict_map(&read, &read.root(), "channels").unwrap();
-        let mut encoded = [0; 128];
-        let len = read.write_id(result.id(), &mut encoded).unwrap();
-        assert_eq!(&encoded[..len], object.to_string().as_bytes());
-        assert_eq!(candidate.pending_ops(), 0);
-    }
-
-    #[test]
-    fn room_read_adapter_native_preserves_actual_conflict_denial() {
-        let mut document = AutoCommit::new();
-        let mut remote = document.fork();
-        document.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        document.commit();
-        remote.put_object(ROOT, "channels", ObjType::Map).unwrap();
-        remote.commit();
-        document.merge_incoming(&mut remote).unwrap();
-        assert_eq!(document.get_all(ROOT, "channels").unwrap().len(), 2);
-        let (candidate, turn) = native_candidate(&document);
-        let read = candidate.read_unqualified(&turn).unwrap();
-        assert_eq!(
-            strict_map(&read, &read.root(), "channels"),
-            Err(ReadError::Visitor(MediaPolicyError::Conflict))
-        );
-    }
 
     #[test]
     fn room_read_adapter_returns_the_actual_single_map_identity() {
@@ -635,75 +334,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn room_read_adapter_governance_visits_actual_bounded_history_and_preserves_quota_failure() {
-        use crate::resources::native::NativeBatch;
-        use automerge::resource_limits::{
-            NativeAllocationSet, NativeAllowance, NativeResourceError,
-        };
-        let (peer, _, _, _, _) = crate::admission_tests::seeded();
-        let room = peer.admitted_room().unwrap();
-        let expected = super::super::governance_of(Some(room));
-        let expected_count = [
-            usize::from(expected.0.is_some()),
-            expected.1.len(),
-            expected.2.len(),
-            expected.3.len(),
-        ]
-        .into_iter()
-        .try_fold(0usize, usize::checked_add)
-        .unwrap();
-        let mut legacy_count = 0;
-        visit_governance_entries(&LegacyRead(room), |_| {
-            legacy_count += 1;
-            Ok::<_, ()>(())
-        })
-        .unwrap();
-        assert_eq!(legacy_count, expected_count);
-        let bytes = room.clone().save_with_options(automerge::SaveOptions {
-            deflate: false,
-            retain_orphans: true,
-        });
-        let allowance = NativeAllowance::new(8 * 1024 * 1024).unwrap();
-        let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
-        let turn = allocations.work_turn(allowance.clone()).unwrap();
-        let document = NativeBatch::new(&mut allocations, &turn, bytes.len())
-            .unwrap()
-            .load(&bytes)
-            .unwrap();
-        let read = document.read(&turn).unwrap();
-        let mut count = 0usize;
-        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
-            visit_governance_entries(&read, |entry| {
-                count = count.checked_add(1).unwrap();
-                match entry {
-                    GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
-                    GovernanceEntry::Capability { key, bytes } => {
-                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
-                    }
-                    GovernanceEntry::Peer { key, name } => {
-                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
-                    }
-                    GovernanceEntry::Identity { key, bytes } => {
-                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
-                    }
-                }
-                Ok::<_, ()>(())
-            })
-        })
-        .unwrap();
-        assert_eq!(count, expected_count);
-        let exhausted = turn.reserve(allowance.available_bytes()).unwrap();
-        assert_eq!(
-            visit_governance_entries(&read, |_| Ok::<_, ()>(())),
-            Err(ReadError::Resource(NativeResourceError::WorkBytes))
-        );
-        drop(exhausted);
-    }
-
     fn compare_governance_entries(doc: &automerge::AutoCommit) -> usize {
-        use crate::resources::native::NativeBatch;
-        use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
         let expected = super::super::governance_of(Some(doc));
         let expected_count = [
             usize::from(expected.0.is_some()),
@@ -718,32 +349,24 @@ mod tests {
             deflate: false,
             retain_orphans: true,
         });
-        let allowance = NativeAllowance::new(8 * 1024 * 1024).unwrap();
-        let mut allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
-        let turn = allocations.work_turn(allowance.clone()).unwrap();
-        let document = NativeBatch::new(&mut allocations, &turn, bytes.len())
-            .unwrap()
-            .load(&bytes)
-            .unwrap();
-        let read = document.read(&turn).unwrap();
+        let document = tilo_automerge_isolate::load(&bytes).unwrap();
+        let read = LegacyRead(&document);
         let mut count = 0usize;
-        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
-            visit_governance_entries(&read, |entry| {
-                count = count.checked_add(1).unwrap();
-                match entry {
-                    GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
-                    GovernanceEntry::Capability { key, bytes } => {
-                        assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
-                    }
-                    GovernanceEntry::Peer { key, name } => {
-                        assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
-                    }
-                    GovernanceEntry::Identity { key, bytes } => {
-                        assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
-                    }
+        visit_governance_entries(&read, |entry| {
+            count = count.checked_add(1).unwrap();
+            match entry {
+                GovernanceEntry::Owner(value) => assert_eq!(Some(value), expected.0.as_deref()),
+                GovernanceEntry::Capability { key, bytes } => {
+                    assert_eq!(expected.1.get(key).map(Vec::as_slice), Some(bytes));
                 }
-                Ok::<_, ()>(())
-            })
+                GovernanceEntry::Peer { key, name } => {
+                    assert_eq!(expected.2.get(key).map(String::as_str), Some(name));
+                }
+                GovernanceEntry::Identity { key, bytes } => {
+                    assert_eq!(expected.3.get(key).map(Vec::as_slice), Some(bytes));
+                }
+            }
+            Ok::<_, ()>(())
         })
         .unwrap();
         assert_eq!(count, expected_count);
@@ -796,17 +419,15 @@ mod tests {
         }
         scalar.commit();
         assert_eq!(compare_governance_entries(&scalar), 1);
-        for kind in [ObjType::Map, ObjType::Table] {
-            let mut valid = scalar.clone();
-            let capabilities = valid
-                .put_object(automerge::ROOT, "capabilities", kind)
-                .unwrap();
-            valid
-                .put(&capabilities, "valid cap", ScalarValue::Bytes(vec![3, 4]))
-                .unwrap();
-            valid.commit();
-            assert_eq!(compare_governance_entries(&valid), 2);
-        }
+        let mut valid = scalar.clone();
+        let capabilities = valid
+            .put_object(automerge::ROOT, "capabilities", ObjType::Map)
+            .unwrap();
+        valid
+            .put(&capabilities, "valid cap", ScalarValue::Bytes(vec![3, 4]))
+            .unwrap();
+        valid.commit();
+        assert_eq!(compare_governance_entries(&valid), 2);
         for map_wins in [false, true] {
             let mut map = scalar
                 .clone()

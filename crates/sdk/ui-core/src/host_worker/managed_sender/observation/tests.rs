@@ -1,11 +1,8 @@
 use super::*;
-use automerge::resource_limits::NativeAllowance;
 const ID: [u8; 16] = [8; 16];
 const UUID: &str = "08080808-0808-0808-0808-080808080808";
 fn run(body: &str, uncertain: bool) -> Result<Facts, OutboxFailure> {
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let credit = allowance.reserve(SCRATCH_BYTES).unwrap();
-    validate(body, &ID, uncertain, false, &credit)
+    validate(body, &ID, uncertain, false)
 }
 fn frame(state: &str, fields: &str) -> String {
     format!(r#"{{"state":"{state}","invocation":"{UUID}"{fields}}}"#)
@@ -92,18 +89,22 @@ fn managed_sender_observation_unknown_and_sanitized_payload_never_consumable() {
         r#", "error":{"code":"action_read_payload_unavailable","message":"unavailable","retryable":false}"#,
     );
     assert!(!run(&sanitized, false).unwrap().consumable);
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
-    let insufficient = allowance.reserve(SCRATCH_BYTES - 1).unwrap();
+    let oversized = frame(
+        "accepted",
+        &format!(
+            r#", "x":"{}""#,
+            "y".repeat(super::super::codec::MAX_OBSERVATION)
+        ),
+    );
     assert!(matches!(
-        validate(&frame("accepted", ""), &ID, false, false, &insufficient),
+        run(&oversized, false),
         Err(OutboxFailure::Capacity)
     ));
 }
 
 #[test]
-fn managed_sender_observation_streaming_scratch_is_paid_through_destruction() {
+fn managed_sender_observation_streaming_scratch_is_released() {
     use crate::semantic_document_read::retirement::measure_test_allocations;
-    let allowance = NativeAllowance::new(2 * 1024 * 1024).unwrap();
     let escaped = "\\n".repeat(100_000);
     let success = frame(
         "succeeded",
@@ -116,16 +117,12 @@ fn managed_sender_observation_streaming_scratch_is_paid_through_destruction() {
         (&unknown_key, false),
         (&malformed_type, false),
     ] {
-        let (result, allocations) = measure_test_allocations(&allowance, || {
-            let credit = allowance.reserve(SCRATCH_BYTES).unwrap();
-            validate(json, &ID, false, false, &credit)
-        });
+        let (result, allocations) = measure_test_allocations(|| validate(json, &ID, false, false));
         assert_eq!(result.is_ok(), valid);
         assert!(
             allocations.allocations > 0,
             "actual escaped string/error allocation required"
         );
-        assert!(!allocations.underfunded, "{allocations:?}");
         assert_eq!(allocations.live, 0, "no retained parse backing");
     }
     // Value strings require the same valid Unicode grammar as a real Value

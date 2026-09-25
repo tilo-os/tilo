@@ -108,6 +108,9 @@ pub mod workspace;
 mod workspace_io;
 pub mod workspace_join;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+tilo_automerge_isolate::test_worker!();
+
 // The records and wire messages shared with relay clients live in
 // `tilo-relay-protocol`, and the frame codec in `tilo-relay-client`, so
 // clients need not link the daemon. The daemon keeps addressing them here.

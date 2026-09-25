@@ -2,20 +2,15 @@ use super::*;
 use crate::BoundedStatePeer;
 use crate::NeighbourMsg;
 use crate::PeerLimits;
-use crate::PeerRegistry;
-use crate::PeerWork;
 use crate::SeedDocument;
 use crate::SeedState;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::seed_room;
-use automerge::resource_limits::NativeAllowance;
-use automerge::resource_limits::NativeResourceError;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 use tilo_user_identity::RevocationList;
 use web_time::Duration;
-fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> BoundedStatePeer {
+fn restore(peer: &StatePeer, now: SystemTime, limits: &PeerLimits) -> BoundedStatePeer {
     BoundedStatePeer::restore(
         &peer.durable().unwrap(),
         peer.room(),
@@ -23,7 +18,7 @@ fn restore(peer: &StatePeer, now: SystemTime, work: &mut PeerWork<'_>) -> Bounde
         &[],
         &RevocationList::new(),
         now,
-        work,
+        limits,
     )
     .unwrap()
 }
@@ -81,23 +76,14 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
             .digest(),
         digest
     );
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
-        .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let read = native.read(&work).unwrap();
+    let native = restore(&peer, now, &PeerLimits::default());
+    let read = native.read();
     ROUTE_CHECKS.with(|n| n.set(0));
-    let before = current.retained_bytes();
-    let got =
-        assert_precharged(&current, || read.delivery_policy(37, &host, &device, now)).unwrap();
+    let got = read.delivery_policy(37, &host, &device, now).unwrap();
     assert_eq!(got.digest(), digest);
     assert_eq!(got.room(), peer.room());
     assert_eq!(got.authority_root(), peer.authority().user_public_key);
     assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 2);
-    assert_eq!(current.retained_bytes(), before);
     assert_ne!(
         got.digest(),
         read.delivery_policy(37, &device, &host, now)
@@ -105,57 +91,6 @@ fn actual_delivery_holder_preserves_distinct_host_device_and_checks_every_real_r
             .digest()
     );
 }
-#[test]
-fn actual_delivery_holder_pays_current_turn_and_keeps_only_borrowed_inline_data() {
-    let (peer, _, _, device, now) = crate::admission_tests::seeded();
-    let resident = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let native = {
-        let mut turn = registry
-            .begin_turn(resident.clone(), PeerLimits::default())
-            .unwrap();
-        restore(&peer, now, &mut turn.work().unwrap())
-    };
-    let residency = resident.retained_bytes();
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let before = current.retained_bytes();
-    let policy = {
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let work = turn.work().unwrap();
-        let read = native.read(&work).unwrap();
-        let baseline = current.retained_bytes();
-        let policy = assert_precharged(&current, || {
-            read.delivery_policy(37, peer.authority(), &device, now)
-        })
-        .unwrap();
-        assert_eq!(current.retained_bytes(), baseline);
-        assert_eq!(resident.retained_bytes(), residency);
-        let held = work.reserve_output(current.available_bytes()).unwrap();
-        assert!(matches!(
-            read.delivery_policy(37, peer.authority(), &device, now),
-            Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(
-                NativeResourceError::WorkBytes
-            )))
-        ));
-        drop(held);
-        current.finish_turn();
-        assert!(
-            read.delivery_policy(37, peer.authority(), &device, now)
-                .is_err()
-        );
-        policy
-    };
-    drop(registry);
-    assert_eq!(current.retained_bytes(), before);
-    assert_eq!(policy.room(), peer.room());
-    assert_eq!(
-        policy.digest(),
-        expected(&peer, peer.authority(), &device, now)
-    );
-}
-
 fn seed_with_expiring_member() -> (StatePeer, DeviceCert, SystemTime) {
     let (base, key, _, mut device, now) = crate::admission_tests::seeded();
     device.expires_at_ns = Some(
@@ -229,31 +164,16 @@ fn actual_delivery_holder_denies_current_expired_and_revoked_members() {
             peer.delivery_policy_unqualified(37, peer.authority(), &device, at),
             Err(PeerDeliveryPolicyError::CurrentDenied)
         ));
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        let native = restore(&peer, now, &mut work);
-        let read = native.read(&work).unwrap();
+        let native = restore(&peer, now, &PeerLimits::default());
+        let read = native.read();
         assert!(matches!(
-            assert_precharged(&current, || read.delivery_policy(
-                37,
-                peer.authority(),
-                &device,
-                at
-            )),
+            read.delivery_policy(37, peer.authority(), &device, at),
             Err(PeerDeliveryPolicyError::CurrentDenied)
         ));
     }
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
-fn actual_delivery_holder_preserves_empty_room_semantics_and_resource_refusals() {
+fn actual_delivery_holder_preserves_empty_room_semantics_and_limit_refusals() {
     let (source, key, _, device, now) = crate::admission_tests::seeded();
     let mut empty = StatePeer::new(
         source.room(),
@@ -275,92 +195,45 @@ fn actual_delivery_holder_preserves_empty_room_semantics_and_resource_refusals()
             now,
         )
         .unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let (native, missing, with_routes) = {
-        let mut turn = registry
-            .begin_turn(
-                NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-                PeerLimits::default(),
-            )
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        (
-            restore(&empty, now, &mut work),
-            restore(&missing, now, &mut work),
-            restore(&source, now, &mut work),
-        )
-    };
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    {
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let work = turn.work().unwrap();
-        let read = native.read(&work).unwrap();
-        // The old projection has no independent membership gate with no routes.
-        // This is why its result cannot stand in for authenticated session proof.
-        let mut unknown = device.clone();
-        unknown.device_public_key = [99; 32];
-        ROUTE_CHECKS.with(|n| n.set(0));
-        assert!(
-            read.delivery_policy(37, empty.authority(), &unknown, now)
-                .is_ok()
-        );
-        assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
-        let absent = missing.read(&work).unwrap();
-        assert!(matches!(
-            absent.delivery_policy(37, empty.authority(), &device, now),
-            Err(PeerDeliveryPolicyError::Unavailable)
-        ));
-        current.finish_turn();
-        for view in [&read, &absent] {
-            assert!(matches!(
-                view.delivery_policy(37, empty.authority(), &device, now),
-                Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(
-                    NativeResourceError::WorkBytes
-                )))
-            ));
-        }
-    }
-    let mut foreign = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut foreign_turn = foreign
-        .begin_turn(
-            NativeAllowance::new(64 * 1024 * 1024).unwrap(),
-            PeerLimits::default(),
-        )
-        .unwrap();
-    let foreign_work = foreign_turn.work().unwrap();
-    assert!(native.read(&foreign_work).is_err());
-    assert!(missing.read(&foreign_work).is_err());
+    let native = restore(&empty, now, &PeerLimits::default());
+    let missing = restore(&missing, now, &PeerLimits::default());
+    let read = native.read();
+    // The old projection has no independent membership gate with no routes.
+    // This is why its result cannot stand in for authenticated session proof.
+    let mut unknown = device.clone();
+    unknown.device_public_key = [99; 32];
+    ROUTE_CHECKS.with(|n| n.set(0));
+    assert!(
+        read.delivery_policy(37, empty.authority(), &unknown, now)
+            .is_ok()
+    );
+    assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
+    assert!(matches!(
+        missing
+            .read()
+            .delivery_policy(37, empty.authority(), &device, now),
+        Err(PeerDeliveryPolicyError::Unavailable)
+    ));
     for json in [false, true] {
-        let current = NativeAllowance::new(16 * 1024 * 1024).unwrap();
         let mut limits = PeerLimits::default();
         if json {
             limits.governance_json.allocation_bytes = 1;
         } else {
             limits.governance_collection_bytes = 1;
         }
-        let mut turn = registry.begin_turn(current.clone(), limits).unwrap();
-        let work = turn.work().unwrap();
-        let read = with_routes.read(&work).unwrap();
-        let before = current.retained_bytes();
-        let result = assert_precharged(&current, || {
-            read.delivery_policy(37, source.authority(), &device, now)
-        });
+        // Restoring this room reads no governance JSON; the policy read does.
+        let with_routes = restore(&source, now, &limits);
+        let result = with_routes
+            .read()
+            .delivery_policy(37, source.authority(), &device, now);
         if json {
             assert!(matches!(
                 result,
                 Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Decode(_)))
             ));
         } else {
-            assert!(matches!(
-                result,
-                Err(PeerDeliveryPolicyError::Peer(BoundedPeerError::Resource(
-                    NativeResourceError::WorkBytes
-                )))
-            ));
+            assert!(matches!(result, Err(PeerDeliveryPolicyError::Capacity)));
         }
-        assert_eq!(current.retained_bytes(), before);
     }
 }
 #[test]
@@ -419,18 +292,11 @@ fn actual_delivery_holder_uses_verified_metadata_and_ignores_document_heads() {
     // consumer's authorization view (v2): admitting or revoking them must not
     // reset this consumer's delivery session.
     assert_eq!(digest, original);
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let mut turn = registry
-        .begin_turn(current.clone(), PeerLimits::default())
+    let native = restore(&peer, now, &PeerLimits::default());
+    let read = native.read();
+    let policy = read
+        .delivery_policy(37, peer.authority(), &device, now)
         .unwrap();
-    let mut work = turn.work().unwrap();
-    let native = restore(&peer, now, &mut work);
-    let read = native.read(&work).unwrap();
-    let policy = assert_precharged(&current, || {
-        read.delivery_policy(37, peer.authority(), &device, now)
-    })
-    .unwrap();
     assert_eq!(policy.digest(), digest);
     assert_ne!(
         policy.digest(),
@@ -485,18 +351,10 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
                 PeerDeliveryPolicyError::UnsupportedPolicy
             }
         );
-        let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-        let mut registry = PeerRegistry::new(NativeAllowance::new(4096).unwrap()).unwrap();
-        let mut turn = registry
-            .begin_turn(current.clone(), PeerLimits::default())
-            .unwrap();
-        let mut work = turn.work().unwrap();
-        let native = restore(&peer, now, &mut work);
-        let read = native.read(&work).unwrap();
+        let native = restore(&peer, now, &PeerLimits::default());
+        let read = native.read();
         ROUTE_CHECKS.with(|n| n.set(0));
-        let result = assert_precharged(&current, || {
-            read.delivery_policy(37, peer.authority(), &device, now)
-        });
+        let result = read.delivery_policy(37, peer.authority(), &device, now);
         assert_eq!(result.err().unwrap(), legacy);
         assert_eq!(ROUTE_CHECKS.with(std::cell::Cell::get), 0);
     }

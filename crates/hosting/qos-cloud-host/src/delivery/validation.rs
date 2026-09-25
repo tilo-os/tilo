@@ -117,25 +117,10 @@ pub(super) fn revision(delivery: &DeliveryState, actual: &str) -> Result<(), Che
     }
     Ok(())
 }
-/// Concrete retained index views only. Neither variant is a receipt or an
-/// owner credential, and no caller-defined membership function is accepted.
-pub(super) enum Admissions<'index, 'peer, 'work> {
-    Legacy(&'index BTreeSet<Digest>),
-    #[cfg_attr(not(test), expect(dead_code, reason = "constructed only by tests"))]
-    Bounded(&'index qos_peer_state::PeerRead<'peer, 'work>),
-}
-impl Admissions<'_, '_, '_> {
-    fn contains(&self, operation: &Digest) -> bool {
-        match self {
-            Self::Legacy(index) => index.contains(operation),
-            Self::Bounded(read) => read.contains_admitted_operation(operation),
-        }
-    }
-}
 pub(super) fn replay(
     state: &State,
     delivery: &DeliveryState,
-    admissions: Admissions<'_, '_, '_>,
+    admissions: &BTreeSet<Digest>,
 ) -> Result<(), CheckError> {
     for entry in delivery.ledger.replay.values() {
         let expected = replay_digest::exact(state, delivery.ledger.store_generation, entry)
@@ -152,5 +137,5 @@ pub(super) fn replay(
     Ok(())
 }
 #[cfg(test)]
-#[path = "resources/delivery_validation/tests.rs"]
+#[path = "validation/tests.rs"]
 mod tests;

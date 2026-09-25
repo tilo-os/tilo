@@ -1,6 +1,5 @@
 use super::*;
 use crate::portable_storage::{PortableStorage, StorageKey};
-use automerge::resource_limits::NativeAllowance;
 fn cache() -> (PortableStorage, StorageKey) {
     let cache = PortableStorage::new("profile", "device").unwrap();
     let key = StorageKey::PrivateActions {
@@ -50,46 +49,31 @@ pub(in crate::host_worker::private_actions) fn admitted_temp_dir() -> tempfile::
     #[cfg(not(target_os = "linux"))]
     tempfile::tempdir().unwrap()
 }
-fn allowance() -> NativeAllowance {
-    NativeAllowance::new(32 * 1024 * 1024).unwrap()
-}
-fn capture(cache: &PortableStorage, budget: &NativeAllowance) -> PrivateActionsCapture {
-    let n = PrivateActionsCapture::required_bytes(cache, "room")
-        .unwrap()
-        .unwrap();
-    PrivateActionsCapture::capture(cache, "room", budget.reserve(n).unwrap())
+fn capture(cache: &PortableStorage) -> PrivateActionsCapture {
+    PrivateActionsCapture::capture(cache, "room")
         .unwrap()
         .unwrap()
 }
 #[test]
-fn private_actions_storage_capture_exact_and_paid() {
+fn private_actions_storage_capture_exact_and_released() {
     let (cache, key) = cache();
-    let budget = allowance();
-    let baseline = budget.retained_bytes();
-    let ((), stats) =
-        crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-            let saved = capture(&cache, &budget);
-            assert_eq!(saved.bytes(), b"original");
-            assert!(saved.is_current());
-            drop(saved);
-        });
-    assert!(!stats.underfunded);
+    let ((), stats) = crate::semantic_document_read::retirement::measure_test_allocations(|| {
+        let saved = capture(&cache);
+        assert_eq!(saved.bytes(), b"original");
+        assert!(saved.is_current());
+        drop(saved);
+    });
     assert_eq!(stats.live, 0);
-    assert_eq!(budget.retained_bytes(), baseline);
-    let saved = capture(&cache, &budget);
+    let saved = capture(&cache);
     cache.put(key, b"newer".to_vec(), None).unwrap();
     assert!(!saved.is_current());
 }
 #[test]
-fn private_actions_storage_capture_recounts_and_actor_refuses() {
+fn private_actions_storage_capture_oversized_and_actor_refuse() {
     let (cache, key) = cache();
-    let budget = allowance();
-    let n = PrivateActionsCapture::required_bytes(&cache, "room")
-        .unwrap()
-        .unwrap();
-    cache.put(key, vec![1; 4096], None).unwrap();
+    cache.put(key, vec![1; 4 * 1024 * 1024 + 1], None).unwrap();
     assert!(matches!(
-        PrivateActionsCapture::capture(&cache, "room", budget.reserve(n).unwrap()),
+        PrivateActionsCapture::capture(&cache, "room"),
         Err(SenderStorageCode::Capacity)
     ));
     let other = PortableStorage::new("profile", "other").unwrap();
@@ -102,39 +86,32 @@ fn private_actions_storage_capture_recounts_and_actor_refuses() {
             Some(vec![2]),
         )
         .unwrap();
-    assert_eq!(
-        PrivateActionsCapture::required_bytes(&other, "room"),
+    assert!(matches!(
+        PrivateActionsCapture::capture(&other, "room"),
         Err(SenderStorageCode::InvalidScope)
-    );
+    ));
 }
 
 #[test]
-fn private_actions_storage_finish_moves_paid_backing_and_preserves_generic_put() {
+fn private_actions_storage_finish_moves_backing_and_preserves_generic_put() {
     let (cache, key) = cache();
-    let budget = allowance();
-    let baseline = budget.retained_bytes();
-    let mut held = capture(&cache, &budget);
-    let paid = budget.retained_bytes();
+    let mut held = capture(&cache);
     assert_eq!(held.finish().unwrap(), held.revision());
     assert!(cache.flush(&key).is_ok());
     drop(held);
-    assert_eq!(budget.retained_bytes(), paid);
     cache.put(key.clone(), b"newer".to_vec(), None).unwrap();
-    assert_eq!(budget.retained_bytes(), paid);
     assert!(cache.flush(&key).is_err());
     // Status keeps its ordinary independently owned public copy semantics.
     assert_eq!(
         cache.status(&key).unwrap().committed.unwrap().1.bytes,
         b"original"
     );
-    let old = capture(&cache, &budget);
+    let old = capture(&cache);
     cache.put(key.clone(), b"latest".to_vec(), None).unwrap();
     let mut stale = old;
     assert_eq!(stale.finish(), Err(SenderStorageCode::StaleCapture));
     assert!(cache.flush(&key).is_err());
     drop(stale);
-    drop(cache);
-    assert_eq!(budget.retained_bytes(), baseline);
 }
 fn scope() -> SenderScope {
     SenderScope::native(uuid::Uuid::from_bytes([1; 16]), [2; 32], [3; 32]).unwrap()
@@ -142,31 +119,28 @@ fn scope() -> SenderScope {
 #[test]
 fn private_actions_storage_envelope_exact_bounded_scope_and_corruption() {
     let scope = scope();
-    let budget = allowance();
     let payload = b"opaque private outbox";
-    let ((), stats) =
-        crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-            let credit = budget
-                .reserve(codec::required_bytes(&scope, payload.len()).unwrap())
-                .unwrap();
-            let mut bytes = codec::encode(&scope, [4; 16], 1, 9, payload).unwrap();
-            let parsed = codec::decode(&scope, &bytes).unwrap();
-            assert_eq!(parsed.payload, payload);
-            assert_eq!(parsed.sequence, 1);
-            assert_eq!(parsed.revision, 9);
-            assert_eq!(parsed.instance, [4; 16]);
-            let foreign =
-                SenderScope::native(uuid::Uuid::from_bytes([8; 16]), [2; 32], [3; 32]).unwrap();
-            assert!(codec::decode(&foreign, &bytes).is_err());
-            for i in 0..bytes.len() {
-                bytes[i] ^= 1;
-                assert!(codec::decode(&scope, &bytes).is_err());
-                bytes[i] ^= 1;
-            }
-            drop(bytes);
-            drop(credit);
-        });
-    assert!(!stats.underfunded);
+    let ((), stats) = crate::semantic_document_read::retirement::measure_test_allocations(|| {
+        let mut bytes = codec::encode(&scope, [4; 16], 1, 9, payload).unwrap();
+        assert_eq!(
+            bytes.len(),
+            codec::required_bytes(&scope, payload.len()).unwrap()
+        );
+        let parsed = codec::decode(&scope, &bytes).unwrap();
+        assert_eq!(parsed.payload, payload);
+        assert_eq!(parsed.sequence, 1);
+        assert_eq!(parsed.revision, 9);
+        assert_eq!(parsed.instance, [4; 16]);
+        let foreign =
+            SenderScope::native(uuid::Uuid::from_bytes([8; 16]), [2; 32], [3; 32]).unwrap();
+        assert!(codec::decode(&foreign, &bytes).is_err());
+        for i in 0..bytes.len() {
+            bytes[i] ^= 1;
+            assert!(codec::decode(&scope, &bytes).is_err());
+            bytes[i] ^= 1;
+        }
+        drop(bytes);
+    });
     assert_eq!(stats.live, 0);
     assert!(codec::required_bytes(&scope, codec::MAX_PAYLOAD + 1).is_err());
     assert!(codec::encode(&scope, [0; 16], 1, 1, payload).is_err());
@@ -260,17 +234,10 @@ pub(in crate::host_worker::private_actions) mod consuming {
     #[test]
     fn private_actions_storage_consuming_real_existing_read() {
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let file = PrivateActionsFile::from_held(
-            directory(root.path()),
-            scope(),
-            &cache,
-            budget.reserve(4096).unwrap(),
-        )
-        .unwrap_or_else(|e| panic!("actual existing owner must open: {:?}", e.code()));
-        let read_credit = budget.reserve(file.read_required_bytes().unwrap()).unwrap();
-        let read = match file.read_existing(read_credit) {
+        let file = PrivateActionsFile::from_held(directory(root.path()), scope(), &cache)
+            .unwrap_or_else(|e| panic!("actual existing owner must open: {:?}", e.code()));
+        let read = match file.read_existing() {
             PrivateReadOutcome::Committed(read) => read,
             PrivateReadOutcome::Failed(e) => {
                 panic!("actual existing commit failed: {:?}", e.code())
@@ -280,41 +247,27 @@ pub(in crate::host_worker::private_actions) mod consuming {
         assert_eq!(read.sequence(), 1);
     }
 
-    fn opened(
-        root: &std::path::Path,
-        cache: &PortableStorage,
-        budget: &NativeAllowance,
-    ) -> PrivateActionsFile {
-        PrivateActionsFile::from_held(
-            directory(root),
-            scope(),
-            cache,
-            budget.reserve(4096).unwrap(),
-        )
-        .unwrap_or_else(|e| panic!("open {:?}", e.code()))
+    fn opened(root: &std::path::Path, cache: &PortableStorage) -> PrivateActionsFile {
+        PrivateActionsFile::from_held(directory(root), scope(), cache)
+            .unwrap_or_else(|e| panic!("open {:?}", e.code()))
     }
-    fn read(file: PrivateActionsFile, budget: &NativeAllowance) -> CommittedPrivateRead {
-        let credit = budget.reserve(file.read_required_bytes().unwrap()).unwrap();
-        match file.read_existing(credit) {
+    fn read(file: PrivateActionsFile) -> CommittedPrivateRead {
+        match file.read_existing() {
             PrivateReadOutcome::Committed(v) => v,
             PrivateReadOutcome::Failed(e) => panic!("read {:?}", e.code()),
         }
     }
-    fn hydrate(read: CommittedPrivateRead, budget: &NativeAllowance) -> CurrentPrivateState {
-        let credit = budget
-            .reserve(read.hydrate_required_bytes().unwrap())
-            .unwrap();
-        read.hydrate_current(credit)
+    fn hydrate(read: CommittedPrivateRead) -> CurrentPrivateState {
+        read.hydrate_current()
             .unwrap_or_else(|e| panic!("hydrate {:?}", e.code()))
     }
     #[test]
-    fn private_actions_storage_consuming_hydrates_one_backing_and_commits_paid_queue() {
+    fn private_actions_storage_consuming_hydrates_one_backing_and_commits_queue() {
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let initial = read(opened(root.path(), &cache, &budget), &budget);
+        let initial = read(opened(root.path(), &cache));
         let backing = initial.bytes.as_ptr();
-        let state = hydrate(initial, &budget);
+        let state = hydrate(initial);
         {
             let view = state.borrow_current().unwrap();
             assert_eq!(view.payload(), b"initial");
@@ -333,10 +286,9 @@ pub(in crate::host_worker::private_actions) mod consuming {
             )
             .unwrap();
         assert_eq!(state.borrow_current().unwrap().payload(), b"initial");
-        let credit = budget.reserve(10).unwrap();
         let payload = b"new intent".to_vec();
         let PrivateQueueOutcome::Pending(file) = state
-            .queue_owned(payload, credit)
+            .queue_owned(payload)
             .unwrap_or_else(|e| panic!("queue {:?}", e.code()))
         else {
             panic!("changed bytes must be pending")
@@ -345,20 +297,12 @@ pub(in crate::host_worker::private_actions) mod consuming {
             workspace: ROOM.into(),
         };
         assert!(cache.flush(&key).is_err());
-        let n = PrivateActionsCapture::required_bytes(file.cache(), file.workspace())
+        let captured = PrivateActionsCapture::capture(file.cache(), file.workspace())
             .unwrap()
             .unwrap();
-        let captured = PrivateActionsCapture::capture(
-            file.cache(),
-            file.workspace(),
-            budget.reserve(n).unwrap(),
-        )
-        .unwrap()
-        .unwrap();
         let pointer = captured.bytes().as_ptr();
-        let n = file.prepare_required_bytes(&captured).unwrap();
         let prepared = file
-            .prepare(captured, budget.reserve(n).unwrap())
+            .prepare(captured)
             .unwrap_or_else(|e| panic!("prepare {:?}", e.code()));
         let committed = match prepared.publish() {
             PrivateWriteOutcome::Committed(v) => v,
@@ -379,47 +323,27 @@ pub(in crate::host_worker::private_actions) mod consuming {
         drop(state);
         drop(cache);
         let reopened = PortableStorage::new("profile", "device").unwrap();
-        let state = hydrate(
-            read(opened(root.path(), &reopened, &budget), &budget),
-            &budget,
-        );
+        let state = hydrate(read(opened(root.path(), &reopened)));
         assert_eq!(state.borrow_current().unwrap().payload(), b"new intent");
         assert_eq!(state.borrow_current().unwrap().sequence(), 2);
     }
-    fn state(
-        root: &std::path::Path,
-        cache: &PortableStorage,
-        budget: &NativeAllowance,
-    ) -> CurrentPrivateState {
-        hydrate(read(opened(root, cache, budget), budget), budget)
+    fn state(root: &std::path::Path, cache: &PortableStorage) -> CurrentPrivateState {
+        hydrate(read(opened(root, cache)))
     }
-    fn queue(
-        state: CurrentPrivateState,
-        payload: &[u8],
-        budget: &NativeAllowance,
-    ) -> PrivateActionsFile {
-        let credit = budget.reserve(payload.len()).unwrap();
+    fn queue(state: CurrentPrivateState, payload: &[u8]) -> PrivateActionsFile {
         match state
-            .queue_owned(payload.to_vec(), credit)
+            .queue_owned(payload.to_vec())
             .unwrap_or_else(|e| panic!("queue {:?}", e.code()))
         {
             PrivateQueueOutcome::Pending(file) => file,
             _ => panic!("expected changed payload"),
         }
     }
-    fn prepared(file: PrivateActionsFile, budget: &NativeAllowance) -> PreparedPrivateWrite {
-        let n = PrivateActionsCapture::required_bytes(file.cache(), file.workspace())
+    fn prepared(file: PrivateActionsFile) -> PreparedPrivateWrite {
+        let capture = PrivateActionsCapture::capture(file.cache(), file.workspace())
             .unwrap()
             .unwrap();
-        let capture = PrivateActionsCapture::capture(
-            file.cache(),
-            file.workspace(),
-            budget.reserve(n).unwrap(),
-        )
-        .unwrap()
-        .unwrap();
-        let n = file.prepare_required_bytes(&capture).unwrap();
-        file.prepare(capture, budget.reserve(n).unwrap())
+        file.prepare(capture)
             .unwrap_or_else(|e| panic!("prepare {:?}", e.code()))
     }
     fn committed(write: PrivateWriteOutcome) -> CommittedPrivateWrite {
@@ -437,45 +361,24 @@ pub(in crate::host_worker::private_actions) mod consuming {
     #[test]
     fn private_actions_storage_consuming_delayed_capture_cannot_switch_queued_revision() {
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let file = queue(
-            state(root.path(), &cache, &budget),
-            b"first command",
-            &budget,
-        );
+        let file = queue(state(root.path(), &cache), b"first command");
         cache
             .put(key(), b"replacement command".to_vec(), None)
             .unwrap();
-        let n = PrivateActionsCapture::required_bytes(file.cache(), file.workspace())
+        let newer = PrivateActionsCapture::capture(file.cache(), file.workspace())
             .unwrap()
             .unwrap();
-        let newer = PrivateActionsCapture::capture(
-            file.cache(),
-            file.workspace(),
-            budget.reserve(n).unwrap(),
-        )
-        .unwrap()
-        .unwrap();
-        let n = file.prepare_required_bytes(&newer).unwrap();
         assert!(
-            file.prepare(newer, budget.reserve(n).unwrap()).is_err(),
+            file.prepare(newer).is_err(),
             "a delayed queue must not commit a newer command"
         );
     }
     #[test]
     fn private_actions_storage_consuming_stale_before_io_and_after_barrier() {
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let write = prepared(
-            queue(
-                state(root.path(), &cache, &budget),
-                b"first command",
-                &budget,
-            ),
-            &budget,
-        );
+        let write = prepared(queue(state(root.path(), &cache), b"first command"));
         let before = fs::read(root.path().join(CHILD).join(FILE_NAME)).unwrap();
         cache.put(key(), b"newer".to_vec(), None).unwrap();
         let PrivateWriteOutcome::Refused(refused) = write.publish() else {
@@ -488,27 +391,16 @@ pub(in crate::host_worker::private_actions) mod consuming {
         );
         drop(refused);
         let cache2 = PortableStorage::new("profile", "device").unwrap();
-        let done = committed(
-            prepared(
-                queue(state(root.path(), &cache2, &budget), b"committed", &budget),
-                &budget,
-            )
-            .publish(),
-        );
+        let done = committed(prepared(queue(state(root.path(), &cache2), b"committed")).publish());
         cache2.put(key(), b"latest".to_vec(), None).unwrap();
         let Err(refusal) = done.finish_current() else {
             panic!("stale finish")
         };
         assert_eq!(refusal.code(), SenderStorageCode::StaleCapture);
         assert!(cache2.flush(&key()).is_err());
-        let e = PrivateActionsFile::from_held(
-            directory(root.path()),
-            scope(),
-            &cache2,
-            budget.reserve(0).unwrap(),
-        )
-        .err()
-        .expect("lease must stay held");
+        let e = PrivateActionsFile::from_held(directory(root.path()), scope(), &cache2)
+            .err()
+            .expect("lease must stay held");
         assert_eq!(e.code(), SenderStorageCode::Busy);
     }
     #[test]
@@ -520,16 +412,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
             Checkpoint::BeforeCommit,
         ] {
             let root = fixture();
-            let budget = allowance();
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let write = prepared(
-                queue(
-                    state(root.path(), &cache, &budget),
-                    b"private command",
-                    &budget,
-                ),
-                &budget,
-            );
+            let write = prepared(queue(state(root.path(), &cache), b"private command"));
             let PrivateWriteOutcome::Failed(failed) = with_failure(point, || write.publish())
             else {
                 panic!("actual failure must remain physical")
@@ -542,14 +426,9 @@ pub(in crate::host_worker::private_actions) mod consuming {
                     .contains("injected")
             );
             assert!(cache.flush(&key()).is_err());
-            let e = PrivateActionsFile::from_held(
-                directory(root.path()),
-                scope(),
-                &cache,
-                budget.reserve(0).unwrap(),
-            )
-            .err()
-            .expect("failed phase retains lease");
+            let e = PrivateActionsFile::from_held(directory(root.path()), scope(), &cache)
+                .err()
+                .expect("failed phase retains lease");
             assert_eq!(e.code(), SenderStorageCode::Busy);
             drop(e);
             if point == Checkpoint::BeforeCommit {
@@ -576,14 +455,12 @@ pub(in crate::host_worker::private_actions) mod consuming {
     fn private_actions_storage_consuming_existing_retry_refuses_replaced_identity() {
         use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let file = opened(root.path(), &cache, &budget);
-        let credit = budget.reserve(file.read_required_bytes().unwrap()).unwrap();
+        let file = opened(root.path(), &cache);
         let PrivateReadOutcome::Failed(failed) = with_existing_hooks(
             Some(ExistingCheckpoint::BeforeNamespaceFlush),
             |_| {},
-            || file.read_existing(credit),
+            || file.read_existing(),
         ) else {
             panic!("expected real existing commit failure")
         };
@@ -605,31 +482,18 @@ pub(in crate::host_worker::private_actions) mod consuming {
     #[test]
     fn private_actions_storage_consuming_hydrate_rechecks_bound_key_and_disk() {
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let initial = read(opened(root.path(), &cache, &budget), &budget);
-        let required = initial.hydrate_required_bytes().unwrap();
+        let initial = read(opened(root.path(), &cache));
         let pointer = initial.bytes.as_ptr();
-        let refused = initial
-            .hydrate_current(budget.reserve(required - 1).unwrap())
-            .err()
-            .expect("undersized metadata");
-        assert_eq!(refused.code(), SenderStorageCode::Capacity);
+        cache.put(key(), b"local pending".to_vec(), None).unwrap();
+        let refused = initial.hydrate_current().err().expect("occupied key");
+        assert_eq!(refused.code(), SenderStorageCode::StaleCapture);
         let initial = refused.into_read();
         assert_eq!(initial.bytes.as_ptr(), pointer);
         assert_eq!(initial.payload(), b"initial");
-        cache.put(key(), b"local pending".to_vec(), None).unwrap();
-        let refused = initial
-            .hydrate_current(budget.reserve(required).unwrap())
-            .err()
-            .expect("occupied key");
-        assert_eq!(refused.code(), SenderStorageCode::StaleCapture);
-        drop(refused);
+        drop(initial);
         let other = PortableStorage::new("profile", "device").unwrap();
-        let initial = read(opened(root.path(), &other, &budget), &budget);
-        let credit = budget
-            .reserve(initial.hydrate_required_bytes().unwrap())
-            .unwrap();
+        let initial = read(opened(root.path(), &other));
         let changed = codec::encode(&scope(), [4; 16], 2, 0, b"changed").unwrap();
         directory(&root.path().join(CHILD))
             .publish(
@@ -640,7 +504,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
             )
             .unwrap();
         let refused = initial
-            .hydrate_current(credit)
+            .hydrate_current()
             .err()
             .expect("disk changed after read");
         assert!(refused.io_error().is_some());
@@ -650,12 +514,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
     fn private_actions_storage_consuming_original_child_sentinel_and_cursor_fences() {
         for change in 0..3 {
             let root = fixture();
-            let budget = allowance();
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let write = prepared(
-                queue(state(root.path(), &cache, &budget), b"command", &budget),
-                &budget,
-            );
+            let write = prepared(queue(state(root.path(), &cache), b"command"));
             match change {
                 0 => {
                     fs::rename(root.path().join(CHILD), root.path().join("old-child")).unwrap();
@@ -696,7 +556,6 @@ pub(in crate::host_worker::private_actions) mod consuming {
     fn private_actions_storage_consuming_exclusive_and_existing_only() {
         use atomic_file::lease::{FileLease, LeaseMode};
         let root = fixture();
-        let budget = allowance();
         let cache = PortableStorage::new("profile", "device").unwrap();
         let lease = FileLease::try_acquire(
             directory(root.path())
@@ -705,44 +564,31 @@ pub(in crate::host_worker::private_actions) mod consuming {
             LeaseMode::Shared,
         )
         .unwrap();
-        let refused = PrivateActionsFile::from_held(
-            directory(root.path()),
-            scope(),
-            &cache,
-            budget.reserve(0).unwrap(),
-        )
-        .err()
-        .expect("shared excludes actual exclusive");
+        let refused = PrivateActionsFile::from_held(directory(root.path()), scope(), &cache)
+            .err()
+            .expect("shared excludes actual exclusive");
         assert_eq!(refused.code(), SenderStorageCode::Busy);
         drop(refused);
         drop(lease);
         fs::remove_file(root.path().join(LOCK_NAME)).unwrap();
-        let refused = PrivateActionsFile::from_held(
-            directory(root.path()),
-            scope(),
-            &cache,
-            budget.reserve(0).unwrap(),
-        )
-        .err()
-        .expect("no missing sentinel creation");
+        let refused = PrivateActionsFile::from_held(directory(root.path()), scope(), &cache)
+            .err()
+            .expect("no missing sentinel creation");
         assert!(refused.io_error().is_some());
         assert!(!root.path().join(LOCK_NAME).exists());
     }
 
     pub(in crate::host_worker::private_actions) fn actual_state_fixture(
         payload: &[u8],
-        budget: &NativeAllowance,
     ) -> (tempfile::TempDir, CurrentPrivateState, PortableStorage) {
         let root = fixture_payload(payload);
         let cache = PortableStorage::new("profile", "device").unwrap();
-        let held = state(root.path(), &cache, budget);
+        let held = state(root.path(), &cache);
         (root, held, cache)
     }
     #[test]
-    fn private_actions_storage_consuming_paid_lifetime_and_current_aliases() {
+    fn private_actions_storage_consuming_lifetime_and_current_aliases() {
         let root = fixture();
-        let budget = allowance();
-        let baseline = budget.retained_bytes();
         let cache = PortableStorage::new("profile", "device").unwrap();
         // Force nontrivial actual BTree insertion shape; initial ordinary entries are unqualified.
         for index in 0..80 {
@@ -758,34 +604,22 @@ pub(in crate::host_worker::private_actions) mod consuming {
         }
         let original = directory(root.path());
         let ((), stats) =
-            crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-                let file = PrivateActionsFile::from_held(
-                    original,
-                    scope(),
-                    &cache,
-                    budget.reserve(0).unwrap(),
-                )
-                .unwrap_or_else(|e| panic!("open {:?}", e.code()));
-                let current = hydrate(read(file, &budget), &budget);
+            crate::semantic_document_read::retirement::measure_test_allocations(|| {
+                let file = PrivateActionsFile::from_held(original, scope(), &cache)
+                    .unwrap_or_else(|e| panic!("open {:?}", e.code()));
+                let current = hydrate(read(file));
                 assert_eq!(current.workspace(), ROOM);
                 assert_eq!(current.borrow_current().unwrap().payload(), b"initial");
-                let input_credit = budget.reserve(128 * 1024).unwrap();
                 let input = vec![7; 128 * 1024];
                 let PrivateQueueOutcome::Pending(file) = current
-                    .queue_owned(input, input_credit)
+                    .queue_owned(input)
                     .unwrap_or_else(|e| panic!("queue {:?}", e.code()))
                 else {
                     panic!("pending")
                 };
-                let capture_credit = budget
-                    .reserve(file.capture_required_bytes().unwrap())
-                    .unwrap();
-                let capture = file.capture(capture_credit).unwrap();
-                let encoded_credit = budget
-                    .reserve(file.prepare_required_bytes(&capture).unwrap())
-                    .unwrap();
+                let capture = file.capture().unwrap();
                 let done = committed(
-                    file.prepare(capture, encoded_credit)
+                    file.prepare(capture)
                         .unwrap_or_else(|e| panic!("prepare {:?}", e.code()))
                         .publish(),
                 );
@@ -795,23 +629,17 @@ pub(in crate::host_worker::private_actions) mod consuming {
                 let view = current.borrow_current().unwrap();
                 assert_eq!(view.payload().len(), 128 * 1024);
                 drop(view);
-                // Input/current/capture/envelope credits survive to their actual last backing owner.
                 drop(current);
                 drop(cache);
             });
-        assert!(!stats.underfunded, "{stats:?}");
         assert_eq!(stats.live, 0, "{stats:?}");
-        assert_eq!(budget.retained_bytes(), baseline);
     }
     #[test]
-    fn private_actions_storage_consuming_pending_credit_survives_sender_drop_and_generic_ack_is_not_receipt()
+    fn private_actions_storage_consuming_pending_survives_sender_drop_and_generic_ack_is_not_receipt()
      {
-        let budget = allowance();
-        let baseline = budget.retained_bytes();
-        let (root, current, cache) = actual_state_fixture(b"initial", &budget);
-        let file = queue(current, b"new private command", &budget);
+        let (root, current, cache) = actual_state_fixture(b"initial");
+        let file = queue(current, b"new private command");
         drop(file);
-        assert!(budget.retained_bytes() > baseline);
         // Ordinary ACK may mark cache durable but has no physical provenance.
         let pending = cache
             .pending_writes()
@@ -830,25 +658,19 @@ pub(in crate::host_worker::private_actions) mod consuming {
         );
         drop(pending);
         drop(cache);
-        assert_eq!(budget.retained_bytes(), baseline);
     }
     #[test]
     fn private_actions_storage_consuming_real_fixture_borrow_and_foreign_cache_refusal() {
-        let budget = allowance();
-        let (root, current, cache) = actual_state_fixture(b"opaque", &budget);
+        let (root, current, cache) = actual_state_fixture(b"opaque");
         assert_eq!(current.borrow_current().unwrap().payload(), b"opaque");
-        let file = queue(current, b"queued", &budget);
+        let file = queue(current, b"queued");
         let other = PortableStorage::new("profile", "device").unwrap();
         other.put(key(), b"queued".to_vec(), None).unwrap();
-        let n = PrivateActionsCapture::required_bytes(&other, ROOM)
+        let foreign = PrivateActionsCapture::capture(&other, ROOM)
             .unwrap()
             .unwrap();
-        let foreign = PrivateActionsCapture::capture(&other, ROOM, budget.reserve(n).unwrap())
-            .unwrap()
-            .unwrap();
-        let n = file.prepare_required_bytes(&foreign).unwrap();
         let refusal = file
-            .prepare(foreign, budget.reserve(n).unwrap())
+            .prepare(foreign)
             .err()
             .expect("foreign same-byte cache");
         assert_eq!(refusal.code(), SenderStorageCode::InvalidScope);
@@ -861,15 +683,8 @@ pub(in crate::host_worker::private_actions) mod consuming {
     fn private_actions_storage_consuming_final_fence_and_stamp_refuse_changed_identity() {
         for change in 0..3 {
             let root = fixture();
-            let budget = allowance();
             let cache = PortableStorage::new("profile", "device").unwrap();
-            let done = committed(
-                prepared(
-                    queue(state(root.path(), &cache, &budget), b"command", &budget),
-                    &budget,
-                )
-                .publish(),
-            );
+            let done = committed(prepared(queue(state(root.path(), &cache), b"command")).publish());
             match change {
                 0 => {
                     fs::rename(root.path().join(CHILD), root.path().join("old-child")).unwrap();
@@ -906,8 +721,7 @@ pub(in crate::host_worker::private_actions) mod consuming {
             assert!(failed.io_error().is_some());
             assert!(cache.flush(&key()).is_err());
         }
-        let budget = allowance();
-        let (_root, mut state, _cache) = actual_state_fixture(b"exact bytes", &budget);
+        let (_root, mut state, _cache) = actual_state_fixture(b"exact bytes");
         state.stamp.payload_digest[0] ^= 1;
         assert!(matches!(
             state.borrow_current(),
@@ -916,29 +730,28 @@ pub(in crate::host_worker::private_actions) mod consuming {
     }
     #[test]
     fn private_actions_storage_consuming_root_fd_and_queue_refusal_preserve_originals() {
-        let budget = allowance();
-        let (root, current, cache) = actual_state_fixture(b"initial", &budget);
+        let (root, current, cache) = actual_state_fixture(b"initial");
+        let oversized = vec![1; 4 * 1024 * 1024 + 1];
         let refused = current
-            .queue_owned(b"next".to_vec(), budget.reserve(3).unwrap())
+            .queue_owned(oversized.clone())
             .err()
             .expect("actual capacity check");
         assert_eq!(refused.code(), SenderStorageCode::Capacity);
-        let (current, bytes, credit) = refused.into_parts();
-        assert_eq!(bytes, b"next");
+        let (current, bytes) = refused.into_parts();
+        assert_eq!(bytes, oversized);
         drop(bytes);
-        drop(credit);
         let PrivateQueueOutcome::Unchanged(current) = current
-            .queue_owned(b"initial".to_vec(), budget.reserve(7).unwrap())
+            .queue_owned(b"initial".to_vec())
             .unwrap_or_else(|e| panic!("same bytes {:?}", e.code()))
         else {
             panic!("same bytes must not queue")
         };
-        let file = queue(current, b"retained root", &budget);
+        let file = queue(current, b"retained root");
         let container = fixture_container();
         let retained = container.path().join("retained");
         fs::rename(root.path(), &retained).unwrap();
         fs::create_dir(root.path()).unwrap();
-        let current = committed(prepared(file, &budget).publish())
+        let current = committed(prepared(file).publish())
             .finish_current()
             .unwrap_or_else(|e| panic!("original FD {:?}", e.code()));
         assert_eq!(

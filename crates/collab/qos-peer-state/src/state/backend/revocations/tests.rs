@@ -1,7 +1,5 @@
 use super::*;
-use crate::native_footprint_vendor_tests::assert_precharged;
 use crate::state::now_ns;
-use automerge::resource_limits::{NativeAllocationSet, NativeAllowance};
 use ed25519_dalek::SigningKey;
 use tilo_user_identity::{RevocationReason, sign_revocation_entry};
 
@@ -16,25 +14,23 @@ fn signed(key: [u8; 32], time: u64, root: &SigningKey) -> RevocationEntry {
     sign_revocation_entry(&mut entry, root).unwrap();
     entry
 }
-fn context() -> (NativeAllowance, NativeAllocationSet, NativeWorkTurn) {
-    let allowance = NativeAllowance::new(8 * 1024 * 1024).unwrap();
-    let allocations = NativeAllocationSet::new(allowance.clone()).unwrap();
-    let turn = allocations.work_turn(allowance.clone()).unwrap();
-    (allowance, allocations, turn)
+fn roster(
+    peer: &crate::StatePeer,
+    now: std::time::SystemTime,
+) -> super::super::roster::BoundedRoster {
+    super::super::roster::BoundedRoster::restore(
+        &peer.certificates(),
+        &[],
+        peer.authority(),
+        now_ns(now),
+    )
+    .unwrap()
 }
 
 #[test]
 fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
-    let (allowance, _allocations, turn) = context();
-    let roster = super::super::roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let roster = roster(&peer, now);
     let root = SigningKey::from_bytes(&[1; 32]);
     let independent = SigningKey::from_bytes(&[8; 32]);
     let stored = vec![
@@ -45,20 +41,15 @@ fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor()
     enrollment
         .insert(signed(member.device_public_key, 20, &root))
         .unwrap();
-    let before = allowance.retained_bytes();
-    let union = assert_precharged(&allowance, || {
-        BoundedRevocations::restore(
-            &stored,
-            &enrollment,
-            &roster,
-            peer.authority().device_public_key,
-            &turn,
-        )
-    })
+    let union = BoundedRevocations::restore(
+        &stored,
+        &enrollment,
+        &roster,
+        peer.authority().device_public_key,
+    )
     .unwrap();
     drop(stored);
     drop(enrollment);
-    allowance.finish_turn();
     assert_eq!(union.iter().count(), 2);
     assert_eq!(
         union
@@ -76,22 +67,12 @@ fn bounded_revocations_preserves_independent_verified_union_and_earliest_floor()
             .user_public_key,
         independent.verifying_key().to_bytes()
     );
-    drop(union);
-    assert_eq!(allowance.retained_bytes(), before);
 }
 
 #[test]
 fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() {
     let (peer, _, _, member, now) = crate::admission_tests::seeded();
-    let (allowance, _allocations, turn) = context();
-    let roster = super::super::roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let roster = roster(&peer, now);
     let empty = RevocationList::new();
     let root = SigningKey::from_bytes(&[1; 32]);
     let other = SigningKey::from_bytes(&[8; 32]);
@@ -107,33 +88,20 @@ fn bounded_revocations_rejects_mismatched_root_signature_and_pinned_authority() 
         ),
         (&revoked[..], RestoreRevocationsError::AuthorityRevoked),
     ] {
-        let before = allowance.retained_bytes();
-        let result = assert_precharged(&allowance, || {
-            BoundedRevocations::restore(
-                entries,
-                &empty,
-                &roster,
-                peer.authority().device_public_key,
-                &turn,
-            )
-        });
+        let result = BoundedRevocations::restore(
+            entries,
+            &empty,
+            &roster,
+            peer.authority().device_public_key,
+        );
         assert!(matches!(result, Err(error) if error == expected));
-        assert_eq!(allowance.retained_bytes(), before);
     }
 }
 
 #[test]
-fn bounded_revocations_precharges_real_table_growth_and_refuses_small_turn() {
+fn bounded_revocations_restores_growing_real_tables() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let (allowance, _allocations, turn) = context();
-    let roster = super::super::roster::BoundedRoster::restore(
-        &peer.certificates(),
-        &[],
-        peer.authority(),
-        now_ns(now),
-        &turn,
-    )
-    .unwrap();
+    let roster = roster(&peer, now);
     let root = SigningKey::from_bytes(&[1; 32]);
     let entries = (0u32..129)
         .map(|n| {
@@ -144,30 +112,13 @@ fn bounded_revocations_precharges_real_table_growth_and_refuses_small_turn() {
         .collect::<Vec<_>>();
     let empty = RevocationList::new();
     for count in [0, 1, 3, 4, 7, 8, 14, 15, 28, 29, 128, 129] {
-        let value = assert_precharged(&allowance, || {
-            BoundedRevocations::restore(
-                &entries[..count],
-                &empty,
-                &roster,
-                peer.authority().device_public_key,
-                &turn,
-            )
-        })
-        .unwrap();
-        assert_eq!(value.iter().count(), count);
-    }
-    let exhausted = turn.reserve(allowance.available_bytes() - 128).unwrap();
-    assert!(matches!(
-        assert_precharged(&allowance, || BoundedRevocations::restore(
-            &entries,
+        let value = BoundedRevocations::restore(
+            &entries[..count],
             &empty,
             &roster,
             peer.authority().device_public_key,
-            &turn
-        )),
-        Err(RestoreRevocationsError::Resource(
-            NativeResourceError::WorkBytes
-        ))
-    ));
-    drop(exhausted);
+        )
+        .unwrap();
+        assert_eq!(value.iter().count(), count);
+    }
 }

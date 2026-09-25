@@ -142,6 +142,7 @@ function fakeRuntime(publisher) {
       expiresInMs: 60000, renewInMs: 40000, membershipGeneration: '1',
     }),
     peer_live_forget() {}, peer_live_reset() {},
+    peer_live_check_input: () => ({base: new Uint8Array(), incoming: Uint8Array.of(1), baseHeads: ''}),
     peer_live_admit: () => JSON.stringify({kind: 'admitted'}),
   };
 }
@@ -159,7 +160,7 @@ function withGrant(fetch) {
 }
 function client(publisher, transport, http) {
   const errors = [];
-  const live = createLiveClient({runtime: fakeRuntime(publisher), peerId: 1, fetch: withGrant(http), codec, transport, clock: fastClock, onError: error => errors.push(error)});
+  const live = createLiveClient({runtime: fakeRuntime(publisher), peerId: 1, fetch: withGrant(http), codec, transport, clock: fastClock, onError: error => errors.push(error), automergeGate: {check: async () => true, close() {}}});
   return {live, api: live.api, errors};
 }
 function setup() {

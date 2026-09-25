@@ -1,9 +1,8 @@
-//! Funded immutable shovel custody. Constructors are private to the sender.
+//! Immutable shovel custody. Constructors are private to the sender.
 //! A queued attempt and its result are not durable sender receipts.
 use super::{OutboxFailure, codec::RowView};
 use crate::collaboration::RouteSpec;
 use crate::time::Instant;
-use automerge::resource_limits::NativeReservation;
 use runtime_collab::{PublishedInvocationBinding, PublishedInvocationObservation};
 use std::sync::{
     Arc,
@@ -46,9 +45,9 @@ struct Inner {
         not(feature = "broker-transport"),
         allow(dead_code, reason = "only the broker transport meters attempts")
     )]
-    credit: NativeReservation,
+    queued_bytes: usize,
 }
-/// Opaque request custody. Clone shares the original paid backing.
+/// Opaque request custody. Clone shares the original backing.
 pub struct ManagedAttempt {
     inner: Option<Arc<Inner>>,
 }
@@ -90,8 +89,6 @@ impl Clone for ManagedAttemptResult {
         }
     }
 }
-// Taking the last Arc out before dropping its payload frees the shared
-// allocation while the payload's credit still pays for it.
 impl Drop for ManagedAttempt {
     fn drop(&mut self) {
         if let Some(inner) = self.inner.take() {
@@ -150,7 +147,9 @@ impl AttemptOwner {
     pub(super) fn ticket(&self) -> Ticket {
         self.attempt.shared().ticket
     }
-    pub(super) fn required_bytes(
+    /// Bytes an attempt and its bounded result retain while queued, for the
+    /// broker's queue meter. Also refuses an invalid row or confirmation.
+    pub(super) fn queued_bytes(
         row: &RowView<'_>,
         confirmation: &str,
     ) -> Result<usize, OutboxFailure> {
@@ -176,8 +175,7 @@ impl AttemptOwner {
                 .checked_add(text.len())
                 .ok_or(OutboxFailure::Capacity)?;
         }
-        // Prepay the bounded response String before the actual RPC. Its single
-        // ResultInner shares this credit until its final payload/control drop.
+        // The bounded response String arrives in the single ResultInner.
         bytes
             .checked_add(super::codec::MAX_OBSERVATION)
             .ok_or(OutboxFailure::Capacity)
@@ -189,14 +187,10 @@ impl AttemptOwner {
         operation: Operation,
         confirmation: &str,
         deadline: Instant,
-        credit: NativeReservation,
     ) -> Result<(Self, ManagedAttempt), OutboxFailure> {
-        let needed = Self::required_bytes(row, confirmation)?;
+        let queued_bytes = Self::queued_bytes(row, confirmation)?;
         if instance == [0; 16] || room.is_nil() {
             return Err(OutboxFailure::Invalid);
-        }
-        if credit.bytes() < needed {
-            return Err(OutboxFailure::Capacity);
         }
         let inner = Inner {
             route: RouteSpec {
@@ -232,7 +226,7 @@ impl AttemptOwner {
             claimed: AtomicBool::new(false),
             completed: AtomicBool::new(false),
             retired: AtomicBool::new(false),
-            credit,
+            queued_bytes,
         };
         let attempt = ManagedAttempt {
             inner: Some(Arc::new(inner)),
@@ -264,7 +258,7 @@ impl ManagedAttempt {
         allow(dead_code, reason = "only the broker transport meters attempts")
     )]
     pub(crate) fn meter_bytes(&self) -> usize {
-        self.shared().credit.bytes()
+        self.shared().queued_bytes
     }
     pub(crate) fn deadline(&self) -> Instant {
         self.shared().deadline

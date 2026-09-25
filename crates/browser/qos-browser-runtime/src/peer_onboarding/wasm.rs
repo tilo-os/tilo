@@ -47,20 +47,15 @@ fn current(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 pub(super) async fn fetch(
     origin: &str,
     path: &str,
     body: &[u8],
     maximum: usize,
     deadline: u64,
-    budget: &IncomingBudget,
     cancel: &OnboardingCancel,
     check: &impl Fn() -> Result<(), String>,
-) -> Result<ChargedBytes, String> {
+) -> Result<Vec<u8>, String> {
     current(cancel, check, deadline)?;
     let remaining = deadline
         .checked_sub(tilo_relay::clock::now_ns())
@@ -80,15 +75,9 @@ pub(super) async fn fetch(
     if cancel.controller.borrow().is_some() {
         return Err("onboarding network operation busy".into());
     }
-    // Application-owned JS request bytes and a fixed BYOB read view are charged
-    // before construction. The browser network stack is not claimed as native
-    // allocation qualification. Unsupported BYOB streams fail closed.
-    let _js = budget.reserve(
-        body.len()
-            .checked_add(64 * 1024 + 16 * 1024)
-            .ok_or("onboarding browser charge overflow")?,
-    )?;
-    let mut output = ChargedBytes::zeroed(maximum, budget)?;
+    // The response is read into a fixed backing of `maximum` bytes through a
+    // BYOB reader. Unsupported BYOB streams fail closed.
+    let mut output = zeroed(maximum)?;
     let global = js_sys::global();
     let constructor: Function = get(&global, "AbortController")?
         .dyn_into()
@@ -182,7 +171,7 @@ pub(super) async fn fetch(
                     .checked_add(length)
                     .filter(|end| *end <= maximum)
                     .ok_or("onboarding HTTP reply exceeds bound")?;
-                bytes.copy_to(&mut output.bytes[position..end]);
+                bytes.copy_to(&mut output[position..end]);
                 position = end;
                 // BYOB transfers the same backing to the returned view. Reuse
                 // it rather than allocating one ArrayBuffer per network read.
@@ -201,7 +190,7 @@ pub(super) async fn fetch(
                 return Err("onboarding stream made no progress".into());
             }
         }
-        output.bytes.truncate(position);
+        output.truncate(position);
         current(cancel, check, deadline)?;
         Ok(())
     }
@@ -243,15 +232,14 @@ pub(crate) async fn exchange_invited(
         prepared.request_bytes(),
         1024 * 1024,
         request.expires_at_ns,
-        &prepared.budget,
         cancel,
         &check,
     )
     .await?;
-    let reply = prepared.verify_reply(&raw.bytes, tilo_relay::clock::now_ns())?;
+    let reply = prepared.verify_reply(&raw, tilo_relay::clock::now_ns())?;
     let mut deadline = request.expires_at_ns;
     let result = match reply.kind {
-        wire::ReplyBodyKind::InlineLegacy => OnboardingReply::decode(reply.body, &prepared.budget)?,
+        wire::ReplyBodyKind::InlineLegacy => OnboardingReply::decode(reply.body)?,
         wire::ReplyBodyKind::HandoffManifest => {
             let context = handoff::ManifestContext {
                 scope: request.scope,
@@ -261,23 +249,18 @@ pub(crate) async fn exchange_invited(
                 request_nonce: request.nonce,
                 expires_at_ns: request.expires_at_ns,
             };
-            let transfer = handoff::Handoff::start(
-                reply.body,
-                context,
-                &prepared.budget,
-                tilo_relay::clock::now_ns(),
-            )?;
+            let transfer =
+                handoff::Handoff::start(reply.body, context, tilo_relay::clock::now_ns())?;
             deadline = deadline.min(transfer.expires_at_ns());
             let bytes = transfer_all(
                 transfer,
                 request.scope.origin,
                 &prepared.key,
-                &prepared.budget,
                 cancel,
                 &check,
             )
             .await?;
-            OnboardingReply::decode(&bytes.bytes, &prepared.budget)?
+            OnboardingReply::decode(&bytes)?
         }
     };
     current(cancel, &check, deadline)?;
@@ -287,28 +270,26 @@ pub(super) async fn transfer_all(
     mut transfer: handoff::Handoff,
     origin: &str,
     key: &SigningKey,
-    budget: &IncomingBudget,
     cancel: &OnboardingCancel,
     check: &impl Fn() -> Result<(), String>,
-) -> Result<ChargedBytes, String> {
+) -> Result<Vec<u8>, String> {
     // Captured once: later ranges can shorten this deadline, never renew it.
     let deadline = transfer.expires_at_ns();
     while transfer.remaining() != 0 {
         current(cancel, check, deadline)?;
         let request = transfer.request(key, tilo_relay::clock::now_ns())?;
-        let body = encode(&request, 512, budget)?;
+        let body = encode(&request, 512)?;
         let chunk = fetch(
             origin,
             wire::HANDOFF_CHUNKS_PATH,
-            &body.bytes,
+            &body,
             wire::MAX_HANDOFF_CHUNK_BYTES,
             request.expires_at_ns,
-            budget,
             cancel,
             check,
         )
         .await?;
-        transfer.push(&request, &chunk.bytes, tilo_relay::clock::now_ns())?;
+        transfer.push(&request, &chunk, tilo_relay::clock::now_ns())?;
     }
     current(cancel, check, deadline)?;
     transfer.finish(tilo_relay::clock::now_ns())

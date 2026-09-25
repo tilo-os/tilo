@@ -48,6 +48,7 @@ function fakeRuntime(publisher, {supported = true, renewInMs = 40000, authorized
     },
     peer_live_forget() { calls.forgets++; },
     peer_live_reset() { calls.resets++; },
+    peer_live_check_input: () => ({base: new Uint8Array(), incoming: Uint8Array.of(1), baseHeads: ''}),
     peer_live_admit(id, bytes) {
       const frame = JSON.parse(decoder.decode(bytes));
       calls.admits.push(frame.digest);
@@ -57,6 +58,8 @@ function fakeRuntime(publisher, {supported = true, renewInMs = 40000, authorized
     },
   };
 }
+/** Stand-in for the Web Worker check (its own tests: automerge-check.test.mjs). */
+const acceptingGate = {check: async () => true, close() {}};
 function fakeFetch(status = () => 200) {
   const requests = [];
   const fetch = async (url, init) => {
@@ -86,6 +89,7 @@ function client(fake, publisher, options = {}) {
     runtime, peerId: 1, fetch: http.fetch, codec,
     transport: options.transport ?? createLiveTransport({library: fake.library}),
     clock: options.clock ?? fastClock, onError: error => errors.push(error),
+    automergeGate: options.automergeGate ?? acceptingGate,
   });
   return {live, api: live.api, runtime, http, errors};
 }
@@ -231,6 +235,51 @@ test('own signed publications are forwarded in order behind the previews of the 
   authored(signedChange(record, '3'.repeat(64)), '', record.record);
   a.live.close();
   assert.deepEqual(listeners.at(-1), {id: 1, listener: null}, 'unregistered on close');
+  b.live.close();
+});
+
+test('a forwarded change the Automerge check refuses never reaches admission', async () => {
+  const fake = relay();
+  const runtime = fakeRuntime('c'.repeat(64));
+  const checked = [];
+  runtime.peer_live_check_input = (id, bytes) => {
+    const digest = JSON.parse(decoder.decode(bytes)).digest;
+    return {base: Uint8Array.of(7), incoming: encoder.encode(digest), baseHeads: `heads-${digest.slice(0, 1)}`};
+  };
+  const admitted = [];
+  const admit = runtime.peer_live_admit.bind(runtime);
+  runtime.peer_live_admit = (id, bytes, base) => { admitted.push(base); return admit(id, bytes); };
+  const automergeGate = {
+    async check(base, incoming) {
+      const digest = decoder.decode(incoming);
+      checked.push([base[0], digest.slice(0, 1)]);
+      return !digest.startsWith('b');
+    },
+    close() {},
+  };
+  const b = client(fake, 'c'.repeat(64), {runtime, automergeGate});
+  const changes = [];
+  b.api.onSignedChange(value => changes.push(`${value.digest.slice(0, 1)}:${value.result}`));
+  b.live.start();
+  await until(() => b.api.state === 'live', 'live');
+  const record = {app: 'so.tilo.notes', record: 'n1'};
+  b.api.watchRecord(record);
+  const author = await createLiveTransport({library: fake.library}).connect({
+    endpoint: `${ORIGIN}/moq/v21/live`, authorization: encoder.encode('d'.repeat(64)),
+    namespace: ['tilo-live', ROOM, 'd'.repeat(64)], directions: {publish: true, subscribe: false},
+  });
+  await until(() => b.api.stats().remotes === 1, 'author member');
+  await tick();
+  author.publishOps(codec.opsTrack(record), signedChange(record, 'a'.repeat(64)));
+  author.publishOps(codec.opsTrack(record), signedChange(record, 'b'.repeat(64)));
+  author.publishOps(codec.opsTrack(record), signedChange(record, 'e'.repeat(64)));
+  await until(() => changes.length === 3, 'checked changes');
+  assert.deepEqual(changes, ['a:admitted', 'b:rejected', 'e:admitted']);
+  assert.deepEqual(checked, [[7, 'a'], [7, 'b'], [7, 'e']], 'each frame is checked against its base');
+  assert.deepEqual(admitted, ['heads-a', 'heads-e'], 'admission names the base that was checked');
+  assert.deepEqual(runtime.calls.admits, ['a'.repeat(64), 'e'.repeat(64)]);
+  assert.equal(b.api.stats().signedRejected, 1);
+  author.close();
   b.live.close();
 });
 

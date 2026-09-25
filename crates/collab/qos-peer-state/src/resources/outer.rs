@@ -6,7 +6,7 @@ pub(crate) struct Limits {
     pub(crate) allocation: usize,
     pub(crate) collection_entries: usize,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Error {
     Capacity,
     Invalid,

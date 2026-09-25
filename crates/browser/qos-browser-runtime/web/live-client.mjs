@@ -8,6 +8,7 @@
  * client falls back silently: API calls become no-ops and the durable
  * delivery path keeps working unchanged.
  */
+import {createAutomergeGate} from './automerge-check.mjs';
 import {createLiveCarriers} from './live-fallback.mjs';
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 
@@ -141,6 +142,8 @@ export function createLiveClient({
   codec = runtimeCodec(runtime),
   clock = {},
   directions = {publish: true, subscribe: true},
+  // Checks forwarded Automerge bytes in a Web Worker before admission.
+  automergeGate,
   onError = () => {},
 }) {
   const now = clock.now ?? (() => performance.now());
@@ -149,6 +152,11 @@ export function createLiveClient({
   const clearTimer = clock.clearTimeout ?? (handle => globalThis.clearTimeout(handle));
   const random = clock.random ?? Math.random;
   const report = error => { try { onError(error); } catch {} };
+  let gate = automergeGate;
+  const ownsGate = !gate;
+  // Forwarded changes are checked and admitted one at a time, in arrival order.
+  let admissions = Promise.resolve();
+  const enqueueAdmission = task => { admissions = admissions.then(task).catch(report); };
 
   const events = {
     state: listeners(), publish: listeners(), presence: listeners(), preview: listeners(),
@@ -184,7 +192,7 @@ export function createLiveClient({
   let tokens = OPS_RATE;
   let tokensAt = now();
   let flushTimer;
-  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedPublished: 0, signedPublishDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedRetryAdmitted: 0, signedRetryAbandoned: 0, signedWithdrawn: 0, agentActivityAccepted: 0, agentActivityRejected: 0, agentSignedAdmitted: 0, agentSignedDuplicate: 0, agentSignedDeferred: 0};
+  const stats = {connects: 0, reconnects: 0, renewals: 0, revocations: 0, fallbacks: 0, previewsSent: 0, previewsDropped: 0, signedPublished: 0, signedPublishDropped: 0, signedAdmitted: 0, signedDuplicate: 0, signedDeferred: 0, signedRetryAdmitted: 0, signedRetryAbandoned: 0, signedRejected: 0, signedWithdrawn: 0, agentActivityAccepted: 0, agentActivityRejected: 0, agentSignedAdmitted: 0, agentSignedDuplicate: 0, agentSignedDeferred: 0};
   let deferredTimer;
   let reconcileTimer;
   let reconcileAtMs = Infinity;
@@ -433,7 +441,7 @@ export function createLiveClient({
   }
   function addRemote(publisherId) {
     if (!session || remotes.has(publisherId) || publisherId === grant?.namespace[2]) return;
-    const remote = {id: publisherId, presence: createRemotePresence(), ops: new Map(), previewSeq: new Map(), deferred: [], focus: null, cancel: undefined, failures: new Map(), timers: new Set()};
+    const remote = {id: publisherId, presence: createRemotePresence(), ops: new Map(), previewSeq: new Map(), deferred: [], checking: 0, focus: null, cancel: undefined, failures: new Map(), timers: new Set()};
     remotes.set(publisherId, remote);
     subscribePresence(remote);
     syncOps(remote);
@@ -497,19 +505,31 @@ export function createLiveClient({
     let frame;
     try { frame = codec.decodeOps(bytes); } catch (error) { report(error); return; }
     if (frame.kind === 'preview') {
-      const key = recordKey(frame.record);
-      if (frame.seq <= (remote.previewSeq.get(key) ?? -1)) return;
-      remote.previewSeq.set(key, frame.seq);
-      // Activity is state, not typing: it never reaches preview listeners.
-      if (key === ACTIVITY_KEY) { onAgentActivity(remote, frame); return; }
-      events.preview.emit({publisher: remote.id, record: frame.record, seq: frame.seq, ops: frame.ops, receivedAtMs, receivedWallMs});
+      // A preview that follows a change still being checked stays behind it,
+      // as on the ops track.
+      if (remote.checking) enqueueAdmission(() => { if (!closed) onPreview(remote, frame, receivedAtMs, receivedWallMs); });
+      else onPreview(remote, frame, receivedAtMs, receivedWallMs);
       return;
     }
     if (frame.kind !== 'signed-change' || !remember(frame.digest)) return;
     const entry = {bytes, frame, receivedAtMs, receivedWallMs, attempts: 0};
-    // Changes from one publisher are admitted in order: behind a deferred one, wait.
-    if (remote.deferred.length) { deferChange(remote, entry); return; }
-    if (admitChange(remote, entry) === 'deferred') deferChange(remote, entry);
+    remote.checking++;
+    enqueueAdmission(async () => {
+      try {
+        if (closed) return;
+        // Changes from one publisher are admitted in order: behind a deferred one, wait.
+        if (remote.deferred.length) { deferChange(remote, entry); return; }
+        if (await admitChange(remote, entry) === 'deferred') deferChange(remote, entry);
+      } finally { remote.checking--; }
+    });
+  }
+  function onPreview(remote, frame, receivedAtMs, receivedWallMs) {
+    const key = recordKey(frame.record);
+    if (frame.seq <= (remote.previewSeq.get(key) ?? -1)) return;
+    remote.previewSeq.set(key, frame.seq);
+    // Activity is state, not typing: it never reaches preview listeners.
+    if (key === ACTIVITY_KEY) { onAgentActivity(remote, frame); return; }
+    events.preview.emit({publisher: remote.id, record: frame.record, seq: frame.seq, ops: frame.ops, receivedAtMs, receivedWallMs});
   }
   // ---- Agent activity ---------------------------------------------------------
   /** The agent's namespace recomputed from this Peer's room and authority. */
@@ -574,11 +594,32 @@ export function createLiveClient({
     return [...agents.values()].filter(entry => t - entry.receivedAtMs < AGENT_ACTIVITY_EXPIRE_MS).map(entry => ({...entry}));
   }
 
+  /**
+   * The base heads the frame was checked against, once the Web Worker
+   * accepted its Automerge bytes applied to its current document; null when
+   * the frame must be dropped. Other browsers are not trusted Automerge
+   * sources, so nothing reaches the runtime's admission unchecked.
+   */
+  async function checkChange(entry) {
+    let input;
+    try { input = runtime.peer_live_check_input(peerId, entry.bytes); } catch (error) { report(error); return null; }
+    gate ??= createAutomergeGate();
+    let accepted = false;
+    try { accepted = await gate.check(input.base, input.incoming); } catch (error) { report(error); }
+    return accepted && typeof input.baseHeads === 'string' ? input.baseHeads : null;
+  }
   /** One admission attempt; emits the outcome. Returns the result kind. */
-  function admitChange(remote, entry) {
+  async function admitChange(remote, entry) {
     const {frame} = entry;
+    const checked = await checkChange(entry);
+    if (closed) return 'failed';
+    if (checked === null) {
+      stats.signedRejected++;
+      events.signedChange.emit({publisher: remote.id, record: frame.record, digest: frame.digest, result: 'rejected', receivedAtMs: entry.receivedAtMs, receivedWallMs: entry.receivedWallMs, admittedAtMs: now(), retried: entry.attempts > 0});
+      return 'rejected';
+    }
     let result;
-    try { result = JSON.parse(runtime.peer_live_admit(peerId, entry.bytes)); } catch (error) { report(error); return 'failed'; }
+    try { result = JSON.parse(runtime.peer_live_admit(peerId, entry.bytes, checked)); } catch (error) { report(error); return 'failed'; }
     const admittedAtMs = now();
     const retried = entry.attempts > 0;
     entry.attempts++;
@@ -606,16 +647,19 @@ export function createLiveClient({
   function retryDeferred() {
     deferredTimer = undefined;
     if (closed) return;
-    for (const remote of remotes.values()) {
-      while (remote.deferred.length) {
-        const entry = remote.deferred[0];
-        const kind = admitChange(remote, entry);
-        if (kind === 'deferred' && entry.attempts <= DEFERRED_RETRY_ATTEMPTS) break;
-        if (kind === 'deferred') stats.signedRetryAbandoned++;
-        remote.deferred.shift();
+    enqueueAdmission(async () => {
+      for (const remote of remotes.values()) {
+        while (remote.deferred.length) {
+          if (closed) return;
+          const entry = remote.deferred[0];
+          const kind = await admitChange(remote, entry);
+          if (kind === 'deferred' && entry.attempts <= DEFERRED_RETRY_ATTEMPTS) break;
+          if (kind === 'deferred') stats.signedRetryAbandoned++;
+          remote.deferred.shift();
+        }
       }
-    }
-    if ([...remotes.values()].some(remote => remote.deferred.length)) deferredTimer = setTimer(retryDeferred, DEFERRED_RETRY_MS);
+      if (!closed && deferredTimer === undefined && [...remotes.values()].some(remote => remote.deferred.length)) deferredTimer = setTimer(retryDeferred, DEFERRED_RETRY_MS);
+    });
   }
   // Forwarded changes are speculative until durable replay confirms them; the
   // runtime withdraws unconfirmed ones at their deadline.
@@ -810,6 +854,7 @@ export function createLiveClient({
       if (reconcileTimer !== undefined) clearTimer(reconcileTimer);
       if (deferredTimer !== undefined) clearTimer(deferredTimer);
       if (agentTimer !== undefined) clearTimer(agentTimer);
+      if (ownsGate) gate?.close();
       agents.clear();
       try { runtime.peer_live_author_listen?.(peerId, null); } catch {}
       previewQueues.clear();

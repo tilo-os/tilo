@@ -105,20 +105,17 @@ mod tests {
     }
 
     #[test]
-    fn typed_current_certificate_checks_time_without_allocating_diagnostics() {
+    fn typed_current_certificate_checks_time() {
         let verified = VerifiedCertificate::new(certificate(), 9).unwrap();
-        let allowance = automerge::resource_limits::NativeAllowance::new(4096).unwrap();
-        crate::native_footprint_vendor_tests::assert_precharged(&allowance, || {
-            assert_eq!(verified.current_typed(9).unwrap(), verified.as_ref());
-            assert!(matches!(
-                verified.current_typed(10),
-                Err(DeviceCertError::Expired)
-            ));
-            assert!(matches!(
-                verified.current_typed(0),
-                Err(DeviceCertError::NotYetValid)
-            ));
-        });
+        assert_eq!(verified.current_typed(9).unwrap(), verified.as_ref());
+        assert!(matches!(
+            verified.current_typed(10),
+            Err(DeviceCertError::Expired)
+        ));
+        assert!(matches!(
+            verified.current_typed(0),
+            Err(DeviceCertError::NotYetValid)
+        ));
     }
 
     #[test]

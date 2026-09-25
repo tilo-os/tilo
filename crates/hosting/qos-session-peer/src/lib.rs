@@ -11,6 +11,8 @@ pub mod store;
 /// Pre-commit forwarding of verified state items, shared with the Cloud host.
 pub use owner::delivery::early_forward;
 pub use owner::{CommitReceipt, PendingOperation, SessionOwner, Status};
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
 
 pub mod enrollment;
 pub mod enrollment_http;

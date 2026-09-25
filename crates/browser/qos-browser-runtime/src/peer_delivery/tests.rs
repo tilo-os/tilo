@@ -102,7 +102,7 @@ fn replay_reassembles_exact_ranges_then_checks_signed_complete_cut() {
         )
         .unwrap();
     assert_eq!(cut.events.len(), 1);
-    assert_eq!(cut.events[0].bytes.bytes(), bytes);
+    assert_eq!(cut.events[0].bytes.as_slice(), bytes);
     assert_eq!(cut.cursor.identity, identity);
     // An authenticated cut alone does not offer a network ACK API.
     assert_eq!(
@@ -236,7 +236,7 @@ fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
     for part in stream.chunks(7) {
         decoder
             .push(part, |event| {
-                actual.push((event.ordinal, event.bytes.bytes().to_vec()));
+                actual.push((event.ordinal, event.bytes.as_slice().to_vec()));
                 Ok(())
             })
             .unwrap();
@@ -374,78 +374,55 @@ fn pinned_transfer_checks_scope_every_chunk_final_order_generation_and_actual_de
 }
 
 #[test]
-fn incoming_budget_is_shared_across_requests_raw_items_and_actual_bounded_dto_decode() {
-    use super::incoming::IncomingBudget;
+fn bounded_publication_decode_refuses_past_its_outer_allocation_limit() {
     use qos_peer_state::resources::{BoundedPeerMessage, OuterLimits};
-    let budget = IncomingBudget::new(64 * 1024).unwrap();
-    let free = budget.available();
-    let request = budget.reserve(40 * 1024).unwrap();
-    assert!(budget.clone().reserve(30 * 1024).is_err());
     let bytes = postcard::to_allocvec(&qos_peer_state::NeighbourMsg::SyncResp {
         changes: vec![vec![1; 32]],
         room: "room".into(),
     })
     .unwrap();
-    let raw = budget.copy(&bytes).unwrap();
-    assert_eq!(raw.bytes(), bytes);
-    assert!(
+    let decode = |allocation_bytes| {
         BoundedPeerMessage::decode(
-            raw.bytes(),
+            &bytes,
             OuterLimits {
-                allocation_bytes: 32 * 1024,
-                collection_entries: 64
+                allocation_bytes,
+                collection_entries: 64,
             },
-            budget.allowance()
         )
-        .is_err()
-    );
-    drop(request);
-    let dto = BoundedPeerMessage::decode(
-        raw.bytes(),
-        OuterLimits {
-            allocation_bytes: 32 * 1024,
-            collection_entries: 64,
-        },
-        budget.allowance(),
-    )
-    .unwrap();
-    assert!(budget.reserve(40 * 1024).is_err());
-    drop(dto);
-    drop(raw);
-    assert_eq!(budget.available(), free);
-    assert!(budget.copy(&vec![0; 64 * 1024]).is_err());
-    assert_eq!(budget.available(), free);
+    };
+    assert!(decode(16).is_err());
+    assert!(decode(32 * 1024).is_ok());
 }
 
 #[test]
-fn staged_parser_retains_shared_raw_credit_until_the_consuming_admission_drops_it() {
-    use super::incoming::IncomingBudget;
+fn staged_parser_refuses_an_item_past_its_limit_and_emits_a_complete_one() {
     use state::{TransferKind, TransferRecordHeader};
-    let budget = IncomingBudget::new(64 * 1024).unwrap();
-    let before = budget.available();
-    let header = TransferRecordHeader::new(
-        1,
-        TransferKind::State,
-        32 * 1024,
-        canonical_item_digest(&vec![3; 32 * 1024]),
-    )
-    .unwrap()
-    .encode();
-    let mut decoder =
-        StreamDecoder::with_incoming(1, 32 * 1024 + 45, 32 * 1024, budget.clone()).unwrap();
-    decoder.push(&header, |_| unreachable!()).unwrap();
-    assert!(budget.reserve(33 * 1024).is_err());
+    let header = |size: u64, body: &[u8]| {
+        TransferRecordHeader::new(1, TransferKind::State, size, canonical_item_digest(body))
+            .unwrap()
+            .encode()
+    };
+    let oversized = vec![3; 32 * 1024 + 1];
+    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 46, 32 * 1024).unwrap();
+    assert!(
+        decoder
+            .push(&header(32 * 1024 + 1, &oversized), |_| unreachable!())
+            .is_err()
+    );
+    let body = vec![3; 32 * 1024];
+    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 45, 32 * 1024).unwrap();
+    decoder
+        .push(&header(32 * 1024, &body), |_| unreachable!())
+        .unwrap();
     let mut retained = None;
     decoder
-        .push(&vec![3; 32 * 1024], |event| {
+        .push(&body, |event| {
             retained = Some(event);
             Ok(())
         })
         .unwrap();
     decoder.finish().unwrap();
-    assert!(budget.reserve(33 * 1024).is_err());
-    drop(retained);
-    assert_eq!(budget.available(), before);
+    assert_eq!(retained.unwrap().bytes, body);
 }
 
 // ---- Multi-group poll pages (MULTI_GROUP_REPLAY_V1).
@@ -491,13 +468,11 @@ const SINGLE: (usize, usize) = (1, 64);
 #[test]
 fn a_multi_group_page_yields_every_complete_group_in_commit_order() {
     let (identity, key, _) = fixture();
-    let incoming = incoming::IncomingBudget::new(16 * 1024 * 1024).unwrap();
     let mut page = Vec::new();
     group_frames(&identity, &key, &commit_at(7), &[b"a1", b"a2"], &mut page);
     group_frames(&identity, &key, &commit_at(8), &[], &mut page);
     group_frames(&identity, &key, &commit_at(12), &[b"c1"], &mut page);
-    let PageContents::Cuts(cuts) = collect_page(&identity, 11, &incoming, &page, MULTI).unwrap()
-    else {
+    let PageContents::Cuts(cuts) = collect_page(&identity, 11, &page, MULTI).unwrap() else {
         panic!("expected cuts")
     };
     assert_eq!(
@@ -507,13 +482,13 @@ fn a_multi_group_page_yields_every_complete_group_in_commit_order() {
         [7, 8, 12]
     );
     assert_eq!(cuts[0].events.len(), 2);
-    assert_eq!(cuts[2].events[0].bytes.bytes(), b"c1");
+    assert_eq!(cuts[2].events[0].bytes.as_slice(), b"c1");
     // A client that did not negotiate the extension accepts exactly one group.
-    assert!(collect_page(&identity, 11, &incoming, &page, SINGLE).is_err());
+    assert!(collect_page(&identity, 11, &page, SINGLE).is_err());
     let mut single = Vec::new();
     group_frames(&identity, &key, &commit_at(7), &[b"a1"], &mut single);
     assert!(matches!(
-        collect_page(&identity, 11, &incoming, &single, SINGLE).unwrap(),
+        collect_page(&identity, 11, &single, SINGLE).unwrap(),
         PageContents::Cuts(cuts) if cuts.len() == 1
     ));
 }
@@ -521,12 +496,11 @@ fn a_multi_group_page_yields_every_complete_group_in_commit_order() {
 #[test]
 fn a_multi_group_page_refuses_reordered_partial_or_oversized_groups() {
     let (identity, key, _) = fixture();
-    let incoming = incoming::IncomingBudget::new(16 * 1024 * 1024).unwrap();
     // Non-increasing commit order.
     let mut page = Vec::new();
     group_frames(&identity, &key, &commit_at(9), &[b"x"], &mut page);
     group_frames(&identity, &key, &commit_at(9), &[b"x"], &mut page);
-    assert!(collect_page(&identity, 11, &incoming, &page, MULTI).is_err());
+    assert!(collect_page(&identity, 11, &page, MULTI).is_err());
     // A trailing partial group.
     let mut page = Vec::new();
     group_frames(&identity, &key, &commit_at(9), &[b"x"], &mut page);
@@ -538,15 +512,15 @@ fn a_multi_group_page_refuses_reordered_partial_or_oversized_groups() {
         1 << 20,
     )
     .unwrap();
-    assert!(collect_page(&identity, 11, &incoming, &page, MULTI).is_err());
+    assert!(collect_page(&identity, 11, &page, MULTI).is_err());
     // More groups than negotiated.
     let mut page = Vec::new();
     for sequence in 1..=3 {
         group_frames(&identity, &key, &commit_at(sequence), &[], &mut page);
     }
-    assert!(collect_page(&identity, 11, &incoming, &page, (2, 512)).is_err());
-    assert!(collect_page(&identity, 11, &incoming, &page, (3, 2)).is_err());
-    assert!(collect_page(&identity, 11, &incoming, &page, (3, 3)).is_ok());
+    assert!(collect_page(&identity, 11, &page, (2, 512)).is_err());
+    assert!(collect_page(&identity, 11, &page, (3, 2)).is_err());
+    assert!(collect_page(&identity, 11, &page, (3, 3)).is_ok());
     // A group's events cannot be relabelled under another group's boundary.
     let mut page = Vec::new();
     let event = chunk(&commit_at(4), 0, b"z", 0..1);
@@ -558,5 +532,5 @@ fn a_multi_group_page_refuses_reordered_partial_or_oversized_groups() {
     )
     .unwrap();
     group_frames(&identity, &key, &commit_at(5), &[b"z"], &mut page);
-    assert!(collect_page(&identity, 11, &incoming, &page, MULTI).is_err());
+    assert!(collect_page(&identity, 11, &page, MULTI).is_err());
 }

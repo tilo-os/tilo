@@ -21,7 +21,6 @@ use crate::{
     collaboration::RouteSpec,
     host_worker::private_actions::{CurrentPrivateState, SenderStorageCode},
 };
-use automerge::resource_limits::NativeAllowance;
 use runtime_collab::PublishedInvocationBinding;
 
 /// Digest of one original immutable semantic request, including None versus
@@ -395,9 +394,8 @@ impl SenderRuntime {
     pub fn install(
         state: CurrentPrivateState,
         caller: SenderCaller,
-        work: &NativeAllowance,
     ) -> Result<Self, InstallRefusal> {
-        match ManagedSender::open(state, work) {
+        match ManagedSender::open(state) {
             Ok(sender) => Ok(Self { sender, caller }),
             Err(refusal) => {
                 let error = SenderError::from(refusal.failure());
@@ -417,30 +415,22 @@ impl SenderRuntime {
         }
     }
     /// Resume one retained physical barrier after a storage failure.
-    pub fn drive(&mut self, work: &NativeAllowance) -> Result<(), SenderError> {
+    pub fn drive(&mut self) -> Result<(), SenderError> {
         if self.sender.has_pending() {
-            self.sender.complete(work)?;
+            self.sender.complete()?;
         }
         Ok(())
     }
-    fn complete(
-        &mut self,
-        expected: Completion,
-        work: &NativeAllowance,
-    ) -> Result<(), SenderError> {
-        if self.sender.complete(work)? != expected {
+    fn complete(&mut self, expected: Completion) -> Result<(), SenderError> {
+        if self.sender.complete()? != expected {
             return Err(SenderError::Invalid);
         }
         Ok(())
     }
-    fn facts(
-        &self,
-        ticket: Ticket,
-        work: &NativeAllowance,
-    ) -> Result<Option<super::lifecycle::RowFacts>, SenderError> {
+    fn facts(&self, ticket: Ticket) -> Result<Option<super::lifecycle::RowFacts>, SenderError> {
         Ok(self
             .sender
-            .inspect(self.caller.view(), work)?
+            .inspect(self.caller.view())?
             .into_iter()
             .flatten()
             .find(|facts| facts.ticket == ticket))
@@ -453,9 +443,8 @@ impl SenderRuntime {
         parent: &mut dyn ParentOwner,
         step: ParentStep,
         intent: &ChildIntent,
-        work: &NativeAllowance,
     ) -> Result<StepStart, SenderError> {
-        self.drive(work)?;
+        self.drive()?;
         let wanted = intent.digest();
         if let Some(record) = parent.lookup(step)? {
             if record.intent != wanted || record.step != step {
@@ -466,7 +455,7 @@ impl SenderRuntime {
             }
             // Never replace an uncertain or lost original with a new UUID.
             let facts = self
-                .facts(record.child.0, work)?
+                .facts(record.child.0)?
                 .ok_or(SenderError::NotRetained)?;
             if facts.intent != wanted {
                 return Err(SenderError::IdentityConflict);
@@ -477,7 +466,7 @@ impl SenderRuntime {
         // original instead of adding a second row for the same request.
         let unmapped = self
             .sender
-            .inspect(self.caller.view(), work)?
+            .inspect(self.caller.view())?
             .into_iter()
             .flatten()
             .filter(|facts| facts.intent == wanted && !facts.observed);
@@ -488,10 +477,8 @@ impl SenderRuntime {
                 return Ok(StepStart::Recovered(child));
             }
         }
-        let ticket = self
-            .sender
-            .begin_new(self.caller.view(), intent.view(), work)?;
-        self.complete(Completion::Began(ticket), work)?;
+        let ticket = self.sender.begin_new(self.caller.view(), intent.view())?;
+        self.complete(Completion::Began(ticket))?;
         let child = ChildTicket(ticket);
         Self::bound(parent.bind(step, child, wanted)?, step, child, wanted)?;
         Ok(StepStart::Fresh(child))
@@ -516,7 +503,6 @@ impl SenderRuntime {
         kind: AttemptKind,
         confirmation: &str,
         deadline: Instant,
-        work: &NativeAllowance,
     ) -> Result<ManagedAttempt, SenderError> {
         let record = parent.lookup(step)?.ok_or(SenderError::Unmapped)?;
         if record.step != step {
@@ -536,16 +522,11 @@ impl SenderRuntime {
             operation,
             confirmation,
             deadline,
-            work,
         )?)
     }
     /// Retain one correlated result. Only `Retained` changed durable state.
-    pub fn accept(
-        &mut self,
-        result: ManagedAttemptResult,
-        work: &NativeAllowance,
-    ) -> Result<Reply, AcceptRefusal> {
-        let disposition = match self.sender.observe_result(result, self.caller.view(), work) {
+    pub fn accept(&mut self, result: ManagedAttemptResult) -> Result<Reply, AcceptRefusal> {
+        let disposition = match self.sender.observe_result(result, self.caller.view()) {
             Ok(disposition) => disposition,
             Err(refusal) => {
                 let error = SenderError::from(refusal.failure());
@@ -562,7 +543,7 @@ impl SenderRuntime {
             ReplyDisposition::Queued => {
                 // The row write is queued; the reply custody was already
                 // consumed into it. A barrier failure is resumed by drive().
-                match self.sender.complete(work) {
+                match self.sender.complete() {
                     Ok(Completion::Observed(_)) => Reply::Retained,
                     Ok(_) | Err(_) => Reply::Pending,
                 }
@@ -576,15 +557,14 @@ impl SenderRuntime {
         parent: &mut dyn ParentOwner,
         step: ParentStep,
         continuation: &mut Continuation<'_>,
-        work: &NativeAllowance,
     ) -> Result<ParentReceipt, SenderError> {
-        self.drive(work)?;
+        self.drive()?;
         let record = parent.lookup(step)?.ok_or(SenderError::Unmapped)?;
         if record.step != step {
             return Err(SenderError::IdentityConflict);
         }
         let ticket = record.child.0;
-        let Some(facts) = self.facts(ticket, work)? else {
+        let Some(facts) = self.facts(ticket)? else {
             // Consumption committed but its acknowledgement was lost.
             return match record.committed {
                 Some(committed) => Ok(ParentReceipt {
@@ -596,9 +576,7 @@ impl SenderRuntime {
             };
         };
         let result = facts.terminal.ok_or(SenderError::NotTerminal)?;
-        let receipt = self
-            .sender
-            .terminal_receipt(ticket, self.caller.view(), work)?;
+        let receipt = self.sender.terminal_receipt(ticket, self.caller.view())?;
         if receipt.digest() != result || receipt.ticket() != ticket {
             return Err(SenderError::Invalid);
         }
@@ -606,7 +584,7 @@ impl SenderRuntime {
             Some(committed) if committed.result == result => {}
             Some(_) => return Err(SenderError::IdentityConflict),
             None => {
-                let read = self.sender.read_result(ticket, self.caller.view(), work)?;
+                let read = self.sender.read_result(ticket, self.caller.view())?;
                 let next = continuation(step, read.json()).map_err(SenderError::Continuation)?;
                 let committed = parent.commit(ChildCommit {
                     step,
@@ -627,8 +605,8 @@ impl SenderRuntime {
                 }
             }
         }
-        self.sender.consume(receipt, self.caller.view(), work)?;
-        self.complete(Completion::Consumed(ticket), work)?;
+        self.sender.consume(receipt, self.caller.view())?;
+        self.complete(Completion::Consumed(ticket))?;
         Ok(ParentReceipt {
             step,
             child: record.child,
@@ -641,10 +619,9 @@ impl SenderRuntime {
         &mut self,
         parent: &mut dyn ParentOwner,
         continuation: &mut Continuation<'_>,
-        work: &NativeAllowance,
     ) -> Result<Recovery, SenderError> {
-        self.drive(work)?;
-        let rows = self.sender.inspect(self.caller.view(), work)?;
+        self.drive()?;
+        let rows = self.sender.inspect(self.caller.view())?;
         let mut recovery = Recovery {
             children: [None; RECOVERY_SLOTS],
         };
@@ -656,7 +633,7 @@ impl SenderRuntime {
                     return Err(SenderError::IdentityConflict);
                 }
                 Some(record) if facts.terminal.is_some() => {
-                    self.settle(parent, record.step, continuation, work)?;
+                    self.settle(parent, record.step, continuation)?;
                     Recovered::Settled(record.step)
                 }
                 Some(record) => Recovered::Drive(record.step, child),

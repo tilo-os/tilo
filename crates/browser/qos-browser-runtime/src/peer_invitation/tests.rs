@@ -428,38 +428,22 @@ fn restored_expired_invitation_keeps_exact_completion_but_cannot_create_fresh_pr
 }
 
 #[test]
-fn invited_identity_retains_shared_incoming_credit_and_refuses_exhausted_decode() {
-    use crate::peer_delivery::incoming::IncomingBudget;
+fn invited_identity_refuses_oversized_or_malformed_material() {
     let f = Fixture::new();
     let bytes = InvitedIdentity::create(&f.invitation(None), "guest", NOW).unwrap();
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let identity = InvitedIdentity::read_with_budget(&bytes, NOW, &budget).unwrap();
-    assert!(
-        budget.available() < before,
-        "owned identity must keep its incoming credit"
-    );
-    let remaining = budget.reserve(budget.available()).unwrap();
-    assert!(InvitedIdentity::read_with_budget(&bytes, NOW, &budget).is_err());
-    drop(remaining);
-    drop(identity);
-    assert_eq!(budget.available(), before);
-    assert!(InvitedIdentity::read_with_budget(b"{", NOW, &budget).is_err());
-    assert_eq!(
-        budget.available(),
-        before,
-        "invalid material must release its reservation"
-    );
+    assert!(InvitedIdentity::read(&bytes, NOW).is_ok());
+    assert!(InvitedIdentity::read(b"{", NOW).is_err());
+    assert!(InvitedIdentity::read(&[], NOW).is_err());
+    let mut oversized = bytes;
+    oversized.resize(1_048_577, b' ');
+    assert!(InvitedIdentity::read(&oversized, NOW).is_err());
 }
 
 #[test]
-fn retained_completion_preflight_and_owned_decode_share_identity_budget() {
-    use crate::peer_delivery::incoming::IncomingBudget;
+fn retained_completion_checkpoint_is_fixed_after_restore() {
     let f = Fixture::new();
     let bytes = InvitedIdentity::create(&f.invitation(None), "guest", NOW).unwrap();
-    let budget = IncomingBudget::new(8 * 1024 * 1024).unwrap();
-    let before = budget.available();
-    let mut identity = InvitedIdentity::read_with_budget(&bytes, NOW, &budget).unwrap();
+    let mut identity = InvitedIdentity::read(&bytes, NOW).unwrap();
     let challenge = join::JoinChallenge::new(
         &identity.invitation(NOW).unwrap(),
         identity.certificate(),
@@ -473,24 +457,13 @@ fn retained_completion_preflight_and_owned_decode_share_identity_budget() {
         .checkpoint_challenge(challenge.clone(), NOW)
         .unwrap();
     drop(identity);
-    let mut restored =
-        InvitedIdentity::read_with_budget(&checkpoint, NOW + 31_000_000_000, &budget).unwrap();
-    let remaining = budget.reserve(budget.available()).unwrap();
-    assert!(
-        restored
-            .checkpoint_challenge(challenge.clone(), NOW + 31_000_000_000)
-            .is_err(),
-        "retained completion owned decode requires shared credit"
-    );
-    drop(remaining);
+    let mut restored = InvitedIdentity::read(&checkpoint, NOW + 31_000_000_000).unwrap();
     assert_eq!(
         restored
             .checkpoint_challenge(challenge, NOW + 31_000_000_000)
             .unwrap(),
         checkpoint
     );
-    drop(restored);
-    assert_eq!(budget.available(), before);
 }
 
 #[test]

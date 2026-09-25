@@ -1,44 +1,49 @@
 //! Native complete-cut admission into one browser StatePeer candidate.
 //!
-//! Every original publication is decoded under the shared incoming budget and
-//! admitted through StatePeer's checked incoming path (bounded, fully validated
-//! Automerge application; the original owner is untouched on refusal). The
+//! Every original publication is decoded under explicit outer limits and
+//! admitted through StatePeer's checked incoming path (Automerge application
+//! through `tilo_automerge_isolate`; the original owner is untouched on
+//! refusal). The
 //! candidate is exported only by `finish`, together with the exact signed
 //! cursor that ends the cut, so the caller can stage state, pending journal
 //! work and cursor in one storage transaction.
-use super::{CompleteEvent, incoming::IncomingBudget};
+use super::CompleteEvent;
 use crate::peer_delivery_cursor::StoredDeliveryCursor;
 use crate::peer_journal::{JournalFormat, JournalStorage};
 use qos_peer_state::{NativePublicationCut, NeighbourMsg, StatePeer};
 use tilo_relay::delivery_v3::{cursor::CursorToken, state::EventKind};
 use web_time::SystemTime;
 
+/// Largest outer allocation one decoded publication may make.
+const MAX_PUBLICATION_ALLOCATION: usize = 64 * 1024 * 1024;
+
 /// One streaming cut. An error consumes the candidate; the live owner keeps
 /// its prior state and cursor, so a retry replays from the committed cursor.
 pub(crate) struct CutAdmission {
     cut: Option<NativePublicationCut>,
-    incoming: IncomingBudget,
 }
 impl CutAdmission {
     /// The native host publishes as the pinned governing authority; any other
     /// publisher is refused by StatePeer before the first item is read.
-    pub fn begin(
-        state: &StatePeer,
-        incoming: IncomingBudget,
-        now: SystemTime,
-    ) -> Result<Self, String> {
+    ///
+    /// This publisher check is also the trust basis for the Automerge bytes
+    /// inside the cut. A browser has no processes to isolate Automerge in, so
+    /// StatePeer's admission here only pre-checks their size and framing and
+    /// applies them to a copy. The pinned host admitted every one of these
+    /// bytes through its own isolated workers before it signed and published
+    /// them. Frames forwarded by other browsers carry no such basis; the page
+    /// checks those in a Web Worker before they reach this path
+    /// (`automerge-check-worker.mjs`).
+    pub fn begin(state: &StatePeer, now: SystemTime) -> Result<Self, String> {
         let publisher = state.authority().device_public_key;
         let cut = state
             .begin_native_publication_cut(publisher, now)
             .map_err(|error| error.to_string())?;
-        Ok(Self {
-            cut: Some(cut),
-            incoming,
-        })
+        Ok(Self { cut: Some(cut) })
     }
     /// One complete delivery item; its signed family label must match.
     pub fn push(&mut self, event: CompleteEvent, now: SystemTime) -> Result<(), String> {
-        self.push_decoded(event.bytes.bytes(), Some(event.kind), now)
+        self.push_decoded(&event.bytes, Some(event.kind), now)
     }
     /// One original publication retained by an authenticated onboarding
     /// handoff (local enrollment or invited Complete), which carries no label.
@@ -55,10 +60,9 @@ impl CutAdmission {
         let held = qos_peer_state::resources::BoundedPeerMessage::decode(
             bytes,
             qos_peer_state::resources::OuterLimits {
-                allocation_bytes: self.incoming.available().min(64 * 1024 * 1024),
+                allocation_bytes: MAX_PUBLICATION_ALLOCATION,
                 collection_entries: 65536,
             },
-            self.incoming.allowance(),
         )
         .map_err(|e| format!("bounded native publication decode: {e:?}"))?;
         if !matches!(
@@ -73,10 +77,9 @@ impl CutAdmission {
         ) {
             return Err("native publication family mismatch".into());
         }
-        // The outer reservation stays charged while the checked admission runs.
         let message = held.message().clone();
-        let cut = cut.push(message, now).map_err(|error| error.to_string())?;
         drop(held);
+        let cut = cut.push(message, now).map_err(|error| error.to_string())?;
         self.cut = Some(cut);
         Ok(())
     }
@@ -107,7 +110,6 @@ impl CutAdmission {
 pub(crate) fn admit_cuts(
     base: &StatePeer,
     cuts: Vec<super::ReplayCut>,
-    incoming: &IncomingBudget,
     now: SystemTime,
 ) -> Result<(StatePeer, StoredDeliveryCursor, usize), String> {
     let mut admitted: Option<(StatePeer, StoredDeliveryCursor)> = None;
@@ -115,7 +117,7 @@ pub(crate) fn admit_cuts(
     for cut in cuts {
         let result = (|| {
             let from = admitted.as_ref().map_or(base, |(state, _)| state);
-            let mut cut_admission = CutAdmission::begin(from, incoming.clone(), now)?;
+            let mut cut_admission = CutAdmission::begin(from, now)?;
             for event in cut.events {
                 cut_admission.push(event, now)?;
             }

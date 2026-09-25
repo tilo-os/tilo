@@ -42,34 +42,23 @@ fn deadline() -> Instant {
 }
 
 /// Reopen the same selected private file through the existing-only reader.
-fn reopen(root: &Path, work: &NativeAllowance) -> (SenderRuntime, PortableStorage) {
+fn reopen(root: &Path) -> (SenderRuntime, PortableStorage) {
     let cache = PortableStorage::new("profile", "device").unwrap();
     let scope = SenderScope::native(uuid::Uuid::from_bytes([1; 16]), [2; 32], [3; 32]).unwrap();
-    let credit = work
-        .reserve(PrivateActionsFile::required_bytes(&scope).unwrap())
-        .unwrap();
     let file = PrivateActionsFile::from_held(
         atomic_file::StorageDirectory::open(root).unwrap(),
         scope,
         &cache,
-        credit,
     )
     .unwrap_or_else(|e| panic!("reopen {:?}", e.code()));
-    let credit = work.reserve(file.read_required_bytes().unwrap()).unwrap();
-    let read = match file.read_existing(credit) {
+    let read = match file.read_existing() {
         PrivateReadOutcome::Committed(read) => read,
         PrivateReadOutcome::Failed(error) => panic!("read {:?}", error.code()),
     };
-    let credit = work
-        .reserve(read.hydrate_required_bytes().unwrap())
-        .unwrap();
     let state = read
-        .hydrate_current(credit)
+        .hydrate_current()
         .unwrap_or_else(|e| panic!("hydrate {:?}", e.code()));
-    (
-        SenderRuntime::install(state, caller(), work).unwrap(),
-        cache,
-    )
+    (SenderRuntime::install(state, caller()).unwrap(), cache)
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -295,10 +284,10 @@ fn continuation(_: ParentStep, json: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| "child produced no content".into())
 }
 
-fn outbox_rows(runtime: &SenderRuntime, work: &NativeAllowance) -> usize {
+fn outbox_rows(runtime: &SenderRuntime) -> usize {
     runtime
         .sender
-        .inspect(runtime.caller.view(), work)
+        .inspect(runtime.caller.view())
         .unwrap()
         .iter()
         .flatten()
@@ -311,101 +300,81 @@ fn run_step(
     receiver: &mut Receiver,
     index: u32,
     intent: &ChildIntent,
-    work: &NativeAllowance,
 ) -> ChildTicket {
-    let child = match runtime
-        .begin_step(parent, step(index), intent, work)
-        .unwrap()
-    {
+    let child = match runtime.begin_step(parent, step(index), intent).unwrap() {
         StepStart::Fresh(child) => child,
         other => panic!("expected a fresh child, got {other:?}"),
     };
     let attempt = runtime
-        .attempt(
-            parent,
-            step(index),
-            AttemptKind::Invoke,
-            "",
-            deadline(),
-            work,
-        )
+        .attempt(parent, step(index), AttemptKind::Invoke, "", deadline())
         .unwrap();
     let reply = receiver.serve(runtime, attempt);
-    assert_eq!(runtime.accept(reply, work).unwrap(), Reply::Retained);
+    assert_eq!(runtime.accept(reply).unwrap(), Reply::Retained);
     runtime
-        .settle(parent, step(index), &mut continuation, work)
+        .settle(parent, step(index), &mut continuation)
         .unwrap();
     child
 }
 
 #[test]
 fn managed_runtime_two_step_handoff_recovers_after_crash_before_parent_commit() {
-    let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes(), &work);
+    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
     let ledger = root.path().join("parent.json");
     let mut receiver = Receiver::default();
-    let mut runtime = SenderRuntime::install(state, caller(), &work).unwrap();
+    let mut runtime = SenderRuntime::install(state, caller()).unwrap();
     let mut parent = DurableParent::open(&ledger);
     let first = intent("draft", "launch brief");
-    let StepStart::Fresh(original) = runtime
-        .begin_step(&mut parent, step(0), &first, &work)
-        .unwrap()
+    let StepStart::Fresh(original) = runtime.begin_step(&mut parent, step(0), &first).unwrap()
     else {
         panic!("fresh child expected")
     };
     let attempt = runtime
-        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work)
+        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline())
         .unwrap();
     // The receiver admits and applies the child, then the reply is lost.
     drop(receiver.serve(&runtime, attempt));
     drop((runtime, parent, cache));
 
-    let (mut runtime, cache) = reopen(root.path(), &work);
+    let (mut runtime, cache) = reopen(root.path());
     let mut parent = DurableParent::open(&ledger);
-    let recovery = runtime
-        .recover(&mut parent, &mut continuation, &work)
-        .unwrap();
+    let recovery = runtime.recover(&mut parent, &mut continuation).unwrap();
     assert_eq!(
         recovery.iter().collect::<Vec<_>>(),
         vec![Recovered::Drive(step(0), original)]
     );
     // A replanned identical step reuses the uncertain original, never a new UUID.
     assert_eq!(
-        runtime
-            .begin_step(&mut parent, step(0), &first, &work)
-            .unwrap(),
+        runtime.begin_step(&mut parent, step(0), &first).unwrap(),
         StepStart::Recovered(original)
     );
     let attempt = runtime
-        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work)
+        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline())
         .unwrap();
     let reply = receiver.serve(&runtime, attempt);
-    assert_eq!(runtime.accept(reply, &work).unwrap(), Reply::Retained);
+    assert_eq!(runtime.accept(reply).unwrap(), Reply::Retained);
     // Crash with the certain terminal observation durable but no parent commit.
     parent.refuse_commit = true;
     assert!(matches!(
-        runtime.settle(&mut parent, step(0), &mut continuation, &work),
+        runtime.settle(&mut parent, step(0), &mut continuation),
         Err(SenderError::Parent(ParentFailure::Unavailable(_)))
     ));
     assert_eq!(
-        outbox_rows(&runtime, &work),
+        outbox_rows(&runtime),
         1,
         "child retained without parent commit"
     );
     drop((runtime, parent, cache));
 
-    let (mut runtime, _cache) = reopen(root.path(), &work);
+    let (mut runtime, _cache) = reopen(root.path());
     let mut parent = DurableParent::open(&ledger);
     assert_eq!(parent.ledger.advances, 0);
-    let recovery = runtime
-        .recover(&mut parent, &mut continuation, &work)
-        .unwrap();
+    let recovery = runtime.recover(&mut parent, &mut continuation).unwrap();
     assert_eq!(
         recovery.iter().collect::<Vec<_>>(),
         vec![Recovered::Settled(step(0))]
     );
     assert_eq!(parent.ledger.advances, 1);
-    assert_eq!(outbox_rows(&runtime, &work), 0);
+    assert_eq!(outbox_rows(&runtime), 0);
     assert!(
         parent.ledger.rows[&0]
             .json
@@ -422,7 +391,6 @@ fn managed_runtime_two_step_handoff_recovers_after_crash_before_parent_commit() 
         &mut receiver,
         1,
         &intent("publish", &handoff),
-        &work,
     );
     assert_eq!(parent.ledger.advances, 2);
     assert_eq!(
@@ -437,44 +405,39 @@ fn managed_runtime_two_step_handoff_recovers_after_crash_before_parent_commit() 
         ],
         "each child's effect happened exactly once"
     );
-    assert_eq!(outbox_rows(&runtime, &work), 0);
+    assert_eq!(outbox_rows(&runtime), 0);
 }
 
 #[test]
 fn managed_runtime_two_step_handoff_recovers_after_commit_before_child_removal() {
-    let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes(), &work);
+    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
     let ledger = root.path().join("parent.json");
     let mut receiver = Receiver::default();
-    let mut runtime = SenderRuntime::install(state, caller(), &work).unwrap();
+    let mut runtime = SenderRuntime::install(state, caller()).unwrap();
     let mut parent = DurableParent::open(&ledger);
     let first = intent("draft", "launch brief");
-    let StepStart::Fresh(original) = runtime
-        .begin_step(&mut parent, step(0), &first, &work)
-        .unwrap()
+    let StepStart::Fresh(original) = runtime.begin_step(&mut parent, step(0), &first).unwrap()
     else {
         panic!("fresh child expected")
     };
     let attempt = runtime
-        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work)
+        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline())
         .unwrap();
     let reply = receiver.serve(&runtime, attempt);
-    assert_eq!(runtime.accept(reply, &work).unwrap(), Reply::Retained);
+    assert_eq!(runtime.accept(reply).unwrap(), Reply::Retained);
     // The parent commits durably; the process dies before the child is removed.
     parent.lose_commit_reply = true;
     assert!(matches!(
-        runtime.settle(&mut parent, step(0), &mut continuation, &work),
+        runtime.settle(&mut parent, step(0), &mut continuation),
         Err(SenderError::Parent(ParentFailure::Uncertain(_)))
     ));
-    assert_eq!(outbox_rows(&runtime, &work), 1);
+    assert_eq!(outbox_rows(&runtime), 1);
     drop((runtime, parent, cache));
 
-    let (mut runtime, _cache) = reopen(root.path(), &work);
+    let (mut runtime, _cache) = reopen(root.path());
     let mut parent = DurableParent::open(&ledger);
     assert_eq!(parent.ledger.advances, 1);
-    let recovery = runtime
-        .recover(&mut parent, &mut continuation, &work)
-        .unwrap();
+    let recovery = runtime.recover(&mut parent, &mut continuation).unwrap();
     assert_eq!(
         recovery.iter().collect::<Vec<_>>(),
         vec![Recovered::Settled(step(0))]
@@ -483,23 +446,21 @@ fn managed_runtime_two_step_handoff_recovers_after_commit_before_child_removal()
         parent.ledger.advances, 1,
         "recovery never advances the parent twice"
     );
-    assert_eq!(outbox_rows(&runtime, &work), 0);
+    assert_eq!(outbox_rows(&runtime), 0);
     // A repeated settle after a lost consumption acknowledgement is inert.
     let receipt = runtime
-        .settle(&mut parent, step(0), &mut continuation, &work)
+        .settle(&mut parent, step(0), &mut continuation)
         .unwrap();
     assert_eq!(receipt.child, original);
     assert_eq!(Some(receipt.result), parent.ledger.rows[&0].result);
     assert_eq!(parent.ledger.advances, 1);
     assert_eq!(
-        runtime
-            .begin_step(&mut parent, step(0), &first, &work)
-            .unwrap(),
+        runtime.begin_step(&mut parent, step(0), &first).unwrap(),
         StepStart::Committed(original),
         "a replayed committed step is not dispatched again"
     );
     assert!(matches!(
-        runtime.attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work),
+        runtime.attempt(&parent, step(0), AttemptKind::Invoke, "", deadline()),
         Err(SenderError::NotRetained)
     ));
     let handoff = parent.continuation(0);
@@ -509,7 +470,6 @@ fn managed_runtime_two_step_handoff_recovers_after_commit_before_child_removal()
         &mut receiver,
         1,
         &intent("publish", &handoff),
-        &work,
     );
     assert_eq!(parent.ledger.advances, 2);
     assert_eq!(receiver.effects.len(), 2);
@@ -518,12 +478,11 @@ fn managed_runtime_two_step_handoff_recovers_after_commit_before_child_removal()
 
 #[test]
 fn managed_runtime_same_step_with_changed_body_is_refused_without_a_new_child() {
-    let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let (root, state, _cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes(), &work);
-    let mut runtime = SenderRuntime::install(state, caller(), &work).unwrap();
+    let (root, state, _cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
+    let mut runtime = SenderRuntime::install(state, caller()).unwrap();
     let mut parent = DurableParent::open(&root.path().join("parent.json"));
     runtime
-        .begin_step(&mut parent, step(0), &intent("draft", "one"), &work)
+        .begin_step(&mut parent, step(0), &intent("draft", "one"))
         .unwrap();
     for changed in [
         intent("draft", "two"),
@@ -534,11 +493,11 @@ fn managed_runtime_same_step_with_changed_body_is_refused_without_a_new_child() 
         intent("draft", ""),
     ] {
         assert_eq!(
-            runtime.begin_step(&mut parent, step(0), &changed, &work),
+            runtime.begin_step(&mut parent, step(0), &changed),
             Err(SenderError::IdentityConflict)
         );
     }
-    assert_eq!(outbox_rows(&runtime, &work), 1);
+    assert_eq!(outbox_rows(&runtime), 1);
     assert_ne!(
         ChildIntent {
             argument: None,
@@ -552,88 +511,71 @@ fn managed_runtime_same_step_with_changed_body_is_refused_without_a_new_child() 
 
 #[test]
 fn managed_runtime_nothing_is_sent_before_the_parent_mapping_and_restart_adopts_the_original() {
-    let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes(), &work);
+    let (root, state, cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
     let ledger = root.path().join("parent.json");
-    let mut runtime = SenderRuntime::install(state, caller(), &work).unwrap();
+    let mut runtime = SenderRuntime::install(state, caller()).unwrap();
     let mut parent = DurableParent::open(&ledger);
     parent.refuse_bind = true;
     let first = intent("draft", "launch brief");
     assert!(matches!(
-        runtime.begin_step(&mut parent, step(0), &first, &work),
+        runtime.begin_step(&mut parent, step(0), &first),
         Err(SenderError::Parent(ParentFailure::Unavailable(_)))
     ));
-    assert_eq!(
-        outbox_rows(&runtime, &work),
-        1,
-        "row committed before mapping"
-    );
+    assert_eq!(outbox_rows(&runtime), 1, "row committed before mapping");
     assert_eq!(
         runtime
-            .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work)
+            .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline())
             .unwrap_err(),
         SenderError::Unmapped
     );
     drop((runtime, parent, cache));
 
-    let (mut runtime, _cache) = reopen(root.path(), &work);
+    let (mut runtime, _cache) = reopen(root.path());
     let mut parent = DurableParent::open(&ledger);
-    let recovery = runtime
-        .recover(&mut parent, &mut continuation, &work)
-        .unwrap();
+    let recovery = runtime.recover(&mut parent, &mut continuation).unwrap();
     let [Recovered::Unmapped(original)] = recovery.iter().collect::<Vec<_>>()[..] else {
         panic!("unmapped original expected")
     };
     // A different request never adopts the unmapped row.
     let StepStart::Fresh(other) = runtime
-        .begin_step(&mut parent, step(5), &intent("draft", "other"), &work)
+        .begin_step(&mut parent, step(5), &intent("draft", "other"))
         .unwrap()
     else {
         panic!("fresh child expected")
     };
     assert_ne!(other, original);
     assert_eq!(
-        runtime
-            .begin_step(&mut parent, step(0), &first, &work)
-            .unwrap(),
+        runtime.begin_step(&mut parent, step(0), &first).unwrap(),
         StepStart::Recovered(original)
     );
-    assert_eq!(outbox_rows(&runtime, &work), 2);
+    assert_eq!(outbox_rows(&runtime), 2);
     let mut receiver = Receiver::default();
     let attempt = runtime
-        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline(), &work)
+        .attempt(&parent, step(0), AttemptKind::Invoke, "", deadline())
         .unwrap();
     let reply = receiver.serve(&runtime, attempt);
-    assert_eq!(runtime.accept(reply, &work).unwrap(), Reply::Retained);
+    assert_eq!(runtime.accept(reply).unwrap(), Reply::Retained);
     assert_eq!(receiver.effects[0].0, original.invocation());
 }
 
 #[test]
 fn managed_runtime_uncertain_or_absent_child_is_retained_and_not_settled() {
-    let work = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let (root, state, _cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes(), &work);
-    let mut runtime = SenderRuntime::install(state, caller(), &work).unwrap();
+    let (root, state, _cache) = committed_test_fixture(NativeSenderOutboxV1::empty_bytes());
+    let mut runtime = SenderRuntime::install(state, caller()).unwrap();
     let mut parent = DurableParent::open(&root.path().join("parent.json"));
     let mut receiver = Receiver::default();
     runtime
-        .begin_step(&mut parent, step(0), &intent("draft", "one"), &work)
+        .begin_step(&mut parent, step(0), &intent("draft", "one"))
         .unwrap();
     let attempt = runtime
-        .attempt(
-            &parent,
-            step(0),
-            AttemptKind::Observe,
-            "",
-            deadline(),
-            &work,
-        )
+        .attempt(&parent, step(0), AttemptKind::Observe, "", deadline())
         .unwrap();
     let reply = receiver.serve(&runtime, attempt);
-    assert_eq!(runtime.accept(reply, &work).unwrap(), Reply::Absent);
+    assert_eq!(runtime.accept(reply).unwrap(), Reply::Absent);
     assert_eq!(
-        runtime.settle(&mut parent, step(0), &mut continuation, &work),
+        runtime.settle(&mut parent, step(0), &mut continuation),
         Err(SenderError::NotTerminal)
     );
     assert_eq!(parent.ledger.advances, 0);
-    assert_eq!(outbox_rows(&runtime, &work), 1);
+    assert_eq!(outbox_rows(&runtime), 1);
 }

@@ -564,7 +564,15 @@ fn personal_device_command(
     enrollment_command_result(&output, "personal-device enrollment was not completed")
 }
 
-fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<std::process::ExitCode> {
+    // Automerge isolation workers re-enter this binary; serve them first.
+    if let Some(code) = tilo_automerge_isolate::dispatch_early() {
+        return Ok(std::process::ExitCode::from(code));
+    }
+    run().map(|()| std::process::ExitCode::SUCCESS)
+}
+
+fn run() -> anyhow::Result<()> {
     require_root()?;
     match Cli::parse().command {
         BrokerCommand::Apply => apply(&read_request()?),

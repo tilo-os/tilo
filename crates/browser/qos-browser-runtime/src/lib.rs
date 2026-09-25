@@ -5,6 +5,12 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 
+#[cfg(target_arch = "wasm32")]
+mod automerge_check;
+
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
+
 #[cfg(any(target_arch = "wasm32", test))]
 mod close_recovery;
 

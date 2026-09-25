@@ -1,8 +1,6 @@
 use super::*;
 use crate::StatePeer;
 use crate::TransportOrigin;
-use crate::native_footprint_vendor_tests::assert_precharged;
-use crate::resources::NativeAllowance;
 use crate::state::DurableV4;
 use automerge::AutoCommit;
 use automerge::ROOT;
@@ -39,14 +37,11 @@ fn deferred() -> (StatePeer, NeighbourMsg, SystemTime) {
 }
 
 #[test]
-fn bounded_pending_counts_actual_signed_deferred_message_without_allocating() {
+fn bounded_pending_counts_actual_signed_deferred_message() {
     let (peer, predecessor, now) = deferred();
     let bytes = peer.durable().unwrap();
     let durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
-    let allowance = NativeAllowance::new(4096).unwrap();
-    assert_precharged(&allowance, || {
-        validate(&durable.pending, durable.pending_bytes).unwrap();
-    });
+    validate(&durable.pending, durable.pending_bytes).unwrap();
     let mut restored = StatePeer::restore(
         &bytes,
         peer.room(),
@@ -118,8 +113,7 @@ fn bounded_pending_enforces_four_mib_at_literal_serialized_boundary() {
     }
     assert_eq!(postcard::to_allocvec(&message).unwrap().len(), limit);
     let mut queue = VecDeque::from([([0; 32], message, false)]);
-    let allowance = NativeAllowance::new(4096).unwrap();
-    assert_precharged(&allowance, || validate(&queue, limit).unwrap());
+    validate(&queue, limit).unwrap();
     if let NeighbourMsg::SyncResp { changes, .. } = &mut queue[0].1 {
         changes[0].push(0);
     }

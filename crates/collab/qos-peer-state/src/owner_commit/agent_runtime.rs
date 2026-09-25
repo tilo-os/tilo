@@ -1,8 +1,8 @@
 //! Versioned private executor state. Recorded data never grants live execution authority.
 use super::{
-    AgentChange, AgentError, AgentMutation, AgentMutationReceipt, CommitBinding, CommitOperation,
-    GrantAction, MAX_LIVE_PRIVATE_AGENTS, MAX_PRIVATE_AGENT_ADMISSIONS,
-    MAX_PRIVATE_AGENT_LEDGER_BYTES, OwnerCommitRequest, PrivateAgentLedger,
+    AgentError, CommitBinding, CommitOperation, GrantAction, MAX_LIVE_PRIVATE_AGENTS,
+    MAX_PRIVATE_AGENT_ADMISSIONS, MAX_PRIVATE_AGENT_LEDGER_BYTES, OwnerCommitRequest,
+    PrivateAgentLedger,
 };
 use serde::{
     Deserialize, Serialize,
@@ -10,9 +10,7 @@ use serde::{
 };
 use serde_json::Value;
 use std::{collections::BTreeMap, fmt};
-mod paid;
 mod validation;
-pub use paid::PrivateValidationFailure;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(untagged)]

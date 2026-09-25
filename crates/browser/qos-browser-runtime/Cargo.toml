@@ -26,6 +26,7 @@ qdoc = { path = "../../doc/qdoc" }
 tilo-actions = { path = "../../collab/actions" }
 futures = { workspace = true, features = ["std", "async-await"] }
 automerge.workspace = true
+tilo-automerge-isolate.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 vello.workspace = true

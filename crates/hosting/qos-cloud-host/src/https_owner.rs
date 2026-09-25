@@ -13,9 +13,6 @@ use std::{
     },
 };
 
-#[cfg(test)]
-mod held;
-
 pub(crate) enum Current<T> {
     #[expect(
         clippy::enum_variant_names,

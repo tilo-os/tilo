@@ -1,15 +1,11 @@
 //! Exact delivery projection, distinct from strict private policy semantics.
 use super::read::LegacyRead;
 use crate::resources::{PeerResourceError, json::JsonLimits};
-use automerge::{
-    AutoCommit,
-    resource_limits::{NativeReadSession, NativeResourceError, NativeWorkTurn},
-};
+use automerge::AutoCommit;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 pub(crate) const POLICY_BYTES: usize = 1024 * 1024;
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum Error {
-    Resource(NativeResourceError),
     Decode(PeerResourceError),
     Unavailable,
     CurrentDenied,
@@ -32,12 +28,12 @@ pub(crate) struct Limits {
 }
 
 use super::read::{ReadError, RoomRead, RoomValue, Selection, collections::Collections};
-use crate::resources::json::JsonHeld;
+use crate::resources::json;
 use collab_types::caps::{CapOverride, Principal, Scope, Subject};
 /// Whether a grant's subject can address this consumer's person (whose
 /// document-read actor is `Person(hex(root))`). Role, room, app, agent and
 /// token subjects are kept; person-addressed grants only for this person.
-/// Allocation-free: the native path charges every allocation to its turn.
+/// Allocation-free.
 pub(super) fn consumer_subject(subject: &Subject, root: &[u8; 32]) -> bool {
     match subject {
         Subject::User(key) => key.0 == *root,
@@ -52,7 +48,7 @@ use serde::Serialize;
 fn read_error(error: ReadError<Error>) -> Error {
     match error {
         ReadError::Malformed => Error::Unavailable,
-        ReadError::Resource(error) => Error::Resource(error),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(error) => error,
     }
 }
@@ -86,7 +82,7 @@ fn counted<T: Serialize>(value: &T) -> Result<usize, Error> {
 }
 fn encode<T: Serialize>(value: &T, work: &mut Collections) -> Result<Vec<u8>, Error> {
     let length = counted(value)?;
-    let mut output = work.zeroed(length).map_err(Error::Resource)?;
+    let mut output = work.zeroed(length).map_err(|_| Error::Capacity)?;
     let written = postcard::to_slice(value, &mut output)
         .map_err(|_| Error::Capacity)?
         .len();
@@ -117,38 +113,21 @@ impl postcard::ser_flavors::Flavor for Hash {
         Ok((*self.value.finalize().as_bytes(), self.length))
     }
 }
-trait CapValue {
-    fn cap(&self) -> &CapOverride;
-}
-impl CapValue for CapOverride {
-    fn cap(&self) -> &CapOverride {
-        self
-    }
-}
-impl CapValue for JsonHeld<CapOverride> {
-    fn cap(&self) -> &CapOverride {
-        self.value()
-    }
-}
 trait Decode {
-    type Value: CapValue;
-    fn cap(&self, bytes: &[u8]) -> Result<Self::Value, Error>;
+    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
 }
 struct LegacyDecode;
 impl Decode for LegacyDecode {
-    type Value = CapOverride;
-    fn cap(&self, bytes: &[u8]) -> Result<Self::Value, Error> {
+    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
         serde_json::from_slice(bytes).map_err(|_| Error::Unavailable)
     }
 }
-struct NativeDecode<'a> {
-    turn: &'a NativeWorkTurn,
+struct NativeDecode {
     limits: JsonLimits,
 }
-impl Decode for NativeDecode<'_> {
-    type Value = JsonHeld<CapOverride>;
-    fn cap(&self, bytes: &[u8]) -> Result<Self::Value, Error> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(|e| match e {
+impl Decode for NativeDecode {
+    fn cap(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+        json::decode(bytes, self.limits).map_err(|e| match e {
             PeerResourceError::Malformed => Error::Unavailable,
             PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
         })
@@ -159,17 +138,17 @@ fn rows<'a, T: Serialize + 'a>(
     total: &mut usize,
     work: &mut Collections,
 ) -> Result<Vec<Vec<u8>>, Error> {
-    // Preserve count-all-before-encode-all ordering. These paid borrowed refs
-    // do not clone labels, signed entries, or original metadata backing.
+    // Preserve count-all-before-encode-all ordering.
     let mut references = Vec::new();
     for row in rows {
         add(total, counted(row)?)?;
-        work.push(&mut references, row).map_err(Error::Resource)?;
+        work.push(&mut references, row)
+            .map_err(|_| Error::Capacity)?;
     }
     let mut output = Vec::new();
     for row in references {
         let bytes = encode(row, work)?;
-        work.push(&mut output, bytes).map_err(Error::Resource)?;
+        work.push(&mut output, bytes).map_err(|_| Error::Capacity)?;
     }
     output.sort_unstable();
     Ok(output)
@@ -211,7 +190,7 @@ where
             return Err(Error::Unavailable);
         };
         add(&mut total, text.len())?;
-        governor = Some(work.text(text).map_err(Error::Resource)?);
+        governor = Some(work.text(text).map_err(|_| Error::Capacity)?);
         Ok(())
     })
     .map_err(read_error)?;
@@ -241,8 +220,7 @@ where
                     if bytes.len() > POLICY_BYTES {
                         return Err(Error::Capacity);
                     }
-                    let held = decode.cap(bytes)?;
-                    let cap = held.cap();
+                    let cap = &decode.cap(bytes)?;
                     match &cap.scope {
                         Scope::Workspace => (),
                         Scope::Room(room) if room == meta.room => (),
@@ -255,9 +233,9 @@ where
                     }
                     add(&mut total, counted(cap)?)?;
                     let encoded = encode(cap, work)?;
-                    let key = work.text(key).map_err(Error::Resource)?;
+                    let key = work.text(key).map_err(|_| Error::Capacity)?;
                     work.push(&mut caps, (key, encoded))
-                        .map_err(Error::Resource)
+                        .map_err(|_| Error::Capacity)
                 })
                 .map_err(read_error)?;
             if count != 1 {
@@ -322,9 +300,8 @@ where
     )
 }
 pub(crate) fn native<'a, I, J>(
-    read: &NativeReadSession<'_, '_>,
+    read: &LegacyRead<'_, AutoCommit>,
     meta: Metadata<'a, I, J>,
-    turn: &NativeWorkTurn,
     limits: Limits,
     check_routes: impl FnOnce() -> Result<(), Error>,
 ) -> Result<[u8; 32], Error>
@@ -332,14 +309,11 @@ where
     I: Iterator<Item = &'a DeviceCert>,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    // Declared before every project allocation; inner buffers drop on return
-    // before this original current-turn reservation is released.
-    let mut work = Collections::native(turn, limits.collections).map_err(Error::Resource)?;
+    let mut work = Collections::limited(limits.collections);
     project(
         read,
         meta,
         &NativeDecode {
-            turn,
             limits: limits.json,
         },
         &mut work,

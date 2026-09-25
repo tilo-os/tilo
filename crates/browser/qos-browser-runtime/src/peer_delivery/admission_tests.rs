@@ -116,22 +116,15 @@ impl Native {
         .unwrap()
     }
 }
-fn budget() -> IncomingBudget {
-    IncomingBudget::new(64 * 1024 * 1024).unwrap()
-}
-fn admit(
-    state: &StatePeer,
-    incoming: &IncomingBudget,
-    events: &[(EventKind, Vec<u8>)],
-) -> Result<StatePeer, String> {
-    let mut cut = CutAdmission::begin(state, incoming.clone(), time())?;
+fn admit(state: &StatePeer, events: &[(EventKind, Vec<u8>)]) -> Result<StatePeer, String> {
+    let mut cut = CutAdmission::begin(state, time())?;
     for (ordinal, (kind, bytes)) in events.iter().enumerate() {
         cut.push(
             CompleteEvent {
                 ordinal: ordinal as u32,
                 kind: *kind,
                 digest: canonical_item_digest(bytes),
-                bytes: incoming.copy(bytes)?,
+                bytes: bytes.to_vec(),
             },
             time(),
         )?;
@@ -150,11 +143,9 @@ fn value(state: &StatePeer) -> Option<String> {
 #[test]
 fn fresh_owner_admits_complete_native_cut_without_mutating_the_live_owner() {
     let mut native = Native::new(1);
-    let incoming = budget();
-    let credit = incoming.available();
     let owner = native.consumer();
     let before = owner.durable().unwrap();
-    let candidate = admit(&owner, &incoming, &native.baseline()).unwrap();
+    let candidate = admit(&owner, &native.baseline()).unwrap();
     assert_eq!(value(&candidate).as_deref(), Some("native v1"));
     assert_eq!(
         owner.durable().unwrap(),
@@ -163,22 +154,20 @@ fn fresh_owner_admits_complete_native_cut_without_mutating_the_live_owner() {
     );
     assert!(owner.document(APP, RECORD).is_none());
     // The suffix applies to the admitted candidate through the same checked path.
-    let next = admit(&candidate, &incoming, &native.edit("native v2")).unwrap();
+    let next = admit(&candidate, &native.edit("native v2")).unwrap();
     assert_eq!(value(&next).as_deref(), Some("native v2"));
-    assert_eq!(incoming.available(), credit, "no credit retained");
 }
 
 #[test]
 fn duplicate_or_overlapping_replay_after_lost_ack_is_idempotent() {
     let mut native = Native::new(1);
-    let incoming = budget();
     let baseline = native.baseline();
     let suffix = native.edit("native v2");
-    let once = admit(&native.consumer(), &incoming, &baseline).unwrap();
-    let once = admit(&once, &incoming, &suffix).unwrap();
+    let once = admit(&native.consumer(), &baseline).unwrap();
+    let once = admit(&once, &suffix).unwrap();
     // A lost ACK or aborted commit replays from the older committed cursor.
-    let twice = admit(&once, &incoming, &baseline).unwrap();
-    let twice = admit(&twice, &incoming, &suffix).unwrap();
+    let twice = admit(&once, &baseline).unwrap();
+    let twice = admit(&twice, &suffix).unwrap();
     assert_eq!(value(&twice).as_deref(), Some("native v2"));
     assert_eq!(twice.rows(), once.rows());
     assert_eq!(
@@ -190,8 +179,6 @@ fn duplicate_or_overlapping_replay_after_lost_ack_is_idempotent() {
 #[test]
 fn refused_item_consumes_the_candidate_and_leaves_the_owner_untouched() {
     let mut native = Native::new(1);
-    let incoming = budget();
-    let credit = incoming.available();
     let owner = native.consumer();
     let before = owner.durable().unwrap();
     let baseline = native.baseline();
@@ -203,31 +190,30 @@ fn refused_item_consumes_the_candidate_and_leaves_the_owner_untouched() {
         .unwrap();
     let last = bytes.len() - 8;
     bytes[last] ^= 0x55;
-    assert!(admit(&owner, &incoming, &tampered).is_err());
+    assert!(admit(&owner, &tampered).is_err());
     // A family label cannot relabel governance as document state.
     let mut relabelled = baseline.clone();
     relabelled[0].0 = EventKind::State;
     assert!(
-        admit(&owner, &incoming, &relabelled)
+        admit(&owner, &relabelled)
             .err()
             .is_some_and(|error| error.contains("family"))
     );
     // Another governor's publications are not this workspace's authority.
     let mut other = Native::new(9);
-    assert!(admit(&owner, &incoming, &other.baseline()).is_err());
+    assert!(admit(&owner, &other.baseline()).is_err());
     // A used cut cannot continue after refusal.
-    let mut cut = CutAdmission::begin(&owner, incoming.clone(), time()).unwrap();
+    let mut cut = CutAdmission::begin(&owner, time()).unwrap();
     let bad = CompleteEvent {
         ordinal: 0,
         kind: EventKind::Governance,
         digest: [0; 32],
-        bytes: incoming.copy(&[0xff; 4]).unwrap(),
+        bytes: vec![0xff; 4],
     };
     assert!(cut.push(bad, time()).is_err());
     assert!(cut.finish(time()).is_err());
     assert_eq!(owner.durable().unwrap(), before);
-    assert_eq!(incoming.available(), credit);
-    assert!(admit(&owner, &incoming, &baseline).is_ok());
+    assert!(admit(&owner, &baseline).is_ok());
 }
 
 fn identity() -> CursorIdentity {
@@ -399,7 +385,6 @@ fn reload(bytes: &[u8], native: &Native) -> (StatePeer, Journal) {
 #[test]
 fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload() {
     let mut native = Native::new(1);
-    let incoming = budget();
     let cache = PortableStorage::new("certified:room", "device").unwrap();
     let mut batches = PeerStorageBatches::new(1);
     batches.bind_lease("lease").unwrap();
@@ -412,7 +397,7 @@ fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload()
 
     // First complete cut: fresh startup snapshot.
     let owner = native.consumer();
-    let first = admit(&owner, &incoming, &native.baseline()).unwrap();
+    let first = admit(&owner, &native.baseline()).unwrap();
     let storage = advance_cursor(&JournalStorage::default(), cursor(1, 1, 6)).unwrap();
     stage(&cache, &first, &pending, &storage);
     let (id, _) = capture(&mut batches, &cache);
@@ -421,7 +406,7 @@ fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload()
 
     // Second cut: a suffix whose transaction aborts (quota).
     let suffix = native.edit("native v2");
-    let second = admit(&first, &incoming, &suffix).unwrap();
+    let second = admit(&first, &suffix).unwrap();
     let storage = advance_cursor(&storage, cursor(2, 2, 6)).unwrap();
     stage(&cache, &second, &pending, &storage);
     let (id, _) = capture(&mut batches, &cache);
@@ -451,7 +436,7 @@ fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload()
     }
     let (restored, journal) = committed(&reloaded, &native);
     assert_eq!(journal.storage.delivery, Some(cursor(1, 1, 6)));
-    let replayed = admit(&restored, &incoming, &suffix).unwrap();
+    let replayed = admit(&restored, &suffix).unwrap();
     assert_eq!(value(&replayed).as_deref(), Some("native v2"));
     assert_eq!(journal.into_unretired_outbox(&restored), pending);
 
@@ -467,7 +452,7 @@ fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload()
 
     // Lost storage acknowledgement: the transaction outcome is unknown when the
     // page reloads. Either durable outcome is a self-consistent state/cursor pair.
-    let third = admit(&second, &incoming, &native.edit("native v3")).unwrap();
+    let third = admit(&second, &native.edit("native v3")).unwrap();
     let storage = advance_cursor(&storage, cursor(3, 3, 6)).unwrap();
     stage(&cache, &third, &pending, &storage);
     let (_, writes) = capture(&mut batches, &cache);
@@ -501,11 +486,10 @@ fn state_journal_and_cursor_commit_atomically_across_abort_lost_ack_and_reload()
 #[test]
 fn abandoned_snapshot_binding_never_blocks_the_retried_commit() {
     let mut native = Native::new(1);
-    let incoming = budget();
     let cache = PortableStorage::new("certified:room", "device").unwrap();
     let mut batches = PeerStorageBatches::new(1);
     batches.bind_lease("lease").unwrap();
-    let candidate = admit(&native.consumer(), &incoming, &native.baseline()).unwrap();
+    let candidate = admit(&native.consumer(), &native.baseline()).unwrap();
     let storage = advance_cursor(&JournalStorage::default(), cursor(1, 1, 6)).unwrap();
     let transfer = "0123456789abcdef0123456789abcdef";
     batches.bind_transfer(transfer, cursor(1, 1, 6), 1).unwrap();
@@ -574,11 +558,10 @@ fn local_edit(cache: &PortableStorage, text: &str) {
 }
 /// A cursor-bearing journal committed with the admitted record at H0.
 fn committed_owner(native: &mut Native) -> (PortableStorage, PeerStorageBatches, JournalStorage) {
-    let incoming = budget();
     let cache = PortableStorage::new("certified:room", "device").unwrap();
     let mut batches = PeerStorageBatches::new(1);
     batches.bind_lease("lease").unwrap();
-    let state = admit(&native.consumer(), &incoming, &native.baseline()).unwrap();
+    let state = admit(&native.consumer(), &native.baseline()).unwrap();
     let storage = advance_cursor(&JournalStorage::default(), cursor(1, 1, 6)).unwrap();
     stage(&cache, &state, &[], &storage);
     let (id, _) = capture(&mut batches, &cache);
@@ -760,11 +743,7 @@ fn stage_journal_only(
 
 // ---- One page of several groups admits in order onto one candidate.
 
-fn replay_cut(
-    incoming: &IncomingBudget,
-    events: &[(EventKind, Vec<u8>)],
-    sequence: u64,
-) -> crate::peer_delivery::ReplayCut {
+fn replay_cut(events: &[(EventKind, Vec<u8>)], sequence: u64) -> crate::peer_delivery::ReplayCut {
     let stored = cursor(sequence, sequence as u8, 1);
     crate::peer_delivery::ReplayCut {
         events: events
@@ -774,7 +753,7 @@ fn replay_cut(
                 ordinal: ordinal as u32,
                 kind: *kind,
                 digest: canonical_item_digest(bytes),
-                bytes: incoming.copy(bytes).unwrap(),
+                bytes: bytes.to_vec(),
             })
             .collect(),
         cursor: stored,
@@ -788,23 +767,22 @@ fn replay_cut(
 #[test]
 fn page_cuts_admit_in_order_and_a_later_refusal_keeps_the_admitted_prefix() {
     let mut native = Native::new(1);
-    let incoming = budget();
     let baseline = native.baseline();
     let v2 = native.edit("native v2");
     let v3 = native.edit("native v3");
     let owner = native.consumer();
-    let sequential = admit(&owner, &incoming, &baseline).unwrap();
-    let sequential = admit(&sequential, &incoming, &v2).unwrap();
-    let sequential = admit(&sequential, &incoming, &v3).unwrap();
+    let sequential = admit(&owner, &baseline).unwrap();
+    let sequential = admit(&sequential, &v2).unwrap();
+    let sequential = admit(&sequential, &v3).unwrap();
     let cuts = vec![
-        replay_cut(&incoming, &baseline, 1),
-        replay_cut(&incoming, &v2, 2),
-        replay_cut(&incoming, &v3, 3),
+        replay_cut(&baseline, 1),
+        replay_cut(&v2, 2),
+        replay_cut(&v3, 3),
     ];
     page_cursor_steps(None, &cuts).unwrap();
-    let (state, cursor, count) = admit_cuts(&owner, cuts, &incoming, time()).unwrap();
+    let (state, cursor, count) = admit_cuts(&owner, cuts, time()).unwrap();
     assert_eq!(count, 3);
-    assert_eq!(cursor, replay_cut(&incoming, &v3, 3).cursor);
+    assert_eq!(cursor, replay_cut(&v3, 3).cursor);
     assert_eq!(value(&state).as_deref(), Some("native v3"));
     assert_eq!(state.rows(), sequential.rows());
     // A tampered later group: install the prefix with that prefix's cursor.
@@ -812,18 +790,18 @@ fn page_cuts_admit_in_order_and_a_later_refusal_keeps_the_admitted_prefix() {
     let last = tampered[0].1.len() - 8;
     tampered[0].1[last] ^= 0x55;
     let cuts = vec![
-        replay_cut(&incoming, &baseline, 1),
-        replay_cut(&incoming, &v2, 2),
-        replay_cut(&incoming, &tampered, 3),
+        replay_cut(&baseline, 1),
+        replay_cut(&v2, 2),
+        replay_cut(&tampered, 3),
     ];
-    let (state, cursor, count) = admit_cuts(&owner, cuts, &incoming, time()).unwrap();
+    let (state, cursor, count) = admit_cuts(&owner, cuts, time()).unwrap();
     assert_eq!(count, 2);
-    assert_eq!(cursor, replay_cut(&incoming, &v2, 2).cursor);
+    assert_eq!(cursor, replay_cut(&v2, 2).cursor);
     assert_eq!(value(&state).as_deref(), Some("native v2"));
     // A refused first group refuses the page and leaves the owner untouched.
-    let cuts = vec![replay_cut(&incoming, &tampered, 1)];
-    assert!(admit_cuts(&native.consumer(), cuts, &incoming, time()).is_err());
+    let cuts = vec![replay_cut(&tampered, 1)];
+    assert!(admit_cuts(&native.consumer(), cuts, time()).is_err());
     // Groups must continue each other's cursor within the page.
-    let backwards = vec![replay_cut(&incoming, &v2, 2), replay_cut(&incoming, &v3, 1)];
+    let backwards = vec![replay_cut(&v2, 2), replay_cut(&v3, 1)];
     assert!(page_cursor_steps(None, &backwards).is_err());
 }

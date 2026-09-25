@@ -10,8 +10,6 @@ pub(crate) mod commit_wake;
 pub(crate) mod early_forward;
 pub(crate) mod relay;
 pub(crate) mod replay_digest;
-#[cfg(test)]
-pub(crate) mod resources;
 pub(crate) mod retention;
 mod schema;
 mod security;
@@ -106,8 +104,7 @@ pub(crate) fn validate(state: &State, now: u64) -> Result<()> {
         .into_iter()
         .map(|op| op.operation_id())
         .collect::<std::collections::BTreeSet<_>>();
-    validation::replay(state, delivery, validation::Admissions::Legacy(&operations))
-        .map_err(CheckError::into_legacy)
+    validation::replay(state, delivery, &operations).map_err(CheckError::into_legacy)
 }
 
 /// Central hook before the existing Store save. No successful in-memory

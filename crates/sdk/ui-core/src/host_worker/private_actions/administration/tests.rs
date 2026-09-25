@@ -1,7 +1,6 @@
 use super::super::CHILD_NAME;
 use super::*;
 use atomic_file::lease::FileLease;
-use automerge::resource_limits::NativeAllowance;
 use std::os::unix::fs::PermissionsExt;
 
 fn private_fixture(temp: tempfile::TempDir) -> tempfile::TempDir {
@@ -65,16 +64,11 @@ fn scope() -> SenderScope {
 fn private_actions_admin_provisions_initial_existing_root() {
     let root = fixture();
     std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let budget = NativeAllowance::new(16 * 1024 * 1024).unwrap();
-    let credit = budget
-        .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
-        .unwrap();
     let verified = AdministrativeFile::open(
         StorageDirectory::open(root.path()).unwrap(),
         scope(),
         [4; 16],
         AdministrativeExpectation::Prepared,
-        credit,
     )
     .expect("real administrative carrier must provision and verify initial file");
     let facts = verified.revalidate().expect("original live file binding");
@@ -106,18 +100,13 @@ fn private_actions_admin_provisions_initial_existing_root() {
 
 fn open_path(
     path: &std::path::Path,
-    budget: &NativeAllowance,
     expectation: AdministrativeExpectation,
 ) -> Result<AdministrativeFile, AdministrativeFailure> {
-    let credit = budget
-        .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
-        .unwrap();
     AdministrativeFile::open(
         StorageDirectory::open(path).unwrap(),
         scope(),
         [4; 16],
         expectation,
-        credit,
     )
 }
 fn rewrite(
@@ -139,40 +128,23 @@ fn rewrite(
         .unwrap();
 }
 #[test]
-fn private_actions_admin_preflight_refuses_zero_and_capacity_without_effects() {
+fn private_actions_admin_preflight_refuses_zero_instance_without_effects() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let n = AdministrativeFile::required_bytes(&scope()).unwrap();
-    for case in 1..3 {
-        let instance = if case == 1 { [0; 16] } else { [4; 16] };
-        let credit = budget.reserve(if case == 2 { n - 1 } else { n }).unwrap();
-        let error = AdministrativeFile::open(
-            StorageDirectory::open(root.path()).unwrap(),
-            scope(),
-            instance,
-            AdministrativeExpectation::Prepared,
-            credit,
-        )
-        .unwrap_err();
-        assert_eq!(
-            error.code(),
-            if case == 2 {
-                Code::Capacity
-            } else {
-                Code::InvalidScope
-            }
-        );
-        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-        assert!(budget.retained_bytes() >= n - 1);
-        drop(error);
-    }
+    let error = AdministrativeFile::open(
+        StorageDirectory::open(root.path()).unwrap(),
+        scope(),
+        [0; 16],
+        AdministrativeExpectation::Prepared,
+    )
+    .unwrap_err();
+    assert_eq!(error.code(), Code::InvalidScope);
+    assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
 }
 /// The Cloud profile (machine and incarnation bound into the envelope) uses
 /// the same administrative carrier; its file never opens under another scope.
 #[test]
 fn private_actions_admin_cloud_profile_creates_and_is_scope_bound() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let cloud = |incarnation| {
         SenderScope::cloud(
             uuid::Uuid::from_bytes([1; 16]),
@@ -184,15 +156,11 @@ fn private_actions_admin_cloud_profile_creates_and_is_scope_bound() {
         .unwrap()
     };
     let open = |scope: SenderScope, expectation| {
-        let credit = budget
-            .reserve(AdministrativeFile::required_bytes(&scope).unwrap())
-            .unwrap();
         AdministrativeFile::open(
             StorageDirectory::open(root.path()).unwrap(),
             scope,
             [4; 16],
             expectation,
-            credit,
         )
     };
     let created = open(cloud([9; 16]), AdministrativeExpectation::Prepared).unwrap();
@@ -205,9 +173,8 @@ fn private_actions_admin_cloud_profile_creates_and_is_scope_bound() {
 #[test]
 fn private_actions_admin_resume_initial_and_active_later_are_distinct() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
-    drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+    drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
+    drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
     rewrite(
         root.path(),
         [4; 16],
@@ -215,13 +182,13 @@ fn private_actions_admin_resume_initial_and_active_later_are_distinct() {
         42,
         NativeSenderOutboxV1::empty_bytes(),
     );
-    let active = open_path(root.path(), &budget, AdministrativeExpectation::Active).unwrap();
+    let active = open_path(root.path(), AdministrativeExpectation::Active).unwrap();
     assert_eq!(active.revalidate().unwrap().sequence(), 19);
     assert_eq!(active.revalidate().unwrap().revision(), 42);
     drop(active);
     let original = std::fs::read(root.path().join(CHILD_NAME).join(FILE_NAME)).unwrap();
     assert_eq!(
-        open_path(root.path(), &budget, AdministrativeExpectation::Prepared)
+        open_path(root.path(), AdministrativeExpectation::Prepared)
             .unwrap_err()
             .code(),
         Code::InvalidFile
@@ -238,7 +205,7 @@ fn private_actions_admin_resume_initial_and_active_later_are_distinct() {
         NativeSenderOutboxV1::empty_bytes(),
     );
     assert_eq!(
-        open_path(root.path(), &budget, AdministrativeExpectation::Active)
+        open_path(root.path(), AdministrativeExpectation::Active)
             .unwrap_err()
             .code(),
         Code::InvalidFile
@@ -247,16 +214,15 @@ fn private_actions_admin_resume_initial_and_active_later_are_distinct() {
 #[test]
 fn private_actions_admin_active_missing_never_creates_or_reseeds() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    assert!(open_path(root.path(), &budget, AdministrativeExpectation::Active).is_err());
+    assert!(open_path(root.path(), AdministrativeExpectation::Active).is_err());
     assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
-    drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+    drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
     let file = root.path().join(CHILD_NAME).join(FILE_NAME);
     std::fs::remove_file(&file).unwrap();
-    assert!(open_path(root.path(), &budget, AdministrativeExpectation::Active).is_err());
+    assert!(open_path(root.path(), AdministrativeExpectation::Active).is_err());
     assert!(!file.exists());
     // An existing empty child is unexplained after lost fresh custody, even Prepared.
-    assert!(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).is_err());
+    assert!(open_path(root.path(), AdministrativeExpectation::Prepared).is_err());
     assert!(!file.exists());
 }
 #[test]
@@ -266,9 +232,8 @@ fn private_actions_admin_busy_retry_retains_original_root_and_sentinel() {
     let moved = container.path().join("moved");
     std::fs::create_dir(&owner).unwrap();
     std::fs::set_permissions(&owner, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let first = open_path(&owner, &budget, AdministrativeExpectation::Prepared).unwrap();
-    let busy = open_path(&owner, &budget, AdministrativeExpectation::Prepared).unwrap_err();
+    let first = open_path(&owner, AdministrativeExpectation::Prepared).unwrap();
+    let busy = open_path(&owner, AdministrativeExpectation::Prepared).unwrap_err();
     assert_eq!(busy.code(), Code::Busy);
     drop(first);
     std::fs::rename(&owner, &moved).unwrap();
@@ -281,10 +246,9 @@ fn private_actions_admin_busy_retry_retains_original_root_and_sentinel() {
 }
 #[test]
 fn private_actions_admin_current_root_sentinel_child_and_file_fences() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     for which in 0..4 {
         let root = fixture();
-        let held = open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap();
+        let held = open_path(root.path(), AdministrativeExpectation::Prepared).unwrap();
         match which {
             0 => std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o755))
                 .unwrap(),
@@ -322,7 +286,6 @@ fn private_actions_admin_current_root_sentinel_child_and_file_fences() {
 #[test]
 fn private_actions_admin_publication_failures_retain_exact_custody() {
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     for occurrence in [1, 2] {
         for checkpoint in [
             Checkpoint::BeforePublish,
@@ -331,7 +294,7 @@ fn private_actions_admin_publication_failures_retain_exact_custody() {
         ] {
             let root = fixture();
             let error = with_failure_on_nth(checkpoint, occurrence, || {
-                open_path(root.path(), &budget, AdministrativeExpectation::Prepared)
+                open_path(root.path(), AdministrativeExpectation::Prepared)
             })
             .unwrap_err();
             let expected = match checkpoint {
@@ -340,9 +303,6 @@ fn private_actions_admin_publication_failures_retain_exact_custody() {
                 _ => PublicationState::PublicationUnknown,
             };
             assert_eq!(error.publication_error().unwrap().state(), expected);
-            assert!(
-                budget.retained_bytes() >= AdministrativeFile::required_bytes(&scope()).unwrap()
-            );
             if occurrence == 2 {
                 let bounded =
                     OwnerDirectory::admit(StorageDirectory::open(root.path()).unwrap()).unwrap();
@@ -359,7 +319,7 @@ fn private_actions_admin_publication_failures_retain_exact_custody() {
                 assert_eq!(still_unknown.publication_error().unwrap().state(), expected);
                 drop(still_unknown);
                 // Actual restart re-proves current bytes; no error is converted to success.
-                drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+                drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
             } else {
                 let complete = error.retry().unwrap();
                 assert_eq!(complete.revalidate().unwrap().sequence(), 1);
@@ -371,9 +331,8 @@ fn private_actions_admin_publication_failures_retain_exact_custody() {
 fn private_actions_admin_lost_fresh_custody_does_not_adopt_partial_child() {
     use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
-        open_path(root.path(), &budget, AdministrativeExpectation::Prepared)
+        open_path(root.path(), AdministrativeExpectation::Prepared)
     })
     .unwrap_err();
     assert_eq!(
@@ -382,18 +341,17 @@ fn private_actions_admin_lost_fresh_custody_does_not_adopt_partial_child() {
     );
     drop(error);
     assert!(root.path().join(CHILD_NAME).is_dir());
-    assert!(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).is_err());
+    assert!(open_path(root.path(), AdministrativeExpectation::Prepared).is_err());
     assert!(!root.path().join(CHILD_NAME).join(FILE_NAME).exists());
 }
 #[test]
 fn private_actions_admin_existing_barrier_and_named_file_change_keep_original_error() {
     use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     let error = with_existing_hooks(
         Some(ExistingCheckpoint::BeforeNamespaceFlush),
         |_| {},
-        || open_path(root.path(), &budget, AdministrativeExpectation::Prepared),
+        || open_path(root.path(), AdministrativeExpectation::Prepared),
     )
     .unwrap_err();
     assert!(error.existing_commit_error().is_some());
@@ -412,7 +370,7 @@ fn private_actions_admin_existing_barrier_and_named_file_change_keep_original_er
                 }
             }
         },
-        || open_path(root.path(), &budget, AdministrativeExpectation::Active),
+        || open_path(root.path(), AdministrativeExpectation::Active),
     )
     .unwrap_err();
     assert!(error.existing_commit_error().unwrap().source_changed());
@@ -421,73 +379,42 @@ fn private_actions_admin_existing_barrier_and_named_file_change_keep_original_er
     assert_eq!(refused.code(), Code::InvalidFile);
 }
 #[test]
-fn private_actions_admin_real_allocations_and_backing_drop_stay_paid() {
+fn private_actions_admin_real_allocations_are_released_on_drop() {
     let root = fixture();
     let original = StorageDirectory::open(root.path()).unwrap();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let baseline = budget.retained_bytes();
-    let ((), stats) =
-        crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-            let credit = budget
-                .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
-                .unwrap();
-            let held = AdministrativeFile::open(
-                original,
-                scope(),
-                [4; 16],
-                AdministrativeExpectation::Prepared,
-                credit,
-            )
-            .unwrap();
-            assert_eq!(held.revalidate().unwrap().sequence(), 1);
-            budget.finish_turn();
-            assert!(budget.retained_bytes() > baseline);
-            drop(held);
-        });
-    assert!(
-        !stats.underfunded,
-        "requested heap must stay below original retained credit"
-    );
+    let ((), stats) = crate::semantic_document_read::retirement::measure_test_allocations(|| {
+        let held = AdministrativeFile::open(
+            original,
+            scope(),
+            [4; 16],
+            AdministrativeExpectation::Prepared,
+        )
+        .unwrap();
+        assert_eq!(held.revalidate().unwrap().sequence(), 1);
+        drop(held);
+    });
     assert_eq!(stats.live, 0);
-    assert_eq!(budget.retained_bytes(), baseline);
-    eprintln!(
-        "sender-admin layouts operation={} failure={} facts={} check={} required={}",
-        std::mem::size_of::<Operation>(),
-        std::mem::size_of::<AdministrativeFailure>(),
-        std::mem::size_of::<AdministrativeFacts>(),
-        std::mem::size_of::<AdministrativeCheckFailure<'_>>(),
-        AdministrativeFile::required_bytes(&scope()).unwrap()
-    );
 }
 #[test]
-fn private_actions_admin_bounded_corrupt_read_preserves_file_and_credit() {
+fn private_actions_admin_bounded_corrupt_read_preserves_file() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+    drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
     let path = root.path().join(CHILD_NAME).join(FILE_NAME);
     let malformed = vec![7; codec::MAX_FILE + 2];
     std::fs::write(&path, &malformed).unwrap();
     let original = StorageDirectory::open(root.path()).unwrap();
-    let baseline = budget.retained_bytes();
-    let ((), stats) =
-        crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-            let credit = budget
-                .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
-                .unwrap();
-            let failed = AdministrativeFile::open(
-                original,
-                scope(),
-                [4; 16],
-                AdministrativeExpectation::Active,
-                credit,
-            )
-            .unwrap_err();
-            assert_eq!(failed.code(), Code::InvalidFile);
-            drop(failed);
-        });
-    assert!(!stats.underfunded);
+    let ((), stats) = crate::semantic_document_read::retirement::measure_test_allocations(|| {
+        let failed = AdministrativeFile::open(
+            original,
+            scope(),
+            [4; 16],
+            AdministrativeExpectation::Active,
+        )
+        .unwrap_err();
+        assert_eq!(failed.code(), Code::InvalidFile);
+        drop(failed);
+    });
     assert_eq!(stats.live, 0);
-    assert_eq!(budget.retained_bytes(), baseline);
     assert_eq!(std::fs::read(path).unwrap(), malformed);
 }
 
@@ -526,10 +453,9 @@ fn observed_payload(json: &str) -> Vec<u8> {
     bytes
 }
 #[test]
-fn private_actions_admin_active_nonempty_observation_parser_overlap_is_paid() {
+fn private_actions_admin_active_nonempty_observation_parser_is_released() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+    drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
     let escaped = "\\n".repeat(100_000);
     let valid = format!(
         r#"{{"state":"succeeded","invocation":"08080808-0808-0808-0808-080808080808","output":{{"value":"{escaped}"}}}}"#
@@ -543,16 +469,12 @@ fn private_actions_admin_active_nonempty_observation_parser_overlap_is_paid() {
         let original_bytes = std::fs::read(root.path().join(CHILD_NAME).join(FILE_NAME)).unwrap();
         let original = StorageDirectory::open(root.path()).unwrap();
         let ((), stats) =
-            crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
-                let credit = budget
-                    .reserve(AdministrativeFile::required_bytes(&scope()).unwrap())
-                    .unwrap();
+            crate::semantic_document_read::retirement::measure_test_allocations(|| {
                 let result = AdministrativeFile::open(
                     original,
                     scope(),
                     [4; 16],
                     AdministrativeExpectation::Active,
-                    credit,
                 );
                 if expected {
                     let file = result.unwrap();
@@ -562,7 +484,6 @@ fn private_actions_admin_active_nonempty_observation_parser_overlap_is_paid() {
                     assert_eq!(result.unwrap_err().code(), Code::InvalidFile);
                 }
             });
-        assert!(!stats.underfunded);
         assert_eq!(stats.live, 0);
         assert_eq!(
             std::fs::read(root.path().join(CHILD_NAME).join(FILE_NAME)).unwrap(),
@@ -573,8 +494,7 @@ fn private_actions_admin_active_nonempty_observation_parser_overlap_is_paid() {
 #[test]
 fn private_actions_admin_same_inode_content_change_refuses_current_facts() {
     let root = fixture();
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
-    let held = open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap();
+    let held = open_path(root.path(), AdministrativeExpectation::Prepared).unwrap();
     let path = root.path().join(CHILD_NAME).join(FILE_NAME);
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -588,16 +508,14 @@ fn private_actions_admin_same_inode_content_change_refuses_current_facts() {
     assert_eq!(FileIdentity::of(&file).unwrap(), identity);
     let error = held.revalidate().unwrap_err();
     assert_eq!(error.code(), Code::InvalidFile);
-    assert!(budget.retained_bytes() >= AdministrativeFile::required_bytes(&scope()).unwrap());
     drop(error);
     drop(held);
 }
 #[test]
 fn private_actions_admin_active_missing_sentinel_or_child_preserves_absence() {
-    let budget = NativeAllowance::new(32 * 1024 * 1024).unwrap();
     for sentinel in [true, false] {
         let root = fixture();
-        drop(open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap());
+        drop(open_path(root.path(), AdministrativeExpectation::Prepared).unwrap());
         let path = root
             .path()
             .join(if sentinel { LOCK_NAME } else { CHILD_NAME });
@@ -606,19 +524,16 @@ fn private_actions_admin_active_missing_sentinel_or_child_preserves_absence() {
         } else {
             std::fs::rename(&path, root.path().join("preserved-child")).unwrap();
         }
-        assert!(open_path(root.path(), &budget, AdministrativeExpectation::Active).is_err());
+        assert!(open_path(root.path(), AdministrativeExpectation::Active).is_err());
         assert!(!path.exists());
     }
 }
 
 #[test]
-fn private_actions_admin_owned_recheck_retains_actual_error_credit_and_lease() {
+fn private_actions_admin_owned_recheck_retains_actual_error_and_lease() {
     for changed_child in [false, true] {
         let root = fixture();
-        let budget = NativeAllowance::new(16 * 1024 * 1024).unwrap();
-        let initial_credit = budget.available_bytes();
-        let file = open_path(root.path(), &budget, AdministrativeExpectation::Prepared).unwrap();
-        let after_open = budget.available_bytes();
+        let file = open_path(root.path(), AdministrativeExpectation::Prepared).unwrap();
         let child = root.path().join(CHILD_NAME);
         let moved = root.path().join("retained-original-child");
         let path = child.join(FILE_NAME);
@@ -637,7 +552,7 @@ fn private_actions_admin_owned_recheck_retains_actual_error_credit_and_lease() {
                 .unwrap();
         }
         let (failure, observed) =
-            crate::semantic_document_read::retirement::measure_test_allocations(&budget, || {
+            crate::semantic_document_read::retirement::measure_test_allocations(|| {
                 file.revalidate_owned().unwrap_err()
             });
         assert_eq!(
@@ -645,7 +560,6 @@ fn private_actions_admin_owned_recheck_retains_actual_error_credit_and_lease() {
             "owned transfer itself allocates no backing"
         );
         assert_eq!(observed.allocations, 0);
-        assert_eq!(budget.available_bytes(), after_open);
         assert_eq!(
             failure.io_error().unwrap().kind(),
             if changed_child {
@@ -684,7 +598,6 @@ fn private_actions_admin_owned_recheck_retains_actual_error_credit_and_lease() {
         let recovered = failure.retry().unwrap();
         assert_eq!(recovered.revalidate().unwrap().sequence(), 1);
         drop(recovered);
-        assert_eq!(budget.available_bytes(), initial_credit);
         assert!(
             FileLease::try_acquire(
                 bounded.open_lease_existing(OsStr::new(LOCK_NAME)).unwrap(),

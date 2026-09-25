@@ -1,14 +1,13 @@
 //! Shared private policy data. These values confer no caller or owner authority.
 use super::read::{LegacyRead, collections::Collections};
 use crate::resources::{PeerResourceError, json::JsonLimits};
-use automerge::resource_limits::{NativeReadSession, NativeResourceError, NativeWorkTurn};
 use automerge::{AutoCommit, AutomergeError};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 #[derive(Debug)]
 pub(crate) enum Error {
     Legacy(AutomergeError),
-    Resource(NativeResourceError),
+    Capacity,
     Decode(PeerResourceError),
     Rule(Rule),
     Encoding(postcard::Error),
@@ -68,7 +67,6 @@ pub(crate) struct LegacyBasis {
 pub(crate) struct NativeBasis {
     revision: String,
     expiries: Vec<u64>,
-    _collections: Collections,
 }
 impl NativeBasis {
     pub(crate) fn revision(&self) -> &str {
@@ -79,30 +77,27 @@ impl NativeBasis {
     }
 }
 use super::media::fingerprint::FingerprintRead;
-use super::read::{
-    self, CopyValue, LegacyCopy, ReadError, RoomRead, RoomValue, Selection, TurnCopy,
-};
-use crate::resources::json::JsonHeld;
+use super::read::{self, Capacity, ReadError, RoomValue};
+use crate::resources::json;
 use automerge::{ObjType, ReadDoc};
 use collab_types::caps::{CapOverride, Expiry};
 use serde::{Serialize, Serializer, ser::SerializeSeq};
 use std::collections::BTreeMap;
 
-fn resource(error: NativeResourceError) -> Error {
-    Error::Resource(error)
+fn resource(_: Capacity) -> Error {
+    Error::Capacity
 }
 fn rule(value: Rule) -> Error {
     Error::Rule(value)
 }
 fn read_error(error: ReadError<Error>) -> Error {
     match error {
-        ReadError::Resource(e) => resource(e),
+        ReadError::Capacity => Error::Capacity,
         ReadError::Visitor(e) => e,
         ReadError::Malformed => rule(Rule::Read),
     }
 }
-// Only this strict legacy adapter retains the original get_all diagnostics.
-// The shared decisions below are unchanged for the native borrowed reader.
+// Reads keep the original get_all diagnostics.
 trait PrivateRead: FingerprintRead {
     fn all(
         &self,
@@ -126,48 +121,21 @@ impl PrivateRead for LegacyRead<'_, AutoCommit> {
         Ok(count)
     }
 }
-impl PrivateRead for NativeReadSession<'_, '_> {
-    fn all(
-        &self,
-        object: &Self::Object,
-        key: &str,
-        visitor: impl for<'a> FnMut(RoomValue<'a, Self::Object>) -> Result<(), Error>,
-    ) -> Result<usize, Error> {
-        RoomRead::visit_property(self, object, key, Selection::All, visitor).map_err(read_error)
-    }
-}
-trait CapValue {
-    fn cap(&self) -> &CapOverride;
-}
-impl CapValue for CapOverride {
-    fn cap(&self) -> &CapOverride {
-        self
-    }
-}
-impl CapValue for JsonHeld<CapOverride> {
-    fn cap(&self) -> &CapOverride {
-        self.value()
-    }
-}
 trait Decode {
-    type Cap: CapValue;
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Cap, Error>;
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error>;
 }
 struct LegacyDecode;
 impl Decode for LegacyDecode {
-    type Cap = CapOverride;
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Cap, Error> {
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
         serde_json::from_slice(bytes).map_err(|_| rule(Rule::CapabilityInvalid))
     }
 }
-struct NativeDecode<'a> {
-    turn: &'a NativeWorkTurn,
+struct NativeDecode {
     limits: JsonLimits,
 }
-impl Decode for NativeDecode<'_> {
-    type Cap = JsonHeld<CapOverride>;
-    fn capability(&self, bytes: &[u8]) -> Result<Self::Cap, Error> {
-        JsonHeld::decode(bytes, self.limits, self.turn).map_err(|error| match error {
+impl Decode for NativeDecode {
+    fn capability(&self, bytes: &[u8]) -> Result<CapOverride, Error> {
+        json::decode(bytes, self.limits).map_err(|error| match error {
             PeerResourceError::Malformed => rule(Rule::CapabilityInvalid),
             PeerResourceError::Capacity => Error::Decode(PeerResourceError::Capacity),
         })
@@ -215,8 +183,7 @@ fn capabilities<R: PrivateRead, D: Decode>(
                     return Err(rule(Rule::CapabilityInvalid));
                 };
                 seen = true;
-                let held = decode.capability(bytes)?;
-                let cap = held.cap();
+                let cap = decode.capability(bytes)?;
                 if !cap.persists_across_restart() {
                     return Err(rule(Rule::Nonpersistent));
                 }
@@ -236,12 +203,11 @@ fn capabilities<R: PrivateRead, D: Decode>(
     expiries.dedup();
     Ok(expiries)
 }
-fn canonical_owner<R: PrivateRead, C: CopyValue>(
+fn canonical_owner<R: PrivateRead>(
     read: &R,
     room: &str,
     authority: &DeviceCert,
-    copies: &C,
-) -> Result<C::Text, Error> {
+) -> Result<String, Error> {
     let expected = crate::room::key_hex::KeyHex::new(&authority.user_public_key);
     let mut is_string = false;
     let mut owner_is_root = false;
@@ -271,7 +237,7 @@ fn canonical_owner<R: PrivateRead, C: CopyValue>(
         let RoomValue::Str(value) = value else {
             return Err(rule(Rule::OwnerInvalid));
         };
-        owner = Some(copies.text(value).map_err(resource)?);
+        owner = Some(value.to_owned());
         Ok(())
     })?;
     owner.ok_or_else(|| rule(Rule::OwnerInvalid))
@@ -304,19 +270,17 @@ impl postcard::ser_flavors::Flavor for Hash<'_> {
         Ok(())
     }
 }
-fn revision<'a, R, C, I, J>(
+fn revision<'a, R, I, J>(
     read: &R,
     meta: Metadata<'a, I, J>,
-    copies: &C,
     work: &mut Collections,
 ) -> Result<String, Error>
 where
     R: PrivateRead,
-    C: CopyValue,
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    let owner = canonical_owner(read, meta.room, meta.authority, copies)?;
+    let owner = canonical_owner(read, meta.room, meta.authority)?;
     let mut caps = BTreeMap::new();
     let mut peers = BTreeMap::new();
     let mut identities = BTreeMap::new();
@@ -361,15 +325,14 @@ where
     for entry in meta.revocations {
         work.push(&mut revocations, entry).map_err(resource)?;
     }
-    // Verified union targets are unique. This order is identical to the legacy
-    // sorted owned Vec and needs no cloning of row backing or sort workspace.
+    // Verified union targets are unique, so this order is total.
     revocations.sort_unstable_by_key(|entry| entry.revoked_device_public_key);
     let mut hash = blake3::Hasher::new_derive_key("qOS agent governance revision v1");
     postcard::serialize_with_flavor(
         &(
             meta.room,
             meta.authority,
-            owner.as_ref(),
+            owner.as_str(),
             caps,
             peers,
             identities,
@@ -388,7 +351,7 @@ pub(crate) fn legacy_owner(
     room: &str,
     authority: &DeviceCert,
 ) -> Result<String, Error> {
-    canonical_owner(read, room, authority, &LegacyCopy)
+    canonical_owner(read, room, authority)
 }
 pub(crate) fn legacy_revision<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,
@@ -398,7 +361,7 @@ where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    revision(read, meta, &LegacyCopy, &mut Collections::unqualified())
+    revision(read, meta, &mut Collections::unqualified())
 }
 pub(crate) fn legacy<'a, I, J>(
     read: &LegacyRead<'_, AutoCommit>,
@@ -410,34 +373,28 @@ where
 {
     let mut work = Collections::unqualified();
     let expiries = capabilities(read, &LegacyDecode, &mut work)?;
-    let revision = revision(read, meta, &LegacyCopy, &mut work)?;
+    let revision = revision(read, meta, &mut work)?;
     Ok(LegacyBasis { revision, expiries })
 }
 pub(crate) fn native<'a, I, J>(
-    read: &NativeReadSession<'_, '_>,
+    read: &LegacyRead<'_, AutoCommit>,
     meta: Metadata<'a, I, J>,
-    turn: &NativeWorkTurn,
     limits: Limits,
 ) -> Result<NativeBasis, Error>
 where
     I: ExactSizeIterator<Item = &'a DeviceCert> + Clone,
     J: Iterator<Item = &'a RevocationEntry>,
 {
-    let mut work = Collections::native(turn, limits.collections).map_err(resource)?;
+    let mut work = Collections::limited(limits.collections);
     let expiries = capabilities(
         read,
         &NativeDecode {
-            turn,
             limits: limits.json,
         },
         &mut work,
     )?;
-    let revision = revision(read, meta, &TurnCopy(turn), &mut work)?;
-    Ok(NativeBasis {
-        revision,
-        expiries,
-        _collections: work,
-    })
+    let revision = revision(read, meta, &mut work)?;
+    Ok(NativeBasis { revision, expiries })
 }
 #[cfg(test)]
 mod tests;

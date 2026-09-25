@@ -175,7 +175,7 @@ fn delivery_projection_preserves_exact_final_quota_and_quota_denial_order() {
     );
 }
 #[test]
-fn delivery_projection_pays_nested_valid_json_and_refuses_current_quota_before_output() {
+fn delivery_projection_reads_nested_valid_json_and_refuses_small_limits() {
     let (peer, _, _, device, _) = crate::admission_tests::seeded();
     let mut doc = peer.admitted_room().unwrap().clone();
     let caps = doc.get(ROOT, "capabilities").unwrap().unwrap().1;
@@ -194,11 +194,6 @@ fn delivery_projection_pays_nested_valid_json_and_refuses_current_quota_before_o
     }
     doc.commit();
     assert!(compare(&doc, &peer, peer.authority(), &device, true).is_ok());
-    let current = NativeAllowance::new(64 * 1024 * 1024).unwrap();
-    let mut set = NativeAllocationSet::new(NativeAllowance::new(4096).unwrap()).unwrap();
-    let turn = set.work_turn(current.clone()).unwrap();
-    let candidate = doc.clone_bounded(&mut set, &turn).unwrap();
-    let read = candidate.read_unqualified(&turn).unwrap();
     let certs = peer.certificates();
     let revoked = peer.revocations();
     let meta = || Metadata {
@@ -210,57 +205,24 @@ fn delivery_projection_pays_nested_valid_json_and_refuses_current_quota_before_o
         certificates: certs.iter(),
         revocations: revoked.iter(),
     };
-    let before = current.retained_bytes();
-    assert!(matches!(
-        assert_precharged(&current, || native(
-            &read,
-            meta(),
-            &turn,
-            Limits {
-                collections: 1,
-                json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536
-                }
-            },
-            || Ok(())
-        )),
-        Err(Error::Resource(NativeResourceError::WorkBytes))
-    ));
-    assert_eq!(current.retained_bytes(), before);
-    let held = current.reserve(current.available_bytes()).unwrap();
-    assert!(matches!(
+    let run = |collections, allocation_bytes| {
         native(
-            &read,
+            &LegacyRead(&doc),
             meta(),
-            &turn,
             Limits {
-                collections: 4 * 1024 * 1024,
+                collections,
                 json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536
-                }
+                    allocation_bytes,
+                    collection_entries: 65536,
+                },
             },
-            || Ok(())
-        ),
-        Err(Error::Resource(NativeResourceError::WorkBytes))
-    ));
-    drop(held);
-    current.finish_turn();
-    assert!(
-        native(
-            &read,
-            meta(),
-            &turn,
-            Limits {
-                collections: 4 * 1024 * 1024,
-                json: JsonLimits {
-                    allocation_bytes: 128 * 1024,
-                    collection_entries: 65536
-                }
-            },
-            || Ok(())
+            || Ok(()),
         )
-        .is_err()
-    );
+    };
+    assert!(matches!(run(1, 128 * 1024), Err(Error::Capacity)));
+    assert!(matches!(
+        run(4 * 1024 * 1024, 64),
+        Err(Error::Decode(PeerResourceError::Capacity))
+    ));
+    assert!(run(4 * 1024 * 1024, 128 * 1024).is_ok());
 }

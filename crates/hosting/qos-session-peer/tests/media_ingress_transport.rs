@@ -1,5 +1,7 @@
 #![cfg(feature = "media")]
 
+tilo_automerge_isolate::test_worker!();
+
 use std::io::Cursor;
 use std::net::Ipv4Addr;
 use std::sync::{
