@@ -114,9 +114,11 @@ grep -Fq 'python3 -m http.server "$browser_fixture_port"' "$installer_cycle" \
   || bad 'the installed-target cold boot lacks durable Browser render evidence'
 
 if grep -Fq "wait_screen 09-oobe-backup 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq "wait_screen 10-oobe-backup-resumed 'Back[[:space:]]+up[[:space:]]+your[[:space:]]+Tilo[[:space:]]+identity'" "$installer_cycle" \
+  && grep -Fq 'OOBE did not resume after an interrupted first boot' "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab tab spc tab ret' "$installer_cycle" \
-  && grep -Fq "wait_screen 10-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
-  && grep -Fq "wait_screen 14-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
+  && grep -Fq "wait_screen 11-oobe-ready 'Your[[:space:]]+identity[[:space:]]+is[[:space:]]+ready'" "$installer_cycle" \
+  && grep -Fq "wait_screen 15-tour-start 'Your[[:space:]]+first[[:space:]]+five[[:space:]]+minutes'" "$installer_cycle" \
   && grep -Fq '"$vm" keys tab tab ret' "$installer_cycle"; then
   ok 'graphical cycle acknowledges backup loss and completes all four tutorial pages'
 else
@@ -160,15 +162,15 @@ mkdir -p "$tmp/aavmf-fedora" "$tmp/aavmf-debian"
 : > "$tmp/aavmf-fedora/vars-template-pflash.raw"
 : > "$tmp/aavmf-debian/AAVMF_CODE.fd"
 : > "$tmp/aavmf-debian/AAVMF_VARS.fd"
-if fedora_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+if fedora_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" \
     TILO_AAVMF_DIRS="$tmp/aavmf-fedora" "$vm" firmware --no-tpm 2>/dev/null)" \
-  && debian_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 \
+  && debian_fw="$(TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" \
     TILO_AAVMF_DIRS="$tmp/aavmf-debian" "$vm" firmware --no-tpm 2>/dev/null)" \
   && grep -Fq "code       $tmp/aavmf-fedora/QEMU_EFI-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "vars       $tmp/aavmf-fedora/vars-template-pflash.raw" <<<"$fedora_fw" \
   && grep -Fq "code       $tmp/aavmf-debian/AAVMF_CODE.fd" <<<"$debian_fw" \
   && grep -Fq "vars       $tmp/aavmf-debian/AAVMF_VARS.fd" <<<"$debian_fw" \
-  && ! TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_AAVMF_DIRS="$tmp/aavmf-fedora" \
+  && ! TILO_DISTROBOX='' TILO_VM_ARCH=aarch64 TILO_RUN="$tmp/aavmf-run" TILO_AAVMF_DIRS="$tmp/aavmf-fedora" \
     "$vm" firmware --tpm >/dev/null 2>&1; then
   ok 'ARM firmware resolution works for both package families and TPM fails closed'
 else

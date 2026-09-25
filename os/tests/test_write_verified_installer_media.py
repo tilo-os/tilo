@@ -78,6 +78,45 @@ class AcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'archive differs'):
                 media.load_acceptance(path)
 
+    def test_hardware_acceptance_binds_profile_image_and_boot_contracts(self):
+        value = {
+            'schema': 1, 'purpose': media.HARDWARE_ACCEPTANCE_PURPOSE,
+            'artifact': {'bytes': media.ACCEPTED_MEDIA_BYTES, 'sha256': 'a' * 64,
+                         'partition_table': 'GPT'},
+            'hardware': {'architecture': 'aarch64', 'profile': 'lenovo-83ed',
+                         'model': 'Lenovo Yoga Slim 7 14Q8X9',
+                         'devicetree': 'qcom/x1e80100-lenovo-yoga-slim7x.dtb',
+                         'devicetree_sha256': 'b' * 64},
+            'os_source': {'immutable_reference': 'registry.example/tilo@sha256:' + 'c' * 64,
+                          'signature': 'verified with development key',
+                          'composefs_verity': 'd' * 128},
+            'uki': {'base_sha256': '1' * 64, 'firmware_initramfs_sha256': '2' * 64,
+                    'live_sha256': '3' * 64, 'source_uki_before_live_sha256': '4' * 64,
+                    'target_sha256': '5' * 64,
+                    'live_cmdline_contracts': ['root=tilo-auto', 'tilo.install',
+                        'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec'],
+                    'target_cmdline_contracts': ['root=tilo-auto',
+                        'systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec'],
+                    'target_excludes': ['tilo.install']},
+            'verification': {'physical_disks_touched': False, 'usb_touched': False,
+                'proven_base': 'clean local install and cold boot',
+                'esp': 'FAT repaired and clean fsck.fat required',
+                'esp_readback': 'UKIs matched pinned SHA-256',
+                'identity_scrub': 'machine identity and credentials removed'},
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'receipt.json'; path.write_text(json.dumps(value))
+            _, _, identity, _ = media.load_acceptance(path)
+            self.assertEqual(identity['sha256'], 'a' * 64)
+            for mutation in (
+                    lambda document: document['hardware'].__setitem__('architecture', 'x86_64'),
+                    lambda document: document['verification'].__setitem__('usb_touched', True),
+                    lambda document: document['uki']['target_excludes'].clear()):
+                changed = json.loads(json.dumps(value)); mutation(changed)
+                path.write_text(json.dumps(changed))
+                with self.assertRaisesRegex(ValueError, 'accepted Lenovo'):
+                    media.load_acceptance(path)
+
 
 class AdmissionTests(unittest.TestCase):
     def test_only_identity_bearing_external_removable_disk_is_admitted(self):

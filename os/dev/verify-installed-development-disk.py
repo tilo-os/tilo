@@ -21,13 +21,15 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
 import development_prediction as prediction
 import hardware_profile as hardware
 import installed_material_audit as material
-from private_disk_image import _directory
+import installer_bootc_helper
+from private_disk_image import _directory, loop_partition_nodes
 
 spec = importlib.util.spec_from_file_location('installed_source', Path(__file__).with_name('verify-development-source.py'))
 source = importlib.util.module_from_spec(spec)
@@ -89,6 +91,26 @@ def file_identity(info):
     return {'device': info.st_dev, 'inode': info.st_ino, 'size': info.st_size}
 
 
+def copied_disk_receipt(path, creation_bytes, creation, copied):
+    required={'schema','purpose','source_creation_sha256','source_path',
+              'source_file_identity','raw_identity','path','file_identity'}
+    raw=copied.get('raw_identity') if isinstance(copied,dict) else None
+    if (not isinstance(copied,dict) or set(copied)!=required
+            or copied.get('schema')!=1 or copied.get('purpose')!='tilo-supervised-raw-media-copy'
+            or copied.get('source_creation_sha256')!=hashlib.sha256(creation_bytes).hexdigest()
+            or copied.get('source_path')!=creation.get('path')
+            or copied.get('source_file_identity')!=creation.get('file_identity')
+            or copied.get('path')!=str(path) or not isinstance(raw,dict)
+            or set(raw)!={'size','sha256'} or raw.get('size')!=creation.get('size_bytes')
+            or not re.fullmatch(r'[0-9a-f]{64}',raw.get('sha256',''))
+            or not isinstance(copied.get('file_identity'),dict)
+            or set(copied['file_identity'])!={'device','inode','size'}
+            or copied['file_identity'].get('size')!=creation.get('size_bytes')):
+        raise ValueError('copied disk receipt does not bind the created raw media')
+    return {'path':str(path),'file_identity':copied['file_identity'],
+            'size_bytes':creation['size_bytes'],'disk_created':True}
+
+
 @contextmanager
 def open_created_disk(path, receipt):
     path = Path(path)
@@ -127,7 +149,7 @@ def partitions(document, loop):
         raise ValueError('expected a 512-byte-sector GPT on the allocated loop')
     rows = table['partitions']
     expected = [('EFI-SYSTEM', 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'),
-                ('root', 'b921b045-1df0-41c3-af44-4c6f280d3fae')]
+                ('root', '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab')]
     if len(rows) != 2:
         raise ValueError('expected only ESP and ARM64 root partitions')
     for index, (row, (label, kind)) in enumerate(zip(rows, expected), 1):
@@ -138,6 +160,55 @@ def partitions(document, loop):
     if rows[1]['start'] < rows[0]['start'] + rows[0]['size'] or rows[1]['size'] <= 0:
         raise ValueError('overlapping or empty root partition')
     return [row['node'] for row in rows]
+
+
+def media_partitions(document, loop):
+    """Validate the exact systemd-repart layout emitted by disk-image.sh."""
+    table = document['partitiontable']
+    if table.get('label') != 'gpt' or table.get('device') != loop or table.get('sectorsize') != 512:
+        raise ValueError('expected a 512-byte-sector GPT on the allocated loop')
+    rows = table['partitions']
+    expected = [('esp', 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b'),
+                ('Tilo root', '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab')]
+    if len(rows) != 2:
+        raise ValueError('expected only ESP and ARM64 root partitions')
+    for index, (row, (label, kind)) in enumerate(zip(rows, expected), 1):
+        if (row.get('node') != f'{loop}p{index}' or row.get('name') != label
+                or row.get('type', '').lower() != kind):
+            raise ValueError('media partition identity or type differs')
+    if rows[0]['size'] != 2 * 1024 * 1024 * 1024 // 512 or rows[0]['start'] < 2048:
+        raise ValueError('unexpected media ESP size/alignment')
+    if rows[1]['start'] < rows[0]['start'] + rows[0]['size'] or rows[1]['size'] <= 0:
+        raise ValueError('overlapping or empty media root partition')
+    return [row['node'] for row in rows]
+
+
+@contextmanager
+def readable_partition_nodes(loop, timeout=2.0):
+    """Use settled devtmpfs nodes when udev owns them, else create private nodes."""
+    match = re.fullmatch(r'/dev/(loop[0-9]+)', loop)
+    if match is None:
+        raise ValueError('unexpected loop identity')
+    names = [f'{match.group(1)}p{number}' for number in (1, 2)]
+    nodes = [Path('/dev') / name for name in names]
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not all(node.exists() for node in nodes):
+        time.sleep(0.05)
+    if all(node.exists() for node in nodes):
+        for name, node in zip(names, nodes):
+            raw = (Path('/sys/class/block') / name / 'dev').read_text().strip()
+            if not re.fullmatch(r'[0-9]+:[0-9]+', raw):
+                raise ValueError('loop partition has invalid kernel identity')
+            expected = os.makedev(*map(int, raw.split(':', 1)))
+            info = node.lstat()
+            if (not stat.S_ISBLK(info.st_mode) or info.st_uid != 0
+                    or stat.S_IMODE(info.st_mode) & 0o007 or info.st_rdev != expected
+                    or info.st_nlink != 1):
+                raise ValueError('udev loop partition node differs from kernel identity')
+        yield nodes
+        return
+    with loop_partition_nodes(loop) as created:
+        yield created
 
 
 def config_lines(raw):
@@ -153,14 +224,16 @@ def config_lines(raw):
     return result
 
 
-def selected_uki(esp, digest, *, target_materialized=False):
+def selected_uki(esp, digest, *, target_materialized=False, entry_key='efi'):
+    if entry_key not in ('efi', 'uki'):
+        raise ValueError('unsupported UKI boot-entry directive')
     entries = hardware.trusted_path(esp, Path('loader/entries'), regular=False)
     names = list(entries.iterdir())
     if len(names) != 1 or not names[0].name.endswith('.conf'):
         raise ValueError('fresh disk must have exactly one boot entry')
     entry = config_lines(read(esp, names[0].relative_to(esp)))
     wanted = f'/EFI/Linux/bootc/bootc_composefs-{digest}.efi'
-    if entry.get('efi') != wanted or set(entry) - {'title', 'version', 'sort-key', 'efi'}:
+    if entry.get(entry_key) != wanted or set(entry) - {'title', 'version', 'sort-key', entry_key}:
         raise ValueError('selected entry differs or overrides signed UKI')
     loader = config_lines(read(esp, 'loader/loader.conf'))
     default = loader.get('default', names[0].name)
@@ -236,6 +309,82 @@ def readonly_mount(path, expected_type=None):
     return rows[0]
 
 
+def preflight_disk(path):
+    """Cheap read-only structural check before spending time on a VM boot."""
+    if os.getuid() != 0 or os.geteuid() != 0:
+        raise ValueError('disk preflight requires root')
+    require_private_namespace()
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts:
+        raise ValueError('disk preflight requires an absolute path')
+    parent = _directory(path.parent)
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size < 2 * 1024**3:
+                raise ValueError('disk must be a regular image large enough for ESP and root')
+            with tempfile.TemporaryDirectory(prefix='tilo-disk-preflight-') as directory, ExitStack() as cleanup:
+                scratch = Path(directory)
+                loop = command(['/usr/sbin/losetup', '--find', '--show', '--read-only', '--partscan',
+                                f'/proc/self/fd/{fd}'], pass_fds=(fd,)).decode().strip()
+                if not re.fullmatch('/dev/loop[0-9]+', loop):
+                    raise ValueError('unexpected allocated loop identity')
+                cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
+                part_nodes = cleanup.enter_context(readable_partition_nodes(loop))
+                if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
+                    raise ValueError('loop is not read-only')
+                layout = json.loads(command(['/usr/sbin/sfdisk', '--json', loop]))
+                media_partitions(layout, loop)
+                esp, root = scratch / 'esp', scratch / 'root'
+                for device, destination, kind, options in zip(
+                        part_nodes, (esp, root), ('vfat', 'btrfs'),
+                        ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,rescue=nologreplay')):
+                    destination.mkdir()
+                    command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
+                    cleanup.callback(command, ['/usr/bin/umount', str(destination)])
+                    readonly_mount(destination, kind)
+
+                entries = hardware.trusted_path(esp, Path('loader/entries'), regular=False)
+                names = list(entries.iterdir())
+                if len(names) != 1 or not names[0].name.endswith('.conf'):
+                    raise ValueError('fresh disk must have exactly one boot entry')
+                entry = config_lines(read(esp, names[0].relative_to(esp)))
+                match = re.fullmatch(r'/EFI/Linux/bootc/bootc_composefs-([0-9a-f]{128})\.efi',
+                                     entry.get('uki', ''))
+                if not match:
+                    raise ValueError('boot entry does not select a sealed composefs UKI')
+                digest = match.group(1)
+                uki = selected_uki(esp, digest, entry_key='uki')
+                data = read(esp, uki, prediction.boot.UKI_LIMIT)
+                sections = prediction.boot.uki_sections(data, 'aarch64')
+                if not (root / 'composefs').is_dir() or not (root / 'state/deploy').is_dir():
+                    raise ValueError('installed root lacks composefs repository or deployment state')
+                after = os.fstat(fd)
+                if ((before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                     before.st_ctime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns,
+                     after.st_ctime_ns)):
+                    raise ValueError('disk changed during preflight')
+                return {'schema': 1, 'purpose': 'tilo-disk-boot-preflight',
+                    'disk': str(path), 'size_bytes': before.st_size,
+                    'partition_table': 'gpt', 'sector_size': 512,
+                    'partitions': [
+                        {'name': 'esp', 'type': 'c12a7328-f81f-11d2-ba4b-00a0c93ec93b',
+                         'size_bytes': 2 * 1024**3, 'filesystem': 'vfat',
+                         'read_only_mount_verified': True},
+                        {'name': 'Tilo root', 'type': '7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab',
+                         'filesystem': 'btrfs', 'read_only_mount_verified': True}],
+                    'uki': {'path': uki, 'architecture': 'aarch64',
+                            'sha256': hashlib.sha256(data).hexdigest(),
+                            'sections': sorted(sections)},
+                    'composefs_digest': digest, 'vm_boot_verified': False}
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent)
+
+
 def audit_material(root, esp, uki, digest, architecture):
     etc = hardware.trusted_path(root, Path(f'state/deploy/{digest}/etc'), regular=False)
     var = hardware.trusted_path(root, Path('state/os/default/var'), regular=False)
@@ -303,6 +452,71 @@ def require_private_namespace():
         raise ValueError('mount namespace must have private propagation')
 
 
+def _assert_digest_absent(paths, forbidden):
+    scanned = 0
+    for root in paths:
+        for directory, names, files in os.walk(root, followlinks=False):
+            for name in files:
+                path = Path(directory) / name
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                scanned += 1
+                if installer_bootc_helper.sha256_file(path) == forbidden:
+                    raise ValueError('installer helper leaked into installed mutable state or ESP')
+    return scanned
+
+
+def verify_installer_helper_isolation(creation, source_root, installed_root,
+                                      mutable_paths, esp, architecture):
+    helper = creation.get('installer_bootc_helper')
+    if not isinstance(helper, dict) or set(helper) != {'artifact', 'source_binary', 'runtime'}:
+        raise ValueError('creation receipt lacks installer helper isolation evidence')
+    artifact, original = helper['artifact'], helper['source_binary']
+    expected_artifact = {
+        'schema': 1, 'purpose': installer_bootc_helper.PURPOSE,
+        'architecture': architecture,
+        'bootc_version': installer_bootc_helper.BOOTC_VERSION,
+        'source_tag': installer_bootc_helper.SOURCE_TAG,
+        'source_commit': installer_bootc_helper.SOURCE_COMMIT,
+        'source_cargo_lock_sha256': installer_bootc_helper.SOURCE_CARGO_LOCK_SHA256,
+        'patch_sha256': installer_bootc_helper.PATCH_SHA256,
+        'rust_toolchain': installer_bootc_helper.RUST_TOOLCHAIN,
+        'build_image': installer_bootc_helper.BUILD_IMAGE,
+        'build_target': installer_bootc_helper.TARGETS[architecture],
+        'build_command': installer_bootc_helper.BUILD_COMMAND,
+    }
+    if (not isinstance(artifact, dict)
+            or set(artifact) != installer_bootc_helper.RECEIPT_KEYS
+            or any(artifact.get(key) != value for key, value in expected_artifact.items())
+            or not isinstance(original, dict)
+            or artifact.get('binary_sha256') == original.get('sha256')):
+        raise ValueError('creation receipt has invalid installer helper identities')
+    helper_identity = {'architecture': architecture,
+                       'sha256': artifact['binary_sha256'],
+                       'build_id': artifact['binary_build_id']}
+    runtime = helper['runtime']
+    if (not isinstance(runtime, dict) or runtime.get('schema') != 1
+            or runtime.get('purpose') != 'tilo-installer-bootc-runtime'
+            or runtime.get('binary') != helper_identity
+            or not isinstance(runtime.get('mount'), dict)
+            or runtime['mount'].get('mount_point') != '/run/tilo-installer-bootc'
+            or runtime['mount'].get('read_only') is not True):
+        raise ValueError('creation receipt lacks bound installer helper runtime evidence')
+    fresh_source = installer_bootc_helper.binary_identity(
+        source_root / 'usr/bin/bootc', architecture)
+    installed = installer_bootc_helper.binary_identity(
+        installed_root / 'usr/bin/bootc', architecture)
+    if fresh_source != original or installed != original:
+        raise ValueError('installed bootc differs from the original source binary')
+    if installed['sha256'] == artifact['binary_sha256']:
+        raise ValueError('installer helper replaced the installed bootc')
+    scanned = _assert_digest_absent([*mutable_paths, esp], artifact['binary_sha256'])
+    return {'source_binary': original, 'installed_binary': installed,
+            'helper_sha256': artifact['binary_sha256'],
+            'mutable_and_esp_files_scanned': scanned, 'helper_absent': True}
+
+
 def verify(args):
     if os.getuid() != 0 or os.geteuid() != 0 or args.architecture != 'aarch64':
         raise ValueError('requires root on the native ARM verification guest')
@@ -310,8 +524,11 @@ def verify(args):
     if platform.machine() != args.architecture:
         raise ValueError('requires native execution')
     require_private_namespace()
-    receipt = json.loads(args.creation_receipt.read_text())
-    with source.verified_source(args) as verified, open_created_disk(args.disk, receipt) as fd:
+    creation_bytes=args.creation_receipt.read_bytes()
+    receipt=json.loads(creation_bytes)
+    copied=json.loads(args.copy_receipt.read_text()) if args.copy_receipt else None
+    access=copied_disk_receipt(args.disk,creation_bytes,receipt,copied) if copied else receipt
+    with source.verified_source(args) as verified, open_created_disk(args.disk, access) as fd:
         if receipt.get('source') != verified.receipt:
             raise ValueError('creation source differs from fresh source verification')
         boot = prediction.verify_prediction(verified.root, verified.public_bundle, args.manifest_sha256,
@@ -325,12 +542,13 @@ def verify(args):
             if not re.fullmatch('/dev/loop[0-9]+', loop):
                 raise ValueError('unexpected allocated loop identity')
             cleanup.callback(command, ['/usr/sbin/losetup', '--detach', loop])
+            part_nodes = cleanup.enter_context(readable_partition_nodes(loop))
             if command(['/usr/sbin/blockdev', '--getro', loop]).strip() != b'1':
                 raise ValueError('loop is not read-only')
-            parts = partitions(json.loads(command(['/usr/sbin/sfdisk', '--json', loop])), loop)
+            partitions(json.loads(command(['/usr/sbin/sfdisk', '--json', loop])), loop)
             esp, root, view = [scratch / name for name in ('esp', 'root', 'view')]
-            for device, destination, kind, options in zip(parts, (esp, root), ('vfat', 'btrfs'),
-                    ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,nologreplay')):
+            for device, destination, kind, options in zip(part_nodes, (esp, root), ('vfat', 'btrfs'),
+                    ('ro,nodev,nosuid,noexec', 'ro,nodev,nosuid,noexec,rescue=nologreplay')):
                 destination.mkdir()
                 command(['/usr/bin/mount', '-t', kind, '-o', options, device, str(destination)])
                 cleanup.callback(command, ['/usr/bin/umount', str(destination)])
@@ -371,15 +589,23 @@ def verify(args):
             shared_var = hardware.trusted_path(root, Path('state/os/default/var'), regular=False)
             if not var_link.is_symlink() or var_link.resolve(strict=True) != shared_var:
                 raise ValueError('deployment var does not bind expected shared state')
+            helper_isolation = verify_installer_helper_isolation(
+                receipt, verified.root, view,
+                [hardware.trusted_path(root, Path(deploy), regular=False), shared_var],
+                esp, args.architecture)
             material_receipt = audit_material(root, esp, uki, args.composefs_digest, args.architecture)
     return {'schema': 1, 'purpose': 'tilo-installed-boot-and-root-verification',
-        'source': verified.receipt, 'boot': boot, 'file_identity': receipt['file_identity'],
+        'source': verified.receipt, 'boot': boot, 'file_identity': access['file_identity'],
+        'copy_receipt': copied,
         'selected_boot': selected_boot,
         'target_materialization': target_materialization,
-        'checks': {'read_only_disk': True, 'selected_uki_matches_source': True,
+        'checks': {'read_only_disk': True, 'disk_receipt_binding': True,
+                   'selected_uki_matches_source': True,
                    'installed_origin': True, 'verity_mounted_root': True, 'effective_policy': True,
-                   'introduced_private_material_policy': True},
+                   'introduced_private_material_policy': True,
+                   'installer_bootc_isolation': True},
         'material_audit': material_receipt,
+        'installer_bootc_isolation': helper_isolation,
         'loader': loader_receipt,
         'composefs_mount_type': mounted['fstype'], 'installed_bytes_verified': False,
         'remaining': ['independent source OCI layer private-material audit receipt', 'VM boot acceptance'],
@@ -387,11 +613,15 @@ def verify(args):
 
 
 def main():
+    if len(sys.argv) == 3 and sys.argv[1] == '--preflight-disk':
+        print(json.dumps(preflight_disk(Path(sys.argv[2])), sort_keys=True))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ('source', 'target', 'architecture', 'revision', 'manifest-sha256', 'composefs-digest', 'systemd-version'):
         parser.add_argument('--' + name, required=True)
     for name in ('public-bundle', 'disk', 'creation-receipt'):
         parser.add_argument('--' + name, type=Path, required=True)
+    parser.add_argument('--copy-receipt', type=Path)
     parser.add_argument('--generation', type=int, required=True)
     parser.add_argument('--boot-profile', choices=('installed-target', 'installer-media'), default='installed-target')
     parser.add_argument('--source-live-uki', help='installer-media only: exact source boot/EFI/Linux/*.efi path')

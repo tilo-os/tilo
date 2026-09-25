@@ -43,48 +43,43 @@ RUN test -x /usr/bin/tilo-installer \
     # from it. Error-only kernel/udev logging and Plymouth already keep boot
     # clean. Dropping the redundant explicit systemd default and the udev log
     # overrides (quiet already covers them) reserves enough measured .cmdline
-    # space for target UUIDs without giving up the quiet splash.
+    # space for the target-only boot mount without giving up the quiet splash.
     && /usr/libexec/tilo-uki-cmdline remove systemd.show_status \
     && /usr/libexec/tilo-uki-cmdline remove rd.udev.log_level \
     && /usr/libexec/tilo-uki-cmdline remove loglevel \
     && /usr/libexec/tilo-uki-cmdline remove vt.global_cursor_default \
-    # Refuse a malformed build-time base instead of silently normalizing its
-    # target discovery contract before deriving the live and installed UKIs.
+    # Refuse a malformed base before deriving either signed UKI. Both variants
+    # inherit the target-independent root and unlock discovery contract.
     && live_cmdline="$(/usr/libexec/tilo-uki-cmdline show)" \
     && test "$(printf '%s\n' "$live_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
     && test "$(printf '%s\n' "$live_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
-    # These describe the installed target. The live UKI uses the three
-    # length-stable installer placeholders below; its independently derived
-    # target variant adds root discovery back after removing those slots.
-    && /usr/libexec/tilo-uki-cmdline remove root \
-    && /usr/libexec/tilo-uki-cmdline remove rd.luks.options \
-    && /usr/libexec/tilo-uki-cmdline append tilo.root=0000000000000000000000000000000000000 \
-    && /usr/libexec/tilo-uki-cmdline append tilo.luks=000000000000000000000000000000000000000000000 \
-    # Reserve one length-stable measured token for per-volume TPM2/FIDO2
-    # discovery. tilo-install replaces it after the target LUKS UUID exists.
-    && /usr/libexec/tilo-uki-cmdline append tilo.unlock=000000000000000000000000000000000000000000000000000000000000000000000000000 \
+    # Live media and installed targets use the same target-independent root
+    # discovery contract.  The boot ESP identifies the physical disk and the
+    # dedicated Tilo GPT type identifies its root, so no per-machine UUID or
+    # inert placeholder belongs in either signed UKI.
     && /usr/libexec/tilo-uki-cmdline append tilo.install \
     # Keep a deterministic installed-target UKI outside bootc's EFI scan path.
     # It seals the same composefs tree but contains no live marker or device UUID.
     && install -d -m 0755 /boot/tilo-target/predictions \
-    && target_uki="$(find /boot/EFI/Linux -type f -name '*.efi' -print -quit)" \
-    && cp "$target_uki" /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.root /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.luks /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline remove tilo.unlock /boot/tilo-target/tilo-target.efi \
+    # Reject ambiguous live UKI trees instead of depending on traversal order.
+    && set -- /boot/EFI/Linux/*.efi \
+    && [ "$#" -eq 1 ] && [ -f "$1" ] \
+    && cp "$1" /boot/tilo-target/tilo-target.efi \
     && /usr/libexec/tilo-uki-cmdline remove tilo.install /boot/tilo-target/tilo-target.efi \
-    # The live UKI deliberately removed these generic target-discovery keys
-    # before adding installer-only placeholders. Restore one canonical value of
-    # each only on the installed-target copy, then verify the result exactly.
-    && /usr/libexec/tilo-uki-cmdline append root=tilo-auto /boot/tilo-target/tilo-target.efi \
-    && /usr/libexec/tilo-uki-cmdline append rd.luks.options=tpm2-device=auto,fido2-device=auto /boot/tilo-target/tilo-target.efi \
+    # The encrypted installer creates a dedicated ext4 /boot with this unique
+    # label.  Keep it in the signed target UKI: bootc's composefs Type2 path
+    # cannot synthesize per-machine kernel arguments during installation.
+    && /usr/libexec/tilo-uki-cmdline append systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec /boot/tilo-target/tilo-target.efi \
     && target_cmdline="$(/usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi)" \
     && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^root(=|$)')" = root=tilo-auto \
     && test "$(printf '%s\n' "$target_cmdline" | tr '[:space:]' '\n' | grep -E '^rd[.]luks[.]options(=|$)')" = rd.luks.options=tpm2-device=auto,fido2-device=auto \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.mode=normal \
     && /usr/libexec/tilo-uki-cmdline show | grep -qw tilo.install \
+    && /usr/libexec/tilo-uki-cmdline show | grep -qw root=tilo-auto \
+    && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw root=tilo-auto \
+    && /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw systemd.mount-extra=LABEL=TILO_BOOT:/boot:ext4:ro,nosuid,nodev,noexec \
     && ! /usr/libexec/tilo-uki-cmdline show /boot/tilo-target/tilo-target.efi | grep -qw tilo.install \
-    && systemctl enable tilo-firstboot-user.service tilo-installer-setup.service tilo-live-recovery.service \
+    && systemctl enable tilo-firstboot-user.service tilo-firstboot-autologin-cleanup.service tilo-installer-setup.service tilo-live-recovery.service \
     # USB-free installation: recognise a staged installer and grow its root on
     # the live side (both conditioned on tilo.install), and reclaim the staging
     # partitions once on the installed system (conditioned on its record).

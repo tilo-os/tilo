@@ -258,6 +258,9 @@ jobs:
             type=raw,value=pr-${{ github.event.number }}-${{ matrix.arch }},enable=${{ github.event_name == 'pull_request' }}
             type=raw,value=dispatch-${{ github.sha }}-${{ matrix.arch }},enable=${{ (github.event_name == 'workflow_dispatch' || github.event_name == 'push') && github.ref == 'refs/heads/main' }}
 
+      - name: Start kernel build timing
+        run: echo "KERNEL_BUILD_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       # A shared Docker daemon can still hold this commit's image from an
       # earlier attempt; the registry-push retry below must never publish it.
       - name: Discard any earlier local image for this commit
@@ -298,6 +301,26 @@ jobs:
           # image was already pushed; the next run simply starts colder.
           cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref=code.sandbox.example/qos/tilo-kernel-buildcache:{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
+
+      # The build step never fails the job itself (continue-on-error), so
+      # this runs whenever the build ran and is skipped with it otherwise.
+      - name: Report kernel build resource metrics
+        if: ${{ steps.build.outcome != 'skipped' }}
+        run: |
+          set -euo pipefail
+          cpu_max=unavailable
+          if [ -r /sys/fs/cgroup/cpu.max ]; then
+            cpu_max=$(tr ' ' '/' < /sys/fs/cgroup/cpu.max)
+          fi
+          elapsed_seconds=$(( $(date +%s) - KERNEL_BUILD_STARTED_AT ))
+          {
+            echo "## Kernel build resources (${{ matrix.arch }})"
+            echo ""
+            echo "- configured jobs: ${{ matrix.kernel_build_jobs }}"
+            echo "- visible CPUs: $(nproc)"
+            echo "- cgroup cpu.max: $cpu_max"
+            echo "- elapsed seconds: $elapsed_seconds"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Reached only when the build step failed. Pull request builds do not
       # push, so their failure is always fatal. The image is loaded before
@@ -406,6 +429,7 @@ jobs:
         with:
           name: kernel-acceptance-${{ matrix.arch }}
           path: |
+            kernel-repo/tilo-kernel-core-*.rpm
             kernel-acceptance/serial.log
             kernel-acceptance/inputs.json
             kernel-acceptance/rpm.sha256

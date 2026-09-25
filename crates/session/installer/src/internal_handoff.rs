@@ -289,7 +289,7 @@ pub(crate) mod tests {
             part("/dev/nvme0n1p3", "aaaaaaaa-0000-4000-8000-000000000001",
                  crate::disks::EFI_SYSTEM_GUID, STAGING_ESP, serde_json::json!([null])),
             part("/dev/nvme0n1p4", "bbbbbbbb-0000-4000-8000-000000000002",
-                 crate::disks::LINUX_FILESYSTEM_GUID, STAGING_ROOT,
+                 crate::disks::TILO_STAGING_ROOT_GUID, STAGING_ROOT,
                  serde_json::json!(["/sysroot", "/var"])),
         ]}]})
     }

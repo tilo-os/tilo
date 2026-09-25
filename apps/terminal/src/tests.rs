@@ -4544,6 +4544,16 @@ fn hosted_terminal_requires_ush_before_construction() {
     ));
 }
 
+#[test]
+#[cfg(unix)]
+fn each_nonblocking_connect_progress_error_is_retried() {
+    for error in [libc::EINPROGRESS, libc::EALREADY, libc::EAGAIN] {
+        assert!(crate::unix_connect_is_pending(Some(error)));
+    }
+    assert!(!crate::unix_connect_is_pending(Some(libc::ECONNREFUSED)));
+    assert!(!crate::unix_connect_is_pending(None));
+}
+
 #[cfg(unix)]
 fn private_ush_listener(runtime: &std::path::Path) -> std::os::unix::net::UnixListener {
     use std::os::unix::fs::PermissionsExt;

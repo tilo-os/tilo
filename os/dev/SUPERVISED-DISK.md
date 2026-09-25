@@ -49,6 +49,9 @@ atomically persists the accepted receipt both beside `disk.raw` and locally.
 creation arguments with Python field names: source, target, architecture,
 revision, manifest_sha256, composefs_digest, systemd_version, public_bundle,
 output, generation, size_bytes, offline_key_signature and disposable_guest.
+It also contains `installer_bootc_directory` (fixed to
+`/work/installer-bootc-helper`) and the independently reviewed
+`installer_bootc_sha256`.
 Paths refer to the guest; source must be an immutable digest reference. A new
 exclusive regular file is the only installer target. The controller streams
 the local Python helpers instead of trusting guest-supplied helper code.
@@ -56,6 +59,78 @@ The required guest image pin must match both the admitted pod image and its
 running image digest. The controller binds the actual virtiofs server's shared
 root, socket owner and complete export inventory, rejects missing observations,
 and checks pod/container identity again after execution before reporting success.
+
+The inner installer container receives a fresh read-only tmpfs at `/run/udev`.
+Its entrypoint requires that `/run/udev/data` is absent, the mount belongs to
+the inner PID 1 namespace and the filesystem is read-only before bootc starts.
+This keeps a later helper from creating an empty database directory that would
+disable bootc's direct block-device probing for guest-local loop partitions.
+
+The creator owns partitioning rather than asking `bootc install to-disk` to do
+it.  It attaches only the held new regular file, creates a 1 GiB ESP and one
+remaining Btrfs root with Tilo type
+`7a2e8d75-3f01-4e5a-b2c9-51f6ed90b8ab`, and materializes only those two loop
+partition nodes from their exact sysfs identities.  Both nodes are removed
+before the loop device is detached.  The root and ESP are mounted in the
+creator's private mount namespace and passed to `bootc install to-filesystem`.
+An explicitly empty `--root-mount-spec=` preserves the signed
+`root=tilo-auto` command line; adding a filesystem UUID would change the UKI
+and bypass Tilo's boot-ESP-bound root discovery.  The independent verifier
+recreates and removes the same bounded device nodes before mounting the copied
+disk read-only.
+
+The supervised creator also requires a native installer-only bootc artifact at
+`/work/installer-bootc-helper/{bootc,receipt.json}` and an independently
+reviewed `installer_bootc_sha256` in `verified-disk-inputs.json`. The receipt is
+fail-closed: it binds architecture, bootc version, upstream tag and commit, the
+tracked patch SHA-256, binary SHA-256 and GNU build ID, Rust/Cargo versions,
+target triple and exact build command. The reviewed source pin and patch live in
+`os/external-assets/bootc/`; they are provenance inputs, not OS payload.
+
+The creator verifies that contract before allocating a disk. It mounts the
+helper read-only at `/run/tilo-installer-bootc` and executes that explicit path;
+it never shadows the source image's `/usr/bin/bootc`. The in-container wrapper
+rechecks the binary hash, ELF architecture, build ID, version and actual
+read-only mountinfo before execution. Its runtime receipt and the original
+source `/usr/bin/bootc` identity are included in the creation receipt. The
+installed-disk verifier then requires installed `/usr/bin/bootc` to equal the
+freshly verified original source binary, to differ from the helper, and scans
+installed mutable state and the ESP for any file equal to the helper digest.
+This keeps the workaround available across bootc re-exec while proving it was
+not installed.
+
+Build this helper in Forgejo rather than on an operator or Kubernetes builder.
+The workflow selects a native runner and an immutable builder image; its cache
+key covers the upstream commit and Cargo.lock, canonical patch, Rust/Cargo
+toolchain, architecture and builder image. It uploads only `bootc` and the
+receipt consumed by this contract:
+
+```sh
+fgj workflow run development-installer-bootc-helper.yml -R qos/qos \
+  -r codex/tilo-install-ready -f architecture=aarch64
+```
+
+Download `installer-bootc-helper-aarch64-<revision>`, verify it with
+`installer_bootc_helper.verify_artifact`, and use the receipt's
+`binary_sha256` as `installer_bootc_sha256`. A local native build is useful as
+a canary only; final installation evidence must name the CI run and consume its
+artifact unchanged.
+The installer container itself is started by the already verified canonical
+digest reference. Bootc resolves that running container's exact local manifest
+digest and enters its private mount namespace; the explicit canonical target
+reference remains the installed system's upgrade origin.
+
+Nested Podman receives a temporary `fuse-overlayfs` copy-on-write view of the
+creator's verified rootful image store. The parent store is mounted read-only
+at an alternate path. After the source container is fully running, its wrapper
+uses that path only as the lower layer; all lock and metadata writes go to a
+root-owned private upper layer. This ordering excludes the parent's in-progress
+container layer from the private store snapshot.
+Before bootc starts, the wrapper requires the container metadata, Podman image
+identity, raw manifest digest and config architecture to agree with the exact
+immutable source. The view is unmounted and deleted before the source hold can
+be released or the created disk retained; no shared read-write store fallback
+is allowed.
 
 Root/native architecture/user-namespace/remote-container/EFI/TPM checks and all
 source, signature, boot-prediction and cleanup checks remain enforced. Success
@@ -90,6 +165,23 @@ install, removes the medium, cold-boots the encrypted target, completes OOBE,
 and reaches the desktop. Workers are retained until the browser follow-up and
 evidence collection finish; their active deadlines bound cleanup.
 
+The creator-to-verifier boundary is resumable. Once `creation.json` and the raw
+identity are durable, the controller deletes its local registry-auth snapshot
+and writes a typed `creator-checkpoint.json` containing the complete selected
+creator node document and exact worker identity. A controller, network, or WSL
+failure anywhere from verifier provisioning through transfer and creator
+release keeps `paused-creator.json` authoritative and leaves that exact creator
+emptyDir available for `--resume`. A verifier has its own typed handoff receipt.
+If its create response is lost, resume adopts only the exact pinned manifest,
+owner labels, Pod UID and node identity. A partially prepared verifier is
+deleted and recreated; a ready verifier is reused idempotently. The pause
+receipt becomes `creator-released.json` only after creator deletion succeeds.
+Creator/install failures and checkpoint-write failures remain terminal and
+delete their worker. Creator Pods carry an operation owner and absolute expiry
+label and have a 12-hour active deadline. The pause receipt records a
+credential-free cleanup command; it validates the checkpoint, Pod UID,
+ownership labels, and expiry before deleting anything.
+
 Run it from a clean Linux checkout at the exact helper commit:
 
 ```sh
@@ -103,6 +195,11 @@ python3 os/dev/run-supervised-install-lane.py \
   --acceptance-id FRESH_DNS_SAFE_ID \
   --registry-secret forgejo-pull-secret
 ```
+
+To resume, repeat the same pinned arguments and add `--resume`. If the retained
+media is no longer wanted, run the `cleanup_command` array recorded in
+`paused-creator.json` after its expiry. `--cleanup-paused` deliberately rejects
+early cleanup and Pods whose live UID or ownership labels differ.
 
 The operation directory retains mode-0600 worker bindings, creation, source-layer and
 verification receipts, raw identity, conversion/cycle evidence and the final

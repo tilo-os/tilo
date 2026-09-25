@@ -5,10 +5,10 @@
 #   sudo os/tests/internal_bundle_export.sh
 #
 # It builds a synthetic live-installer-shaped disk (GPT; FAT32 ESP holding a
-# structural PE "UKI" with the derived live command line and a placeholder
+# signed structural PE "UKI" with the derived live command line and a placeholder
 # fallback loader; a 40 GiB sparse Btrfs Tilo root with some payload), exports
 # it from raw and from qcow2, and checks the result with independent tools
-# (blkid, btrfs check, a fresh read-only mount, uki-cmdline.py). The UKI is
+# (blkid, btrfs check, a fresh read-only mount, sha256sum). The UKI is
 # not bootable; boot is the VM round trip's job.
 #
 # It FAILS, never skips, when it cannot observe its subject: not root, not
@@ -71,8 +71,9 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location('t', Path(sys.argv[1]) / 'os/tests/internal_bundle_test.py')
 t = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(t)
-Path(sys.argv[2]).write_bytes(bytes(t.pe_fixture(t.live_cmdline())))
+Path(sys.argv[2]).write_bytes(t.signed(t.pe_fixture(t.live_cmdline())))
 PY
+live_uki_sha="$(sha256sum "$work/esp/EFI/Linux/bootc/bootc_composefs-fixture.efi" | cut -d' ' -f1)"
 # Enough data that the minimum device size is well above zero.
 head -c $((300 * 1024 * 1024)) /dev/urandom > "$work/root/payload"
 mkdir -p "$work/root/usr/lib"; printf 'ID=tilo\n' > "$work/root/usr/lib/os-release"
@@ -103,9 +104,10 @@ assert root['byte_size'] % (1 << 20) == 0
 assert esp['filesystem_uuid'] == '1234-ABCD', esp
 b = m['boot_binding']
 assert b['efi_path'] == '/EFI/BOOT/BOOTX64.EFI'
-assert b['root_locator'] == 'UUID=' + root['filesystem_uuid']
-assert ('root=UUID=%s ' % root['filesystem_uuid']) in b['uki_cmdline'] + ' '
-assert 'tilo.root=' not in b['uki_cmdline']
+assert root['partition_type_guid'] == 'd4c4daf6-f72c-43ee-b8e3-5ba32550311d', root
+assert 'root_locator' not in b
+assert 'root=tilo-auto' in b['uki_cmdline'].split()
+assert 'tilo.root=' not in b['uki_cmdline'] and 'root=UUID=' not in b['uki_cmdline']
 PY
   local size fs_uuid got_uuid
   size="$(stat -c %s "$root_img")"
@@ -122,13 +124,14 @@ PY
   esp_loop="$(losetup --find --show --read-only "$esp_img")"; loops+=("$esp_loop")
   mkdir -p "$work/check-esp"
   mount -o ro "$esp_loop" "$work/check-esp"; mounts+=("$work/check-esp")
-  cmp -s "$work/check-esp/EFI/BOOT/BOOTX64.EFI" "$work/check-esp/EFI/Linux/bootc/bootc_composefs-fixture.efi" \
-    || fail "$label: fallback loader is not the specialised UKI"
-  [ "$(sha256sum "$work/check-esp/EFI/BOOT/BOOTX64.EFI" | cut -d' ' -f1)" = \
-    "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["boot_binding"]["uki_sha256"])' "$manifest")" ] \
-    || fail "$label: manifest uki_sha256 does not name the fallback loader"
-  python3 "$repo/os/dev/uki-cmdline.py" show "$work/check-esp/EFI/BOOT/BOOTX64.EFI" \
-    | tr ' ' '\n' | grep -x "root=UUID=$fs_uuid" >/dev/null || fail "$label: fallback loader is not bound to the staging root"
+  # Both loader paths are the signed live UKI, byte for byte.
+  local path
+  for path in EFI/BOOT/BOOTX64.EFI EFI/Linux/bootc/bootc_composefs-fixture.efi; do
+    [ "$(sha256sum "$work/check-esp/$path" | cut -d' ' -f1)" = "$live_uki_sha" ] \
+      || fail "$label: $path is not the unchanged live UKI"
+  done
+  [ "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["boot_binding"]["uki_sha256"])' "$manifest")" \
+    = "$live_uki_sha" ] || fail "$label: manifest uki_sha256 does not name the live UKI"
   [ "$(cat "$work/check-esp/loader/loader.conf")" = 'timeout 0' ] || fail "$label: unrelated ESP files changed"
   umount "$work/check-esp"; mounts=()
   losetup --detach "$esp_loop"; loops=()

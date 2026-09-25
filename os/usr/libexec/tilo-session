@@ -6,6 +6,7 @@ set -euo pipefail
 ulimit -c 0
 
 readonly SYSTEMCTL=/usr/bin/systemctl
+readonly DBUS_UPDATE=/usr/bin/dbus-update-activation-environment
 readonly SHELL_BIN=/usr/bin/shell
 readonly MKDTEMP=/usr/bin/mktemp
 readonly RM=/usr/bin/rm
@@ -13,6 +14,7 @@ readonly RMDIR=/usr/bin/rmdir
 readonly SESSION_TARGET=tilo-graphical-session.target
 
 target_started=0
+environment_imported=0
 shell_pid=""
 logout_request_dir=""
 logout_request_path=""
@@ -33,10 +35,27 @@ logout_request_dir="$($MKDTEMP -d "$runtime_dir/tilo-session.XXXXXX")"
 logout_request_path="$logout_request_dir/logout-request"
 export TILO_SESSION_LOGOUT_REQUEST="$logout_request_path"
 
+# greetd supplies these only to the compositor process.  D-Bus activation and
+# the already-running systemd user manager need their own copy or
+# xdg-desktop-portal cannot select Tilo's backend.
+XDG_CURRENT_DESKTOP=tilo
+XDG_SESSION_DESKTOP=tilo
+XDG_SESSION_TYPE=wayland
+export XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE
+
 stop_target() {
   if [ "$target_started" = 1 ]; then
     "$SYSTEMCTL" --user stop "$SESSION_TARGET" >/dev/null 2>&1 || true
     target_started=0
+  fi
+  if [ "$environment_imported" = 1 ]; then
+    "$DBUS_UPDATE" --systemd \
+      XDG_CURRENT_DESKTOP= XDG_SESSION_TYPE= >/dev/null 2>&1 || true
+    "$SYSTEMCTL" --user unset-environment \
+      DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+      XDG_CURRENT_DESKTOP XDG_SESSION_DESKTOP XDG_SESSION_TYPE \
+      >/dev/null 2>&1 || true
+    environment_imported=0
   fi
 }
 
@@ -83,6 +102,20 @@ run_managed() {
 # OOBE because it is the first trusted display surface. Starting the Tilo-owned
 # target is necessary because the standard graphical targets carry
 # RefuseManualStart=yes.
+if [ ! -x "$DBUS_UPDATE" ]; then
+  echo "tilo-session: $DBUS_UPDATE is missing or not executable" >&2
+  exit 1
+fi
+
+# A user manager survives desktop sessions.  Keep its activation environment
+# synchronized with greetd's selected desktop before portal services start,
+# then clear it on logout so the next desktop cannot inherit Tilo's backend.
+"$SYSTEMCTL" --user unset-environment \
+  DISPLAY WAYLAND_DISPLAY XAUTHORITY DESKTOP_SESSION GDMSESSION \
+  XDG_SESSION_DESKTOP >/dev/null 2>&1 || true
+environment_imported=1
+"$DBUS_UPDATE" --systemd XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
+"$SYSTEMCTL" --user import-environment XDG_CURRENT_DESKTOP XDG_SESSION_TYPE
 "$SYSTEMCTL" --user start "$SESSION_TARGET"
 target_started=1
 
