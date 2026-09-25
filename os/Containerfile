@@ -1840,6 +1840,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-rpm-snapshot-package[aarch64]: libwayland-client
 # tilo-rpm-snapshot-package[aarch64]: vulkan-loader
 ARG TILO_WINDOWS_ARCH
+# wine only recommends dosbox-staging, a DOS emulator no Tilo Windows path
+# uses. It would bring opusfile, whose HTTP stream reader links OpenSSL.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
@@ -1847,6 +1849,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
       aarch64) vm_firmware=edk2-aarch64; windows_packages='glibc libgcc libstdc++ libglvnd-glx libglvnd-opengl libglvnd-egl qt6-qtbase qt6-qtbase-gui qt6-qtdeclarative alsa-lib libdrm libwayland-client vulkan-loader' ;; \
       *) echo 'unsupported Windows VM firmware architecture' >&2; exit 1 ;; \
     esac && dnf install -y --setopt=reposdir=/repo \
+    --exclude=dosbox-staging \
     $windows_packages \
     qemu-kvm \
     libvirt-client \
@@ -2342,6 +2345,10 @@ RUN chmod 0755 /usr/libexec/tilo/luks-enrolment-test.sh \
 # removed, so delete its payload and package metadata too. The aggregate
 # GStreamer bundle retains a dependency on libshout for the deleted plugin;
 # `--nodeps` is therefore intentional and bounded by the absence audit below.
+# wine-common's helper scripts need a Perl interpreter, and Fedora's Perl
+# core pulls in HTTP::Tiny's HTTPS backend (IO::Socket::SSL over the
+# Net::SSLeay OpenSSL binding). No Tilo path runs Perl networking, so remove
+# that backend the same way; the forbidden-package gate below enforces it.
 # Delete these loadable surfaces before the composefs root is sealed.
 RUN find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
@@ -2356,6 +2363,8 @@ RUN find /usr/lib /usr/lib64 \
          -o -path '*/qt6/plugins/tls/libqopensslbackend.so' \) \
       \( -type f -o -type l \) -delete \
     && rpm -e --nodeps libshout \
+    && rpm -qa --qf '%{NAME}\n' perl-IO-Socket-SSL perl-Net-SSLeay \
+       | xargs -r rpm -e --nodeps \
     && ! find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
