@@ -251,6 +251,9 @@ pub struct InstallScenarioArgs {
     /// Existing sparse raw target file for a Windows WHPX guided-alongside cycle. The file is written in place and retained after the run.
     #[arg(long)]
     pub target_disk: Option<PathBuf>,
+    /// Stop after a verified encrypted install into a reviewed Windows raw target. For board-specific images that cannot boot on QEMU virt; requires a separate generic full-cycle proof before physical copy.
+    #[arg(long)]
+    pub skip_target_boot: bool,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
@@ -916,6 +919,7 @@ mod tests {
             "tpm-pin",
             "--graphics",
             "software",
+            "--skip-target-boot",
         ])
         .unwrap();
         let Some(Command::Scenario(ScenarioCommand::Install(args))) = cli.command else {
@@ -928,6 +932,7 @@ mod tests {
         assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
         assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
         assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+        assert!(args.skip_target_boot);
         assert_eq!(args.install_timeout, 3600);
         let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
         let Some(Command::Scenario(ScenarioCommand::Install(args))) = defaults.command else {
@@ -935,6 +940,7 @@ mod tests {
         };
         assert_eq!(args.layout, crate::scenario::Layout::Erase);
         assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+        assert!(!args.skip_target_boot);
         assert!(
             Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"]).is_err()
         );

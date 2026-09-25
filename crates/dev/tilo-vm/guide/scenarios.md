@@ -36,8 +36,16 @@ python os/dev/prepare-windows-direct-source.py template --plan C:\path\to\realiz
 tilo-vm scenario install --medium C:\path\to\installer.qcow2 --layout guided-alongside --target-disk C:\VMs\tilo-source.raw --encrypt passphrase --graphics software
 ```
 
+A Lenovo board image can require firmware and a DTB that QEMU virt does not
+provide. For a reviewed Windows source raw, `--skip-target-boot` stops after
+the encrypted install and guest proof, then verifies the preserved GPT after
+the VM stops. Its checked proof states `first_boot_verified: false`. This
+mode is an install write check; a separate generic CI-signed target must run
+the full installer and first-boot cycle before physical copying.
+
 The scenario verifies the template manifest before installation, after the
-installer powers off, and after the installed system's first boot. It retains
+installer powers off, and, unless target boot is explicitly skipped, after
+the installed system's first boot. It retains
 the external raw file even without `--keep`; it only cleans its own VM cycle.
 On Windows it also requires a fresh proof from the guest on a dedicated
 virtio-serial port. The scenario checks that the guest installed the image it
