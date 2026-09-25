@@ -5968,9 +5968,7 @@ mod tests {
         app.pending_save = Some(SaveRequest {
             id: 3,
             document_id: 1,
-            annotations: Vec::new(),
-            comments: Vec::new(),
-            signatures: Vec::new(),
+            markup: crate::source::ExportMarkup::default(),
             path: "save.pdf".into(),
         });
         app.pending_worker_plan = Some(Vec::new());
