@@ -16,6 +16,7 @@ on:
       - os/dev/assert-native-arch.sh
       - os/dev/install-cached-cosign.sh
       - os/dev/configure-cosign-kms.sh
+      - os/dev/require-cosign-authority.sh
       - os/dev/login-registry-with-retry.sh
       - os/dev/open-snapshot-pr.py
       - ".forgejo/actions/install-cosign/**"
@@ -47,19 +48,7 @@ jobs:
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          resolved="$RUNNER_TEMP/kernel-buildroot-signing-authority.pub"
-          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
-          cmp --silent keys/cosign.pub "$resolved" || {
-            echo '::error::snapshot KMS/HSM authority does not match keys/cosign.pub'
-            exit 1
-          }
+        run: os/dev/require-cosign-authority.sh
 
   build:
     needs: signing-preflight
@@ -148,10 +137,6 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" "$TILO_KERNEL_BUILDROOT_REF"
       - name: Verify the signature and record the immutable reference
@@ -187,6 +172,7 @@ jobs:
         os/dev/assert-native-arch.sh
         os/dev/install-cached-cosign.sh
         os/dev/configure-cosign-kms.sh
+        os/dev/require-cosign-authority.sh
         os/dev/login-registry-with-retry.sh
         os/dev/open-snapshot-pr.py
         .forgejo/actions/install-cosign

@@ -189,8 +189,13 @@ if grep -Fq 'actions/workflows/build-image.yml/dispatches' "$workflow"; then
 else
   ok 'snapshot promotion leaves image builds to the merged RPM pin'
 fi
-has "$workflow" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
+has "$repo/os/dev/configure-cosign-kms.sh" 'COSIGN_KEY_REF must name a non-exportable KMS/HSM key' \
   'snapshot signing requires a non-exportable key'
+if COSIGN_KEY_REF='cosign.key' sh -c '. "$1"' fixture "$repo/os/dev/configure-cosign-kms.sh" >/dev/null 2>&1; then
+  bad 'a file-backed signing key is accepted'
+else
+  ok 'every signing step refuses a key outside a KMS/HSM'
+fi
 has "$workflow" '. os/dev/configure-cosign-kms.sh' \
   'snapshot signing configures the KMS provider from its trusted key reference'
 oidc_fixture="$(mktemp -d)"
@@ -224,8 +229,7 @@ if COSIGN_KEY_REF='awskms:///not-an-arn' \
 else
   ok 'malformed AWS KMS key references fail closed'
 fi
-if grep -Fq 'cosign public-key --key "$COSIGN_KEY_REF"' "$workflow" \
-   && grep -Fq 'cmp --silent keys/cosign.pub "$resolved"' "$workflow" \
+if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$workflow" \
    && grep -Fq 'needs: signing-preflight' "$workflow"; then
   ok 'snapshot construction starts only after KMS authority matches the pinned public key'
 else
@@ -261,7 +265,7 @@ has "$workflow" '- os/dev/derive-rpm-package-set.py' \
 
 has "$workflow" '- os/external-assets/github-assets.tsv' \
   'pinned external asset changes retrigger the snapshot'
-has "$workflow" './os/dev/cache-github-assets.sh' \
+has "$workflow" 'uses: ./.forgejo/actions/cache-github-assets' \
   'snapshot materializes checksum-verified external inputs'
 has "$workflow" 'github-assets=os/external-assets/cache' \
   'snapshot receives only the materialized external-input cache'
