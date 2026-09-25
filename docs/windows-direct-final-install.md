@@ -70,6 +70,12 @@ python os/dev/prepare-windows-direct-source.py receipt --plan realized-plan.json
 python os/dev/copy-windows-direct-final-install.py execute --plan realized-plan.json --source-raw source.raw --source-receipt source-receipt.json --confirm-disk-id <disk-id> --ci-image <repo@sha256:digest> --verify-key keys/cosign.pub --output final-readback.json
 ```
 
+`verify-template` prints a JSON record with `disk_guid` and
+`final_partuuids` (`efi`, `boot`, `root`). Before the VM install the latter is
+empty; after the install it contains the guest-created GPT identities. The
+scenario must compare them to the guest's install proof before `finalize`
+rewrites the final PARTUUIDs to the Windows-assigned values.
+
 The allocator command above is an authorized physical mutation and must run
 only after the matching BitLocker recovery key has actually been backed up.
 The source raw commands act only on a new disposable VM file.
