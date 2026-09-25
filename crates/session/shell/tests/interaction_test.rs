@@ -173,12 +173,15 @@ fn wait_for_any_surface(
                 suggested_height,
             } = event
             {
-                return Some((
-                    surface_id,
+                #[expect(
+                    clippy::cast_precision_loss,
+                    reason = "suggested window sizes are screen dimensions, far below f32's 2^24 exact-integer range"
+                )]
+                let size = (
                     suggested_width.unwrap_or(1024) as f32,
                     suggested_height.unwrap_or(768) as f32,
-                    app_id,
-                ));
+                );
+                return Some((surface_id, size.0, size.1, app_id));
             }
         }
         thread::sleep(Duration::from_millis(50));

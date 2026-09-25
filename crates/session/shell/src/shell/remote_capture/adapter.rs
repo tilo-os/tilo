@@ -698,7 +698,10 @@ fn remote_camera_loopback() -> Option<std::path::PathBuf> {
 }
 
 fn wait_for_pipewire_node(name: &str) -> Result<u32, RemoteCaptureAdapterError> {
-    let deadline = Instant::now() + std::time::Duration::from_secs(2);
+    // An unrepresentable deadline falls back to "now": one probe, then give up.
+    let deadline = Instant::now()
+        .checked_add(std::time::Duration::from_secs(2))
+        .unwrap_or_else(Instant::now);
     loop {
         let output = Command::new(trusted_command("pw-dump").ok_or_else(|| {
             RemoteCaptureAdapterError::BackendUnavailable("pw-dump is unavailable".into())

@@ -3503,7 +3503,9 @@ impl ShellNetwork {
         if routes.get(&(route.workspace_topic, route.endpoint_id)) != Some(route) {
             return Err("personal route is no longer current".into());
         }
-        self.send_personal_fabric_action(&route.device, action)
+        let sent = self.send_personal_fabric_action(&route.device, action);
+        drop(routes);
+        sent
     }
 
     pub(crate) fn current_personal_route(
@@ -3634,12 +3636,16 @@ impl ShellNetwork {
             .lock()
             .map_err(|_| "personal display authorization store is unavailable".to_string())?;
         let now = Instant::now();
+        // An expiry the clock cannot represent fails closed: it lapses at once.
+        let expires = now
+            .checked_add(PERSONAL_DISPLAY_AUTHORIZATION_TTL)
+            .unwrap_or(now);
         authorizations.retain(|_, authorization| authorization.expires > now);
         if let Some(existing) = authorizations.get_mut(&session_id) {
             if existing.source != source || existing.target != target {
                 return Err("personal display session id is already bound".into());
             }
-            existing.expires = now + PERSONAL_DISPLAY_AUTHORIZATION_TTL;
+            existing.expires = expires;
             return Ok(());
         }
         if authorizations.len() >= MAX_AUTHORIZATIONS {
@@ -3650,9 +3656,10 @@ impl ShellNetwork {
             PersonalDisplayAuthorization {
                 source,
                 target,
-                expires: now + PERSONAL_DISPLAY_AUTHORIZATION_TTL,
+                expires,
             },
         );
+        drop(authorizations);
         Ok(())
     }
 
@@ -6559,6 +6566,7 @@ mod tests {
                 registry.record_instance_for_tab(room, tab, &launch),
                 Some(tab)
             );
+            drop(registry);
         }
         let dir = tempfile::tempdir().expect("continuity store");
         let path = dir.path().join("personal-continuity.postcard");
@@ -7128,7 +7136,7 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(sequence as u8, &source, &target, action),
+                    fabric_envelope(u8::try_from(sequence).unwrap(), &source, &target, action),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7218,7 +7226,7 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(210 + index as u8, &source, &target, action),
+                    fabric_envelope(210 + u8::try_from(index).unwrap(), &source, &target, action),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7286,14 +7294,14 @@ mod tests {
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(30 + index as u8, owner, &target, audio),
+                    fabric_envelope(30 + u8::try_from(index).unwrap(), owner, &target, audio),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
             assert_eq!(
                 queue_personal_fabric_action(
                     &mut queue,
-                    fabric_envelope(40 + index as u8, owner, &target, capture),
+                    fabric_envelope(40 + u8::try_from(index).unwrap(), owner, &target, capture),
                 ),
                 PersonalFabricQueueOutcome::Queued
             );
@@ -7361,7 +7369,7 @@ mod tests {
                 queue_personal_fabric_action(
                     &mut queue,
                     fabric_envelope(
-                        index as u8,
+                        u8::try_from(index).unwrap(),
                         &source,
                         &target,
                         PersonalFabricAction::InputLeaseRevoked { nonce },

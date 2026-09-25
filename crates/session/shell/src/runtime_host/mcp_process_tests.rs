@@ -49,7 +49,9 @@ struct InputAfterFile {
 impl Read for InputAfterFile {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         if !self.waited {
-            let deadline = Instant::now() + Duration::from_secs(5);
+            let deadline = Instant::now()
+                .checked_add(Duration::from_secs(5))
+                .ok_or_else(|| std::io::Error::other("pid wait deadline overflows"))?;
             while !self.ready.exists() {
                 if Instant::now() >= deadline {
                     return Err(std::io::Error::new(
@@ -122,6 +124,25 @@ fn line_at_the_one_mib_limit_is_accepted() {
         panic!("line at limit must be accepted");
     };
     assert_eq!(line.len(), MAX_REQUEST_BYTES);
+}
+
+#[test]
+fn framing_joins_lines_split_across_buffer_refills() {
+    // A three-byte buffer forces every line to span several `fill_buf` calls,
+    // including a refill that starts exactly at a newline.
+    let bytes = b"abcdef\r\n\nxy\nlast";
+    let mut input = BufReader::with_capacity(3, bytes.as_slice());
+    assert_eq!(
+        read_frame(&mut input).unwrap(),
+        Frame::Line(b"abcdef".to_vec())
+    );
+    assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(Vec::new()));
+    assert_eq!(read_frame(&mut input).unwrap(), Frame::Line(b"xy".to_vec()));
+    assert_eq!(
+        read_frame(&mut input).unwrap(),
+        Frame::Line(b"last".to_vec())
+    );
+    assert_eq!(read_frame(&mut input).unwrap(), Frame::Eof);
 }
 
 #[test]

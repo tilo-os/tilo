@@ -58,4 +58,5 @@ fn profile_is_exclusive_and_workspace_survives_restart() {
             code: "controlled_denial".into(),
         }
     );
+    drop(tree);
 }

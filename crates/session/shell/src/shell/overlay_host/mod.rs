@@ -3177,7 +3177,7 @@ impl ShellOverlayHost {
             search_chip_rows: 1,
             search_filter_control_h: SELECTOR_HEIGHT_PX,
             search_scope_segment_w: 0.0,
-            search_pointer_floor_h: ui::tokens::Metrics::BASE.min_pointer_target as f64,
+            search_pointer_floor_h: f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
             search_band_at_draw: Rect::ZERO,
             search_scope_own_row: false,
             room_records: inputs.room_records,
@@ -5250,6 +5250,7 @@ impl ShellOverlayHost {
             let after = tree
                 .desktop
                 .nudge_active_group_off_closing(strip_id, &closing);
+            drop(tree);
             changed |= before != after;
         }
         if changed {
@@ -10054,6 +10055,7 @@ impl ShellOverlayHost {
             if let Some(workspace) = tree.desktop.active_workspace() {
                 ids.push(state.local_user_for_room(&workspace.room));
             }
+            drop(tree);
             ids.retain(|id| !id.is_empty());
             ids
         };
@@ -18539,7 +18541,8 @@ impl NotificationHistoryLayout {
         };
         l.rows_top()
             + usize_to_f64_lossy(rows) * l.row_h()
-            + usize_to_f64_lossy(rows - 1) * qs::RELATED_GAP
+            // `rows` is non-zero past the early return, so this never saturates.
+            + usize_to_f64_lossy(rows.saturating_sub(1)) * qs::RELATED_GAP
             + foot
     }
 }
@@ -19929,7 +19932,7 @@ impl ShellOverlayHost {
                 let reference_top = essentials_y + 18.0;
                 let reference_gap = 12.0;
                 let reference_width = (body.width()
-                    - reference_gap * usize_to_f64_lossy(reference_columns - 1))
+                    - reference_gap * usize_to_f64_lossy(reference_columns.saturating_sub(1)))
                     / usize_to_f64_lossy(reference_columns);
                 let reference_height = shortcut_reference_group_height(compact);
                 let group_titles = [
@@ -19955,9 +19958,14 @@ impl ShellOverlayHost {
                         f64::from(theme.tokens.radii.sm),
                         qs::control_fill(theme, false),
                     );
+                    #[expect(
+                        clippy::indexing_slicing,
+                        reason = "shortcut_reference_rows yields 18 rows, so chunks(6) gives exactly one group per title (pinned by shortcut_reference_columns_stay_semantically_grouped)"
+                    )]
+                    let group_title = group_titles[group_index];
                     text_renderer.draw_text_weighted(
                         scene,
-                        group_titles[group_index],
+                        group_title,
                         theme.tokens.typography.scale.xs,
                         colors.text_dim,
                         transform.pre_translate((group.x0 + 12.0, group.y0 + 10.0).into()),
@@ -24120,6 +24128,10 @@ impl ShellOverlayHost {
 
     /// Wi-Fi drill-in discovery row `index`, exposed for integration click
     /// routing tests so they read the list's rhythm instead of restating it.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the list is laid out with index + 1 rows just before it is indexed"
+    )]
     pub fn quick_settings_wifi_row_rect_for_tests(&self, index: usize) -> Rect {
         let mut list = DrillInList::default();
         list.layout_from(
@@ -26516,6 +26528,7 @@ mod palette_dispatch_tests {
                 .active_workspace_mut()
                 .expect("active workspace");
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+            drop(tree);
         }
         let mut document = AutoCommit::new();
         let action = {
@@ -26567,6 +26580,7 @@ mod palette_dispatch_tests {
                 .active_workspace_mut()
                 .expect("active workspace");
             workspace.set_owner(crate::shell::state::local_user_id_for_room(&workspace.room));
+            drop(tree);
         }
         chrome.borrow_mut().peer_sync_enabled = true;
         let mut document = AutoCommit::new();

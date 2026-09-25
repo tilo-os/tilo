@@ -2683,11 +2683,12 @@ fn queue_test_control_response(
 
 fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionProgress {
     while conn.output_offset < conn.output.len() {
-        match conn
-            .reader
-            .get_mut()
-            .write(&conn.output[conn.output_offset..])
-        {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the loop condition keeps output_offset below output.len()"
+        )]
+        let pending = &conn.output[conn.output_offset..];
+        match conn.reader.get_mut().write(pending) {
             Ok(0) => {
                 eprintln!("nirios compositor: test_control write: disconnected");
                 conn.closed = true;
@@ -10402,6 +10403,7 @@ mod tests {
                 })
                 .expect("adopted foreign tab");
             tab.title = "Quarterly Plan".to_string();
+            drop(tree);
         }
 
         let mut shares = ShareRegistry::new();

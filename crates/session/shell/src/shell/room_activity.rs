@@ -539,6 +539,10 @@ fn type_size(tr: &TextRenderer, resolved: f32) -> f32 {
     resolved / tr.text_scale()
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+)]
 fn text_width(width: f64) -> f32 {
     width.max(0.0) as f32
 }
@@ -3585,6 +3589,10 @@ impl RoomActivityPane {
                 0.0
             };
             let expanded = self.expanded_brief == Some(index);
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "previous_index is an earlier enumerate() index of the same briefs being iterated"
+            )]
             if let Some(newer) = previous_index
                 && (expanded || self.expanded_brief == Some(newer))
             {
@@ -7289,7 +7297,7 @@ fn draw_brief_author_stack(
 ) -> f64 {
     let visible = authors.len().min(2);
     for (index, author) in authors.iter().take(visible).enumerate() {
-        let avatar_x = x + index as f64 * 12.0;
+        let avatar_x = x + small_count_to_f64(index) * 12.0;
         let (r, g, b) = ui::widget::history::hue_to_rgb(author.avatar_hue);
         let initial = author
             .name
@@ -7309,22 +7317,23 @@ fn draw_brief_author_stack(
         );
     }
     if authors.len() > visible {
-        let badge_x = x + visible as f64 * 12.0;
+        let badge_x = x + small_count_to_f64(visible) * 12.0;
         ui::widget::Avatar::draw_at(
             scene,
             transform,
             Rect::new(badge_x, y - 2.0, badge_x + 18.0, y + 16.0),
-            &format!("+{}", authors.len() - visible),
+            &format!("+{}", authors.len().saturating_sub(visible)),
             theme.tokens.colors.surfaces.raised,
             theme,
             tr,
         );
     }
-    let badges = visible + usize::from(authors.len() > visible);
+    // `visible` is at most two, so adding the overflow badge cannot saturate.
+    let badges = visible.saturating_add(usize::from(authors.len() > visible));
     if badges == 0 {
         x
     } else {
-        x + badges as f64 * 12.0 + 10.0
+        x + small_count_to_f64(badges) * 12.0 + 10.0
     }
 }
 
@@ -8311,7 +8320,9 @@ mod tests {
             .find(|workspace| workspace.id != home)
             .expect("demo has another workspace")
             .id;
-        let departed_at = SystemTime::UNIX_EPOCH + Duration::from_secs(10_000);
+        let departed_at = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(10_000))
+            .expect("fixed test timestamp");
         let mut pane = RoomActivityPane::new();
         pane.persistent_frontiers = false;
         pane.set_now_for_test(departed_at);
@@ -8334,7 +8345,11 @@ mod tests {
         }
 
         tree.desktop.active = home;
-        pane.set_now_for_test(departed_at + elapsed);
+        pane.set_now_for_test(
+            departed_at
+                .checked_add(elapsed)
+                .expect("test elapsed time fits SystemTime"),
+        );
         pane.observe_workspace(home.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);

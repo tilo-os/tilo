@@ -21,9 +21,9 @@ use crate::shell::remote_capture::adapter::{
     RemoteCaptureAvailability, RemoteCaptureEndpoint, RemoteCaptureTargetBridge,
 };
 use crate::shell::remote_capture::device::{
-    MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_GRANT_TTL, REMOTE_CAPTURE_PROTOCOL_VERSION,
-    RemoteCaptureChunk, RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase,
-    RemoteCaptureProfile, RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal,
+    MAX_REMOTE_CAPTURE_SESSIONS, REMOTE_CAPTURE_PROTOCOL_VERSION, RemoteCaptureChunk,
+    RemoteCaptureGrant, RemoteCaptureKind, RemoteCapturePhase, RemoteCaptureProfile,
+    RemoteCaptureRegistry, RemoteCaptureRequest, RemoteCaptureSignal, grant_expiry,
 };
 use crate::shell::remote_capture::source::{
     CapturedRemoteChunk, ProductionRemoteCaptureSource, RemoteCaptureSource,
@@ -335,7 +335,7 @@ impl RemoteCaptureFabricRuntime {
                 request: request.clone(),
                 source,
                 target,
-                expires_at: Instant::now() + REMOTE_CAPTURE_GRANT_TTL,
+                expires_at: grant_expiry(Instant::now()),
             },
         );
         Ok(PersonalFabricAction::RemoteCaptureSignal {
@@ -640,7 +640,7 @@ impl RemoteCaptureFabricRuntime {
             session.target.clone(),
             PersonalFabricAction::RemoteCaptureChunk { chunk },
         ));
-        session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
+        session.expires_at = grant_expiry(now);
     }
 
     fn handle_signal(
@@ -662,7 +662,7 @@ impl RemoteCaptureFabricRuntime {
                         request: request.clone(),
                         source: envelope.target.clone(),
                         target: envelope.source.clone(),
-                        expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+                        expires_at: grant_expiry(now),
                     },
                 );
             }
@@ -705,7 +705,7 @@ impl RemoteCaptureFabricRuntime {
                     source: pending.source,
                     target: pending.target,
                     grant,
-                    expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+                    expires_at: grant_expiry(now),
                 };
                 self.provisioning.insert(session_id, target_session);
                 let adapter = Arc::clone(&self.adapter);
@@ -825,7 +825,7 @@ impl RemoteCaptureFabricRuntime {
             }
         }
         if let Some(session) = self.target_sessions.get_mut(&chunk.session_id) {
-            session.expires_at = now + REMOTE_CAPTURE_GRANT_TTL;
+            session.expires_at = grant_expiry(now);
         }
     }
 
@@ -903,7 +903,7 @@ impl RemoteCaptureFabricRuntime {
                 target: pending.target.clone(),
                 grant,
                 next_sequence: 1,
-                expires_at: now + REMOTE_CAPTURE_GRANT_TTL,
+                expires_at: grant_expiry(now),
             },
         );
         Ok((
@@ -1227,7 +1227,9 @@ fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
 mod tests {
     use super::*;
     use crate::shell::remote_capture::adapter::{RemoteCaptureAdapterError, RemoteCaptureEndpoint};
-    use crate::shell::remote_capture::device::{RemoteCaptureKind, RemoteVideoFormat};
+    use crate::shell::remote_capture::device::{
+        REMOTE_CAPTURE_GRANT_TTL, RemoteCaptureKind, RemoteVideoFormat,
+    };
     use crate::shell::remote_capture::source::RemoteCaptureSource;
 
     #[derive(Default)]
@@ -1265,12 +1267,12 @@ mod tests {
             _profile: &RemoteCaptureProfile,
             _chunk: &RemoteCaptureChunk,
         ) -> Result<(), RemoteCaptureAdapterError> {
-            self.ingested += 1;
+            self.ingested = self.ingested.saturating_add(1);
             Ok(())
         }
 
         fn revoke(&mut self, _session_id: [u8; 16]) {
-            self.revoked += 1;
+            self.revoked = self.revoked.saturating_add(1);
         }
     }
 

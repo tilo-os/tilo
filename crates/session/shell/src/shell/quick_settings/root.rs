@@ -2113,7 +2113,8 @@ impl QuickSettingsRoot {
                 if index < active_count {
                     self.card(self.panel, index, true)
                 } else {
-                    self.available_edit_chip(state, index - active_count)
+                    // index >= active_count on this branch, so this never saturates.
+                    self.available_edit_chip(state, index.saturating_sub(active_count))
                 }
             } else {
                 self.control_card(self.panel, index, count)

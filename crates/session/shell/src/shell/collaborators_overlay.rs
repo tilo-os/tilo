@@ -337,6 +337,10 @@ impl CollaboratorsOverlay {
                 transform.pre_translate((banner.x0 + 8.0, banner.y0 + 5.0).into()),
                 None,
             );
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
             let detail = text_renderer.elide_to_width(
                 exposure,
                 tokens.typography.scale.xs,
@@ -387,6 +391,10 @@ impl CollaboratorsOverlay {
                 0.0
             };
         for (visible_index, index) in self.roster_range.clone().enumerate() {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "layout() above clamps roster_range to model.rows.len()"
+            )]
             let row = &model.rows[index];
             let relationship = model.relationship_for(&row.id);
             let relationship_partner = relationship.as_ref().and_then(|relationship| {
@@ -1068,6 +1076,10 @@ impl CollaboratorsOverlay {
         }
         let label = format!("You · {label}");
         let trailing_room = if model.status_editing { 48.0 } else { 28.0 };
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+        )]
         let shown = text_renderer.elide_to_width(
             &label,
             theme.tokens.typography.scale.xs,
@@ -1158,6 +1170,10 @@ impl CollaboratorsOverlay {
                 3.0,
             );
             scene.fill(Fill::NonZero, transform, model.own_color, None, &dot);
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "a non-negative on-screen width in logical pixels; f32 holds it with sub-pixel precision"
+            )]
             let activity = text_renderer.elide_to_width(
                 activity,
                 theme.tokens.typography.scale.xs,
