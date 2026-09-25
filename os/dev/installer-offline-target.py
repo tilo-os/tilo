@@ -50,11 +50,14 @@ def verify(directory):
     require(metadata["schema"] == "tilo.installer-offline-target.v1"
             and match is not None and metadata["target_digest"] == match.group(1)
             and metadata["architecture"] == "aarch64"
-            and metadata["hardware_profile"] == "lenovo-83ed"
+            and metadata["hardware_profile"] in ("generic", "lenovo-83ed")
             and isinstance(metadata["update_origin"], str)
-            and re.fullmatch(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}",
-                             metadata["update_origin"]) is not None,
-            "target metadata does not pin the Lenovo ARM64 child")
+            and (re.fullmatch(r"code\.podesta\.ai/qos/tilo:lenovo-83ed-[0-9a-f]{40}",
+                              metadata["update_origin"]) is not None
+                 if metadata["hardware_profile"] == "lenovo-83ed"
+                 else re.fullmatch(r"code\.podesta\.ai/qos/tilo:gen[1-9][0-9]*",
+                                   metadata["update_origin"]) is not None),
+            "target metadata does not pin a supported CI ARM64 child")
     layout = directory / "oci"
     require(layout.is_dir() and not layout.is_symlink()
             and {item.name for item in layout.iterdir()} == {"oci-layout", "index.json", "blobs"},
