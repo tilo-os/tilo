@@ -2,8 +2,8 @@
 //! disc onto a canvas shaped like the live sidebar slot, pinned against a
 //! committed golden. The golden catches visual regressions by eye; the
 //! high-contrast test reads pixels back, since a dark-theme golden can't
-//! see "the wheel went invisible under this palette". Soft-skips when no
-//! wgpu adapter is available.
+//! see "the wheel went invisible under this palette". Skips when no wgpu
+//! adapter is available, unless `TILO_REQUIRE_GPU=1` makes that a failure.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,6 +17,8 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+
+use tilo_test_env::require_capability;
 
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -184,10 +186,11 @@ fn render_disc_at(
 
 #[test]
 fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
+    let mut renderer = require_capability!(
+        Gpu,
+        try_new_renderer(CANVAS_W, CANVAS_H),
+        "no wgpu adapter available for offscreen render"
+    );
     let mut tr = TextRenderer::new();
     let (scene, _disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
 
@@ -212,10 +215,11 @@ fn sidebar_wheel_disc_renders_a_spoke_per_workspace() {
 /// so tuning its depth moves the probes with it.
 #[test]
 fn the_summoned_band_is_a_surface_over_a_bright_app_and_still_ends() {
-    let Some(mut renderer) = try_new_renderer(CANVAS_W, CANVAS_H) else {
-        eprintln!("skip: no wgpu adapter available for offscreen render");
-        return;
-    };
+    let mut renderer = require_capability!(
+        Gpu,
+        try_new_renderer(CANVAS_W, CANVAS_H),
+        "no wgpu adapter available for offscreen render"
+    );
     let mut tr = TextRenderer::new();
     let (scene, disc) = render_three_spoke_disc(&Theme::dark(), &mut tr);
     let rgba = renderer.render(&scene, Color::WHITE);

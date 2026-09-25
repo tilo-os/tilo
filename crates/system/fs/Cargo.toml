@@ -132,6 +132,7 @@ redb = { workspace = true, optional = true }
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
 image = { workspace = true, features = ["png"] }
+tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
 workspace = true

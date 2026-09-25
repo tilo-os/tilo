@@ -27,6 +27,9 @@
 #     --offline-target-dir DIR
 #                            copy a verified, digest-pinned OCI target into the
 #                            live installer's writable /var for offline installs
+#     --etc-overlay DIR       add files to THIS disk's installed /etc (release
+#                            gate only; os/dev/validation-access.sh). Limited to
+#                            systemd/system, verity.d and pam.d/sshd
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #     --direct-boot-bundle DIR
 #                            export this dev disk's installed UKI sections
@@ -75,6 +78,7 @@
 #     When install fails that way, the message below says so and prints the
 #     digest to seal.
 set -euo pipefail
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 source "$(dirname "${BASH_SOURCE[0]}")/_common.sh"
 
@@ -85,6 +89,7 @@ KARGS=(); USERSPEC=""; TARGET_IMGREF=""; SEALED_SOURCE_IMGREF=""
 FIRSTBOOT_SEED=""
 BOOTC_HELPER=""
 OFFLINE_TARGET_DIR=""
+ETC_OVERLAY=""
 DIRECT_BOOT_DIR=""
 KEEP_RAW=0; DEFAULT_KARGS=yes
 
@@ -108,6 +113,7 @@ while [ $# -gt 0 ]; do
     --firstboot-seed) FIRSTBOOT_SEED="$2"; shift ;;
     --bootc-helper) BOOTC_HELPER="$2"; shift ;;
     --offline-target-dir) OFFLINE_TARGET_DIR="$2"; shift ;;
+    --etc-overlay) ETC_OVERLAY="$2"; shift ;;
     --direct-boot-bundle) DIRECT_BOOT_DIR="$2"; shift ;;
     --raw) KEEP_RAW=1 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
@@ -138,6 +144,23 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   source "$(dirname "${BASH_SOURCE[0]}")/../usr/libexec/tilo-firstboot-user"
   valid_sha512_crypt "$firstboot_hash" \
     || die "--firstboot-seed must contain a complete SHA-512 crypt hash"
+fi
+
+# The overlay only ever adds validation access to a gate's own disk copy: a
+# unit, the trust anchor for its extension, and sshd's PAM stack. Anything else
+# is refused rather than silently written into an installed /etc.
+if [ -n "$ETC_OVERLAY" ]; then
+  [ -d "$ETC_OVERLAY" ] && [ ! -L "$ETC_OVERLAY" ] \
+    || die "--etc-overlay must name a regular directory"
+  while IFS= read -r entry; do
+    case "$entry" in
+      systemd/system/*.service|systemd/system/*.target.wants/*.service|verity.d/*.crt|pam.d/sshd) ;;
+      *) die "--etc-overlay may not write /etc/$entry" ;;
+    esac
+  done < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n')
+  if (cd "$ETC_OVERLAY" && find . ! -type d ! -type f ! -type l -print -quit) | grep -q .; then
+    die "--etc-overlay contains a special file"
+  fi
 fi
 
 if [ -n "$OFFLINE_TARGET_DIR" ]; then
@@ -370,6 +393,10 @@ cleanup() {
     ESP_STAGE_BIND_MOUNTED=0
   fi
   sudo -n umount -R "$MNT" 2>/dev/null || true
+  if [ -n "${LOOP_NODE_HOLDER_PID:-}" ]; then
+    printf 'release\n' >&"$LOOP_NODE_HOLDER_IN" || true
+    wait "$LOOP_NODE_HOLDER_PID" 2>/dev/null || true
+  fi
   [ -n "${LOOP:-}" ] && sudo -n losetup -d "$LOOP" 2>/dev/null || true
   if [ -n "$ESP_STAGE" ] && [ -d "$ESP_STAGE" ]; then
     sudo -n rm -rf -- "$ESP_STAGE" 2>/dev/null || true
@@ -514,6 +541,15 @@ sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
 sudo -n udevadm settle 2>/dev/null || true
+# Kata exposes the scanned partitions in sysfs but does not run udev to
+# materialize their /dev nodes. Keep the validated nodes alive through mounts
+# and bootc install, then release them before detaching the loop device.
+coproc LOOP_NODE_HOLDER { sudo -n python3 -u "$SCRIPT_DIR/hold-loop-partition-nodes.py" "$LOOP"; }
+LOOP_NODE_HOLDER_PID=$!
+LOOP_NODE_HOLDER_IN=${LOOP_NODE_HOLDER[1]}
+LOOP_NODE_HOLDER_OUT=${LOOP_NODE_HOLDER[0]}
+IFS= read -r loop_nodes_ready <&"$LOOP_NODE_HOLDER_OUT" || die "loop partition node holder failed"
+[ "$loop_nodes_ready" = READY ] || die "loop partition node holder did not become ready"
 mkdir -p "$MNT"
 sudo -n mount "${LOOP}p2" "$MNT"
 if [ "$BOOT_IS_ESP" = yes ]; then ESP_AT="$MNT/boot"; else ESP_AT="$MNT/boot/efi"; fi
@@ -696,6 +732,33 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
   sudo -n ln -sfn /usr/lib/systemd/system/tilo-firstboot-user.service \
     "$t_etc/systemd/system/multi-user.target.wants/tilo-firstboot-user.service"
   msg "seeded $firstboot_user for first-boot account creation"
+fi
+
+# Validation access for the release gate, written into this disk copy only and
+# listed in the log. The image, its UKI and any published disk never see it.
+if [ -n "$ETC_OVERLAY" ]; then
+  t_etc="$(sudo -n sh -c "ls -d $MNT/state/deploy/*/etc $MNT/ostree/deploy/*/deploy/*/etc 2>/dev/null | head -1")"
+  [ -n "$t_etc" ] || die "could not find the installed system's /etc under $MNT"
+  sudo -n mount -o remount,rw "$MNT"
+  mapfile -t overlay_entries < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n' | LC_ALL=C sort)
+  msg "adding validation access to this disk's /etc: ${overlay_entries[*]}"
+  sudo -n cp -a --no-preserve=ownership "$ETC_OVERLAY/." "$t_etc/"
+  overlay_label_args=(--rm --privileged -v "$t_etc:/target-etc")
+  if [ -n "$SRC_REF" ]; then
+    overlay_label_args+=(--network host
+      -v "$REGCONF:/etc/containers/registries.conf.d/98-local.conf:ro")
+  fi
+  # Offline labelling with the image's own policy, as for the account above.
+  sudo -n podman run "${overlay_label_args[@]}" "${TLS_ARGS[@]+"${TLS_ARGS[@]}"}" \
+    "$RUNREF" bash -c '
+      set -e
+      fc=/etc/selinux/targeted/contexts/files/file_contexts
+      test -r "$fc"
+      cp "$fc" /tmp/file_contexts
+      mount --bind /target-etc /etc
+      for entry do setfiles -F /tmp/file_contexts "/etc/$entry"; done
+    ' label "${overlay_entries[@]}" \
+    || die "could not label the validation access files"
 fi
 
 # The transport is copied to writable /var only after bootc has installed the

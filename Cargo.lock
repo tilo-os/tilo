@@ -4307,6 +4307,7 @@ dependencies = [
  "tilo-clock",
  "tilo-power-mgmt",
  "tilo-rt",
+ "tilo-test-env",
  "tilo-user-identity",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
