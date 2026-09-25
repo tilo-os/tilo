@@ -308,6 +308,10 @@ impl Saver {
     }
 
     /// Wait for queued saves and report failed or disconnected storage.
+    ///
+    /// # Errors
+    /// Returns a message when the saver thread has gone away, when the flush
+    /// does not complete within 30 seconds, or when a queued save failed.
     pub fn try_flush(&self) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
         self.tx
@@ -415,6 +419,10 @@ impl PageSaver {
     }
 
     /// Wait for queued bodies and report failed or disconnected storage.
+    ///
+    /// # Errors
+    /// Returns a message when the body saver thread has gone away, when the
+    /// flush does not complete within 30 seconds, or when a queued write failed.
     pub fn try_flush(&self) -> Result<(), String> {
         let (sender, receiver) = mpsc::channel();
         self.tx

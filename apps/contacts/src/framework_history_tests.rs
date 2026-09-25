@@ -272,6 +272,10 @@ fn test_root() -> Box<dyn ui::widget::Widget> {
 /// the preview shares the detail card's rhythm rather than a private 20/76
 /// pixel offset.
 #[test]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "w/h are the render size, p the preview under test; the draw-and-probe loop reads as the renderer API does"
+)]
 fn history_preview_renders_on_the_token_rhythm_in_dark_and_light() {
     use ui::offscreen::OffscreenRenderer;
     use ui::text_render::TextRenderer;

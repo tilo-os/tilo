@@ -56,7 +56,7 @@ pub(crate) fn selection_fill(theme: &Theme, ground: Color) -> Color {
                 .abs()
                 .total_cmp(&(relative_luminance(*b) - g).abs())
         })
-        .unwrap_or(c.lift(1.0))
+        .unwrap_or_else(|| c.lift(1.0))
 }
 
 /// What a chosen-from row on `ground` is filled with in its state: the full

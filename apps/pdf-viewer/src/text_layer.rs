@@ -436,7 +436,7 @@ mod tests {
 
     #[test]
     fn unicode_search_maps_expanded_spelling_to_original_glyphs() {
-        let text = "İ test K TEST";
+        let text = "İ test \u{212a} TEST";
         let page = PageText::from_glyphs(
             text.chars()
                 .enumerate()
@@ -460,7 +460,7 @@ mod tests {
                 char_len: 4
             }
         );
-        for (query, expected, start) in [("i\u{307}", "İ", 0), ("k", "K", 7)] {
+        for (query, expected, start) in [("i\u{307}", "İ", 0), ("k", "\u{212a}", 7)] {
             let hits = page.search(2, query, SearchOptions::default());
             assert_eq!(hits.len(), 1);
             assert_eq!(hits[0].char_start, start);

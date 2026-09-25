@@ -3840,7 +3840,7 @@ impl Widget for NotesApp {
                     self.self_dirty = true;
                 }
                 Ok(ui::widget::ResourceOperationStart::Completed(output)) => {
-                    self.complete_markdown_operation(Ok(output.clone()))
+                    self.complete_markdown_operation(Ok(output.clone()));
                 }
                 Ok(ui::widget::ResourceOperationStart::Accepted) => {}
             }
@@ -5632,9 +5632,8 @@ mod tests {
             let original = [0xff, 0xfe, 0x41];
             std::fs::write(&path, original).unwrap();
 
-            let error = match NotesApp::spawn(tmp.path().into()) {
-                Ok(_) => panic!("an unreadable note must not become an empty editor"),
-                Err(error) => error,
+            let Err(error) = NotesApp::spawn(tmp.path().into()) else {
+                panic!("an unreadable note must not become an empty editor");
             };
             assert!(error.contains("Could not read note"));
             assert_eq!(std::fs::read(&path).unwrap(), original);

@@ -232,7 +232,7 @@ fn mark_boundary_runs_match_per_character_reference() {
                 kind: "paragraph".into(),
                 text: text.into(),
                 marks,
-                attrs: Default::default(),
+                attrs: std::collections::BTreeMap::default(),
                 children: vec![],
             };
             for review in [false, true] {
