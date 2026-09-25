@@ -643,12 +643,8 @@ fn install_trust(
             "update lock must be caller-owned, mode 0600 or stricter, and have one link".into(),
         );
     }
-    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&update_lock), libc::LOCK_EX) } != 0 {
-        return Err(format!(
-            "cannot lock update transaction: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    let _update_lock = advisory_lock::FileLock::exclusive(update_lock)
+        .map_err(|error| format!("cannot lock update transaction: {error}"))?;
 
     let lock_path = trust_dir.join(".arm.lock");
     let lock = open_lock_without_symlinks(&lock_path)
@@ -666,12 +662,8 @@ fn install_trust(
                 .into(),
         );
     }
-    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) } != 0 {
-        return Err(format!(
-            "cannot lock trust-store activation: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
+    let _lock = advisory_lock::FileLock::exclusive(lock)
+        .map_err(|error| format!("cannot lock trust-store activation: {error}"))?;
     // `verify-and-record` takes this same stable sibling lock before reading
     // any trust artifacts.  Holding it across validation and marker-last
     // publication prevents standalone CLI users (outside tilo-verified-update's
@@ -865,7 +857,7 @@ fn verify(args: impl Iterator<Item = std::ffi::OsString>) -> Result<(), String> 
     verify_common(args, false)
 }
 
-fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
+fn lock_generation_state(path: &Path) -> Result<advisory_lock::FileLock, String> {
     let mut lock_name = path.as_os_str().to_owned();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
@@ -894,14 +886,8 @@ fn lock_generation_state(path: &Path) -> Result<std::fs::File, String> {
             "generation lock must be caller-owned, mode 0600 or stricter, and have one link".into(),
         );
     }
-    // SAFETY: flock consumes a valid live file descriptor and no pointers.
-    if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&file), libc::LOCK_EX) } != 0 {
-        return Err(format!(
-            "cannot lock generation state: {}",
-            std::io::Error::last_os_error()
-        ));
-    }
-    Ok(file)
+    advisory_lock::FileLock::exclusive(file)
+        .map_err(|error| format!("cannot lock generation state: {error}"))
 }
 
 fn read_generation_floor(path: &Path) -> Result<Option<u64>, String> {

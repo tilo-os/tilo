@@ -401,7 +401,7 @@ impl Session {
         let joined = Instant::now();
         loop {
             if self.step(Duration::from_millis(100))? && self.cfg.once {
-                return Ok(());
+                return self.link.flush_documents();
             }
             if self.editor.is_none()
                 && !self.cfg.await_document.is_zero()
@@ -873,9 +873,13 @@ impl Session {
     /// Run until `deadline`, then return whether an instruction was
     /// carried out. For tests.
     ///
+    /// Every edit made is published before this returns, so a caller that
+    /// then drops the session cannot discard the last of them in transit.
+    ///
     /// # Errors
     ///
-    /// Whenever a turn's own I/O fails — see [`Self::run`].
+    /// Whenever a turn's own I/O fails — see [`Self::run`] — or an edit
+    /// could not be published.
     pub fn run_until(&mut self, deadline: Instant) -> Result<bool> {
         let mut acted = false;
         while Instant::now() < deadline {
@@ -884,6 +888,7 @@ impl Session {
                 break;
             }
         }
+        self.link.flush_documents()?;
         Ok(acted)
     }
 

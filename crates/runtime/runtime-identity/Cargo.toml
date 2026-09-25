@@ -22,6 +22,7 @@ name = "runtime_identity"
 path = "src/lib.rs"
 
 [dependencies]
+advisory-lock = { path = "../../system/advisory-lock" }
 getrandom.workspace = true
 runtime-portal = { path = "../runtime-portal" }
 serde.workspace = true

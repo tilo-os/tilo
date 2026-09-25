@@ -151,19 +151,17 @@ fn owned_private_root(root: &Path) -> bool {
 fn cleanup_private_root(root: &Path) {
     #[cfg(unix)]
     let _lock = {
-        use std::os::fd::AsRawFd;
         match std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(root.join(PRIVATE_ROOT_LOCK))
         {
             Ok(file) => {
-                // SAFETY: flock only observes the valid descriptor owned by `file`.
-                if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
+                let Ok(lock) = advisory_lock::FileLock::exclusive(file) else {
                     tracing::warn!(path = %root.display(), "Could not lock private browser root for cleanup");
                     return;
-                }
-                Some(file)
+                };
+                Some(lock)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => {
