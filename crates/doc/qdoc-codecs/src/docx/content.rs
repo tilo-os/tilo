@@ -87,10 +87,40 @@ struct DrawingState {
 
 /// The docx-id → qdoc-id lookup tables [`BodyState::handle_empty`] resolves footnote/endnote/
 /// comment references against.
-struct RefMaps<'a> {
-    foot: &'a BTreeMap<String, String>,
-    end: &'a BTreeMap<String, String>,
-    comment: &'a BTreeMap<String, String>,
+pub(crate) struct RefMaps<'a> {
+    pub foot: &'a BTreeMap<String, String>,
+    pub end: &'a BTreeMap<String, String>,
+    pub comment: &'a BTreeMap<String, String>,
+    pub links: &'a BTreeMap<String, String>,
+}
+
+/// Build an `rId → URL` map of the external hyperlink relationships in
+/// `word/_rels/document.xml.rels`, which `w:hyperlink r:id` references.
+pub(crate) fn build_link_map(container: &DocxContainer) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(rels) = container
+        .get("word/_rels/document.xml.rels")
+        .and_then(|b| std::str::from_utf8(b).ok())
+    else {
+        return out;
+    };
+    let mut reader = Reader::from_str(rels);
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
+                let is_link = attr_val(&e, b"Type").is_some_and(|t| t.ends_with("/hyperlink"));
+                if is_link
+                    && attr_val(&e, b"TargetMode").as_deref() == Some("External")
+                    && let (Some(id), Some(target)) = (attr_val(&e, b"Id"), attr_val(&e, b"Target"))
+                {
+                    out.insert(id, target);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
 }
 
 /// All per-parse mutable state for [`parse_body`]'s event loop, bundled so the loop can be split
@@ -113,6 +143,7 @@ struct BodyState {
     p_style: Option<String>,
     p_align: Option<String>,
     p_numid: Option<String>,
+    p_ilvl: i64,
     p_line_spacing: Option<f64>,
 
     // Run marks are collected for `w:rPr` and applied over the run's text range at `</w:r>`.
@@ -170,7 +201,35 @@ struct BodyState {
     inline: Option<InlineCapture>,
     // (block, char index, verbatim XML) of each inline atom, marked once all text is in.
     atoms: Vec<(String, usize, String)>,
+
+    // The table cell being read, and the open vertical merges: grid column → (the merge's
+    // first cell, rows it spans so far).
+    cell: CellState,
+    merges: BTreeMap<usize, (String, i64)>,
+
+    // The current `w:pPr`'s unmodeled children, verbatim; element depth inside it and the
+    // start of the direct child being read.
+    ppr_kept: String,
+    ppr_depth: usize,
+    ppr_child: Option<(usize, Vec<u8>)>,
+    // The current `w:pPr`'s `w:pStyle`, kept only when the model does not use the style.
+    ppr_style: Option<String>,
 }
+
+/// What the body parser tracks about the table cell being read.
+#[derive(Default)]
+struct CellState {
+    /// The block before the cell's own, to fall back to when the cell turns out to be covered.
+    prev: Option<String>,
+    /// Grid columns the cell spans (`w:gridSpan`).
+    span: usize,
+    /// The cell takes part in a vertical merge (`w:vMerge`).
+    merged: bool,
+}
+
+/// List-item attr holding the imported `w:numId`, reused on export while the item still
+/// numbers the same way.
+pub(super) const ATTR_NUM: &str = "docx_num";
 
 /// Paragraph children the body parser models; any other child of a `w:p` is kept verbatim as
 /// an inline atom.
@@ -407,6 +466,78 @@ impl BodyState {
         true
     }
 
+    /// Keep an unmodeled element verbatim (or start capturing a complex field) when `e` is
+    /// one; `true` when it was.
+    fn begin_unmodeled(
+        &mut self,
+        e: &BytesStart,
+        raw: &str,
+        pos_before: usize,
+        is_start: bool,
+        doc: &mut DocMut,
+    ) -> bool {
+        if self.in_run
+            && !self.in_char_props
+            && e.name().as_ref() == b"w:fldChar"
+            && field_delta(e) > 0
+        {
+            self.begin_field(pos_before, is_start);
+            return true;
+        }
+        if self.is_unmodeled_run_child(e) || self.is_unmodeled_para_child(e.name().as_ref()) {
+            self.begin_atom(raw, pos_before, is_start, doc);
+            return true;
+        }
+        false
+    }
+
+    /// A `w:hyperlink`: remember its target + start index; the `link` mark applies at its end.
+    /// An external link's `r:id` names a relationship holding the URL; a cross-reference
+    /// (`w:anchor="name"`) points inside the document.
+    fn open_hyperlink(&mut self, e: &BytesStart, maps: &RefMaps) {
+        let target = match (attr_val(e, b"r:id"), attr_val(e, b"w:anchor")) {
+            (Some(rid), _) if maps.links.contains_key(&rid) => maps.links.get(&rid).cloned(),
+            (_, Some(anchor)) => Some(format!("{}{anchor}", qdoc::schema::CROSS_REF_PREFIX)),
+            _ => None,
+        };
+        if let Some(target) = target {
+            self.hyperlink = Some((target, self.cur.clone(), self.cur_len));
+        }
+    }
+
+    /// A `w:gridSpan` in the current cell's properties: the cell spans that many grid columns.
+    fn grid_span(&mut self, e: &BytesStart, doc: &mut DocMut) {
+        let span = attr_val(e, b"w:val")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 1024);
+        self.cell.span = span;
+        if let (Some(id), Ok(n)) = (self.cur.as_deref(), i64::try_from(span))
+            && n > 1
+        {
+            doc.set_attr(id, "colspan", n);
+        }
+    }
+
+    /// A `w:vMerge` in the current cell's properties: `restart` opens a vertical merge at this
+    /// grid column; otherwise the cell continues the merge above it, so it adds a row to that
+    /// merge's first cell and has no block of its own.
+    fn vertical_merge(&mut self, e: &BytesStart, doc: &mut DocMut) {
+        self.cell.merged = true;
+        let Some(id) = self.cur.clone() else {
+            return;
+        };
+        if attr_val(e, b"w:val").as_deref() == Some("restart") {
+            self.merges.insert(self.tcol, (id, 1));
+        } else if let Some((first, rows)) = self.merges.get_mut(&self.tcol) {
+            *rows = rows.saturating_add(1);
+            doc.set_attr(first, "rowspan", *rows);
+            doc.remove_block(&id);
+            self.cur = None;
+            self.prev = self.cell.prev.clone();
+        }
+    }
+
     /// Opens a fresh top-level block anchored after the previous one, and makes it current.
     fn start_block(&mut self, doc: &mut DocMut, kind: &str) -> String {
         let id = doc.insert_block(self.prev.as_deref(), kind);
@@ -437,11 +568,61 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
+    /// Inside a `w:pPr`, collect the direct children the model does not represent, verbatim.
+    /// Only observes: the regular handlers still see every event.
+    fn observe_ppr(&mut self, ev: &Event, s: &str, pos_before: usize, pos_after: usize) {
+        if !self.in_ppr {
+            return;
+        }
+        match ev {
+            Event::Start(e) => {
+                if self.ppr_depth == 0 {
+                    self.ppr_child = Some((pos_before, e.name().as_ref().to_vec()));
+                }
+                self.ppr_depth = self.ppr_depth.saturating_add(1);
+            }
+            Event::Empty(e) if self.ppr_depth == 0 => {
+                let raw = s.get(pos_before..pos_after).unwrap_or_default();
+                if e.name().as_ref() == b"w:pStyle" {
+                    self.ppr_style = Some(raw.to_string());
+                } else if let Some(kept) = super::paragraph::kept_child(e, raw) {
+                    self.ppr_kept.push_str(&kept);
+                }
+            }
+            Event::End(_) if self.ppr_depth > 0 => {
+                self.ppr_depth = self.ppr_depth.saturating_sub(1);
+                if self.ppr_depth == 0
+                    && let Some((start, name)) = self.ppr_child.take()
+                    && name != b"w:numPr"
+                {
+                    self.ppr_kept
+                        .push_str(s.get(start..pos_after).unwrap_or_default());
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Finalise the paragraph's properties: pick the block kind (`list_item`/heading/paragraph), set attrs, stash whole-block marks.
     fn finalize_ppr(&mut self, doc: &mut DocMut, reg: &StyleRegistry) {
         let Some(id) = self.cur.clone() else {
             return;
         };
+        // The unmodeled properties ride on the block verbatim; the style reference only when
+        // the model did not take it up (as a heading, list or lifted named style).
+        let mut kept = std::mem::take(&mut self.ppr_kept);
+        let style = self.ppr_style.take();
+        let used_style = self.p_numid.is_some()
+            || self.p_style.as_deref().is_some_and(|s| {
+                reg.heading_level(s).is_some()
+                    || (reg.is_named_para(s) && reg.style_props(s).is_some())
+            });
+        if let Some(style) = style.filter(|_| !used_style) {
+            kept.insert_str(0, &style);
+        }
+        if !kept.is_empty() {
+            doc.set_attr(&id, super::paragraph::ATTR_PPR, kept.as_str());
+        }
         // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
         let line_spacing = self.p_line_spacing.or_else(|| {
             self.p_style
@@ -456,6 +637,11 @@ impl BodyState {
             doc.set_kind(&id, "list_item");
             let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
             doc.set_attr(&id, "ordered", ordered);
+            doc.set_attr(&id, ATTR_NUM, numid.as_str());
+            // 0-based nesting depth, only when nested (as the other codecs do).
+            if self.p_ilvl > 0 {
+                doc.set_attr(&id, "level", self.p_ilvl);
+            }
             // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
             if ordered && let Some(def) = reg.num_def.get(&numid) {
                 if let Some(f) = def.num_format
@@ -663,17 +849,14 @@ impl BodyState {
 
     /// Block-structure and run-open events: headings/paragraphs/lists/tables, tracked-change and
     /// hyperlink openers, and the fidelity-atom capture start for anything unmodeled.
-    fn handle_start(&mut self, e: &BytesStart, doc: &mut DocMut, pos_before: usize) {
-        if self.in_run
-            && !self.in_char_props
-            && e.name().as_ref() == b"w:fldChar"
-            && field_delta(e) > 0
-        {
-            self.begin_field(pos_before, true);
-            return;
-        }
-        if self.is_unmodeled_run_child(e) || self.is_unmodeled_para_child(e.name().as_ref()) {
-            self.begin_atom("", pos_before, true, doc);
+    fn handle_start(
+        &mut self,
+        e: &BytesStart,
+        doc: &mut DocMut,
+        pos_before: usize,
+        maps: &RefMaps,
+    ) {
+        if self.begin_unmodeled(e, "", pos_before, true, doc) {
             return;
         }
         match e.name().as_ref() {
@@ -694,10 +877,16 @@ impl BodyState {
                 self.p_style = None;
                 self.p_align = None;
                 self.p_numid = None;
+                self.p_ilvl = 0;
                 self.p_line_spacing = None;
                 self.cur_para_marks.clear();
             }
-            b"w:pPr" if self.in_para => self.in_ppr = true,
+            b"w:pPr" if self.in_para => {
+                self.in_ppr = true;
+                self.ppr_kept.clear();
+                self.ppr_style = None;
+                self.ppr_depth = 0;
+            }
             b"w:numPr" if self.in_ppr => self.in_numpr = true,
             // A tracked-change wrapper: create the change record now, remember the start index; the mark applies over `[start, cur_len)` at close.
             b"w:ins" | b"w:del" if self.in_body && self.cur.is_some() => {
@@ -711,16 +900,7 @@ impl BodyState {
                 let cid = doc.insert_change(kind, &author, &date);
                 self.change = Some((cid, kind, self.cur.clone(), self.cur_len));
             }
-            b"w:hyperlink" if self.in_body && self.cur.is_some() => {
-                // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
-                if let Some(anchor) = attr_val(e, b"w:anchor") {
-                    self.hyperlink = Some((
-                        format!("{}{anchor}", qdoc::schema::CROSS_REF_PREFIX),
-                        self.cur.clone(),
-                        self.cur_len,
-                    ));
-                }
-            }
+            b"w:hyperlink" if self.in_body && self.cur.is_some() => self.open_hyperlink(e, maps),
             b"w:r" if self.in_body => {
                 self.in_run = true;
                 self.run_start = self.cur_len;
@@ -743,10 +923,16 @@ impl BodyState {
                 self.table_seq = self.table_seq.saturating_add(1);
                 self.table_id = Some(format!("t{}", self.table_seq));
                 self.trow = 0;
+                self.merges.clear();
             }
             b"w:tr" if self.table_id.is_some() => self.tcol = 0,
             b"w:tc" if self.table_id.is_some() => {
                 self.cell_paras = 0;
+                self.cell = CellState {
+                    prev: self.prev.clone(),
+                    span: 1,
+                    merged: false,
+                };
                 if let Some(tid) = self.table_id.clone() {
                     let id = self.start_block(doc, "cell");
                     doc.set_attr(&id, "table", tid.as_str());
@@ -777,20 +963,13 @@ impl BodyState {
         raw: &str,
         pos_before: usize,
     ) {
-        if self.in_run
-            && !self.in_char_props
-            && e.name().as_ref() == b"w:fldChar"
-            && field_delta(e) > 0
-        {
-            self.begin_field(pos_before, false);
-            return;
-        }
-        if self.is_unmodeled_run_child(e) || self.is_unmodeled_para_child(e.name().as_ref()) {
-            self.begin_atom(raw, 0, false, doc);
+        if self.begin_unmodeled(e, raw, pos_before, false, doc) {
             return;
         }
         match e.name().as_ref() {
             b"w:rPr" if self.in_run => self.rpr_xml = raw.to_string(),
+            b"w:gridSpan" if self.table_id.is_some() => self.grid_span(e, doc),
+            b"w:vMerge" if self.table_id.is_some() => self.vertical_merge(e, doc),
             b"w:p" if self.in_body && self.table_id.is_none() => {
                 self.start_block(doc, "paragraph");
                 self.cur = None;
@@ -803,6 +982,12 @@ impl BodyState {
                 }
             }
             b"w:numId" if self.in_numpr => self.p_numid = attr_val(e, b"w:val"),
+            b"w:ilvl" if self.in_numpr => {
+                self.p_ilvl = attr_val(e, b"w:val")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    .clamp(0, 8);
+            }
             b"w:tab" if self.in_run => self.append(doc, "\t"),
             b"w:br" | b"w:cr" if self.in_run => self.append(doc, "\n"),
             b"w:footnoteReference" | b"w:endnoteReference" if self.in_run => {
@@ -947,7 +1132,11 @@ impl BodyState {
             b"w:p" => self.in_para = false,
             b"w:tc" if self.table_id.is_some() => {
                 self.cur = None;
-                self.tcol = self.tcol.saturating_add(1);
+                // A cell that is not part of a vertical merge ends any merge in its column.
+                if !self.cell.merged {
+                    self.merges.remove(&self.tcol);
+                }
+                self.tcol = self.tcol.saturating_add(self.cell.span);
             }
             b"w:tr" if self.table_id.is_some() => self.trow = self.trow.saturating_add(1),
             b"w:tbl" => {
@@ -1054,20 +1243,13 @@ impl BodyState {
 pub(crate) fn parse_body(
     document_xml: &[u8],
     reg: &StyleRegistry,
-    foot_map: &BTreeMap<String, String>,
-    end_map: &BTreeMap<String, String>,
-    comment_map: &BTreeMap<String, String>,
+    maps: &RefMaps,
     image_map: &BTreeMap<String, Vec<u8>>,
     doc: &mut DocMut,
     inputs: &mut ContentInputs,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
-    let maps = RefMaps {
-        foot: foot_map,
-        end: end_map,
-        comment: comment_map,
-    };
     let mut st = BodyState::default();
 
     loop {
@@ -1087,11 +1269,12 @@ pub(crate) fn parse_body(
             continue;
         }
 
+        st.observe_ppr(&ev, s, pos_before, pos_after);
         match ev {
-            Event::Start(e) => st.handle_start(&e, doc, pos_before),
+            Event::Start(e) => st.handle_start(&e, doc, pos_before, maps),
             Event::Empty(e) => {
                 let raw = s.get(pos_before..pos_after).unwrap_or_default();
-                st.handle_empty(&e, doc, reg, &maps, raw, pos_before);
+                st.handle_empty(&e, doc, reg, maps, raw, pos_before);
             }
             Event::End(e) => st.handle_end(&e, doc, reg, s, pos_after),
             Event::Text(t) => st.handle_text(&t, doc)?,

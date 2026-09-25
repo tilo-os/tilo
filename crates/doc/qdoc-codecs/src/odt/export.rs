@@ -2030,7 +2030,11 @@ mod tests {
         );
         let mut d = Document::new();
         OdtCodec
-            .import(&minimal_odt(body), &mut d.as_mut())
+            .import(
+                &minimal_odt(body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         let snap = d.materialize();
         let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
@@ -2039,7 +2043,9 @@ mod tests {
         let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
         assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert!(
@@ -2048,7 +2054,13 @@ mod tests {
         );
         assert_eq!(content.matches("<table:covered-table-cell/>").count(), 3);
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         assert_eq!(norm(&d2.materialize()), norm(&snap));
     }
 
@@ -2062,13 +2074,21 @@ mod tests {
         d.splice_text(&bullet, 0, 0, "dot");
         d.as_mut().set_attr(&bullet, "ordered", false);
 
-        let exported = OdtCodec.export(d.as_ref()).unwrap();
+        let exported = OdtCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
         let cont = OdtContainer::read(&exported).unwrap();
         let content = std::str::from_utf8(cont.get("content.xml").unwrap()).unwrap();
         assert_eq!(content.matches("<text:list ").count(), 2, "{content}");
 
         let mut d2 = Document::new();
-        OdtCodec.import(&exported, &mut d2.as_mut()).unwrap();
+        OdtCodec
+            .import(
+                &exported,
+                &mut d2.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
         let snap = d2.materialize();
         assert_eq!(
             snap.blocks[0].attrs.get("ordered"),
