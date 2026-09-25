@@ -75,8 +75,14 @@ impl DeviceRole {
 }
 
 /// Existing data plane used for a replicated resource.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind", content = "id")]
+///
+/// Human-readable formats (the JSON of published mesh profiles, `relay.toml`)
+/// carry it adjacently tagged, `{"kind": "app_records", "id": "…"}`. Serde's
+/// adjacent tagging cannot be decoded by a format that is not
+/// self-describing, so binary formats such as postcard carry the ordinary
+/// variant-index form instead — the same bytes the tagged encoder already
+/// produced there. See the `Serialize` / `Deserialize` impls below.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReplicationResource {
     /// Workspace topology, windows, strips and shared app records.
     Workspace,
@@ -95,6 +101,89 @@ pub enum ReplicationResource {
     MediaLibrary,
     /// An app-defined record family carried by the collaboration runtime.
     AppRecords(String),
+}
+
+/// The serialized shape of [`ReplicationResource`]; `S` is `&str` when
+/// encoding and `String` when decoding. Both representations below expand
+/// from this one definition so their variants cannot drift apart.
+macro_rules! replication_resource_repr {
+    ($(#[$attr:meta])* $name:ident) => {
+        #[derive(Serialize, Deserialize)]
+        $(#[$attr])*
+        enum $name<S> {
+            Workspace,
+            FileTree,
+            FileThumbnails,
+            FileBlobs,
+            EbookLibrary,
+            MediaLibrary,
+            AppRecords(S),
+        }
+
+        impl<'a> From<&'a ReplicationResource> for $name<&'a str> {
+            fn from(resource: &'a ReplicationResource) -> Self {
+                match resource {
+                    ReplicationResource::Workspace => Self::Workspace,
+                    ReplicationResource::FileTree => Self::FileTree,
+                    ReplicationResource::FileThumbnails => Self::FileThumbnails,
+                    ReplicationResource::FileBlobs => Self::FileBlobs,
+                    ReplicationResource::EbookLibrary => Self::EbookLibrary,
+                    ReplicationResource::MediaLibrary => Self::MediaLibrary,
+                    ReplicationResource::AppRecords(id) => Self::AppRecords(id),
+                }
+            }
+        }
+
+        impl From<$name<String>> for ReplicationResource {
+            fn from(repr: $name<String>) -> Self {
+                match repr {
+                    $name::Workspace => Self::Workspace,
+                    $name::FileTree => Self::FileTree,
+                    $name::FileThumbnails => Self::FileThumbnails,
+                    $name::FileBlobs => Self::FileBlobs,
+                    $name::EbookLibrary => Self::EbookLibrary,
+                    $name::MediaLibrary => Self::MediaLibrary,
+                    $name::AppRecords(id) => Self::AppRecords(id),
+                }
+            }
+        }
+    };
+}
+
+replication_resource_repr!(
+    /// Adjacently tagged form for human-readable formats.
+    #[serde(
+        rename = "ReplicationResource",
+        rename_all = "snake_case",
+        tag = "kind",
+        content = "id"
+    )]
+    TaggedReplicationResource
+);
+replication_resource_repr!(
+    /// Variant-index form for binary formats.
+    #[serde(rename = "ReplicationResource")]
+    IndexedReplicationResource
+);
+
+impl Serialize for ReplicationResource {
+    fn serialize<Ser: serde::Serializer>(&self, serializer: Ser) -> Result<Ser::Ok, Ser::Error> {
+        if serializer.is_human_readable() {
+            TaggedReplicationResource::from(self).serialize(serializer)
+        } else {
+            IndexedReplicationResource::from(self).serialize(serializer)
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ReplicationResource {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        if deserializer.is_human_readable() {
+            TaggedReplicationResource::<String>::deserialize(deserializer).map(Self::from)
+        } else {
+            IndexedReplicationResource::<String>::deserialize(deserializer).map(Self::from)
+        }
+    }
 }
 
 /// Replication residency requested by a device for one workspace.

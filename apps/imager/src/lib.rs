@@ -233,6 +233,8 @@ pub const SHOT_SCENARIOS: &[&str] = &[
     "setup-folders-later",
     "setup-review",
     "setup-desktop-installed",
+    "setup-full-review",
+    "setup-full-restart",
     "import-first-login",
     "import-first-login-waiting",
     "import-first-login-later",

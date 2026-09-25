@@ -1,9 +1,9 @@
 [workspace]
 # qdoc-codec-markdown-wasm is intentionally excluded from default `cargo build`
-# runs: it must be compiled with `--target wasm32-wasip2` and produces a
-# Component Model `.wasm`, not a host-target library. Build it explicitly:
-# `cargo build --manifest-path crates/doc/qdoc-codec-markdown-wasm/Cargo.toml
-# --target wasm32-wasip2 --release --locked`.
+# runs: it is a format-provider guest compiled for `wasm32-unknown-unknown`,
+# not a host-target library. Build it from its own directory so its
+# `.cargo/config.toml` applies:
+# `crates/doc/qdoc-codec-markdown-wasm/build.sh`.
 exclude = [
     "fuzz",
     "crates/doc/qdoc-codec-markdown-wasm",
@@ -130,12 +130,13 @@ members = [
     # Doc
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
-    "crates/doc/format-provider-wit",
+    "crates/doc/format-provider-abi",
     "crates/doc/qdoc",
     "crates/doc/qdoc-pdf",
 
     # Hosting
     "crates/hosting/tilo-relay",
+    "crates/hosting/tilo-relay-client",
     "crates/hosting/tilo-relay-protocol",
 
     # Media
@@ -433,6 +434,8 @@ tracing-subscriber = "0.3"
 anyhow = "1.0.102"
 thiserror = "2"
 clap = { version = "4.6.1", features = ["derive"] }
+clap_complete = "4.6.9"
+strsim = "0.11"
 uuid = { version = "1.23.1", features = ["serde", "v4"] }
 chrono = { version = "0.4", default-features = false }
 dirs = "6.0.0"

@@ -2213,6 +2213,38 @@ impl WgpuEngine {
         F: FnOnce(&mut CommandEncoder),
         G: FnOnce() -> bool,
     {
+        self.run_recording_with_post_render_checked_indexed(
+            device,
+            queue,
+            recording,
+            external_resources,
+            label,
+            post_render,
+            before_submit,
+            #[cfg(feature = "wgpu-profiler")]
+            profiler,
+        )?;
+        Ok(())
+    }
+
+    /// The indexed form exposes the exact submission containing the render
+    /// and caller-appended commands. Most callers intentionally discard it.
+    #[doc(hidden)]
+    pub fn run_recording_with_post_render_checked_indexed<F, G>(
+        &mut self,
+        device: &Device,
+        queue: &Queue,
+        recording: &Recording,
+        external_resources: &[ExternalResource<'_>],
+        label: &'static str,
+        post_render: F,
+        before_submit: G,
+        #[cfg(feature = "wgpu-profiler")] profiler: &mut wgpu_profiler::GpuProfiler,
+    ) -> Result<wgpu::SubmissionIndex>
+    where
+        F: FnOnce(&mut CommandEncoder),
+        G: FnOnce() -> bool,
+    {
         let cpu_pathtag_reuse_active = self.cpu_pathtag_reuse_active();
         let cpu_metadata_active = self.cpu_metadata_active();
         let cpu_draw_prefix_active = self.cpu_draw_prefix_active();
@@ -2692,7 +2724,7 @@ impl WgpuEngine {
             self.gpu_dispatch_timestamps = GpuDispatchTimestampTracker::Disabled;
             return Err(Error::SubmissionAborted);
         }
-        queue.submit(Some(command_buffer));
+        let submission = queue.submit(Some(command_buffer));
         if timestamp_readback {
             self.gpu_timestamps.map_after_submit();
         }
@@ -2742,7 +2774,7 @@ impl WgpuEngine {
                 // TODO: have a pool to avoid needless re-allocation
             }
         }
-        Ok(())
+        Ok(submission)
     }
 
     pub fn get_download(&self, buf: BufferProxy) -> Option<&Buffer> {

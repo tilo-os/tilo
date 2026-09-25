@@ -2,8 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use format_provider_wit::Tier;
+use format_provider_abi::Tier;
 use serde::Deserialize;
+
+use crate::runner::Limits;
 
 /// One provider as declared in the registry TOML.
 #[derive(Clone, Debug, PartialEq)]
@@ -13,7 +15,7 @@ pub struct ProviderEntry {
     /// Package identifier (e.g. `so.tilo.qdoc-md`). Also the provider id used
     /// by clients in `importAs`/`exportAs`.
     pub package: String,
-    /// Path to the WASM Component Model binary.
+    /// Path to the provider's core WebAssembly module.
     pub wasm: PathBuf,
     pub version: String,
     /// Trust tier. Determines priority when multiple providers claim the same
@@ -28,6 +30,16 @@ pub struct ProviderEntry {
 struct WireRegistry {
     #[serde(default, alias = "providers", alias = "provider")]
     provider: Vec<WireProvider>,
+    #[serde(default)]
+    limits: WireLimits,
+}
+
+/// Optional `[limits]` table overriding the per-call budget for every provider.
+#[derive(Deserialize, Debug, Default)]
+#[serde(deny_unknown_fields)]
+struct WireLimits {
+    fuel: Option<u64>,
+    max_memory_mib: Option<usize>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -47,6 +59,8 @@ struct WireProvider {
 #[derive(Clone, Debug, Default)]
 pub struct Registry {
     pub providers: Vec<ProviderEntry>,
+    /// Per-call resource budget applied to every provider.
+    pub limits: Limits,
 }
 
 impl Registry {
@@ -70,8 +84,8 @@ impl Registry {
     ///
     /// # Errors
     ///
-    /// Returns an error if parsing the TOML fails or if a provider declares
-    /// an unknown priority tier.
+    /// Returns an error if parsing the TOML fails, if a provider declares
+    /// an unknown priority tier, or if `[limits]` is out of range.
     pub fn parse(toml_text: &str) -> anyhow::Result<Self> {
         let wire: WireRegistry = toml::from_str(toml_text)?;
         let mut providers = Vec::with_capacity(wire.provider.len());
@@ -92,7 +106,19 @@ impl Registry {
                 trust: p.trust,
             });
         }
-        Ok(Self { providers })
+        let defaults = Limits::default();
+        let max_memory_bytes = match wire.limits.max_memory_mib {
+            Some(mib) => mib
+                .checked_mul(1024 * 1024)
+                .filter(|b| *b > 0)
+                .ok_or_else(|| anyhow::anyhow!("limits.max_memory_mib {mib} is out of range"))?,
+            None => defaults.max_memory_bytes,
+        };
+        let limits = Limits {
+            max_memory_bytes,
+            fuel: wire.limits.fuel.unwrap_or(defaults.fuel),
+        };
+        Ok(Self { providers, limits })
     }
 
     /// Lookup a provider by its package id (the client-facing handle).
@@ -121,7 +147,7 @@ mod tests {
 [[provider]]
 mime     = "text/markdown"
 package  = "so.tilo.qdoc-md"
-wasm     = "/path/to/component.wasm"
+wasm     = "/path/to/provider.wasm"
 version  = "1.0.0"
 priority = "builtin"
 trust    = ["tilo-curated/2025"]
@@ -133,6 +159,21 @@ trust    = ["tilo-curated/2025"]
         assert_eq!(p.package, "so.tilo.qdoc-md");
         assert_eq!(p.tier, Tier::Builtin);
         assert_eq!(p.trust, vec!["tilo-curated/2025".to_string()]);
+    }
+
+    #[test]
+    fn limits_default_and_override() {
+        assert_eq!(Registry::parse("").unwrap().limits, Limits::default());
+        let r = Registry::parse("[limits]\nfuel = 1000\nmax_memory_mib = 64\n").unwrap();
+        assert_eq!(
+            r.limits,
+            Limits {
+                max_memory_bytes: 64 * 1024 * 1024,
+                fuel: 1000,
+            }
+        );
+        assert!(Registry::parse("[limits]\nmax_memory_mib = 0\n").is_err());
+        assert!(Registry::parse("[limits]\nwallclock = 3\n").is_err());
     }
 
     #[test]

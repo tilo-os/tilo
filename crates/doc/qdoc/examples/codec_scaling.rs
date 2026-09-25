@@ -5,9 +5,11 @@
 //! size is synthesized, imported, and exported to each format; each format's
 //! bytes are then imported back. `CODEC=md` (or `docx`, `odt`, `html`, `rtf`)
 //! limits the run to one codec besides the Markdown source. `HOST=1` imports
-//! into a host-owned document (the host keeps the transaction) instead of an
-//! owned [`Document`]. Peak memory is the process's peak resident set during
-//! the Markdown import (Linux only).
+//! into a new host-owned document instead of an owned [`Document`]; `HOST=edit`
+//! imports into one whose generator is seeded from the document, as a host
+//! editing an existing document has, which keeps every op in the host's
+//! transaction. Peak memory is the process's peak resident set during the
+//! Markdown import (Linux only).
 
 #![allow(
     clippy::unwrap_used,
@@ -43,7 +45,12 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> (Document, Duration) {
     }
     let mut am = AutoCommit::new();
     let c = qdoc::model::init(&mut am, &automerge::ROOT);
-    let mut ids = IdGen::new(am.get_actor().to_hex_string());
+    let actor = am.get_actor().to_hex_string();
+    let mut ids = if std::env::var_os("HOST").is_some_and(|h| h == "edit") {
+        IdGen::with_counter(actor, 0)
+    } else {
+        IdGen::new(actor)
+    };
     let ((), t) = time(|| {
         let mut dm = DocMut {
             doc: &mut am,

@@ -3,9 +3,9 @@
 //! nearest.
 //!
 //! `rotation_deg` is absolute (workspace `i` rests at `-i * spoke_gap_deg()`);
-//! `draw` uses the offset from the active sector's rest position instead
-//! ([`SidebarWheelDisc::visual_residual_deg`]), so the lit sector doesn't
-//! march down the arc as you switch.
+//! `draw` uses the offset from the active workspace's rest position instead
+//! ([`SidebarWheelDisc::visual_residual_deg`]), so the selected rim marker
+//! doesn't march down the arc as you switch.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -15,8 +15,8 @@ use std::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use taffy::{AlignItems, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
-use vello::peniko::{BlendMode, Color, ColorStop, Compose, Extend, Fill, Gradient, Mix};
+use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, Stroke};
+use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
 use ui::ColorCompat;
@@ -31,10 +31,10 @@ use ui::widget::{Chip, ChipLead, ChipStyle, Widget};
 use crate::shell::chrome_state::ChromeState;
 use crate::shell::state::WorkspaceId;
 
-/// Maximum width reserved by the content layout for the mounted workspace
-/// wheel. The disc itself may render narrower on short viewports, leaving the
-/// remainder as wallpaper rather than reflowing the active workspace.
-pub const SIDEBAR_RESERVE_PX: f32 = 320.0;
+/// The accepted wheel used a 96 px left gutter. Keep that layout contract even
+/// though the rim itself now stops 30 px earlier, leaving a little air between
+/// the control and workspace content instead of making the disc visually huge.
+pub const SIDEBAR_RESERVE_PX: f32 = 96.0;
 
 /// A single spoke-label. `workspace_id` is an opaque correlator the host
 /// uses to map the active spoke back to a workspace in the tree; the
@@ -74,8 +74,8 @@ pub struct SidebarWheelDisc {
     drag_raw_deg: f32,
     /// The disc's visible footprint inside the sidebar column.
     pub rect: Rect,
-    /// Disc diameter in logical pixels; recomputed from the host slot on
-    /// layout so the visible arc-fraction stays fixed.
+    /// Fixed, enormous disc diameter in logical pixels. Only its narrow
+    /// rightmost sliver is laid out on-screen.
     pub diameter_px: f64,
     /// When present, a snap that lands on a spoke with a known
     /// `workspace_id` writes the new active workspace to `chrome.tree`.
@@ -169,16 +169,16 @@ impl WheelCacheFp {
     }
 }
 
-/// Fraction of the disc's radius that protrudes into the viewport:
-/// `cx = rect.x0 - radius * (1 - VISIBLE)`. Does not change the
-/// footprint — only how tightly the visible sliver curves.
-pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.14;
+/// Fraction of the enormous disc radius visible on screen. The earlier,
+/// accepted implementation exposed 96 px of a 600 px radius (`0.16`). We keep
+/// a much larger 2200 px radius and expose 66 px: the rim is 30 px farther
+/// left, with less curvature rather than a smaller circle.
+pub(crate) const VISIBLE_RADIUS_FRACTION: f64 = 0.03;
 
-/// Vertical inset applied top/bottom to the taffy slot, so the footprint
-/// reads as inset rather than edge-to-edge. Trades height for band
-/// depth (the band bends back toward centre to fit a tall narrow slot):
-/// at 0.10 the band came out 129 px, too shallow for a workspace name.
-pub(crate) const SLOT_VERTICAL_INSET_FRAC: f64 = 0.16;
+/// A fixed, deliberately huge disc. Layout must never derive this from the
+/// narrow visible sliver: doing so turns the wheel into a small curved rail
+/// whose ends stop inside the viewport.
+const DEFAULT_DIAMETER_PX: f64 = 4_400.0;
 
 /// Degrees of rotation per pixel of vertical drag.
 const DRAG_FACTOR: f32 = 0.15;
@@ -230,12 +230,6 @@ const MAX_WHEEL_DETENTS_PER_EVENT: u32 = 4096;
 /// outlasts a continuous flick but reads a pause as deliberate.
 const WHEEL_SCROLL_TIMEOUT_MS: u64 = 250;
 
-/// Where the disc's vertical fade reaches full strength, as a fraction
-/// of the footprint's height (mirrored at the bottom). Must stay above
-/// `1 - BAND_TANGENT_FRACTION` so the inner arc's clip is already
-/// fading by the time the clip bites.
-const FADE_IN_STOP: f32 = 0.13;
-
 /// How far past the footprint's right edge the rim's shadow may reach;
 /// the paint group is clipped this much wider so the shadow can sit
 /// outside the rim and still be faded with everything else. Read by the
@@ -243,40 +237,31 @@ const FADE_IN_STOP: f32 = 0.13;
 /// window (`overlay_host::WHEEL_TO_STRIP_GAP_PX` must exceed it).
 pub(crate) const RIM_SHADOW_REACH: f64 = 26.0;
 
-/// Clear space between the footprint's left edge and the band's inner
-/// arc, so the band visibly ends on its own curve rather than the clip.
-const BAND_LEFT_INSET: f64 = 12.0;
-
 /// How close the band's inner arc may reach the left edge (fraction of half
 /// the footprint height) — trades band depth for height; at the extreme
 /// it's too shallow for a name (1600x900: 109px, "Research" truncates to
-/// "Res…"). Read with [`FADE_IN_STOP`], which fades the drift into the clip.
+/// "Res…").
 const BAND_TANGENT_FRACTION: f64 = 0.93;
 
-/// Clearance either side of a sector's label chip. Constant for every
-/// sector since the band has a constant radial depth, so labels form a
-/// ring rather than a ragged column.
-///
-/// These, and [`BAND_LEFT_INSET`], are the `spacing.s3` step. They stay
-/// `const` because the band geometry they feed (`label_band_radii`,
-/// `label_chip_width`) is queried without a theme in hand; the test
-/// `label_metrics_sit_on_the_spacing_scale` pins them to the token so
-/// they cannot drift off it.
+/// Compact labels sit immediately outside the rim. They are navigation
+/// affordances attached to one circle, not full-width slices of that circle.
+/// The gap is the `spacing.s3` step; it stays `const` because the label
+/// geometry is queried without a theme in hand, and the test
+/// `label_metrics_sit_on_the_spacing_scale` pins it to the token.
 const LABEL_RIM_GAP: f64 = 12.0;
-const LABEL_INNER_INSET: f64 = 12.0;
+const LABEL_MAX_W: f64 = 136.0;
 
 /// Narrowest a chip may get before the sector shows no label at all —
 /// below this even a truncated name says less than an empty sector does.
 const LABEL_MIN_W: f64 = 62.0;
 
-/// Height of an inactive sector's chip (`spacing.s12`); the active
-/// sector's is [`SECTOR_CHIP_H_ACTIVE`] (`spacing.s16`), one step larger.
-/// Sized against the slot: it caps near 330 px so three fit the screen at
-/// once, and widening the slot to fit a bigger chip would push the third
-/// workspace off screen.
-const SECTOR_CHIP_H: f64 = 48.0;
+/// Height of an inactive sector's chip; the active sector's is
+/// [`SECTOR_CHIP_H_ACTIVE`], one step larger. Sized against the slot: it
+/// caps near 330 px so three fit the screen at once, and widening the
+/// slot to fit a bigger chip would push the third workspace off screen.
+const SECTOR_CHIP_H: f64 = 34.0;
 
-const SECTOR_CHIP_H_ACTIVE: f64 = 64.0;
+const SECTOR_CHIP_H_ACTIVE: f64 = 42.0;
 
 /// Smallest chip a sector label may step down to before it is truncated:
 /// the shared `Chip`'s resting height (HIG §9.6 Selector, 28 px), where
@@ -285,20 +270,8 @@ const SECTOR_CHIP_H_ACTIVE: f64 = 64.0;
 /// chip only gets this small when a name would otherwise lose its letters
 /// — the text scale is up, or a name is long. A name that fits at no step
 /// at all is elided *here*, at the person's own size, which shows the most
-/// letters: eliding it at the family size instead painted a 38 px "H…" for
-/// "Home" in the live 220×343 slot at 200 % text.
+/// letters.
 const SECTOR_CHIP_H_MIN: f64 = 28.0;
-
-/// Fill strength of the active sector's wedge, as a factor on the
-/// workspace's colour — enough to be unmistakably lit, quiet enough
-/// that the name on top stays the brightest thing in the sector.
-const ACTIVE_WEDGE_ALPHA: f32 = 0.17;
-
-/// The same fill where the body beneath is fully opaque: 17% is barely
-/// a colour on the high-contrast track's opaque surface, so this is
-/// interpolated on the body's own opacity rather than switched per
-/// theme.
-const ACTIVE_WEDGE_ALPHA_ON_OPAQUE: f32 = 0.55;
 
 /// Diameter of the add-workspace button and how far down the band it
 /// sits. Labels that would collide with it are dropped instead.
@@ -315,8 +288,8 @@ impl SidebarWheelDisc {
         (self.diameter_px / 2.0) * VISIBLE_RADIUS_FRACTION
     }
 
-    /// Fresh disc at rest. `diameter_px` starts at a placeholder,
-    /// recomputed from the host slot on first layout.
+    /// Fresh disc at rest. The huge diameter is intentional: the host lays
+    /// out only a narrow sliver while the circle spans beyond both edges.
     pub fn new(spokes: Vec<SpokeLabel>) -> Self {
         Self {
             spokes,
@@ -327,7 +300,7 @@ impl SidebarWheelDisc {
             drag_rotation_origin: 0.0,
             drag_raw_deg: 0.0,
             rect: Rect::ZERO,
-            diameter_px: 10929.0,
+            diameter_px: DEFAULT_DIAMETER_PX,
             chrome: None,
             rotation_spring: None,
             last_update_at: None,
@@ -373,8 +346,7 @@ impl SidebarWheelDisc {
         self
     }
 
-    /// Override the disc diameter — tests use this to validate layout
-    /// math without depending on the placeholder default.
+    /// Override the disc diameter for deterministic geometry tests.
     #[must_use]
     pub fn with_diameter(mut self, d: f64) -> Self {
         self.diameter_px = d;
@@ -699,7 +671,7 @@ impl SidebarWheelDisc {
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,
-            reason = "a non-negative step count of at most (64 - 28) / 2 = 18"
+            reason = "a non-negative step count of at most (42 - 28) / 2 = 7"
         )]
         let steps = steps as u32;
         for i in (0..=steps).rev() {
@@ -713,10 +685,11 @@ impl SidebarWheelDisc {
     }
 
     /// The width available to a sector's label chip, in pixels — what
-    /// `draw` uses, exposed for callers needing the same answer.
-    pub fn label_chip_width(&self) -> f64 {
-        let (r_ref, r_out) = self.label_band_radii();
-        (r_out - LABEL_RIM_GAP) - (r_ref + LABEL_INNER_INSET)
+    /// `draw` uses, exposed for callers needing the same answer. Labels sit
+    /// outside the rim, so a larger text scale widens them instead of
+    /// eliding the name the person enlarged.
+    pub fn label_chip_width(theme: &Theme) -> f64 {
+        LABEL_MAX_W * f64::from(theme.text_scale.max(1.0))
     }
 
     /// Lucide icon for the spoke at `idx`, by lower-cased label;
@@ -1038,15 +1011,15 @@ impl Widget for SidebarWheelDisc {
         let Ok(l) = taffy.layout(node) else {
             unreachable!("TaffyTree::layout only errors on a config this compositor never sets")
         };
-        // Trimmed vertically by `SLOT_VERTICAL_INSET_FRAC` at both ends
-        // so the wheel reads as inset rather than edge-to-edge.
+        // Keep the docked rail edge-to-edge. The circle itself supplies the
+        // taper toward the top and bottom; cropping the slot and then fading
+        // it made the rail dissolve before it reached either screen edge.
         let x0 = origin.x + f64::from(l.location.x);
         let y0_raw = origin.y + f64::from(l.location.y);
         let h_raw = f64::from(l.size.height);
-        let inset_v = h_raw * SLOT_VERTICAL_INSET_FRAC;
         let w = f64::from(l.size.width);
-        let y0 = y0_raw + inset_v;
-        let y1 = y0_raw + h_raw - inset_v;
+        let y0 = y0_raw;
+        let y1 = y0_raw + h_raw;
         self.rect = match self.summon_at {
             // Docked: the slot's own box, already shifted by the pan.
             None => Rect::new(x0, y0, x0 + w, y1),
@@ -1064,12 +1037,10 @@ impl Widget for SidebarWheelDisc {
                 Rect::new(x1 - w, top, x1, top + height)
             }
         };
-        // The sidebar slot's width is viewport-driven, so recompute
-        // `diameter_px` on every pass to keep the arc-fraction fixed.
-        let rw = self.rect.width();
-        if rw > 1.0 {
-            self.diameter_px = rw / VISIBLE_RADIUS_FRACTION * 2.0;
-        }
+        // Keep the disc's radius independent from the sliver the layout gives
+        // it. Re-deriving the diameter from this narrow box makes a small rail;
+        // the fixed huge circle is what lets one rim continue through both
+        // viewport edges with almost no visible curvature.
         // Re-anchor on the workspace index, not the stored rotation — the gap
         // just recomputed changes what workspace it names. Only at rest:
         // mid-gesture this would pull the target onto the indicator and a
@@ -1122,12 +1093,12 @@ impl Widget for SidebarWheelDisc {
             presence,
         };
 
-        // ---- Pass 1: the band -------------------------------------------
-        // Body, edges and drop shadow are ONE isolated group, faded top/bottom
-        // by a single mask below, so the band reads as a slice, not a hard
-        // cut. The horizontal clip is load-bearing — unclipped, the ring
-        // would sweep back around off-screen; it runs past the right edge
-        // for the rim shadow.
+        // ---- Pass 1: the disc -------------------------------------------
+        // Body, edge and drop shadow are one isolated group. The circular
+        // silhouette itself tapers toward the screen edges; no opacity mask
+        // is applied, so the rail visibly reaches the top and bottom. The
+        // horizontal clip is load-bearing — unclipped, the ring would sweep
+        // back around off-screen; it runs past the right edge for the shadow.
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
@@ -1136,30 +1107,14 @@ impl Widget for SidebarWheelDisc {
             &geom.group_clip,
         );
         Self::draw_band_shadow_and_body(&mut ctx, &geom);
-        // ---- Pass 2: the sectors ------------------------------------
-        self.draw_sectors(&mut ctx, &geom);
-        // The rim, painted after the sectors so it sits on top of every
-        // wedge, still inside the layer pushed above.
+        // One uninterrupted rim defines the object. Workspace state is a
+        // compact marker on this edge, never a filled pie slice.
         Self::draw_rim(&mut ctx, &geom);
 
-        // Fade the whole surface out, top and bottom, in one pass, then
-        // close the isolated group.
-        let vfade = self.vfade_gradient();
-        ctx.scene.push_layer(
-            Fill::NonZero,
-            BlendMode::new(Mix::Normal, Compose::DestIn),
-            1.0,
-            ctx.transform,
-            &geom.group_clip,
-        );
-        ctx.scene
-            .fill(Fill::NonZero, ctx.transform, &vfade, None, &geom.group_clip);
-        ctx.scene.pop_layer();
         ctx.scene.pop_layer();
 
         // ---- Pass 3 & 4: labels, then the add-workspace button ------
-        // Both painted outside the masked group above, so each fades
-        // along `row_fade` instead of the group mask.
+        // Labels naturally leave the visible sweep as the wheel turns.
         self.position_add_button(&geom);
         self.draw_labels(&mut ctx, &geom);
         self.draw_add_button(&mut ctx, &geom);
@@ -1445,7 +1400,6 @@ struct DiscGeometry {
     /// Logical centre, screen coordinates.
     c: Point,
     r_out: f64,
-    r_ref: f64,
     sweep: f64,
     half_h: f64,
     group_clip: Rect,
@@ -1455,12 +1409,8 @@ struct DiscGeometry {
 /// Sector-label chip geometry, constant across one call to
 /// [`SidebarWheelDisc::draw_labels`].
 struct LabelLayout {
-    chip_x0: f64,
-    chip_x1: f64,
-    chip_w: f64,
-    /// Too shallow to carry a name is a reason to drop the name, not
-    /// the sector — it stays drawn and hit-tested with just its icon.
-    names_fit: bool,
+    radial_start: f64,
+    max_w: f64,
     /// The one height every resting sector's chip is drawn at this
     /// frame — see [`SidebarWheelDisc::inactive_chip_height`].
     inactive_h: f64,
@@ -1525,23 +1475,12 @@ impl SidebarWheelDisc {
         }
         let c = self.center();
 
-        // The visible object is an annular BAND: constant-depth, as deep as
-        // it can be while the inner arc stays inside the footprint.
         let half_h = self.rect.height() / 2.0;
         let r_out = radius;
-        // `sqrt(d^2 + half_h^2)`: the radius whose arc passes exactly through
-        // the footprint's left corners — deepest the band can be on a curve.
-        let d_left = (self.rect.x0 - c.x + BAND_LEFT_INSET).max(1.0);
-        // The body reaches centre, so `r_ref` is a layout reference only
-        // (labels, add button) — the solid fill doesn't move with it.
-        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
-        let r_ref = (d_left * d_left + tangent_dy * tangent_dy)
-            .sqrt()
-            .clamp(4.0, r_out - 12.0);
-        // `atan(half_h / d_left)` is the angle whose radial passes
-        // exactly through the footprint's corner, plus slop so an
-        // entering divider is already drawn.
-        let sweep = (half_h / d_left).atan() + SWEEP_SLOP_DEG.to_radians();
+        // This is one huge circle. The sweep only bounds tessellation; it is
+        // extended a little beyond the viewport so the fill and rim cannot
+        // reveal a short end at either edge.
+        let sweep = (half_h / r_out).clamp(-1.0, 1.0).asin() + SWEEP_SLOP_DEG.to_radians();
         let group_clip = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -1554,7 +1493,6 @@ impl SidebarWheelDisc {
         Some(DiscGeometry {
             c,
             r_out,
-            r_ref,
             sweep,
             half_h,
             group_clip,
@@ -1562,56 +1500,11 @@ impl SidebarWheelDisc {
         })
     }
 
-    /// Vertical fade used as the band's group mask (white — only its
-    /// alpha channel is read; `DestIn` keeps the backdrop where the mask
-    /// is opaque, so the colour never reaches the screen) and, via
-    /// [`Self::row_fade`], the same curve a label or the add button
-    /// dissolves along once painted outside that masked group.
-    fn vfade_gradient(&self) -> Gradient {
-        Gradient::new_linear(
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-        )
-        .with_extend(Extend::Pad)
-        .with_stops(
-            &[
-                ColorStop {
-                    offset: 0.0,
-                    color: Color::from_rgba8(255, 255, 255, 0).into(),
-                },
-                ColorStop {
-                    offset: FADE_IN_STOP,
-                    color: Color::WHITE.into(),
-                },
-                ColorStop {
-                    offset: 1.0 - FADE_IN_STOP,
-                    color: Color::WHITE.into(),
-                },
-                ColorStop {
-                    offset: 1.0,
-                    color: Color::from_rgba8(255, 255, 255, 0).into(),
-                },
-            ][..],
-        )
-    }
-
-    /// Same curve [`Self::vfade_gradient`] masks the band with, so a
-    /// label or the add button — both painted outside that masked group —
-    /// dissolves where the surface beneath it does rather than ending up
-    /// crisp on bare wallpaper.
+    /// Labels stay fully opaque until their sector leaves the circular
+    /// sweep. This intentionally has no edge fade: the rail should read as
+    /// one solid object continuing all the way to the screen boundaries.
     fn row_fade(&self, y: f64) -> f32 {
-        let h = self.rect.height();
-        if h <= 0.0 {
-            return 0.0;
-        }
-        let t = f64_to_f32_lossy(((y - self.rect.y0) / h).clamp(0.0, 1.0));
-        if t < FADE_IN_STOP {
-            t / FADE_IN_STOP
-        } else if t > 1.0 - FADE_IN_STOP {
-            (1.0 - t) / FADE_IN_STOP
-        } else {
-            1.0
-        }
+        f32::from(self.rect.y0 <= y && y <= self.rect.y1)
     }
 
     /// Pass 1 — the band: soft multi-ring drop shadow (same falloff as
@@ -1634,93 +1527,9 @@ impl SidebarWheelDisc {
             .fill(Fill::NonZero, ctx.transform, geom.body_hue, None, &band);
     }
 
-    /// Pass 2 — the sectors: display slots tile the sweep at a fixed
-    /// step and CYCLE through the workspaces — indexing off the
-    /// workspace list instead would leave a bald, unsegmented band
-    /// whenever workspaces < slots. Wedge fill for the active sector,
-    /// leading-divider strokes for every sector.
-    fn draw_sectors(&self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
-        if self.spokes.is_empty() {
-            return;
-        }
-        let colors = &ctx.theme.tokens.colors;
-        // Tracks the theme's foreground rather than a hardcoded white,
-        // which is a scratch under the light theme and near-invisible
-        // under high contrast.
-        let edge_hue = colors.text_primary;
-        let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
-
-        let gap = f64::from(self.spoke_gap_deg());
-        let rot = f64::from(self.visual_residual_deg());
-        let slots = slot_reach(geom.sweep, gap);
-        let body_opacity = geom.body_hue.components[3].clamp(0.0, 1.0);
-        let wedge_alpha =
-            ACTIVE_WEDGE_ALPHA + (ACTIVE_WEDGE_ALPHA_ON_OPAQUE - ACTIVE_WEDGE_ALPHA) * body_opacity;
-
-        let slot_idx = self.slot_indices(slots);
-        // `slots` is always >= 0 (see `slot_reach`); `checked_neg`
-        // rather than `-slots` just keeps the negation from reading
-        // as raw arithmetic to clippy.
-        let neg_slots = slots.checked_neg().unwrap_or(i32::MIN);
-        for k in neg_slots..=slots {
-            let mid_deg = rot + f64::from(k) * gap;
-            let mid = mid_deg.to_radians();
-            let a0 = mid - (gap / 2.0).to_radians();
-            let a1 = mid + (gap / 2.0).to_radians();
-            // Wholly outside the sweep.
-            if a0 > geom.sweep || a1 < -geom.sweep {
-                continue;
-            }
-            let Some(idx) = slot_at(&slot_idx, k, slots) else {
-                continue;
-            };
-            let is_active = k == 0;
-            let base = Self::spoke_color(idx, colors);
-
-            // The wedge itself is lit in the workspace's colour —
-            // the thing that turns is also the thing that shows state.
-            if is_active {
-                let wedge = disc_segment(geom.c, geom.r_out, a0, a1);
-                ctx.scene.fill(
-                    Fill::NonZero,
-                    ctx.transform,
-                    base.with_alpha_factor(wedge_alpha),
-                    None,
-                    &wedge,
-                );
-            }
-
-            // Leading divider only, so adjacent sectors share one
-            // line rather than stacking two translucent strokes.
-            let div_a = if is_active { 96 } else { 40 };
-            ctx.scene.stroke(
-                &Stroke::new(1.0),
-                ctx.transform,
-                edge(div_a),
-                None,
-                // From the centre: a divider stopping part-way would
-                // leave the solid body tinted but undivided beyond it.
-                &Line::new(geom.c, polar(geom.c, geom.r_out, a0)),
-            );
-            // Active sector also owns its upper bound, bracketed by
-            // two bright lines instead of one.
-            if is_active {
-                ctx.scene.stroke(
-                    &Stroke::new(1.0),
-                    ctx.transform,
-                    edge(96),
-                    None,
-                    &Line::new(geom.c, polar(geom.c, geom.r_out, a1)),
-                );
-            }
-        }
-    }
-
     /// The rim is the body's one lit edge, carrying the silhouette on
-    /// its own — full window-decoration language: soft wide stroke
-    /// reading as light on a bevel, crisp hairline for a definite
-    /// position, then an inset glow. Painted after [`Self::draw_sectors`]
-    /// so it sits on top of every wedge.
+    /// its own: one soft halo and one definite hairline. A second inset arc
+    /// reads as a separate rail at this enormous radius rather than depth.
     fn draw_rim(ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
         let edge_hue = ctx.theme.tokens.colors.text_primary;
         let edge = |a: u8| Color::from_rgba8(edge_hue.r(), edge_hue.g(), edge_hue.b(), a);
@@ -1729,53 +1538,34 @@ impl SidebarWheelDisc {
             .stroke(&Stroke::new(5.0), ctx.transform, edge(26), None, &rim);
         ctx.scene
             .stroke(&Stroke::new(1.5), ctx.transform, edge(140), None, &rim);
-        // A 1-px-inset hairline just inside the rim, the disc's version of
-        // the active pill's inner glow.
-        ctx.scene.stroke(
-            &Stroke::new(1.0),
-            ctx.transform,
-            edge(46),
-            None,
-            &Circle::new((geom.c.x, geom.c.y), geom.r_out - 2.5),
-        );
     }
 
-    /// Add-button anchor: settled before any label is placed, so labels
-    /// can be kept clear of it. Placed by depth down the band rather
-    /// than up from the floor — the floor is inside the vertical fade,
-    /// which would leave the button hanging on bare wallpaper. Tucked
-    /// against the inner arc rather than mid-band, where a label
-    /// sweeping past would collide with it.
+    /// Seat the add button directly on the lower rim. It belongs to the wheel;
+    /// placing it against an imaginary inner band made it look detached.
     fn position_add_button(&mut self, geom: &DiscGeometry) {
         let add_center_y = geom.c.y + geom.half_h * ADD_BAND_FRACTION;
         let add_delta_y = add_center_y - geom.c.y;
-        let add_span_in = (geom.r_ref * geom.r_ref - add_delta_y * add_delta_y)
+        let add_radius = geom.r_out - 6.0;
+        let rim_span = (add_radius * add_radius - add_delta_y * add_delta_y)
             .max(0.0)
             .sqrt();
-        let add_center_x = geom.c.x + add_span_in + ADD_BUTTON_D / 2.0 + 8.0;
+        let add_center_x = geom.c.x + rim_span;
         self.plus_rect = Rect::from_center_size(
             Point::new(add_center_x, add_center_y),
             (ADD_BUTTON_D, ADD_BUTTON_D),
         );
     }
 
-    /// Pass 3 — the sector labels: each is a chip built in the sector's
-    /// own frame then rotated about the disc's centre, so every chip
-    /// sits at the same radius and width — a ring of labels that tips
-    /// with the wheel, reading as paint on the surface. Also claims
-    /// each spoke's click target (nearest slot to centre wins) and
-    /// draws presence dots for peers on that workspace — see
+    /// Pass 3 — compact workspace labels and markers attached to the rim.
+    /// Each still rotates with the same wheel geometry and claims the same
+    /// click target; only the oversized pie-slice presentation is gone. See
     /// [`Self::draw_one_sector_label`].
     fn draw_labels(&mut self, ctx: &mut DrawCtx<'_>, geom: &DiscGeometry) {
-        let chip_x0 = geom.c.x + geom.r_ref + LABEL_INNER_INSET;
-        let chip_x1 = geom.c.x + geom.r_out - LABEL_RIM_GAP;
-        let chip_w = chip_x1 - chip_x0;
-        let inactive_h = self.inactive_chip_height(chip_w, ctx.theme, ctx.text_renderer);
+        let max_w = Self::label_chip_width(ctx.theme);
+        let inactive_h = self.inactive_chip_height(max_w, ctx.theme, ctx.text_renderer);
         let layout = LabelLayout {
-            chip_x0,
-            chip_x1,
-            chip_w,
-            names_fit: chip_w >= LABEL_MIN_W,
+            radial_start: geom.c.x + geom.r_out + LABEL_RIM_GAP,
+            max_w,
             inactive_h,
         };
 
@@ -1837,14 +1627,17 @@ impl SidebarWheelDisc {
         // rather than showing "H…" for "Home" at a larger text scale; the
         // resting sectors step down together so the ring stays uniform.
         let row_h = if slot.is_active {
-            self.active_chip_height(slot.idx, layout.chip_w, ctx.theme, ctx.text_renderer)
+            self.active_chip_height(slot.idx, layout.max_w, ctx.theme, ctx.text_renderer)
         } else {
             layout.inactive_h
         };
+        let label = self.spokes.get(slot.idx).map_or("", |s| s.text.as_str());
+        let natural_w = Chip::natural_width_at(label, row_h, lead, ctx.theme, ctx.text_renderer);
+        let chip_w = natural_w.clamp(LABEL_MIN_W, layout.max_w);
         let chip = Rect::new(
-            layout.chip_x0,
+            layout.radial_start,
             geom.c.y - row_h / 2.0,
-            layout.chip_x1,
+            layout.radial_start + chip_w,
             geom.c.y + row_h / 2.0,
         );
         let rotate = Affine::rotate_about(slot.mid, geom.c);
@@ -1856,11 +1649,8 @@ impl SidebarWheelDisc {
             return;
         }
 
-        // The sector is the container — no pill of its own, since a
-        // pill inside a lit wedge is a box inside a box. Active label
-        // colours as primary text: its own workspace hue would sit on
-        // a wedge of that same hue, where identity is already carried
-        // by the wedge.
+        Self::draw_rim_marker(ctx, geom, slot, fade_a);
+
         let style = if slot.is_active {
             ChipStyle::bare(None)
         } else {
@@ -1882,19 +1672,67 @@ impl SidebarWheelDisc {
             ctx.scene,
             chip_transform,
             chip,
-            if layout.names_fit {
-                self.spokes.get(slot.idx).map_or("", |s| s.text.as_str())
-            } else {
-                ""
-            },
+            label,
             lead,
             style,
             ctx.theme,
             ctx.text_renderer,
         );
 
-        self.claim_hit_rect(hit_claim, slot, placed);
+        let marker = Rect::from_center_size(anchor, (28.0, 28.0));
+        self.claim_hit_rect(hit_claim, slot, placed.union(marker));
         self.draw_presence_dots(ctx, geom, slot);
+    }
+
+    /// Restrained selection treatment: a small seat on the rim and, for the
+    /// active workspace, a short coloured glint. Nothing reaches toward the
+    /// disc centre, so it can never read as a pizza sector.
+    fn draw_rim_marker(ctx: &mut DrawCtx<'_>, geom: &DiscGeometry, slot: &SectorSlot, alpha: f32) {
+        let colors = &ctx.theme.tokens.colors;
+        let base = Self::spoke_color(slot.idx, colors);
+        let anchor = polar(geom.c, geom.r_out, slot.mid);
+        if slot.is_active {
+            let mut glint = BezPath::new();
+            let half = 1.15_f64.to_radians();
+            for step in 0_u32..=12 {
+                let t = f64::from(step) / 12.0;
+                let p = polar(geom.c, geom.r_out, slot.mid - half + t * half * 2.0);
+                if step == 0 {
+                    glint.move_to(p);
+                } else {
+                    glint.line_to(p);
+                }
+            }
+            ctx.scene.stroke(
+                &Stroke::new(3.0),
+                ctx.transform,
+                base.with_alpha_factor(0.72 * alpha),
+                None,
+                &glint,
+            );
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                base.with_alpha_factor(0.18 * alpha),
+                None,
+                &Circle::new(anchor, 11.0),
+            );
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                base.with_alpha_factor(alpha),
+                None,
+                &Circle::new(anchor, 5.0),
+            );
+        } else {
+            ctx.scene.fill(
+                Fill::NonZero,
+                ctx.transform,
+                colors.text_dim.with_alpha_factor(0.72 * alpha),
+                None,
+                &Circle::new(anchor, 3.0),
+            );
+        }
     }
 
     /// Whether `chip` — unrotated, in the sector's own frame — would
@@ -2394,14 +2232,7 @@ impl SidebarWheelDisc {
     /// reaching the centre; this bounds the readable ring near the rim.
     pub fn label_band_radii(&self) -> (f64, f64) {
         let radius = self.diameter_px / 2.0;
-        let c = self.center();
-        let half_h = self.rect.height() / 2.0;
-        let d_left = (self.rect.x0 - c.x + BAND_LEFT_INSET).max(1.0);
-        let tangent_dy = half_h * BAND_TANGENT_FRACTION;
-        let r_in = (d_left * d_left + tangent_dy * tangent_dy)
-            .sqrt()
-            .clamp(4.0, radius - 12.0);
-        (r_in, radius)
+        (radius - ADD_BUTTON_D, radius)
     }
 
     /// Sits well off-screen left of the footprint, which is what makes
@@ -2742,7 +2573,7 @@ mod tests {
                      (chip width {:.1}, names need {LABEL_MIN_W})",
                     placed.len(),
                     d.spokes.len(),
-                    d.label_chip_width()
+                    SidebarWheelDisc::label_chip_width(&Theme::default())
                 );
             }
         }
@@ -2839,24 +2670,36 @@ mod tests {
         );
     }
 
-    /// Past a point the band's inner arc leaves through the footprint's
-    /// left edge and the clip turns it into a straight cut — survivable
-    /// only while the fade has already taken the band down. Asserts on
-    /// the two constants that decide it, not a rendered pixel.
+    /// The docked rail owns the complete slot height; its circular profile,
+    /// not a cropped/faded rectangle, is what makes it taper at the edges.
     #[test]
-    fn band_clip_starts_where_the_fade_has_already_taken_hold() {
-        // Fraction of the footprint's height between its edge and the
-        // point the inner arc starts being clipped.
-        let clip_at = (1.0 - BAND_TANGENT_FRACTION) / 2.0;
-        // The fade ramps linearly from 0 at the edge to 1 at FADE_IN_STOP.
-        let alpha_at_clip = clip_at / f64::from(FADE_IN_STOP);
+    fn docked_rail_reaches_both_slot_edges_without_an_inset() {
+        let slot = live_slot();
+        let mut d = mk(&["Home", "Research", "Design"]);
+        layout_into_slot(&mut d, slot);
+
+        assert_eq!(d.rect.y0, slot.y0, "rail must begin at the slot's top edge");
+        assert_eq!(d.rect.y1, slot.y1, "rail must reach the slot's bottom edge");
+        assert_eq!(d.row_fade(slot.y0), 1.0, "top edge must not fade out");
+        assert_eq!(d.row_fade(slot.y1), 1.0, "bottom edge must not fade out");
+    }
+
+    /// The accepted 96 px wheel moves 30 px left while the circle only gets
+    /// larger/flatter; shrinking the radius would recreate the short rail.
+    #[test]
+    fn visible_rail_is_about_thirty_pixels_narrower_at_live_width() {
+        let d = mk(&["Home", "Research", "Design"]);
+        let accepted_width = 96.0_f64;
+        let accepted_radius = 600.0_f64;
+
         assert!(
-            alpha_at_clip <= 0.35,
-            "the band gets clipped while still at {:.0}% alpha — the cut \
-             will read as a straight edge sliced through the surface. \
-             Raise BAND_TANGENT_FRACTION ({BAND_TANGENT_FRACTION}) or \
-             FADE_IN_STOP ({FADE_IN_STOP}).",
-            alpha_at_clip * 100.0
+            (accepted_width - d.visible_width_px() - 30.0).abs() < 0.5,
+            "accepted 96px rim should move 30px left; visible width is {}px",
+            d.visible_width_px()
+        );
+        assert!(
+            d.diameter_px / 2.0 > accepted_radius,
+            "the narrower sliver must come from moving a larger circle left, not shrinking it"
         );
     }
 
@@ -3008,10 +2851,17 @@ mod tests {
             d.rect.x1,
             pointer.x
         );
+        // The docked rim spans its whole slot, so the vertical centre is the
+        // pointer clamped to where the footprint still fits inside the slot.
         let centre_y = f64::midpoint(d.rect.y0, d.rect.y1);
+        let half = docked.height() / 2.0;
+        let expected_y = pointer
+            .y
+            .clamp(slot.y0 + half, (slot.y1 - half).max(slot.y0 + half));
         assert!(
-            (centre_y - pointer.y).abs() < 1.0,
-            "the disc centres on the pointer vertically, got {centre_y} for pointer y={}",
+            (centre_y - expected_y).abs() < 1.0,
+            "the disc centres on the pointer as far as the slot allows, got {centre_y} \
+             for pointer y={} (expected {expected_y})",
             pointer.y
         );
 
@@ -3039,8 +2889,9 @@ mod tests {
         );
     }
 
-    /// Real `build_layout` / `apply_layout` against a slot, as the
-    /// overlay host does.
+    /// Real `build_layout` / `apply_layout` against a host slot. The slot may
+    /// be hundreds of pixels wide, but the wheel leaf deliberately keeps its
+    /// own narrow visible width.
     fn layout_into_slot(d: &mut SidebarWheelDisc, slot: Rect) {
         use std::collections::HashMap;
         use taffy::prelude::TaffyMaxContent;
@@ -3050,7 +2901,7 @@ mod tests {
         let node = d.build_layout(&mut taffy, &theme, &mut node_map);
         let mut style = taffy.style(node).unwrap().clone();
         style.size = Size {
-            width: Dimension::length(f64_to_f32_lossy(slot.width())),
+            width: Dimension::length(f64_to_f32_lossy(d.visible_width_px().min(slot.width()))),
             height: Dimension::length(f64_to_f32_lossy(slot.height())),
         };
         taffy.set_style(node, style).unwrap();
@@ -3977,7 +3828,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
 
         for (idx, name) in ["Home", "Research", "Design"].iter().enumerate() {
@@ -4106,16 +3957,13 @@ mod tests {
         assert_eq!(d.active_idx, 2, "the indicator lands on the clicked spoke");
     }
 
-    /// The band's label metrics are the spacing scale under other names;
-    /// pinned so a later edit cannot move them off the grid unnoticed.
+    /// The rim's label gap is the spacing scale under another name; pinned
+    /// so a later edit cannot move it off the grid unnoticed. Chip heights
+    /// are the compact chip type scale, not spacing.
     #[test]
     fn label_metrics_sit_on_the_spacing_scale() {
         let spacing = Theme::default().tokens.spacing;
         assert_eq!(LABEL_RIM_GAP, f64::from(spacing.s3));
-        assert_eq!(LABEL_INNER_INSET, f64::from(spacing.s3));
-        assert_eq!(BAND_LEFT_INSET, f64::from(spacing.s3));
-        assert_eq!(SECTOR_CHIP_H, f64::from(spacing.s12));
-        assert_eq!(SECTOR_CHIP_H_ACTIVE, f64::from(spacing.s16));
     }
 
     /// At 200 % text the chip's label grows with it, and at the family's
@@ -4129,7 +3977,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert!(chip_w > LABEL_MIN_W, "band too shallow to test: {chip_w}");
 
         let inactive_h = d.inactive_chip_height(chip_w, &theme, &mut tr);
@@ -4174,7 +4022,7 @@ mod tests {
         layout_into_slot(&mut d, live_slot());
         let mut tr = TextRenderer::new();
         let theme = Theme::dark();
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         assert_eq!(
             d.chip_height_for(1, chip_w, SECTOR_CHIP_H, &theme, &mut tr),
             None,
@@ -4205,7 +4053,7 @@ mod tests {
         layout_into_slot(&mut d, Rect::new(0.0, 168.0, 220.0, 511.0));
         let mut tr = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        let chip_w = d.label_chip_width();
+        let chip_w = SidebarWheelDisc::label_chip_width(&theme);
         let fits_anywhere = (0..3).any(|idx| {
             d.chip_height_for(idx, chip_w, SECTOR_CHIP_H_ACTIVE, &theme, &mut tr)
                 .is_some()

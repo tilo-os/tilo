@@ -1,7 +1,7 @@
 //! Trust policy — which peer certs the relay accepts.
 //!
 //! Every inbound connection carries a `DeviceCert`. The auth
-//! handshake (`tilo_relay::auth`) checks the cert's signature; this
+//! handshake ([`crate::auth`]) checks the cert's signature; this
 //! module decides whether the *identity* the cert chains to is
 //! allowed to talk to us at all.
 //!
