@@ -1085,7 +1085,7 @@ impl App {
                 plan,
             ));
         }
-        let mut report = json!({
+        let report = json!({
             "scenario": "install",
             "layout": plan.layout.name(),
             "encrypt": plan.unlock.name(),
@@ -1099,9 +1099,13 @@ impl App {
             "artifacts": plan.out,
         });
         #[cfg(windows)]
-        if let Some(checked) = checked_install_proof {
-            report["_checked_install_proof"] = checked;
-        }
+        let report = {
+            let mut report = report;
+            if let Some(checked) = checked_install_proof {
+                report["_checked_install_proof"] = checked;
+            }
+            report
+        };
         Ok(report)
     }
 
