@@ -790,9 +790,9 @@ impl ChatApp {
         let mut app = Self::bare();
         app.is_live = true;
         app.me = LocalIdentity::resolve();
-        // The live binary uses the real transport (a bound iroh endpoint on a
-        // real session; the simulator otherwise). Tests/`--shots` keep the
-        // deterministic local bus from `bare`.
+        // Select the live transport, but defer its endpoint bind until the
+        // user explicitly joins a call. Tests/`--shots` keep the deterministic
+        // local bus from `bare`.
         app.media = MediaEngine::new();
         // Author the local view state under the real identity from the start so
         // nothing is attributed to the demo `u_me`.

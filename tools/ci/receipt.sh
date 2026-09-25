@@ -37,11 +37,22 @@ case "${1:-}" in
     git rev-parse --verify "$sha^{commit}" >/dev/null
     git config user.name 'Tilo Forgejo CI'
     git config user.email 'tilo@noreply.code.sandbox.example'
-    git fetch "$remote" "+$notes_ref:$notes_ref" 2>/dev/null || true
-    git notes --ref=tilo-check-ci add -f \
-      -m "select=$select_result security=$security_result affected=$affected_result run=$run_id sha=$sha" \
-      "$sha"
-    git push "$remote" "$notes_ref"
+    # Several CI runs can record receipts at once. Refresh the notes tree and
+    # retry a rejected push so each run retains notes written by the others.
+    for attempt in {1..12}; do
+      git fetch "$remote" "+$notes_ref:$notes_ref" 2>/dev/null || true
+      git notes --ref=tilo-check-ci add -f \
+        -m "select=$select_result security=$security_result affected=$affected_result run=$run_id sha=$sha" \
+        "$sha"
+      if git push "$remote" "$notes_ref"; then
+        break
+      fi
+      if (( attempt == 12 )); then
+        echo 'could not publish CI receipt after 12 attempts' >&2
+        exit 1
+      fi
+      sleep "0.$((200 + RANDOM % 400))"
+    done
     ;;
   verify)
     [[ $# == 3 ]] || usage
