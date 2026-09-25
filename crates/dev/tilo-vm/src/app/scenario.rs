@@ -2,11 +2,17 @@
 //! host — `os/dev/vm.sh` for the VM, the console socket for the guest, the
 //! receipt for timings, and the artifact directory.
 
+#[cfg(windows)]
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+#[cfg(windows)]
+use std::process::Command;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
+#[cfg(windows)]
+use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::{App, Outcome};
@@ -33,6 +39,7 @@ const UNLOCK_ATTEMPTS: u32 = 8;
 struct Plan {
     root: PathBuf,
     medium: PathBuf,
+    external_target: Option<PathBuf>,
     layout: Layout,
     unlock: Unlock,
     graphics: crate::scenario::Graphics,
@@ -80,7 +87,9 @@ impl Plan {
     }
 
     fn target(&self) -> PathBuf {
-        self.cycle_dir.join("target.qcow2")
+        self.external_target
+            .clone()
+            .unwrap_or_else(|| self.cycle_dir.join("target.qcow2"))
     }
 
     fn tpm_flag(&self) -> &'static str {
@@ -112,6 +121,12 @@ impl Plan {
             let mut env = env;
             env.push(("TILO_CONSOLE_PORT".into(), self.ports.console.to_string()));
             env.push(("TILO_QMP_PORT".into(), self.ports.qmp.to_string()));
+            if let Some(target) = &self.external_target {
+                env.push((
+                    "TILO_INSTALL_TARGET_DISK".into(),
+                    target.display().to_string(),
+                ));
+            }
             env
         };
         env
@@ -142,6 +157,7 @@ impl Plan {
             "artifacts": self.out,
             "console": self.console(),
             "target": self.target(),
+            "external_target": self.external_target.is_some(),
             "install_timeout_seconds": self.install_timeout.as_secs(),
             "keep": self.keep,
             "commands": [
@@ -218,6 +234,173 @@ fn write_json(dir: &Path, name: &str, value: &Value) -> Result<(), CliError> {
         .map_err(CliError::io(format!("writing {name}")))
 }
 
+#[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VmInstallProof {
+    schema: String,
+    architecture: String,
+    booted_image_digest: String,
+    installed_image_digest: String,
+    composefs_digest: String,
+    target_uki_sha256: String,
+    disk_guid: String,
+    partuuids: VmPartuuids,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VmPartuuids {
+    efi: String,
+    boot: String,
+    root: String,
+}
+
+#[cfg(windows)]
+fn lowercase_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(windows)]
+fn canonical_uuid(value: &str) -> bool {
+    uuid::Uuid::parse_str(value).is_ok_and(|id| id.to_string() == value)
+}
+
+#[cfg(windows)]
+fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
+    const PREFIX: &str = "TILO_VM_INSTALL_PROOF_V1=";
+    let line = std::str::from_utf8(bytes).map_err(|_| "VM install proof is not UTF-8")?;
+    let payload = line
+        .strip_prefix(PREFIX)
+        .and_then(|rest| rest.strip_suffix('\n'))
+        .ok_or("VM install proof needs exactly one terminated proof line")?;
+    if payload.contains('\n') || payload.contains('\r') {
+        return Err("VM install proof contains another line or carriage return".into());
+    }
+    let proof: VmInstallProof = serde_json::from_str(payload)
+        .map_err(|error| format!("invalid VM install proof: {error}"))?;
+    if proof.schema != "tilo.vm-install-image-proof.v1"
+        || proof.architecture != "arm64"
+        || !proof
+            .booted_image_digest
+            .strip_prefix("sha256:")
+            .is_some_and(|hex| lowercase_hex(hex, 64))
+        || proof.booted_image_digest != proof.installed_image_digest
+        || !lowercase_hex(&proof.composefs_digest, 128)
+        || !lowercase_hex(&proof.target_uki_sha256, 64)
+        || !canonical_uuid(&proof.disk_guid)
+        || !canonical_uuid(&proof.partuuids.efi)
+        || !canonical_uuid(&proof.partuuids.boot)
+        || !canonical_uuid(&proof.partuuids.root)
+        || proof.partuuids.efi == proof.partuuids.boot
+        || proof.partuuids.efi == proof.partuuids.root
+        || proof.partuuids.boot == proof.partuuids.root
+    {
+        return Err("VM install proof has invalid or inconsistent identities".into());
+    }
+    Ok(proof)
+}
+
+#[cfg(windows)]
+fn check_install_proof(
+    proof: &VmInstallProof,
+    source_check: &Value,
+    installer_composefs: Option<&str>,
+) -> Result<Value, String> {
+    if source_check.get("disk_guid").and_then(Value::as_str) != Some(&proof.disk_guid)
+        || source_check
+            .pointer("/final_partuuids/efi")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.efi)
+        || source_check
+            .pointer("/final_partuuids/boot")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.boot)
+        || source_check
+            .pointer("/final_partuuids/root")
+            .and_then(Value::as_str)
+            != Some(&proof.partuuids.root)
+        || installer_composefs != Some(&proof.composefs_digest)
+    {
+        return Err(
+            "guest install proof differs from the verified source GPT or installer composefs"
+                .into(),
+        );
+    }
+    Ok(json!({
+        "schema": "tilo.windows-vm-install-proof-check.v1",
+        "guest_proof": {
+            "schema": proof.schema,
+            "architecture": proof.architecture,
+            "booted_image_digest": proof.booted_image_digest,
+            "installed_image_digest": proof.installed_image_digest,
+            "composefs_digest": proof.composefs_digest,
+            "target_uki_sha256": proof.target_uki_sha256,
+            "disk_guid": proof.disk_guid,
+            "partuuids": {
+                "efi": proof.partuuids.efi,
+                "boot": proof.partuuids.boot,
+                "root": proof.partuuids.root,
+            },
+        },
+        "source_check": source_check,
+        "installer_composefs": installer_composefs,
+    }))
+}
+
+#[cfg(windows)]
+fn verify_external_target(
+    plan: &Plan,
+    expected_final_partitions: u64,
+    artifact_name: &str,
+) -> Result<Option<Value>, CliError> {
+    let Some(target) = &plan.external_target else {
+        return Ok(None);
+    };
+    let mut manifest_name = OsString::from(target.as_os_str());
+    manifest_name.push(".manifest.json");
+    let manifest = PathBuf::from(manifest_name);
+    let script = plan.root.join("os/dev/prepare-windows-direct-source.py");
+    let output = Command::new("python3")
+        .arg(&script)
+        .args(["verify-template", "--manifest"])
+        .arg(&manifest)
+        .arg("--source-raw")
+        .arg(target)
+        .current_dir(&plan.root)
+        .output()
+        .map_err(CliError::io("verifying the Windows direct-source template"))?;
+    if !output.status.success() {
+        return Err(failed(
+            "verify-alongside",
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+            plan,
+        ));
+    }
+    let proof: Value = serde_json::from_slice(&output.stdout)
+        .map_err(|error| failed("verify-alongside", error.to_string(), plan))?;
+    if proof.get("preserved_gpt_verified").and_then(Value::as_bool) != Some(true)
+        || proof
+            .get("preserved_edge_samples_verified")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || proof.get("final_partition_count").and_then(Value::as_u64)
+            != Some(expected_final_partitions)
+    {
+        return Err(failed(
+            "verify-alongside",
+            format!("unexpected Windows direct-source proof: {proof}"),
+            plan,
+        ));
+    }
+    write_json(&plan.out, artifact_name, &proof)?;
+    Ok(Some(proof))
+}
+
 impl App {
     #[expect(
         clippy::too_many_lines,
@@ -227,10 +410,18 @@ impl App {
         &mut self,
         args: &InstallScenarioArgs,
     ) -> Result<Outcome, CliError> {
-        if cfg!(windows) && args.layout != Layout::Erase {
+        if cfg!(windows) && args.layout != Layout::Erase && args.target_disk.is_none() {
             return Err(CliError::Unsupported {
                 what: "alongside installer fixture on a Windows host".into(),
-                alternative: "use --layout erase for the Windows WHPX install cycle; alongside fixtures require Linux sfdisk and mkfs tools".into(),
+                alternative: "supply a reviewed sparse raw target with --target-disk; alongside fixture creation requires Linux sfdisk and mkfs tools".into(),
+            });
+        }
+        if args.target_disk.is_some() && (!cfg!(windows) || args.layout != Layout::GuidedAlongside)
+        {
+            return Err(CliError::Unsupported {
+                what: "external install target".into(),
+                alternative: "use --target-disk only for a Windows WHPX guided-alongside cycle"
+                    .into(),
             });
         }
         if cfg!(windows) && args.encrypt == Unlock::TpmPin {
@@ -270,6 +461,37 @@ impl App {
                 path: medium.display().to_string(),
             });
         }
+        let external_target = if let Some(target) = &args.target_disk {
+            let metadata = std::fs::symlink_metadata(target)
+                .map_err(CliError::io("inspecting external install target"))?;
+            if !metadata.is_file()
+                || metadata.file_type().is_symlink()
+                || metadata.len() < 40 * 1024 * 1024 * 1024
+            {
+                return Err(CliError::Unsupported {
+                    what: "external install target".into(),
+                    alternative: "use a regular, non-link sparse raw file of at least 40 GiB prepared by the Windows direct-source helper".into(),
+                });
+            }
+            let target = target
+                .canonicalize()
+                .map_err(CliError::io("resolving external install target"))?;
+            let medium_path = medium
+                .canonicalize()
+                .map_err(CliError::io("resolving installer medium"))?;
+            if target == medium_path
+                || target.extension().and_then(|extension| extension.to_str()) != Some("raw")
+            {
+                return Err(CliError::Unsupported {
+                    what: "external install target".into(),
+                    alternative: "use a distinct .raw target file, never the installer medium"
+                        .into(),
+                });
+            }
+            Some(target)
+        } else {
+            None
+        };
         let cycle = format!(
             "scenario-install-{}-{}",
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
@@ -291,6 +513,7 @@ impl App {
         let plan = Plan {
             root,
             medium,
+            external_target,
             layout: args.layout,
             unlock: args.encrypt,
             graphics: args.graphics,
@@ -324,13 +547,44 @@ impl App {
         }
         std::fs::create_dir_all(&plan.out)
             .map_err(CliError::io("creating the artifact directory"))?;
+        if let Some(target) = &plan.external_target {
+            let artifacts = plan
+                .out
+                .canonicalize()
+                .map_err(CliError::io("resolving scenario artifacts"))?;
+            if target.starts_with(artifacts) {
+                return Err(CliError::Unsupported {
+                    what: "external install target inside scenario artifacts".into(),
+                    alternative: "place the reviewed raw target outside --out so scenario cleanup cannot remove it".into(),
+                });
+            }
+        }
         write_json(&plan.out, "scenario.json", &plan.describe())?;
         self.receipt.set("scenario", plan.describe());
         let secret = plan.unlock.scenario_secret();
         let result = self.run_install_scenario(&plan, &secret);
         // Whatever happened, the VM stops and the evidence is scrubbed.
-        let _ = self.runner.output(&plan.vm(&["stop"]));
-        if !plan.keep {
+        let stop = self.runner.output(&plan.vm(&["stop"]));
+        #[cfg(windows)]
+        let stopped_cleanly = stop.as_ref().is_ok_and(|outcome| outcome.success);
+        #[cfg(windows)]
+        let result = result.and_then(|report| {
+            if plan.external_target.is_some() {
+                let stopped = stop.map_err(|error| failed("stop", error.to_string(), &plan))?;
+                if !stopped.success {
+                    return Err(failed("stop", stopped.stderr.trim(), &plan));
+                }
+            }
+            verify_external_target(&plan, 3, "external-target-after-boot.json")?;
+            Ok(report)
+        });
+        #[cfg(not(windows))]
+        let _ = stop;
+        #[cfg(windows)]
+        let preserve_failed_external = plan.external_target.is_some() && !stopped_cleanly;
+        #[cfg(not(windows))]
+        let preserve_failed_external = false;
+        if !plan.keep && !preserve_failed_external {
             let _ = std::fs::remove_dir_all(&plan.cycle_dir);
             let _ = std::fs::remove_dir_all(&plan.run);
         }
@@ -393,8 +647,10 @@ impl App {
         if !init.success {
             return Err(failed("prepare", init.stderr.trim(), plan));
         }
+        #[cfg(windows)]
+        verify_external_target(plan, 0, "external-target-before.json")?;
         let mut preserved: Vec<Preserved> = Vec::new();
-        if plan.layout != Layout::Erase {
+        if plan.layout != Layout::Erase && plan.external_target.is_none() {
             let scratch = fixture::scratch_dir(&plan.cycle_dir);
             std::fs::create_dir_all(&scratch).map_err(CliError::io("creating fixture scratch"))?;
             let raw = plan.cycle_dir.join("target.raw");
@@ -515,6 +771,29 @@ impl App {
             }
             self.receipt
                 .record("verify-alongside", verify.elapsed().as_secs_f64());
+        }
+        #[cfg(windows)]
+        let source_check = verify_external_target(plan, 3, "external-target-after-install.json")?;
+        #[cfg(windows)]
+        if let Some(source_check) = &source_check {
+            let path = plan.run.join("install-proof.log");
+            let size = std::fs::metadata(&path)
+                .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?
+                .len();
+            if size == 0 || size > 8192 {
+                return Err(failed(
+                    "verify-install-proof",
+                    "VM install proof is empty or oversized",
+                    plan,
+                ));
+            }
+            let bytes = std::fs::read(&path)
+                .map_err(|error| failed("verify-install-proof", error.to_string(), plan))?;
+            let proof = parse_install_proof(&bytes)
+                .map_err(|error| failed("verify-install-proof", error, plan))?;
+            let checked = check_install_proof(&proof, source_check, installed.composefs.as_deref())
+                .map_err(|error| failed("verify-install-proof", error, plan))?;
+            write_json(&plan.out, "vm-install-proof-checked.json", &checked)?;
         }
 
         let target_boot = Instant::now();
@@ -665,12 +944,40 @@ fn wait_for_app(console: &mut SocketConsole, app: &str, limit: Duration) -> Opti
 
 #[cfg(test)]
 mod tests {
+    #[cfg(windows)]
+    #[test]
+    fn vm_install_proof_requires_one_valid_guest_line_and_matching_source() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let efi = "11111111-1111-4111-8111-111111111111";
+        let boot = "22222222-2222-4222-8222-222222222222";
+        let root = "33333333-3333-4333-8333-333333333333";
+        let disk = "44444444-4444-4444-8444-444444444444";
+        let payload = json!({
+            "schema": "tilo.vm-install-image-proof.v1", "architecture": "arm64",
+            "booted_image_digest": digest, "installed_image_digest": digest,
+            "composefs_digest": "b".repeat(128), "target_uki_sha256": "c".repeat(64),
+            "disk_guid": disk, "partuuids": {"efi": efi, "boot": boot, "root": root},
+        });
+        let line = format!("TILO_VM_INSTALL_PROOF_V1={payload}\n");
+        let proof = super::parse_install_proof(line.as_bytes()).expect("valid guest proof");
+        let source = json!({"disk_guid": disk,
+            "final_partuuids": {"efi": efi, "boot": boot, "root": root}});
+        let checked = super::check_install_proof(&proof, &source, Some(&"b".repeat(128)))
+            .expect("matching source GPT");
+        assert_eq!(checked["guest_proof"]["disk_guid"], disk);
+        assert!(super::parse_install_proof(format!("{line}{line}").as_bytes()).is_err());
+        assert!(super::parse_install_proof(line.trim_end().as_bytes()).is_err());
+        let mut changed = source;
+        changed["final_partuuids"]["root"] = json!(efi);
+        assert!(super::check_install_proof(&proof, &changed, Some(&"b".repeat(128))).is_err());
+    }
     use super::*;
 
     fn plan(layout: Layout) -> Plan {
         Plan {
             root: PathBuf::from("/w"),
             medium: PathBuf::from("/w/os/output/installer/qcow2/disk.qcow2"),
+            external_target: None,
             layout,
             unlock: Unlock::Passphrase,
             graphics: crate::scenario::Graphics::Software,
@@ -759,5 +1066,19 @@ mod tests {
         assert!(commands.contains("boot-installer"));
         assert!(commands.contains("boot-target"));
         assert!(commands.contains("tcp://127.0.0.1:30001"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn external_raw_target_is_retained_and_passed_to_whpx_transport() {
+        let mut plan = plan(Layout::GuidedAlongside);
+        let target = PathBuf::from("C:/tilo-test/source.raw");
+        plan.external_target = Some(target.clone());
+        assert_eq!(plan.target(), target);
+        let boot = plan.vm(&["boot-installer"]);
+        assert!(boot.env.iter().any(|(key, value)| {
+            key == "TILO_INSTALL_TARGET_DISK" && value == &target.display().to_string()
+        }));
+        assert_eq!(plan.describe()["external_target"], true);
     }
 }

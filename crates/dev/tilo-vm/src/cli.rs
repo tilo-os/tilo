@@ -238,7 +238,7 @@ pub enum Command {
 pub enum ScenarioCommand {
     /// Boot an installer medium, install through its published actions, cold-boot the result and verify first boot.
     #[command(
-        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
+        after_help = "Examples:\n  tilo-vm scenario install\n  tilo-vm scenario install --medium os/output/installer/qcow2/disk.qcow2\n  tilo-vm scenario install --layout guided-alongside\n  tilo-vm scenario install --layout guided-alongside --target-disk C:\\VMs\\tilo-source.raw --graphics software\n  tilo-vm scenario install --layout prepared-alongside --graphics software\n  TILO_SECBOOT_KEYS=/path/to/release-vars tilo-vm scenario install --encrypt tpm-pin\n  tilo-vm scenario install --dry-run --json\n\nNo slot and no dev VM: the scenario boots its own throwaway QEMU VM with\nos/dev/vm.sh, reaches the installer on its console channel (the tilo-control\naction protocol over a virtio-serial port only this VM has), installs, powers\noff through the installer's Finish action, cold-boots the target, types the\nunlock secret at its boot prompt, and verifies the greeter runs the image the\ninstaller wrote. Build a medium first: ./os/build.sh --local, then\n./os/dev/build-custom-installer.sh. Details: tilo-vm guide scenarios."
     )]
     Install(InstallScenarioArgs),
 }
@@ -248,6 +248,9 @@ pub struct InstallScenarioArgs {
     /// The installer medium (default: os/output/installer/qcow2/disk.qcow2, what os/dev/build-custom-installer.sh writes). Never modified: the VM boots a throwaway overlay.
     #[arg(long)]
     pub medium: Option<PathBuf>,
+    /// Existing sparse raw target file for a Windows WHPX guided-alongside cycle. The file is written in place and retained after the run.
+    #[arg(long)]
+    pub target_disk: Option<PathBuf>,
     /// The target disk before the install: erase (blank disk, used whole), prepared-alongside or guided-alongside (existing systems kept byte-for-byte).
     #[arg(long, value_enum, default_value = "erase")]
     pub layout: crate::scenario::Layout,
@@ -404,7 +407,7 @@ pub enum VmCommand {
     },
     /// Download the published dev disk (or use a local one), create the VM with the host's hypervisor, and register it.
     #[command(
-        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
+        after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2"
     )]
     Create(CreateArgs),
     /// Boot the VM and wait until SSH answers.
@@ -463,13 +466,24 @@ pub enum VmCommand {
         #[arg(short, long, default_value = "target/tilo-vm-vm.png")]
         output: PathBuf,
     },
+    /// Delete a VM: unregister it from the hypervisor and remove its disk, firmware variables, logs and key.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm rm try1\n  tilo-vm vm rm try1 --force   # power it off first if it is running\n\nThe image it was created from (a published disk in the cache, or --image) is\nkept. A VM tilo-vm did not create (registered by hand) is only\nunregistered."
+    )]
+    Rm {
+        /// The VM to delete (always named: there is no default).
+        name: String,
+        /// Power the VM off first if it is running.
+        #[arg(long)]
+        force: bool,
+    },
     /// Hard-reset the VM.
     #[command(after_help = "Examples:\n  tilo-vm vm reset")]
     Reset {
         /// The VM (default: the one this worktree uses).
         name: Option<String>,
     },
-    /// Pass arguments to the hypervisor's native control tool (virsh, QEMU monitor, utmctl, PowerShell).
+    /// Pass arguments to the hypervisor's native control tool (virsh, QEMU monitor, utmctl, `PowerShell`).
     #[command(
         after_help = "Examples:\n  tilo-vm vm control dominfo dev\n  tilo-vm vm control --vm ci info block"
     )]
@@ -493,9 +507,16 @@ pub struct CreateArgs {
     /// scenario tests.
     #[arg(long)]
     pub hypervisor: Option<String>,
-    /// A local dev disk to create the VM from, instead of downloading one.
+    /// A local disk to create the VM from, instead of downloading one: a
+    /// qcow2 dev disk or a raw disk with a GPT. Never written: the VM's disk
+    /// is a copy-on-write child. WHPX imports one on a network path
+    /// (`\\wsl.localhost\...`) once into the cache first.
     #[arg(long, conflicts_with = "tag")]
     pub image: Option<String>,
+    /// A raw ESP disk (os/dev/make-boot-esp.sh) to attach read-only ahead of
+    /// the VM's disk: the VM boots its loader and UKI (libvirt, whpx).
+    #[arg(long)]
+    pub boot_esp: Option<String>,
     /// Published dev disk tag to download (default: the newest main or release build).
     #[arg(long)]
     pub tag: Option<String>,

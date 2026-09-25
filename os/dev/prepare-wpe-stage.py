@@ -46,7 +46,7 @@ def build_command(args, iidfile):
             '--build-context', f'github-assets={args.assets}',
             '--build-arg', f'BASE_REF={args.base}', '--build-arg', f'RPMS_REF={args.rpms}',
             '--build-arg', f'KERNEL_RPMS_REF={args.kernel}', '--build-arg', f'WPE_BUILDROOT_REF={args.wpe}',
-            '--build-arg', f'SOURCE_DATE_EPOCH={args.epoch}',
+            '--build-arg', f'TILO_WPE_SOURCE_DATE_EPOCH={args.epoch}',
             '--build-arg', f'WPE_BUILD_JOBS={getattr(args, "jobs", 2)}', '--build-arg', 'TILO_WITH_BROWSER=1',
             '-f', str(args.repo / 'os/Containerfile'), str(args.repo)]
 

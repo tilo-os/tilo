@@ -46,6 +46,7 @@ TILO_INSTALLER_OUTPUT="$TILO_OUTPUT/installer"
 TILO_INSTALLER_DISK="$TILO_INSTALLER_OUTPUT/qcow2/disk.qcow2"
 msg() { printf '%s\\n' "$*" >&2; }
 die() { printf '%s\\n' "$*" >&2; exit 1; }
+warn() { printf 'WARN: %s\\n' "$*" >&2; }
 warn_slow_podman_storage() { :; }
 """)
         # These external checks are unrelated to forwarding inputs. A failing
@@ -449,6 +450,20 @@ print('sha256:' + '6' * 64)
         self.assertEqual(arguments["TILO_WITH_BROWSER"], "0")
         self.assertEqual(arguments["FEX_PAYLOAD_REF"], self.env["FEX_PAYLOAD_REF"])
         self.assertEqual(arguments["WINDOWS_GUEST_REF"], self.env["WINDOWS_GUEST_REF"])
+        self.assertEqual(arguments["TILO_WITH_WINDOWS"], "1")
+
+    def test_arm_without_either_pin_builds_without_windows(self):
+        result = self.run_builder(FEX_PAYLOAD_REF="", WINDOWS_GUEST_REF="", TILO_WITH_WINDOWS="1")
+        arguments = self.build_arguments(result)
+        self.assertEqual(arguments["TILO_WITH_WINDOWS"], "0")
+        self.assertEqual(arguments["FEX_PAYLOAD_REF"], "scratch")
+        self.assertEqual(arguments["WINDOWS_GUEST_REF"], "scratch")
+        self.assertIn("built without Windows apps", result.stderr)
+
+    def test_x86_always_builds_with_windows(self):
+        arguments = self.build_arguments(self.run_builder(
+            TILO_TEST_ARCH="x86_64", FEX_PAYLOAD_REF="", WINDOWS_GUEST_REF="", TILO_WITH_WINDOWS="0"))
+        self.assertEqual(arguments["TILO_WITH_WINDOWS"], "1")
 
     def test_arm_provider_requires_both_immutable_inputs_before_build(self):
         for key in ("FEX_PAYLOAD_REF", "WINDOWS_GUEST_REF"):

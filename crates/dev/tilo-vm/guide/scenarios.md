@@ -27,15 +27,40 @@ On Windows ARM64, use the native `tilo-vm.exe` and the WHPX transport:
 tilo-vm scenario install --medium C:\path\to\installer.qcow2 --layout erase --encrypt passphrase --graphics software
 ```
 
+For the guarded Windows-direct source workflow, first create a **disposable
+file** from the reviewed allocation plan. The helper creates sparse synthetic
+Windows partitions; it never reads Windows partition contents into the VM.
+
+```powershell
+python os/dev/prepare-windows-direct-source.py template --plan C:\path\to\realized-plan.json --output C:\VMs\tilo-source.raw
+tilo-vm scenario install --medium C:\path\to\installer.qcow2 --layout guided-alongside --target-disk C:\VMs\tilo-source.raw --encrypt passphrase --graphics software
+```
+
+The scenario verifies the template manifest before installation, after the
+installer powers off, and after the installed system's first boot. It retains
+the external raw file even without `--keep`; it only cleans its own VM cycle.
+On Windows it also requires a fresh proof from the guest on a dedicated
+virtio-serial port. The scenario checks that the guest installed the image it
+booted, that its composefs digest matches the installer and first boot, and
+that its disk and partition identities match the source raw's verified GPT.
+The checked proof is saved as `vm-install-proof-checked.json` in the scenario
+artifacts; the private installer serial log is still withheld. The
+source-preparation helper must be present in this worktree. This test does
+not itself verify the CI signature or authorize writing a physical disk;
+the Windows-direct receipt must bind the proof to a signed CI image and the
+source ESP's UKI before the physical copy.
+
 `os/dev/vm-windows.ps1` uses `qemu-system-aarch64.exe` with `-accel whpx`
 and `-cpu host`. It creates a copy-on-write installer overlay and a sparse
-40 GiB QCOW2 target; the medium remains unchanged. Set `TILO_QEMU_SYSTEM`,
+40 GiB QCOW2 target for erase, or attaches the reviewed external sparse raw
+target for guided alongside; the medium remains unchanged. Set `TILO_QEMU_SYSTEM`,
 `TILO_QEMU_IMG`, `TILO_EFI_CODE`, and `TILO_EFI_VARS` if these are outside the
 QEMU installation. The two boots share the target and UEFI variable store.
 The virtio console and QMP endpoints bind to localhost TCP ports in the run
-plan. Windows currently supports the erase layout with passphrase unlock and
-software graphics; alongside fixtures need Linux filesystem creation tools,
-and TPM PIN needs a persistent software TPM. The default `--graphics gl`
+plan. Windows supports erase and a supplied guided-alongside raw target with
+passphrase unlock and software graphics. Built-in alongside fixtures need
+Linux filesystem creation tools, and TPM PIN needs a persistent software TPM.
+The default `--graphics gl`
 must therefore be overridden on Windows. This route has static and transport
 checks but has not yet completed a live installer cycle on this host.
 

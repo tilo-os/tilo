@@ -56,6 +56,18 @@ pub enum Placement {
 /// When the active workspace has no strips, a default strip is synthesized so the tab always
 /// lands visible — otherwise the foreign surface leaks buffer + shm-pool memory until the client tears the toplevel down on its own.
 pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<String>) -> TabId {
+    let tab = adopt_toplevel_unpersisted(tree, surface_id, app_id);
+    persist_adopted_toplevel(tree, surface_id);
+    tab
+}
+
+// Room-attributed adoption temporarily changes `active`; its caller must
+// restore that selection before writing the desktop's durable snapshot.
+fn adopt_toplevel_unpersisted(
+    tree: &mut WorkspaceTree,
+    surface_id: u64,
+    app_id: Option<String>,
+) -> TabId {
     let pending = app_id
         .as_deref()
         .and_then(|id| crate::shell::launcher::placement_and_instance_for_toplevel(id, surface_id));
@@ -71,15 +83,16 @@ pub fn adopt_toplevel(tree: &mut WorkspaceTree, surface_id: u64, app_id: Option<
     if matches!(placement, Placement::IntoTab(_)) {
         tree.claim_continuation_tab(tab);
     }
-    if let Some((_, instance)) = pending
-        && let Some(instance) = instance
-        && let Ok(mut reports) =
+    if let Some((_, Some(instance))) = pending {
+        tree.remember_local_app_record(tab, instance);
+        if let Ok(mut reports) =
             crate::shell::personal_continuity_registry::global_registry().lock()
-    {
-        reports.bind_tab(
-            crate::shell::personal_continuity::AppInstanceId(tab),
-            crate::shell::personal_continuity::AppInstanceId(instance),
-        );
+        {
+            reports.bind_tab(
+                crate::shell::personal_continuity::AppInstanceId(tab),
+                crate::shell::personal_continuity::AppInstanceId(instance),
+            );
+        }
     }
     tab
 }
@@ -101,9 +114,21 @@ pub fn adopt_toplevel_in_room(
         .map(|workspace| workspace.id)?;
     let previous = tree.desktop.active;
     tree.desktop.active = target;
-    let tab = adopt_toplevel(tree, surface_id, app_id);
+    let tab = adopt_toplevel_unpersisted(tree, surface_id, app_id);
     tree.desktop.active = previous;
+    persist_adopted_toplevel(tree, surface_id);
     Some(tab)
+}
+
+fn persist_adopted_toplevel(tree: &WorkspaceTree, surface_id: u64) {
+    // A provisional anonymous identity cannot be relaunched. Admission has
+    // already established any native package identity before this point;
+    // this guard only decides whether adoption is ready to save.
+    if app_id_for_surface(tree, surface_id)
+        .is_some_and(|app_id| !app_id.trim().is_empty() && app_id != format!("anon-{surface_id}"))
+    {
+        tree.flush_to_disk();
+    }
 }
 
 /// [`adopt_toplevel`] with the placement supplied explicitly, so the placement rule is assertable without staging a launch.
@@ -182,8 +207,9 @@ pub fn open_hosted_app(
     // Hosted apps have no Wayland surface whose later adoption can write the
     // tab back.  Persist both authorities at the point of creation, or a
     // restart/peer export that happens before the next unrelated mutation
-    // loses the newly-opened native window.  Foreign adoption deliberately
-    // stays process-local and therefore only calls `place_tab` directly.
+    // loses the newly-opened native window. Foreign bindings stay out of
+    // the room document; their adoption wrappers persist symbolic launch
+    // records only after placement and workspace selection are settled.
     tree.seed_doc_from_cache();
     tree.flush_to_disk();
     tab_id
@@ -968,6 +994,7 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
 
     let group = &mut tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx];
     let removed = group.tabs.remove(tab_idx);
+    tree.local_app_records.remove(&tab_id);
     if group.active_tab == tab_id {
         group.active_tab = group.tabs.last().map_or(0, |tab| tab.id);
     }
@@ -2586,6 +2613,115 @@ mod tests {
                     }
                 ))
         );
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn adopted_native_toplevel_is_durable_without_an_unrelated_mutation() {
+        crate::shell::launcher::clear_pending_placements();
+        for attributed in [false, true] {
+            let state_dir = tempfile::tempdir().expect("temporary state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_demo();
+            for workspace in &mut tree.desktop.workspaces {
+                for strip in &mut workspace.strips {
+                    strip.window_groups.clear();
+                }
+            }
+            tree.seed_doc_from_cache();
+            tree.persist_path = Some(state_path.clone());
+            tree.flush_to_disk();
+            let active = tree.desktop.active;
+            let target_index = usize::from(attributed);
+            let target_id = tree.desktop.workspaces[target_index].id;
+            let target_room = tree.desktop.workspaces[target_index].room;
+            let target_strip = tree.desktop.workspaces[target_index].strips[0].id;
+            let tab = if attributed {
+                adopt_toplevel_in_room(
+                    &mut tree,
+                    8_889,
+                    Some("dev.tilo.calculator".into()),
+                    target_room,
+                )
+                .expect("known room accepts the native app")
+            } else {
+                adopt_toplevel(&mut tree, 8_889, Some("dev.tilo.calculator".into()))
+            };
+            assert_eq!(
+                tree.desktop.active, active,
+                "adoption must preserve desktop focus"
+            );
+            let live_group = group_of(&tree, 8_889).id;
+
+            // Do not flush here: the real adoption must make the new tab
+            // restartable without a later workspace edit or permission grant.
+            let saved = crate::shell::persist::load_tree_from(&state_path)
+                .expect("adoption leaves a readable durable workspace");
+            assert_eq!(
+                saved.desktop.active, active,
+                "persist only after restoring the previously active workspace"
+            );
+            let persisted = saved
+                .desktop
+                .workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter().map(move |strip| (workspace, strip)))
+                .flat_map(|(workspace, strip)| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .map(move |group| (workspace, strip, group))
+                })
+                .find(|(_, _, group)| group.tabs.iter().any(|candidate| candidate.id == tab))
+                .expect("native adoption itself must persist its relaunchable tab");
+            assert_eq!(persisted.0.id, target_id);
+            assert_eq!(persisted.1.id, target_strip);
+            assert_eq!(persisted.2.id, live_group);
+            assert_eq!(persisted.2.active_tab, tab);
+            let persisted_tab = persisted
+                .2
+                .tabs
+                .iter()
+                .find(|candidate| candidate.id == tab)
+                .unwrap();
+            assert!(matches!(
+                &persisted_tab.tile,
+                TileContent::LocalApp { app_id, note, .. }
+                    if app_id == "dev.tilo.calculator" && note.is_empty()
+            ));
+        }
+        crate::shell::launcher::clear_pending_placements();
+    }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn anonymous_native_adoption_does_not_persist_a_synthetic_launch_id() {
+        crate::shell::launcher::clear_pending_placements();
+        for (attributed, app_id) in [
+            (false, None),
+            (true, None),
+            (false, Some("anon-8890".to_string())),
+            (true, Some("anon-8890".to_string())),
+        ] {
+            let state_dir = tempfile::tempdir().expect("temporary state directory");
+            let state_path = state_dir.path().join("state.json");
+            let mut tree = WorkspaceTree::bootstrap_default();
+            tree.persist_path = Some(state_path.clone());
+            tree.flush_to_disk();
+            let before = std::fs::read(&state_path).expect("saved empty desktop");
+            if attributed {
+                let room = tree.desktop.workspaces[0].room;
+                assert!(adopt_toplevel_in_room(&mut tree, 8_890, app_id, room).is_some());
+            } else {
+                adopt_toplevel(&mut tree, 8_890, app_id);
+            }
+            assert_eq!(app_id_for_surface(&tree, 8_890), Some("anon-8890"));
+            assert_eq!(
+                std::fs::read(&state_path).expect("desktop remains readable"),
+                before,
+                "an anonymous provisional surface is not a relaunchable application"
+            );
+        }
     }
 
     #[test]
