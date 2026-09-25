@@ -600,6 +600,20 @@ jobs:
         uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: refs
+      # Ordering against main's pin reads the source commit from the pinned
+      # kernels' signed provenance.
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
+        with:
+          cache-architecture: x86_64
+      - name: Log in to code.sandbox.example
+        env:
+          REGISTRY_USERNAME: ${{ github.actor }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          printf '%s' "$REGISTRY_PASSWORD" | \
+            os/dev/login-registry-with-retry.sh \
+              docker code.sandbox.example "$REGISTRY_USERNAME"
       - name: Propose both kernel pins atomically through protected main
         env:
           # The automatic job token pushes the branch. Neither it nor
@@ -621,13 +635,36 @@ jobs:
             printf 'native kernel builds unexpectedly produced one shared manifest\n' >&2
             exit 1
           }
-          # Pin on the current main tip, and only while every input the kernels
-          # were built from is still unchanged there. The OS RPM snapshot is
-          # not a kernel input, so its pin moving never makes this stale.
+          # A kernel pin binds only its own signed buildroot, so it is
+          # consistent on its own: it lands on the current main tip whenever it
+          # comes from a later commit than main's pin, even if kernel inputs
+          # moved during the build. Each such move triggered its own push run
+          # of this workflow, queued behind this one, which supersedes it.
+          # The source commit of a pinned kernel is the one its signed
+          # provenance names; an unreadable pin is replaced.
+          kernel_source() {
+            cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$1" 2>/dev/null \
+              | jq -r '[(if type == "array" then .[] else . end) | .payload | @base64d | fromjson
+                  | .predicate.buildDefinition.resolvedDependencies[]?.uri
+                  | capture("^git\\+ssh://code\\.podesta\\.ai/qos/qos@(?<commit>[0-9a-f]{40})$").commit]
+                  | unique | if length == 1 then .[0] else empty end' 2>/dev/null || true
+          }
+          # Succeeds when a pin built from $1 is older than this run's source.
+          older_than_this_run() {
+            [ -z "$1" ] || { [ "$1" != "$GITHUB_SHA" ] \
+              && git merge-base --is-ancestor "$1" "$GITHUB_SHA" 2>/dev/null; }
+          }
           git fetch --no-tags origin main
           mapfile -t inputs < <(printf '%s' "$KERNEL_SNAPSHOT_INPUTS")
           if ! git diff --quiet "$GITHUB_SHA..FETCH_HEAD" -- "${inputs[@]}"; then
-            printf 'kernel inputs changed during promotion; refusing stale PR\n' >&2
+            echo '::notice::kernel inputs moved on main during the build; the push runs they triggered follow this one'
+          fi
+          pinned="$(git show FETCH_HEAD:os/kernel-snapshot.env | sed -n 's/^KERNEL_RPMS_X86_64_REF=//p')"
+          pinned_source=''
+          [ -z "$pinned" ] || pinned_source="$(kernel_source "$pinned")"
+          if ! older_than_this_run "$pinned_source"; then
+            printf 'main already pins kernels from %s, not older than %s; refusing to regress\n' \
+              "$pinned_source" "$GITHUB_SHA" >&2
             exit 1
           fi
           git checkout --detach FETCH_HEAD
@@ -657,8 +694,25 @@ jobs:
             exit 1
           fi
           cat push.log >&2
+          # This pin supersedes every open kernel pin pull request built from
+          # an earlier commit: merging one of those later would only regress.
+          superseded=()
+          git fetch --no-tags --prune origin '+refs/heads/automation/*:refs/remotes/origin/automation/*'
+          while IFS= read -r candidate; do
+            [ "$candidate" != "$branch" ] || continue
+            candidate_ref="$(git show "origin/$candidate:os/kernel-snapshot.env" 2>/dev/null \
+              | sed -n 's/^KERNEL_RPMS_X86_64_REF=//p')" || continue
+            [ -n "$candidate_ref" ] || continue
+            if older_than_this_run "$(kernel_source "$candidate_ref")"; then
+              superseded+=(--supersede "$candidate")
+            fi
+          done < <(git for-each-ref --format='%(refname:strip=3)' \
+            'refs/remotes/origin/automation/kernel-snapshot-*')
           python3 os/dev/open-snapshot-pr.py \
             --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
-            --branch "$branch" --snapshot-digest "$snapshot_digest" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" "${superseded[@]}" \
             kernel --x86-ref "$KERNEL_RPMS_X86_64_REF" \
             --arm-ref "$KERNEL_RPMS_AARCH64_REF" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Revoke local registry login
+        if: ${{ always() }}
+        run: docker logout code.sandbox.example >/dev/null 2>&1 || true
