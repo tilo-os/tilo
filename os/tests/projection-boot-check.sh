@@ -5,7 +5,7 @@ for helper in tilo-projector tilo-doubletake tilo-fluxcast; do
   test -x "/usr/libexec/$helper"
 done
 
-gst-inspect-1.0 openh264enc >/dev/null
+gst-inspect-1.0 h264parse >/dev/null
 python3 - <<'PY'
 import dbus_next
 import gi

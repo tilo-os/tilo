@@ -21,15 +21,9 @@ say() { printf '\n== %s\n' "$*"; }
 # ---------------------------------------------------------------------------
 # 1. The binaries.
 # ---------------------------------------------------------------------------
-# `shell` is built with --no-default-features on purpose. Its default set
-# includes `hdr-decode`, which links libavcodec; the build container and the
-# host do not necessarily carry the same libavcodec soname (Fedora 43 ships
-# .so.61, Fedora 44 ships .so.62), and a compositor that cannot load is a
-# session that fails at the login screen. Dropping the default set also drops
-# `hosted-test-control`, which a normal login session never reaches.
-#
-# What is lost: receive-side HEVC Main10 decode, i.e. viewing a peer's HDR
-# stream. Everything else, including sending, is unaffected.
+# `shell` is built with --no-default-features on purpose: that drops
+# `hosted-test-control`, which a normal login session never reaches. Video
+# goes through GStreamer, whose library ABI is stable across Fedora releases.
 if (( run_cargo )); then
     say "cargo build --release (session and app support)"
     ( cd "$repo_root" && cargo build --release --locked \

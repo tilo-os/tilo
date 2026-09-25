@@ -13,7 +13,7 @@ class FeedbackScopeTests(unittest.TestCase):
         self.assertIn('cargo nextest run --locked --profile ci ${{ matrix.test_packages }}', workflow)
         self.assertIn("if: matrix.test_packages != ''", workflow)
         self.assertIn("if: contains(matrix.test_packages, '-p app-cli')", workflow)
-        self.assertIn('needs: [builder, select, security, test, check, clippy, native-dependencies, suites]', workflow)
+        self.assertIn('needs: [builder, select, security, test, check, clippy, suites]', workflow)
         self.assertIn('test "$BUILDER_RESULT" = success', workflow)
         self.assertIn('*:true:success)', workflow)
         self.assertIn('pull_request:false:skipped)', workflow)

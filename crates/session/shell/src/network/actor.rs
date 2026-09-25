@@ -2203,6 +2203,17 @@ impl ActorState {
                 let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
             }
         }
+        // What this machine can encode and decode rides along with every
+        // heartbeat, so a sharer can pick a codec each viewer takes and
+        // notices when a viewer disappears.
+        let advert = crate::network::media_caps::local_advert(
+            crate::network::behaviour::peer_liveness_handle(&self.endpoint.id()),
+        );
+        if let Ok(bytes) = postcard::to_allocvec(&advert) {
+            for topic in self.topics.values() {
+                let _ = topic.sender.broadcast(Bytes::from(bytes.clone())).await;
+            }
+        }
     }
 
     /// Send this device's certificate to its direct neighbors on `ws`.

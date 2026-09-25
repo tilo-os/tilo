@@ -15,41 +15,8 @@ netns-e2e = []
 # `ui::UserEvent`s into the App via winit's `EventLoopProxy`. Disable
 # in production builds to drop the test surface (`--no-default-features
 # --features ...`).
-default = ["hosted-test-control", "hdr-decode"]
+default = ["hosted-test-control"]
 hosted-test-control = []
-# VA-API hardware H.264 encoder for Intel iGPU / AMD Radeon / ARM SoCs.
-# Opt-in — pulls in `ffmpeg-next` + libavcodec so the shell still
-# compiles on hosts without `ffmpeg-devel`. The backend calls
-# `h264_vaapi` (libavcodec) with an `av_hwdevice_ctx_create`d VAAPI
-# device on the render node.
-vaapi = ["ffmpeg-next"]
-# NVIDIA NVENC hardware H.264 encoder. Opt-in for NVIDIA-only OS-image
-# variants — same `ffmpeg-next` dep as vaapi, different codec probe
-# (`h264_nvenc`). If libavcodec wasn't built against NVENC the probe
-# reports unavailable and Auto falls through to openh264.
-nvenc = ["ffmpeg-next"]
-# HEVC Main10 receive-side decoder for HDR PeerView. Default-on because
-# a peer streaming HDR content wouldn't have anywhere for its bytes to
-# go without it. Pulls in `ffmpeg-next` for libavcodec's HEVC decoder;
-# the tone-map + display-probe machinery is always compiled — only the
-# decoder side is feature-gated because software HEVC decode is the one
-# piece that needs libavcodec.
-hdr-decode = ["ffmpeg-next"]
-# Compile the tests that encode and decode HEVC —
-# `tests/hdr_decode_pipeline.rs`, which encodes with libx265 and decodes
-# with the HEVC decoder. Off by default because that is a property of the
-# host's ffmpeg, not of Tilo: Fedora builds `libavcodec-free` with
-# `--disable-decoder='h264,hevc,vc1,vvc'` and ships no libx265, so on the
-# platform Tilo is built from and runs on, those tests cannot observe
-# their subject. Compiling them anyway meant one passed by printing
-# "skipping" and two failed forever. Enable on a host with an
-# HEVC-capable libavcodec (rpmfusion `libavcodec-freeworld`, or a
-# self-built ffmpeg); under the feature a missing codec is a failure.
-#
-# This gates *tests only*. `hdr-decode` still governs whether the decoder
-# is built, and the dispatch contract that holds on every host is
-# asserted in the always-compiled unit tests.
-hevc-codec-tests = ["hdr-decode"]
 # Stamps a build marker into the binary (see `compositor::dev_env`) so the
 # host session RPM's *developer* entry can tell a deliberately-built dev
 # compositor from any other executable before logging into it. Non-default,
@@ -142,8 +109,14 @@ mime_guess = "2.0.5"
 # compositor. Quick Settings keeps only dispatcher aliases and fixture policy.
 os-actions = { path = "../../system/os-actions" }
 # Session-owned balance/mono policy and PipeWire graph enumeration. Settings
-# persists intent; the compositor is the single long-lived actuator.
-media = { path = "../../media/core" }
+# persists intent; the compositor is the single long-lived actuator. Also the
+# video stack for shared surfaces, projection and recording: `realtime` is
+# the GStreamer encoder/decoder, which picks hardware first, then
+# royalty-free software, then Cisco's openh264 binary loaded by the system.
+media = { path = "../../media/core", features = ["realtime"] }
+# Recording muxes the encoder's access units through `appsrc`; the same pin
+# as `media`, so one copy resolves.
+gstreamer-app = { workspace = true, features = ["v1_24"] }
 hex.workspace = true
 sha2.workspace = true
 xattr = "1.6.1"
@@ -167,26 +140,7 @@ libc.workspace = true
 # owner's stable iroh EndpointAddr.
 base64.workspace = true
 bs58.workspace = true
-# Software H.264 encode/decode for foreign-surface streaming between peers.
-# `source` feature builds Cisco's OpenH264 in-tree (vs. dlopen'ing the system
-# copy), which keeps the test image self-contained — bootc is immutable so we
-# can't rely on a runtime-installed `libopenh264.so`.
-openh264.workspace = true
 tilo-projector = { path = "../../system/projector" }
-# Hardware H.264 encode (VA-API / NVENC) via libavcodec. Opt-in behind
-# the `vaapi` / `nvenc` features. `default-features = false` +
-# `features = ["codec", "software-scaling"]` pulls only libavcodec +
-# libswscale (no libavformat / libavfilter / libavdevice) so the compile
-# cost is bounded. The h264_vaapi encoder needs an `av_hwdevice_ctx_create`d
-# VAAPI device on `/dev/dri/renderD*`; libswscale handles the RGBA→NV12
-# CPU-side conversion before uploading to a VA-API surface.
-#
-# Why not `cros-libva`: it selects `log/release_max_level_debug` and
-# `ssip-client` (already in-tree for accessibility) selects
-# `log/release_max_level_info` — mutually exclusive Cargo features on
-# the `log` crate. `ffmpeg-next` has no `log` dependency, so it side-
-# steps the conflict entirely.
-ffmpeg-next = { version = "8", optional = true, default-features = false, features = ["codec", "format", "software-scaling"] }
 zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }

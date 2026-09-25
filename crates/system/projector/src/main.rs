@@ -1939,27 +1939,39 @@ mod tests {
         ));
         let paths = SessionPaths::for_root(root.clone()).expect("session paths");
         paths.clear_markers();
+        // Large enough for every hardware encoder's minimum frame size.
+        let size: u32 = 256;
         let mut pipeline =
             HlsPipeline::start(&paths, false).expect("start production HLS pipeline");
-        let mut encoder =
-            tilo_callstream::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
-                64, 64, 30, 1_000_000, 30,
-            )
-            .expect("H.264 encoder");
-        let mut rgba = vec![0u8; 64 * 64 * 4];
+        // Projection receivers take H.264 only: hardware when the machine
+        // has it, Cisco's openh264 through GStreamer otherwise.
+        let mut encoder = tilo_callstream::VideoEncoder::with_options(
+            tilo_callstream::StreamCodec::H264,
+            size,
+            size,
+            30,
+            1_000_000,
+            30,
+            true,
+        )
+        .expect("an H.264 encoder (hardware, or the openh264 GStreamer plugin)");
+        let mut rgba = vec![0u8; (size * size * 4) as usize];
         for frame_index in 0..75u64 {
             let luma = u8::try_from(frame_index).unwrap_or(u8::MAX);
             for pixel in rgba.chunks_exact_mut(4) {
                 pixel.copy_from_slice(&[luma, 96, 180, 255]);
             }
-            let annex_b = encoder.encode(&rgba).expect("encode projection frame");
+            let unit = encoder
+                .encode_unit(&rgba, frame_index * 33)
+                .expect("encode projection frame")
+                .expect("one unit per frame");
             pipeline
                 .push(&VideoPacket {
-                    width: 64,
-                    height: 64,
+                    width: size,
+                    height: size,
                     presentation_time_us: frame_index * 33_333,
-                    keyframe: tilo_callstream::session::is_h264_keyframe(&annex_b),
-                    annex_b,
+                    keyframe: unit.keyframe,
+                    annex_b: unit.data,
                 })
                 .expect("push projection frame");
             std::thread::sleep(Duration::from_millis(34));
