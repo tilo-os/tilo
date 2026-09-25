@@ -70,7 +70,9 @@ def verify(directory):
             "OCI layout must name bounded image and signature manifests")
     target = [row for row in index["manifests"]
               if row.get("digest") == metadata["target_digest"]]
-    require(len(target) == 1 and target[0].get("mediaType") in IMAGE,
+    require(len(target) == 1 and target[0].get("mediaType") in IMAGE
+            and isinstance(target[0].get("annotations"), dict)
+            and target[0]["annotations"].get("kind") == "dev.cosignproject.cosign/image",
             "OCI index does not uniquely name the pinned target")
     refs = []
     for descriptor in index["manifests"]:
