@@ -30,13 +30,15 @@ containerfile="$repo/os/Containerfile"
 # Tilo build outputs are installed through os/components.toml, so their rows
 # name the manifest component and build output instead of a builder /out path;
 # every destination is unchanged, and /out/optional/ -> /usr/bin/ is now the
-# explicit optional /usr/bin/browser entry it always carried. Sorting
+# explicit optional /usr/bin/browser entry it always carried. The VM console
+# port udev rule and the generated bash/fish/zsh completions for app and tilo
+# (with their store/system aliases) are deliberate additions. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=a6d4f81db6a9e3bbe3fc02403cbeba82ebe948778befd52a8437b9909039e2b0
+expected_contract=a66d3bad79dd9b79831e5b4f1da1e522f163a9dc6a5d9f9b958d089add41307e
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
