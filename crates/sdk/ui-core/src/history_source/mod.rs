@@ -3,13 +3,13 @@
 //! [`ActivityTimeline`](crate::widget::ActivityTimeline) and
 //! [`HistoryScrubber`](crate::widget::HistoryScrubber) both consume
 //! `Vec<HistoryEntry>` and are source-agnostic; this module is the producer,
-//! walking the change graph via [`qdoc::history::versions`] to emit one
+//! walking the change graph via [`tilo_resource::history::versions`] to emit one
 //! [`HistoryEntry`] per change with author, timestamp, op class, and a
 //! summary of what changed. It lives in `ui` (not a leaf crate) because
 //! both an app's scrubber and the compositor's room-level timeline need it.
 //!
 //! Two summary strategies, in order of preference: **structural**, which
-//! materialises the window with [`qdoc::history::materialize_series`] and
+//! materialises the window with [`qdoc::snapshot::series`] and
 //! diffs snapshots for real per-paragraph insert/delete counts on
 //! documents carrying the `qdoc` schema; and **patch**, the fallback that
 //! reads the change's own patch set via `AutoCommit::diff`, weaker only in
@@ -112,7 +112,7 @@ pub fn materialize_entry(
 ) -> Result<Option<DocSnapshot>, qdoc::DocError> {
     with_committed_history(doc, |doc| {
         version_index_for_entry(doc, id)
-            .map(|version| qdoc::history::materialize_at(doc, version))
+            .map(|version| qdoc::snapshot::at(doc, version))
             .transpose()
     })
 }
@@ -178,7 +178,7 @@ impl HistorySource {
     }
 
     fn committed_entries(&self, doc: &mut AutoCommit) -> Vec<HistoryEntry> {
-        let versions = qdoc::history::versions(doc);
+        let versions = tilo_resource::history::versions(doc);
         if versions.is_empty() {
             return Vec::new();
         }
@@ -193,22 +193,22 @@ impl HistorySource {
         let before_window = start.checked_sub(1);
         let indices: Vec<usize> = before_window
             .into_iter()
-            .chain(versions.iter().skip(start).map(|v| v.index))
+            .chain(start..versions.len())
             .collect();
-        let mut snapshots = qdoc::history::materialize_series(doc, &indices).into_iter();
+        let mut snapshots = qdoc::snapshot::series(doc, &indices).into_iter();
         let mut prev_snapshot: Option<DocSnapshot> = match before_window {
             None => Some(DocSnapshot::default()),
             Some(_) => snapshots.next().flatten(),
         };
 
         let mut out = Vec::with_capacity(versions.len().saturating_sub(start));
-        for v in versions.iter().skip(start) {
+        for (index, v) in versions.iter().enumerate().skip(start) {
             let cur_snapshot = snapshots.next().flatten();
             let before = heads
-                .get(&v.index.wrapping_sub(1))
+                .get(&index.wrapping_sub(1))
                 .cloned()
                 .unwrap_or_default();
-            let after = heads.get(&v.index).cloned().unwrap_or_default();
+            let after = heads.get(&index).cloned().unwrap_or_default();
             let (structural_summary, op_class, text_delta) = match (&prev_snapshot, &cur_snapshot) {
                 (Some(prev), Some(cur)) => structural_summary(prev, cur),
                 _ => patch_summary(doc, &before, &after),
@@ -221,7 +221,7 @@ impl HistorySource {
             // a revision to a nonexistent person. Skipped here rather than in
             // `versions`, which stays positional (`materialize_at` / `prefix_heads`
             // address a change by its place).
-            if qdoc::history::is_schema_genesis(v) {
+            if qdoc::model::is_schema_genesis(v) {
                 continue;
             }
 
@@ -246,8 +246,8 @@ impl HistorySource {
                 .unwrap_or(structural_summary);
 
             out.push(HistoryEntry {
-                id: entry_id_from_hash(&v.change_hash),
-                author: self.authors.resolve(&v.actor_hex),
+                id: entry_id_from_hash(&v.hash.to_string()),
+                author: self.authors.resolve(&v.actor),
                 op_class,
                 artifact_kind: self.artifact_kind,
                 timestamp: timestamp_from_ms(v.time_ms),
@@ -272,16 +272,15 @@ impl HistorySource {
 pub fn heads_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<Vec<ChangeHash>> {
     with_committed_history(doc, |doc| {
         let index = version_index_for_entry(doc, id)?;
-        Some(qdoc::history::prefix_heads(doc, index))
+        Some(tilo_resource::history::prefix_heads(doc, index))
     })
 }
 
 pub fn version_index_for_entry(doc: &mut AutoCommit, id: &HistoryEntryId) -> Option<usize> {
     with_committed_history(doc, |doc| {
-        qdoc::history::versions(doc)
-            .into_iter()
-            .find(|v| entry_id_from_hash(&v.change_hash) == *id)
-            .map(|v| v.index)
+        tilo_resource::history::versions(doc)
+            .iter()
+            .position(|v| entry_id_from_hash(&v.hash.to_string()) == *id)
     })
 }
 

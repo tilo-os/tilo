@@ -97,7 +97,7 @@ impl NoteKind {
 }
 
 /// A block's `(order_key, id)` pair, ordered exactly as [`ordered_keys`] orders blocks
-/// (fractional key via [`crate::order::cmp_keys`], then id as a tiebreak). Used as the in-memory order index's key type.
+/// (fractional key via [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). Used as the in-memory order index's key type.
 /// Key and id are shared with the `id → key` map, so the index holds each only once.
 #[derive(Clone, PartialEq, Eq)]
 struct OrderKey {
@@ -107,7 +107,7 @@ struct OrderKey {
 
 impl Ord for OrderKey {
     fn cmp(&self, other: &Self) -> Ordering {
-        crate::order::cmp_keys(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
+        tilo_resource::order::bytes::cmp(&self.key, &other.key).then_with(|| self.id.cmp(&other.id))
     }
 }
 impl PartialOrd for OrderKey {
@@ -150,10 +150,19 @@ struct OrderIndex {
     by_container: HashMap<ObjId, ContainerOrder>,
 }
 
-/// Per-replica, collision-free block id generator: `{actor_hex}.{counter}`.
+/// Collision-free block id generator.
+///
+/// Inside an action it mints from the action's deterministic context
+/// ([`Self::for_action`]): ids are then a function of the action and the
+/// document it applies to, identical on the origin and on every replica
+/// replaying it, and minting costs nothing however large the document.
+/// Writers outside an action (an importer, an owned [`crate::Document`])
+/// count per replica: `{actor_hex}.{counter}`.
 pub struct IdGen {
     actor_hex: String,
     next: Option<u64>,
+    /// The action minting, when writing inside one.
+    action: Option<tilo_resource::ActionCx>,
     /// In-memory block-order index (see [`OrderIndex`]); private bookkeeping carried on `IdGen` since it threads through every `DocMut`.
     order: OrderIndex,
     /// Blocks and marks buffered by an open [`DocMut::bulk`] scope.
@@ -179,6 +188,7 @@ impl Clone for IdGen {
             // Deleted IDs remain part of durable history. A staged edit must
             // inherit the counter rather than reseeding from visible objects.
             next: self.next,
+            action: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -203,6 +213,7 @@ impl IdGen {
         Self {
             actor_hex,
             next: Some(0),
+            action: None,
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -215,6 +226,23 @@ impl IdGen {
         Self {
             actor_hex,
             next: Some(next),
+            action: None,
+            order: OrderIndex::default(),
+            bulk: bulk::Bulk::default(),
+            commits_allowed: false,
+            unseeded: false,
+        }
+    }
+
+    /// Mint ids from an applying action's context: deterministic under
+    /// replay, and independent of the document's size (no scan of existing
+    /// ids — an action's context is unique to the action and the version it
+    /// applies to, so its ids cannot collide with ids minted elsewhere).
+    pub fn for_action(cx: tilo_resource::ActionCx) -> Self {
+        Self {
+            actor_hex: String::new(),
+            next: None,
+            action: Some(cx),
             order: OrderIndex::default(),
             bulk: bulk::Bulk::default(),
             commits_allowed: false,
@@ -239,6 +267,9 @@ impl IdGen {
     /// Returns [`IdGenError::Exhausted`] after the final counter has been
     /// issued, so a durable identifier can never be reused.
     pub fn try_mint(&mut self) -> Result<String, IdGenError> {
+        if let Some(action) = &mut self.action {
+            return Ok(action.id().as_str().to_owned());
+        }
         let counter = self.next.ok_or_else(|| IdGenError::Exhausted {
             actor_hex: self.actor_hex.clone(),
         })?;
@@ -522,8 +553,14 @@ pub fn is_schema_genesis_actor(actor: &automerge::ActorId) -> bool {
     actor.to_bytes() == GENESIS_ACTOR
 }
 
+/// Whether `version` is the schema genesis rather than something a person
+/// wrote. See [`is_schema_genesis_actor`].
+pub fn is_schema_genesis(version: &tilo_resource::history::Version) -> bool {
+    version.actor == schema_genesis_actor_hex()
+}
+
 /// The schema genesis actor as hex, for comparing against a recorded
-/// `actor_hex`. See [`is_schema_genesis_actor`].
+/// actor. See [`is_schema_genesis_actor`].
 pub fn schema_genesis_actor_hex() -> String {
     automerge::ActorId::from(GENESIS_ACTOR).to_hex_string()
 }
@@ -1329,7 +1366,7 @@ struct OrderedBlock {
 }
 
 /// Every block of `container` that carries an order key, sorted into document order (fractional key via
-/// [`crate::order::cmp_keys`], then id as a tiebreak). One walk over the container and one over each block.
+/// [`tilo_resource::order::bytes::cmp`], then id as a tiebreak). One walk over the container and one over each block.
 fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
     ORDERED_KEYS_SCANS.with(|c| c.set(c.get().saturating_add(1)));
     let mut v: Vec<OrderedBlock> = doc
@@ -1345,7 +1382,9 @@ fn ordered_blocks(doc: &AutoCommit, container: &ObjId) -> Vec<OrderedBlock> {
             })
         })
         .collect();
-    v.sort_by(|a, b| crate::order::cmp_keys(&a.order, &b.order).then_with(|| a.id.cmp(&b.id)));
+    v.sort_by(|a, b| {
+        tilo_resource::order::bytes::cmp(&a.order, &b.order).then_with(|| a.id.cmp(&b.id))
+    });
     v
 }
 
@@ -1385,7 +1424,7 @@ pub fn materialize_blocks(doc: &AutoCommit, c: &Containers, ids: &[String]) -> V
         .collect()
 }
 
-/// The byte length of every body block's fractional order key. [`crate::order::key_between`] keeps these
+/// The byte length of every body block's fractional order key. [`tilo_resource::order::bytes::between`] keeps these
 /// logarithmic in a run of sequential appends; a scheme that grows keys linearly makes every comparison O(n).
 /// The perf test asserts the max stays small — a direct, mode-independent guard on key growth.
 pub fn block_order_key_lengths(doc: &AutoCommit, c: &Containers) -> Vec<usize> {
@@ -1618,7 +1657,7 @@ pub fn preserved_part(doc: &AutoCommit, c: &Containers, key: &str) -> Option<Vec
                 })
                 .collect();
             // Sort by fractional order key, then segment id as a deterministic tiebreak.
-            segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+            segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
             Some(segs.into_iter().flat_map(|(_, _, b)| b).collect())
         }
         // Legacy single-blob form: the whole part as one `Bytes` scalar.
@@ -1659,7 +1698,7 @@ pub fn preserved_atoms(doc: &AutoCommit, c: &Containers, key: &str) -> Vec<(Stri
             Some((ord, sid, bytes))
         })
         .collect();
-    segs.sort_by(|a, b| crate::order::cmp_keys(&a.0, &b.0).then(a.1.cmp(&b.1)));
+    segs.sort_by(|a, b| tilo_resource::order::bytes::cmp(&a.0, &b.0).then(a.1.cmp(&b.1)));
     segs.into_iter().map(|(_, sid, b)| (sid, b)).collect()
 }
 
@@ -2063,7 +2102,7 @@ impl DocMut<'_> {
                 None => (co.entries.iter().next_back().map(|k| k.key.clone()), None),
             },
         };
-        crate::order::key_between(lo.as_deref(), hi.as_deref())
+        tilo_resource::order::bytes::between(lo.as_deref(), hi.as_deref())
     }
 
     fn order_after(&mut self, after: Option<&str>) -> Vec<u8> {

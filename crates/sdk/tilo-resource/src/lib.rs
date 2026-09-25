@@ -2,8 +2,9 @@
 //!
 //! A Tilo app's state is a set of **resources**: typed, versioned, shared
 //! values the system owns. This crate is the layer that turns a Rust type into
-//! one. It has no rendering, windowing or widget dependency; the UI toolkit
-//! has no dependency on it; `tilo-app` binds the two.
+//! one. It has no rendering, windowing or widget dependency. The UI toolkit
+//! uses only its document-generic parts (history, stamped commits, replay);
+//! `tilo-app` binds resources to views.
 //!
 //! ## The golden path
 //!
@@ -62,6 +63,10 @@
 //!   ([`history::read_at`]) and restored, field by field and item by item,
 //!   from the record's stored [`Shape`];
 //! * **search** — text fields are indexed by default ([`Resource::search`]);
+//! * **document machinery** — fractional [`order`] keys, stamped commits and
+//!   positional replay ([`history`]), writing large content as a few changes
+//!   ([`batch`]) and id-aligned structural [`diff`]s, shared by every
+//!   resource type including the hand-written ones;
 //! * **incremental reads** — after a change only what it touched is read
 //!   again ([`Resource::refresh`], [`Delta`]); a record resource gets this
 //!   field by field and item by item, and a resource too large to read whole
@@ -94,8 +99,10 @@
 )]
 
 pub mod action;
+pub mod batch;
 pub mod collection;
 pub mod delta;
+pub mod diff;
 pub mod group;
 pub mod history;
 pub mod items;
