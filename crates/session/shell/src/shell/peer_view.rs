@@ -1,7 +1,7 @@
 //! Peer-side foreign-surface view — the receive-side counterpart to the
 //! owner's encode loop in [`crate::network::streaming`]. Owns one
-//! [`crate::network::VideoDecoder`] for the stream's codec and paints the
-//! most recently decoded frame as a vello image draw.
+//! [`crate::network::H264Decoder`] and paints the most recently decoded
+//! RGBA frame as a vello image draw.
 //!
 //! [`PeerView::push_encoded`] decodes a [`crate::network::NeighbourMsg::SurfaceFrame`]
 //! synchronously and stashes the latest frame for the next `draw`; older
@@ -77,8 +77,8 @@ pub struct PeerView {
     /// Local peer id (the *viewer*) — the value the owner sees as the
     /// `peer` field on `RemoteInput`.
     local_peer: PeerId,
-    /// Active decoder for the stream's codec. SDR H.264 by default so
-    /// legacy peers without a codec label still work.
+    /// Active decoder — H.264 for SDR, HEVC Main10 for HDR. SDR default
+    /// so legacy peers without a codec label still work.
     decoder: VideoDecoder,
     /// Most recent decoded frame, ready to paint.
     latest: Option<DecodedFrame>,
@@ -145,11 +145,7 @@ impl PeerView {
             title: format!("Peer surface #{surface_id}"),
             surface_id,
             local_peer,
-            decoder: {
-                let mut d = VideoDecoder::h264();
-                d.set_stream_colorimetry(Some(Colorimetry::sdr_bt709()));
-                d
-            },
+            decoder: VideoDecoder::H264(crate::network::decoder::H264Decoder::new()),
             latest: None,
             hdr_tonemap: None,
             cached_image: None,
@@ -164,9 +160,9 @@ impl PeerView {
         }
     }
 
-    /// Picks the decoder from `SurfaceStreamStart.codec` (`"h264"`,
-    /// `"vp9"`, `"av1"` SDR; `"hevc-main10"` HDR). Unknown labels fall back
-    /// to SDR H.264 rather than the share silently vanishing.
+    /// Picks the decoder from `SurfaceStreamStart.codec` (`"h264"` SDR,
+    /// `"hevc-main10"` HDR). Unknown/unsupported labels fall back to SDR
+    /// rather than the share silently vanishing.
     pub fn new_for_stream(
         surface_id: SurfaceId,
         local_peer: PeerId,
@@ -175,27 +171,21 @@ impl PeerView {
         display_caps: &crate::shell::hdr_display::DisplayCapabilities,
         hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
     ) -> Self {
-        // HDR streams announce their static metadata; they decode to 10-bit.
-        let bit_depth = if hdr_static_metadata.is_some() { 10 } else { 0 };
-        let decoder = VideoDecoder::for_stream(codec, bit_depth).unwrap_or_else(|e| {
+        let decoder = VideoDecoder::for_wire_codec(codec).unwrap_or_else(|e| {
             tracing::warn!(
                 surface = surface_id,
                 codec = codec,
                 error = %e,
                 "peer view falling back to H264 SDR decoder"
             );
-            VideoDecoder::h264()
+            VideoDecoder::H264(crate::network::decoder::H264Decoder::new())
         });
         // Tone-map only runs HDR-into-SDR-output.
-        let stream_colorimetry = if decoder.is_ten_bit() {
-            Colorimetry::hdr10()
-        } else {
+        let stream_colorimetry = if matches!(decoder, VideoDecoder::H264(_)) {
             Colorimetry::sdr_bt709()
+        } else {
+            Colorimetry::hdr10()
         };
-        // What the sender announces for these streams; the bitstream may
-        // not say (see `VideoDecoder::set_stream_colorimetry`).
-        let mut decoder = decoder;
-        decoder.set_stream_colorimetry(Some(stream_colorimetry));
         let output_state = OutputColorState::from_display(display_caps);
         // Same derivation as `HdrTonemapConfig::from_metadata`.
         let source_peak = hdr_static_metadata
@@ -225,36 +215,6 @@ impl PeerView {
             metrics,
             frames_pending: 0,
         }
-    }
-
-    /// Follow a new `SurfaceStreamStart` for the same share: the sender
-    /// switched codec (a viewer joined or left) or announced a display size.
-    /// The decoder is replaced only when the codec changed; the old frame
-    /// stays on screen until the new stream's first keyframe decodes.
-    pub fn restart_stream(&mut self, codec: &str, display_size: Option<(u32, u32)>) {
-        let bit_depth = if self.decoder.is_ten_bit() { 10 } else { 0 };
-        if let Ok(decoder) = VideoDecoder::for_stream(codec, bit_depth)
-            && decoder.codec() != self.decoder.codec()
-        {
-            tracing::info!(
-                surface = self.surface_id,
-                codec,
-                "peer stream switched codec; rebuilding the decoder"
-            );
-            let colorimetry = if decoder.is_ten_bit() {
-                Colorimetry::hdr10()
-            } else {
-                Colorimetry::sdr_bt709()
-            };
-            self.decoder = decoder;
-            self.decoder.set_stream_colorimetry(Some(colorimetry));
-        }
-        self.decoder.set_display_size(display_size);
-    }
-
-    /// The codec the view is decoding.
-    pub fn codec(&self) -> media::StreamCodec {
-        self.decoder.codec()
     }
 
     /// Whether this peer view is running the HDR path. Diagnostics-only.
@@ -674,20 +634,7 @@ impl AppWidget for PeerView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::network::encoder::VideoEncoder;
-    use media::StreamCodec;
-
-    /// A VP9 stream from the royalty-free software encoder: no GPU and no
-    /// Cisco binary needed.
-    fn vp9_unit(width: u32, height: u32) -> Vec<u8> {
-        let mut enc = VideoEncoder::new(StreamCodec::Vp9, width, height, 30).expect("VP9 encoder");
-        enc.encode(&gradient_frame(width, height)).expect("encode")
-    }
-
-    fn vp9_view(metrics: PeerSurfaceMetrics) -> PeerView {
-        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
-        PeerView::new_for_stream(42, 7, "vp9", metrics, &caps, None)
-    }
+    use crate::network::encoder::H264Encoder;
 
     /// `coord * 255 / span.max(1)`, computed via saturating/checked ops
     /// rather than raw operators: saturating multiply can't wrap for a
@@ -736,15 +683,20 @@ mod tests {
         use vello_encoding::DrawTag;
         const W: u32 = 64;
         const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
 
-        let mut view = vp9_view(PeerSurfaceMetrics::default());
+        let mut view = PeerView::new(42, 7);
         let progressed = view.push_encoded(&nalus);
         assert!(progressed, "decoder produced no frame from encoder output");
         let latest = view.latest_frame().expect("frame stashed");
         assert_eq!(latest.width, W);
         assert_eq!(latest.height, H);
-        assert!(latest.pixels.is_rgba(), "an SDR stream yields RGBA pixels");
+        assert!(
+            latest.pixels.is_rgba(),
+            "H.264 decoder should yield RGBA pixels"
+        );
 
         view.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
 
@@ -832,10 +784,12 @@ mod tests {
     fn push_encoded_with_latency_drops_oldest_after_ceiling() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
 
         let metrics = PeerSurfaceMetrics::default();
-        let mut view = vp9_view(metrics.clone());
+        let mut view = PeerView::new_with_metrics(42, 7, metrics.clone());
 
         assert_eq!(
             view.push_encoded_with_latency(&nalus, Some(1_000)),
@@ -873,14 +827,31 @@ mod tests {
     }
 
     /// A stream-start label the receiver can't honour must never cost the
-    /// viewer the share: it degrades to the SDR H.264 decoder.
+    /// viewer the share. Not hypothetical: Fedora's `libavcodec-free`
+    /// (which Tilo images ship) is built
+    /// `--disable-decoder='h264,hevc,vc1,vvc'`, so `HevcDecoder::new`
+    /// fails on a stock image.
     #[test]
-    fn an_unknown_stream_label_degrades_to_h264() {
+    fn an_unsupported_stream_label_still_yields_a_working_peer_view() {
+        const W: u32 = 64;
+        const H: u32 = 64;
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
         let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
-        let unknown =
-            PeerView::new_for_stream(42, 7, "h266", PeerSurfaceMetrics::default(), &caps, None);
-        assert_eq!(unknown.codec(), StreamCodec::H264);
-        let hevc = PeerView::new_for_stream(
+
+        let mut unknown =
+            PeerView::new_for_stream(42, 7, "av1", PeerSurfaceMetrics::default(), &caps, None);
+        assert!(
+            matches!(unknown.decoder, VideoDecoder::H264(_)),
+            "an unknown codec label must degrade to the SDR decoder"
+        );
+        assert!(
+            unknown.push_encoded(&nalus),
+            "the fallback decoder has to actually decode the SDR stream"
+        );
+
+        let mut hevc = PeerView::new_for_stream(
             43,
             7,
             "hevc-main10",
@@ -888,41 +859,31 @@ mod tests {
             &caps,
             None,
         );
-        assert_eq!(hevc.codec(), StreamCodec::HevcMain10);
-        assert!(
-            hevc.is_hdr(),
-            "a 10-bit stream runs the HDR path on an SDR display"
-        );
-    }
-
-    /// A sender that switches codec announces a new stream; the view
-    /// follows it and decodes the new codec.
-    #[test]
-    fn a_codec_switch_rebuilds_the_decoder() {
-        const W: u32 = 64;
-        const H: u32 = 64;
-        let caps = crate::shell::hdr_display::DisplayCapabilities::sdr_default();
-        let mut view =
-            PeerView::new_for_stream(42, 7, "h264", PeerSurfaceMetrics::default(), &caps, None);
-        view.restart_stream("vp9", Some((W, H)));
-        assert_eq!(view.codec(), StreamCodec::Vp9);
-        assert!(view.push_encoded(&vp9_unit(W, H)), "the new codec decodes");
-        view.restart_stream("vp9", Some((W, H)));
-        assert!(
-            view.latest_frame().is_some(),
-            "an unchanged codec keeps the picture"
-        );
+        if matches!(hevc.decoder, VideoDecoder::H264(_)) {
+            assert!(
+                hevc.push_encoded(&nalus),
+                "the degraded HEVC view must still decode the SDR stream \
+                 the sender is really emitting"
+            );
+        } else {
+            assert!(
+                VideoDecoder::for_wire_codec("hevc-main10").is_ok(),
+                "the HDR path is only reachable when the backend builds"
+            );
+        }
     }
 
     #[test]
     fn metrics_handle_is_shared_via_clone() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let nalus = vp9_unit(W, H);
+        let rgba = gradient_frame(W, H);
+        let mut enc = H264Encoder::new(W, H, 30).expect("encoder");
+        let nalus = enc.encode(&rgba).expect("encode");
 
         let metrics = PeerSurfaceMetrics::default();
         let external = metrics.clone();
-        let mut view = vp9_view(metrics);
+        let mut view = PeerView::new_with_metrics(1, 1, metrics);
 
         assert_eq!(external.snapshot().frames_received, 0);
         view.push_encoded_with_latency(&nalus, Some(500));

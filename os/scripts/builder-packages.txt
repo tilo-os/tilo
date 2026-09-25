@@ -8,6 +8,7 @@ clang
 clang-devel
 cmake
 expat-devel
+ffmpeg-free-devel
 fontconfig-devel
 freetype-devel
 gcc
@@ -27,6 +28,7 @@ libinput-devel
 libmanette
 libseat-devel
 libsoup3-devel
+libva-devel
 libxkbcommon-devel
 libxslt
 make

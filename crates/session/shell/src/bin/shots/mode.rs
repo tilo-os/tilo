@@ -203,26 +203,21 @@ pub mod recording {
         frames_per_step_for, scenario,
     };
 
-    use shell::compositor::mp4_recording::{Mp4Recording, recording_encoder};
-    use shell::network::encoder::VideoEncoder;
+    use std::fs::File;
+    use std::io::Write;
 
-    /// What a recording produced: the codec and its first access unit (a
-    /// keyframe), so a caller can check the content decodes.
-    pub struct RecordingSummary {
-        pub codec: media::StreamCodec,
-        pub first_unit: Option<Vec<u8>>,
-    }
+    use shell::network::encoder::H264Encoder;
 
-    /// Run a scenario and record one or more encoded frames per scenario
-    /// step into an MP4 file at `out`.
+    /// Run a scenario and append one or more encoded H.264 NALU payloads
+    /// per scenario step to the file at `out`.
     ///
     /// `fps` controls both the encoder's rate-control hint AND the number
     /// of frames rendered per step (`fps * step_duration_secs`) so the
     /// resulting video plays back at scenario-step pace rather than
     /// galloping through at one frame per step.
     ///
-    /// The codec is the most compatible one this machine encodes (H.264
-    /// where available, else AV1 in hardware, else VP9 in software).
+    /// Output is a raw Annex-B byte stream (no MP4 container). ffplay /
+    /// mpv / vlc all play `.h264` directly.
     ///
     /// # Errors
     ///
@@ -234,17 +229,17 @@ pub mod recording {
         out: &Path,
         fps: u32,
         step_duration_secs: f32,
-    ) -> Result<RecordingSummary, String> {
+    ) -> Result<(), String> {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
         let (w, h) = driver.viewport();
-        // 4:2:0 encoders take even dimensions.
-        let (w, h) = (dim_to_u32(w) & !1, dim_to_u32(h) & !1);
+        let (w, h) = (dim_to_u32(w), dim_to_u32(h));
         let mut renderer = OffscreenRenderer::new(w, h);
-        let mut encoder = recording_encoder(w, h, fps, 4_000_000, 0, true)?;
-        let codec = encoder.codec();
-        let mut file = Mp4Recording::new(out.to_path_buf(), codec, w, h, fps, Vec::new());
+        let mut encoder = H264Encoder::new(w, h, fps)
+            .map_err(|e| format!("H264Encoder::new for recording mode: {e}"))?;
+        let mut file = File::create(out)
+            .map_err(|e| format!("create recording output file '{}': {e}", out.display()))?;
         let frames_per_step = frames_per_step_for(fps, step_duration_secs);
         println!(
             "shots: recording scenario '{}' at {}x{} {}fps, {} frame(s)/step → {}",
@@ -260,7 +255,6 @@ pub mod recording {
             encoder: &mut encoder,
             file: &mut file,
             frames_per_step,
-            first_unit: None,
             error: None,
         };
         // Snapshot the start state too (sink runs only on `Snapshot`
@@ -271,9 +265,7 @@ pub mod recording {
         for action in &scenario.actions {
             scenario_apply_then_capture(driver, action, &mut sink)?;
         }
-        let first_unit = sink.first_unit.take();
-        file.finish()?;
-        Ok(RecordingSummary { codec, first_unit })
+        Ok(())
     }
 
     /// `SnapshotSink` adapter for recording mode. Encodes `frames_per_step`
@@ -282,10 +274,9 @@ pub mod recording {
     /// step is itself the granularity of state change.
     pub struct RecordingSink<'a> {
         pub renderer: &'a mut OffscreenRenderer,
-        pub encoder: &'a mut VideoEncoder,
-        pub file: &'a mut Mp4Recording,
+        pub encoder: &'a mut H264Encoder,
+        pub file: &'a mut File,
         pub frames_per_step: u32,
-        first_unit: Option<Vec<u8>>,
         /// Set by [`Self::encode_current`] on failure when called through
         /// [`SnapshotSink::capture`], whose signature can't return `Result`;
         /// the driving loop checks this after every capture.
@@ -297,15 +288,14 @@ pub mod recording {
             let scene = driver.paint();
             let rgba = self.renderer.render_rgba_resilient(&scene);
             for _ in 0..self.frames_per_step {
-                let unit = self
+                let nalus = self
                     .encoder
                     .encode(&rgba)
-                    .map_err(|e| format!("encode in recording mode: {e}"))?;
-                if !unit.is_empty() {
-                    self.file.write_access_unit(&unit)?;
-                    if self.first_unit.is_none() {
-                        self.first_unit = Some(unit);
-                    }
+                    .map_err(|e| format!("H264Encoder::encode in recording mode: {e}"))?;
+                if !nalus.is_empty() {
+                    self.file
+                        .write_all(&nalus)
+                        .map_err(|e| format!("write encoded NALU bytes: {e}"))?;
                 }
             }
             Ok(())
@@ -441,50 +431,80 @@ mod tests {
 
     use std::fs;
 
-    use shell::network::decoder::VideoDecoder;
+    use shell::network::decoder::H264Decoder;
 
     use super::super::scenario::lookup;
 
-    /// Recording mode must produce a non-empty MP4 whose content decodes
-    /// to a real (non-uniform, non-black) frame — the negative regression
-    /// to guard against is an all-zero RGBA buffer being fed to the encoder
-    /// because of a BGRA-vs-RGBA swizzle.
+    /// Recording mode must produce a non-empty .h264 file whose first
+    /// bytes are a valid Annex-B NAL unit start prefix.
+    ///
+    /// Round-trips the encoded bytes through `H264Decoder` to confirm
+    /// they decode to a real (non-uniform, non-black) frame — the
+    /// negative regression to guard against is an all-zero RGBA buffer
+    /// being fed to the encoder because of a BGRA-vs-RGBA swizzle.
     #[test]
-    fn recording_mode_writes_a_decodable_mp4_for_scenario() {
-        let tmp = std::env::temp_dir().join("shots-recording-test.mp4");
+    fn recording_mode_writes_non_empty_h264_for_scenario() {
+        let tmp = std::env::temp_dir().join("shots-recording-test.h264");
+        // Idempotent — remove any leftover from a previous run.
         let _ = fs::remove_file(&tmp);
 
         let scenario = lookup("palette_typing").expect("palette_typing in catalogue");
+        // 128×96 is the encoder's smallest legal 16-pixel-aligned size
+        // with enough resolution to render real content. The recording
+        // mode honours the driver's viewport, so we set a small one.
         let mut driver = ShellDriver::new((128, 96));
-        let summary =
-            recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
+        recording::run_scenario(&mut driver, &scenario, &tmp, 30, 1.0).expect("run_scenario");
 
         let bytes = fs::read(&tmp).expect("read recorded file");
-        assert!(bytes.len() > 8, "recording mode produced an empty file");
-        assert_eq!(&bytes[4..8], b"ftyp", "the recording is an MP4");
+        assert!(
+            !bytes.is_empty(),
+            "recording mode produced empty file at {}",
+            tmp.display()
+        );
 
-        let first = summary.first_unit.expect("at least one encoded frame");
-        let mut dec = VideoDecoder::new(summary.codec, false);
-        let frame = dec.decode(&first).expect("decoder yields a frame");
+        // Annex-B start code: 0x00 0x00 0x00 0x01 OR 0x00 0x00 0x01.
+        let four = bytes.starts_with(&[0x00, 0x00, 0x00, 0x01]);
+        let three = bytes.starts_with(&[0x00, 0x00, 0x01]);
+        assert!(
+            four || three,
+            "recorded file must start with an Annex-B NALU prefix; first 8 bytes: {:02x?}",
+            &bytes[..bytes.len().min(8)]
+        );
+
+        // Sanity: decode the first frame and confirm it carries content
+        // (non-uniform pixels). All-zero RGBA would indicate the
+        // offscreen renderer's output never reached the encoder.
+        let mut dec = H264Decoder::new();
+        let frame = dec
+            .decode(&bytes)
+            .expect("decoder yields at least one frame");
         assert_eq!(frame.width, 128);
         assert_eq!(frame.height, 96);
         let pixels = match &frame.pixels {
             shell::network::DecodedPixels::Rgba8(bytes) => bytes,
             other @ shell::network::DecodedPixels::P010 { .. } => {
-                panic!("an SDR decoder should yield RGBA pixels, got {other:?}")
+                panic!("SDR H.264 decoder should yield RGBA pixels, got {other:?}")
             }
         };
         let first_r = pixels[0];
-        let nonuniform = pixels
-            .chunks(4)
-            .step_by(64)
-            .any(|chunk| chunk[0] != first_r);
+        // If every pixel's R channel equals the first byte, the frame is
+        // uniformly coloured. The shell paints a backdrop + chrome, so a
+        // legitimate render is never uniform across 128×96.
+        let mut nonuniform = false;
+        for chunk in pixels.chunks(4).step_by(64) {
+            if chunk[0] != first_r {
+                nonuniform = true;
+                break;
+            }
+        }
         assert!(
             nonuniform,
             "decoded recording is uniformly coloured (R={first_r}) — \
              likely a black frame, meaning the offscreen renderer's \
              output isn't reaching the encoder"
         );
+
+        // Cleanup: don't leak the file across runs.
         let _ = fs::remove_file(&tmp);
     }
 }

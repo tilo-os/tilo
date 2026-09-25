@@ -4992,19 +4992,6 @@ impl ShellNetwork {
             | NeighbourMsg::PermissionGrant { .. }) => {
                 self.queue_legacy_message_from(ws, Some(peer), message);
             }
-            NeighbourMsg::MediaCapabilities {
-                peer: advertiser,
-                hardware_decode,
-                software_decode,
-                hardware_encode,
-                software_encode,
-            } => crate::network::media_caps::record(
-                advertiser,
-                &hardware_decode,
-                &software_decode,
-                &hardware_encode,
-                &software_encode,
-            ),
             other => self.dispatch_to_replica(peer, &other),
         }
     }
@@ -5200,7 +5187,6 @@ impl ShellNetwork {
             | NeighbourMsg::RemoteInput { peer, .. }
             | NeighbourMsg::PermissionRequest { peer, .. }
             | NeighbourMsg::Heartbeat { peer, .. }
-            | NeighbourMsg::MediaCapabilities { peer, .. }
             | NeighbourMsg::AppDocument { peer, .. }
             | NeighbourMsg::AppPresenceV2 { peer, .. } => Some(*peer),
             NeighbourMsg::SurfaceStreamStart { source_peer, .. }

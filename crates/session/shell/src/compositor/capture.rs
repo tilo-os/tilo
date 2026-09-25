@@ -14,6 +14,10 @@
 )]
 
 use std::collections::VecDeque;
+#[cfg(not(feature = "hdr-decode"))]
+use std::fs::File;
+#[cfg(not(feature = "hdr-decode"))]
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -40,12 +44,21 @@ const REPLAY_SECONDS: usize = 30;
 const REPLAY_FRAMES: usize = REPLAY_SECONDS * REPLAY_FPS as usize;
 const REPLAY_KEYFRAME_INTERVAL: u32 = REPLAY_FPS * 2;
 const REPLAY_MAX_VIDEO_BYTES: usize = 128 * 1024 * 1024;
+#[cfg(feature = "hdr-decode")]
 const AUDIO_BYTES_PER_VIDEO_FRAME: usize = 48_000 / REPLAY_FPS as usize * 4;
+#[cfg(feature = "hdr-decode")]
 const REPLAY_MAX_AUDIO_BYTES: usize = REPLAY_SECONDS * 48_000 * 4;
 
 pub fn recording_audio_availability() -> (bool, bool) {
-    let availability = super::audio_capture::availability();
-    (availability.system, availability.microphone)
+    #[cfg(feature = "hdr-decode")]
+    {
+        let availability = super::audio_capture::availability();
+        (availability.system, availability.microphone)
+    }
+    #[cfg(not(feature = "hdr-decode"))]
+    {
+        (false, false)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -138,7 +151,7 @@ struct LiveMirror {
 struct RecordingSession {
     intent: CaptureIntent,
     renderer: OffscreenRenderer,
-    encoder: crate::network::encoder::VideoEncoder,
+    encoder: crate::network::encoder::H264Encoder,
     output: RecordingOutput,
     path: PathBuf,
     width: u32,
@@ -146,10 +159,12 @@ struct RecordingSession {
     last_frame: Instant,
     frames: u64,
     paused: bool,
+    #[cfg(feature = "hdr-decode")]
     audio_tracks: Vec<ActiveAudioTrack>,
     audio_warning: Option<String>,
 }
 
+#[cfg(feature = "hdr-decode")]
 struct ActiveAudioTrack {
     source: super::audio_capture::AudioSource,
     capture: super::audio_capture::AudioCapture,
@@ -159,12 +174,13 @@ struct ActiveAudioTrack {
 struct ReplaySession {
     intent: CaptureIntent,
     renderer: OffscreenRenderer,
-    encoder: crate::network::encoder::VideoEncoder,
+    encoder: crate::network::encoder::H264Encoder,
     width: u32,
     height: u32,
     last_frame: Instant,
     frames: VecDeque<BufferedReplayFrame>,
     video_bytes: usize,
+    #[cfg(feature = "hdr-decode")]
     audio_tracks: Vec<ReplayAudioTrack>,
     audio_warning: Option<String>,
 }
@@ -174,6 +190,7 @@ struct BufferedReplayFrame {
     keyframe: bool,
 }
 
+#[cfg(feature = "hdr-decode")]
 struct ReplayAudioTrack {
     source: super::audio_capture::AudioSource,
     capture: super::audio_capture::AudioCapture,
@@ -181,34 +198,57 @@ struct ReplayAudioTrack {
 }
 
 enum RecordingOutput {
+    #[cfg(feature = "hdr-decode")]
     Mp4(super::mp4_recording::Mp4Recording),
+    #[cfg(not(feature = "hdr-decode"))]
+    Raw(File),
 }
 
 impl RecordingOutput {
+    // The non-media build creates a fallible raw file while the media build
+    // constructs its muxer lazily. Keep one call contract across both cfgs.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the raw and muxed cfg variants share one fallible constructor contract"
+    )]
     fn new(
         path: &Path,
-        codec: media::StreamCodec,
         width: u32,
         height: u32,
         fps: u32,
         audio_track_names: Vec<String>,
-    ) -> Self {
-        Self::Mp4(super::mp4_recording::Mp4Recording::new(
-            path.to_path_buf(),
-            codec,
-            width,
-            height,
-            fps,
-            audio_track_names,
-        ))
+    ) -> Result<Self, String> {
+        #[cfg(feature = "hdr-decode")]
+        {
+            Ok(Self::Mp4(super::mp4_recording::Mp4Recording::new(
+                path.to_path_buf(),
+                width,
+                height,
+                fps,
+                audio_track_names,
+            )))
+        }
+        #[cfg(not(feature = "hdr-decode"))]
+        {
+            let _ = (width, height, fps, audio_track_names);
+            File::create(path)
+                .map(Self::Raw)
+                .map_err(|error| format!("create recording {}: {error}", path.display()))
+        }
     }
 
     fn write_access_unit(&mut self, bytes: &[u8]) -> Result<(), String> {
         match self {
+            #[cfg(feature = "hdr-decode")]
             Self::Mp4(output) => output.write_access_unit(bytes),
+            #[cfg(not(feature = "hdr-decode"))]
+            Self::Raw(file) => file
+                .write_all(bytes)
+                .map_err(|error| format!("write raw H.264 access unit: {error}")),
         }
     }
 
+    #[cfg(feature = "hdr-decode")]
     fn write_pcm_audio(&mut self, track_index: usize, bytes: &[u8]) -> Result<(), String> {
         let Self::Mp4(output) = self;
         output.write_pcm_audio(track_index, bytes)
@@ -216,10 +256,15 @@ impl RecordingOutput {
 
     fn finish(self, path: &Path) -> Result<(), String> {
         match self {
+            #[cfg(feature = "hdr-decode")]
             Self::Mp4(output) => {
                 let _ = path;
                 output.finish()
             }
+            #[cfg(not(feature = "hdr-decode"))]
+            Self::Raw(mut file) => file
+                .flush()
+                .map_err(|error| format!("flush recording {}: {error}", path.display())),
         }
     }
 }
@@ -820,16 +865,19 @@ impl CaptureExecutor {
         if self.replay.is_some() {
             return Err("turn off recent capture before starting a recording".into());
         }
+        #[cfg(not(feature = "hdr-decode"))]
+        if intent.audio != AudioCaptureMode::None {
+            return Err(
+                "audio capture is unavailable in this compositor build; turn audio off to record"
+                    .into(),
+            );
+        }
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, &intent);
         let (_, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
-        // 4:2:0 encoders take even dimensions; an odd canvas is fitted into
-        // the next smaller even one.
-        let (width, height) = ((width & !1).max(2), (height & !1).max(2));
         let renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("recording renderer {width}×{height}: {error}"))?;
-        let encoder =
-            super::mp4_recording::recording_encoder(width, height, 30, 8_000_000, 60, true)?;
-        let codec = encoder.codec();
+        let encoder = crate::network::encoder::H264Encoder::new(width, height, 30)
+            .map_err(|error| format!("H.264 encoder {width}×{height}: {error}"))?;
         let path = next_recording_path(self.sequence, intent.audio != AudioCaptureMode::None);
         self.sequence = self.sequence.saturating_add(1);
         if let Some(parent) = path.parent() {
@@ -837,8 +885,11 @@ impl CaptureExecutor {
                 format!("create recording folder {}: {error}", parent.display())
             })?;
         }
+        #[cfg(feature = "hdr-decode")]
         let audio_sources = selected_audio_sources(intent.audio);
+        #[cfg(feature = "hdr-decode")]
         let mut audio_tracks = Vec::with_capacity(audio_sources.len());
+        #[cfg(feature = "hdr-decode")]
         for (mux_index, source) in audio_sources.iter().copied().enumerate() {
             audio_tracks.push(ActiveAudioTrack {
                 source,
@@ -846,11 +897,14 @@ impl CaptureExecutor {
                 mux_index,
             });
         }
+        #[cfg(feature = "hdr-decode")]
         let audio_track_names = audio_sources
             .iter()
             .map(|source| source.track_name().to_string())
             .collect();
-        let output = RecordingOutput::new(&path, codec, width, height, 30, audio_track_names);
+        #[cfg(not(feature = "hdr-decode"))]
+        let audio_track_names = Vec::new();
+        let output = RecordingOutput::new(&path, width, height, 30, audio_track_names)?;
         self.recording = Some(RecordingSession {
             intent,
             renderer,
@@ -862,6 +916,7 @@ impl CaptureExecutor {
             last_frame: immediately_due_instant(),
             frames: 0,
             paused: false,
+            #[cfg(feature = "hdr-decode")]
             audio_tracks,
             audio_warning: None,
         });
@@ -879,6 +934,7 @@ impl CaptureExecutor {
             return Err("there is no active recording to pause or resume".into());
         };
         recording.paused = paused;
+        #[cfg(feature = "hdr-decode")]
         drain_audio_tracks(recording, false)?;
         if !paused {
             // Resume with a fresh frame immediately; never make the user wait
@@ -900,10 +956,15 @@ impl CaptureExecutor {
             frame_builder.set_capture_recording_active(false);
             return Err("there is no active recording to stop".into());
         };
+        #[cfg(feature = "hdr-decode")]
         let mut recording = recording;
         let path = recording.path.clone();
         let frames = recording.frames;
+        #[cfg(feature = "hdr-decode")]
         let mut output = recording.output;
+        #[cfg(not(feature = "hdr-decode"))]
+        let output = recording.output;
+        #[cfg(feature = "hdr-decode")]
         for track in &mut recording.audio_tracks {
             if let Ok(bytes) = track.capture.drain(true)
                 && !bytes.is_empty()
@@ -962,20 +1023,25 @@ impl CaptureExecutor {
         if self.recording.is_some() {
             return Err("stop the active recording before enabling recent capture".into());
         }
+        #[cfg(not(feature = "hdr-decode"))]
+        if intent.audio != AudioCaptureMode::None {
+            return Err("audio is unavailable in this compositor build".into());
+        }
         let (source, regions) = capture_source(frame_builder, clean_screen_scene, &intent);
         let (_, width, height) = compose_scene(&source, &regions, intent.pip_layout)?;
-        let (width, height) = ((width & !1).max(2), (height & !1).max(2));
         let renderer = OffscreenRenderer::try_new(width, height)
             .map_err(|error| format!("recent-capture renderer {width}×{height}: {error}"))?;
-        let encoder = super::mp4_recording::recording_encoder(
+        let encoder = crate::network::encoder::H264Encoder::new_with_bitrate_and_keyframe_interval(
             width,
             height,
             REPLAY_FPS,
             4_000_000,
             REPLAY_KEYFRAME_INTERVAL,
-            true,
-        )?;
+        )
+        .map_err(|error| format!("recent-capture encoder {width}×{height}: {error}"))?;
+        #[cfg(feature = "hdr-decode")]
         let mut audio_tracks = Vec::new();
+        #[cfg(feature = "hdr-decode")]
         for source in selected_audio_sources(intent.audio) {
             audio_tracks.push(ReplayAudioTrack {
                 source,
@@ -993,6 +1059,7 @@ impl CaptureExecutor {
             last_frame: immediately_due_instant(),
             frames: VecDeque::with_capacity(REPLAY_FRAMES + REPLAY_KEYFRAME_INTERVAL as usize),
             video_bytes: 0,
+            #[cfg(feature = "hdr-decode")]
             audio_tracks,
             audio_warning: None,
         });
@@ -1010,32 +1077,47 @@ impl CaptureExecutor {
         if replay.frames.is_empty() {
             return Err("recent capture is still warming up".into());
         }
-        let include_audio = !replay.audio_tracks.is_empty();
+        let include_audio = {
+            #[cfg(feature = "hdr-decode")]
+            {
+                !replay.audio_tracks.is_empty()
+            }
+            #[cfg(not(feature = "hdr-decode"))]
+            {
+                false
+            }
+        };
         let path = next_replay_path(sequence, include_audio);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|error| format!("create replay folder {}: {error}", parent.display()))?;
         }
+        #[cfg(feature = "hdr-decode")]
         let audio_track_names = replay
             .audio_tracks
             .iter()
             .map(|track| track.source.track_name().to_string())
             .collect();
+        #[cfg(not(feature = "hdr-decode"))]
+        let audio_track_names = Vec::new();
         let mut output = RecordingOutput::new(
             &path,
-            replay.encoder.codec(),
             replay.width,
             replay.height,
             REPLAY_FPS,
             audio_track_names,
-        );
+        )?;
+        #[cfg(feature = "hdr-decode")]
         let audio: Vec<Vec<u8>> = replay
             .audio_tracks
             .iter()
             .map(|track| replay_audio_tail(&track.pcm, replay.frames.len()))
             .collect();
         for (frame_index, frame) in replay.frames.iter().enumerate() {
+            #[cfg(not(feature = "hdr-decode"))]
+            let _ = frame_index;
             output.write_access_unit(&frame.access_unit)?;
+            #[cfg(feature = "hdr-decode")]
             for (track_index, pcm) in audio.iter().enumerate() {
                 let start = frame_index.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
                 let end = start.saturating_add(AUDIO_BYTES_PER_VIDEO_FRAME);
@@ -1392,6 +1474,7 @@ fn record_frame(
     recording: &mut RecordingSession,
 ) -> Result<(), String> {
     if recording.paused {
+        #[cfg(feature = "hdr-decode")]
         drain_audio_tracks(recording, false)?;
         return Ok(());
     }
@@ -1429,6 +1512,7 @@ fn record_frame(
         recording.frames = recording.frames.saturating_add(1);
         recording.last_frame = Instant::now();
     }
+    #[cfg(feature = "hdr-decode")]
     drain_audio_tracks(recording, true)?;
     Ok(())
 }
@@ -1463,7 +1547,7 @@ fn record_replay_frame(
             .encode(&rgba)
             .map_err(|error| format!("encode recent frame: {error}"))?;
         if !access_unit.is_empty() {
-            let keyframe = media::realtime::is_keyframe(replay.encoder.codec(), &access_unit);
+            let keyframe = tilo_callstream::session::is_h264_keyframe(&access_unit);
             replay.video_bytes = replay.video_bytes.saturating_add(access_unit.len());
             replay.frames.push_back(BufferedReplayFrame {
                 access_unit,
@@ -1473,6 +1557,7 @@ fn record_replay_frame(
         }
         replay.last_frame = Instant::now();
     }
+    #[cfg(feature = "hdr-decode")]
     drain_replay_audio(replay);
     Ok(())
 }
@@ -1494,6 +1579,7 @@ fn trim_replay_video_frames(frames: &mut VecDeque<BufferedReplayFrame>, video_by
     }
 }
 
+#[cfg(feature = "hdr-decode")]
 fn drain_replay_audio(replay: &mut ReplaySession) {
     let mut ended = Vec::new();
     for (index, track) in replay.audio_tracks.iter_mut().enumerate() {
@@ -1521,6 +1607,7 @@ fn drain_replay_audio(replay: &mut ReplaySession) {
     }
 }
 
+#[cfg(feature = "hdr-decode")]
 fn replay_audio_tail(pcm: &VecDeque<u8>, video_frames: usize) -> Vec<u8> {
     let target_len = video_frames.saturating_mul(AUDIO_BYTES_PER_VIDEO_FRAME);
     let available = pcm.len().min(target_len);
@@ -1536,6 +1623,7 @@ fn replay_audio_tail(pcm: &VecDeque<u8>, video_frames: usize) -> Vec<u8> {
     out
 }
 
+#[cfg(feature = "hdr-decode")]
 fn selected_audio_sources(mode: AudioCaptureMode) -> Vec<super::audio_capture::AudioSource> {
     let mut sources = Vec::with_capacity(2);
     if mode.includes_system() {
@@ -1547,6 +1635,7 @@ fn selected_audio_sources(mode: AudioCaptureMode) -> Vec<super::audio_capture::A
     sources
 }
 
+#[cfg(feature = "hdr-decode")]
 fn drain_audio_tracks(recording: &mut RecordingSession, keep: bool) -> Result<(), String> {
     let mut ended = Vec::new();
     for (index, track) in recording.audio_tracks.iter_mut().enumerate() {
@@ -1817,7 +1906,13 @@ fn next_recording_path(sequence: u64, include_audio: bool) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("Screen Recordings");
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
+    #[cfg(feature = "hdr-decode")]
     let extension = if include_audio { "mov" } else { "mp4" };
+    #[cfg(not(feature = "hdr-decode"))]
+    let extension = {
+        let _ = include_audio;
+        "h264"
+    };
     root.join(format!("Tilo Recording {stamp}-{sequence}.{extension}"))
 }
 
@@ -1827,7 +1922,13 @@ fn next_replay_path(sequence: u64, include_audio: bool) -> PathBuf {
         .unwrap_or_else(std::env::temp_dir)
         .join("Screen Recordings");
     let stamp = chrono::Local::now().format("%Y-%m-%d at %H.%M.%S");
+    #[cfg(feature = "hdr-decode")]
     let extension = if include_audio { "mov" } else { "mp4" };
+    #[cfg(not(feature = "hdr-decode"))]
+    let extension = {
+        let _ = include_audio;
+        "h264"
+    };
     root.join(format!("Tilo Recent {stamp}-{sequence}.{extension}"))
 }
 
@@ -2396,6 +2497,7 @@ mod tests {
         assert_eq!(bytes, frames.len());
     }
 
+    #[cfg(feature = "hdr-decode")]
     #[test]
     fn replay_audio_tail_pads_warmup_and_keeps_the_newest_samples() {
         let pcm: VecDeque<u8> = (0..12).collect();

@@ -53,6 +53,8 @@ mod desktop_env_interactions;
 mod dmabuf_commit_barrier;
 #[path = "dmabuf_direct_capture_path.rs"]
 mod dmabuf_direct_capture_path;
+#[path = "dmabuf_encode_path_integration.rs"]
+mod dmabuf_encode_path_integration;
 #[path = "dmabuf_feedback_protocol.rs"]
 mod dmabuf_feedback_protocol;
 #[path = "document_open_e2e.rs"]
@@ -77,8 +79,6 @@ mod foreign_surface_compositing;
 mod fractional_scale_protocol;
 #[path = "freeze_bench.rs"]
 mod freeze_bench;
-#[path = "hardware_encode.rs"]
-mod hardware_encode;
 #[path = "hdr_capability_probe.rs"]
 mod hdr_capability_probe;
 #[path = "hdr_decode_pipeline.rs"]
@@ -87,10 +87,14 @@ mod hdr_decode_pipeline;
 mod hdr_output_encode_shader;
 #[path = "hdr_output_pipeline.rs"]
 mod hdr_output_pipeline;
+#[path = "hdr_sei_metadata.rs"]
+mod hdr_sei_metadata;
 #[path = "hdr_tonemap_shader.rs"]
 mod hdr_tonemap_shader;
 #[path = "headless_examples_smoke.rs"]
 mod headless_examples_smoke;
+#[path = "hevc_hardware_encode.rs"]
+mod hevc_hardware_encode;
 #[path = "identity_startup.rs"]
 mod identity_startup;
 #[path = "interaction_test.rs"]
@@ -103,6 +107,8 @@ mod leak_probe;
 mod lock_screen_visual;
 #[path = "maximize_persist_wireup_test.rs"]
 mod maximize_persist_wireup_test;
+#[path = "nvenc_hardware_encode.rs"]
+mod nvenc_hardware_encode;
 #[path = "onboarding_visual.rs"]
 mod onboarding_visual;
 #[path = "opening_configure_carries_the_tab_size.rs"]
@@ -155,6 +161,8 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
+#[path = "vaapi_hardware_encode.rs"]
+mod vaapi_hardware_encode;
 #[path = "wayland_test.rs"]
 mod wayland_test;
 #[path = "workspace_settings_state_test.rs"]

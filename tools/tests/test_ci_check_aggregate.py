@@ -49,7 +49,7 @@ class CheckAggregateTests(unittest.TestCase):
 
     def aggregate(self, builder="success", select="success", security="success", affected="success",
                   required="true", security_required="true", count="4",
-                  event="pull_request",
+                  event="pull_request", native_required="false", native="skipped",
                   suites_required="false", suites="skipped",
                   test=None, check=None, clippy=None):
         with tempfile.TemporaryDirectory() as directory:
@@ -63,6 +63,8 @@ class CheckAggregateTests(unittest.TestCase):
                      "CLIPPY_RESULT": affected if clippy is None else clippy,
                      "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
+                     "NATIVE_DEPENDENCIES_REQUIRED": native_required,
+                     "NATIVE_DEPENDENCIES_RESULT": native,
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
                      "SELECTED_COUNT": count, "GITHUB_STEP_SUMMARY": summary.as_posix()},
                 capture_output=True, text=True,
@@ -151,6 +153,20 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertNotEqual(self.aggregate(
                     security="skipped", security_required="false", event=event)[0], 0)
 
+    def test_native_dependency_job_is_observable_and_required_when_selected(self):
+        job = section(self.workflow, "native-dependencies", 2)
+        self.assertIn("if: needs.select.outputs.native_dependencies_required == 'true'", job)
+        self.assertIn("needs: [builder, select]", job)
+        self.assertIn("image: ${{ needs.builder.outputs.image }}", job)
+        self.assertIn("python3 os/tests/test_openh264_source_order.py -v", job)
+        self.assertEqual(self.workflow.count("python3 os/tests/test_openh264_source_order.py -v"), 1)
+        self.assertEqual(self.aggregate(native_required="true", native="success")[0], 0)
+        for required, result in (("true", "failure"), ("true", "skipped"),
+                                 ("true", "cancelled"), ("false", "success"),
+                                 ("", "skipped"), ("true", "")):
+            with self.subTest(required=required, result=result):
+                self.assertNotEqual(self.aggregate(native_required=required, native=result)[0], 0)
+
     def test_path_selected_suites_job_is_observable_and_required_when_selected(self):
         job = section(self.workflow, "suites", 2)
         self.assertIn("if: needs.select.outputs.suites_required == 'true'", job)
@@ -180,6 +196,20 @@ class CheckAggregateTests(unittest.TestCase):
                                 env={**os.environ, "SUITES": ""}, capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_selected_native_job_fails_without_its_fixture_or_dependency(self):
+        script = step_script(self.workflow, "native-check")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for fixture_present in (False, True):
+                if fixture_present:
+                    fixture = root / "os/tests/test_openh264_source_order.py"
+                    fixture.parent.mkdir(parents=True)
+                    shutil.copyfile(ROOT / "os/tests/test_openh264_source_order.py", fixture)
+                result = subprocess.run([self.bash, "-c", script], cwd=root,
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertNotEqual(self.aggregate(native_required="true", native="failure")[0], 0)
+
     def test_wiring_and_failed_selector_pipeline(self):
         for name, matrix in (("test", "matrix"), ("check", "matrix"), ("clippy", "clippy_matrix")):
             with self.subTest(job=name):
@@ -192,7 +222,7 @@ class CheckAggregateTests(unittest.TestCase):
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn(
-            "needs: [builder, select, security, test, check, clippy, suites]", checks)
+            "needs: [builder, select, security, test, check, clippy, native-dependencies, suites]", checks)
         for name in ("test", "check", "clippy"):
             self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
         self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)

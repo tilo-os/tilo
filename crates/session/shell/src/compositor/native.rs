@@ -108,8 +108,6 @@ struct PendingLegacyStream {
     local_peer: u64,
     app_id: String,
     codec: String,
-    /// The size the sender announced; decoded pictures are cropped to it.
-    display_size: Option<(u32, u32)>,
     hdr_static_metadata: Option<crate::collab::hdr_metadata::Hdr10Metadata>,
     input_sink: Arc<dyn Fn(crate::network::streaming::InputEvent) + Send + Sync>,
 }
@@ -7149,8 +7147,6 @@ pub fn run() {
                             app_id,
                             codec,
                             hdr_static_metadata,
-                            width,
-                            height,
                             ..
                         } => {
                             let reply_net = Arc::clone(net);
@@ -7174,7 +7170,6 @@ pub fn run() {
                                 local_peer,
                                 app_id,
                                 codec,
-                                display_size: Some((width, height)),
                                 hdr_static_metadata,
                                 input_sink,
                             };
@@ -7185,7 +7180,6 @@ pub fn run() {
                                     stream.local_peer,
                                     &stream.app_id,
                                     &stream.codec,
-                                    stream.display_size,
                                     stream.hdr_static_metadata,
                                     Arc::clone(&stream.input_sink),
                                 );
@@ -7259,7 +7253,6 @@ pub fn run() {
                             stream.local_peer,
                             &stream.app_id,
                             &stream.codec,
-                            stream.display_size,
                             stream.hdr_static_metadata,
                             Arc::clone(&stream.input_sink),
                         );

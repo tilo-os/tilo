@@ -1,11 +1,11 @@
 //! Send/receive composition over the streaming stack.
 //!
 //! [`VideoStreamSender`] composes [`crate::throttle::StreamingThrottle`] +
-//! [`crate::encoder::VideoEncoder`] and emits [`crate::stream::SurfaceFrame`]
-//! bytes stamped with the codec. [`VideoStreamReceiver`] composes
-//! [`crate::stream::SurfaceStreamReceiver`] + [`crate::decoder::VideoDecoder`]
-//! (rebuilt when the codec on the wire changes) and turns wire bytes back
-//! into [`crate::decoder::DecodedFrame`]s for a call tile.
+//! [`crate::encoder::H264Encoder`] and emits [`crate::stream::SurfaceFrame`]
+//! bytes. [`VideoStreamReceiver`] composes
+//! [`crate::stream::SurfaceStreamReceiver`] + [`crate::decoder::H264Decoder`]
+//! and turns wire bytes back into [`crate::decoder::DecodedFrame`]s for a
+//! call tile.
 //!
 //! This is the exact composition the compositor's
 //! `collab::flatpak_share::SharedFlatpakSession` uses for a shared Wayland
@@ -15,10 +15,8 @@
 
 use std::time::Instant;
 
-use media::StreamCodec;
-
-use crate::decoder::{DecodedFrame, VideoDecoder};
-use crate::encoder::{EncodeError, VideoEncoder};
+use crate::decoder::{DecodedFrame, H264Decoder};
+use crate::encoder::{EncodeError, H264Encoder};
 use crate::stream::{FrameError, ReceiverEvent, SurfaceFrame, SurfaceStreamReceiver};
 use crate::throttle::StreamingThrottle;
 
@@ -57,12 +55,12 @@ pub fn is_h264_keyframe(nalus: &[u8]) -> bool {
     false
 }
 
-/// Send half of a video stream: throttle + encode → framed [`SurfaceFrame`]
-/// bytes. Own one per outgoing source; feed captured RGBA via
-/// [`Self::offer_frame`], which returns the on-wire bytes to publish or
-/// `None` if throttled or the encoder emitted nothing.
+/// Send half of a video stream: throttle + H.264 encode → framed
+/// [`SurfaceFrame`] bytes. Own one per outgoing source; feed captured RGBA
+/// via [`Self::offer_frame`], which returns the on-wire bytes to publish
+/// or `None` if throttled or the encoder emitted nothing.
 pub struct VideoStreamSender {
-    encoder: VideoEncoder,
+    encoder: H264Encoder,
     throttle: StreamingThrottle,
     sequence: u64,
     width: u32,
@@ -70,28 +68,19 @@ pub struct VideoStreamSender {
 }
 
 impl VideoStreamSender {
-    /// Builds a sender encoding `codec` at `width × height`, up to `fps`
-    /// frames per second (the throttle enforces the cadence). Pick `codec`
-    /// with [`media::realtime::negotiate`] over the receivers' capabilities.
+    /// Builds a sender encoding `width × height` at up to `fps` frames per second (the throttle enforces the cadence).
     ///
     /// # Errors
     ///
-    /// Returns [`EncodeError`] if no encoder for `codec` can run here.
-    pub fn new(codec: StreamCodec, width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+    /// Returns [`EncodeError`] if the underlying H.264 encoder fails to
+    /// initialise for `width`/`height`/`fps`.
+    pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
         let per_second = u64::from(fps.max(1));
         let interval = std::time::Duration::from_micros(
             1_000_000u64.checked_div(per_second).unwrap_or(1).max(1),
         );
         Ok(Self {
-            encoder: VideoEncoder::with_options(
-                codec,
-                width,
-                height,
-                fps,
-                crate::encoder::DEFAULT_BITRATE_BPS,
-                0,
-                true,
-            )?,
+            encoder: H264Encoder::new(width, height, fps)?,
             throttle: StreamingThrottle::with_interval(interval),
             sequence: 0,
             width,
@@ -107,16 +96,6 @@ impl VideoStreamSender {
     /// Configured height in pixels.
     pub fn height(&self) -> u32 {
         self.height
-    }
-
-    /// The codec on the wire.
-    pub fn codec(&self) -> StreamCodec {
-        self.encoder.codec()
-    }
-
-    /// Make the next frame a keyframe, for a viewer that just joined.
-    pub fn force_keyframe(&mut self) {
-        self.encoder.force_keyframe();
     }
 
     /// Offers a captured RGBA frame (`width * height * 4` bytes) at wall clock
@@ -142,27 +121,17 @@ impl VideoStreamSender {
         if !self.throttle.should_encode(now) {
             return Ok(None);
         }
-        let Ok(Some(unit)) = self
-            .encoder
-            .encode_unit(rgba, self.sequence.saturating_mul(33))
-        else {
+        let Ok(nalus) = self.encoder.encode(rgba) else {
             return Ok(None);
         };
-        if unit.data.is_empty() {
+        if nalus.is_empty() {
             return Ok(None);
         }
-        let codec = self.encoder.codec();
+        let keyframe = is_h264_keyframe(&nalus);
         let frame = SurfaceFrame {
             sequence: self.sequence,
-            keyframe: unit.keyframe,
-            codec,
-            display_size: (codec != StreamCodec::H264).then(|| {
-                (
-                    u16::try_from(self.width).unwrap_or(u16::MAX),
-                    u16::try_from(self.height).unwrap_or(u16::MAX),
-                )
-            }),
-            payload: unit.data,
+            keyframe,
+            payload: nalus,
         };
         let bytes = frame.encode()?;
         // Only consume the throttle slot after framing succeeded. A local
@@ -181,21 +150,20 @@ impl VideoStreamSender {
     }
 }
 
-/// Receive half of a video stream: [`SurfaceFrame`] reframing + decode →
-/// RGBA [`DecodedFrame`]s. Own one per incoming source (keyed by sender +
-/// track); feed it bytes from [`VideoStreamSender::offer_frame`] via
-/// [`Self::push`]. The decoder follows the codec each frame names. Sequence
-/// gaps are counted via [`Self::dropped_count`].
+/// Receive half of a video stream: [`SurfaceFrame`] reframing + H.264
+/// decode → RGBA [`DecodedFrame`]s. Own one per incoming source (keyed by
+/// sender + track); feed it bytes from [`VideoStreamSender::offer_frame`]
+/// via [`Self::push`]. Sequence gaps are counted via [`Self::dropped_count`].
 pub struct VideoStreamReceiver {
     framer: SurfaceStreamReceiver,
-    decoder: VideoDecoder,
+    decoder: H264Decoder,
 }
 
 impl VideoStreamReceiver {
     pub fn new() -> Self {
         Self {
             framer: SurfaceStreamReceiver::new(),
-            decoder: VideoDecoder::default(),
+            decoder: H264Decoder::new(),
         }
     }
 
@@ -213,20 +181,8 @@ impl VideoStreamReceiver {
         };
         let mut out = Vec::new();
         for ev in events {
-            let ReceiverEvent::Frame(frame) = ev else {
-                continue;
-            };
-            if frame.codec != self.decoder.codec() {
-                self.decoder = VideoDecoder::new(frame.codec);
-            }
-            self.decoder.set_display_size(
-                frame
-                    .display_size
-                    .map(|(w, h)| (u32::from(w), u32::from(h))),
-            );
-            if let Some(decoded) = self
-                .decoder
-                .decode_with_hint(&frame.payload, Some(frame.keyframe))
+            if let ReceiverEvent::Frame(frame) = ev
+                && let Some(decoded) = self.decoder.decode(&frame.payload)
             {
                 out.push(decoded);
             }
@@ -280,7 +236,7 @@ mod tests {
     fn captured_rgba_streams_end_to_end_through_the_shared_stack() {
         const W: u32 = 128;
         const H: u32 = 96;
-        let mut sender = VideoStreamSender::new(StreamCodec::Vp9, W, H, 30).expect("sender");
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
         let now = Instant::now();
         let wire = sender
             .offer_frame(&gradient(W, H), now)
@@ -299,7 +255,7 @@ mod tests {
     fn throttle_rejects_a_second_frame_within_the_interval() {
         const W: u32 = 32;
         const H: u32 = 32;
-        let mut sender = VideoStreamSender::new(StreamCodec::Vp9, W, H, 30).expect("sender");
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
         let now = Instant::now();
         assert!(
             sender
@@ -327,21 +283,22 @@ mod tests {
     fn first_frame_is_flagged_a_keyframe() {
         const W: u32 = 64;
         const H: u32 = 64;
-        let mut sender = VideoStreamSender::new(StreamCodec::Vp9, W, H, 30).expect("sender");
+        let mut sender = VideoStreamSender::new(W, H, 30).expect("sender");
         let wire = sender
             .offer_frame(&gradient(W, H), Instant::now())
             .expect("sequence available")
             .expect("frame");
         let (frame, _) = SurfaceFrame::decode(&wire).expect("decode").expect("whole");
-        assert!(frame.keyframe, "the first access unit is a keyframe");
-        assert_eq!(frame.codec, StreamCodec::Vp9);
-        assert_eq!(frame.display_size, Some((64, 64)));
+        assert!(
+            frame.keyframe,
+            "the first H.264 access unit is an IDR keyframe"
+        );
         assert_eq!(frame.sequence, 0);
     }
 
     #[test]
     fn wrong_sized_buffer_yields_no_frame() {
-        let mut sender = VideoStreamSender::new(StreamCodec::Vp9, 32, 32, 30).expect("sender");
+        let mut sender = VideoStreamSender::new(32, 32, 30).expect("sender");
         // RGB (3 bytes/px), not RGBA — size mismatch folds to None.
         assert!(
             sender
@@ -363,7 +320,7 @@ mod tests {
 
     #[test]
     fn video_sender_sequence_exhaustion_is_a_visible_non_wrapping_error() {
-        let mut sender = VideoStreamSender::new(StreamCodec::Vp9, 32, 32, 30).expect("sender");
+        let mut sender = VideoStreamSender::new(32, 32, 30).expect("sender");
         sender.sequence = u64::MAX;
         let now = Instant::now();
         assert_eq!(

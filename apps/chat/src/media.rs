@@ -4,13 +4,12 @@
 //! of timestamped media objects, carried by **iroh QUIC** for direct P2P (a
 //! host relay is selected above the mesh threshold — see [`crate::model::CallSession`]).
 //! Microphone capture/playback and the Opus audio codec go through **`GStreamer`**
-//! elements ([`crate::audio`]); camera + screen video use the shared media stack
-//! (`tilo-callstream` over `media`'s `GStreamer` real-time encoder, in the codec
-//! the call negotiated — see [`crate::video`]); screen capture is requested
-//! from the host's screen-capture service (natively the
-//! **xdg-desktop-portal `ScreenCast`** API, see `ui::capture`). None of ALSA /
-//! `PulseAudio` / ffmpeg / the `opus` crate are used — only `GStreamer` and
-//! the portal, matching the Tilo build env.
+//! elements ([`crate::audio`]); camera + screen video use the in-tree **openh264**
+//! codec ([`crate::video`]); screen capture is requested from the host's
+//! screen-capture service (natively the **xdg-desktop-portal `ScreenCast`**
+//! API, see `ui::capture`). None of ALSA / `PulseAudio` /
+//! ffmpeg / the `opus` crate are used — only `GStreamer`, the portal, and openh264,
+//! matching the Tilo build env.
 //!
 //! ## Real vs. gated
 //! The *transport contract* ([`MediaTransport`]) and a *simulated*
@@ -51,12 +50,6 @@ pub enum TrackKind {
     Video,
     /// Screen-share video (portal `ScreenCast` / `PipeWire`).
     Screen,
-    /// Camera video in a codec other than H.264, in the shared stack's
-    /// codec-tagged `SurfaceFrame` framing. H.264 camera video stays on
-    /// [`Self::Video`] as raw access units, which is what peers that predate
-    /// this track understand; a sender uses this track only when every
-    /// member announced it decodes the codec.
-    CameraFramed,
 }
 
 impl TrackKind {
@@ -66,7 +59,6 @@ impl TrackKind {
             TrackKind::Audio => 0,
             TrackKind::Video => 1,
             TrackKind::Screen => 2,
-            TrackKind::CameraFramed => 3,
         }
     }
     fn from_wire_tag(b: u8) -> Option<Self> {
@@ -74,7 +66,6 @@ impl TrackKind {
             0 => Some(TrackKind::Audio),
             1 => Some(TrackKind::Video),
             2 => Some(TrackKind::Screen),
-            3 => Some(TrackKind::CameraFramed),
             _ => None,
         }
     }

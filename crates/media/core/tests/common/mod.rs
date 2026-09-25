@@ -9,7 +9,7 @@
 //! was missing.
 //!
 //! Where the environment genuinely varies — a machine with no hardware decoder
-//! for the fixture's codec is a legitimate configuration — the test still asserts, but it
+//! for H.264 is a legitimate configuration — the test still asserts, but it
 //! asserts the *correct outcome for the machine it is on*, having first
 //! interrogated the registry. "There was no hardware decoder available" is a
 //! conclusion the test proves and prints, never an assumption it makes to get
@@ -56,9 +56,9 @@ pub const FIXTURE_HEIGHT: u32 = 1_080;
 #[cfg(feature = "decode")]
 pub const FRAME_MS: u64 = 33;
 
-/// The fixture's keyframe interval. Verified by demuxing the generated clip:
-/// keyframes sit at 0, 8.333, 16.667, 25, 33.333, 41.667 and 50 seconds and
-/// nowhere else.
+/// The fixture's keyframe interval. Verified with
+/// `ffprobe -skip_frame nokey`: keyframes sit at 0, 8.333, 16.667, 25,
+/// 33.333, 41.667 and 50 seconds and nowhere else.
 ///
 /// This is what makes the accurate-seek test sharp. A `KEY_UNIT` seek to a
 /// time in the middle of a GOP cannot do better than the nearest of those, so
@@ -75,20 +75,7 @@ pub const FIXTURE_GOP_FRAMES: u32 = 250;
 #[cfg(feature = "decode")]
 pub const FIXTURE_FRAMES: u32 = 1_717;
 
-/// Caps of the fixture's video stream, for asking the registry which
-/// decoders can take it.
-#[cfg(feature = "decode")]
-pub const FIXTURE_CAPS: &str = "video/x-vp9";
-
-/// Human name of the fixture's codec, for messages.
-#[cfg(feature = "decode")]
-pub const FIXTURE_CODEC: &str = "VP9";
-
-/// The fixture clip: 1080p VP9 in `WebM`, 30 fps, 57.2 s, 1717 frames.
-///
-/// VP9 is royalty-free and its encoder (libvpx) ships with every stack these
-/// tests run on, so generating the subject never depends on a patented
-/// encoder that a stock image leaves to the opt-in codec pack.
+/// The fixture clip: 1080p H.264 in MP4, 30fps, 57.2s, 1717 frames.
 ///
 /// The clip is generated from an in-process `GStreamer` graph instead of living
 /// in a developer's untracked artifact directory.  Its filename includes the
@@ -115,7 +102,7 @@ pub fn fixture_path() -> PathBuf {
     reason = "failure to construct the real encoded test subject must fail the decode test loudly"
 )]
 fn generate_fixture() -> PathBuf {
-    const CACHE_FILE: &str = "vp9-smpte-scroll-1920x1080-30fps-1717frames-gop250-v1.webm";
+    const CACHE_FILE: &str = "h264-smpte-scroll-1920x1080-30fps-1717frames-gop250-v1.mp4";
 
     let cache = std::env::temp_dir().join("tilo-media-test-fixtures");
     std::fs::create_dir_all(&cache).expect("create media fixture cache directory");
@@ -125,13 +112,10 @@ fn generate_fixture() -> PathBuf {
     }
 
     gstreamer::init().expect("initialize GStreamer for generated media fixture");
-    for element in ["vp9enc", "webmmux"] {
-        assert!(
-            gstreamer::ElementFactory::find(element).is_some(),
-            "the decode-test stack must provide {element} (gstreamer1-plugins-good) \
-             so its VP9 subject can be generated"
-        );
-    }
+    assert!(
+        gstreamer::ElementFactory::find("openh264enc").is_some(),
+        "the decode-test stack must provide openh264enc so its H.264 subject can be generated"
+    );
 
     let staging = cache.join(format!("{CACHE_FILE}.{}.part", std::process::id()));
     std::fs::remove_file(&staging).ok();
@@ -139,9 +123,9 @@ fn generate_fixture() -> PathBuf {
         "videotestsrc pattern=smpte horizontal-speed=8 num-buffers={FIXTURE_FRAMES} ! \
          video/x-raw,format=I420,width={FIXTURE_WIDTH},height={FIXTURE_HEIGHT},\
          framerate={FIXTURE_FPS}/1 ! \
-         vp9enc deadline=1 cpu-used=8 row-mt=true end-usage=cbr target-bitrate=4000000 \
-         lag-in-frames=0 keyframe-mode=auto keyframe-max-dist={FIXTURE_GOP_FRAMES} ! \
-         webmmux ! filesink name=fixture_sink"
+         openh264enc complexity=low gop-size={FIXTURE_GOP_FRAMES} scene-change-detection=false \
+         enable-frame-skip=false ! h264parse ! mp4mux ! \
+         filesink name=fixture_sink"
     );
     let pipeline = gstreamer::parse::launch(&description)
         .expect("construct generated media fixture pipeline")
@@ -185,7 +169,7 @@ fn generate_fixture() -> PathBuf {
     assert!(reached_eos, "generated media fixture timed out before EOS");
     assert!(
         fixture_is_ready(&staging),
-        "generated fixture is not a real encoded WebM: {}",
+        "generated fixture is not a real encoded MP4: {}",
         staging.display()
     );
 
@@ -213,7 +197,7 @@ pub fn require_fixture() -> PathBuf {
     assert!(
         p.exists(),
         "decode fixture missing at {}. These tests verify real hardware decode \
-         against a real {FIXTURE_CODEC} clip; without it nothing is being checked, so this \
+         against a real H.264 clip; without it nothing is being checked, so this \
          is a failure rather than a skip.",
         p.display()
     );
@@ -226,19 +210,6 @@ pub fn fixture_source() -> media::Source {
     media::Source::LocalFile(require_fixture())
 }
 
-/// Serialise tests that open engines under different [`media::HwPolicy`]s.
-///
-/// Decoder ranks live in the process-wide `GStreamer` registry, and an engine
-/// applies its policy there when it opens a source. Two tests in one binary
-/// racing each other would let one re-rank the registry while the other's
-/// decoder is being autoplugged, so each holds this for its whole run.
-#[cfg(feature = "decode")]
-pub fn registry_policy_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
 /// A one-line description of every video decoder the registry offers, for a
 /// failure message. Printing this is what turns "software was chosen" from an
 /// unexplained result into a diagnosable one.
@@ -248,7 +219,7 @@ pub fn registry_summary() -> String {
     if all.is_empty() {
         return "registry has no video decoders at all".to_string();
     }
-    let capable = media::gst_backend::decoders_for(FIXTURE_CAPS);
+    let h264 = media::gst_backend::decoders_for("video/x-h264");
     let list = |v: &[media::hw::DecoderEntry]| -> String {
         v.iter()
             .map(|d| format!("{}({}, rank {})", d.name, d.kind.as_str(), d.rank))
@@ -256,16 +227,16 @@ pub fn registry_summary() -> String {
             .join(", ")
     };
     format!(
-        "{} video decoders total; {FIXTURE_CODEC}-capable: [{}]",
+        "{} video decoders total; H.264-capable: [{}]",
         all.len(),
-        list(&capable)
+        list(&h264)
     )
 }
 
-/// Whether this machine has any hardware decoder that can take the fixture.
+/// Whether this machine has any hardware decoder that can take H.264.
 #[cfg(feature = "decode")]
-pub fn has_hardware_fixture_decoder() -> bool {
-    media::gst_backend::decoders_for(FIXTURE_CAPS)
+pub fn has_hardware_h264() -> bool {
+    media::gst_backend::decoders_for("video/x-h264")
         .iter()
         .any(|d| d.kind.is_hardware())
 }

@@ -123,7 +123,7 @@ impl TiloSession {
         std::thread::Builder::new()
             .name("remote-tilo-decode".into())
             .spawn(move || {
-                let mut h264_decoder = tilo_callstream::VideoDecoder::default();
+                let mut h264_decoder = tilo_callstream::H264Decoder::new();
                 while encoded_rx.recv().is_ok() {
                     let Some(encoded) = lock_recover(&encoded_worker).take() else {
                         continue;

@@ -1,8 +1,7 @@
-//! Encoder selection and codec negotiation in
-//! [`shell::collab::flatpak_share::SharedFlatpakSession`]. The media stack
-//! picks hardware first, then royalty-free software, then Cisco's openh264;
-//! the codec follows what the viewers can decode. Session start only — the
-//! tracker/encode loop lives in `flatpak_share_e2e.rs`.
+//! Integration tests for the runtime encoder probe in
+//! [`shell::collab::flatpak_share::SharedFlatpakSession`], which walks
+//! `NVENC -> VA-API -> openh264` in priority order. Session-start probe
+//! only — the tracker/encode loop lives in `flatpak_share_e2e.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -14,8 +13,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use media::StreamCodec;
-use media::realtime::{CodecCapabilities, local_capabilities};
 use shell::collab::encoder::EncoderKind;
 use shell::collab::flatpak_share::SharedFlatpakSession;
 use shell::config::{EncoderChoice, FlatpakShareConfig};
@@ -32,78 +29,140 @@ fn cfg(choice: EncoderChoice) -> FlatpakShareConfig {
     }
 }
 
-fn start(choice: EncoderChoice, receivers: &[CodecCapabilities]) -> SharedFlatpakSession {
-    SharedFlatpakSession::start_with_metrics(
+/// On a stripped host Auto must resolve to openh264 — the software
+/// fallback is always available.
+#[test]
+fn auto_resolves_to_openh264_on_stripped_host() {
+    let session = SharedFlatpakSession::start(
         HOST_PEER,
         "org.gimp.GIMP",
         SURFACE,
-        320,
-        240,
-        &cfg(choice),
-        receivers,
-        None,
+        64,
+        64,
+        &cfg(EncoderChoice::Auto),
     )
-    .expect("session should start")
+    .expect("session should start");
+    // Without the `vaapi` / `nvenc` features the probe walks past both
+    // hardware backends and lands on Openh264.
+    #[cfg(not(feature = "vaapi"))]
+    #[cfg(not(feature = "nvenc"))]
+    assert_eq!(session.chosen_encoder(), EncoderKind::Openh264);
+    // On feature-on builds a hardware backend may legitimately win.
+    let kind = session.chosen_encoder();
+    assert!(matches!(
+        kind,
+        EncoderKind::Openh264 | EncoderKind::VaApi | EncoderKind::NvEnc
+    ));
+    eprintln!("auto probe chose: {}", kind.as_str());
 }
 
-/// With no viewers yet, a share starts with this machine's best codec, and
-/// the kind it reports is one the media stack can produce.
+/// Explicit openh264 skips the hardware probes — no `/dev/dri` open, no
+/// NVIDIA init.
 #[test]
-fn auto_starts_on_every_host() {
-    let session = start(EncoderChoice::Auto, &[]);
-    eprintln!(
-        "auto chose {} via {}",
-        session.chosen_codec().wire_label(),
-        session.chosen_encoder().as_str()
-    );
+fn explicit_openh264_never_probes_hardware() {
+    let session = SharedFlatpakSession::start(
+        HOST_PEER,
+        "org.gimp.GIMP",
+        SURFACE,
+        64,
+        64,
+        &cfg(EncoderChoice::Openh264),
+    )
+    .expect("session should start");
+    assert_eq!(session.chosen_encoder(), EncoderKind::Openh264);
 }
 
-/// A software preference never touches hardware.
+/// Requesting VA-API where it isn't available falls back to openh264, with
+/// the reason recorded in `chosen_encoder` so the OSD can surface
+/// "vaapi requested -> fell back to software" rather than refusing to start.
 #[test]
-fn software_choice_never_reports_hardware() {
-    let session = start(EncoderChoice::Software, &[]);
-    assert!(
-        !session.chosen_encoder().is_hardware(),
-        "{:?}",
-        session.chosen_encoder()
-    );
-}
-
-/// Preferring a vendor that isn't here still starts the share.
-#[test]
-fn a_missing_preferred_vendor_falls_back() {
-    for choice in [EncoderChoice::Vaapi, EncoderChoice::Nvenc] {
-        let _session = start(choice, &[]);
+fn requested_vaapi_falls_back_when_hardware_absent() {
+    let session = SharedFlatpakSession::start(
+        HOST_PEER,
+        "org.gimp.GIMP",
+        SURFACE,
+        64,
+        64,
+        &cfg(EncoderChoice::Vaapi),
+    )
+    .expect("session should fall back rather than fail");
+    #[cfg(not(feature = "vaapi"))]
+    {
+        assert_eq!(
+            session.chosen_encoder(),
+            EncoderKind::Openh264,
+            "no vaapi feature: probe must fall back to openh264"
+        );
     }
+    // On a vaapi build with a real `/dev/dri` the probe may pick VA-API
+    // instead — both outcomes are valid.
+    let _ = session.chosen_encoder();
 }
 
-/// Where this machine encodes AV1 in hardware and a viewer decodes it in
-/// hardware, AV1 is negotiated; a legacy viewer joining pins H.264 (when
-/// an H.264 encoder exists) through `renegotiate`.
+/// Explicit NVENC on a non-NVIDIA host falls back, as VA-API does above.
 #[test]
-fn hardware_av1_is_negotiated_only_while_every_viewer_takes_it() {
-    let local = local_capabilities();
-    if !local.hardware_encode.contains(&StreamCodec::Av1) {
-        eprintln!("no AV1 hardware encoder listed here; not run");
-        return;
+fn requested_nvenc_falls_back_when_hardware_absent() {
+    let session = SharedFlatpakSession::start(
+        HOST_PEER,
+        "org.gimp.GIMP",
+        SURFACE,
+        64,
+        64,
+        &cfg(EncoderChoice::Nvenc),
+    )
+    .expect("session should fall back rather than fail");
+    #[cfg(not(feature = "nvenc"))]
+    {
+        assert_eq!(
+            session.chosen_encoder(),
+            EncoderKind::Openh264,
+            "no nvenc feature: probe must fall back to openh264"
+        );
     }
-    let hw_viewer = CodecCapabilities {
-        hardware_decode: [StreamCodec::Av1, StreamCodec::H264].into(),
-        ..CodecCapabilities::default()
-    };
-    let session = start(EncoderChoice::Auto, std::slice::from_ref(&hw_viewer));
-    assert_eq!(session.chosen_codec(), StreamCodec::Av1);
-    assert_eq!(session.chosen_encoder(), EncoderKind::VaApi);
+    let _ = session.chosen_encoder();
+}
 
-    if local.can_encode(StreamCodec::H264) {
-        let switched = session.renegotiate(&[hw_viewer, CodecCapabilities::legacy_peer()]);
-        assert!(switched, "a legacy viewer forces a switch");
-        assert_eq!(session.chosen_codec(), StreamCodec::H264);
-        match session.stream_start_msg() {
-            shell::network::NeighbourMsg::SurfaceStreamStart { codec, .. } => {
-                assert_eq!(codec, "h264", "the new stream is announced as H.264");
-            }
-            other => panic!("expected SurfaceStreamStart, got {other:?}"),
+/// On a real VA-API host with a wired encoder, Auto picks `VaApi`.
+/// `#[ignore]`d (CI runners lack `/dev/dri`); run with `--include-ignored`
+/// on a workstation. Self-skips without a functional H.264 VA-API path.
+#[test]
+#[ignore = "requires --features vaapi + a real /dev/dri render node; run with --include-ignored on a workstation"]
+fn auto_probe_picks_vaapi_when_hardware_present() {
+    #[cfg(not(feature = "vaapi"))]
+    {
+        eprintln!(
+            "skipping vaapi hardware assertion — build has no `vaapi` \
+             feature; rerun with --features vaapi to actually exercise \
+             the probe path"
+        );
+    }
+    #[cfg(feature = "vaapi")]
+    {
+        use shell::collab::encoder::{Codec, probe as encoder_probe};
+        // Some hosts have a render node but no H.264 encode entrypoint (older
+        // iGPUs, discrete GPUs without an encode block).
+        let (chosen_by_probe, _outcomes) = encoder_probe(Codec::H264, Some(EncoderChoice::Vaapi));
+        if chosen_by_probe != EncoderKind::VaApi {
+            eprintln!(
+                "skipping vaapi hardware assertion — probe reports \
+                 vaapi unavailable on this host (probe chose {})",
+                chosen_by_probe.as_str()
+            );
+            return;
         }
+        let session = SharedFlatpakSession::start(
+            HOST_PEER,
+            "org.gimp.GIMP",
+            SURFACE,
+            320,
+            240,
+            &cfg(EncoderChoice::Auto),
+        )
+        .expect("session should start");
+        assert_eq!(
+            session.chosen_encoder(),
+            EncoderKind::VaApi,
+            "auto probe must pick vaapi when the render node exposes a working h264_vaapi path"
+        );
     }
 }

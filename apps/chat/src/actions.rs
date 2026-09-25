@@ -352,16 +352,6 @@ pub enum ChatAction {
         user: String,
         ticket: String,
     },
-    /// Which video codecs this peer decodes, announced on join so a sender
-    /// picks a codec every member of the call takes. Like the ticket it is
-    /// minted locally (from the media stack) and not an addressable
-    /// operation.
-    SetCallVideoCaps {
-        channel: String,
-        user: String,
-        hardware_decode: Vec<String>,
-        software_decode: Vec<String>,
-    },
 }
 
 /// Durable, browseable history metadata for a Chat mutation.
@@ -460,8 +450,7 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
             channel,
             "chat.call",
         ),
-        ChatAction::SetCallTicket { channel, .. }
-        | ChatAction::SetCallVideoCaps { channel, .. } => {
+        ChatAction::SetCallTicket { channel, .. } => {
             ("Update call connection", channel, channel, "chat.call")
         }
     };
@@ -682,22 +671,6 @@ impl ChatAction {
                 ticket,
             } => {
                 ChatDoc::voice_set_ticket(doc, channel, user, ticket);
-            }
-            ChatAction::SetCallVideoCaps {
-                channel,
-                user,
-                hardware_decode,
-                software_decode,
-            } => {
-                ChatDoc::voice_set_video_caps(
-                    doc,
-                    channel,
-                    user,
-                    &crate::model::VideoCaps {
-                        hardware_decode: hardware_decode.clone(),
-                        software_decode: software_decode.clone(),
-                    },
-                );
             }
             _ => {}
         }
