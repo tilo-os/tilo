@@ -293,6 +293,10 @@ fn host_free(path: &Path) -> Option<u64> {
     Some(kib.saturating_mul(1024))
 }
 
+fn vm_free_floor(configured: u64, hypervisor: &str) -> u64 {
+    configured.max(if hypervisor == "whpx" { 15 << 30 } else { 0 })
+}
+
 fn on_path(tool: &str) -> bool {
     let Some(paths) = std::env::var_os("PATH") else {
         return false;
@@ -1210,14 +1214,7 @@ impl App {
         } else {
             None
         };
-        let floor = self
-            .registry()?
-            .min_free_bytes()
-            .max(if choice.adapter == "whpx" {
-                15 << 30
-            } else {
-                0
-            });
+        let floor = vm_free_floor(self.registry()?.min_free_bytes(), choice.adapter);
         if let Some(published) = &published
             && !disk::cached(&published.dest, &published.disk)
         {
@@ -1507,14 +1504,7 @@ impl App {
 
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
-        let floor = self
-            .registry()?
-            .min_free_bytes()
-            .max(if vm.entry.hypervisor == "whpx" {
-                15 << 30
-            } else {
-                0
-            });
+        let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
         if let Some(dir) = vm
             .entry
             .disk
