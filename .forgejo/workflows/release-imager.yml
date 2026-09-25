@@ -256,14 +256,21 @@ jobs:
           # The signed OS already contains the native installer binary. Reuse it
           # while applying this checkout's small installer-only runtime overlay.
           ./os/dev/build-custom-installer.sh --reuse-image-installer
-          package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
-          if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
-            apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
+          if [[ -n ${TILO_INSTALLER_OFFLINE_TARGET_DIR:-} ]]; then
+            # WHPX consumes the tested qcow2 directly. The legacy imager path
+            # converts it to a large raw disk and compresses that second copy;
+            # neither raw bytes nor its catalog are used by an offline VM run.
+            echo '::notice::offline WHPX target skips redundant raw imager bundle'
           else
-            TILO_INSTALLER_RELEASE_TAG="rehearsal-${GITHUB_SHA}" \
-            TILO_INSTALLER_VERSION=0.0.0 \
-            TILO_INSTALLER_CHANNEL=rehearsal \
+            package_args=(os/output/installer/qcow2/disk.qcow2 "${{ matrix.arch }}")
+            if [[ "$GITHUB_REF" == refs/tags/imager-v* ]]; then
               apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
+            else
+              TILO_INSTALLER_RELEASE_TAG="rehearsal-${GITHUB_SHA}" \
+              TILO_INSTALLER_VERSION=0.0.0 \
+              TILO_INSTALLER_CHANNEL=rehearsal \
+                apps/imager/packaging/package-install-medium.sh "${package_args[@]}"
+            fi
           fi
       - name: Remove native image registry credentials
         if: always()
@@ -383,6 +390,7 @@ jobs:
         if: matrix.target_profile == 'generic' || matrix.target_profile == 'lenovo-83ed'
         run: |
           set -euo pipefail
+          mkdir -p dist/tilo-installer
           stem="tilo-installer-${TILO_OFFLINE_TARGET_PROFILE:?}-aarch64"
           output="dist/tilo-installer/$stem.qcow2.zst"
           zstd --threads=0 -1 --sparse -f os/output/installer/qcow2/disk.qcow2 -o "$output"
@@ -446,11 +454,13 @@ jobs:
         run: |
           set -euo pipefail
           medium="tilo-installer-linux-${{ matrix.arch }}.img.zst"
+          [[ -z ${TILO_OFFLINE_TARGET_IMAGE:-} ]] || exit 0
           test -s "dist/tilo-installer/$medium"
           test -s "dist/tilo-installer/$medium.sha256"
           test -s "dist/tilo-installer/catalog-${{ matrix.arch }}.json"
           (cd dist/tilo-installer && sha256sum --check "$medium.sha256")
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: matrix.target_profile != 'generic' && matrix.target_profile != 'lenovo-83ed'
         with:
           name: tilo-installer-medium-${{ matrix.arch }}-${{ matrix.target_profile || 'standard' }}
           path: |
