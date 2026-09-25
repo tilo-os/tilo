@@ -7,8 +7,8 @@
 # every change:
 #
 #   * the builder is that Containerfile's own `build-toolchain` stage (the
-#     BASE_REF + RPMS_REF toolchain, tilo-crypto, the Fedora SRPM after %prep),
-#     built with podman and reused while its inputs are unchanged;
+#     pinned kernel buildroot's toolchain, tilo-crypto, the Fedora SRPM after
+#     %prep), built with podman and reused while its inputs are unchanged;
 #   * the prepared source tree is copied out of it once per SRPM version into
 #     ${TILO_KERNEL_CACHE:-~/.cache/tilo-kernel}/<linux-version>/ and kept, with
 #     its Kbuild objects, so the next `make` recompiles only what changed;
@@ -26,7 +26,7 @@
 # override with --jobs or TILO_KERNEL_JOBS. The result (kernel release, staged
 # tree, vmlinuz, timings) is written as JSON to --result.
 #
-# --direct-initrd also writes a generic initramfs (the builder base's dracut,
+# --direct-initrd also writes a generic initramfs (the buildroot base's dracut,
 # with virtio_net) for booting the kernel straight from the host (libvirt
 # direct kernel boot). It is not the image's initramfs; installing into the VM
 # (`tilo-vm swap kernel`) builds that one in the VM.
@@ -61,10 +61,13 @@ command -v podman >/dev/null || die "podman is required (rootless) to run the ke
 arch="$(uname -m)"
 case "$arch" in x86_64|aarch64) ;; *) die "unsupported kernel architecture: $arch" ;; esac
 
-# The pins the release build uses (the workflow passes the same two).
-BASE_REF="$(sed -n 's/^BASE_REF=//p' "$repo/os/base-snapshot.env")"
-RPMS_REF="$(sed -n 's/^RPMS_REF=//p' "$repo/os/rpms-snapshot.env")"
-[ -n "$BASE_REF" ] && [ -n "$RPMS_REF" ] || die "os/base-snapshot.env or os/rpms-snapshot.env has no pin"
+# The native buildroot pin the release build uses (the workflow passes the same).
+case "$arch" in
+  x86_64) buildroot_var=KERNEL_BUILDROOT_X86_64_REF ;;
+  aarch64) buildroot_var=KERNEL_BUILDROOT_AARCH64_REF ;;
+esac
+KERNEL_BUILDROOT_REF="${KERNEL_BUILDROOT_REF:-$(sed -n "s/^$buildroot_var=//p" "$repo/os/kernel-buildroot-snapshot.env")}"
+[ -n "$KERNEL_BUILDROOT_REF" ] || die "os/kernel-buildroot-snapshot.env has no $buildroot_var; run the snapshot-kernel-buildroot workflow"
 
 mkdir -p "$cache_root"
 started=$(date +%s)
@@ -74,7 +77,7 @@ started=$(date +%s)
 # is not even re-sent to podman.
 key="$(
   {
-    printf '%s\n%s\n%s\n' "$BASE_REF" "$RPMS_REF" "$arch"
+    printf '%s\n%s\n' "$KERNEL_BUILDROOT_REF" "$arch"
     cd "$repo"
     find os/kernel/Containerfile os/kernel/project-crate.py os/tests/secureboot_vm_app.c \
          Cargo.toml Cargo.lock crates/system/tilo-crypto/Cargo.toml crates/system/tilo-crypto/src \
@@ -90,7 +93,7 @@ else
   assets="$cache_root/assets"
   TILO_GITHUB_ASSET_CACHE="$assets" "$repo/os/dev/cache-github-assets.sh" v4l2loopback-0.15.3-a7e4a4d.tar.gz >&2
   podman build -f "$repo/os/kernel/Containerfile" --target build-toolchain \
-    --build-arg "BASE_REF=$BASE_REF" --build-arg "RPMS_REF=$RPMS_REF" \
+    --build-arg "KERNEL_BUILDROOT_REF=$KERNEL_BUILDROOT_REF" \
     --build-context "github-assets=$assets" \
     -t "$image" "$repo" >&2
 fi

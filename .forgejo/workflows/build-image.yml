@@ -773,14 +773,11 @@ jobs:
       # Digest pinning prevents substitution after this verification; the
       # repository restriction prevents a valid Tilo signature being replayed
       # from a different artifact namespace.
-      # A publication requires the kernel to name this run's exact RPM snapshot.
-      # An unsigned integration image (tilo-ci and dev disks) also accepts a
-      # kernel bound to an earlier signed snapshot, since the RPM and kernel
-      # pins refresh independently; the kernel's signature, source,
-      # architecture, digest and base binding are verified either way.
+      # The kernel's provenance must bind the signed build environment it was
+      # compiled in, verified on its own. The OS RPM snapshot and base are not
+      # kernel inputs, so publications and integration images check alike and
+      # OS package or base changes never invalidate the pinned kernel.
       - name: Verify KERNEL_RPMS_REF (tilo-kernel image)
-        env:
-          PUBLISH: ${{ needs.plan.outputs.publish }}
         run: |
           set -euo pipefail
           . os/kernel-snapshot.env
@@ -789,9 +786,7 @@ jobs:
             aarch64) ref="$KERNEL_RPMS_AARCH64_REF" ;;
             *) printf 'unsupported kernel architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
           esac
-          binding=exact
-          [[ $PUBLISH != false ]] || binding=signed-snapshot
-          ./os/dev/verify-kernel-provenance.sh "$ref" "$BASE_REF" "$RPMS_REF" "$binding"
+          ./os/dev/verify-kernel-provenance.sh "$ref"
           echo "KERNEL_RPMS_REF=$ref" >> "$GITHUB_ENV"
 
       # Deterministic timestamp for reproducible builds: the HEAD commit time.
