@@ -17,6 +17,10 @@ copy, to the same path under /build:
   * every repository file its RUN steps name, as /build/<path> or relative to
     the stage's WORKDIR, /build.
 
+A compile stage may take these from a scratch stage whole
+(`COPY --from=<stage> /build/ /build/`, one layer instead of one per COPY);
+that stage's copies then count as its own.
+
 And neither stage may copy the whole context back in.
 
 Every finding names file:line, why it matters, and the fix.
@@ -127,6 +131,20 @@ def context_copies(lines: list[tuple[int, str]]) -> list[Copy]:
     return copies
 
 
+def source_stage_copies(text: str, lines: list[tuple[int, str]]) -> list[Copy]:
+    """Context copies of a scratch stage the compile stage takes whole.
+
+    `COPY --from=<stage> /build/ /build/` brings in everything that stage
+    copied to /build, as one layer; its copies count as the compile stage's.
+    """
+    copies: list[Copy] = []
+    for _, line in lines:
+        match = re.fullmatch(rf"COPY\s+--from=(\S+)\s+{WORKDIR}/?\s+{WORKDIR}/?", line.strip())
+        if match:
+            copies.extend(context_copies(stage_lines(text, match.group(1))))
+    return copies
+
+
 def image_path(copy: Copy, source: str) -> str:
     """Where one source of a COPY lands."""
     if len(copy.sources) > 1 or copy.destination.endswith("/"):
@@ -209,7 +227,7 @@ def audit_stage(repo: Path, containerfile: str, stage: str, tracked: list[str],
         return [Finding(containerfile, f"has no stage named {stage}",
                         "this policy guards that stage's narrow source copy",
                         f"update STAGES in {Path(__file__).name} if the stage was renamed")]
-    copies = context_copies(lines)
+    copies = context_copies(lines) + source_stage_copies(text, lines)
     findings: list[Finding] = []
     for copy in copies:
         if "." in copy.sources:

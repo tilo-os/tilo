@@ -104,6 +104,18 @@ class ImageBuilderInputsTests(unittest.TestCase):
     def test_other_stages_may_copy_what_they_like(self) -> None:
         self.assertEqual(self.findings(NARROW + "COPY . /src\n"), [])
 
+    def test_copies_of_a_scratch_source_stage_count(self) -> None:
+        head, rest = NARROW.split("WORKDIR /build\n", 1)
+        copies = "".join(line + "\n" for line in rest.splitlines() if line.startswith("COPY"))
+        body = "\n".join(line for line in rest.splitlines() if not line.startswith("COPY"))
+        staged = ("FROM scratch AS sources\n" + copies + "\n" + head + "WORKDIR /build\n"
+                  + "COPY --from=sources /build/ /build/\n" + body + "\n")
+        self.assertEqual(self.findings(staged), [])
+        dropped = staged.replace("COPY os/data.txt /build/os/data.txt\n", "")
+        self.assertTrue(any("os/data.txt" in f for f in self.findings(dropped)))
+        whole = staged.replace("FROM scratch AS sources\n", "FROM scratch AS sources\nCOPY . /build\n")
+        self.assertTrue(any("whole build context" in f for f in self.findings(whole)))
+
     def test_the_repository_passes(self) -> None:
         self.assertEqual([str(f) for f in policy.audit(REPO)], [])
 
