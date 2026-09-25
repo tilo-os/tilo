@@ -12269,23 +12269,13 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "scratchpad"
 version = "0.1.0"
 dependencies = [
- "advisory-lock",
  "anyhow",
- "atomic-file",
- "automerge",
  "blake3",
- "dirs 6.0.0",
- "fs",
  "runtime-dylib",
  "serde",
  "serde_json",
- "taffy",
  "tempfile",
- "tilo-actions",
  "tilo-app",
- "tokio",
- "vello",
- "winit",
 ]
 
 [[package]]

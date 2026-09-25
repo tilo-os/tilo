@@ -9,25 +9,13 @@ license.workspace = true
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-# One instance per note directory.
-advisory-lock = { path = "../../crates/system/advisory-lock" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# Persistent blob storage is portable; the app does not mount filesystems.
-fs = { path = "../../crates/system/fs", default-features = false }
-tilo-actions = { path = "../../crates/collab/actions" }
-atomic-file = { path = "../../crates/system/atomic-file" }
 anyhow.workspace = true
-automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
-# Note bodies are content-addressed by BLAKE3, the content store's hash.
+# The native diagnostic reports the note's BLAKE3 hash, never its text.
 blake3.workspace = true
-dirs.workspace = true
-taffy.workspace = true
-vello.workspace = true
-winit.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
