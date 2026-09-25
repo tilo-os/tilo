@@ -133,6 +133,10 @@ pub fn has_pending_progress(identity_dir: &std::path::Path) -> bool {
 /// process interruption between the identity commit and the next journal
 /// update. Treating it as post-identity setup would incorrectly send an
 /// established user back through recovery on every login.
+///
+/// # Errors
+///
+/// Fails when the journal cannot be read, is malformed, or cannot be removed.
 pub fn clear_verified_pre_acquisition_progress(
     identity_dir: &std::path::Path,
 ) -> std::io::Result<bool> {
