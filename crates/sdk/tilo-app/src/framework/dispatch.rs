@@ -75,6 +75,21 @@ impl<R: Resource> Dispatcher<R> {
         });
     }
 
+    /// Invoke an action published on a nested resource, such as one item of
+    /// a collection.
+    pub(crate) fn invoke_at(
+        &self,
+        address: ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        if self.read_only {
+            return;
+        }
+        self.queue
+            .borrow_mut()
+            .push_back(ControlInvocation { address, arguments });
+    }
+
     /// Submit one typed action value — an edit with no named declaration,
     /// such as a drag's final geometry.
     pub fn apply(&self, action: &R::Action) {
