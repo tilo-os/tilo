@@ -26,9 +26,11 @@ scenario still need to call them as one resumable workflow.
   `--source-raw`, and should run both before and after the WHPX scenario.
 - Boot a separately downloaded **CI-built, CI-signed** installer medium in
   WHPX and attach this template as its writable target. Use the guided
-  alongside installer flow, then boot and check the installed VM once. The
-  installer must produce the ESP, `TILO_BOOT` ext4 partition, and LUKS2 root.
-  Shut the VM down before accessing its source file on Windows.
+  alongside installer flow. For the Lenovo board target, verify the completed
+  install and stop before a QEMU virt first boot; separately run the generic
+  signed medium through install **and** first boot. The installer must produce
+  the ESP, `TILO_BOOT` ext4 partition, and LUKS2 root. Shut the Lenovo VM
+  down before accessing its source file on Windows.
 - `prepare-windows-direct-source.py finalize` requires the VM's seven GPT
   entries to retain all four synthetic Windows identities and to match the
   reviewed final geometry and types. It rewrites only protective MBR and GPT
