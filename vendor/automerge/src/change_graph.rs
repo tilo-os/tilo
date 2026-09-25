@@ -975,6 +975,11 @@ impl ChangeGraphCols {
         if messages.len() != len {
             return Err(LoadError::InvalidColumnLength(MESSAGE_COL_SPEC));
         }
+        // qOS load-path hardening: the extra-bytes lengths must add up to the
+        // extra-bytes column, which change metadata iteration slices by them.
+        if extra_bytes_meta.get_prefix(extra_bytes_meta.len()) != extra_bytes_raw.len() as u64 {
+            return Err(LoadError::InvalidColumnLength(EXTRA_VAL_COL_SPEC));
+        }
 
         let mut seq_index = vec![vec![]; num_actors];
         for (i, actor) in actors.iter().enumerate() {
@@ -988,6 +993,11 @@ impl ChangeGraphCols {
         let deps_count: Vec<u32> = hexane::decoder::<u32>(deps_count_bytes).collect();
         let mut deps_val_iter = hexane::DeltaDecoder::<u32>::new(deps_val_bytes);
 
+        // qOS load-path hardening: `max_ops[i]` below needs one dep count
+        // per change (the length check after the loop came too late).
+        if deps_count.len() != len {
+            return Err(LoadError::InvalidColumnLength(DEPS_COUNT_COL_SPEC));
+        }
         let mut num_ops_vec = Vec::with_capacity(len);
         for (i, d) in deps_count.iter().enumerate() {
             let d = *d as usize;
@@ -1006,7 +1016,12 @@ impl ChangeGraphCols {
                 let target = NodeIdx(dep);
                 let next = EdgeIdx::new(edges.len() + 1);
                 let next = if e + 1 == d { None } else { Some(next) };
-                last_max_op = std::cmp::max(last_max_op, max_ops[dep as usize]);
+                // qOS load-path hardening: a dep index past the change
+                // list is invalid storage, not an index panic.
+                let dep_max_op = *max_ops
+                    .get(dep as usize)
+                    .ok_or(LoadError::InvalidColumnLength(DEPS_VAL_COL_SPEC))?;
+                last_max_op = std::cmp::max(last_max_op, dep_max_op);
                 edges.push(Edge { target, next })
             }
             if last_max_op > max_ops[i] {

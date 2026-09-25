@@ -711,6 +711,14 @@ impl RleValue for String {
         // `&str::as_bytes`), and `Column::load` calls `try_unpack` on every
         // value during validation — see `Column::load`'s validate-on-load
         // path.  Internal column manipulation never produces invalid UTF-8.
+        // qOS: the streaming decoder (`decoder::<String>` /
+        // `decoder::<Option<String>>`) can also be handed raw bytes. In the
+        // vendored automerge the only such callers are the bundle column
+        // iterators (`storage/bundle/builder.rs`), and every bundle column is
+        // checked, UTF-8 included, by `storage/bundle/validate.rs` at parse
+        // before any iterator exists; automerge's other raw-byte decoders
+        // (`change_graph.rs`) read no strings. A new raw-byte `String`
+        // decoder caller must validate first (`try_unpack`).
         let s = unsafe { std::str::from_utf8_unchecked(&data[hdr..hdr + len]) };
         (hdr + len, s)
     }
@@ -723,7 +731,9 @@ impl RleValue for String {
         let (hdr, len) = C::read_unsigned(data)?;
         let end = hdr.checked_add(usize::try_from(len).ok()?)?;
         let bytes = data.get(hdr..end)?;
-        // Safety: as for `unpack` above.
+        // Safety: as for `unpack` above: bytes from `pack`, from a column
+        // validated by `Column::load`, or (raw streaming decoders) from a
+        // bundle column validated by automerge's `storage/bundle/validate.rs`.
         let s = unsafe { std::str::from_utf8_unchecked(bytes) };
         Some((end, s))
     }
