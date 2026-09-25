@@ -38,6 +38,7 @@ cosign_workflows=(
   "$workflows/release-imager.yml"
   "$workflows/snapshot-rpms.yml"
   "$workflows/snapshot-wpe-buildroot.yml"
+  "$workflows/snapshot-kernel-buildroot.yml"
   "$workflows/dev-disk.yml"
 )
 dev_disk_workflow="$workflows/dev-disk.yml"
