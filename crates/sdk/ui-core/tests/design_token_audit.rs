@@ -457,10 +457,45 @@ fn declared_borders_in_chrome_do_not_grow() {
     );
 }
 
+/// The resource app framework's entry points. Each builds its launch from
+/// `LaunchSpec`, so an app started through one is on the shared launcher.
+const FRAMEWORK_LAUNCHERS: [&str; 2] = ["framework::run::<", "framework::launch_spec::<"];
+const FRAMEWORK_APP: &str = "crates/sdk/tilo-app/src/framework/app.rs";
+
+/// The body of the top-level `pub fn NAME<` in `source`, up to its closing
+/// brace at column zero.
+fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let start = source
+        .find(&format!("\npub fn {name}<"))
+        .unwrap_or_else(|| panic!("{FRAMEWORK_APP} no longer defines `pub fn {name}<`"));
+    let rest = &source[start + 1..];
+    &rest[..rest.find("\n}\n").map_or(rest.len(), |end| end + 2)]
+}
+
+/// Accepting the framework's entry points is sound only while they stay on
+/// `LaunchSpec`; a framework that grew its own launcher would take every
+/// framework app off the acceptance matrix at once.
+#[test]
+fn framework_launchers_build_on_the_shared_launch_spec() {
+    let source = fs::read_to_string(repository_root().join(FRAMEWORK_APP))
+        .expect("framework app module is readable");
+    let spec = function_body(&source, "launch_spec");
+    assert!(
+        spec.contains("-> LaunchSpec") && spec.contains("LaunchSpec::from_definition("),
+        "framework::launch_spec must build the shared LaunchSpec:\n{spec}"
+    );
+    let run = function_body(&source, "run");
+    assert!(
+        run.contains("launch::run_or_exit(&launch_spec::<A>())"),
+        "framework::run must launch through framework::launch_spec:\n{run}"
+    );
+}
+
 /// Product apps share one viewport/large-type/pseudo-locale audit path. A new
 /// bespoke launcher silently loses that acceptance matrix, so keep the fleet on
-/// `LaunchSpec` unless the binary is itself an automation agent rather than a
-/// user-facing app window.
+/// `LaunchSpec` — directly or through a framework entry point that builds it —
+/// unless the binary is itself an automation agent rather than a user-facing
+/// app window.
 #[test]
 fn product_apps_use_the_shared_responsive_launcher() {
     let apps = repository_root().join("apps");
@@ -478,7 +513,11 @@ fn product_apps_use_the_shared_responsive_launcher() {
             continue;
         }
         let source = fs::read_to_string(&main).expect("app main is readable");
-        if !source.contains("LaunchSpec") {
+        let launched = source.contains("LaunchSpec")
+            || FRAMEWORK_LAUNCHERS
+                .iter()
+                .any(|entry| source.contains(entry));
+        if !launched {
             missing.push(
                 app.file_name()
                     .unwrap_or_default()
