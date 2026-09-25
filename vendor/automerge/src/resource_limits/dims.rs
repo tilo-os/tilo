@@ -438,6 +438,18 @@ pub(crate) struct IncomingDims {
     /// Largest actor table of any single chunk (`NativeShape`); for parsed
     /// changes, every actor entry.
     pub(crate) chunk_actors: usize,
+    /// Leading document chunk: bound on ops its load collector can queue
+    /// out of order (`structure::queued_ops`), and its stored raw value
+    /// column length.
+    pub(crate) leading_queued: usize,
+    pub(crate) leading_raw_values: usize,
+    /// Largest declared op count of a single change.
+    pub(crate) max_change_ops: usize,
+    /// Leading document chunk: ops the collector may encode out of row
+    /// order, and a bound on the encoded change-column bytes of all other
+    /// ops (`NativeShape::leading_document_ordered_encoding`).
+    pub(crate) leading_literal_ops: usize,
+    pub(crate) leading_ordered_encoding: usize,
 }
 impl IncomingDims {
     pub(crate) fn from_shape(shape: &NativeShape) -> Self {
@@ -463,6 +475,11 @@ impl IncomingDims {
             make_ops: shape.make_operations,
             mark_ops: shape.mark_operations,
             chunk_actors: shape.max_chunk_actors,
+            leading_queued: shape.leading_document_queued_ops,
+            leading_raw_values: shape.leading_document_raw_values,
+            max_change_ops: shape.max_change_ops,
+            leading_literal_ops: shape.leading_document_literal_ops,
+            leading_ordered_encoding: shape.leading_document_ordered_encoding,
         };
         dims.parsed_bytes = shape_parsed_bound(&dims).unwrap_or(usize::MAX);
         dims
@@ -527,6 +544,7 @@ impl IncomingDims {
         d.make_ops = d.ops;
         d.mark_ops = d.ops;
         d.chunk_actors = d.actors;
+        d.max_change_ops = changes.iter().map(Change::len).max().unwrap_or(0);
         d.parsed_bytes = parsed.get()?;
         Ok(d)
     }
@@ -545,12 +563,66 @@ fn op_literal_bytes(d: &IncomingDims) -> usize {
     let ls = leb(d.max_op_counter.saturating_mul(2).saturating_add(1));
     let lm = leb((d.value_bytes as u64).saturating_mul(16).saturating_add(15));
     let lp = leb(d.edges as u64 + 1);
-    2 * la + lc + ls + lm + lp + 25
+    // Per column and op, a literal costs its value plus an amortized
+    // literal-group header (≤ 1: a group of one has a 1-byte header), a
+    // run of ≥ 2 costs ≤ (header + value) / 2, a null run of one 2 bytes,
+    // a boolean run of one 1 byte: so ≤ max(V + 1, 2) per column.
+    let col = |v: usize| (v + 1).max(2);
+    col(la) // obj actor
+        + col(lc) // obj ctr
+        + col(la) // key actor
+        + col(ls) // key ctr (delta)
+        + 2 // key string length / null run (contents in value_bytes)
+        + 1 // insert
+        + col(1) // action
+        + col(lm) // value meta
+        + col(lp) // pred count
+        + 1 // expand
+        + 2 // mark name length / null run
+}
+
+/// Encoded op-column bytes of the rebuilt changes (without value and
+/// string contents). With the leading document's collector-order figures:
+/// ops encoded in row order cost at most the document's own column bytes
+/// plus one cut per change switch (`leading_ordered_encoding`), other ops
+/// their literal width; actor indexes are remapped per change (≤ one extra
+/// LEB byte per op per actor column once there are ≥ 128 actors); the pred
+/// columns (absent from the document) are charged separately: per op a
+/// pred count (runs of zero broken ≤ twice per pred, plus one run per
+/// change) and per pred its literals. Without those figures (parsed
+/// changes, later chunks): every op at literal width.
+fn encoded_ops_bytes(d: &IncomingDims) -> usize {
+    let literal = d
+        .ops
+        .saturating_mul(op_literal_bytes(d))
+        .saturating_add(d.edges.saturating_mul(pred_literal_bytes(d)));
+    if d.leading_ops == 0 || d.leading_ops != d.ops {
+        return literal;
+    }
+    let lp = leb(d.edges as u64 + 1);
+    let la = leb(d.actors.max(1) as u64);
+    let ordered = d
+        .leading_ordered_encoding
+        .saturating_add(
+            d.leading_literal_ops
+                .min(d.ops)
+                .saturating_mul(op_literal_bytes(d)),
+        )
+        .saturating_add(d.ops.saturating_mul(2 * (la - 1)))
+        .saturating_add(
+            d.edges
+                .saturating_mul(2)
+                .saturating_add(d.changes)
+                .saturating_mul(lp + 3),
+        )
+        .saturating_add(d.edges.saturating_mul(pred_literal_bytes(d)));
+    ordered.min(literal)
 }
 
 /// Per predecessor: actor and delta counter literals.
 fn pred_literal_bytes(d: &IncomingDims) -> usize {
-    leb(d.actors.max(1) as u64) + leb(d.max_op_counter.saturating_mul(2).saturating_add(1)) + 4
+    (leb(d.actors.max(1) as u64) + 1).max(2)
+        + (leb(d.max_op_counter.saturating_mul(2).saturating_add(1)) + 1).max(2)
 }
 
 /// Raw chunk bytes of the changes `ChangeCollector::collect` rebuilds from
@@ -569,11 +641,27 @@ fn rebuilt_raw_bytes(d: &IncomingDims) -> Result<usize> {
     let mut s = Sum::new();
     s.mul(d.changes, 160 + actor)
         .mul(others, actor + 2)
-        .mul(d.edges, 33 + pred_literal_bytes(d))
-        .mul(d.ops, op_literal_bytes(d))
+        .mul(d.edges, 33)
+        .add(encoded_ops_bytes(d))
         .add(d.value_bytes)
-        .add(d.normalized_bytes);
+        // extra bytes and messages live outside the raw value column
+        .add(d.normalized_bytes.saturating_sub(d.leading_raw_values));
     s.get()
+}
+
+/// Rebuilt raw bytes of the largest single change: header, other actors,
+/// its declared ops at literal width, and at most all preds, values and
+/// extra bytes.
+fn rebuilt_raw_max(d: &IncomingDims) -> Result<usize> {
+    let actor = d.max_actor_len;
+    let mut s = Sum::new();
+    s.add(160 + actor)
+        .mul(d.chunk_actors, actor + 2)
+        .mul(d.edges, 33 + pred_literal_bytes(d))
+        .mul(d.max_change_ops, op_literal_bytes(d))
+        .add(d.value_bytes)
+        .add(d.normalized_bytes.saturating_sub(d.leading_raw_values));
+    Ok(s.get()?.min(rebuilt_raw_bytes(d)?))
 }
 
 /// Retained `Vec<Change>` of rebuilt changes: the Vec (`collect` reserves it
@@ -594,8 +682,7 @@ fn rebuilt_changes_bound(d: &IncomingDims) -> Result<usize> {
         .mul(
             others.saturating_add(d.changes),
             size_of::<crate::ActorId>() + actor_heap_bytes(actor),
-        )
-        .add(d.value_bytes);
+        );
     s.get()
 }
 
@@ -650,6 +737,10 @@ fn split_leading(d: &IncomingDims) -> (Option<IncomingDims>, IncomingDims) {
         leading_ops: 0,
         leading_changes: 0,
         leading_bytes: 0,
+        leading_queued: 0,
+        leading_raw_values: 0,
+        leading_literal_ops: 0,
+        leading_ordered_encoding: 0,
         ..*d
     };
     if l_changes == 0 && l_ops == 0 && l_bytes == 0 {
@@ -1143,8 +1234,13 @@ fn leading_document_peak(d: &IncomingDims) -> Result<usize> {
     } else {
         dense.min(changes.saturating_mul(encoder))
     };
+    let raw_values = d.leading_raw_values.min(d.normalized_bytes);
     let mut held = Sum::new();
-    held.mul(d.normalized_bytes, 10)
+    // Re-segmented columns ≤ 10 × their bytes; the raw value column is
+    // copied once into ≤ 4 KiB slabs (64 bytes of slab/BIT entries each).
+    held.mul(d.normalized_bytes - raw_values, 10)
+        .add(raw_values)
+        .mul(raw_values / 4096 + 1, 64)
         .mul(23, 256)
         .mul(
             d.actors,
@@ -1168,12 +1264,12 @@ fn leading_document_peak(d: &IncomingDims) -> Result<usize> {
         .add_sum(hash_table_peak_for(d.edges, 32))
         .mul(d.edges, 2 * 8);
     let collector = collector.get()?;
-    let encoded = ops
-        .saturating_mul(2 * op_literal_bytes(d))
-        .saturating_add(d.edges.saturating_mul(2 * pred_literal_bytes(d)))
-        .saturating_add(d.value_bytes.saturating_mul(2));
-    let queue_or_encoded = ops
-        .saturating_mul(queued_op_bytes().max(2 * op_literal_bytes(d)))
+    // Only ops the inspector's collector simulation found out of order can
+    // be queued; every other op is encoded as it arrives.
+    let queued = d.leading_queued.min(ops);
+    let queue_or_encoded = queued
+        .saturating_mul(queued_op_bytes())
+        .saturating_add(encoded_ops_bytes(d).saturating_mul(2))
         .saturating_add(d.edges.saturating_mul(2 * (8 + pred_literal_bytes(d))))
         .saturating_add(d.value_bytes.saturating_mul(2));
     let rebuilt = rebuilt_changes_bound(d)?;
@@ -1181,18 +1277,28 @@ fn leading_document_peak(d: &IncomingDims) -> Result<usize> {
 
     let mut processing = Sum::new();
     processing.add(collector).add(queue_or_encoded);
+    // Collecting: every change not yet rebuilt is still encoded (≤ 2 × its
+    // rebuilt raw bytes: encoder buffers double), every rebuilt one holds
+    // its raw bytes (plus the Change and its Vecs, charged in full). The
+    // change being assembled adds one exact copy at a time (qOS snapshot
+    // admission memory patch, vendor/automerge/README.qos.md): its encoder
+    // output is copied into a `data` buffer reserved exactly
+    // (`ProgressiveEncoder::save_to` / `write_change_ops`), then into the
+    // exactly reserved chunk (`assemble_change_chunk`), each source freed
+    // after its copy: 2 × all + 1 × the largest.
     let mut collecting = Sum::new();
     collecting
         .add(collector)
-        .add(encoded)
-        .add(rebuilt)
-        .mul(rebuilt_raw, 3);
+        .add(rebuilt - rebuilt_raw.min(rebuilt))
+        .mul(rebuilt_raw, 2)
+        .add(rebuilt_raw_max(d)?);
     let empty = DocDims::default();
     let mut finishing = Sum::new();
     finishing
         .mul(ops, 8 + 1 + 1 + 2 * 20)
         .add_sum(hash_table_peak_for(d.mark_ops, 88))
-        .mul(d.value_bytes, 2)
+        // the mark cache owns copies of mark names and values
+        .add(if d.mark_ops == 0 { 0 } else { d.value_bytes })
         .add(rebuilt)
         .mul(changes, 32 + 2 * 4 + 2 * 16)
         .add_sum(hash_table_peak_for(changes, 36))

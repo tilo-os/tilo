@@ -409,7 +409,18 @@ fn measure_doc(t: &mut Table, name: &str, doc: &AutoCommit) {
             .shape()
             .native_load_peak_probe(fragments(&changes), actors)
             .unwrap();
-        let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+        // The checked paths load normalized storage (columns inflated).
+        let set = NativeAllocationSet::new(allowance()).unwrap();
+        let turn = set
+            .work_turn(NativeAllowance::new(64 << 20).unwrap())
+            .unwrap();
+        let normalized = turn
+            .normalize_input(&bytes, &limits)
+            .unwrap()
+            .bytes()
+            .to_vec();
+        drop(turn);
+        let (loaded, load_peak) = peak_of(|| AutoCommit::load(&normalized).unwrap());
         drop(loaded);
         t.add(name, "load peak", load_peak, bound, false);
     }
@@ -750,6 +761,7 @@ fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit, useful: boo
     limits.max_operations = 1 << 22;
     limits.max_operation_counter = 1 << 22;
     limits.max_normalized_bytes = 64 << 20;
+    limits.max_value_bytes = 64 << 20;
     let mut scratch = allowance();
     let checked = AutoCommit::inspect_bounded(&bytes, &limits, &mut scratch).unwrap();
     let shape = checked.shape();
@@ -757,7 +769,18 @@ fn measure_snapshot(t: &mut Table, name: &str, doc: &mut AutoCommit, useful: boo
         .native_load_peak_probe(fragments(&changes), 1)
         .unwrap();
     let parsed_bound = shape.native_parsed_probe().unwrap();
-    let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+    // The checked paths load normalized storage (columns already inflated).
+    let set = NativeAllocationSet::new(allowance()).unwrap();
+    let turn = set
+        .work_turn(NativeAllowance::new(64 << 20).unwrap())
+        .unwrap();
+    let normalized = turn
+        .normalize_input(&bytes, &limits)
+        .unwrap()
+        .bytes()
+        .to_vec();
+    drop(turn);
+    let (loaded, load_peak) = peak_of(|| AutoCommit::load(&normalized).unwrap());
     drop(loaded);
     let (held, parsed) = retained_of(|| changes.clone());
     drop(held);
@@ -850,4 +873,54 @@ fn typed_snapshot_is_admitted_into_a_blank_document_within_32_mib() {
         )
         .unwrap();
     assert_eq!(outcome, NativeIncomingOutcome::Applied { changed: true });
+}
+
+// ── large values (snapshot load) ───────────────────────────────────────────
+
+/// Incompressible bytes (xorshift), so DEFLATE cannot shrink the snapshot.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+/// One op whose value is `n` incompressible bytes, one commit.
+fn single_value(n: usize) -> AutoCommit {
+    let mut doc = AutoCommit::new().with_actor(actor(1));
+    doc.put(ROOT, "blob", ScalarValue::Bytes(noise(n, 7)))
+        .unwrap();
+    doc.commit();
+    doc
+}
+
+/// Typed text plus a few MiB of binary values.
+fn mixed(splices: usize, blobs: usize, blob: usize) -> AutoCommit {
+    let mut doc = typed_history(splices, 3);
+    let list = doc.put_object(ROOT, "files", ObjType::List).unwrap();
+    for i in 0..blobs {
+        doc.insert(&list, i, ScalarValue::Bytes(noise(blob, i as u64 + 3)))
+            .unwrap();
+        doc.commit();
+    }
+    doc
+}
+
+#[test]
+fn large_value_snapshots_load_within_tight_bounds() {
+    let mut t = Table::default();
+    for (name, mut doc) in [
+        ("single 4 MiB value", single_value(4 << 20)),
+        ("single 10 MiB value", single_value(10 << 20)),
+        ("mixed 1k splices + 6 x 512 KiB", mixed(1_000, 6, 512 << 10)),
+    ] {
+        let bound = measure_snapshot(&mut t, name, &mut doc, true);
+        println!("{name}: snapshot {} bound {bound}", doc.save().len());
+    }
+    t.finish_with_ratio(3.5);
 }

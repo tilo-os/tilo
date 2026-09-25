@@ -313,3 +313,85 @@ fn snapshot_into_existing_replica_tracks_measured_peak() {
     );
     assert!(high <= 48 * 1024 * 1024, "needs {high}");
 }
+
+/// About 300k characters of ordinary typing admits into a blank document
+/// within one 64 MiB turn (upstream's own verified load peaks at about
+/// 168 B/op, ~51 MB here, so the bound must be within ~1.3x of it).
+#[test]
+#[ignore = "slow in debug builds (about 3 minutes); run with --ignored"]
+fn typed_history_of_300k_chars_fits_one_64_mib_turn() {
+    let (mut doc, text) = typed(25_000, "typed words ", 3);
+    let snapshot = doc.save();
+    let mut fresh = AutoCommit::new();
+    let allowance = NativeAllowance::new(64 * 1024 * 1024).unwrap();
+    let (outcome, peak) = peak_of(|| {
+        fresh.apply_incoming_checked(
+            &snapshot,
+            &limits(),
+            &allowance,
+            NativeDependencyPolicy::RequireComplete,
+        )
+    });
+    eprintln!(
+        "300k typed chars: snapshot {} B, checked apply peak {peak} B",
+        snapshot.len()
+    );
+    assert_eq!(
+        outcome.unwrap(),
+        NativeIncomingOutcome::Applied { changed: true }
+    );
+    assert_eq!(fresh.text(&text).unwrap(), doc.text(&text).unwrap());
+}
+
+/// Incompressible bytes (xorshift), so DEFLATE cannot shrink the snapshot.
+fn noise(n: usize, seed: u64) -> Vec<u8> {
+    let mut x = seed | 1;
+    (0..n)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as u8
+        })
+        .collect()
+}
+
+/// One op whose value is `n` incompressible bytes, one commit.
+fn value_snapshot(n: usize) -> Vec<u8> {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "blob", automerge::ScalarValue::Bytes(noise(n, 7)))
+        .unwrap();
+    doc.commit();
+    doc.save()
+}
+
+/// A single large value admits into a blank document within one 64 MiB
+/// turn, up to 10 MiB. With the snapshot-admission memory patch
+/// (vendor/automerge/README.qos.md) the verified load of such a snapshot
+/// peaks at 3x the value (the raw value column, the change's exactly
+/// reserved column data, and its exactly reserved chunk), on top of the
+/// normalized input (1x) the turn also holds; the sound bound charges the
+/// collector's encoder copies too (4x + input).
+#[test]
+fn large_value_snapshot_admits_within_one_64_mib_turn() {
+    for mib in [4usize, 8, 10] {
+        let snapshot = value_snapshot(mib << 20);
+        let (outcome, peak) = peak_of(|| apply(&snapshot, 64 * 1024 * 1024));
+        assert_eq!(
+            outcome.unwrap(),
+            NativeIncomingOutcome::Applied { changed: true },
+            "{mib} MiB"
+        );
+        let needed = minimal_allowance(&snapshot);
+        eprintln!(
+            "{mib} MiB value: snapshot {} B, peak {peak} B ({:.2} B per value byte), minimal allowance {needed} B ({:.2}x peak)",
+            snapshot.len(),
+            peak as f64 / (mib << 20) as f64,
+            needed as f64 / peak as f64
+        );
+        assert!(
+            needed as f64 <= 1.4 * peak as f64,
+            "{mib} MiB: {needed} vs {peak}"
+        );
+    }
+}

@@ -68,7 +68,8 @@ where
 
     let other_actors: Vec<_> = mapper.iter().collect();
 
-    let mut data = Vec::with_capacity(col_data.len());
+    // qOS: the prefix is small; the chunk is assembled exactly once.
+    let mut data = Vec::new();
     leb128::write::unsigned(&mut data, meta.deps.len() as u64).unwrap();
 
     // FIXME missing value here is changes out of order error
@@ -98,23 +99,9 @@ where
 
     ops_meta.raw_columns().write(&mut data);
 
-    let ops_data_start = data.len();
-    let ops_data = ops_data_start..(ops_data_start + col_data.len());
-
-    data.extend(col_data);
-    let extra_bytes = data.len()..(data.len() + meta.extra.len());
-    if !meta.extra.is_empty() {
-        data.extend(meta.extra.as_ref());
-    }
-
-    let header = Header::new(ChunkType::Change, &data);
-
-    let mut bytes = Vec::with_capacity(header.len() + data.len());
-    header.write(&mut bytes);
-    bytes.extend(data);
-
-    let ops_data = shift_range(ops_data, header.len());
-    let extra_bytes = shift_range(extra_bytes, header.len());
+    let (header, bytes, ops_data, extra_bytes) =
+        assemble_change_chunk(&data, col_data, meta.extra.as_ref());
+    drop(data);
 
     Change {
         bytes: Cow::Owned(bytes),
@@ -132,6 +119,39 @@ where
         num_ops,
         _phantom: PhantomData,
     }
+}
+
+/// qOS snapshot admission memory: assembles a change chunk
+/// `header || prefix || col_data || extra` in one buffer reserved exactly
+/// (the header length follows from the data length), so the column data is
+/// copied once and no buffer regrows while an older copy is alive. The
+/// bytes are identical to writing `prefix`, `col_data` and `extra` into a
+/// data Vec and prefixing its header. Returns the header, the chunk bytes,
+/// and the ops-data and extra-bytes ranges within the chunk.
+pub(crate) fn assemble_change_chunk(
+    prefix: &[u8],
+    col_data: Vec<u8>,
+    extra: &[u8],
+) -> (Header, Vec<u8>, Range<usize>, Range<usize>) {
+    let data_len = prefix.len() + col_data.len() + extra.len();
+    let header_len =
+        crate::storage::MAGIC_BYTES.len() + 4 + 1 + hexane::ulebsize(data_len as u64) as usize;
+    let mut bytes = Vec::with_capacity(header_len + data_len);
+    bytes.resize(header_len, 0);
+    bytes.extend_from_slice(prefix);
+    let ops_start = bytes.len();
+    bytes.extend_from_slice(&col_data);
+    let ops_data = ops_start..bytes.len();
+    drop(col_data);
+    let extra_start = bytes.len();
+    bytes.extend_from_slice(extra);
+    let extra_bytes = extra_start..bytes.len();
+    let header = Header::new(ChunkType::Change, &bytes[header_len..]);
+    let mut head = Vec::with_capacity(header_len);
+    header.write(&mut head);
+    assert_eq!(head.len(), header_len);
+    bytes[..header_len].copy_from_slice(&head);
+    (header, bytes, ops_data, extra_bytes)
 }
 
 impl PartialOrd for OpBuilder<'_> {
@@ -225,23 +245,41 @@ where
     let insert = hexane::Encoder::<bool>::encode_to(data, ops.iter().map(T::insert));
     let action = hexane::Encoder::<Action>::encode_to(data, ops.iter().map(T::action));
     let value_meta = hexane::Encoder::<ValueMeta>::encode_to(data, ops.iter().map(T::value_meta));
+    // qOS snapshot admission memory: encode the columns after the values
+    // into a small buffer first, so `data` grows exactly once to hold the
+    // values and them (no doubling of a large value). Same bytes.
+    let mut tail = Vec::new();
+    let pred_count = hexane::Encoder::<u32>::encode_to(&mut tail, ops.iter().map(T::pred_count));
+    let pred_iter = ops.iter().map(T::pred).flat_map(|id| id.iter());
+    let pred_actor = hexane::Encoder::<ActorIdx>::encode_to(
+        &mut tail,
+        pred_iter.clone().map(T::id_actor).map(&remap_actor),
+    );
+    let pred_ctr =
+        hexane::DeltaEncoder::<i64>::encode_to(&mut tail, pred_iter.map(|id| id.icounter()));
+    let expand =
+        hexane::Encoder::<bool>::encode_to_unless(&mut tail, ops.iter().map(T::expand), false);
+    let mark_name = hexane::Encoder::<Option<String>>::encode_to_unless(
+        &mut tail,
+        ops.iter().map(T::mark_name),
+        None,
+    );
+    let values: usize = ops.iter().filter_map(T::value).map(|v| v.len()).sum();
+    data.reserve_exact(values + tail.len());
     let value_start = data.len();
     for bytes in ops.iter().filter_map(T::value) {
         data.extend_from_slice(&bytes);
     }
     let value = value_start..data.len();
-    let pred_count = hexane::Encoder::<u32>::encode_to(data, ops.iter().map(T::pred_count));
-    let pred_iter = ops.iter().map(T::pred).flat_map(|id| id.iter());
-    let pred_actor = hexane::Encoder::<ActorIdx>::encode_to(
-        data,
-        pred_iter.clone().map(T::id_actor).map(&remap_actor),
-    );
-    let pred_ctr = hexane::DeltaEncoder::<i64>::encode_to(data, pred_iter.map(|id| id.icounter()));
-    let expand = hexane::Encoder::<bool>::encode_to_unless(data, ops.iter().map(T::expand), false);
-    let mark_name = hexane::Encoder::<Option<String>>::encode_to_unless(
-        data,
-        ops.iter().map(T::mark_name),
-        None,
+    let base = data.len();
+    data.extend_from_slice(&tail);
+    let shift = |r: Range<usize>| r.start + base..r.end + base;
+    let (pred_count, pred_actor, pred_ctr, expand, mark_name) = (
+        shift(pred_count),
+        shift(pred_actor),
+        shift(pred_ctr),
+        shift(expand),
+        shift(mark_name),
     );
 
     let cols = ChangeOpsColumns {

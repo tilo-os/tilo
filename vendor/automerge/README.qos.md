@@ -84,6 +84,26 @@ Files outside `src/resource_limits*` changed by this patch (keep exact):
   `apply_incoming_checked` admits a snapshot into a blank document by the
   checked strict load instead of re-applying every change through batch
   apply (upstream `load_incremental` takes the same shortcut).
+- Change rebuild without buffer doubling (lane L1; memory only, identical
+  bytes). Load verification rebuilds every change of a document chunk, and
+  a large value used to be held up to 6 times: the raw value column, the
+  collector's column `data` doubled by growth, and the chunk `data`
+  reserved for the columns only, then regrown by the header while the old
+  copy lived. Now:
+  - `src/op_set2/change.rs` `write_change_ops` and
+    `src/op_set2/change/collector.rs` `ProgressiveEncoder::save_to` encode
+    the columns after the value column into a small buffer first, reserve
+    `data` exactly for the values plus that tail, then append both
+    (ranges shifted);
+  - `src/op_set2/change.rs` `assemble_change_chunk` writes
+    `header || prefix || columns || extra` into one exactly reserved buffer
+    (the header length follows from the data length; the header is filled
+    in after hashing the data in place), used by `build_change_inner`,
+    `ChangeBuilder::finish` (collector) and `storage::change::ChangeBuilder::build`
+    (`src/storage/change.rs`).
+  A verified load of a single large value now peaks at 3x the value (the
+  raw value column, the column data and the chunk); a 10 MiB value
+  snapshot admits within one 64 MiB turn.
 
 ### Allocation-free dimension hooks (lane L1, read-only)
 
