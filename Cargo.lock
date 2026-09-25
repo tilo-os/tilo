@@ -3903,31 +3903,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ffmpeg-next"
-version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7c4bd5ab1ac61f29c634df1175d350ded29cf74c3c6d4f7030431a5ae3c7d5d"
-dependencies = [
- "bitflags 2.11.0",
- "ffmpeg-sys-next",
- "libc",
-]
-
-[[package]]
-name = "ffmpeg-sys-next"
-version = "8.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a314bc0e022a33a99567ed4bd2576bd58ffd8fcff7891c29194cfecc26a62547"
-dependencies = [
- "bindgen 0.72.1",
- "cc",
- "libc",
- "num_cpus",
- "pkg-config",
- "vcpkg",
-]
-
-[[package]]
 name = "fiat-crypto"
 version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4271,6 +4246,7 @@ name = "frame-link"
 version = "0.1.0"
 dependencies = [
  "cosmic-text",
+ "media",
  "proptest",
  "shell",
  "tracing",
@@ -8476,15 +8452,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nasm-rs"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "706bf8a5e8c8ddb99128c3291d31bd21f4bcde17f0f4c20ec678d85c74faa149"
-dependencies = [
- "log",
-]
-
-[[package]]
 name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9363,25 +9330,6 @@ dependencies = [
  "is-wsl",
  "libc",
  "pathdiff",
-]
-
-[[package]]
-name = "openh264"
-version = "0.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a12b82c14f702c2cece4e0fc28896c6a6bed5317dc13448c86ac41df91a6f82"
-dependencies = [
- "openh264-sys2",
- "wide",
-]
-
-[[package]]
-name = "openh264-sys2"
-version = "0.9.6"
-dependencies = [
- "cc",
- "nasm-rs",
- "walkdir",
 ]
 
 [[package]]
@@ -12224,15 +12172,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
 
 [[package]]
-name = "safe_arch"
-version = "0.7.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "96b02de82ddbe1b636e6170c21be622223aea188ef2e139be0a5b219ec215323"
-dependencies = [
- "bytemuck",
-]
-
-[[package]]
 name = "salsa20"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12890,7 +12829,6 @@ dependencies = [
  "desktop-policy",
  "dirs 6.0.0",
  "ed25519-dalek 3.0.0",
- "ffmpeg-next",
  "file-explorer",
  "futures",
  "futures-lite",
@@ -12898,6 +12836,7 @@ dependencies = [
  "gbm",
  "getrandom 0.4.1",
  "greeter",
+ "gstreamer-app",
  "hex",
  "image",
  "iroh",
@@ -12910,7 +12849,6 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
- "openh264",
  "os-actions",
  "parking_lot",
  "pipewire",
@@ -14330,8 +14268,7 @@ dependencies = [
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
- "openh264",
- "serde",
+ "media",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -14713,7 +14650,6 @@ dependencies = [
  "media",
  "mime_guess",
  "open",
- "openh264",
  "percent-encoding",
  "pkg-config",
  "pollster",
@@ -17097,16 +17033,6 @@ dependencies = [
  "objc2-system-configuration",
  "wasite",
  "web-sys",
-]
-
-[[package]]
-name = "wide"
-version = "0.7.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce5da8ecb62bcd8ec8b7ea19f69a51275e91299be594ea5cc6ef7819e16cd03"
-dependencies = [
- "bytemuck",
- "safe_arch",
 ]
 
 [[package]]

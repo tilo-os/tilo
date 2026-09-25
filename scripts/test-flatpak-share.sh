@@ -2,9 +2,9 @@
 # Test driver for the Flatpak share pipeline.
 #
 # Runs every layer of the pipeline that the current host can exercise —
-# openh264 software encode inside distrobox for the standard case, real
-# NVENC on the host via an LD_LIBRARY_PATH shim, VA-API when the render
-# node advertises H.264, the frame-link shim, and the side-by-side demo.
+# royalty-free software encode (VP9/AV1) everywhere, hardware encode and
+# 10-bit HDR decode where the GStreamer registry lists a hardware encoder,
+# the frame-link shim, and the side-by-side demo.
 #
 # See docs/flatpak-share-testing.md for what each subcommand covers.
 #
@@ -12,9 +12,9 @@
 #   scripts/test-flatpak-share.sh <subcommand>
 #
 # Subcommands:
-#   sw          openh264 software backend + probe + fallback
-#   vaapi       VA-API H.264 (self-skips on hosts without an encode profile)
-#   nvenc       NVENC H.264 — builds in distrobox, runs on host
+#   sw          software encoders + codec negotiation + fallback
+#   hw          hardware encoders, zero-copy dmabuf, 10-bit HDR decode
+#               (each test self-skips when no hardware encoder is listed)
 #   dmabuf      DMABUF direct-import capture-path routing
 #   substream   QUIC substream framing + backpressure
 #   e2e         SharedFlatpakSession end-to-end pipeline
@@ -60,10 +60,6 @@ else
     DISTROBOX=""
 fi
 
-# Matching the host's ffmpeg ABI avoids the library staging shim. A custom
-# container is conservatively treated as unmatched unless the caller opts out
-# with an empty TILO_DISTROBOX.
-HOST_ABI_MATCHES=$([ "$DISTROBOX" = "my-distrobox-44" ] && echo 1 || echo 0)
 cargo_in_distrobox() {
     if [ -n "$DISTROBOX" ]; then
         distrobox enter "$DISTROBOX" -- bash -c "cd $REPO && $*"
@@ -72,119 +68,21 @@ cargo_in_distrobox() {
     fi
 }
 
-# Root the on-host scratch dir here so subsequent runs are cheap.
-SCRATCH="${TILO_TEST_SCRATCH:-$REPO/.claude/test-scratch/flatpak-share}"
-FF_LIBS="$SCRATCH/ff-libs"
-NV_LIBS="$SCRATCH/nvidia-libs"
-
 run_sw() {
-    echo "=== software (openh264) + probe ==="
+    echo "=== software encoders + negotiation ==="
     cargo_in_distrobox \
-        "cargo test -p shell \
-            --test flatpak_share_e2e \
-            --test flatpak_share_encoder_probe \
-            --release -- --include-ignored"
+        "cargo test -p shell --test it --release --locked \
+            flatpak_share_encoder_probe:: flatpak_share_e2e:: \
+            -- --include-ignored"
 }
 
-run_vaapi() {
-    echo "=== VA-API ==="
+run_hw() {
+    echo "=== hardware encoders + HDR decode ==="
     cargo_in_distrobox \
-        "cargo test -p shell --features vaapi \
-            --test vaapi_hardware_encode \
-            --test flatpak_share_encoder_probe \
-            --release -- --include-ignored --nocapture"
-    echo "Note: probe self-skips when the render node has no H.264 encode profile."
-}
-
-# Extract the ffmpeg .so files from distrobox and stage them on the
-# host, plus symlink the host's NVIDIA libs into the same dir. Idempotent.
-stage_host_libs() {
-    mkdir -p "$FF_LIBS" "$NV_LIBS"
-
-    # NVIDIA userspace libs live on the host, not in distrobox.
-    for lib in libcuda.so.1 libnvidia-encode.so.1 libnvidia-ml.so.1 \
-               libnvcuvid.so.1 libnvidia-cfg.so.1; do
-        src=$(readlink -f "/lib64/$lib" 2>/dev/null || true)
-        if [ -n "$src" ] && [ -f "$src" ]; then
-            ln -sf "$src" "$NV_LIBS/$lib"
-            ln -sf "$src" "$NV_LIBS/$(basename "$src")"
-        fi
-    done
-
-    # ffmpeg libs from distrobox — the host's `ffmpeg-free` (Fedora
-    # default) usually lacks NVENC linkage, so we prefer the container's.
-    if [ -z "$DISTROBOX" ]; then
-        echo "TILO_DISTROBOX is required to stage codec libraries" >&2
-        return 1
-    fi
-    distrobox enter "$DISTROBOX" -- bash -c "
-        for so in libavcodec.so.61 libavutil.so.59 libswscale.so.8 \
-                  libavformat.so.61 libswresample.so.5; do
-            path=\$(ldconfig -p | grep -E \"^\\s*\$so \" | head -1 | awk '{print \$NF}')
-            if [ -n \"\$path\" ] && [ -f \"\$path\" ]; then
-                real=\$(readlink -f \"\$path\")
-                cp -f \"\$real\" '$FF_LIBS/' 2>/dev/null || true
-                ln -sf \"\$(basename \"\$real\")\" '$FF_LIBS/'\$so 2>/dev/null || true
-            fi
-        done
-    "
-
-    # First-run misses transitive codec deps; grab whatever ldd on the
-    # host still can't resolve after the initial batch. Iterate until
-    # the resolution converges (each pass may unlock more deps whose
-    # SONAMEs only become visible once their loader can find the caller).
-    local TEST_BIN missing_file
-    TEST_BIN=$(ls -t "$REPO"/target/release/deps/nvenc_hardware_encode-* 2>/dev/null \
-        | grep -v '\.d$' | head -1 || true)
-    missing_file="$SCRATCH/missing.txt"
-    for _ in 1 2 3; do
-        [ -n "$TEST_BIN" ] || break
-        LD_LIBRARY_PATH="$FF_LIBS:$NV_LIBS:/lib64" \
-            ldd "$TEST_BIN" 2>&1 | awk '/not found/ {print $1}' | sort -u > "$missing_file"
-        [ -s "$missing_file" ] || break
-        distrobox enter "$DISTROBOX" -- bash -c "
-            while read so; do
-                path=\$(ldconfig -p | grep -E \"^\\s*\$so \" | head -1 | awk '{print \$NF}')
-                if [ -n \"\$path\" ] && [ -f \"\$path\" ]; then
-                    real=\$(readlink -f \"\$path\")
-                    cp -nf \"\$real\" '$FF_LIBS/' 2>/dev/null || true
-                    ln -sf \"\$(basename \"\$real\")\" '$FF_LIBS/'\$so 2>/dev/null || true
-                fi
-            done < '$missing_file'
-        "
-    done
-}
-
-run_nvenc() {
-    echo "=== NVENC (build in $DISTROBOX, run on host) ==="
-    if [ ! -e /dev/nvidia0 ] && [ ! -e /dev/nvidiactl ]; then
-        echo "no /dev/nvidia* on this host — NVENC probe self-skips, running anyway to prove it"
-    fi
-    cargo_in_distrobox \
-        "cargo test -p shell --features nvenc \
-            --test nvenc_hardware_encode --release --no-run"
-    local TEST_BIN
-    TEST_BIN=$(ls -t "$REPO"/target/release/deps/nvenc_hardware_encode-* \
-        | grep -v '\.d$' | head -1)
-    if [ -z "$TEST_BIN" ] || [ ! -x "$TEST_BIN" ]; then
-        echo "no nvenc_hardware_encode binary produced — build failed" >&2
-        exit 1
-    fi
-    echo "running: $TEST_BIN"
-    if [ "$HOST_ABI_MATCHES" = 1 ]; then
-        # Distrobox and host share ffmpeg SONAMEs — the binary can
-        # dlopen host libs directly. This is the happy path.
-        "$TEST_BIN" --include-ignored --nocapture --test-threads 1
-    else
-        # Fallback path when the distrobox's ffmpeg SONAMEs don't
-        # match the host's (e.g. F42 distrobox on an F44 host).
-        # Stage distrobox's libavcodec/libavutil/libswscale + the
-        # host's libnvidia-encode/libcuda into a scratch dir and
-        # LD_LIBRARY_PATH the binary at them.
-        stage_host_libs
-        LD_LIBRARY_PATH="$FF_LIBS:$NV_LIBS:/lib64" "$TEST_BIN" \
-            --include-ignored --nocapture --test-threads 1
-    fi
+        "cargo test -p shell --test it --release --locked \
+            hardware_encode:: hdr_decode_pipeline:: \
+            -- --include-ignored --nocapture --test-threads 1"
+    echo "Note: each test reports and returns when no hardware encoder is listed."
 }
 
 run_dmabuf() {
@@ -232,8 +130,8 @@ run_demo() {
             --throughput-kbps ${THROUGHPUT_KBPS:-2000} \
             --out $out"
     echo "video: $REPO/$out"
-    if command -v ffprobe >/dev/null 2>&1; then
-        ffprobe -hide_banner "$out" 2>&1 | grep -E "Stream|Duration" | head -3
+    if command -v gst-discoverer-1.0 >/dev/null 2>&1; then
+        gst-discoverer-1.0 "$out" 2>&1 | grep -E "video|Duration" | head -3
     fi
 }
 
@@ -243,12 +141,7 @@ run_all() {
     run_substream
     run_dmabuf
     run_e2e
-    run_vaapi || echo "vaapi step skipped/failed — expected on non-H.264 iGPUs"
-    if [ -e /dev/nvidia0 ] || [ -e /dev/nvidiactl ]; then
-        run_nvenc
-    else
-        echo "=== NVENC skipped: no /dev/nvidia* ==="
-    fi
+    run_hw
     run_demo
     echo
     echo "netns pair test needs sudo — run manually:"
@@ -256,9 +149,8 @@ run_all() {
 }
 
 case "${1:-}" in
-    sw|software|openh264)  run_sw ;;
-    vaapi)                 run_vaapi ;;
-    nvenc|nvidia)          run_nvenc ;;
+    sw|software)           run_sw ;;
+    hw|hardware|vaapi|nvenc) run_hw ;;
     dmabuf)                run_dmabuf ;;
     substream|quic)        run_substream ;;
     e2e|pipeline)          run_e2e ;;

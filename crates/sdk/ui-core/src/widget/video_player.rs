@@ -3,9 +3,12 @@
 //! Two frame sources feed the same `latest_frame`: **engine mode** pumps an
 //! attached [`media::MediaEngine`] each [`Widget::sync`] (used by the local
 //! player, editor preview, and video app, so streaming + collaborative
-//! playback land once). **Push mode** (legacy) decodes raw H.264 NALUs via
-//! [`VideoPlayer::feed_frame`] in-process via openh264, kept working for
-//! callers still migrating onto the engine.
+//! playback land once). **Push mode** decodes streamed access units handed to
+//! [`VideoPlayer::feed_frame`] (H.264) or [`VideoPlayer::feed_encoded`] (any
+//! real-time codec) through a [`media::RealtimeDecoder`], which picks a
+//! hardware decoder first. Push mode decodes only in builds where `media`'s
+//! `realtime` feature is on (any app that streams video enables it); in other
+//! builds the feed methods report that nothing was decoded.
 
 use crate::time::{Duration, Instant};
 use std::sync::Arc;
@@ -13,7 +16,6 @@ use std::sync::Arc;
 use crate::text_metrics::renderer_type_size;
 use crate::widget::TaffyTreeExt;
 use automerge::{AutoCommit, ObjId};
-use openh264::formats::YUVSource;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -229,8 +231,10 @@ pub struct VideoPlayer {
     /// `None` in push mode.
     engine: Option<media::MediaEngine>,
     /// Lazily constructed on the first non-empty push so engine-mode
-    /// consumers never touch the openh264 runtime.
-    decoder: Option<openh264::decoder::Decoder>,
+    /// consumers never start a decode pipeline. Rebuilt when the pushed
+    /// codec changes.
+    decoder: Option<media::RealtimeDecoder>,
+    decoder_codec: Option<media::StreamCodec>,
     /// Shared render cache for both the engine and push paths.
     latest_frame: Option<PenikoImage>,
     /// So engine-mode `sync` only rebuilds the peniko image when the
@@ -358,6 +362,7 @@ impl VideoPlayer {
         Self {
             engine: None,
             decoder: None,
+            decoder_codec: None,
             latest_frame: None,
             last_frame_pts: None,
             state: PlaybackState::Paused,
@@ -654,36 +659,41 @@ impl VideoPlayer {
         self
     }
 
-    /// Returns `true` when a frame was decoded and `latest_frame` updated.
+    /// Push one H.264 access unit (Annex-B). Returns `true` when a frame was
+    /// decoded and `latest_frame` updated.
     pub fn feed_frame(&mut self, nalus: &[u8]) -> bool {
-        if nalus.is_empty() {
+        self.feed_encoded(media::StreamCodec::H264, nalus)
+    }
+
+    /// Push one access unit of `codec`. Returns `true` when a frame was
+    /// decoded and `latest_frame` updated. Units before the stream's first
+    /// keyframe decode to nothing.
+    pub fn feed_encoded(&mut self, codec: media::StreamCodec, unit: &[u8]) -> bool {
+        if unit.is_empty() {
             return false;
         }
-        if self.decoder.is_none() {
-            match openh264::decoder::Decoder::new() {
-                Ok(d) => self.decoder = Some(d),
+        let codec_changed = self.decoder_codec.is_some_and(|current| current != codec);
+        if self.decoder.is_none() || codec_changed {
+            let mut config = media::DecoderConfig::new(codec);
+            config.output = media::DecodeOutput::Rgba;
+            match media::RealtimeDecoder::new(config) {
+                Ok(d) => {
+                    self.decoder = Some(d);
+                    self.decoder_codec = Some(codec);
+                }
                 Err(_) => return false,
             }
         }
         let Some(decoder) = self.decoder.as_mut() else {
             return false;
         };
-        let Ok(Some(yuv)) = decoder.decode(nalus) else {
+        let Ok(Some(picture)) = decoder.decode(unit, None) else {
             return false;
         };
-        let (width, height) = yuv.dimensions();
-        // A malformed/adversarial stream could report dimensions whose
-        // product overflows `usize`; bail rather than let it wrap into an
-        // undersized allocation that `write_rgba8` then writes past.
-        let Some(len) = width.checked_mul(height).and_then(|wh| wh.checked_mul(4)) else {
+        let Some(rgba) = picture.frame.to_rgba() else {
             return false;
         };
-        let (Ok(w32), Ok(h32)) = (u32::try_from(width), u32::try_from(height)) else {
-            return false;
-        };
-        let mut rgba = vec![0u8; len];
-        yuv.write_rgba8(&mut rgba);
-        self.latest_frame = Some(rgba_image(w32, h32, Arc::new(rgba)));
+        self.latest_frame = Some(rgba_image(picture.frame.width, picture.frame.height, rgba));
         self.dirty = true;
         true
     }
@@ -3928,23 +3938,35 @@ mod tests {
         );
     }
 
+    /// Push mode through a real encoder and decoder. Needs the `realtime`
+    /// feature of `media` (GStreamer); VP9 in software needs no GPU.
+    #[cfg(feature = "realtime-video")]
     #[test]
-    fn push_mode_feed_frame_updates_latest_image() {
-        use openh264::encoder::Encoder;
-        use openh264::formats::YUVBuffer;
-
-        let w = 16usize;
-        let h = 16usize;
-        let total = w * h + 2 * ((w * h) / 4);
-        let plane = vec![128u8; total];
-        let yuv = YUVBuffer::from_vec(plane, w, h);
-        let mut enc = Encoder::new().expect("openh264 encoder");
-        let encoded = enc.encode(&yuv).expect("encode grey frame").to_vec();
-        assert!(!encoded.is_empty());
+    fn push_mode_feed_encoded_updates_latest_image() {
+        let (w, h) = (64u32, 48u32);
+        let mut config = media::EncoderConfig::new(media::StreamCodec::Vp9, w, h, 30);
+        config.policy = media::realtime::RealtimePolicy::SoftwareOnly;
+        let mut enc = media::RealtimeEncoder::new(&config).expect("VP9 software encoder");
+        let rgba = vec![128u8; (w * h * 4) as usize];
+        let unit = enc
+            .encode(media::InputFrame::Packed(&rgba), std::time::Duration::ZERO)
+            .expect("encode grey frame")
+            .remove(0);
 
         let mut vp = VideoPlayer::new();
-        assert!(vp.feed_frame(&encoded), "decoder consumed the frame");
-        assert!(vp.latest_frame().is_some());
+        assert!(
+            vp.feed_encoded(media::StreamCodec::Vp9, &unit.data),
+            "decoder consumed the frame"
+        );
+        let frame = vp.latest_frame().expect("a frame");
+        assert_eq!((frame.width, frame.height), (w, h));
+    }
+
+    #[test]
+    fn push_mode_ignores_empty_units() {
+        let mut vp = VideoPlayer::new();
+        assert!(!vp.feed_frame(&[]));
+        assert!(vp.latest_frame().is_none());
     }
 
     #[test]

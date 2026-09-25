@@ -321,7 +321,6 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         libseat-devel libinput-devel systemd-devel libdrm-devel \
         mesa-libgbm-devel mesa-libGL-devel mesa-libEGL-devel \
         pipewire-devel \
-        ffmpeg-free-devel libva-devel \
         sqlite-devel zlib-ng-compat-devel \
         fontconfig-devel freetype-devel harfbuzz-devel expat-devel \
         glib2-devel libsoup3-devel \
@@ -970,17 +969,27 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # pulse shim above). `gstreamer1-plugin-libav` supplies the AAC/Opus decoders
 # (`avdec_aac`, `avdec_opus`) YouTube-Music streams need — without it the
 # pipeline demuxes but decodes nothing and playback is silent.
+#
+# Video codecs: the image ships only royalty-free software codecs — libvpx
+# (VP9, in -good), libaom and SVT-AV1 (in -bad-free) and dav1d — plus the
+# VA-API/Vulkan hardware paths stock Mesa exposes (AV1/VP9 decode, AV1 encode
+# on AMD). Cisco's openh264 GStreamer plugin is deliberately NOT baked in:
+# Cisco's patent licence covers only binaries the user downloads from Cisco.
+# It arrives with the opt-in additional-codecs pack, downloaded on the device.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
     gstreamer1 \
     gstreamer1-plugins-base \
     gstreamer1-plugins-good \
     gstreamer1-plugins-bad-free \
     gstreamer1-plugin-libav \
-    gstreamer1-plugin-openh264 \
+    gstreamer1-plugin-dav1d \
     ffmpeg-free \
     python3 \
     && dnf clean all && ${FINALIZE_RPMDB} \
-    && gst-inspect-1.0 openh264enc >/dev/null \
+    && gst-inspect-1.0 vp9enc >/dev/null \
+    && gst-inspect-1.0 vp9dec >/dev/null \
+    && gst-inspect-1.0 av1enc >/dev/null \
+    && gst-inspect-1.0 dav1ddec >/dev/null \
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \

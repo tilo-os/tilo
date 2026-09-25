@@ -120,8 +120,8 @@ cmd_bootstrap() {
         command -v cargo
         command -v mold
         command -v sccache
-        rpm -q libxkbcommon-devel capnproto libavcodec-free-devel \
-            libswscale-free-devel >/dev/null
+        rpm -q libxkbcommon-devel capnproto gstreamer1-devel \
+            gstreamer1-plugin-dav1d >/dev/null
         # A persistent distrobox does not change when its source image tag is
         # rebuilt.  Refresh the live development headers too; otherwise Cargo
         # can retain generated libspa wrappers from an older Fedora 44 base
