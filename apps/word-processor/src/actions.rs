@@ -1678,14 +1678,14 @@ fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
 }
 
 fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
-    use qdoc::FormatProvider;
+    use qdoc_codecs::FormatProvider;
     let existing = qdoc::model::blocks_in_order(dm.doc, dm.c);
     for id in &existing {
         dm.tombstone_block_in(Region::Body, id);
     }
     // A malformed template can't wedge a replay: the body-clear stays in the
     // pinned change either way.
-    let _ = qdoc::MarkdownCodec.import(markdown.as_bytes(), dm);
+    let _ = qdoc_codecs::MarkdownCodec.import(markdown.as_bytes(), dm);
 }
 
 fn ordered_change_ids(doc: &AutoCommit, c: &Containers) -> Vec<String> {
@@ -3422,9 +3422,9 @@ mod tests {
         let mut state = ui::State::new();
         let mut ed = crate::EditorDoc::bind(&mut state.doc, &state.root);
         {
-            use qdoc::FormatProvider;
+            use qdoc_codecs::FormatProvider;
             let mut dm = ed.edit(&mut state.doc);
-            qdoc::MarkdownCodec
+            qdoc_codecs::MarkdownCodec
                 .import(markdown.as_bytes(), &mut dm)
                 .unwrap();
         }
