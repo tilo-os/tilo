@@ -45,7 +45,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::client::RelayClient;
-use crate::transport::Envelope;
+use tilo_relay_protocol::auth::now_ns;
+use tilo_relay_protocol::transport::Envelope;
 
 /// Body carried inside an [`Envelope::Delta`]. Self-describing so the
 /// receiver can distinguish retained checkpoints from their incremental tail.
@@ -269,6 +270,8 @@ impl RelayCoeditSession {
             .send(Envelope::Delta {
                 workspace_id: self.workspace_id,
                 author_device_public_key: self.author,
+                // Metadata only: the host orders its pending queue by its
+                // own delivery seq.
                 authored_at_ns: now_ns(),
                 delta,
                 // The op-level signature (for the signed variant) lives
@@ -320,7 +323,7 @@ impl RelayCoeditSession {
         self.client
             .send(Envelope::RemoteAction {
                 workspace_id: self.workspace_id,
-                version: crate::transport::REMOTE_ACTION_ENVELOPE_VERSION,
+                version: tilo_relay_protocol::transport::REMOTE_ACTION_ENVELOPE_VERSION,
                 to_device_public_key: to,
                 // The host overwrites both from the authenticated connection.
                 from_device_public_key: self.author,
@@ -402,18 +405,6 @@ impl RelayCoeditSession {
     pub fn into_client(self) -> RelayClient {
         self.client
     }
-}
-
-/// Wall-clock nanoseconds since the epoch, used as the envelope's
-/// `authored_at_ns`. The host assigns its own monotonic delivery seq
-/// for the pending queue, so this value is metadata only.
-fn now_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        // `u64` nanoseconds since the epoch doesn't overflow until the
-        // year 2554; clamp rather than panic on the (unreachable in
-        // practice) far side of that.
-        .map_or(0, |d| u64::try_from(d.as_nanos()).unwrap_or(u64::MAX))
 }
 
 #[cfg(test)]
