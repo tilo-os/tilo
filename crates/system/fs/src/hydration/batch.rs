@@ -288,6 +288,7 @@ impl Hydrator {
             Err(_) => Some(anyhow!("batch from {} timed out", peer.id)),
         };
         let bytes = received.iter().map(|(_, b)| b.len() as u64).sum();
+        self.count_blob_bytes(bytes);
         let got: HashSet<Hash> = received.iter().map(|(h, _)| *h).collect();
         if let Err(store_error) = self.store.store_fetched_batch(received).await {
             return (HashSet::new(), 0, Some(store_error));

@@ -3484,6 +3484,7 @@ async fn run_native(
 ) -> Result<MountOutcome> {
     let fs = Arc::new(fs);
     let content = Arc::clone(&fs.hydrator);
+    let hydrator = Arc::clone(&fs.hydrator);
     let runtime = tokio::runtime::Handle::current();
     let plane = tokio::task::spawn_blocking(move || {
         fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
@@ -3519,6 +3520,8 @@ async fn run_native(
         }
     };
     tokio::task::spawn_blocking(move || plane.stop()).await??;
+    let (ranged, blobs) = hydrator.received_bytes();
+    println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
     println!("Workspace unmounted.");
     Ok(outcome)
 }
