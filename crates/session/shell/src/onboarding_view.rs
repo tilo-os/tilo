@@ -124,6 +124,29 @@ pub fn has_pending_progress(identity_dir: &std::path::Path) -> bool {
     }
 }
 
+/// Clear the crash journal left immediately before an identity acquisition
+/// only after startup has fully loaded and verified the resulting identity.
+///
+/// `AcquiringIdentity` protects the write transaction: before a valid
+/// identity exists it must keep first-use chrome active. Once the complete
+/// identity chain verifies, however, that marker can only be residue from a
+/// process interruption between the identity commit and the next journal
+/// update. Treating it as post-identity setup would incorrectly send an
+/// established user back through recovery on every login.
+///
+/// # Errors
+///
+/// Fails when the journal cannot be read, is malformed, or cannot be removed.
+pub fn clear_verified_pre_acquisition_progress(
+    identity_dir: &std::path::Path,
+) -> std::io::Result<bool> {
+    if load_progress(identity_dir)? != Some(PersistedStage::AcquiringIdentity) {
+        return Ok(false);
+    }
+    clear_progress(identity_dir)?;
+    Ok(true)
+}
+
 fn load_progress(identity_dir: &std::path::Path) -> std::io::Result<Option<PersistedStage>> {
     let path = progress_path(identity_dir);
     let mut options = OpenOptions::new();
@@ -3331,6 +3354,32 @@ mod tests {
         view.sync(&mut document, &automerge::ROOT);
         assert!(view.finished());
         assert!(!has_pending_progress(&identity_dir));
+    }
+
+    #[test]
+    fn verified_pre_acquisition_journal_is_cleared_without_discarding_later_progress() {
+        let directory = TempDir::new().expect("progress directory");
+        let identity_dir = directory.path().join("identity");
+
+        store_progress(&identity_dir, PersistedStage::AcquiringIdentity)
+            .expect("store pre-acquisition progress");
+        assert!(
+            clear_verified_pre_acquisition_progress(&identity_dir)
+                .expect("clear verified pre-acquisition progress")
+        );
+        assert_eq!(load_progress(&identity_dir).expect("load progress"), None);
+
+        store_progress(&identity_dir, PersistedStage::IdentityReady)
+            .expect("store post-acquisition progress");
+        assert!(
+            !clear_verified_pre_acquisition_progress(&identity_dir)
+                .expect("retain post-acquisition progress")
+        );
+        assert_eq!(
+            load_progress(&identity_dir).expect("load progress"),
+            Some(PersistedStage::IdentityReady),
+            "successful verification must not skip backup or tour completion"
+        );
     }
 
     #[test]

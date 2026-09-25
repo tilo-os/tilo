@@ -38,7 +38,7 @@ use uuid::Uuid;
 use tilo_actions::{
     Action, ActionAddress, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry,
     ActionSpec, Doc, EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType,
-    Resource, ResourcePresentation, ResourceProvider, ResultSpec, RetryPolicy,
+    Resource, ResourcePresentation, ResourceProvider, ResourceViewSpec, ResultSpec, RetryPolicy,
 };
 
 use crate::doc::NotesDoc;
@@ -50,6 +50,7 @@ use ui::widget::marks::{Mark, MarkSpan};
 /// Registry `type_id` for every Notes action.
 pub const NOTES_ACTION_TYPE: &str = "notes.action";
 pub const NOTES_OPERATION_TYPE: &str = "notes.operation";
+pub const PAGE_EDITOR_VIEW_ID: &str = "editor";
 
 pub fn page_resource_id(page: PageId) -> String {
     format!("notes.page:{page}")
@@ -1108,6 +1109,11 @@ fn effect_operation_spec(id: &str, label: &str, operation: &NotesOperation) -> O
     .ok()
 }
 
+fn page_editor_view() -> ResourceViewSpec {
+    ResourceViewSpec::new(PAGE_EDITOR_VIEW_ID, ui::i18n!("notes-view-editor"), "open")
+        .with_primary(true)
+}
+
 fn decorate_external_link_actions(resource: &mut Resource, text: &str, marks: &[InlineMarkSpan]) {
     for mark in marks {
         let InlineMark::ExternalLink { url } = &mark.mark else {
@@ -1417,7 +1423,7 @@ fn page_resource_from_index(
             block_id: None,
         },
     ) {
-        res = res.with_action(open);
+        res = res.with_action(open).with_view(page_editor_view());
     }
     if let Some(copy_link) = effect_operation_spec(
         "copy-link",
@@ -1883,7 +1889,7 @@ fn tag_resource(tag: &TagMeta, ctx: &NotesResourceCtx) -> Resource {
                 block_id: None,
             },
         ) {
-            page_ref = page_ref.with_action(open);
+            page_ref = page_ref.with_action(open).with_view(page_editor_view());
         }
         resource = resource.with_child(page_ref);
     }
@@ -2301,6 +2307,36 @@ mod tests {
             labels.iter().any(|l| l.contains("Delete note")),
             "{labels:?}"
         );
+    }
+
+    #[test]
+    fn page_resource_publishes_the_localized_editor_view() {
+        std::thread::spawn(|| {
+            ui::i18n::I18nManager::install(
+                "en-US",
+                "en-US",
+                &[("en-US", include_str!("../locales/en-US.ftl"))],
+            )
+            .unwrap();
+            let (doc, projects, _a, _b, _inbox) = seeded();
+            let resource = provide_resources(&ctx_from(&doc), &doc)[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == page_resource_id(projects))
+                .cloned()
+                .expect("Projects page resource");
+            let [view] = resource.views.as_slice() else {
+                panic!("one explicit page view expected")
+            };
+            assert_eq!(view.id, PAGE_EDITOR_VIEW_ID);
+            assert_eq!(view.label, "Editor");
+            assert_eq!(view.open_action, "open");
+            assert!(view.primary);
+            assert!(view.mount.is_none());
+            assert!(view.validate(&resource).is_empty());
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

@@ -1104,6 +1104,7 @@ mod tests {
                         collects: c,
                     },
                 },
+                view: None,
             },
         }
     }

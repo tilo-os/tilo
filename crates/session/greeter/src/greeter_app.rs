@@ -1,19 +1,13 @@
 //! [`GreeterApp`] — the root login widget.
 //!
-//! Structured like the other `ui`-toolkit composed apps (file-explorer /
-//! browser): a thin root widget that owns a single composed child (the
-//! [`Card`]) and delegates the five `Widget` passes into it. The card is a
-//! fixed-width column holding a title, username + password inputs, a
-//! session-cycle button, a Log-in button, and a status line.
+//! A composed welcome and credential surface: wide displays place identity
+//! beside the form, while compact or large-text displays use a single stack.
+//! The shared toolkit owns every input and action. Its App/FrameHarness
+//! lifecycle settles viewport-dependent composition before the first paint.
 //!
-//! IMPORTANT (focus): the App discovers focusable widgets by walking the
-//! widget tree (`Widget::children`) in lock-step with the taffy tree
-//! (`taffy.children`). Any intermediate taffy node MUST have a matching
-//! widget in `children()`, or the recursion derails and inner widgets
-//! (the `TextInputs`) never enter `focusable_order` — breaking Tab / arrow
-//! navigation. That's why the card is a real [`Card`] widget rather than a
-//! bare taffy node owned directly by `GreeterApp`: the structure stays
-//! `GreeterApp -> Card -> [fields]`, mirroring the taffy tree exactly.
+//! IMPORTANT (focus): every layout node has a matching widget in `children()`.
+//! This keeps the toolkit's focus, accessibility and layout traversals aligned
+//! through every grouping and across responsive recomposition.
 //!
 //! Non-secret presentation state lives in the CRDT (the toolkit convention):
 //!   * `greeter.username` — `Text`
@@ -28,6 +22,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use ui::doc::{read_bool, read_text};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
@@ -36,8 +31,8 @@ use taffy::{
     AlignItems, Dimension, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree,
 };
 use vello::Scene;
-use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, ColorStop, Extend, Fill, Gradient};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
+use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
@@ -51,8 +46,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{
-    Button, Divider, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput,
-    Widget,
+    Button, Dropdown, IconWidget, Row, Scrollable, Spacer, Spinner, Text, TextInput, Widget,
 };
 
 mod console;
@@ -86,32 +80,32 @@ enum AuthMethod {
 /// Card geometry (logical px).
 const CARD_WIDTH: f32 = 440.0;
 const CARD_PADDING: f32 = 24.0;
-/// Space between the card's top-level groups (brand, each field, the
-/// primary action, the status row, the power strip).
-const CARD_GAP: f32 = 12.0;
 /// Gap between a field's label and the field itself. Tight enough that the
 /// pair reads as one unit rather than two stacked rows.
 const LABEL_GAP: f32 = 7.0;
 /// Height of the primary action.
 const ACTION_HEIGHT: f32 = 44.0;
-/// Height of a secondary power action. Deliberately smaller than
-/// [`ACTION_HEIGHT`] so "Shut down" can never be mistaken for the thing you
-/// came to this screen to press.
-const POWER_HEIGHT: f32 = 30.0;
+/// Full-size power targets remain secondary through their ghost treatment.
+const POWER_HEIGHT: f32 = 44.0;
 /// The status row is reserved at this height in *every* state, so a message
 /// appearing — or a spinner replacing it — never resizes the card. Without
 /// the reservation the whole form jumps vertically the moment you get your
 /// password wrong, which is exactly when you are least able to absorb it.
 const STATUS_HEIGHT: f32 = 20.0;
 /// Space between the primary action and its status line. Tighter than
-/// [`CARD_GAP`], so the feedback reads as belonging to the button you just
+/// the section gap, so feedback reads as belonging to the button you just
 /// pressed rather than floating loose in the card.
 const ACTION_STATUS_GAP: f32 = 10.0;
 /// Space between lines in the compact welcome lockup.
 const BRAND_GAP: f32 = 5.0;
+/// A split is useful only when both regions have room to breathe. Short or
+/// large-text displays keep the compact form and its persistent power footer.
+const WIDE_VIEWPORT_WIDTH: f64 = 1100.0;
+const WIDE_VIEWPORT_HEIGHT: f64 = 560.0;
+const COMPACT_VIEWPORT_WIDTH: f64 = 600.0;
 
-/// A vertical stack with an explicit gap and optional padding, fixed width,
-/// minimum height, and card chrome (surface + border + elevation shadow).
+/// A stack with an explicit gap and optional padding, fixed width,
+/// minimum height, and opaque card chrome. Only the wide welcome stage is horizontal.
 ///
 /// Every grouping in the greeter is one of these. It exists as a real
 /// `Widget` rather than a bare taffy node because the App discovers
@@ -130,7 +124,8 @@ struct VStack {
     max_width: Option<f32>,
     fill_height: bool,
     center_children: bool,
-    /// Paint the card surface: elevation shadow, fill, and hairline border.
+    direction: FlexDirection,
+    /// Paint the opaque credential surface and its theme-derived edge.
     chrome: bool,
     rect: Rect,
 }
@@ -147,6 +142,7 @@ impl VStack {
             max_width: None,
             fill_height: false,
             center_children: false,
+            direction: FlexDirection::Column,
             chrome: false,
             rect: Rect::ZERO,
         }
@@ -164,6 +160,7 @@ impl VStack {
             max_width: Some(CARD_WIDTH),
             fill_height: false,
             center_children: false,
+            direction: FlexDirection::Column,
             chrome: true,
             rect: Rect::ZERO,
         }
@@ -182,6 +179,7 @@ impl VStack {
             max_width: None,
             fill_height: true,
             center_children: true,
+            direction: FlexDirection::Column,
             chrome: false,
             rect: Rect::ZERO,
         }
@@ -199,9 +197,19 @@ impl VStack {
             max_width: None,
             fill_height: true,
             center_children: false,
+            direction: FlexDirection::Column,
             chrome: false,
             rect: Rect::ZERO,
         }
+    }
+
+    /// Two real widget children preserve the toolkit's focus/layout topology.
+    fn split(brand: Box<dyn Widget>, card: Box<dyn Widget>, theme: &Theme) -> Self {
+        let mut stage = Self::new(theme.tokens.spacing.s16, vec![brand, card]);
+        stage.direction = FlexDirection::Row;
+        stage.center_children = true;
+        stage.max_width = Some(CARD_WIDTH * 2.0 + theme.tokens.spacing.s16);
+        stage
     }
 
     fn with_min_height(mut self, px: f32) -> Self {
@@ -238,7 +246,9 @@ impl Widget for VStack {
             .new_with_children(
                 Style {
                     display: Display::Flex,
-                    flex_direction: FlexDirection::Column,
+                    flex_direction: self.direction,
+                    justify_content: (self.direction == FlexDirection::Row)
+                        .then_some(JustifyContent::Center),
                     // Stretch, not Center: every control spans the card's
                     // content width and the copy sits on one left margin, so
                     // the form reads as a single column instead of a stack of
@@ -249,8 +259,16 @@ impl Widget for VStack {
                         AlignItems::Stretch
                     }),
                     gap: Size {
-                        width: length(0.0_f32),
-                        height: length(self.gap),
+                        width: length(if self.direction == FlexDirection::Row {
+                            self.gap
+                        } else {
+                            0.0
+                        }),
+                        height: length(if self.direction == FlexDirection::Row {
+                            0.0
+                        } else {
+                            self.gap
+                        }),
                     },
                     padding: taffy::Rect {
                         left: length(self.padding),
@@ -316,21 +334,22 @@ impl Widget for VStack {
     ) {
         if self.chrome {
             let tokens = &theme.tokens;
-            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.lg) * 1.5);
-            // Lift the card off the backdrop so it reads as a surface rather
-            // than a lighter rectangle painted onto the wallpaper.
-            ui::surface::elevation(scene, transform, self.rect, &tokens.elevation.e4);
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                tokens.colors.surfaces.raised,
-                None,
-                &shape,
-            );
+            let shape = RoundedRect::from_rect(self.rect, f64::from(tokens.radii.xl));
+            let ground = ui::chrome::shell::panel_ground(theme);
+            // Credentials sit on one opaque, quiet surface. Its derived edge
+            // separates it from the moving backdrop without a heavy shadow.
+            scene.fill(Fill::NonZero, transform, ground, None, &shape);
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                tokens.colors.border_white_10,
+                ui::tokens::Colors::hairline_on(
+                    ground,
+                    if theme.name == "High Contrast" {
+                        180
+                    } else {
+                        26
+                    },
+                ),
                 None,
                 &shape,
             );
@@ -624,6 +643,11 @@ pub struct GreeterApp {
     /// The compact-viewport scroll position survives status/caps/auth
     /// rebuilds, which recreate the composed tree.
     viewport_offset: Rc<Cell<(f32, f32)>>,
+    /// Pure presentation caches, never authentication or replicated state.
+    layout_text_scale: f32,
+    backdrop_started: Instant,
+    backdrop_deadline: Option<Instant>,
+    shot_time: Option<f64>,
     /// Queued console requests (see [`console`]); `None` in shots and tests
     /// that do not exercise the console.
     console: Option<console_control::ConsoleServer>,
@@ -726,6 +750,10 @@ impl GreeterApp {
             composed: None,
             proxy: Arc::new(OnceLock::new()),
             viewport_offset: Rc::new(Cell::new((0.0, 0.0))),
+            layout_text_scale: 1.0,
+            backdrop_started: Instant::now(),
+            backdrop_deadline: None,
+            shot_time: None,
             console: None,
         }
     }
@@ -782,6 +810,7 @@ impl GreeterApp {
         };
         let mut app =
             Self::with_sessions_login_user_and_fingerprint(sessions, personal, fingerprint);
+        app.shot_time = Some(0.0);
         match scenario {
             AuthScenario::Form
             | AuthScenario::LongName
@@ -811,6 +840,32 @@ impl GreeterApp {
             }
         }
         app
+    }
+
+    /// Freeze decorative motion at a reproducible phase for offscreen review.
+    /// This changes presentation only and is used exclusively by `--shots`.
+    pub fn set_shot_time(&mut self, seconds: f64) {
+        self.shot_time = Some(if seconds.is_finite() {
+            seconds.max(0.0)
+        } else {
+            0.0
+        });
+    }
+
+    fn uses_wide_layout(&self, text_scale: f32) -> bool {
+        self.rect.width() >= WIDE_VIEWPORT_WIDTH
+            && self.rect.height() >= WIDE_VIEWPORT_HEIGHT
+            && text_scale < 1.75
+    }
+
+    /// Short or narrow displays need less decorative space as text grows.
+    /// Controls keep their normal target sizes; identity and spacing reflow.
+    fn uses_compact_layout(&self, text_scale: f32) -> bool {
+        self.rect.width() > 0.0
+            && self.rect.height() > 0.0
+            && (self.rect.width() < COMPACT_VIEWPORT_WIDTH
+                || self.rect.height() < WIDE_VIEWPORT_HEIGHT)
+            && text_scale >= 1.25
     }
 
     /// Seed representative local-only passcode text for a headless snapshot.
@@ -991,7 +1046,14 @@ impl GreeterApp {
             ));
         }
         actions.push(Box::new(self.build_status(theme)));
-        VStack::new(ACTION_STATUS_GAP, actions)
+        VStack::new(
+            if self.uses_compact_layout(theme.text_scale) {
+                theme.tokens.spacing.s1
+            } else {
+                ACTION_STATUS_GAP
+            },
+            actions,
+        )
     }
 
     fn build_account_field(&self, busy: bool, theme: &Theme) -> Box<dyn Widget> {
@@ -1029,8 +1091,34 @@ impl GreeterApp {
     /// is already known, so the person—not the product wordmark—gets the
     /// strongest type tier. The ambiguous-account fallback keeps the compact
     /// product-first lockup because it cannot truthfully greet anyone yet.
-    fn build_brand(&self, theme: &Theme) -> Box<dyn Widget> {
+    fn build_brand(&self, theme: &Theme, wide: bool) -> Box<dyn Widget> {
         let c = &theme.tokens.colors;
+        if !wide && self.uses_compact_layout(theme.text_scale) {
+            // Identity remains explicit while decorative welcome copy yields
+            // its space to the credentials and live authentication feedback.
+            let mut identity: Vec<Box<dyn Widget>> = Vec::new();
+            if let Some(user) = &self.login_user {
+                identity.push(Box::new(
+                    Text::new(&user.display_name)
+                        .with_id("greeter.welcome")
+                        .with_heading_level(1)
+                        .with_role(ui::tokens::TextRole::Heading),
+                ));
+                identity.push(Box::new(
+                    Text::new(&user.username)
+                        .with_id("greeter.account")
+                        .with_role(ui::tokens::TextRole::Label)
+                        .with_color(c.text_dim),
+                ));
+            } else {
+                identity.push(Box::new(
+                    Text::new("Tilo")
+                        .with_heading_level(1)
+                        .with_fixed_size(theme.tokens.typography.scale.x2l),
+                ));
+            }
+            return Box::new(VStack::new(theme.tokens.spacing.s1, identity));
+        }
         if let Some(user) = &self.login_user {
             let compact_for_large_text = theme.text_scale >= 1.75;
             let caption = if compact_for_large_text {
@@ -1039,38 +1127,47 @@ impl GreeterApp {
                     .with_size(13.0)
                     .with_color(c.text_dim)
             } else {
-                Text::new("Enter your passcode to open your desktop.")
+                Text::new("greeter-passcode-intro")
                     .with_size(13.0)
                     .with_color(c.text_dim)
+            };
+            // Keep the person's name as one intentional headline. Prefixing it
+            // with "Welcome back," made an ordinary first + last name wrap
+            // after the first name in the production-width card, which looked
+            // like accidental clipping rather than a considered lockup.
+            let welcome = Text::new(&user.display_name)
+                .with_id("greeter.welcome")
+                .with_heading_level(1);
+            let welcome = if wide {
+                welcome.with_fixed_size(theme.tokens.typography.scale.x4l)
+            } else {
+                welcome.with_size(28.0)
             };
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
                     Box::new(
-                        Text::new("Welcome back to Tilo")
+                        Text::new("greeter-welcome-back")
                             .with_role(ui::tokens::typography::TextRole::Label)
                             .with_color(c.text_dim),
                     ),
-                    Box::new(
-                        // Keep the person's name as one intentional headline.
-                        // Prefixing it with "Welcome back," made an ordinary
-                        // first + last name wrap after the first name in the
-                        // production-width card, which looked like accidental
-                        // clipping rather than a considered lockup.
-                        Text::new(&user.display_name)
-                            .with_id("greeter.welcome")
-                            .with_size(28.0),
-                    ),
+                    Box::new(welcome),
                     Box::new(caption),
                 ],
             ))
         } else {
+            let wordmark = Text::new("Tilo").with_heading_level(1);
+            let wordmark = if wide {
+                wordmark.with_fixed_size(theme.tokens.typography.scale.x4l * 2.0)
+            } else {
+                wordmark.with_size(38.0)
+            };
             Box::new(VStack::new(
                 BRAND_GAP,
                 vec![
-                    Box::new(Text::new("Tilo").with_size(38.0)),
+                    Box::new(wordmark),
                     Box::new(
-                        Text::new("Sign in to continue")
+                        Text::new("greeter-sign-in")
                             .with_size(13.0)
                             .with_color(c.text_dim),
                     ),
@@ -1104,8 +1201,18 @@ impl GreeterApp {
 
         let mut children: Vec<Box<dyn Widget>> = Vec::new();
 
-        // --- brand -------------------------------------------------------
-        children.push(self.build_brand(theme));
+        let wide = self.uses_wide_layout(theme.text_scale);
+        let compact = self.uses_compact_layout(theme.text_scale);
+        let field_gap = if compact {
+            theme.tokens.spacing.s1
+        } else {
+            LABEL_GAP
+        };
+        // On compact displays the welcome belongs to the same short column.
+        // Wide displays give identity its own region without duplicating copy.
+        if !wide {
+            children.push(self.build_brand(theme, false));
+        }
 
         // --- credentials -------------------------------------------------
         // Persistent labels above each field. Two unlabelled rounded boxes
@@ -1115,7 +1222,7 @@ impl GreeterApp {
         // username into the welcome lockup (see `build_brand`). This preserves
         // account context while keeping both authentication actions above the
         // fixed power footer on a 640x480 logical display.
-        if self.login_user.is_none() || theme.text_scale < 1.75 {
+        if self.login_user.is_none() || (!compact && theme.text_scale < 1.75) {
             children.push(self.build_account_field(busy, theme));
         }
 
@@ -1153,7 +1260,7 @@ impl GreeterApp {
                     )),
             ));
         }
-        children.push(Box::new(VStack::new(LABEL_GAP, password_group)));
+        children.push(Box::new(VStack::new(field_gap, password_group)));
 
         // --- authentication actions + status ------------------------------
         // The one accented, full-width control on the card — everything else
@@ -1168,58 +1275,90 @@ impl GreeterApp {
         // viewport never hides Log in or Use fingerprint merely because an
         // optional alternate session is installed.
         if self.sessions.len() > 1 {
-            let options: Vec<String> = self.sessions.iter().map(|s| s.name.clone()).collect();
-            children.push(Box::new(VStack::new(
-                LABEL_GAP,
-                vec![
-                    Box::new(Self::field_label("Session", theme)),
-                    Box::new(
-                        Dropdown::new(options, SESSION_PATH)
-                            .with_id("greeter.session")
-                            .with_enabled(!busy),
-                    ),
-                ],
-            )));
+            children.push(self.build_session_picker(busy, field_gap, theme));
         }
 
-        // At the maximum accessibility scale the groups already gain height
-        // from their text metrics. Tighten only the inter-group rhythm so the
-        // two authentication actions remain above the persistent power footer
-        // even when the Caps-Lock hint is present.
-        let card_gap = if theme.text_scale >= 1.75 {
-            8.0
+        let mut credentials = VStack::card(
+            if compact {
+                theme.tokens.spacing.s1
+            } else {
+                theme.tokens.spacing.s3
+            },
+            children,
+        );
+        credentials.padding = if wide {
+            theme.tokens.spacing.s8
+        } else if compact {
+            // Text-scaled fields grow with large type; the compact card gives
+            // that height back from its own inset rather than scrolling.
+            theme.tokens.spacing.s2
         } else {
-            CARD_GAP
+            theme.tokens.spacing.s6
         };
-        let card: Box<dyn Widget> = Box::new(VStack::card(card_gap, children));
+        if compact {
+            credentials.max_width = Some(CARD_WIDTH + theme.tokens.spacing.s16 * 2.0);
+        }
+        let card: Box<dyn Widget> = Box::new(credentials);
+        let stage = if wide {
+            let mut identity =
+                VStack::new(theme.tokens.spacing.s6, vec![self.build_brand(theme, true)]);
+            identity.width = Some(CARD_WIDTH);
+            Box::new(VStack::split(Box::new(identity), card, theme)) as Box<dyn Widget>
+        } else {
+            card
+        };
+        let mut viewport = VStack::viewport(stage);
+        if compact {
+            viewport.padding = theme.tokens.spacing.s2;
+        }
         let card_view: Box<dyn Widget> = Box::new(
             Scrollable::new_vertical()
                 .fill_parent_height()
-                .with_child(Box::new(VStack::viewport(card)))
+                .with_child(Box::new(viewport))
                 .with_persisted_offset(self.viewport_offset.clone())
                 .always_visible(),
         );
-        let power: Box<dyn Widget> = Box::new(
+        Box::new(VStack::shell(vec![card_view, Self::build_power_footer()]))
+    }
+
+    fn build_session_picker(&self, busy: bool, label_gap: f32, theme: &Theme) -> Box<dyn Widget> {
+        let options = self
+            .sessions
+            .iter()
+            .map(|session| session.name.clone())
+            .collect();
+        Box::new(VStack::new(
+            label_gap,
+            vec![
+                Box::new(Self::field_label("Session", theme)),
+                Box::new(
+                    Dropdown::new(options, SESSION_PATH)
+                        .with_id("greeter.session")
+                        .with_enabled(!busy),
+                ),
+            ],
+        ))
+    }
+
+    fn build_power_footer() -> Box<dyn Widget> {
+        Box::new(
             Row::new()
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     Button::new("greeter.reboot", "Restart", Some(REBOOT_PATH))
                         .ghost()
                         .with_icon(Icon::Refresh)
-                        .with_size(100.0, POWER_HEIGHT),
+                        .content_sized()
+                        .with_min_height(POWER_HEIGHT),
                 ))
                 .push(Box::new(
                     Button::new("greeter.poweroff", "Shut down", Some(POWEROFF_PATH))
                         .ghost()
                         .with_icon(Icon::Power)
-                        .with_size(116.0, POWER_HEIGHT),
+                        .content_sized()
+                        .with_min_height(POWER_HEIGHT),
                 )),
-        );
-        Box::new(VStack::shell(vec![
-            card_view,
-            Box::new(Divider::horizontal().with_color(c.border_white_10)),
-            power,
-        ]))
+        )
     }
 
     fn bootstrap_crdt(&self, state: &mut AutoCommit, root: &ObjId) {
@@ -1499,6 +1638,13 @@ impl GreeterApp {
     }
 }
 
+impl ui::widget::FullscreenProvider for GreeterApp {
+    fn fullscreen_intent(&self) -> Option<bool> {
+        // greetd owns the output; this is a system surface, not an app window.
+        Some(true)
+    }
+}
+
 impl Widget for GreeterApp {
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if !self.bootstrap_done {
@@ -1549,12 +1695,21 @@ impl Widget for GreeterApp {
         }
     }
 
+    fn fullscreen_provider(&self) -> Option<&dyn ui::widget::FullscreenProvider> {
+        Some(self)
+    }
+
+    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn ui::widget::FullscreenProvider> {
+        Some(self)
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_text_scale = theme.text_scale;
         let mut composed = self.build_composition(theme);
         let card_node = composed.build_layout(taffy, theme, node_map);
         self.composed = Some(composed);
@@ -1591,12 +1746,21 @@ impl Widget for GreeterApp {
         let Ok(layout) = taffy.layout(node) else {
             return;
         };
+        let was_wide = self.uses_wide_layout(self.layout_text_scale);
+        let was_compact = self.uses_compact_layout(self.layout_text_scale);
         self.rect = Rect::new(
             origin.x + f64::from(layout.location.x),
             origin.y + f64::from(layout.location.y),
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
+        // App and FrameHarness settle this rebuild before painting, including
+        // the very first frame and crossings caused by display/text scaling.
+        if was_wide != self.uses_wide_layout(self.layout_text_scale)
+            || was_compact != self.uses_compact_layout(self.layout_text_scale)
+        {
+            self.dirty_structure = true;
+        }
         if let Some(c) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()
@@ -1613,49 +1777,19 @@ impl Widget for GreeterApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // Backdrop: the app ground, then a soft accent wash falling from
-        // the top edge. Both are theme tokens, so the greeter inherits the
-        // OS palette — and the high-contrast track — instead of pinning its
-        // own colours the way a login screen usually does.
-        scene.fill(Fill::NonZero, transform, theme.bg_app, None, &self.rect);
-        if self.rect.height() > 0.0 {
-            let a = theme.tokens.colors.accent[5].to_rgba8();
-            let wash = Gradient::new_linear(
-                Point::new(self.rect.x0, self.rect.y0),
-                Point::new(self.rect.x0, self.rect.y0 + self.rect.height() * 0.7),
-            )
-            .with_extend(Extend::Pad)
-            .with_stops(
-                &[
-                    ColorStop {
-                        offset: 0.0,
-                        color: Color::from_rgba8(a.r, a.g, a.b, 30).into(),
-                    },
-                    ColorStop {
-                        offset: 1.0,
-                        color: Color::from_rgba8(a.r, a.g, a.b, 0).into(),
-                    },
-                ][..],
-            );
-            scene.fill(Fill::NonZero, transform, &wash, None, &self.rect);
-
-            // Echo the trusted installer/OOBE backdrop with two restrained
-            // accent fields. Their low alpha keeps the passcode card dominant
-            // and remains safe in high-contrast themes because the hue comes
-            // from the active theme rather than a hard-coded brand colour.
-            let accent_soft = Color::from_rgba8(a.r, a.g, a.b, 18);
-            let radius = self.rect.width().min(self.rect.height()) * 0.34;
-            let upper = Circle::new(
-                Point::new(self.rect.x0 - radius * 0.25, self.rect.y0 - radius * 0.2),
-                radius,
-            );
-            let lower = Circle::new(
-                Point::new(self.rect.x1 + radius * 0.45, self.rect.y1 + radius * 0.25),
-                radius * 1.15,
-            );
-            scene.fill(Fill::NonZero, transform, accent_soft, None, &upper);
-            scene.fill(Fill::NonZero, transform, accent_soft, None, &lower);
-        }
+        let now = Instant::now();
+        let elapsed = self
+            .shot_time
+            .unwrap_or_else(|| self.backdrop_started.elapsed().as_secs_f64());
+        let mut backdrop = Scene::new();
+        ui::auth_backdrop::draw(&mut backdrop, theme, self.rect, elapsed);
+        scene.append(&backdrop, Some(transform));
+        self.backdrop_deadline =
+            if self.shot_time.is_none() && ui::auth_backdrop::needs_animation(theme) {
+                now.checked_add(Duration::from_secs_f64(1.0 / 24.0))
+            } else {
+                None
+            };
         if let Some(c) = &mut self.composed {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
@@ -1798,6 +1932,14 @@ impl Widget for GreeterApp {
             }
             // Unrelated External payloads are ignored.
             None => {}
+        }
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        let child = self.composed.as_ref().and_then(|c| c.next_wake_deadline());
+        match (self.backdrop_deadline, child) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
         }
     }
 
@@ -1988,26 +2130,37 @@ mod tests {
 
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
-        let mut taffy = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, theme, &mut node_map);
         let mut text = TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                node,
-                Size {
-                    width: AvailableSpace::Definite(viewport.0),
-                    height: AvailableSpace::Definite(viewport.1),
-                },
-                |known, available, node_id, _, _| {
-                    node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
-                        (*ptr).measure(known, available, &mut text)
-                    })
-                },
-            )
+        text.set_text_scale(theme.text_scale);
+        for _ in 0..8 {
+            let mut taffy = TaffyTree::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = app.build_layout(&mut taffy, theme, &mut node_map);
+            app.sync(&mut doc, &automerge::ROOT);
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: this helper exclusively owns the matching tree and the
+            // app stays in place through admission and the prepaint solve.
+            unsafe {
+                bindings.rebuild(app, &taffy, node, &node_map);
+                ui::widget::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    Size {
+                        width: AvailableSpace::Definite(viewport.0),
+                        height: AvailableSpace::Definite(viewport.1),
+                    },
+                    &node_map,
+                    &bindings,
+                    &mut text,
+                )
+            }
             .unwrap();
-        app.apply_layout(&taffy, node, Point::ZERO);
-        (taffy, node)
+            app.apply_layout(&taffy, node, Point::ZERO);
+            if !app.take_structure_dirty() {
+                return (taffy, node);
+            }
+        }
+        panic!("greeter composition did not settle before paint");
     }
 
     fn layout_at(app: &mut GreeterApp, viewport: (f32, f32)) -> (TaffyTree<()>, NodeId) {
@@ -3111,6 +3264,298 @@ mod tests {
         );
     }
 
+    /// Theme typography is already scaled. Passing those resolved sizes to
+    /// renderer-relative Text would apply the accessibility factor twice.
+    #[test]
+    fn wide_headings_apply_accessibility_scale_once() {
+        fn heading_height(theme: &Theme, personal: bool) -> f64 {
+            let user = personal.then(|| LoginUser {
+                username: "ada".into(),
+                display_name: "Ada".into(),
+            });
+            let app = GreeterApp::with_sessions_and_login_user(test_sessions(), user);
+            let mut brand = app.build_brand(theme, true);
+            let mut taffy = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let node = brand.build_layout(&mut taffy, theme, &mut nodes);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(theme.text_scale);
+            let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+            // SAFETY: the matching tree and widgets remain exclusively owned
+            // and stationary throughout admission and the production solve.
+            unsafe {
+                bindings.rebuild(brand.as_ref(), &taffy, node, &nodes);
+                ui::widget::compute_widget_layout(
+                    &mut taffy,
+                    node,
+                    Size {
+                        // Enough width isolates scaling from line wrapping.
+                        width: taffy::AvailableSpace::Definite(2000.0),
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &nodes,
+                    &bindings,
+                    &mut text,
+                )
+            }
+            .unwrap();
+            brand.apply_layout(&taffy, node, Point::ZERO);
+            if personal {
+                rect_for(brand.as_ref(), "greeter.welcome")
+                    .unwrap()
+                    .height()
+            } else {
+                rect_for_accessible_name(brand.as_ref(), "Tilo")
+                    .unwrap()
+                    .height()
+            }
+        }
+        for personal in [false, true] {
+            let normal = heading_height(&Theme::dark(), personal);
+            let enlarged = heading_height(&Theme::dark().with_text_scale(1.5), personal);
+            assert!(
+                normal > 0.0 && enlarged > 0.0,
+                "production heading measurement must run: {normal} → {enlarged}"
+            );
+            let ratio = enlarged / normal;
+            assert!(
+                (1.45..=1.55).contains(&ratio),
+                "heading should grow once at 1.5×, personal={personal}: {normal} → {enlarged} ({ratio}×)"
+            );
+        }
+    }
+
+    /// Wide identity and credential regions must not overlap. Reusing a
+    /// centered narrow card after a resize would fail this production layout.
+    #[test]
+    fn wide_viewport_separates_welcome_from_credentials() {
+        let mut app = GreeterApp::for_shot(AuthScenario::Personal);
+        let _layout = layout_at(&mut app, (1440.0, 900.0));
+        let welcome = rect_for(&app, "greeter.welcome").expect("welcome");
+        let password = rect_for(&app, "greeter.password").expect("passcode");
+        assert!(
+            welcome.x1 + 48.0 <= password.x0,
+            "wide welcome and credentials must occupy separate regions: {welcome:?}, {password:?}"
+        );
+        assert!(
+            welcome.y0 < password.y1 && welcome.y1 > password.y0 - 180.0,
+            "wide identity should sit alongside the form: {welcome:?}, {password:?}"
+        );
+
+        let _layout = layout_at(&mut app, (640.0, 480.0));
+        let welcome = rect_for(&app, "greeter.welcome").expect("welcome");
+        let password = rect_for(&app, "greeter.password").expect("passcode");
+        assert!(
+            welcome.y1 <= password.y0,
+            "compact welcome precedes credentials"
+        );
+        assert!(
+            welcome.x0 < password.x1 && welcome.x1 > password.x0,
+            "compact welcome and credentials share one column"
+        );
+
+        // A height-only resize must settle the enlarged-text composition in
+        // both directions, even though neither viewport qualifies as wide.
+        let theme = Theme::dark().with_text_scale(1.3);
+        let _layout = layout_at_with_theme(&mut app, (640.0, 720.0), &theme);
+        let tall_password = rect_for(&app, "greeter.password").expect("tall passcode");
+        let mut tall_actions = Vec::new();
+        collect_focusables(&app, &mut tall_actions);
+        let _layout = layout_at_with_theme(&mut app, (640.0, 480.0), &theme);
+        let short_password = rect_for(&app, "greeter.password").expect("short passcode");
+        assert!(
+            short_password.width() > tall_password.width(),
+            "short enlarged-text form should use available width before wrapping"
+        );
+        let mut short_actions = Vec::new();
+        collect_focusables(&app, &mut short_actions);
+        assert_eq!(
+            short_actions, tall_actions,
+            "height adaptation must retain every action and its focus order"
+        );
+        let footer_top = rect_for(&app, "greeter.reboot").expect("power footer").y0;
+        assert!(
+            rect_for(&app, "greeter.fingerprint")
+                .expect("fingerprint")
+                .y1
+                <= footer_top
+        );
+        let _layout = layout_at_with_theme(&mut app, (640.0, 720.0), &theme);
+        let restored = rect_for(&app, "greeter.password").expect("restored passcode");
+        assert!(
+            (restored.width() - tall_password.width()).abs() < 1.0,
+            "a taller viewport should restore the comfortable reading width"
+        );
+    }
+
+    #[test]
+    fn narrow_enlarged_identity_fits_and_settles_on_width_only_resize() {
+        let theme = Theme::dark().with_text_scale(2.0);
+        for scenario in [
+            AuthScenario::Personal,
+            AuthScenario::PersonalCapsLock,
+            AuthScenario::PersonalError,
+        ] {
+            let mut app = GreeterApp::for_shot(scenario);
+            // This regression requires a session picker. Snapshot discovery
+            // follows the host, whose CI image may expose zero or one session.
+            // Inject both choices before the first CRDT sync and layout.
+            app.sessions = test_sessions();
+            let _layout = layout_at_with_theme(&mut app, (640.0, 640.0), &theme);
+            let ordinary = rect_for(&app, "greeter.welcome").expect("ordinary identity");
+            let mut original_actions = Vec::new();
+            collect_focusables(&app, &mut original_actions);
+
+            let _layout = layout_at_with_theme(&mut app, (320.0, 640.0), &theme);
+            let heading = rect_for(&app, "greeter.welcome").expect("compact identity");
+            let label = accessible_name_for(&app, "greeter.welcome").expect("identity name");
+            let mut text = TextRenderer::new();
+            text.set_text_scale(2.0);
+            // The compact identity uses the shared Heading role. Measure the
+            // actual name with that role's base style and the live text scale.
+            let style = Theme::dark()
+                .tokens
+                .typography
+                .style(ui::tokens::TextRole::Heading);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "bounded logical test viewport"
+            )]
+            let width = heading.width() as f32;
+            let (painted_width, painted_height) = text.measure_style(&label, Some(width), &style);
+            assert!(painted_width > 0.0 && painted_height > 0.0);
+            assert!(
+                f64::from(painted_width) <= heading.width() + 0.5
+                    && f64::from(painted_height) <= heading.height() + 0.5,
+                "{scenario:?} compact identity must contain actual scaled glyphs: {heading:?}, text={painted_width}×{painted_height}"
+            );
+            assert!(heading.x0 >= 16.0 && heading.x1 <= 304.0 && heading.y0 >= 0.0);
+            assert!(
+                heading.height() < ordinary.height(),
+                "narrow presentation must release decorative space despite having less width"
+            );
+            let footer_top = rect_for(&app, "greeter.reboot").expect("footer").y0;
+            for id in ["greeter.password", "greeter.login", "greeter.fingerprint"] {
+                let rect = rect_for(&app, id).expect("authentication control");
+                assert!(
+                    rect.y0 >= heading.y1 && rect.y1 <= footer_top,
+                    "{scenario:?} at narrow 2× must keep {id} visible above power: {rect:?}, footer={footer_top}"
+                );
+            }
+            let mut narrow_actions = Vec::new();
+            collect_focusables(&app, &mut narrow_actions);
+            // The full welcome needs overflow scrolling at this text scale;
+            // the compact identity fits until a status adds content. Preserve
+            // every credential and power target, plus overflow keyboard access.
+            assert_eq!(
+                original_actions,
+                [
+                    "Scrollable",
+                    "greeter.password",
+                    "greeter.login",
+                    "greeter.fingerprint",
+                    "greeter.session",
+                    "greeter.reboot",
+                    "greeter.poweroff",
+                ]
+            );
+            let mut expected_narrow = vec![
+                "greeter.password",
+                "greeter.login",
+                "greeter.fingerprint",
+                "greeter.session",
+                "greeter.reboot",
+                "greeter.poweroff",
+            ];
+            if matches!(scenario, AuthScenario::PersonalError) {
+                expected_narrow.insert(0, "Scrollable");
+            }
+            assert_eq!(narrow_actions, expected_narrow, "{scenario:?}");
+
+            let _layout = layout_at_with_theme(&mut app, (640.0, 640.0), &theme);
+            let restored = rect_for(&app, "greeter.welcome").expect("restored identity");
+            assert!(
+                (restored.height() - ordinary.height()).abs() < 1.0,
+                "width-only expansion must restore the full welcome before paint"
+            );
+        }
+    }
+
+    #[test]
+    fn backdrop_schedules_bounded_frames_and_stops_for_accessibility() {
+        let mut reduced = Theme::dark();
+        reduced.reduce_motion = true;
+        for (theme, animated) in [
+            (Theme::dark(), true),
+            (Theme::light(), true),
+            (reduced, false),
+            (Theme::high_contrast(), false),
+        ] {
+            let mut app = GreeterApp::with_sessions_and_login_user(
+                test_sessions(),
+                Some(LoginUser {
+                    username: "quinten".into(),
+                    display_name: "Quinten Example".into(),
+                }),
+            );
+            let _layout = layout_at_with_theme(&mut app, (1280.0, 800.0), &theme);
+            let before = std::time::Instant::now();
+            app.draw(
+                &mut Scene::new(),
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            let deadline = app.next_wake_deadline();
+            if animated {
+                let deadline = deadline.expect("moving backdrop needs a scheduled redraw");
+                assert!(deadline > before, "backdrop must let the event loop sleep");
+                assert!(
+                    deadline <= std::time::Instant::now() + std::time::Duration::from_millis(50)
+                );
+            } else {
+                assert!(
+                    deadline.is_none(),
+                    "static accessibility presentation must sleep"
+                );
+            }
+            assert!(
+                !app.needs_animation_frame(),
+                "backdrop uses a bounded cadence, not vsync spin"
+            );
+        }
+    }
+
+    #[test]
+    fn live_greeter_requests_full_output_and_survives_cage_resize() {
+        let mut app = GreeterApp::for_shot(AuthScenario::PersonalNoFingerprint);
+        assert_eq!(
+            ui::widget::FullscreenWidgetExt::fullscreen_intent(&app),
+            Some(true)
+        );
+        // The live Wayland configure can arrive after the default first size.
+        // Both height-only growth and a later shrink must repaint the output.
+        for (width, height) in [(800.0, 600.0), (1024.0, 768.0), (1024.0, 600.0)] {
+            let _layout = layout_at(&mut app, (width, height));
+            assert_eq!(
+                app.get_rect(),
+                Rect::new(0.0, 0.0, f64::from(width), f64::from(height))
+            );
+            for id in ["greeter.login", "greeter.reboot", "greeter.poweroff"] {
+                let rect = rect_for(&app, id).unwrap_or_else(|| panic!("missing {id}"));
+                assert!(
+                    rect.x0 >= 0.0 && rect.x1 <= f64::from(width),
+                    "{id}: {rect:?}"
+                );
+                assert!(
+                    rect.y0 >= 0.0 && rect.y1 <= f64::from(height),
+                    "{id}: {rect:?}"
+                );
+            }
+        }
+    }
+
     /// A narrow portrait display must keep the complete primary workflow on
     /// screen instead of clipping the fixed-width card at both edges.
     #[test]
@@ -3128,6 +3573,82 @@ mod tests {
             rect_for(&app, "greeter.fingerprint").is_some(),
             "multi-account login must keep the username-specific fingerprint action reachable"
         );
+    }
+
+    /// Footer rectangles alone do not prove that enlarged labels fit: fixed
+    /// widths let the button painter draw glyphs outside their hit targets.
+    #[test]
+    fn power_footer_reserves_space_for_scaled_labels_and_icons() {
+        for (viewport, scale, allow_wrap) in [
+            ((320.0, 640.0), 1.0, false),
+            ((640.0, 480.0), 1.3, false),
+            ((640.0, 480.0), 2.0, false),
+            ((640.0, 480.0), 3.0, false),
+            ((640.0, 480.0), 4.0, false),
+            ((320.0, 640.0), 2.0, true),
+        ] {
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut app = GreeterApp::for_shot(AuthScenario::Personal);
+            let _layout = layout_at_with_theme(&mut app, viewport, &theme);
+            let mut text = TextRenderer::new();
+            text.set_text_scale(scale);
+            for id in ["greeter.reboot", "greeter.poweroff"] {
+                let rect = rect_for(&app, id).expect("power action");
+                let label = accessible_name_for(&app, id).expect("power label");
+                // The shared Button paints its label at a 14px base size and
+                // its 44px target uses a 22px icon with a 6px label gap. Check
+                // actual font measurement plus at least 8px breathing room on
+                // each side, independently of Button's intrinsic-width result.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "bounded logical test viewport"
+                )]
+                let max_width =
+                    allow_wrap.then(|| rect.width() as f32 - theme.padding_standard * 2.0 - 28.0);
+                let (label_width, label_height) = text.measure(&label, 14.0, max_width);
+                assert!(label_width > 0.0 && label_height > 0.0);
+                assert!(
+                    rect.width() >= f64::from(label_width) + 22.0 + 6.0 + 16.0,
+                    "{id} at {scale}× cannot contain its painted label and icon: {rect:?}, label={label_width}"
+                );
+                assert!(
+                    rect.height() >= 44.0 && rect.height() >= f64::from(label_height),
+                    "{id} at {scale}× needs a complete target and unclipped glyphs: {rect:?}"
+                );
+                assert!(
+                    rect.height() + 0.5 >= f64::from(label_height + theme.padding_standard),
+                    "{id} at {scale}× must reserve vertical label padding: {rect:?}, text={label_height}"
+                );
+                assert!(
+                    rect.x0 >= 16.0 && rect.x1 <= f64::from(viewport.0) - 16.0,
+                    "{id} escaped the footer at {scale}×: {rect:?}"
+                );
+                assert!(
+                    rect.y0 >= 0.0 && rect.y1 <= f64::from(viewport.1) - 16.0,
+                    "{id} must remain inside the viewport at {scale}×: {rect:?}"
+                );
+            }
+            let restart = rect_for(&app, "greeter.reboot").unwrap();
+            let shutdown = rect_for(&app, "greeter.poweroff").unwrap();
+            if allow_wrap {
+                assert!(
+                    restart.x1 <= shutdown.x0
+                        || shutdown.x1 <= restart.x0
+                        || restart.y1 <= shutdown.y0
+                        || shutdown.y1 <= restart.y0,
+                    "wrapped footer targets must remain disjoint: {restart:?}, {shutdown:?}"
+                );
+            } else {
+                assert!(
+                    restart.x1 + f64::from(theme.gap_standard) <= shutdown.x0 + 0.5,
+                    "power labels need distinct, separated targets at {scale}×"
+                );
+                assert!(
+                    (restart.y0 - shutdown.y0).abs() < 0.5,
+                    "normal narrow and enlarged desktop footers should keep both actions on one row"
+                );
+            }
+        }
     }
 
     /// At the 640×480 logical viewport produced by common 2× display
