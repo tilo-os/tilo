@@ -90,7 +90,7 @@ WHPX can boot a development kernel and initrd directly, without EDK2. Prepare
 `Image`, `initrd` and the UKI's `.cmdline` from the **same dev disk** once,
 and read that disk's ESP GPT partition UUID. The dev-disk CI pipeline
 publishes the three checksum-listed companion files under `directBoot` in
-`tilo-vm-disk.json` for ARM64. Download those files into one directory;
+`tilo-vm-disk-aarch64.json`. Download those files into one directory;
 for a local disk, an operator may extract the same files from its UKI.
 The bundle JSON beside `Image` and `initrd` has this shape:
 
@@ -145,9 +145,13 @@ tilo-vm vm use dev --global   # the default for every worktree
 stops at the first missing piece with its fix: the hypervisor and its tools,
 an `--image` that exists, the published disk for the tag (for your
 architecture and format), a VM disk path that is not taken, and free space
-for the download and the VM. Then it downloads `tilo-vm-disk.json` for the
-tag from the forge's generic packages, picks the disk (qcow2, or VHDX for
-Hyper-V), resumes an interrupted download, checks its SHA-256 and caches it.
+for the download and the VM. Then it downloads the tag's manifest for your
+architecture, `tilo-vm-disk-<arch>.json`, from the forge's generic packages,
+picks the disk (qcow2, or VHDX for Hyper-V), resumes an interrupted download,
+checks its SHA-256 and caches it. Each architecture's CI lane publishes its
+disk on its own, so a new tag can hold one architecture before the other:
+without `--tag`, `vm create` takes the newest tag that has yours, and says
+so when none of the newest does.
 Last, it makes the VM's root SSH key and creates the VM
 ([The root SSH key](#the-root-ssh-key)).
 
@@ -161,10 +165,11 @@ code.sandbox.example. That token is read only for disk downloads; image pulls
 
 `tilo-vm doctor` says whether one is. If none is:
 
-- wait for the main OS workflow to publish its same-commit base image and
-  dispatch both native QCOW2 disk lanes. When production signing is not
-  configured, this is an unsigned `tilo-ci` integration image and its disk tag
-  ends in `-ci`;
+- wait for the main "Release / OS" run (`.forgejo/workflows/build-image.yml`):
+  each native lane publishes its own architecture's disk as soon as it
+  passes, without waiting for the other. An integration run builds on an
+  unsigned `tilo-ci` image and its disk tag ends in `-ci`; a publication
+  requests the disk from its signed image;
 - or dispatch "Release / Dev VM disk" (`.forgejo/workflows/dev-disk.yml`)
   yourself for an existing same-commit base. Set `architectures=aarch64` for
   an ARM host; the workflow's manual default is `x86_64`. Use

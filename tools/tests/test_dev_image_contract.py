@@ -109,6 +109,21 @@ class DevImageContractTests(unittest.TestCase):
                           "podman push localhost/tilo-vm:x docker://code.sandbox.example/qos/tilo:main\n")
         self.assertIn("os/push-dev.sh:3:", "\n".join(self.findings(root)))
 
+    def test_ci_builds_the_dev_image_with_the_local_recipe(self):
+        root = self.fixture()
+        workflow = root / ".forgejo/workflows/dev-disk.yml"
+        workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
+                            "          test -f os/Containerfile.dev\n"
+                            "          ./os/dev/build-dev-image.sh\n")
+        self.assertEqual(self.findings(root), [])
+        workflow.write_text("jobs:\n  b:\n    steps:\n      - run: |\n"
+                            "          podman build --file os/Containerfile.dev --tag localhost/tilo-vm:ci .\n")
+        self.assertIn(".forgejo/workflows/dev-disk.yml: builds os/Containerfile.dev itself",
+                      "\n".join(self.findings(root)))
+        workflow.write_text("jobs:\n  b:\n    steps:\n      - run: echo nothing\n")
+        self.assertIn("no longer builds the dev image with os/dev/build-dev-image.sh",
+                      "\n".join(self.findings(root)))
+
     def test_snapshot_pin_has_one_home(self):
         root = self.fixture()
         self.edit(root / "os/Containerfile.dev", "ARG RPMS_REF\n",
