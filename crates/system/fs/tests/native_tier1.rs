@@ -1193,11 +1193,20 @@ fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none()
                 .then_some(())
         },
     );
-    let projections: Vec<String> = pair.peer.logs.lock().unwrap()[before..]
-        .iter()
-        .filter(|l| l.contains("applied remote changes:") && !l.contains(": 0 file(s)"))
-        .cloned()
-        .collect();
+    // The files are in place before the projection reports them.
+    let peer_logs = Arc::clone(&pair.peer.logs);
+    let projections: Vec<String> = wait_for(
+        &mut [&mut host, &mut pair.peer],
+        "the projection's report",
+        || {
+            let applied: Vec<String> = peer_logs.lock().unwrap()[before..]
+                .iter()
+                .filter(|l| l.contains("applied remote changes:") && !l.contains(": 0 file(s)"))
+                .cloned()
+                .collect();
+            (!applied.is_empty()).then_some(applied)
+        },
+    );
     assert!(
         projections
             .first()
