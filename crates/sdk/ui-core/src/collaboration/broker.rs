@@ -17,9 +17,10 @@
 
 use super::{
     ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
-    CollaborationManager, Collaborator, DocumentMutation, ExportedAction, ExportedInput,
-    PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
-    TransportError, TransportStatus, Uuid, auto_hello_env, channel_key, mpsc, presence_handle_env,
+    CollaborationManager, Collaborator, DocumentMutation, DocumentPublicationError,
+    DocumentPublicationReceipt, ExportedAction, ExportedInput, PresenceKey, PresencePayload,
+    PrimaryRouteState, RouteSpec, SignedOp, TransportCommand, TransportError, TransportStatus,
+    Uuid, auto_hello_env, channel_key, mpsc, presence_handle_env,
 };
 
 use crate::time::Duration;
@@ -247,6 +248,15 @@ impl CollabTransport for BrokerTransport {
             out.push(request);
         }
     }
+
+    fn publication_barrier(
+        &mut self,
+    ) -> Result<DocumentPublicationReceipt, DocumentPublicationError> {
+        let (reply, receiver) = mpsc::sync_channel(1);
+        self.enqueue(SdkCommand::PublicationBarrier(reply))
+            .map_err(|error| DocumentPublicationError::Failed(format!("{error:?}")))?;
+        Ok(DocumentPublicationReceipt::new(receiver))
+    }
 }
 
 enum SdkCommand {
@@ -254,6 +264,9 @@ enum SdkCommand {
     Join(RouteSpec),
     ToRoute(RouteSpec, CollabRequest),
     PrimaryReady(mpsc::SyncSender<Result<RouteSpec, String>>),
+    /// Answered once every document mutation queued before it has been
+    /// handed to the broker, with the first one that was not.
+    PublicationBarrier(mpsc::SyncSender<Result<(), DocumentPublicationError>>),
     InstallEncryption {
         spec: RouteSpec,
         group: Box<channel_crypto::ChannelGroup>,
@@ -531,7 +544,9 @@ fn command_bytes(command: &SdkCommand) -> Option<usize> {
             }
             meter.finish()
         }
-        SdkCommand::PrimaryReady(_) => Some(std::mem::size_of::<SdkCommand>()),
+        SdkCommand::PrimaryReady(_) | SdkCommand::PublicationBarrier(_) => {
+            Some(std::mem::size_of::<SdkCommand>())
+        }
         // `ChannelGroup` intentionally hides its OpenMLS allocation graph,
         // so it cannot offer an exact capacity probe without widening the
         // crypto API. Installation is synchronous and requires `&mut self`,
@@ -2183,6 +2198,9 @@ async fn drive_shovel(
     let mut primary: Option<String> = None;
     let mut participant_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
+    // The first document mutation since the last publication barrier that
+    // did not reach the broker, reported to (and cleared by) that barrier.
+    let mut unpublished: Option<String> = None;
 
     while let Some(QueuedSdkCommand {
         command,
@@ -2192,6 +2210,8 @@ async fn drive_shovel(
         if !inbound_tx.state.is_healthy() {
             break;
         }
+        let document = command.document_len().is_some();
+        let mut published = true;
         match command {
             SdkCommand::Primary(CollabRequest::Hello {
                 app_id,
@@ -2226,15 +2246,15 @@ async fn drive_shovel(
                 primary = primary_result.is_ok().then_some(key);
             }
             SdkCommand::Primary(request) => {
-                let Some(key) = primary.as_ref() else {
-                    tracing::warn!("collab: request sent before the primary route joined");
-                    continue;
-                };
-                if let Some(route) = routes.get_mut(key) {
-                    dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                if let Some(route) = primary.as_ref().and_then(|key| routes.get_mut(key)) {
+                    published =
+                        dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
+                } else {
+                    tracing::warn!("collab: request sent before the primary route joined");
+                    published = false;
                 }
             }
             SdkCommand::Join(spec) => {
@@ -2264,14 +2284,23 @@ async fn drive_shovel(
                 if joined.is_ok()
                     && let Some(route) = routes.get_mut(&key)
                 {
-                    dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
+                    published =
+                        dispatch_sdk_request(route, request, &mut signer, &inbound_tx).await;
                     if !inbound_tx.state.is_healthy() {
                         break;
                     }
+                } else {
+                    published = false;
                 }
             }
             SdkCommand::PrimaryReady(reply) => {
                 let _ = reply.send(primary_result.clone());
+            }
+            SdkCommand::PublicationBarrier(reply) => {
+                let _ = reply.send(match unpublished.take() {
+                    None => Ok(()),
+                    Some(reason) => Err(DocumentPublicationError::Failed(reason)),
+                });
             }
             SdkCommand::InstallEncryption { spec, group, reply } => {
                 let result = install_sdk_encryption(
@@ -2327,6 +2356,9 @@ async fn drive_shovel(
                 };
                 let _ = reply.send(result);
             }
+        }
+        if document && !published && unpublished.is_none() {
+            unpublished = Some("a document mutation did not reach the broker".into());
         }
     }
 }
@@ -2754,14 +2786,14 @@ async fn send_document_mutation(
     signer: &mut LocalSdkDocumentSigner,
     mutation: collab_types::DocumentMutation,
     bridge_state: &BridgeState,
-) {
+) -> bool {
     let frames = match mutation.encode_frames() {
         Ok(frames) => frames,
         Err(error) => {
             // The size was checked before the change was queued, so this
             // is unreachable for SDK callers; never send a partial change.
             tracing::error!(%error, "collab: typed document mutation would not encode; dropping");
-            return;
+            return false;
         }
     };
     let count = frames.len();
@@ -2774,9 +2806,10 @@ async fn send_document_mutation(
                     "collab: segmented document transfer stopped; receivers will discard it"
                 );
             }
-            return;
+            return false;
         }
     }
+    true
 }
 
 /// Encrypt (on MLS routes), sign and send one typed document frame.
@@ -3150,7 +3183,7 @@ async fn dispatch_sdk_request(
     request: CollabRequest,
     signer: &mut LocalSdkDocumentSigner,
     inbound_tx: &InboundBridge,
-) {
+) -> bool {
     match request {
         CollabRequest::Hello { .. } => {}
         CollabRequest::SignedOperation { envelope } => {
@@ -3159,14 +3192,14 @@ async fn dispatch_sdk_request(
             }
         }
         CollabRequest::Document { mutation } => {
-            send_document_mutation(route, signer, mutation, &inbound_tx.state).await;
+            return send_document_mutation(route, signer, mutation, &inbound_tx.state).await;
         }
         CollabRequest::RequestDocumentSnapshot => {
             let _ = route.channel.request_document_snapshot().await;
         }
         CollabRequest::Presence { key, payload } => {
             let Some(presence) = route.presence.as_ref() else {
-                return;
+                return true;
             };
             let key_bytes = postcard::to_stdvec(&key).unwrap_or_default();
             match payload {
@@ -3503,6 +3536,7 @@ async fn dispatch_sdk_request(
                 inbound_tx.send_durable(CollabEvent::TaskRunCancellation { request_id, result });
         }
     }
+    true
 }
 /// Pass a single-frame document event through, or hold a segment until its
 /// transfer completes and return the complete mutation exactly once.
@@ -5258,6 +5292,37 @@ mod tests {
                 collab_types::Signature::from_bytes([0; 64])
             );
         }
+    }
+
+    /// `send` only queues. A publication barrier resolves once every
+    /// document mutation queued before it has reached the broker, which is
+    /// what lets an owner end its session without discarding a change still
+    /// in transit.
+    #[cfg(unix)]
+    #[test]
+    fn publication_barrier_resolves_after_every_earlier_document_is_published() {
+        let broker = FakeBroker {
+            captures: std::sync::Arc::new(std::sync::Mutex::new(Captures::default())),
+            op_backlog: vec![],
+            presence_backlog: vec![],
+            context_backlog: vec![],
+            scrollback_response: None,
+        };
+        let (fd, captures, _thread) = stand_up_fake_broker(broker);
+        let mut manager = CollaborationManager::from_sdk_fd_for_test(fd, "shell", Uuid::new_v4());
+        for n in 0..8_u8 {
+            assert!(manager.send(CollabRequest::document_incremental(vec![n; 16])));
+        }
+        manager
+            .begin_document_publication_barrier()
+            .expect("the broker transport supports publication barriers")
+            .wait(Some(crate::time::now() + HANG_GUARD))
+            .expect("every queued document was published");
+        assert_eq!(
+            captures.lock().unwrap().signed_ops.len(),
+            8,
+            "the barrier resolved before the documents ahead of it reached the broker"
+        );
     }
 
     /// Every presence variant reaches the SDK method that keeps its key —
