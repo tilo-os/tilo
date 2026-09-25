@@ -41,6 +41,8 @@ inputs = ["os/"]
 suites = [
   "os/dev/test-install-copy-scratch-cleanup.sh",
   "os/dev/test-install-copy-scratch.py",
+  "os/kernel/tests/test-cc-wrapper.sh",
+  "os/kernel/tests/test-signing-identity.py",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
