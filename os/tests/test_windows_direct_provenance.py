@@ -25,6 +25,28 @@ def write(path, value):
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_paired_release_rejects_different_ci_source_revisions(self):
+        image = "code.sandbox.example/qos/tilo@sha256:" + "a" * 64
+        child = "sha256:" + "b" * 64
+        args = SimpleNamespace(
+            generic_ci_image=image, generic_index_manifest=Path("index.json"),
+            generic_child_manifest=Path("child.json"),
+            generic_vm_proof_checked=Path("checked.json"),
+            generic_medium_identity=Path("generic.json"),
+            generic_ci_guest_proof=Path("generic-proof.json"),
+            board_medium_identity=Path("board.json"),
+            board_ci_guest_proof=Path("board-proof.json"),
+            verify_key=Path("cosign.pub"), cosign_command_json=None,
+            cosign_key_arg=None)
+        signed = {"source_revision": "1" * 40, "generation": 1,
+                  "invocation_id": "run-1"}
+        with patch.object(proof, "signed_ci_child",
+                          return_value=("sha256:" + "a" * 64, child,
+                                        [child], "generic-index")), \
+             patch.object(proof, "verify_ci_image", return_value=signed):
+            with self.assertRaisesRegex(ValueError, "same source revision"):
+                proof.dual_ci_medium_gate(args, {}, child, "2" * 40)
+
     def fixture(self, root):
         child_path = root / "child.json"
         child = {"schemaVersion": 2, "mediaType": proof.IMAGE,

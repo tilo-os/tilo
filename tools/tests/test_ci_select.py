@@ -37,6 +37,7 @@ class SelectorTests(unittest.TestCase):
             package("middle", "middle", ["base"]),
             package("leaf", "leaf", ["middle"]),
             package("qdoc", "qdoc"),
+            package("qdoc-codecs", "qdoc-codecs", ["qdoc"]),
             package("pkg", "pkg"),
             package("collab-types", "collab-types"),
         ]}
@@ -78,7 +79,7 @@ class SelectorTests(unittest.TestCase):
             return ci_select.make_plan(self.metadata, self.root, changes, 2,
                                        suite_manifest=manifest, **options)
         leaf = plan(["leaf/src/main.rs"])
-        self.assertEqual(set(leaf["tested"]), {"leaf", "base", "qdoc", "pkg", "collab-types"})
+        self.assertEqual(set(leaf["tested"]), {"leaf", "base", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
         # The reader's code did not change, so its dependants are not re-checked.
         self.assertNotIn("middle", leaf["selected"])
         self.assertIn("read the changed files", leaf["reason"])
@@ -126,9 +127,9 @@ class SelectorTests(unittest.TestCase):
 
     def test_reverse_dependency_closure(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
-        self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "pkg", "collab-types"})
+        self.assertEqual(set(plan["selected"]), {"base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
         self.assertFalse(plan["full"])
-        self.assertEqual(set(plan["tested"]), {"base", "qdoc", "pkg", "collab-types"})
+        self.assertEqual(set(plan["tested"]), {"base", "qdoc", "qdoc-codecs", "pkg", "collab-types"})
         self.assertEqual(len(plan["matrix"]["include"]), 1)
         row = plan["matrix"]["include"][0]
         self.assertEqual(row["arch"], "x86_64")
@@ -429,7 +430,7 @@ class SelectorTests(unittest.TestCase):
             2,
         )
         self.assertFalse(plan["full"])
-        self.assertEqual(set(plan["selected"]), {"qdoc", "pkg", "collab-types"})
+        self.assertEqual(set(plan["selected"]), {"qdoc", "qdoc-codecs", "pkg", "collab-types"})
         self.assertEqual(plan["shard_count"], 1)
 
     def install_quality_helpers(self) -> None:
@@ -861,7 +862,7 @@ class SelectorTests(unittest.TestCase):
 
 
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
-LOCAL_PACKAGES = ("base", "middle", "leaf", "qdoc", "pkg", "collab-types")
+LOCAL_PACKAGES = ("base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types")
 
 
 def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[str]],
@@ -882,7 +883,7 @@ def lockfile(external: dict[tuple[str, str], list[str]], local: dict[str, list[s
 ROOT_MANIFEST = """\
 [workspace]
 resolver = "3"
-members = ["base", "middle", "leaf", "qdoc", "pkg", "collab-types"]
+members = ["base", "middle", "leaf", "qdoc", "qdoc-codecs", "pkg", "collab-types"]
 
 [workspace.package]
 edition = "2024"
@@ -913,7 +914,7 @@ class ManifestAttributionTests(unittest.TestCase):
         self.metadata = {"packages": []}
         for name, deps in [("base", [("serde", None)]), ("middle", [("base", "path"), ("itoa", None)]),
                            ("leaf", [("middle", "path"), ("serde_json", "json")]),
-                           ("qdoc", []), ("pkg", []), ("collab-types", [])]:
+                           ("qdoc", []), ("qdoc-codecs", [("qdoc", "path")]), ("pkg", []), ("collab-types", [])]:
             self.add_package(name, deps)
         self.external = {
             ("serde", "1.0.0"): [],
@@ -924,7 +925,7 @@ class ManifestAttributionTests(unittest.TestCase):
         }
         self.local = {
             "base": ["serde"], "middle": ["base", "itoa"], "leaf": ["middle", "serde_json"],
-            "qdoc": [], "pkg": [], "collab-types": [],
+            "qdoc": [], "qdoc-codecs": ["qdoc"], "pkg": [], "collab-types": [],
         }
 
     def tearDown(self) -> None:

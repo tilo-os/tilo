@@ -1,8 +1,8 @@
 //! Spreadsheet interchange: the [`SheetTable`] Sheets imports and exports, and
 //! Excel `.xlsx` import and export.
 //!
-//! Both package formats go through qdoc's codecs ([`qdoc::XlsxCodec`] here,
-//! [`qdoc::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
+//! Both package formats go through qdoc's codecs ([`qdoc_codecs::XlsxCodec`] here,
+//! [`qdoc_codecs::OdsCodec`] in [`crate::ods`]): an untrusted file is read under the
 //! shared zip-bomb and DTD/XXE bounds into plain cells, never through a
 //! dense grid, and only then materialised — within
 //! [`MAX_MATERIALIZED_SLOTS`] — as a table. The exchange unit is a dense grid
@@ -16,9 +16,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use qdoc::codecs::xlsx::{date_style_refs, number_format_styles};
 use qdoc::sheet::a1::{make_ref, parse_ref};
-use qdoc::{CellInput, CellType, CellView, ParsedSheet, SheetView, WorkbookSnapshot, XlsxCodec};
+use qdoc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
+use qdoc_codecs::xlsx::{date_style_refs, number_format_styles};
+use qdoc_codecs::{ParsedSheet, XlsxCodec};
 
 use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
 

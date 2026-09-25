@@ -747,6 +747,41 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "::notice::Windows provider: with_windows=$with_windows"
 
+      # Runner pools with execution-local registries (the Oregon pool) hand
+      # jobs the standard BuildKit registry configuration for them at
+      # /etc/buildkit/buildkitd.toml: a pull-through mirror of code.sandbox.example
+      # with upstream fallback, plus the pool's layer-cache registry, named
+      # by CI_LAYER_CACHE_REGISTRY. Other pools provide neither and keep the
+      # layer cache in code.sandbox.example.
+      #
+      # The OS graph contains several large RPM and Rust stages. Letting
+      # BuildKit run all of them at once exhausts the ephemeral runner's
+      # backing store and can tear SQLite's rpmdb while a layer is being
+      # committed. In particular, composefs needs temporary room comparable
+      # to the completed root while sealing the UKI; a second active solver
+      # operation has exhausted that headroom on otherwise healthy runners.
+      # Serialize the solver so the installed-image and AT-SPI gates are not
+      # skipped because an unrelated stage consumed composefs's workspace.
+      - name: Select the runner pool's BuildKit registries
+        run: |
+          set -euo pipefail
+          config="$RUNNER_TEMP/buildkitd.toml"
+          if [[ -r /etc/buildkit/buildkitd.toml ]]; then
+            cp /etc/buildkit/buildkitd.toml "$config"
+          else
+            : > "$config"
+          fi
+          printf '\n[worker.oci]\n  max-parallelism = 1\n' >> "$config"
+          registry="${CI_LAYER_CACHE_REGISTRY:-code.sandbox.example}"
+          [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
+            echo "::error::invalid layer-cache registry: $registry"; exit 1;
+          }
+          {
+            echo "TILO_BUILDKITD_CONFIG=$config"
+            echo "TILO_LAYER_CACHE_REGISTRY=$registry"
+          } >> "$GITHUB_ENV"
+          echo "::notice::BuildKit layer cache: $registry/qos/tilo-buildcache"
+
       # Set up buildx with the docker-container driver — the default `docker`
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
@@ -755,17 +790,7 @@ jobs:
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         with:
           driver: docker-container
-          # The OS graph contains several large RPM and Rust stages. Letting
-          # BuildKit run all of them at once exhausts the ephemeral runner's
-          # backing store and can tear SQLite's rpmdb while a layer is being
-          # committed. In particular, composefs needs temporary room comparable
-          # to the completed root while sealing the UKI; a second active solver
-          # operation has exhausted that headroom on otherwise healthy runners.
-          # Serialize the solver so the installed-image and AT-SPI gates are not
-          # skipped because an unrelated stage consumed composefs's workspace.
-          buildkitd-config-inline: |
-            [worker.oci]
-              max-parallelism = 1
+          buildkitd-config: ${{ env.TILO_BUILDKITD_CONFIG }}
 
       # Read the manifest through the builder that consumes the snapshot, so
       # its large RPM layer is pulled once, into BuildKit, instead of into
@@ -1083,10 +1108,10 @@ jobs:
           # reproducible image digests.
           provenance: false
           cache-from: |
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-wpe
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
 
       # Build and export the compile stages (WPE engine and the Rust builder)
       # before anything else. A registry cache is only written when its build
@@ -1142,10 +1167,10 @@ jobs:
           # reproducible image digests.
           provenance: false
           cache-from: |
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-wpe
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -1216,10 +1241,10 @@ jobs:
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
           cache-from: |
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-wpe
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}
+          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
@@ -1277,9 +1302,9 @@ jobs:
           secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
-            type=registry,ref=code.sandbox.example/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-wpe,mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
+            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/qos/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every main build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
