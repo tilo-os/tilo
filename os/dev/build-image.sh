@@ -167,10 +167,16 @@ case "${TILO_NATIVE_BUILDER_ONLY:-0}" in
     ;;
   *) die "TILO_NATIVE_BUILDER_ONLY must be 0 or 1" ;;
 esac
+# The pins alone decide whether the image includes the provider (CI derives it
+# with the same command): x86_64 always does, ARM once both refs are set and
+# not before. TILO_WITH_WINDOWS is therefore derived, never taken from the caller.
+TILO_WITH_WINDOWS=1
 if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ]; then
-  python3 "$TILO_OS_DIR/dev/windows_provider.py" inputs --arch "$TILO_WINDOWS_ARCH" \
-    --fex-ref "${FEX_PAYLOAD_REF:-}" --guest-ref "${WINDOWS_GUEST_REF:-}" >/dev/null \
+  TILO_WITH_WINDOWS=$(python3 "$TILO_OS_DIR/dev/windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH" \
+    --fex-ref "${FEX_PAYLOAD_REF:-}" --guest-ref "${WINDOWS_GUEST_REF:-}") \
     || die "Windows provider inputs are incomplete; see os/docs/windows-provider-packaging.md"
+  [ "$TILO_WITH_WINDOWS" = 1 ] \
+    || warn "no FEX_PAYLOAD_REF/WINDOWS_GUEST_REF: this $TILO_WINDOWS_ARCH image is built without Windows apps"
 fi
 if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
@@ -476,6 +482,7 @@ build_image() {
     --build-arg "TILO_WINDOWS_ARCH=$TILO_WINDOWS_ARCH" \
     --build-arg "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}" \
     --build-arg "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}" \
+    --build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS" \
     --build-arg "WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}" \
     --build-arg "TILO_WITH_BROWSER=$TILO_WITH_BROWSER" \
     --build-arg "TILO_HARDWARE_PROFILE=$TILO_HARDWARE_PROFILE" \
@@ -509,7 +516,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  code.sandbox.example/qos/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; generation=$TILO_GENERATION)"
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; generation=$TILO_GENERATION)"
   if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
       --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \

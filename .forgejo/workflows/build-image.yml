@@ -607,6 +607,28 @@ jobs:
           echo "TILO_WITH_BROWSER=$with_browser" >> "$GITHUB_ENV"
           echo "::notice::OS validation profile: with_browser=$with_browser"
 
+      # The same derivation os/dev/build-image.sh uses: x86_64 always ships
+      # Fedora Wine; ARM ships FEX and the x86 guest once both are pinned and
+      # builds without Windows apps until then. A single pin fails the build.
+      - name: Select the Windows provider
+        env:
+          FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}
+          WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}
+        run: |
+          set -euo pipefail
+          with_windows="$(python3 os/dev/windows_provider.py mode --arch "$(uname -m)" \
+            --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF")"
+          if [[ $with_windows == 0 ]]; then
+            echo "::warning::TILO_FEX_PAYLOAD_REF and TILO_WINDOWS_GUEST_REF are unset; this $(uname -m) image is built without Windows apps"
+          fi
+          # FROM needs a parseable reference even in the unselected stage.
+          {
+            echo "TILO_WITH_WINDOWS=$with_windows"
+            echo "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}"
+            echo "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}"
+          } >> "$GITHUB_ENV"
+          echo "::notice::Windows provider: with_windows=$with_windows"
+
       # Set up buildx with the docker-container driver — the default `docker`
       # driver doesn't support cache export (the registry-backed cache we
       # need to survive across ephemeral runners).
@@ -894,6 +916,7 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -957,6 +980,7 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1046,6 +1070,7 @@ jobs:
             FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}

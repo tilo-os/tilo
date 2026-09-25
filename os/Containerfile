@@ -46,10 +46,18 @@ ARG RPMS_REF
 ARG KERNEL_RPMS_REF
 ARG WPE_BUILDROOT_REF
 ARG TILO_WINDOWS_ARCH=x86_64
-# Scratch is only a parseable placeholder for the unselected x86_64 branch.
+# Scratch is only a parseable placeholder for an unselected provider branch.
 # ARM validation rejects it; no diagnostic payload or mutable tag is a fallback.
 ARG FEX_PAYLOAD_REF=scratch
 ARG WINDOWS_GUEST_REF=scratch
+# TILO_WITH_WINDOWS=0 builds an ARM image without the Windows provider (FEX and
+# the x86 guest): /usr/share/tilo/windows/provider.json records provider
+# "none", the image carries org.tilo.with-windows=0, and the compatibility
+# service refuses capsule launches with that explanation. Never choose it by
+# hand: `os/dev/windows_provider.py mode` derives it from the two pins (0 only
+# while neither is set) for os/dev/build-image.sh and CI alike, and x86_64,
+# whose Fedora Wine is always present, refuses it.
+ARG TILO_WITH_WINDOWS=1
 
 # TILO_WITH_BROWSER=0 builds the image without the browser: no WPE WebKit engine
 # stage, no `browser` binary. Default 1 — a normal build is unchanged.
@@ -89,7 +97,7 @@ COPY --from=github-assets / /
 FROM --platform=linux/arm64 ${FEX_PAYLOAD_REF} AS windows-fex-input
 FROM --platform=linux/amd64 ${WINDOWS_GUEST_REF} AS windows-guest-input
 
-FROM ${BASE_REF} AS windows-provider-aarch64
+FROM ${BASE_REF} AS windows-provider-aarch64-1
 ARG FEX_PAYLOAD_REF
 ARG WINDOWS_GUEST_REF
 COPY os/dev/windows_provider.py os/dev/validate-fex-payload.py os/dev/validate-windows-guest.py os/dev/apply-fex-patches.py /tilo/
@@ -108,14 +116,24 @@ RUN --network=none \
     && cp -a /fex/usr/. /out/usr/ \
     && cp -a /guest/rootfs /out/usr/lib/tilo/windows-runners/x86
 
-FROM ${BASE_REF} AS windows-provider-x86_64
+FROM ${BASE_REF} AS windows-provider-x86_64-1
 COPY os/dev/windows_provider.py /tilo/
 RUN --network=none test "$(uname -m)" = x86_64 \
     && mkdir -p /out/usr/share/tilo/windows \
     && python3 /tilo/windows_provider.py inputs --arch x86_64 \
        > /out/usr/share/tilo/windows/provider.json
 
-FROM windows-provider-${TILO_WINDOWS_ARCH} AS windows-provider
+# Without the provider only its build record is copied. `absent` rejects any
+# architecture but aarch64, so an x86_64 build selecting this fails here.
+FROM ${BASE_REF} AS windows-provider-off
+COPY os/dev/windows_provider.py /tilo/
+RUN --network=none mkdir -p /out/usr/share/tilo/windows \
+    && python3 /tilo/windows_provider.py absent --arch "$(uname -m)" \
+       > /out/usr/share/tilo/windows/provider.json
+FROM windows-provider-off AS windows-provider-aarch64-0
+FROM windows-provider-off AS windows-provider-x86_64-0
+
+FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider
 
 
 # ---- Minimal Windows paravirtual driver media -----------------------------
@@ -1875,6 +1893,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     udftools \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+ARG TILO_WITH_WINDOWS
+LABEL org.tilo.with-windows="${TILO_WITH_WINDOWS}"
 COPY --from=windows-provider /out/usr/ /usr/
 RUN --network=none --mount=type=bind,source=os/dev/windows_provider.py,target=/tilo-windows-provider.py,ro \
     python3 /tilo-windows-provider.py host --manifest /usr/share/tilo/windows/provider.json

@@ -1768,7 +1768,7 @@ mod tests {
         CompatibilityService::new(
             catalogue(),
             CapsuleStore::new(directory.path()).unwrap(),
-            SystemRuntimeRegistry::new(),
+            SystemRuntimeRegistry::assuming_provider(),
             Resources,
             Executor,
             Vm::default(),
@@ -1877,7 +1877,7 @@ mod tests {
         let service = CompatibilityService::new(
             catalogue(),
             CapsuleStore::new(directory.path()).unwrap(),
-            SystemRuntimeRegistry::new(),
+            SystemRuntimeRegistry::assuming_provider(),
             Resources,
             Executor,
             Vm {
