@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Mutex, OnceLock};
 
-use tilo_resource::{Invoke, Resource};
+use tilo_resource::{Invoke, Reader, Resource};
 use ui_core::application::{
     AppComponent, ApplicationDefinition, ApplicationHost, ComponentRunnerInputs, HostContext,
     LaunchTarget, NativeProcessHost, PreparedComponentInputs, RestoreInput,
@@ -143,7 +143,7 @@ fn write_scope<A: ResourceApp>() -> PermissionScope {
 /// Build the framework root for a resource state: the live handle, the
 /// dispatcher, the published resource and the app's view.
 pub(crate) fn build_root<A: ResourceApp>(
-    state: <A::Resource as Resource>::State,
+    reader: Reader<A::Resource>,
     editing: Editing,
 ) -> ResourceRoot<A::Resource> {
     let scope = write_scope::<A>();
@@ -154,10 +154,10 @@ pub(crate) fn build_root<A: ResourceApp>(
         }
         Editing::ReadOnly => (None, true),
     };
-    let label = A::label(&state);
+    let label = A::label(reader.state());
     let resource_id = <A::Resource as Resource>::KIND;
-    let published = tilo_resource::publish::<A::Resource>(resource_id, &label, &state);
-    let live = Live::new(state);
+    let published = tilo_resource::publish::<A::Resource>(resource_id, &label, reader.state());
+    let live = Live::new(reader);
     let updaters = Updaters::new();
     let alive = Rc::new(());
     let dispatch = Dispatcher::new(resource_id, read_only);
@@ -202,11 +202,11 @@ fn create<A: ResourceApp>(
             .map_err(LaunchError::Record)?;
     }
     let permissions = context.live_permissions();
-    let state = context
-        .read_record(<A::Resource as Resource>::read)
+    let reader = context
+        .read_record(Reader::<A::Resource>::read)
         .map_err(LaunchError::Record)?
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
-    let root = build_root::<A>(state, Editing::Live(permissions));
+    let root = build_root::<A>(reader, Editing::Live(permissions));
     let mut registry = tilo_actions::ActionRegistry::new();
     tilo_resource::group::register::<A::Resource>(&mut registry);
     let mut component = AppComponent::new(context, Box::new(root), registry);
