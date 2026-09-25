@@ -18,6 +18,8 @@ use crate::tier::ChunkTier;
 const STREAM_BLOCK: usize = 16 * 1024 * 1024;
 /// Below this many bytes to hash, one thread does it.
 const PARALLEL_MIN: usize = 4 * 1024 * 1024;
+/// Below this many bytes, cut points are found on one thread.
+const PARALLEL_CUT_MIN: usize = 32 * 1024 * 1024;
 const MAX_HASH_THREADS: usize = 16;
 
 /// Work done to produce a manifest.
@@ -84,6 +86,97 @@ impl Cutter {
         );
         len.max(1).min(window.len())
     }
+}
+
+/// Cut points of `data` from `start` until the first cut at or past
+/// `until`, as chunk end offsets.
+fn cuts_from(data: &[u8], cutter: &Cutter, start: usize, until: usize) -> Vec<usize> {
+    let mut ends = Vec::new();
+    let mut pos = start;
+    while pos < data.len() {
+        let len = cutter.cut(data.get(pos..).unwrap_or_default());
+        pos = pos.saturating_add(len);
+        ends.push(pos);
+        if pos >= until {
+            break;
+        }
+    }
+    ends
+}
+
+/// Every chunk end offset of `data`, found on several threads for a large
+/// body.
+///
+/// Each thread chunks its own segment as if a chunk started at the
+/// segment's first byte. A cut depends only on the bytes from its chunk's
+/// start, so once the true sequence (continued from the previous segment)
+/// reaches a cut the segment's thread also found, the two sequences agree
+/// from there on; the segment's remaining cuts are taken as they are. That
+/// usually happens within a few chunks.
+fn chunk_ends(data: &[u8], cutter: &Cutter) -> Vec<usize> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(MAX_HASH_THREADS);
+    if data.len() < PARALLEL_CUT_MIN || threads <= 1 {
+        return cuts_from(data, cutter, 0, data.len());
+    }
+    let segment = data.len().div_ceil(threads);
+    let starts: Vec<usize> = (0..threads)
+        .map(|k| k.saturating_mul(segment))
+        .filter(|s| *s < data.len())
+        .collect();
+    let segments: Vec<Vec<usize>> = std::thread::scope(|scope| {
+        #[allow(
+            clippy::needless_collect,
+            reason = "every worker must be spawned before the first is joined"
+        )]
+        let workers: Vec<_> = starts
+            .iter()
+            .map(|&start| {
+                let until = start.saturating_add(segment);
+                scope.spawn(move || cuts_from(data, cutter, start, until))
+            })
+            .collect();
+        workers
+            .into_iter()
+            .map(|w| w.join().unwrap_or_default())
+            .collect()
+    });
+    let mut ends: Vec<usize> = Vec::new();
+    for (k, found) in segments.into_iter().enumerate() {
+        if k == 0 {
+            ends = found;
+            continue;
+        }
+        // Continue the true sequence until it meets a cut of this segment.
+        let mut pos = ends.last().copied().unwrap_or(0);
+        let mut joined = None;
+        while pos < data.len() {
+            if let Ok(at) = found.binary_search(&pos) {
+                joined = Some(at);
+                break;
+            }
+            if found.last().is_some_and(|last| pos > *last) {
+                break;
+            }
+            let len = cutter.cut(data.get(pos..).unwrap_or_default());
+            pos = pos.saturating_add(len);
+            ends.push(pos);
+        }
+        if let Some(at) = joined {
+            ends.extend(found.get(at.saturating_add(1)..).unwrap_or_default());
+        }
+    }
+    // The last segment's worker stopped at its first cut past the end of
+    // its segment, which is the end of the body; make sure the sequence
+    // reaches it even when the segments never joined.
+    let mut pos = ends.last().copied().unwrap_or(0);
+    while pos < data.len() {
+        let len = cutter.cut(data.get(pos..).unwrap_or_default());
+        pos = pos.saturating_add(len);
+        ends.push(pos);
+    }
+    ends
 }
 
 fn span(data: &[u8], start: usize, len: usize) -> &[u8] {
@@ -213,6 +306,16 @@ fn rebuild_in(
     let mut pieces = Vec::new();
     let mut spans = Vec::new();
     let mut pos = 0_usize;
+    if reusable.is_none() {
+        for end in chunk_ends(data, &cutter) {
+            let len = end.saturating_sub(pos);
+            pieces.push(Piece::New(len));
+            spans.push((pos, len));
+            stats.chunks_hashed = stats.chunks_hashed.saturating_add(1);
+            stats.bytes_hashed = stats.bytes_hashed.saturating_add(len as u64);
+            pos = end;
+        }
+    }
     while pos < data.len() {
         if let Some((old, len)) =
             reusable.and_then(|p| reusable_chunk(p, pos as u64, data.len() as u64, &changed))
@@ -513,6 +616,26 @@ mod tests {
         let data = pseudo_random(1000, 1);
         assert!(build_reader(&data[..], 1001, None).is_err());
         assert!(build_reader(&data[..], 999, None).is_err());
+    }
+
+    #[test]
+    fn parallel_cut_points_equal_sequential_ones() {
+        let cutter = Cutter::for_tier(ChunkTier::Medium).unwrap();
+        for (len, seed) in [(40 * 1024 * 1024 + 7, 21), (96 * 1024 * 1024, 22)] {
+            let data = pseudo_random(len, seed);
+            assert_eq!(
+                chunk_ends(&data, &cutter),
+                cuts_from(&data, &cutter, 0, data.len()),
+                "{len}"
+            );
+        }
+        // Pathological data: every cut is at the maximum, so segments that
+        // start off the maximum's grid never join; the result still matches.
+        let zeros = vec![0_u8; 40 * 1024 * 1024 + 12_345];
+        assert_eq!(
+            chunk_ends(&zeros, &cutter),
+            cuts_from(&zeros, &cutter, 0, zeros.len())
+        );
     }
 
     #[test]
