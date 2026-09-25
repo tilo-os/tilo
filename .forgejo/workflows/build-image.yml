@@ -34,6 +34,14 @@ on:
         description: "Independently reviewed SHA-256 of the firmware manifest"
         required: false
         default: ""
+      fex_payload_candidate:
+        description: "One-off ARM FEX OCI digest; requires a paired guest and Lenovo main dispatch"
+        required: false
+        default: ""
+      windows_guest_candidate:
+        description: "One-off x86 guest OCI digest; requires a paired FEX payload and Lenovo main dispatch"
+        required: false
+        default: ""
       app_collection_url:
         description: "Pinned tilo-apps-<arch>.tar.gz URL; empty uses vars.TILO_APP_COLLECTION_URL."
         required: false
@@ -705,8 +713,26 @@ jobs:
         env:
           FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}
           WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}
+          FEX_PAYLOAD_CANDIDATE: ${{ inputs.fex_payload_candidate }}
+          WINDOWS_GUEST_CANDIDATE: ${{ inputs.windows_guest_candidate }}
+          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
+          if [[ -n "$FEX_PAYLOAD_CANDIDATE" || -n "$WINDOWS_GUEST_CANDIDATE" ]]; then
+            [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" == refs/heads/main \
+               && "$HARDWARE_PROFILE" == lenovo-83ed ]] || {
+              echo '::error::one-off Windows provider inputs require a Lenovo main dispatch'; exit 1;
+            }
+            [[ "$FEX_PAYLOAD_CANDIDATE" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ \
+               && "$WINDOWS_GUEST_CANDIDATE" =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$ ]] || {
+              echo '::error::one-off Windows provider inputs require two immutable registry digests'; exit 1;
+            }
+            FEX_PAYLOAD_REF="$FEX_PAYLOAD_CANDIDATE"
+            WINDOWS_GUEST_REF="$WINDOWS_GUEST_CANDIDATE"
+            provider_input_class=development-only
+          else
+            provider_input_class=repository-pinned
+          fi
           with_windows="$(python3 os/dev/windows_provider.py mode --arch "$(uname -m)" \
             --fex-ref "$FEX_PAYLOAD_REF" --guest-ref "$WINDOWS_GUEST_REF")"
           if [[ $with_windows == 0 ]]; then
@@ -715,6 +741,7 @@ jobs:
           # FROM needs a parseable reference even in the unselected stage.
           {
             echo "TILO_WITH_WINDOWS=$with_windows"
+            echo "TILO_WINDOWS_PROVIDER_INPUT_CLASS=$provider_input_class"
             echo "FEX_PAYLOAD_REF=${FEX_PAYLOAD_REF:-scratch}"
             echo "WINDOWS_GUEST_REF=${WINDOWS_GUEST_REF:-scratch}"
           } >> "$GITHUB_ENV"
@@ -1473,6 +1500,9 @@ jobs:
           TILO_RELEASE_ARCHITECTURE: ${{ matrix.arch }}
           TILO_FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           TILO_FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
+          TILO_WINDOWS_PROVIDER_INPUT_CLASS: ${{ env.TILO_WINDOWS_PROVIDER_INPUT_CLASS }}
+          FEX_PAYLOAD_REF: ${{ env.FEX_PAYLOAD_REF }}
+          WINDOWS_GUEST_REF: ${{ env.WINDOWS_GUEST_REF }}
         run: |
           . os/dev/configure-cosign-kms.sh
           ./os/dev/release-provenance.sh provenance.json
@@ -1827,6 +1857,8 @@ jobs:
         env:
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
+          FEX_PAYLOAD_CANDIDATE: ${{ github.event.inputs.fex_payload_candidate }}
+          WINDOWS_GUEST_CANDIDATE: ${{ github.event.inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
           child=release-child/aarch64.json
@@ -1850,7 +1882,8 @@ jobs:
           printf '%s' "$provenance" | jq -e \
             --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
             --arg digest "$digest" --arg firmware "$FIRMWARE_CANDIDATE" \
-            --arg manifest "$FIRMWARE_MANIFEST_SHA256" '
+            --arg manifest "$FIRMWARE_MANIFEST_SHA256" \
+            --arg fex "$FEX_PAYLOAD_CANDIDATE" --arg guest "$WINDOWS_GUEST_CANDIDATE" '
               [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
               | any(.buildDefinition.internalParameters.expectedReleaseDigest == $digest
                     and .buildDefinition.externalParameters.generation == 1
@@ -1858,7 +1891,17 @@ jobs:
                     and .buildDefinition.externalParameters.architecture == "aarch64"
                     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
                     and any(.buildDefinition.resolvedDependencies[]?; .uri == $source)
-                    and any(.buildDefinition.resolvedDependencies[]?; .uri == $firmware))' >/dev/null
+                    and any(.buildDefinition.resolvedDependencies[]?; .uri == $firmware)
+                    and (if $fex == "" and $guest == "" then
+                           .buildDefinition.externalParameters.windowsProvider == null
+                         else
+                           .buildDefinition.externalParameters.windowsProvider == {
+                             inputClass: "development-only", runtimeAcceptanceVerified: false,
+                             fexRef: $fex, guestRef: $guest
+                           }
+                           and any(.buildDefinition.resolvedDependencies[]?; .uri == $fex)
+                           and any(.buildDefinition.resolvedDependencies[]?; .uri == $guest)
+                         end))' >/dev/null
           actual_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
           [[ $actual_arch == arm64 ]] || { echo '::error::Lenovo image is not ARM64'; exit 1; }
           existing="$(skopeo inspect --raw "docker://$target" 2>/dev/null | sha256sum | awk '{print "sha256:" $1}')" || existing=''
