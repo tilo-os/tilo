@@ -30,7 +30,11 @@ pub fn timecode(seconds: f64, fps: f64) -> String {
 /// frame field — the bin is a glance, not a scrub.
 pub fn clock(seconds: f64) -> String {
     let seconds = seconds.max(0.0);
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to zero above; a clip longer than u64 seconds does not exist"
+    )]
     let total = seconds.round() as u64;
     ui::format::timecode(total)
 }
