@@ -9,6 +9,7 @@ pub mod bundle;
 pub mod cli;
 pub mod efi;
 pub mod fat;
+pub mod final_bootnext;
 pub mod handoff;
 pub mod helper;
 #[cfg(target_os = "linux")]
