@@ -572,6 +572,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
           /out/ \
     && ln -s app /out/store \
     && ln -s tilo /out/system \
+    && mkdir -p /out/completions/bash /out/completions/fish /out/completions/zsh \
+    && target/release/tilo completions bash > /out/completions/bash/tilo \
+    && target/release/app completions bash > /out/completions/bash/app \
+    && target/release/tilo completions fish > /out/completions/fish/tilo.fish \
+    && target/release/app completions fish > /out/completions/fish/app.fish \
+    && target/release/tilo completions zsh > /out/completions/zsh/_tilo \
+    && target/release/app completions zsh > /out/completions/zsh/_app \
     # Files stays a standalone /usr/bin binary for recovery; its package is the
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
