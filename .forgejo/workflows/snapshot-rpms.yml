@@ -444,26 +444,16 @@ jobs:
             exit 1
           fi
           cat push.log >&2
-          # This pin supersedes every open RPM pin pull request whose snapshot
-          # comes from an earlier commit (or records none): merging one of
-          # those later would only regress main.
-          superseded=()
-          git fetch --no-tags --prune origin '+refs/heads/automation/*:refs/remotes/origin/automation/*'
-          while IFS= read -r candidate; do
-            [ "$candidate" != "$branch" ] || continue
-            source="$(git show "origin/$candidate:os/rpms-snapshot.env" 2>/dev/null \
-              | sed -n 's/^RPMS_SOURCE_REVISION=//p')" || continue
-            if [ -z "$source" ] || { [ "$source" != "$GITHUB_SHA" ] \
-                && git merge-base --is-ancestor "$source" "$GITHUB_SHA" 2>/dev/null; }; then
-              superseded+=(--supersede "$candidate")
-            fi
-          done < <(git for-each-ref --format='%(refname:strip=3)' \
-            'refs/remotes/origin/automation/rpm-snapshot-*' \
-            'refs/remotes/origin/automation/rpm-kernel-snapshot-*')
           python3 os/dev/open-snapshot-pr.py \
             --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" \
-            --branch "$branch" --snapshot-digest "$snapshot_digest" "${superseded[@]}" \
+            --branch "$branch" --snapshot-digest "$snapshot_digest" \
             rpms --rpms-ref "$ref" --source-revision "$GITHUB_SHA" | tee -a "$GITHUB_STEP_SUMMARY"
+          # Older pin PRs stay open and may land first; the reconcile below
+          # closes only those main already outdates, and schedules every other
+          # one, this one included, to merge once its required checks pass.
+          git checkout --quiet --detach FETCH_HEAD
+          python3 os/dev/reconcile-snapshot-pins.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" | tee -a "$GITHUB_STEP_SUMMARY"
           # This pin is newer than main's but older than main's inputs. Request
           # the refresh that catches up; it supersedes this PR.
           if [ "$moved" = true ]; then
@@ -474,3 +464,32 @@ jobs:
               "$GITHUB_SERVER_URL/api/v1/repos/$GITHUB_REPOSITORY/actions/workflows/snapshot-rpms.yml/dispatches" \
               || echo '::warning::could not dispatch snapshot-rpms.yml; dispatch it by hand to catch up'
           fi
+
+  # Every push that can move the pin (a pin landing included) brings the open
+  # pin PRs up to date with main: obsolete ones closed, newer ones replayed
+  # onto main if another pin landed first, each scheduled to merge on green.
+  reconcile-pins:
+    if: github.ref == 'refs/heads/main'
+    runs-on: runner-quality
+    timeout-minutes: 10
+    container:
+      image: code.sandbox.example/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+      - name: Reconcile open snapshot pin pull requests with main
+        env:
+          FORGEJO_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'Tilo CI'
+          git config user.email 'ci@tilo.invalid'
+          git fetch --no-tags origin main
+          git checkout --quiet --detach FETCH_HEAD
+          python3 os/dev/reconcile-snapshot-pins.py \
+            --server "$GITHUB_SERVER_URL" --repository "$GITHUB_REPOSITORY" | tee -a "$GITHUB_STEP_SUMMARY"

@@ -428,13 +428,27 @@ if grep -Fq 'TILO_INSTALLER_OS_IMAGE' "$workflow" \
    && grep -Fq 'generation_image="code.sandbox.example/qos/tilo:gen$generation"' "$published_image" \
    && grep -Fq 'generation_digest' "$published_image" \
    && grep -Fq 'published generation tag gen$generation binds' "$published_image" \
-   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ startsWith(github.ref, 'refs/tags/imager-v') && github.sha || '' }}" "$workflow" \
+   && grep -Fq "TILO_EXPECTED_OS_SOURCE_REVISION: \${{ github.event.inputs.published_os_source_revision || (startsWith(github.ref, 'refs/tags/imager-v') && github.sha) || '' }}" "$workflow" \
    && grep -Fq 'rehearsal overlays $GITHUB_SHA onto verified published generation' "$workflow" \
    && grep -Fq 'resolvedDependencies[]?; .uri == $source' "$published_image" \
    && grep -Fq 'podman tag "$image" "$TILO_IMAGE"' "$published_image"; then
   ok 'installer media consume one verified, digest-pinned published OS generation'
 else
   bad 'installer media can allocate an unpublished generation or consume an unverified OS source'
+fi
+
+if grep -Fq 'published_os_source_revision:' "$workflow" \
+   && grep -Fq 'PUBLISHED_OS_SOURCE_REVISION:-} =~ ^[0-9a-f]{40}$' "$workflow" \
+   && grep -Fq 'git merge-base --is-ancestor "$PUBLISHED_OS_SOURCE_REVISION" "$GITHUB_SHA"' "$workflow" \
+   && grep -Fq 'ref: ${{ github.event.inputs.published_os_source_revision || github.sha }}' "$workflow" \
+   && grep -Fq 'test "$(git rev-parse HEAD)" = "$TILO_EXPECTED_OS_SOURCE_REVISION"' "$workflow" \
+   && grep -Fq 'verified CI $target_profile target $target_image from source $TILO_EXPECTED_OS_SOURCE_REVISION generation ' "$workflow" \
+   && grep -Fq -- '--arg build_revision "$(git rev-parse HEAD)"' "$workflow" \
+   && grep -Fq 'signed $profile target source differs from pinned installer source' \
+      "$repo/os/dev/prepare-ci-installer-target.sh"; then
+  ok 'offline media pin main ancestry, checkout, signed target source, and medium identity to one revision'
+else
+  bad 'offline medium source can drift from the signed CI target revision'
 fi
 
 if grep -Fq "TILO_PCR_PREDICTION_SIGNER: \${{ startsWith(github.ref, 'refs/tags/imager-v')" "$workflow" \

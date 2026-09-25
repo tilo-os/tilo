@@ -30,7 +30,10 @@ CACHE_FORMAT = 1
 CLIPPY_ARGS = ("--locked", "--all-targets", "--message-format=json", "--", "--cap-lints", "warn")
 # Environment that changes which lints fire or how code is compiled. A cached
 # base is only reused when these match the consuming job exactly.
-FINGERPRINT_ENVIRONMENT = ("RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CLIPPY_CONF_DIR", "CARGO_BUILD_TARGET")
+FINGERPRINT_ENVIRONMENT = (
+    "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS", "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS", "CLIPPY_CONF_DIR", "CARGO_BUILD_TARGET",
+)
 # Lints whose message reports a measured size or count next to its limit.
 THRESHOLD_LINTS = frozenset(
     "clippy::" + name

@@ -28,15 +28,18 @@ use tokio::time::timeout;
 // `/dev/fuse` (+ fusermount3). Minimal CI containers don't have it, so
 // `spawn_mount2` fails with NotFound — skip cleanly there rather than
 // panicking; this gates on capability, it does not weaken any assertion.
+// The FUSE lane sets TILO_REQUIRE_FUSE=1, turning a missing device into a
+// failure instead of a silently skipped contract.
 fn fuse_available() -> bool {
     std::path::Path::new("/dev/fuse").exists()
 }
 macro_rules! require_fuse {
     () => {
-        if !fuse_available() {
-            eprintln!("skipping: requires /dev/fuse + fusermount3");
-            return;
-        }
+        tilo_test_env::require_capability!(
+            Fuse,
+            fuse_available(),
+            "requires /dev/fuse and fusermount3"
+        );
     };
 }
 

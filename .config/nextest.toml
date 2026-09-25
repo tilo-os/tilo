@@ -11,9 +11,12 @@ fail-fast = false
 slow-timeout = { period = "120s", terminate-after = 4 }
 failure-output = "immediate-final"
 fail-fast = false
-# Permit one retry for timing-sensitive GPU and socket tests.
+# Permit one retry for timing-sensitive GPU and socket tests. A retried test
+# is still reported: TRY 2 lines while running, FLAKY in the final summary,
+# and tools/ci/nextest_report.py lists both from the JUnit report.
 retries = 1
-status-level = "fail"
+status-level = "retry"
+final-status-level = "flaky"
 
 [profile.ci.junit]
 path = "junit.xml"
