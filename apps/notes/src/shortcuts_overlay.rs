@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect};
+use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -52,9 +52,10 @@ const GROUPS: &[Group] = &[
     Group {
         label: "Navigation",
         rows: &[
-            ("Jump to page", "Cmd-K / Ctrl-K"),
+            ("Jump to note", "Cmd-K / Ctrl-K"),
+            ("Back / forward note", "Alt-← / Alt-→"),
             ("Move selection up / down", "↑ / ↓"),
-            ("Collapse / expand page", "← / →"),
+            ("Collapse / expand note", "← / →"),
             ("Open shortcuts overlay", "?"),
             ("Close overlay / popover", "Esc"),
         ],
@@ -62,12 +63,20 @@ const GROUPS: &[Group] = &[
     Group {
         label: "Editing",
         rows: &[
+            ("Find in note", "Cmd-F / Ctrl-F"),
             ("New paragraph", "Enter"),
-            ("Indent / outdent list", "Tab / Shift-Tab"),
+            ("notes-help-outline-indent", "Tab / Shift-Tab"),
+            ("notes-help-block-indent", "Ctrl-] / Ctrl-["),
             ("Open block menu", "/"),
-            ("Link another page", "[["),
+            ("Link another note", "[["),
             ("Toggle checklist item", "click"),
             ("Move focused block", "Alt-↑ / Alt-↓"),
+            ("notes-help-code-exit", "Ctrl-Enter"),
+            ("notes-help-code-before", "Ctrl-Shift-Enter"),
+            ("notes-help-code-copy", "Ctrl-Shift-C"),
+            ("notes-help-code-indent", "Tab / Shift-Tab"),
+            ("notes-help-code-blank", "Shift-Enter"),
+            ("notes-help-code-select", "Ctrl-A"),
         ],
     },
     Group {
@@ -78,20 +87,24 @@ const GROUPS: &[Group] = &[
             ("Inline code", "`text` or Ctrl-E"),
             ("Heading 1 / 2 / 3", "# / ## / ###"),
             ("Quote", "> "),
+            ("notes-help-code", "```python ↵"),
+            ("notes-help-bullet", "- Space"),
+            ("notes-help-numbered", "1. Space"),
+            ("notes-help-checklist", "[ ] Space"),
         ],
     },
     Group {
-        label: "Pages",
+        label: "Notes",
         rows: &[
-            ("New page", "+ button"),
+            ("New note", "+ button"),
             ("New child of selected", "Cmd-N / Ctrl-N"),
-            ("Indent / outdent page", "Tab / Shift-Tab"),
-            ("Reorder page up / down", "Alt-↑ / Alt-↓"),
-            ("Rename page", "double-click / F2"),
-            ("Page actions", "Menu / Shift-F10"),
-            ("Link a page", "[[Page]]"),
-            ("Embed a page", "![[Page]]"),
-            ("Delete page", "Delete"),
+            ("Indent / outdent note", "Tab / Shift-Tab"),
+            ("Reorder note up / down", "Alt-↑ / Alt-↓"),
+            ("Rename note", "double-click / F2"),
+            ("Note actions", "Menu / Shift-F10"),
+            ("Link a note", "[[Note]]"),
+            ("Embed a note", "![[Note]]"),
+            ("Delete note", "Delete"),
         ],
     },
 ];
@@ -193,11 +206,14 @@ impl ShortcutsOverlay {
         let hint_y = layout.body.y0 + 2.0 * scale;
         text_renderer.draw_text(
             scene,
-            if compact_view {
-                "Esc or tap outside to close"
-            } else {
-                "Press Esc or click outside to close"
-            },
+            &ui::i18n::I18nManager::lookup(
+                if compact_view {
+                    "notes-help-close-compact"
+                } else {
+                    "Press Esc or click outside to close"
+                },
+                None,
+            ),
             hint_size,
             tokens.colors.text_dim,
             transform * Affine::translate((layout.body.x0, hint_y)),
@@ -237,14 +253,18 @@ impl ShortcutsOverlay {
         );
         scene.pop_layer();
         if self.max_scroll_y > 0.0 {
-            let label = if self.scroll_y + 0.5 < self.max_scroll_y {
+            let label = if compact_view && self.scroll_y + 0.5 < self.max_scroll_y {
+                "notes-help-more-compact"
+            } else if compact_view {
+                "notes-help-earlier-compact"
+            } else if self.scroll_y + 0.5 < self.max_scroll_y {
                 "Scroll for more shortcuts ↓"
             } else {
                 "Scroll up for earlier shortcuts ↑"
             };
             text_renderer.draw_text(
                 scene,
-                label,
+                &ui::i18n::I18nManager::lookup(label, None),
                 hint_size,
                 tokens.colors.text_dim,
                 transform
@@ -308,6 +328,42 @@ impl ShortcutsOverlay {
                     self.scroll_y = next;
                     self.dirty = true;
                 }
+                true
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        logical_key: Key::Named(key),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } if matches!(
+                key,
+                NamedKey::ArrowDown
+                    | NamedKey::ArrowUp
+                    | NamedKey::PageDown
+                    | NamedKey::PageUp
+                    | NamedKey::Home
+                    | NamedKey::End
+            ) =>
+            {
+                let step = ROW_HEIGHT * self.text_scale;
+                let page = self
+                    .layout
+                    .as_ref()
+                    .map_or(step * 8.0, |layout| layout.body.height() * 0.8);
+                let next = match key {
+                    NamedKey::ArrowDown => self.scroll_y + step,
+                    NamedKey::ArrowUp => self.scroll_y - step,
+                    NamedKey::PageDown => self.scroll_y + page,
+                    NamedKey::PageUp => self.scroll_y - page,
+                    NamedKey::Home => 0.0,
+                    _ => self.max_scroll_y,
+                }
+                .clamp(0.0, self.max_scroll_y);
+                self.dirty |= (next - self.scroll_y).abs() > f64::EPSILON;
+                self.scroll_y = next;
                 true
             }
             // Eat every keystroke so the editor underneath doesn't
@@ -451,7 +507,7 @@ fn draw_groups(
             let row_y = rows_top + (i as f64) * row_height * scale;
             text_renderer.draw_text(
                 scene,
-                label,
+                &ui::i18n::I18nManager::lookup(label, None),
                 row_size,
                 tokens.colors.text_dim,
                 transform * Affine::translate((x, row_y)),
@@ -467,25 +523,27 @@ fn draw_groups(
                 x + col_w - f64::from(kw) - 4.0 * scale
             };
             let key_y = if compact { row_y + 30.0 * scale } else { row_y };
-            // Soft chip background — translucent white for a "kbd"
-            // affordance without needing per-theme tinting.
             let chip_pad_x = 6.0 * scale;
             let chip_pad_y = 2.0 * scale;
-            let chip = RoundedRect::from_rect(
-                Rect::new(
-                    kx - chip_pad_x,
-                    key_y - chip_pad_y,
-                    kx + f64::from(kw) + chip_pad_x,
-                    key_y + f64::from(row_size) * scale + chip_pad_y,
-                ),
-                f64::from(tokens.radii.sm) * scale,
+            let chip = Rect::new(
+                kx - chip_pad_x,
+                key_y - chip_pad_y,
+                kx + f64::from(kw) + chip_pad_x,
+                key_y + f64::from(row_size) * scale + chip_pad_y,
             );
-            scene.fill(
-                Fill::NonZero,
+            // A kbd chip: one derived hairline step off the frame's ground
+            // (`ModalFrame` paints `surfaces.raised`), so the key registers
+            // on every preset — `lift(0.72)` landed on the light frame's own
+            // colour — with a crisp edge derived from that fill (HIG §9.5).
+            let ground = tokens.colors.surfaces.raised;
+            let step = ui::surface::edge_on(ground);
+            let kbd_fill = ui::tokens::colors::over(ground, step, step.components[3]);
+            ui::surface::card(
+                scene,
                 transform,
-                tokens.colors.lift(0.72),
-                None,
-                &chip,
+                chip,
+                f64::from(tokens.radii.sm) * scale,
+                kbd_fill,
             );
             text_renderer.draw_text(
                 scene,
@@ -662,6 +720,28 @@ mod tests {
         o.set_visible(true);
         assert!(o.is_visible());
         assert!(o.needs_redraw());
+    }
+
+    #[test]
+    fn keyboard_scrolling_reaches_both_ends_without_closing_help() {
+        let mut overlay = ShortcutsOverlay::new();
+        overlay.set_viewport(Rect::new(0.0, 0.0, 390.0, 844.0));
+        overlay.set_visible(true);
+        paint(&mut overlay);
+        assert!(overlay.max_scroll_y > 0.0);
+        for key in [NamedKey::PageDown, NamedKey::End, NamedKey::Home] {
+            let mut event = esc_event();
+            if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+                event.logical_key = Key::Named(key);
+            }
+            assert!(overlay.handle_key(&event, 1.0));
+            assert!(overlay.is_visible());
+            match key {
+                NamedKey::End => assert_eq!(overlay.scroll_y, overlay.max_scroll_y),
+                NamedKey::Home => assert_eq!(overlay.scroll_y, 0.0),
+                _ => assert!(overlay.scroll_y > 0.0),
+            }
+        }
     }
 
     #[test]

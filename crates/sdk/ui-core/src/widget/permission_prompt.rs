@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
+use crate::text_metrics::{centered_text_top, renderer_type_size};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -254,7 +255,10 @@ struct ButtonVisualState {
 // Standard immediate-mode paint-helper signature for this vello renderer
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "permission buttons combine scene resources and theme with bounds, label and hover/disabled/primary/focus state"
+)]
 fn draw_button(
     scene: &mut Scene,
     transform: Affine,
@@ -279,22 +283,31 @@ fn draw_button(
     }
     scene.fill(Fill::NonZero, transform, bg, None, &shape);
 
+    // Rest edge derived from the face itself (HIG §9.5), under the same
+    // alpha the disabled face carries; a declared `border_standard` sat
+    // within rounding distance of `raised` on the dark preset.
     let border = if state.disabled {
-        theme.tokens.colors.border_standard.with_alpha_factor(0.4)
+        crate::surface::edge_on(bg).with_alpha_factor(0.4)
     } else {
-        theme.tokens.colors.border_standard
+        crate::surface::edge_on(bg)
     };
-    scene.stroke(
-        &Stroke::new(if state.focused { 2.0 } else { 1.0 }),
-        transform,
-        if state.focused {
-            theme.border_focus
-        } else {
-            border
-        },
-        None,
-        &shape,
-    );
+    if state.focused {
+        scene.stroke(
+            &Stroke::new(2.0),
+            transform,
+            theme.border_focus,
+            None,
+            &shape,
+        );
+    } else {
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            border,
+            None,
+            &crate::surface::edge_outline(rect, radius),
+        );
+    }
 
     let text_color = if state.disabled {
         theme.tokens.colors.text_primary.with_alpha_factor(0.4)
@@ -311,10 +324,11 @@ fn draw_button(
         theme.tokens.colors.text_primary
     };
 
-    let text_size = theme.tokens.typography.scale.sm;
-    let (text_w, _) = text_renderer.measure(label, text_size, None);
+    let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+    // Centre on the measured line in both axes, not on the font size.
+    let (text_w, text_h) = text_renderer.measure(label, text_size, None);
     let text_x = rect.center().x - (f64::from(text_w) / 2.0);
-    let text_y = rect.y0 + (rect.height() - f64::from(text_size)) / 2.0;
+    let text_y = rect.y0 + (rect.height() - f64::from(text_h)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -383,12 +397,14 @@ impl Widget for PermissionPrompt {
             None,
             &shape,
         );
+        // Panel role (HIG §9.1): the derived panel edge as a crisp 1 px
+        // inset stroke, never a declared `border_standard`.
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(self.rect, radius),
         );
 
         // Placeholder pulled from the accent ramp until the portal layer
@@ -405,14 +421,36 @@ impl Widget for PermissionPrompt {
             &icon_shape,
         );
 
+        // Button geometry first: the label block ends `spacing.s3` before the
+        // leftmost button and is elided to that width, so the two never
+        // overlap on a narrow strip (HIG §7 "Nothing touches"). Also keeps a
+        // draw without a preceding `apply_layout` hit-testing correctly.
+        self.apply_layout_helper();
         let label_x = icon_x + ICON_SIZE + f64::from(theme.tokens.spacing.s2);
-        let app_id_size = theme.tokens.typography.scale.sm;
-        let cap_size = theme.tokens.typography.scale.base;
-        let label_y = self.rect.y0
-            + (PROMPT_HEIGHT - (f64::from(app_id_size) + f64::from(cap_size) + 4.0)) / 2.0;
+        let label_max_w =
+            (self.allow_rect.x0 - f64::from(theme.tokens.spacing.s3) - label_x).max(0.0);
+        let app_id_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
+        let cap_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.base);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "bounded screen-space width; f32 precision is sufficient for text layout"
+        )]
+        let label_max_w = label_max_w as f32;
+        let app_id = text_renderer.elide_to_width(&self.app_id, app_id_size, label_max_w);
+        let capability =
+            text_renderer.elide_to_width(&self.capability_label, cap_size, label_max_w);
+        // Centre the two-line block on its measured line boxes, not on the
+        // font sizes, so both lines sit where the band says they are.
+        let (_, app_id_h) = text_renderer.measure(&app_id, app_id_size, None);
+        let (_, cap_h) = text_renderer.measure(&capability, cap_size, None);
+        let label_y = centered_text_top(
+            self.rect.y0,
+            PROMPT_HEIGHT,
+            f64::from(app_id_h) + 4.0 + f64::from(cap_h),
+        );
         text_renderer.draw_text(
             scene,
-            &self.app_id,
+            &app_id,
             app_id_size,
             theme.tokens.colors.text_dim,
             transform.pre_translate(Vec2::new(label_x, label_y)),
@@ -420,15 +458,12 @@ impl Widget for PermissionPrompt {
         );
         text_renderer.draw_text(
             scene,
-            &self.capability_label,
+            &capability,
             cap_size,
             theme.tokens.colors.text_primary,
-            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_size) + 4.0)),
+            transform.pre_translate(Vec2::new(label_x, label_y + f64::from(app_id_h) + 4.0)),
             None,
         );
-
-        // So a draw without a preceding `apply_layout` still hit-tests correctly.
-        self.apply_layout_helper();
 
         let buttons = [
             (self.allow_rect, PromptChoice::Allow, true), // primary (accent)
@@ -693,7 +728,7 @@ mod tests {
 
     fn synth_device() -> DeviceId {
         // SAFETY: `DeviceId` is opaque; tests construct one via
-        // `mem::zeroed`. Same pattern as `quick-ui::widget::slider`'s
+        // `mem::zeroed`. Same pattern as `quick-tilo_ui::widget::slider`'s
         // own test helpers.
         unsafe { std::mem::zeroed() }
     }

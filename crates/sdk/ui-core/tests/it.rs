@@ -13,6 +13,10 @@
     clippy::float_cmp,
     reason = "in a test these are the assertion, not a hazard"
 )]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests may time and wait on the real clock; the rule guards the library"
+)]
 
 #[path = "support/mod.rs"]
 mod support;
@@ -28,6 +32,8 @@ mod app_widget;
 mod block_editor_markdown;
 #[path = "block_editor_slash_menu_integration.rs"]
 mod block_editor_slash_menu_integration;
+#[path = "block_editor_wrapping.rs"]
+mod block_editor_wrapping;
 #[cfg(unix)]
 #[path = "coedit_keystone.rs"]
 mod coedit_keystone;
@@ -39,11 +45,15 @@ mod command_palette_test;
 mod container_update_forwarding;
 #[path = "context_menu_test.rs"]
 mod context_menu_test;
+#[path = "control_row_alignment.rs"]
+mod control_row_alignment;
 #[cfg(unix)]
 #[path = "cross_process_presence_pump.rs"]
 mod cross_process_presence_pump;
 #[path = "data_table_test.rs"]
 mod data_table_test;
+#[path = "data_widget_text_alignment.rs"]
+mod data_widget_text_alignment;
 #[path = "design_token_audit.rs"]
 mod design_token_audit;
 #[cfg(unix)]
@@ -63,8 +73,15 @@ mod ghost_cursor_render_test;
 mod group_row_visual_journey;
 #[path = "icon_grid_test.rs"]
 mod icon_grid_test;
+#[path = "identity_flow_layout.rs"]
+mod identity_flow_layout;
+#[path = "immersive_widget_geometry.rs"]
+mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
 mod incremental_render_regressions;
+#[cfg(unix)]
+#[path = "large_document_transfer.rs"]
+mod large_document_transfer;
 #[cfg(unix)]
 #[path = "large_frame_reassembly.rs"]
 mod large_frame_reassembly;
@@ -75,6 +92,8 @@ mod link_popover_renders;
 mod live_text_sync;
 #[path = "local_identity_is_a_person.rs"]
 mod local_identity_is_a_person;
+#[path = "menu_highlight_render.rs"]
+mod menu_highlight_render;
 #[path = "multi_user_session.rs"]
 mod multi_user_session;
 #[path = "overlay_test.rs"]
@@ -105,6 +124,8 @@ mod screenshot_test;
 mod scrollable_test;
 #[path = "scrollbar_render_test.rs"]
 mod scrollbar_render_test;
+#[path = "spacing_token_audit.rs"]
+mod spacing_token_audit;
 #[path = "strip_view_test.rs"]
 mod strip_view_test;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -112,6 +133,8 @@ mod strip_view_test;
 mod synthetic_key_event;
 #[path = "tabs_test.rs"]
 mod tabs_test;
+#[path = "text_scaled_once.rs"]
+mod text_scaled_once;
 #[path = "textinput_local_mode.rs"]
 mod textinput_local_mode;
 #[path = "tile_app_widget.rs"]
@@ -124,6 +147,8 @@ mod tokens_test;
 mod tooltip_render_test;
 #[path = "tooltip_test.rs"]
 mod tooltip_test;
+#[path = "typography_baseline_geometry.rs"]
+mod typography_baseline_geometry;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]

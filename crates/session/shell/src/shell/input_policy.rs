@@ -16,8 +16,8 @@ const WHEEL_STEP: f64 = 15.0;
 /// Resolve the foreign surface hosted by the *focused* tab (active tab of
 /// the active group/strip/workspace). `None` when shell-owned or empty — the keyboard-focus rule: input follows the active tab.
 pub fn active_foreign_surface(tree: &WorkspaceTree) -> Option<u64> {
-    let ws = tree.active_workspace()?;
-    let strip = match tree.active_strip.get(&ws.id) {
+    let ws = tree.desktop.active_workspace()?;
+    let strip = match tree.desktop.active_strip.get(&ws.id) {
         Some(sid) => ws
             .strips
             .iter()
@@ -25,7 +25,7 @@ pub fn active_foreign_surface(tree: &WorkspaceTree) -> Option<u64> {
             .or_else(|| ws.strips.first())?,
         None => ws.strips.first()?,
     };
-    let group = match tree.active_group_for(strip.id) {
+    let group = match tree.desktop.active_group_for(strip.id) {
         Some(gid) => strip
             .window_groups
             .iter()
@@ -74,7 +74,7 @@ pub fn foreign_tile_at(
 /// input must answer the same "what's on top here?" question from a
 /// different thread; a second traversal risks disagreeing with where the click really lands (see [`crate::network::input_firewall`]).
 pub fn foreign_tiles(tree: &WorkspaceTree, host: &ShellOverlayHost) -> Vec<TileHit> {
-    let Some(ws) = tree.active_workspace() else {
+    let Some(ws) = tree.desktop.active_workspace() else {
         return Vec::new();
     };
     let mut out = Vec::new();
@@ -829,9 +829,13 @@ pub fn insert_foreign_group(
     surface_id: u64,
     app_id: Option<&str>,
 ) -> Option<(StripId, GroupId)> {
-    let active_ws = tree.active;
-    let preferred_strip = tree.active_strip.get(&active_ws).copied();
-    let ws = tree.workspaces.iter_mut().find(|w| w.id == active_ws)?;
+    let active_ws = tree.desktop.active;
+    let preferred_strip = tree.desktop.active_strip.get(&active_ws).copied();
+    let ws = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == active_ws)?;
     // Index first, then borrow once — `or_else` over two `&mut` borrows of the same vec doesn't type-check.
     let idx = preferred_strip
         .and_then(|sid| ws.strips.iter().position(|s| s.id == sid))
@@ -860,13 +864,13 @@ pub fn insert_foreign_group(
     let group_id = group.id;
     let strip_id = strip.id;
     strip.window_groups.push(group);
-    tree.set_active_group(strip_id, group_id);
+    tree.desktop.set_active_group(strip_id, group_id);
     Some((strip_id, group_id))
 }
 
 pub fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
     let mut vacated: Option<(StripId, GroupId)> = None;
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             let mut hit_group: Option<GroupId> = None;
             for group in &mut strip.window_groups {
@@ -893,13 +897,13 @@ pub fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
             }
             if let Some((sid, gone)) = vacated {
                 let fallback = strip.window_groups.last().map(|g| g.id);
-                if tree.active_group.get(&sid) == Some(&gone) {
+                if tree.desktop.active_group.get(&sid) == Some(&gone) {
                     match fallback {
                         Some(next) => {
-                            tree.active_group.insert(sid, next);
+                            tree.desktop.active_group.insert(sid, next);
                         }
                         None => {
-                            tree.active_group.remove(&sid);
+                            tree.desktop.active_group.remove(&sid);
                         }
                     }
                 }
@@ -911,7 +915,7 @@ pub fn remove_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64) -> bool {
 }
 
 pub fn rename_foreign_tab(tree: &mut WorkspaceTree, surface_id: u64, new_app_id: &str) -> bool {
-    for ws in &mut tree.workspaces {
+    for ws in &mut tree.desktop.workspaces {
         for strip in &mut ws.strips {
             for group in &mut strip.window_groups {
                 for tab in &mut group.tabs {
@@ -1047,11 +1051,14 @@ mod tests {
         let mut ws = Workspace::new(ws_id, "Home");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active_strip.insert(ws_id, strip_id);
+        tree.desktop.active_strip.insert(ws_id, strip_id);
         (tree, strip_id, foreign_group)
     }
     #[test]
@@ -1106,13 +1113,13 @@ mod tests {
             "a shell-owned active tab must not hand the keyboard to a client"
         );
         // Switching the active group onto the foreign one moves focus.
-        tree.set_active_group(strip, foreign_group);
+        tree.desktop.set_active_group(strip, foreign_group);
         assert_eq!(active_foreign_surface(&tree), Some(4242));
     }
     #[test]
     fn conventional_window_cycle_wraps_while_spatial_step_clamps() {
         let (mut tree, strip, foreign_group) = tree_with_foreign(4242);
-        let first_group = tree.workspaces[0].strips[0].window_groups[0].id;
+        let first_group = tree.desktop.workspaces[0].strips[0].window_groups[0].id;
         assert_eq!(
             cycle_active_window(&tree, -1).map(|(_, group, _)| group),
             Some(foreign_group),
@@ -1120,7 +1127,7 @@ mod tests {
         );
         assert_eq!(step_active_window(&tree, -1), None);
 
-        tree.set_active_group(strip, foreign_group);
+        tree.desktop.set_active_group(strip, foreign_group);
         assert_eq!(
             cycle_active_window(&tree, 1).map(|(_, group, _)| group),
             Some(first_group),
@@ -1158,11 +1165,14 @@ mod tests {
         let mut ws = Workspace::new(ws_id, "Home");
         ws.strips = vec![strip];
         let mut tree = WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                ..Default::default()
+            },
             ..Default::default()
         };
-        tree.active_strip.insert(ws_id, strip_id);
+        tree.desktop.active_strip.insert(ws_id, strip_id);
 
         // Notes is active → one step right is Files.
         assert_eq!(
@@ -1171,12 +1181,12 @@ mod tests {
             "one step right of the first tab must be the second"
         );
         // Apply it, step again → Terminal; then the right edge clamps.
-        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
+        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[1];
         assert_eq!(
             step_active_window(&tree, 1),
             Some((strip_id, group_id, ids[2]))
         );
-        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
+        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[2];
         assert_eq!(step_active_window(&tree, 1), None, "right edge clamps");
         assert_eq!(step_active_window(&tree, 5), None, "overshoot clamps too");
         // And back left, two at once, lands on Notes; the left edge clamps.
@@ -1184,7 +1194,7 @@ mod tests {
             step_active_window(&tree, -2),
             Some((strip_id, group_id, ids[0]))
         );
-        tree.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
+        tree.desktop.workspaces[0].strips[0].window_groups[0].active_tab = ids[0];
         assert_eq!(step_active_window(&tree, -1), None, "left edge clamps");
     }
     #[test]
@@ -1193,7 +1203,7 @@ mod tests {
         // No explicit active pointer yet: the walk starts at the first group's tab; one step right crosses into the foreign group.
         let (s, g, _t) = step_active_window(&tree, 1).expect("step into the next group");
         assert_eq!((s, g), (strip, foreign_group));
-        tree.set_active_group(strip, foreign_group);
+        tree.desktop.set_active_group(strip, foreign_group);
         // At the strip's last window the jump clamps.
         assert_eq!(step_active_window(&tree, 1), None);
         // Stepping back crosses into the first group again.
@@ -1252,10 +1262,10 @@ mod tests {
     #[test]
     fn active_foreign_surface_ignores_inactive_workspaces() {
         let (mut tree, strip, foreign_group) = tree_with_foreign(7);
-        tree.set_active_group(strip, foreign_group);
+        tree.desktop.set_active_group(strip, foreign_group);
         assert_eq!(active_foreign_surface(&tree), Some(7));
         // Point the tree at a workspace that doesn't exist: nothing to focus.
-        tree.active = crate::shell::state::WorkspaceId::from(u64::MAX);
+        tree.desktop.active = crate::shell::state::WorkspaceId::from(u64::MAX);
         assert_eq!(
             active_foreign_surface(&tree),
             None,
@@ -1518,6 +1528,7 @@ mod tests {
     fn insert_foreign_group_lands_in_the_active_strip_and_takes_focus() {
         let (mut tree, strip, _) = tree_with_foreign(1);
         let before = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -1530,6 +1541,7 @@ mod tests {
             .expect("adoption must land in the active strip");
         assert_eq!(placed.0, strip);
         let live = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -1538,7 +1550,7 @@ mod tests {
             .unwrap();
         assert_eq!(live.window_groups.len(), before + 1);
         assert_eq!(
-            tree.active_group_for(strip),
+            tree.desktop.active_group_for(strip),
             Some(placed.1),
             "a newly-mapped window takes the active-group slot"
         );
@@ -1555,6 +1567,7 @@ mod tests {
         assert_eq!(active_foreign_surface(&tree), Some(99));
         assert!(remove_foreign_tab(&mut tree, 99));
         let live = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -1566,7 +1579,7 @@ mod tests {
             "an emptied group must not linger in the strip"
         );
         assert_eq!(
-            tree.active_group_for(strip),
+            tree.desktop.active_group_for(strip),
             Some(foreign_group),
             "focus must move off the destroyed group onto a surviving sibling"
         );
@@ -1592,6 +1605,7 @@ mod tests {
         insert_foreign_group(&mut tree, 99, None).unwrap();
         assert!(rename_foreign_tab(&mut tree, 99, "org.example.Renamed"));
         let tab = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips
@@ -1692,14 +1706,16 @@ mod tests {
         let workspace = fb
             .chrome()
             .tree()
+            .desktop
             .active_workspace()
             .map(|ws| ws.id)
             .expect("a fresh FrameBuilder has an active workspace");
         let (reply, _parked) = tokio::sync::oneshot::channel();
         queue.spawn(crate::portal::FilePickerRequest {
-            caller: crate::portal::PortalCaller::new(workspace, "dev.tilo.tests"),
+            caller: crate::portal::PortalCaller::new(workspace, "so.tilo.tests"),
             title: "Insert image".into(),
             save: false,
+            directory: false,
             multiple: false,
             accept_label: None,
             current_name: None,
@@ -1900,9 +1916,10 @@ mod tests {
     }
 }
 pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, GroupId, u64)> {
-    let ws = tree.active_workspace()?;
+    let ws = tree.desktop.active_workspace()?;
     // Focused strip, else the first — the same fallback `place_tab` applies when a recorded pointer has gone stale.
     let strip = tree
+        .desktop
         .active_strip
         .get(&ws.id)
         .copied()
@@ -1918,6 +1935,7 @@ pub fn step_active_window(tree: &WorkspaceTree, steps: i32) -> Option<(StripId, 
     }
     // Current position: the focused group's active tab (same first-group fallback used everywhere else).
     let cur_group = tree
+        .desktop
         .active_group_for(strip.id)
         .and_then(|g| strip.window_groups.iter().find(|wg| wg.id == g))
         .or_else(|| strip.window_groups.first())?;

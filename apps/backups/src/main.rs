@@ -56,9 +56,18 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.backups", backups::app_root)
+        &LaunchSpec::new("so.tilo.backups", backups::app_root)
             .shot_root(shot_root)
-            .scenarios(&["status", "progress", "failure", "restore", "unavailable"])
+            .scenarios(&[
+                "status",
+                "progress",
+                "failure",
+                "restore",
+                "sources",
+                "destinations",
+                "schedules",
+                "unavailable",
+            ])
             .allowed_flags(&["--empty"])
             .configure_app(|app| backups::actions::register(app.action_registry_mut())),
     );

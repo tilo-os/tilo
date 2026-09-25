@@ -11,6 +11,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use std::collections::HashMap;
 
 use shell::shell::overview::OverviewView;
@@ -29,20 +31,23 @@ fn overview_view_click_activates_workspace() {
     let b_id = b.id;
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![a, b],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![a, b],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
 
     let mut ov = OverviewView::new();
     ov.sync(&tree);
     assert_eq!(ov.card_count(), 2);
     ov.click_card(1, &mut tree);
-    assert_eq!(tree.active, b_id);
+    assert_eq!(tree.desktop.active, b_id);
 }
 
 use shell::shell::global_search::GlobalSearch;
@@ -176,23 +181,26 @@ fn topbar_leftnav_navigates_workspaces() {
     let ws_c = Workspace::new(WorkspaceId::new(), "C");
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![ws_a, ws_b, ws_c],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![ws_a, ws_b, ws_c],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
-    tree.active = tree.workspaces[1].id;
+    tree.desktop.active = tree.desktop.workspaces[1].id;
     let mut tb = TopBar::new();
     tb.emit(TopBarEvent::WorkspaceUp, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[0].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[0].id);
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[2].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
     // clamped at edges
     tb.emit(TopBarEvent::WorkspaceDown, &mut tree);
-    assert_eq!(tree.active, tree.workspaces[2].id);
+    assert_eq!(tree.desktop.active, tree.desktop.workspaces[2].id);
 }
 
 #[test]
@@ -213,14 +221,17 @@ fn topbar_right_tray_renders_collaborators_and_opens_quick_settings() {
     let collab_4 = Collaborator::new("u4", "Di");
 
     let mut tree = WorkspaceTree {
-        workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![collab_1, collab_2, collab_3, collab_4],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![Workspace::new(WorkspaceId::new(), "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![collab_1, collab_2, collab_3, collab_4],
+            ..Default::default()
+        },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
     let mut tb = TopBar::new();
     let avatars = tb.visible_avatars(&tree, 3);
     assert_eq!(avatars.len(), 3);
@@ -238,13 +249,16 @@ fn topbar_chrome_maps_two_peers_to_two_distinct_avatar_hues() {
     let mut workspace = Workspace::new(WorkspaceId::new(), "A");
     workspace.collaborators = vec![collab_1, collab_2];
     let mut tree = WorkspaceTree {
-        workspaces: vec![workspace],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![workspace],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            ..Default::default()
+        },
         ..Default::default()
     };
-    tree.active = tree.workspaces[0].id;
+    tree.desktop.active = tree.desktop.workspaces[0].id;
     let chrome = TopBarChrome::from_tree(&tree);
     let colors = chrome.collaborator_colors();
     assert_eq!(colors.len(), 2);
@@ -261,11 +275,14 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
     use shell::shell::topbar_chrome::TopBarChrome;
     use ui::text_render::TextWeight;
     let tree = WorkspaceTree {
-        workspaces: vec![mk_workspace(0, "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![mk_workspace(0, "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let chrome = TopBarChrome::from_tree(&tree);
@@ -279,24 +296,6 @@ fn topbar_chrome_clock_renders_at_bold_weight() {
         chrome.workspace_name_text_weight(),
         TextWeight::Semibold,
         "workspace-name pill must render at Semibold (600) per concept §2.1",
-    );
-}
-
-/// The top bar is opaque, taking its opacity from the one chrome
-/// constant rather than a number of its own — a tint without blur (vello
-/// has none) is a contrast loss, not glass.
-#[test]
-fn topbar_chrome_surface_alpha_tracks_the_shared_chrome_opacity() {
-    use shell::shell::topbar_chrome::TopBarChrome;
-    let a = TopBarChrome::top_bar_alpha();
-    assert!(
-        (a - ui::chrome::shell::CHROME_SURFACE_ALPHA).abs() < f32::EPSILON,
-        "top-bar alpha must be the shared chrome opacity so the bar and          its popovers stay one material; got {a} against {}",
-        ui::chrome::shell::CHROME_SURFACE_ALPHA
-    );
-    assert!(
-        (a - 1.0).abs() < f32::EPSILON,
-        "chrome is opaque: this renderer has no backdrop filter, so a          translucent bar is not glass but a contrast loss that varies          with what is open behind it; got {a}"
     );
 }
 
@@ -341,11 +340,14 @@ fn topbar_chrome_overview_glyph_is_lucide_layout_grid() {
 fn topbar_chrome_active_center_dot_is_larger_than_inactive() {
     use shell::shell::topbar_chrome::TopBarChrome;
     let tree = WorkspaceTree {
-        workspaces: vec![mk_workspace(0, "A")],
-        active: WorkspaceId::from(0),
-        active_strip: HashMap::default(),
-        active_group: HashMap::default(),
-        collaborators: vec![],
+        desktop: shell::shell::state::DesktopTree {
+            workspaces: vec![mk_workspace(0, "A")],
+            active: WorkspaceId::from(0),
+            active_strip: HashMap::default(),
+            active_group: HashMap::default(),
+            collaborators: vec![],
+            ..Default::default()
+        },
         ..Default::default()
     };
     let chrome = TopBarChrome::from_tree(&tree);

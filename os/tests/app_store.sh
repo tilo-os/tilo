@@ -108,7 +108,7 @@ for m in "${manifests[@]}"; do
 done
 [ "$no_bin" = 1 ] || ok "every manifest entrypoint names a binary its crate builds"
 
-# Thin qpkg binaries must all opt into the same shared-runtime edge. Merely
+# Thin tapp binaries must all opt into the same shared-runtime edge. Merely
 # building runtime-dylib is not enough: one forgotten app silently returns to a
 # 20–30 MB static archive, and building apps separately creates incompatible
 # Rust crate hashes even when every individual link succeeds.
@@ -138,21 +138,21 @@ else
   bad "thin app packaging can still sign a runtime/app pair with incompatible Rust crate hashes"
 fi
 
-if grep -q '^POLICY_MAX_QPKG_BYTES=5242880$' "$PACK" \
-   && grep -q 'MAX_QPKG_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
-   && ! grep -q 'RECOVERY_MAX_QPKG_BYTES' "$PACK"; then
+if grep -q '^POLICY_MAX_TAPP_BYTES=5242880$' "$PACK" \
+   && grep -q 'MAX_TAPP_BYTES cannot exceed the 5 MiB application policy' "$PACK" \
+   && ! grep -q 'RECOVERY_MAX_TAPP_BYTES' "$PACK"; then
   ok "pack-apps enforces the canonical 5 MiB ceiling without app exceptions"
 else
-  bad "pack-apps does not enforce the canonical 5 MiB qpkg ceiling uniformly"
+  bad "pack-apps does not enforce the canonical 5 MiB tapp ceiling uniformly"
 fi
 
-weakening_output=$(MAX_QPKG_BYTES=5242881 "$PACK" 2>&1)
+weakening_output=$(MAX_TAPP_BYTES=5242881 "$PACK" 2>&1)
 weakening_status=$?
 if [ "$weakening_status" -ne 0 ] \
    && grep -q 'cannot exceed the 5 MiB application policy' <<<"$weakening_output"; then
   ok "pack-apps refuses an environment override that weakens the size policy"
 else
-  bad "MAX_QPKG_BYTES can weaken the canonical application size policy"
+  bad "MAX_TAPP_BYTES can weaken the canonical application size policy"
 fi
 
 if grep -q -- '--include /out/libruntime_dylib.so' "$CONTAINERFILE" \
@@ -269,7 +269,7 @@ else
       else
         bad "apps [$users] require 'collab', but the native compositor does not visibly start its broker on launcher::services::collab_socket()."
       fi
-      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
         && ok "the image installs the compositor that owns 'collab'" \
         || bad "os/Containerfile does not install /usr/bin/shell, so the compositor-owned 'collab' broker cannot start."
       continue
@@ -295,7 +295,7 @@ sys.exit(0 if re.search(pattern, source) else 1)
       else
         bad "apps [$users] require 'tools', but its compositor-owned socket and workspace handler are not wired."
       fi
-      containerfile_has_copy "$CONTAINERFILE" /out/shell /usr/bin/shell builder \
+      containerfile_installs_output "$CONTAINERFILE" shell /usr/bin/shell \
         && ok "the image installs the compositor that owns 'tools'" \
         || bad "os/Containerfile does not install the compositor-owned 'tools' service."
       continue
@@ -330,7 +330,7 @@ sys.exit(0 if re.search(pattern, source) else 1)
     if [ -z "$svc_bin" ]; then
       bad "$unit_rel has no ExecStart, so nothing checks that its binary ships"
     elif containerfile_copy_contract "$CONTAINERFILE" | \
-         awk -F '\t' -v d="$svc_bin" '$1 == "builder" && $3 == d { found=1 } END { exit !found }'; then
+         awk -F '\t' -v d="$svc_bin" '($1 == "builder" || $1 == "components.toml") && $3 == d { found=1 } END { exit !found }'; then
       ok "the image installs $svc_bin for '$svc'"
     else
       bad "os/Containerfile never copies $svc_bin into the image, so
@@ -354,9 +354,13 @@ fi
 # unconditionally and has no portal feature of its own, so the pair looked exactly
 # like the twelve valid ones next to it.
 #
-# Checked against cargo metadata rather than a restated list here, so the two
-# cannot drift. Metadata that cannot be read is a FAILURE, not a skip: "could not
-# look" and "looked and found nothing wrong" are the same output otherwise.
+# Checked against the workspace's own manifests rather than a restated list here,
+# so the two cannot drift. They are read directly, not through `cargo metadata`:
+# cargo takes the shared ~/.cargo package-cache lock even with --offline
+# --no-deps, so this preflight used to wait as long as any other build on the
+# machine held it. A manifest that cannot be read is a FAILURE, not a skip:
+# "could not look" and "looked and found nothing wrong" are the same output
+# otherwise.
 feat_line="$(sed -n 's/^ *&& APP_FEATURES="\([^"]*\)".*/\1/p' "$CONTAINERFILE" | head -1)"
 if [ -z "$feat_line" ]; then
   bad "could not read APP_FEATURES from os/Containerfile — the declaration it is
@@ -364,16 +368,36 @@ if [ -z "$feat_line" ]; then
       default feature set: a music player that cannot produce sound, a video player
       that synthesises frames, a camera that cannot capture."
 else
-  meta="$(cd "$REPO" && cargo metadata --no-deps --format-version 1 --offline 2>/dev/null)"
-  if [ -z "$meta" ]; then
-    bad "cargo metadata produced nothing, so the APP_FEATURES pairs in os/Containerfile
-      could not be checked. Treated as a failure: an unknown feature name stops the
-      image build only after the cold Rust compile."
-  else
-    bogus="$(printf '%s' "$meta" | python3 -c '
-import json, sys
-have = {p["name"]: set(p["features"]) for p in json.load(sys.stdin)["packages"]}
-for pair in (s.strip() for s in sys.argv[1].split(",")):
+  bogus="$(python3 - "$REPO" "$feat_line" <<'PY' 2>&1
+import sys, tomllib
+from pathlib import Path
+
+repo = Path(sys.argv[1])
+root = tomllib.loads((repo / "Cargo.toml").read_text())
+members = []
+for pattern in root["workspace"]["members"]:
+    members += sorted(repo.glob(pattern)) if any(c in pattern for c in "*?[") else [repo / pattern]
+
+def features(manifest: dict) -> set[str]:
+    # What cargo metadata reports: declared features plus the implicit feature
+    # of every optional dependency no `dep:` entry hides.
+    declared = manifest.get("features", {})
+    hidden = {v[4:] for values in declared.values() for v in values if v.startswith("dep:")}
+    tables = [manifest] + list(manifest.get("target", {}).values())
+    optional = {name for table in tables
+                for key in ("dependencies", "build-dependencies", "dev-dependencies")
+                for name, spec in table.get(key, {}).items()
+                if isinstance(spec, dict) and spec.get("optional")}
+    return set(declared) | (optional - hidden)
+
+have = {}
+for member in members:
+    manifest = tomllib.loads((member / "Cargo.toml").read_text())
+    if "package" in manifest:
+        have[manifest["package"]["name"]] = features(manifest)
+if not have:
+    sys.exit("the workspace manifests name no packages")
+for pair in (s.strip() for s in sys.argv[2].split(",")):
     if not pair:
         continue
     if "/" not in pair:
@@ -385,16 +409,16 @@ for pair in (s.strip() for s in sys.argv[1].split(",")):
     elif feat not in have[pkg]:
         opts = ", ".join(sorted(have[pkg])) or "none"
         print(f"{pair}: {pkg} has no feature {feat} (it has: {opts})")
-' "$feat_line" 2>&1)"
-    if [ -z "$bogus" ]; then
-      n="$(printf '%s' "$feat_line" | tr ',' '\n' | grep -c .)"
-      ok "all $n APP_FEATURES pairs name a feature their package really has"
-    else
-      bad "os/Containerfile asks cargo for features that do not exist:
+PY
+)" || bogus="${bogus:-the workspace manifests could not be read}"
+  if [ -z "$bogus" ]; then
+    n="$(printf '%s' "$feat_line" | tr ',' '\n' | grep -c .)"
+    ok "all $n APP_FEATURES pairs name a feature their package really has"
+  else
+    bad "os/Containerfile asks cargo for features that do not exist (or the manifests are unreadable):
 $(printf '%s\n' "$bogus" | sed 's/^/      /')
       cargo refuses the whole build for any one of these, after the builder stage
       has already installed its packages and compiled the workspace."
-    fi
   fi
 fi
 

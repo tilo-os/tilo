@@ -142,7 +142,7 @@ not what the caller is allowed to reach. Standard library only, no SDK.
 Start a compositor, then register the shim:
 
 ```bash
-export TILO_TEST_CONTROL=/tmp/tilo.sock
+export TILO_TEST_CONTROL=$XDG_RUNTIME_DIR/tilo-session/test-control.sock
 cargo run --bin shell -- --backend headless &
 
 # Verify the shim reaches the compositor before putting a model behind it:
@@ -155,6 +155,28 @@ The socket path comes from `$TILO_TEST_CONTROL`, or `--socket`. The shim never
 fabricates an action list or a success: if the compositor is unreachable, or
 answers `{"err": ...}`, the model receives that as a tool error with the
 compositor's own code and message intact.
+
+## Apps that run before the compositor
+
+The installer and the greeter run under `cage` straight from greetd, so no
+compositor socket reaches them. They serve the same three semantic ops
+themselves — `actions_enumerate`, `actions_invoke`, `state_dump` — through
+`crates/session/console-control`, so `tilo-control --socket <path> actions
+list` drives them unchanged:
+
+- on the machine, `$XDG_RUNTIME_DIR/tilo-console/<app>.sock` (0700 directory,
+  0600 socket) for the local console and assistive tooling of that user;
+- in a VM, the virtio-serial port `org.tilo.console.0`, which exists only when
+  the hypervisor attaches it (`os/dev/vm.sh console` prints its host end).
+  Physical machines have no such bus; nothing listens on a network.
+
+Action ids there are `<action>@<resource>` (`next@installer`,
+`begin@installer.review`). A contract that asks for confirmation takes it as
+an argument, the same projection the compositor publishes for app actions:
+`confirm: true` for `Confirm`, `confirmation_phrase` for a typed `Phrase`.
+Input injection is not served; the surface is semantic only.
+`tilo-vm scenario install` drives the installer this way end to end
+(`tilo-vm guide scenarios`).
 
 ## Carrying one action result into the next
 
@@ -187,4 +209,5 @@ the origin of the content mechanically checkable.
 | Live end-to-end proof | `scripts/headless-examples/action-api-demo.py` |
 | Cross-app result hand-off proof | `apps/agent/tests/discovered_operations.rs` |
 | MCP shim | `scripts/tilo-mcp-server.py` |
+| Console apps (installer, greeter) | `crates/session/console-control` |
 | Socket framing, other ops | `docs/headless-testing.md` |

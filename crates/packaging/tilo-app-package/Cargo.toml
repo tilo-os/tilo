@@ -1,0 +1,51 @@
+[package]
+# tests/*.rs are modules of tests/it.rs, not separate binaries
+autotests = false
+name = "tilo-app-package"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_app_package"
+path = "src/lib.rs"
+
+# The foundation crate for Tilo packages (.tapp). Defines the manifest
+# schema, the BLAKE3 content-addressed package id, the on-disk blob
+# layout, and the pack/unpack/sign/verify operations. Used by all
+# package kinds (app, service, format-provider, plugin, runtime) and
+# by both the native loader and the Flatpak packager.
+
+[dependencies]
+# Crash-safe file replacement (temp + fsync + rename + dir fsync).
+atomic-file = { path = "../../../crates/system/atomic-file" }
+xdg-paths = { path = "../../../crates/system/xdg-paths" }
+# Threshold-shared Ed25519 identity. Signing goes through the
+# identity's group key; verify is a regular Ed25519 verify against
+# the group public key, so callers only need the verifying-key
+# bytes — not the threshold machinery — to verify a .tapp.
+threshold-identity = { path = "../../collab/threshold-identity" }
+# Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
+# signed-bytes shape matches the rest of Tilo's signed wire types.
+collab-types           = { path = "../../collab/collab-types" }
+
+blake3.workspace = true
+getrandom.workspace = true
+ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }
+hex.workspace = true
+semver.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
+
+[lints]
+workspace = true

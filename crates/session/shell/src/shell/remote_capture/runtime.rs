@@ -9,7 +9,8 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
 use std::time::Instant;
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 
 use crate::portal::CaptureBroker;
 use crate::shell::device_fabric::{PersonalFabricAction, PersonalFabricActionEnvelope};
@@ -1215,7 +1216,7 @@ fn availability_supports(availability: RemoteCaptureAvailability, kind: RemoteCa
 fn random_id(mut exists: impl FnMut(&[u8; 16]) -> bool) -> [u8; 16] {
     loop {
         let mut id = [0; 16];
-        OsRng.fill_bytes(&mut id);
+        UnwrapErr(SysRng).fill_bytes(&mut id);
         if id != [0; 16] && !exists(&id) {
             return id;
         }
@@ -1322,11 +1323,11 @@ mod tests {
     }
 
     fn app() -> VerifiedAppRegistration {
-        VerifiedAppRegistration::new_verified("dev.tilo.Camera", "workspace-a").unwrap()
+        VerifiedAppRegistration::new_verified("so.tilo.Camera", "workspace-a").unwrap()
     }
 
     fn other_app() -> VerifiedAppRegistration {
-        VerifiedAppRegistration::new_verified("dev.tilo.Calls", "workspace-a").unwrap()
+        VerifiedAppRegistration::new_verified("so.tilo.Calls", "workspace-a").unwrap()
     }
 
     fn runtime() -> RemoteCaptureFabricRuntime {
@@ -1519,14 +1520,14 @@ mod tests {
             )
             .unwrap();
 
-        target.teardown_target_app("dev.tilo.Camera", "workspace-a");
+        target.teardown_target_app("so.tilo.Camera", "workspace-a");
 
         assert!(target.target_sessions.is_empty());
         assert_eq!(target.registry.phase(session_id), None);
         assert_eq!(target.outbound.len(), 1);
         assert_eq!(
             target.outbound.values().next().unwrap().app.app_id(),
-            "dev.tilo.Calls"
+            "so.tilo.Calls"
         );
         assert!(target.approve_target(session_id, now).is_err());
         assert!(matches!(

@@ -18,6 +18,7 @@ class ClippyTargetIsolationTests(unittest.TestCase):
             (root / 'tools/ci').mkdir(parents=True)
             shutil.copyfile(SCRIPT, root / 'tools/ci/clippy-diff.sh')
             shutil.copyfile(SCRIPT.parent / 'compiler_inputs.py', root / 'tools/ci/compiler_inputs.py')
+            shutil.copyfile(SCRIPT.parent / 'clippy_diagnostics.py', root / 'tools/ci/clippy_diagnostics.py')
             def git(*args):
                 return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
             git('init', '-q')
@@ -27,7 +28,8 @@ class ClippyTargetIsolationTests(unittest.TestCase):
             source_name = 'old.rs' if mode == 'rename' else 'lib.rs'
             initial_source = 'common\nbase\n' if mode == 'rename' else 'base\n'
             (root / source_name).write_text(initial_source)
-            git('add', 'Cargo.toml', source_name, 'tools/ci/clippy-diff.sh', 'tools/ci/compiler_inputs.py')
+            git('add', 'Cargo.toml', source_name, 'tools/ci/clippy-diff.sh', 'tools/ci/compiler_inputs.py',
+                'tools/ci/clippy_diagnostics.py')
             git('commit', '-qm', 'base')
             base = git('rev-parse', 'HEAD')
             if mode == 'rename':

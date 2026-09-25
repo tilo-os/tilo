@@ -36,10 +36,10 @@ def media(catalog, root, arch=None):
     entries = catalog.get("releases")
     if not isinstance(entries, list) or not entries:
         raise ValueError("installer catalog has no media")
-    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo/releases")
+    repository = os.environ.get("TILO_RELEASE_REPOSITORY", "tilo-os/releases")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise ValueError("release repository must be OWNER/REPOSITORY")
-    server = urlsplit(os.environ.get("GITHUB_SERVER_URL", "https://code.sandbox.example"))
+    server = urlsplit(os.environ.get("TILO_RELEASE_SERVER", "https://github.com"))
     if (server.scheme != "https" or not server.hostname or server.username or server.password
             or server.path not in ("", "/") or server.query or server.fragment):
         raise ValueError("release server must be an HTTPS origin without credentials")

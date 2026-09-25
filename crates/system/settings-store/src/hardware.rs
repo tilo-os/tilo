@@ -273,10 +273,7 @@ impl DisplayTransaction {
 /// accepted: falling back to `/tmp` would let another user forge display
 /// capabilities shown by Settings.
 pub fn display_snapshot_path() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_RUNTIME_DIR")
-        .map(std::path::PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .map(|path| path.join("tilo/display-state.json"))
+    xdg_paths::xdg::runtime_dir().map(|path| path.join("tilo/display-state.json"))
 }
 
 pub fn unix_ms() -> u64 {
@@ -440,12 +437,22 @@ impl DisplayConfig {
                     continue;
                 };
                 let target_mode = self.outputs.get(target).and_then(|output| output.mode);
+                // Tilo renders the shared viewport into each connector's
+                // scanout independently. Mirroring therefore needs a common
+                // pixel extent, not an identical timing: a 60.000 Hz laptop
+                // panel and a 59.940 Hz USB-C sink can show the same viewport
+                // at their own presentation cadences.
+                let same_extent = |left: OutputMode, right: OutputMode| {
+                    left.width == right.width && left.height == right.height
+                };
                 let compatible = match (cfg.mode, target_mode) {
-                    (Some(source), Some(target)) => source == target,
-                    _ => desc
-                        .modes
-                        .iter()
-                        .any(|mode| target_desc.modes.contains(mode)),
+                    (Some(source), Some(target)) => same_extent(source, target),
+                    _ => desc.modes.iter().any(|source| {
+                        target_desc
+                            .modes
+                            .iter()
+                            .any(|target| same_extent(*source, *target))
+                    }),
                 };
                 if !compatible {
                     return Err(DisplayConfigError::IncompatibleMirrorModes {
@@ -777,6 +784,10 @@ pub enum ShortcutAction {
     NextStrip,
     PreviousWorkspace,
     NextWorkspace,
+    ToggleMaximize,
+    DetachTab,
+    AttachTabLeft,
+    AttachTabRight,
     MoveGroupLeft,
     MoveGroupRight,
     ResizeNarrower,
@@ -834,6 +845,66 @@ pub struct QuickSettingsConfig {
     pub controls: Vec<QuickSettingsControl>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TopBarWidget {
+    Clock,
+    SystemMonitor,
+    Calendar,
+}
+
+impl TopBarWidget {
+    pub const ALL: [Self; 3] = [Self::Clock, Self::SystemMonitor, Self::Calendar];
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TopBarWidgetsConfig {
+    pub widgets: Vec<TopBarWidget>,
+}
+
+impl Default for TopBarWidgetsConfig {
+    fn default() -> Self {
+        Self {
+            widgets: TopBarWidget::ALL.to_vec(),
+        }
+    }
+}
+
+impl TopBarWidgetsConfig {
+    #[must_use]
+    pub fn normalised(mut self) -> Self {
+        let mut seen = BTreeSet::new();
+        self.widgets.retain(|widget| seen.insert(*widget));
+        if self.widgets.is_empty() {
+            self.widgets.push(TopBarWidget::Clock);
+        }
+        self
+    }
+
+    pub fn load() -> Self {
+        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
+            "top_bar_widgets",
+        )))
+        .unwrap_or_default()
+        .normalised()
+    }
+
+    /// Persist the ordered top-bar widget selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the configuration cannot be serialized or written.
+    pub fn save(&self) -> std::io::Result<()> {
+        let value =
+            serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
+        super::update_section(
+            "top_bar_widgets",
+            value.as_object().cloned().unwrap_or_default(),
+        )
+    }
+}
+
 impl Default for QuickSettingsConfig {
     fn default() -> Self {
         Self {
@@ -854,30 +925,46 @@ impl QuickSettingsConfig {
     }
 
     pub fn load() -> Self {
-        serde_json::from_value::<Self>(serde_json::Value::Object(super::load_section(
-            "quick_settings",
-        )))
-        .unwrap_or_default()
-        .normalised()
+        Self::from_section(super::load_section("quick_settings"))
+    }
+
+    /// [`Self::load`] from an explicit settings file.
+    pub fn load_at(path: &std::path::Path) -> Self {
+        Self::from_section(super::load_section_at(path, "quick_settings"))
+    }
+
+    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
+        serde_json::from_value::<Self>(serde_json::Value::Object(section))
+            .unwrap_or_default()
+            .normalised()
     }
 
     /// # Errors
     ///
     /// Returns an error if the setting cannot be serialized or persisted.
     pub fn save(&self) -> std::io::Result<()> {
+        super::update_section("quick_settings", self.section()?)
+    }
+
+    /// [`Self::save`] into an explicit settings file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the setting cannot be serialized or persisted.
+    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
+        super::update_section_at(path, "quick_settings", self.section()?)
+    }
+
+    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value =
             serde_json::to_value(self.clone().normalised()).map_err(std::io::Error::other)?;
-        super::update_section(
-            "quick_settings",
-            value.as_object().cloned().unwrap_or_default(),
-        )
+        Ok(value.as_object().cloned().unwrap_or_default())
     }
 }
 
 #[cfg(test)]
 mod quick_settings_tests {
     use super::{QuickSettingsConfig, QuickSettingsControl};
-    use serial_test::serial;
 
     #[test]
     fn quick_settings_config_deduplicates_and_keeps_network_recovery() {
@@ -904,14 +991,9 @@ mod quick_settings_tests {
     }
 
     #[test]
-    #[serial]
     fn quick_settings_order_survives_restart_without_replacing_other_settings() {
         let temp = tempfile::tempdir().unwrap();
-        let old_xdg = std::env::var_os("XDG_CONFIG_HOME");
-        // SAFETY: this process-global mutation is serialised with the other
-        // settings-path tests and restored before returning.
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", temp.path()) };
-        let path = crate::settings_path().unwrap();
+        let path = temp.path().join("tilo/settings.json");
         crate::update_section_at(
             &path,
             "appearance",
@@ -928,18 +1010,31 @@ mod quick_settings_tests {
                 QuickSettingsControl::Bluetooth,
             ],
         };
-        expected.save().unwrap();
+        expected.save_at(&path).unwrap();
 
-        assert_eq!(QuickSettingsConfig::load(), expected);
+        assert_eq!(QuickSettingsConfig::load_at(&path), expected);
         assert_eq!(
             crate::load_at(&path)["appearance"]["theme"],
             serde_json::json!("dark")
         );
+    }
+}
 
-        match old_xdg {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
+#[cfg(test)]
+mod top_bar_widgets_tests {
+    use super::{TopBarWidget, TopBarWidgetsConfig};
+
+    #[test]
+    fn top_bar_widgets_deduplicate_and_never_become_empty() {
+        let config = TopBarWidgetsConfig {
+            widgets: vec![TopBarWidget::Calendar, TopBarWidget::Calendar],
         }
+        .normalised();
+        assert_eq!(config.widgets, vec![TopBarWidget::Calendar]);
+        assert_eq!(
+            TopBarWidgetsConfig { widgets: vec![] }.normalised().widgets,
+            vec![TopBarWidget::Clock]
+        );
     }
 }
 
@@ -1032,6 +1127,8 @@ impl KeyChord {
             "right" => "Right",
             "up" => "Up",
             "down" => "Down",
+            "pageup" => "Page Up",
+            "pagedown" => "Page Down",
             "tab" => "Tab",
             "enter" => "Enter",
             "escape" => "Escape",
@@ -1110,8 +1207,12 @@ impl Default for ShortcutConfig {
             (ShortcutAction::NextTab, ctrl_chord("tab")),
             (ShortcutAction::PreviousStrip, super_shift_chord("up")),
             (ShortcutAction::NextStrip, super_shift_chord("down")),
-            (ShortcutAction::PreviousWorkspace, super_chord("up")),
-            (ShortcutAction::NextWorkspace, super_chord("down")),
+            (ShortcutAction::PreviousWorkspace, super_chord("pageup")),
+            (ShortcutAction::NextWorkspace, super_chord("pagedown")),
+            (ShortcutAction::ToggleMaximize, super_chord("up")),
+            (ShortcutAction::DetachTab, super_shift_chord("enter")),
+            (ShortcutAction::AttachTabLeft, super_chord("[")),
+            (ShortcutAction::AttachTabRight, super_chord("]")),
             (ShortcutAction::MoveGroupLeft, super_shift_chord("left")),
             (ShortcutAction::MoveGroupRight, super_shift_chord("right")),
             (ShortcutAction::ResizeNarrower, super_chord("-")),
@@ -1185,9 +1286,17 @@ impl ShortcutConfig {
         Ok(())
     }
     pub fn load() -> Self {
+        Self::from_section(super::load_section("shortcuts"))
+    }
+
+    /// [`Self::load`] from an explicit settings file.
+    pub fn load_at(path: &std::path::Path) -> Self {
+        Self::from_section(super::load_section_at(path, "shortcuts"))
+    }
+
+    fn from_section(section: serde_json::Map<String, serde_json::Value>) -> Self {
         let loaded: Self =
-            serde_json::from_value(serde_json::Value::Object(super::load_section("shortcuts")))
-                .unwrap_or_default();
+            serde_json::from_value(serde_json::Value::Object(section)).unwrap_or_default();
         Self::normalise(loaded)
     }
 
@@ -1226,8 +1335,22 @@ impl ShortcutConfig {
     /// Returns an error if `self` can't be serialised or the section can't
     /// be written.
     pub fn save(&self) -> std::io::Result<()> {
+        super::update_section("shortcuts", self.section()?)
+    }
+
+    /// [`Self::save`] into an explicit settings file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `self` can't be serialised or the section can't
+    /// be written.
+    pub fn save_at(&self, path: &std::path::Path) -> std::io::Result<()> {
+        super::update_section_at(path, "shortcuts", self.section()?)
+    }
+
+    fn section(&self) -> std::io::Result<serde_json::Map<String, serde_json::Value>> {
         let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        super::update_section("shortcuts", value.as_object().cloned().unwrap_or_default())
+        Ok(value.as_object().cloned().unwrap_or_default())
     }
 }
 
@@ -1364,6 +1487,33 @@ mod tests {
     }
 
     #[test]
+    fn mirror_pair_accepts_same_resolution_at_different_refresh_rates() {
+        let mut panel = display("eDP-1");
+        panel.modes[0].refresh_mhz = 60_000;
+        let mut usb_c = display("DP-1");
+        usb_c.modes[0].refresh_mhz = 59_940;
+        let mut cfg = DisplayConfig::default();
+        cfg.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                mode: Some(panel.modes[0]),
+                ..Default::default()
+            },
+        );
+        cfg.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                mode: Some(usb_c.modes[0]),
+                mirror_of: Some("eDP-1".into()),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(cfg.validate_for(&[panel, usb_c]), Ok(()));
+    }
+
+    #[test]
     fn display_confirmation_expiry_is_a_precise_state_transition() {
         let mut transaction = DisplayTransaction {
             state: DisplayTransactionState::AwaitingConfirmation,
@@ -1382,6 +1532,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
     fn process_start_identity_rejects_pid_reuse_shape() {
         let current = process_start_ticks(std::process::id())
             .expect("the current Linux process has /proc stat data");
@@ -1399,9 +1550,44 @@ mod tests {
         );
     }
     #[test]
+    #[cfg(not(target_os = "linux"))]
+    fn unavailable_linux_process_identity_is_not_invented() {
+        assert_eq!(process_start_ticks(std::process::id()), None);
+    }
+
+    #[test]
     fn shortcut_parser_normalises_and_rejects_plain_letters() {
         assert_eq!(KeyChord::parse("meta + K").unwrap().display(), "Super+k");
         assert!(KeyChord::parse("k").is_err());
+    }
+    #[test]
+    fn window_management_defaults_are_coherent_and_conflict_free() {
+        let cfg = ShortcutConfig::default();
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::ToggleMaximize].display(),
+            "Super+Up"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::PreviousWorkspace].display(),
+            "Super+Page Up"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::NextWorkspace].display(),
+            "Super+Page Down"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::DetachTab].display(),
+            "Super+Shift+Enter"
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::AttachTabLeft].display(),
+            "Super+["
+        );
+        assert_eq!(
+            cfg.bindings[&ShortcutAction::AttachTabRight].display(),
+            "Super+]"
+        );
+        assert!(cfg.validate().is_ok());
     }
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
@@ -1484,32 +1670,16 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn saved_shortcuts_reload_as_the_same_valid_effective_config() {
-        let dir = std::env::temp_dir().join(format!(
-            "tilo-shortcut-save-reload-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos(),
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        let previous = std::env::var_os("XDG_CONFIG_HOME");
-        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tilo/settings.json");
 
         let mut saved = ShortcutConfig::default();
         saved
             .set(ShortcutAction::NextTab, KeyChord::parse("Ctrl+J").unwrap())
             .unwrap();
-        saved.save().unwrap();
-        let reloaded = ShortcutConfig::load();
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("XDG_CONFIG_HOME", value) },
-            None => unsafe { std::env::remove_var("XDG_CONFIG_HOME") },
-        }
-        std::fs::remove_dir_all(dir).ok();
+        saved.save_at(&path).unwrap();
+        let reloaded = ShortcutConfig::load_at(&path);
 
         assert_eq!(reloaded, saved);
         assert!(reloaded.validate().is_ok());
@@ -1518,7 +1688,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 17);
+        assert_eq!(cfg.bindings.len(), 21);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

@@ -11,7 +11,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 const MAX_CONTACTS: usize = 2048;
@@ -43,7 +44,7 @@ struct DiskRecord {
 impl DiskRecord {
     fn empty() -> Self {
         let mut salt = [0_u8; 32];
-        OsRng.fill_bytes(&mut salt);
+        UnwrapErr(SysRng).fill_bytes(&mut salt);
         Self {
             version: 1,
             salt: hex::encode(salt),
@@ -87,7 +88,9 @@ pub struct PriorityContactRegistry {
 
 impl PriorityContactRegistry {
     pub fn open_default() -> Self {
-        Self::open(settings_store::config_root().map(|root| root.join("priority-contacts.json")))
+        Self::open(settings_store::config_path(std::path::Path::new(
+            "priority-contacts.json",
+        )))
     }
 
     pub fn in_memory() -> Self {
@@ -106,7 +109,7 @@ impl PriorityContactRegistry {
     }
 
     /// Replace the whole projection. This is called only after the D-Bus
-    /// service verifies `dev.tilo.contacts`; keeping the check at that boundary
+    /// service verifies `so.tilo.contacts`; keeping the check at that boundary
     /// means this storage type never tries to infer authority from a string.
     ///
     /// # Errors
@@ -121,7 +124,7 @@ impl PriorityContactRegistry {
         let mut guard = self.inner.lock().map_err(|_| "registry unavailable")?;
         let salt = guard.salt().unwrap_or_else(|| {
             let mut salt = [0_u8; 32];
-            OsRng.fill_bytes(&mut salt);
+            UnwrapErr(SysRng).fill_bytes(&mut salt);
             salt
         });
         let mut dedup = BTreeMap::<String, ContactRecord>::new();

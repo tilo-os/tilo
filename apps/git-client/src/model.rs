@@ -124,8 +124,7 @@ pub struct DiffHunk {
 pub struct FileDiff {
     pub path: String,
     pub old_path: Option<String>,
-    /// Language hint used by the lightweight token highlighter
-    /// (e.g. "rs", "toml", "md").
+    /// Grammar token the diff pane highlights with (e.g. "rs", "toml", "md").
     pub language: String,
     pub lines: Vec<DiffLine>,
     pub hunks: Vec<DiffHunk>,

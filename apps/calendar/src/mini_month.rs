@@ -6,14 +6,18 @@
 //! root translates [`Outcome`] values into changes to that shared policy.
 
 use std::collections::HashSet;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use vello::Scene;
 
 use chrono::{Datelike, NaiveDate};
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 
 use crate::app::{center_text, draw_chevron};
 use crate::date;
-use crate::draw_util::{PaintContext, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_round, stroke_round};
+use ui::surface::separator;
 
 const RESERVED_HEIGHT: f64 = 196.0;
 const BOTTOM_INSET: f64 = 12.0;
@@ -30,16 +34,6 @@ const CELL_HEIGHT: f64 = 22.0;
 pub(crate) enum Outcome {
     SelectDate(NaiveDate),
     ShiftMonth(i32),
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct MiniMonthModel<'a> {
-    pub(crate) sidebar: Rect,
-    pub(crate) occupied_until: f64,
-    pub(crate) anchor: NaiveDate,
-    pub(crate) today: NaiveDate,
-    pub(crate) event_dates: &'a HashSet<NaiveDate>,
-    pub(crate) pointer: Point,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -72,33 +66,32 @@ impl MiniMonth {
         reason = "the component paints one compact header and one fixed 42-cell grid; keeping the shared geometry in one pass makes its targets and pixels visibly correspond"
     )]
     pub(crate) fn draw(
-        paint: &mut PaintContext<'_>,
-        model: &MiniMonthModel<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        sidebar: Rect,
+        occupied_until: f64,
+        anchor: NaiveDate,
+        today: NaiveDate,
+        event_dates: &HashSet<NaiveDate>,
+        pointer: Point,
     ) -> Vec<(Rect, Outcome)> {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
-        let MiniMonthModel {
-            sidebar,
-            occupied_until,
-            anchor,
-            today,
-            event_dates,
-            pointer,
-        } = *model;
         let Some(layout) = Self::layout(sidebar, occupied_until) else {
             return Vec::new();
         };
         let colors = &theme.tokens.colors;
 
-        stroke_line(
+        // The rule above the navigator is derived against the sidebar's own
+        // raised ground (HIG §9.5), inset like a Panel separator.
+        separator(
             scene,
             transform,
-            colors.border_standard,
-            Point::new(sidebar.x0 + HORIZONTAL_PAD, layout.divider_y),
-            Point::new(sidebar.x1 - HORIZONTAL_PAD, layout.divider_y),
-            1.0,
+            sidebar.x0,
+            sidebar.x1,
+            layout.divider_y,
+            HORIZONTAL_PAD,
+            colors.surfaces.raised,
         );
         text.draw_text(
             scene,
@@ -109,10 +102,10 @@ impl MiniMonth {
             None,
         );
         if layout.previous.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), layout.previous, 6.0);
+            fill_round(scene, transform, layout.previous, 6.0, colors.lift(0.35));
         }
         if layout.next.contains(pointer) {
-            fill_round(scene, transform, colors.lift(0.35), layout.next, 6.0);
+            fill_round(scene, transform, layout.next, 6.0, colors.lift(0.35));
         }
         draw_chevron(
             scene,
@@ -164,22 +157,22 @@ impl MiniMonth {
                 stroke_round(
                     scene,
                     transform,
-                    colors.accent[5],
                     cell.inflate(-3.0, -2.0),
                     7.0,
+                    colors.accent[5],
                     1.2,
                 );
             } else if cell.contains(pointer) {
                 fill_round(
                     scene,
                     transform,
-                    colors.lift(0.35),
                     cell.inflate(-3.0, -2.0),
                     7.0,
+                    colors.lift(0.35),
                 );
             }
             let number_color = if is_today {
-                Color::WHITE
+                colors.on_accent(4.5)
             } else if !in_month {
                 colors.neutral[4]
             } else {

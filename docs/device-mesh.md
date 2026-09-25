@@ -84,7 +84,7 @@ digest that the requester cannot retrieve.
 - The remote-control client first tries the target directly, then requests a
   `RemoteControl` placement and tunnels the existing encrypted session through
   the selected relay.
-- The compute worker consumes `Compute` placements, executes only verified qpkg
+- The compute worker consumes `Compute` placements, executes only verified tapp
   catalogue entrypoints, and retains exact requester/worker/workspace binding,
   bounded diagnostics, cancellation and monotonic result attribution.
 

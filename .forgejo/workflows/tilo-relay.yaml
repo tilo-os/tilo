@@ -23,16 +23,20 @@ on:
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
+      - "crates/collab/actions/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/threshold-identity/**"
       - "crates/doc/qdoc/**"
+      - "crates/doc/bounded-zip/**"
       - "crates/packaging/app-registry/**"
       - "crates/packaging/install/**"
       - "crates/packaging/launcher/**"
-      - "crates/packaging/pkg/**"
+      - "crates/system/sandbox-core/**"
+      - "crates/packaging/tilo-app-package/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
+      - "crates/dev/test-env/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/atomic-file/**"
       - "crates/system/bounded-command/**"
@@ -40,6 +44,9 @@ on:
       - "crates/system/power/**"
       - "crates/system/private-fs/**"
       - "crates/system/settings-store/**"
+      - "crates/system/xdg-paths/**"
+      - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-net/**"
       - "crates/media/thumbnail/**"
       - "crates/system/fs/**"
       - "os/dev/cache-github-assets.sh"
@@ -61,16 +68,20 @@ on:
       - "crates/hosting/tilo-relay/**"
       - "os/containers/tilo-relay/**"
       - "crates/collab/tilo-user-identity/**"
+      - "crates/collab/actions/**"
       - "crates/collab/collab-types/**"
       - "crates/collab/threshold-identity/**"
       - "crates/doc/qdoc/**"
+      - "crates/doc/bounded-zip/**"
       - "crates/packaging/app-registry/**"
       - "crates/packaging/install/**"
       - "crates/packaging/launcher/**"
-      - "crates/packaging/pkg/**"
+      - "crates/system/sandbox-core/**"
+      - "crates/packaging/tilo-app-package/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-identity/**"
+      - "crates/dev/test-env/**"
       - "crates/runtime/runtime-portal/**"
       - "crates/system/atomic-file/**"
       - "crates/system/bounded-command/**"
@@ -78,6 +89,9 @@ on:
       - "crates/system/power/**"
       - "crates/system/private-fs/**"
       - "crates/system/settings-store/**"
+      - "crates/system/xdg-paths/**"
+      - "crates/system/tilo-native-certs/**"
+      - "crates/system/tilo-net/**"
       - "crates/media/thumbnail/**"
       - "crates/system/fs/**"
       - "os/dev/cache-github-assets.sh"
@@ -307,6 +321,11 @@ jobs:
           SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
         run: python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"
 
+      - name: Resolve the digest-pinned base with bounded retries
+        env:
+          SNAPSHOT_BUILDER: ${{ steps.buildx.outputs.name }}
+        run: bash os/containers/tilo-relay/resolve-base-with-retry.sh "$SNAPSHOT_BUILDER" "$BASE_REF"
+
       - name: Extract image metadata (tags, labels)
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
@@ -355,8 +374,11 @@ jobs:
             aws_access_key_id=AWS_ACCESS_KEY_ID
             aws_secret_access_key=AWS_SECRET_ACCESS_KEY
             aws_session_token=AWS_SESSION_TOKEN
-          cache-from: type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest
-          cache-to: type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest,mode=max
+          # PR validation must be independent of the mutable publication cache:
+          # a partial/corrupt registry export must not prevent source validation,
+          # and untrusted heads must never mutate the shared `latest` cache.
+          cache-from: ${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest' || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && 'type=registry,ref=code.sandbox.example/qos/tilo-relay-buildcache:latest,mode=max' || '' }}
           provenance: false
 
       # Optional signing reuses the same key as the OS image so `bootc

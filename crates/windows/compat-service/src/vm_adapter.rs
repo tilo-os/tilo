@@ -1103,7 +1103,7 @@ fn vm_entry_id(published_id: &str) -> String {
 }
 
 fn vm_app_id(published_id: &str) -> String {
-    format!("dev.tilo.windows.vm.{}", vm_identity_digest(published_id))
+    format!("so.tilo.windows.vm.{}", vm_identity_digest(published_id))
 }
 
 fn vm_identity_digest(published_id: &str) -> String {
@@ -1434,7 +1434,7 @@ mod tests {
         let entry = vm_entry_id("guest-word");
         let app = vm_app_id("guest-word");
         assert!(entry.starts_with("windows-vm-"));
-        assert!(app.starts_with("dev.tilo.windows.vm."));
+        assert!(app.starts_with("so.tilo.windows.vm."));
         assert_ne!(entry, "guest-word");
         assert_ne!(app, "guest-word");
         assert_eq!(entry, vm_entry_id("guest-word"));

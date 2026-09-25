@@ -8,12 +8,13 @@
 //! its fade, on an injected wall clock so it is unit-testable without an
 //! event loop.
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Rect, Stroke, Vec2};
 use vello::peniko::Color;
 
+use crate::text_metrics::centered_text_top;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 
@@ -115,20 +116,30 @@ impl StatusBubble {
 
 /// `control` is a leading+trailing glyph slot in px each (`0.0` for a
 /// plain label).
+///
+/// `text_size` is renderer-relative: the renderer applies the accessibility
+/// text scale, so pass a design size (`12.0`) or a theme token divided once
+/// through [`crate::text_metrics::renderer_type_size`] — never a raw
+/// `theme.tokens.typography.scale.*` value, which paints 4× at 200 %.
 pub fn pill_size(text: &str, tr: &mut TextRenderer, text_size: f32, control: f64) -> (f64, f64) {
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, _th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let pad_x = 14.0;
     let w = f64::from(tw) + 2.0 * pad_x + 2.0 * control;
     // `TextRenderer` applies the user's text scale to metrics, so the pill
     // geometry must use the same effective font size.  Otherwise at 200% the
     // glyphs extend through the lower edge of a 30px bubble.
-    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
-    let h = (scaled_text_size + 16.0).max(30.0);
+    let h = pill_height(text_size, tr.text_scale());
     (w, h)
 }
 
+/// Height shared by layout reservations and the rendered status pill.
+pub fn pill_height(text_size: f32, text_scale: f32) -> f64 {
+    (f64::from(text_size) * f64::from(text_scale) + 16.0).max(30.0)
+}
+
 /// The caller sets opacity by wrapping this in a `scene.push_layer(...
-/// alpha ...)` using [`StatusBubble::alpha`].
+/// alpha ...)` using [`StatusBubble::alpha`]. `text_size` follows the
+/// [`pill_size`] contract: renderer-relative, scaled once by the renderer.
 pub fn draw_pill(
     scene: &mut Scene,
     transform: Affine,
@@ -142,26 +153,21 @@ pub fn draw_pill(
 
     crate::surface::shadow(scene, transform, rect, radius, &theme.tokens.elevation.e2);
 
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(
-        vello::peniko::Fill::NonZero,
+    // Overlay fill under a rest edge derived from it (HIG §9.5): the
+    // declared `border_standard` this replaces is one fixed colour per theme
+    // and lands within rounding distance of the dark preset's overlay.
+    crate::surface::card(
+        scene,
         transform,
+        rect,
+        radius,
         theme.tokens.colors.surfaces.overlay,
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        theme.tokens.colors.border_standard,
-        None,
-        &shape,
     );
 
-    let (tw, _) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
+    let (tw, th) = tr.measure_weighted(text, text_size, None, TextWeight::Medium);
     let tx = rect.x0 + (rect.width() - f64::from(tw)) / 2.0;
-    let scaled_text_size = f64::from(text_size) * f64::from(tr.text_scale());
-    let ty = rect.y0 + (rect.height() - scaled_text_size) / 2.0;
+    // Centre the measured line box, not the font size.
+    let ty = centered_text_top(rect.y0, rect.height(), f64::from(th));
     tr.draw_text_weighted(
         scene,
         text,
@@ -209,7 +215,7 @@ mod tests {
     #[test]
     fn poke_reveals_then_fades_after_linger() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         assert!(!b.is_visible(t0), "hidden until poked");
         assert!(b.poke(t0), "poke reveals and reports the change");
         assert!(b.is_visible(t0), "visible right after a poke");
@@ -231,7 +237,7 @@ mod tests {
     #[test]
     fn hover_pins_open_then_lingers_after_leave() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         b.set_hover(true, t0);
         // Pinned open regardless of time while the pointer stays over it.
         assert!(
@@ -257,7 +263,7 @@ mod tests {
     #[test]
     fn a_fresh_poke_restarts_the_countdown() {
         let mut b = StatusBubble::new().with_linger(Duration::from_secs(1));
-        let t0 = Instant::now();
+        let t0 = crate::time::now();
         b.poke(t0);
         // Almost expired…
         assert!(b.is_visible(t0 + Duration::from_millis(900)));

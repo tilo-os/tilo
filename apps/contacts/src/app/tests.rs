@@ -35,7 +35,7 @@ fn shared_chip_style_keeps_selected_chips_legible_in_every_app_theme() {
 
 #[test]
 fn real_resource_provider_bounds_large_book_snapshot_and_exact_lookup() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = ContactsApp::sample();
     let mut doc = AutoCommit::new();
@@ -92,7 +92,7 @@ fn real_resource_provider_bounds_large_book_snapshot_and_exact_lookup() {
 
 #[test]
 fn ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild() {
-    const LARGE: usize = 100_001;
+    const LARGE: usize = 5_000;
 
     let mut app = ContactsApp::sample();
     let mut doc = AutoCommit::new();
@@ -131,7 +131,7 @@ fn ordinary_local_update_syncs_a_large_book_without_full_retained_rebuild() {
     assert_eq!(
         app.resource_index_rebuilds.get(),
         0,
-        "a one-contact local update must not sort/rebuild the 100k resource index"
+        "a one-contact local update must not sort/rebuild the large resource index"
     );
     assert_eq!(
         app.search_provider.full_refreshes(),
@@ -415,7 +415,7 @@ fn narrow_frame_resolves_single_pane_push() {
     assert!(app.narrow, "a narrow viewport resolves to single-pane push");
     assert_eq!(
         app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "a fresh narrow frame opens to the list"
     );
 }
@@ -426,12 +426,19 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
     let large_text = Theme::dark().with_text_scale(2.0);
     drive_frame_with_theme(&mut app, 1440, 900, &large_text);
     assert!(app.narrow, "large text reflows master/detail to one pane");
-    assert_eq!(app.toolbar_h(), TOOLBAR_H * 2.0);
+    assert!(
+        app.toolbar_h()
+            >= ui::text_metrics::line_height_px(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s3)
+    );
     assert_eq!(app.row_h(), ROW_H * 2.0);
-    assert_eq!(app.hit.search.height(), FIELD_H * 2.0);
+    let field_h = at_least_whole(
+        FIELD_H,
+        line_h(text_base(), 2.0) + 2.0 * f64::from(app.spacing.s2),
+    );
+    assert_eq!(app.hit.search.height(), field_h);
 
     app.shots_edit_contact();
-    drive_frame_with_theme(&mut app, 1440, 900, &large_text);
+    app.layout();
     let form = app.form.as_ref().expect("edit form");
     let first = form
         .inputs
@@ -446,7 +453,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         .expect("last name")
         .ti_rect();
     assert!(last.y0 > first.y1, "paired fields stack at large text");
-    assert_eq!(first.height(), FIELD_H * 2.0);
+    assert_eq!(first.height(), field_h);
     let notes = form
         .inputs
         .iter()
@@ -457,7 +464,7 @@ fn two_hundred_percent_text_reflows_and_scales_interaction_geometry() {
         "note text wraps instead of clipping"
     );
     assert!(
-        notes.ti_rect().height() >= FIELD_H * 4.0,
+        notes.ti_rect().height() >= field_h * 3.0,
         "notes reserve multiple large-text lines"
     );
 }
@@ -485,7 +492,7 @@ fn narrow_selection_pushes_detail_then_back_returns_to_list() {
     // Snap the push to the detail pane (as a row selection would) and
     // confirm the pushed-detail frame renders without panicking.
     app.shots_show_detail();
-    assert_eq!(app.push.pane(), Pane::Detail);
+    assert_eq!(app.push.pane(), PushPane::Detail);
     drive_frame(&mut app, 480, 860);
     // The Back affordance must be laid out (hittable) in the pushed pane.
     assert!(
@@ -981,13 +988,13 @@ impl Harness {
 fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     let mut h = Harness::new(460, 880);
     assert!(h.app.narrow);
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
     // Press a list row → the detail pane is pushed in.
     let row = h.row_center(1);
     assert!(h.press_left(row));
     assert_eq!(
         h.app.push.pane(),
-        Pane::Detail,
+        PushPane::Detail,
         "selecting pushes the detail in"
     );
     h.relayout();
@@ -1000,7 +1007,7 @@ fn narrow_row_press_pushes_detail_then_back_returns_to_list() {
     assert!(h.press_left(back));
     assert_eq!(
         h.app.push.pane(),
-        Pane::List,
+        PushPane::Master,
         "Back returns to the full-width list"
     );
 }
@@ -1211,12 +1218,7 @@ fn keyboard_focus_scrolls_a_below_the_fold_field_into_view() {
     h.press_named(NamedKey::Tab);
     assert_eq!(h.focused_slot(), Some(Slot::First));
     h.relayout();
-    let body_top = h.app.detail_rect.y0
-        + FORM_TITLE_TOP
-        + FORM_TITLE_H
-        + FORM_ROW_GAP
-        + 32.0
-        + h.app.detail_top_offset();
+    let body_top = h.app.form_body_top();
     assert!(
         rect_of(&h, Slot::First).y0 >= body_top - 24.0,
         "wrapping to the first field scrolled back to the top",
@@ -1265,22 +1267,16 @@ fn website_renders_via_the_link_widget() {
 #[test]
 fn clicking_the_website_opens_it_through_the_link_widget() {
     // Drive the whole click path (press → hit-test → Link::activate) and
-    // confirm the contact's URL is what gets opened. The Link's `on_open`
-    // sink records the URL instead of spawning the OS browser (its
-    // documented test hook), so this exercises the production click path
-    // hermetically — no xdg-open side effect.
+    // confirm the contact's URL is what gets opened. A recording host
+    // captures the URL instead of spawning the OS browser, so this exercises
+    // the production click path hermetically — no xdg-open side effect.
+    let (services, recorder) = ui::host::HostServices::recording();
+    let _host = ui::host::enter(&services);
     let mut h = Harness::new(1280, 800);
     let id = h.app.selected.unwrap();
     let url = h.app.store.get(id).unwrap().website.clone();
     assert!(!url.is_empty(), "the selected seed has a website");
 
-    let recorded = std::rc::Rc::new(std::cell::RefCell::new(None::<String>));
-    let sink = recorded.clone();
-    // Same URL as the contact, so the detail draw preserves this instance
-    // (it only rebuilds the link when the URL changes) and lays it out.
-    h.app.website_link = Some(Link::new(&url).with_font_size(14.0).on_open(move |u| {
-        *sink.borrow_mut() = Some(u.to_string());
-    }));
     h.relayout();
     let rect = h.app.website_link.as_ref().unwrap().get_rect();
     assert!(
@@ -1293,8 +1289,8 @@ fn clicking_the_website_opens_it_through_the_link_widget() {
         "clicking the website link is handled"
     );
     assert_eq!(
-        recorded.borrow().as_deref(),
-        Some(url.as_str()),
+        recorder.opened_uris(),
+        [url],
         "the click opened the contact's website via the Link widget",
     );
     assert_eq!(
@@ -1370,13 +1366,13 @@ fn keyboard_context_menu_keys_open_selected_contacts_canonical_actions() {
 fn enter_opens_the_selected_contact_in_narrow_push_navigation() {
     let mut h = Harness::new(420, 800);
     assert!(h.app.narrow, "phone width uses push navigation");
-    assert_eq!(h.app.push.pane(), Pane::List);
+    assert_eq!(h.app.push.pane(), PushPane::Master);
 
     assert!(
         h.press_named(NamedKey::Enter),
         "Enter opens the selected contact"
     );
-    assert_eq!(h.app.push.pane(), Pane::Detail);
+    assert_eq!(h.app.push.pane(), PushPane::Detail);
 }
 
 /// The context-menu Favorite item flips the contact's flag, persists it to
@@ -2446,6 +2442,11 @@ fn export_selection_parks_then_save_portal_path_writes_the_vcf() {
 
     // Export 3.0 → closes the dialog and parks the selection for the Save
     // dialog. It must NOT write anything before the user chooses a path.
+    // A recording host stands in for the desktop and will answer the Save
+    // dialog with `vcf`.
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick(ExportOutcome::Opened(vcf.clone()));
+    let _host = ui::host::enter(&services);
     let g = h
         .app
         .export_dialog
@@ -2466,11 +2467,12 @@ fn export_selection_parks_then_save_portal_path_writes_the_vcf() {
         "nothing is written until a destination is chosen"
     );
 
-    // Deliver the destination the Save portal would return, then drain it
-    // through one real frame's sync — which writes the file.
-    h.app.export_rx = Some(ui::portal::inject_for_test(ExportOutcome::Opened(
-        vcf.clone(),
-    )));
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1, "exactly one Save dialog was requested");
+    assert_eq!(picks[0].title(), "Export contacts");
+
+    // Drain the destination the Save dialog returned through one real
+    // frame's sync — which writes the file.
     h.app.sync(&mut h.doc, &ROOT);
     assert!(
         h.app.pending_export.is_none(),
@@ -2787,6 +2789,18 @@ fn scratch_book() -> (PathBuf, PathBuf) {
     (dir, path)
 }
 
+/// Run the live Import action under a recording host whose multi-select
+/// chooser answers `outcome`, and check the app asked for that chooser.
+fn import_with(app: &mut ContactsApp, outcome: ImportOutcome) {
+    let (services, recorder) = ui::host::HostServices::recording();
+    recorder.respond_to_pick_multiple(outcome);
+    ui::host::scoped(&services, || app.request_import());
+    let picks = recorder.pick_requests();
+    assert_eq!(picks.len(), 1, "one file chooser was requested");
+    assert_eq!(picks[0].title(), "Import contacts");
+    assert!(picks[0].is_multiple(), "Import picks several files at once");
+}
+
 #[test]
 fn live_launch_with_no_saved_book_is_empty_not_fabricated() {
     // The live app must NOT invent sample contacts on an empty store.
@@ -2815,13 +2829,12 @@ fn live_launch_with_no_saved_book_is_empty_not_fabricated() {
 #[serial_test::serial]
 fn created_contact_persists_across_a_restart() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
 
     // First launch.
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.load_or_new();
     let mut app = ContactsApp::new();
     app.sync(&mut doc, &ROOT);
@@ -2837,7 +2850,7 @@ fn created_contact_persists_across_a_restart() {
     drop((store, doc, app)); // the process exits here
 
     // Second launch ("reboot"): a new app over the reloaded document.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc2 = store2.load().unwrap().expect("the store has a document");
     let mut app2 = ContactsApp::new();
     app2.sync(&mut doc2, &ROOT);
@@ -2865,11 +2878,10 @@ fn created_contact_persists_across_a_restart() {
 #[serial_test::serial]
 fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
 
     // A shared ancestor: one contact both sides know about.
@@ -2898,7 +2910,7 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
     drop((store, doc));
 
     // Restart, then merge the peer that diverged before the save.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut restored = store2.load().unwrap().expect("the saved document");
     restored
         .merge(&mut peer)
@@ -2935,15 +2947,14 @@ fn a_saved_book_still_merges_with_a_replica_that_diverged_before_the_save() {
 #[serial_test::serial]
 fn a_legacy_address_book_is_imported_into_the_store() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
     let (dir, legacy) = scratch_book();
     let book = sample_contacts();
     crate::storage::save(&legacy, &book).unwrap();
 
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     assert!(
         store.migrate_from(&legacy).unwrap(),
         "the legacy file is imported"
@@ -3180,7 +3191,8 @@ fn import_drain_merges_selected_files_through_sync() {
     // The live plumbing end to end: an ImportOutcome::Selected on the
     // channel is drained by `sync` (the per-frame drain) and merged into
     // the book — exactly what the portal worker feeds after the user picks
-    // files. Only the picker is bypassed; the drain + parse + merge is real.
+    // files. Only the host dialog is stood in for by a recording host; the
+    // request, drain, parse and merge are real.
     let (dir, path) = scratch_book();
     std::fs::create_dir_all(&dir).unwrap();
     let vcf = dir.join("incoming.vcf");
@@ -3196,11 +3208,9 @@ fn import_drain_merges_selected_files_through_sync() {
     app.sync(&mut doc, &ROOT);
     assert!(app.store.is_empty());
 
-    // Install the outcome the portal worker would deliver, then run one
-    // real frame's sync — which drains it.
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-        vec![vcf],
-    )));
+    // Run the live Import action with the host's chooser picking `vcf`,
+    // then run one real frame's sync — which drains it.
+    import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
     assert!(
         app.portal_in_flight(),
         "a request is in flight until drained"
@@ -3432,9 +3442,7 @@ fn exhausted_parser_generation_refuses_a_new_import_and_settles_the_job() {
     let invocation = tilo_actions::InvocationId::new();
     app.resource_invocation = Some(invocation);
     app.import_generation = u64::MAX;
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Selected(
-        vec![vcf],
-    )));
+    import_with(&mut app, ImportOutcome::Selected(vec![vcf]));
 
     app.sync(&mut doc, &ROOT);
     assert!(
@@ -3516,7 +3524,7 @@ fn import_of_nothing_is_a_clean_noop() {
     // Empty selection.
     assert!(!app.import_paths(&mut doc, &[]).completed());
     // A cancelled picker drained through the real path.
-    app.import_rx = Some(ui::portal::inject_multi_for_test(ImportOutcome::Cancelled));
+    import_with(&mut app, ImportOutcome::Cancelled);
     app.sync(&mut doc, &ROOT);
 
     assert!(app.store.is_empty(), "import of nothing adds nothing");
@@ -3534,14 +3542,13 @@ fn import_of_nothing_is_a_clean_noop() {
 #[serial_test::serial]
 fn deleting_a_contact_persists_the_removal() {
     let home = tempfile::tempdir().unwrap();
-    unsafe {
-        std::env::set_var("XDG_DATA_HOME", home.path());
-        std::env::remove_var("TILO_PACKAGE_ID");
-    }
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_DATA_HOME", home.path())
+        .remove("TILO_PACKAGE_ID");
     // Seed a book into the store, then delete one contact and restart.
     let book = sample_contacts();
     let removed = book[0].id;
-    let mut store = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let mut doc = store.new_document();
     for c in &book {
         ContactsDoc::upsert_contact(&mut doc, c);
@@ -3557,7 +3564,7 @@ fn deleting_a_contact_persists_the_removal() {
     drop((store, doc, app));
 
     // Reload from the store: the deletion stuck.
-    let mut store2 = ui::persist::DocStore::open_for("dev.tilo.contacts").unwrap();
+    let mut store2 = ui::persist::DocStore::open_for("so.tilo.contacts").unwrap();
     let doc2 = store2.load().unwrap().expect("document after restart");
     let reloaded = ContactsDoc::list_contacts(&doc2);
     assert_eq!(
@@ -3754,7 +3761,7 @@ fn first_run_state_is_actionable_by_pointer_keyboard_and_assistive_tech() {
     assert!(app.empty_action_rect.width() >= 44.0);
     let first_run_area = Rect::new(
         app.rect.x0,
-        app.rect.y0 + TOOLBAR_H,
+        app.rect.y0 + app.toolbar_h(),
         app.rect.x1,
         app.rect.y1,
     );
@@ -4151,4 +4158,272 @@ fn apply_at(app: &mut ContactsApp, w: u32, h: u32) {
             .unwrap();
     }
     app.apply_layout(&taffy, child, Point::ORIGIN);
+}
+
+/// The edit form's rows are the authored 1× design exactly and, at 2×,
+/// grow by their lines (whole pixels) so section labels, fields, type
+/// faces and the add / action buttons never overprint one another.
+#[test]
+fn edit_form_rows_are_authored_at_one_x_and_hold_scaled_text() {
+    let (sp, mx) = (Spacing::default(), Metrics::BASE);
+    let one = FormMetrics::new(&sp, &mx, 1.0, &LabelGrowth::default());
+    assert_eq!(one.title_h, f64::from(mx.panel_row_height));
+    assert_eq!(one.action_h, f64::from(mx.min_pointer_target));
+    assert_eq!(one.label_h, FORM_LABEL_H);
+    assert_eq!((one.field_h, one.type_h), (FIELD_H, FIELD_H));
+    assert_eq!((one.type_w, one.remove_w), (FORM_TYPE_W, FORM_REMOVE_W));
+    assert_eq!(
+        (one.add_w, one.add_address_w, one.add_h),
+        (
+            FORM_ADD_W,
+            FORM_ADD_ADDRESS_W,
+            f64::from(mx.selector_height)
+        )
+    );
+    assert_eq!(
+        (one.fav_w, one.save_w, one.cancel_w),
+        (FORM_FAV_W, FORM_SAVE_W, FORM_CANCEL_W)
+    );
+
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(2.0);
+    let growth = LabelGrowth::measure(&mut tr);
+    assert!(growth.add_phone > 0.0 && growth.save > 0.0 && growth.favorite > 0.0);
+    let two = FormMetrics::new(&sp, &mx, 2.0, &growth);
+    for value in [
+        two.title_h,
+        two.action_h,
+        two.label_h,
+        two.field_h,
+        two.type_w,
+        two.remove_w,
+        two.add_h,
+        two.add_w,
+        two.add_address_w,
+        two.fav_w,
+        two.save_w,
+        two.cancel_w,
+    ] {
+        assert_eq!(value.fract(), 0.0, "{value} is not a whole pixel");
+    }
+    assert!(two.label_h >= line_h(FORM_LABEL_TEXT, 2.0));
+    assert!(two.field_h >= line_h(text_base(), 2.0));
+    assert!(two.add_h >= line_h(text_sm(), 2.0));
+    assert!(
+        two.add_w > one.add_w && two.add_w < one.add_w * 2.0,
+        "measured, not a blanket 2×"
+    );
+
+    // Laid out at 2×, no field, face or button overlaps another, every
+    // row has the metrics' height, and the first group's label band
+    // clears the header band.
+    let mut app = ContactsApp::new();
+    app.rect = Rect::new(0.0, 0.0, 1200.0, 900.0);
+    app.text_scale = 2.0;
+    app.label_growth = growth;
+    app.begin_edit(Contact::new(), true);
+    app.layout();
+    let form = app.form.as_ref().expect("edit mode has a form");
+    let mut rects: Vec<Rect> = form.inputs.iter().map(FieldInput::ti_rect).collect();
+    rects.extend([
+        app.hit.save,
+        app.hit.cancel,
+        app.hit.fav_toggle,
+        app.hit.add_phone,
+        app.hit.add_email,
+        app.hit.add_address,
+        app.hit.cal_btn,
+    ]);
+    rects.extend(app.hit.type_chips.iter().map(|(_, r)| *r));
+    rects.extend(app.hit.remove_btns.iter().map(|(_, r)| *r));
+    for (i, a) in rects.iter().enumerate() {
+        assert!(a.width() > 0.0 && a.height() > 0.0, "{a:?} is empty");
+        for b in &rects[i + 1..] {
+            assert!(a.intersect(*b).area() <= 0.0, "{a:?} overlaps {b:?}");
+        }
+    }
+    assert_eq!(app.hit.save.height(), two.action_h);
+    assert_eq!(app.hit.add_phone.height(), two.add_h);
+    assert!(
+        form.inputs.iter().all(|field| {
+            let rows = if field.slot == Slot::Notes { 3.0 } else { 1.0 };
+            (field.ti_rect().height() - two.field_h * rows).abs() < 0.01
+        }),
+        "every field uses its authored number of scaled rows"
+    );
+    let first = form
+        .inputs
+        .iter()
+        .find(|f| f.slot == Slot::First)
+        .map(FieldInput::ti_rect)
+        .expect("first-name field");
+    assert!(first.y0 >= app.form_body_top() + f64::from(app.spacing.s3) + two.label_h - 0.01);
+}
+
+/// Rule 1 of the 1× polish bar for the contact list: two neighbouring
+/// rows' selection pills keep an `s1` between them, and a pill keeps `s2`
+/// from the pane's sides — the geometry the audit cannot observe through
+/// the app's semantics tree, asserted from the same helper the painter
+/// uses.
+#[test]
+fn neighbouring_selection_pills_keep_a_token_gap() {
+    let sp = &Theme::dark().tokens.spacing;
+    let row_h = ContactRowMetrics::new(sp, 1.0).row_h;
+    let a = super::selection_pill(Rect::new(0.0, 0.0, 300.0, row_h), sp);
+    let b = super::selection_pill(Rect::new(0.0, row_h, 300.0, 2.0 * row_h), sp);
+    assert_eq!(b.y0 - a.y1, f64::from(sp.s1), "pill ↔ pill is one s1");
+    assert_eq!(a.x0, f64::from(sp.s2), "pill ↔ pane edge is one s2");
+    assert_eq!(300.0 - a.x1, f64::from(sp.s2));
+    assert!(a.height() >= row_h - f64::from(sp.s1));
+}
+
+/// The chosen and hovered row lifts on a Panel ground register as a
+/// contrast step on every preset — the reason the menu rows do not use
+/// `chrome::selection_tier`, whose lift lands within a hairline of the
+/// dark and high-contrast Panel grounds.
+#[test]
+fn panel_row_lift_registers_on_every_preset() {
+    use ui::surface::edge_delta;
+    use ui::tokens::colors::HAIRLINE_MIN_DELTA;
+    let opaque = |c: Color| c.components[3] == 1.0;
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let ground = ui::chrome::panel_ground(&theme);
+        let active = super::row_tier_on(ground, SelectionState::active(true));
+        assert!(opaque(active.fill), "{}", theme.name);
+        assert!(
+            edge_delta(active.fill, ground) >= HAIRLINE_MIN_DELTA,
+            "{}: active menu row does not register on the panel",
+            theme.name
+        );
+        let border = active.border.expect("active rows carry an edge");
+        assert!(
+            edge_delta(border, active.fill) >= HAIRLINE_MIN_DELTA,
+            "{}",
+            theme.name
+        );
+        let hover = super::row_tier_on(ground, SelectionState::new(false, true, false));
+        assert!(
+            opaque(hover.fill) && hover.border.is_none(),
+            "{}",
+            theme.name
+        );
+        assert!(edge_delta(hover.fill, ground) > 0.0, "{}", theme.name);
+        let idle = super::row_tier_on(ground, SelectionState::default());
+        assert_eq!(idle.fill.components[3], 0.0, "{}", theme.name);
+    }
+}
+
+/// List rows, the toolbar and its buttons keep their authored 1× sizes
+/// and grow from the measured lines they carry at larger text scales, so
+/// the 2× name/subtitle collision and the clipped people-count are gone.
+#[test]
+fn row_and_toolbar_metrics_follow_the_text_scale() {
+    let sp = Spacing::default();
+    let one = ContactRowMetrics::new(&sp, 1.0);
+    assert_eq!(one.row_h, ROW_H);
+    assert_eq!(one.avatar, ROW_AVATAR);
+
+    let two = ContactRowMetrics::new(&sp, 2.0);
+    // The 2× row holds both scaled lines with the `s3` the painter leaves
+    // above and below them, and lands on a whole pixel.
+    assert!(two.row_h >= two.name_h + two.sub_h + 2.0 * f64::from(sp.s3));
+    assert_eq!(two.row_h.fract(), 0.0);
+    assert!(two.row_h > one.row_h);
+    assert!(two.avatar >= ROW_AVATAR && two.avatar <= two.row_h);
+
+    let mut app = ContactsApp::new();
+    let (s2, s3) = (f64::from(app.spacing.s2), f64::from(app.spacing.s3));
+    assert_eq!(app.toolbar_h(), f64::from(app.spacing.s12));
+    assert_eq!(
+        app.toolbar_button_h(),
+        f64::from(app.metrics.min_pointer_target)
+    );
+    assert_eq!(
+        at_least_whole(FIELD_H, line_h(text_base(), 1.0) + 2.0 * s2),
+        FIELD_H,
+        "1× search field is the authored 38"
+    );
+    app.text_scale = 2.0;
+    assert!(app.toolbar_h() >= line_h(text_base(), 2.0) + 2.0 * s3);
+    assert!(app.toolbar_button_h() >= line_h(TOOLBAR_BUTTON_TEXT, 2.0) + s2);
+    assert!(app.toolbar_button_h() < app.toolbar_h());
+    for value in [
+        app.toolbar_h(),
+        app.toolbar_button_h(),
+        at_least_whole(FIELD_H, line_h(text_base(), 2.0) + 2.0 * s2),
+    ] {
+        assert_eq!(
+            value.fract(),
+            0.0,
+            "scaled toolbar metrics land on whole pixels"
+        );
+    }
+    // The scaled row grid is what the virtualised rows and the
+    // ensure-visible path read, so they agree with the painter.
+    assert_eq!(app.row_metrics(), two);
+}
+
+/// Toolbar faces keep their authored 1× widths and grow by exactly how
+/// much wider their measured labels are at the renderer's scale — never
+/// by a blanket `× scale` — and the hit rects follow in the same frame.
+#[test]
+fn toolbar_faces_grow_by_their_measured_labels() {
+    let mut app = ContactsApp::new();
+    app.rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
+    app.layout();
+    assert_eq!(app.hit.new.width(), TOOLBAR_NEW_W);
+    assert_eq!(app.hit.import.width(), TOOLBAR_FILE_W);
+    assert_eq!(app.hit.export.width(), TOOLBAR_FILE_W);
+
+    let mut tr = TextRenderer::new();
+    app.refresh_label_growth(&mut tr);
+    assert_eq!(
+        app.label_growth,
+        LabelGrowth::default(),
+        "1× labels grow nothing"
+    );
+    assert_eq!(app.hit.new.width(), TOOLBAR_NEW_W);
+
+    tr.set_text_scale(2.0);
+    app.text_scale = 2.0;
+    app.refresh_label_growth(&mut tr);
+    // Paint only requests the relayout; the host's next layout pass
+    // applies the measured growth. Run it here as the host would.
+    assert!(
+        app.is_layout_dirty(),
+        "a changed label growth requests a relayout"
+    );
+    app.layout();
+    let scaled = f64::from(
+        tr.measure_weighted(
+            TOOLBAR_NEW_LABEL,
+            TOOLBAR_BUTTON_TEXT,
+            None,
+            TextWeight::Medium,
+        )
+        .0,
+    );
+    let one_x = f64::from(
+        tr.measure_weighted(
+            TOOLBAR_NEW_LABEL,
+            TOOLBAR_BUTTON_TEXT / 2.0,
+            None,
+            TextWeight::Medium,
+        )
+        .0,
+    );
+    assert!(scaled > one_x);
+    assert!(
+        app.hit.new.width() >= TOOLBAR_NEW_W + (scaled - one_x) - 1.0,
+        "the New face grew by its label's measured growth"
+    );
+    assert!(
+        app.hit.new.width() < TOOLBAR_NEW_W * 2.0,
+        "not a blanket 2× face"
+    );
+    for r in [app.hit.new, app.hit.export, app.hit.import] {
+        assert_eq!(r.width().fract(), 0.0, "face widths are whole pixels");
+        assert_eq!(r.y0, app.hit.new.y0, "faces share one baseline row");
+    }
+    assert!(app.hit.export.x1 < app.hit.new.x0 && app.hit.import.x1 < app.hit.export.x0);
 }

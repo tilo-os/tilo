@@ -9,7 +9,7 @@
 
 
 [package]
-id       = "dev.tilo.maps"
+id       = "so.tilo.maps"
 name     = "Maps"
 category = "Utility"
 version  = "0.1.0"

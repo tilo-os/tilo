@@ -2,6 +2,7 @@
 
 use ui::chrome::{LabelCue, ToolbarItem};
 
+use super::TOOLBAR_MODEL;
 use crate::num;
 
 pub(super) const STYLE_PALETTE: [[u8; 3]; 7] = [
@@ -22,7 +23,6 @@ pub(super) const HIGHLIGHT_PALETTE: [[u8; 3]; 5] = [
     [0xff, 0xb1, 0x4d],
 ];
 
-pub(super) const TOOLBAR_RIGHT_PAD: f64 = 18.0;
 pub(super) const COMPACT_TOOLBAR_BREAKPOINT: f64 = 720.0;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -88,36 +88,37 @@ pub(super) fn item(
     )
 }
 
-pub(super) fn swatch_reserve_width(text_scale: f64) -> f64 {
-    let swatch = 20.0 * text_scale;
-    let gap = 5.0 * text_scale;
-    let colors = num::f64_of_usize(STYLE_PALETTE.len() + 1);
-    let highlights = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1);
-    let color_width = colors * swatch + (colors - 1.0) * gap;
-    let highlight_width = highlights * swatch + (highlights - 1.0) * gap;
-    14.0 * text_scale + color_width + 10.0 * text_scale + highlight_width
+pub(super) fn swatch_reserve_width() -> f64 {
+    let sw = 20.0;
+    let gap = 5.0;
+    let n_color = num::f64_of_usize(STYLE_PALETTE.len() + 1); // +1 neutral/default swatch
+    let n_hl = num::f64_of_usize(HIGHLIGHT_PALETTE.len() + 1); // +1 "no highlight" swatch
+    let color = n_color * sw + (n_color - 1.0) * gap;
+    let hl = n_hl * sw + (n_hl - 1.0) * gap;
+    // right edge margin + colour strip + inter-strip gap + highlight strip
+    14.0 + color + 10.0 + hl
 }
 
 pub(super) fn pack_rows(
     widths: &[f64],
     group_starts: &[bool],
-    available_width: f64,
+    avail_w: f64,
     text_scale: f64,
 ) -> Vec<(usize, usize)> {
-    let metrics = ui::chrome::toolbar::metrics(text_scale as f32);
-    let usable = (available_width - metrics.left_padding - TOOLBAR_RIGHT_PAD * text_scale).max(1.0);
     let mut rows = Vec::new();
-    let mut row_start = 0;
-    let mut used = 0.0;
-    for (index, (&width, &group_start)) in widths.iter().zip(group_starts).enumerate() {
-        let separator = if group_start { metrics.group_gap } else { 0.0 };
-        let item_width = separator + width * text_scale + metrics.item_gap;
-        if index > row_start && used + item_width > usable {
-            rows.push((row_start, index));
-            row_start = index;
-            used = 0.0;
+    let metrics = ui::chrome::toolbar::metrics(num::f32_of_f64(text_scale));
+    let usable = (avail_w - metrics.leading_pad - TOOLBAR_MODEL.right_pad * text_scale).max(1.0);
+    let mut row_start = 0usize;
+    let mut x = 0.0f64; // running width consumed within the current row (post-pad)
+    for (i, (&w, &group_start)) in widths.iter().zip(group_starts.iter()).enumerate() {
+        let item_w = metrics.item_advance(w, group_start);
+        // If this isn't the first item on the row and it would overflow, wrap.
+        if i > row_start && x + item_w > usable {
+            rows.push((row_start, i));
+            row_start = i;
+            x = 0.0;
         }
-        used += item_width;
+        x += item_w;
     }
     rows.push((row_start, widths.len()));
     rows

@@ -66,7 +66,7 @@ impl ChatRealtimeContinuity {
         self.next_request = self.next_request.saturating_add(1);
         ui::collaboration::CollabRequest::RealtimeCommand {
             request_id: self.next_request,
-            app_id: "dev.tilo.chat".into(),
+            app_id: "so.tilo.chat".into(),
             command,
         }
     }
@@ -198,18 +198,34 @@ impl ChatApp {
         self.call.muted = offered.controls.microphone_muted;
         self.call.audio_only = !offered.media.camera || offered.controls.camera_muted;
         let resume_screen = offered.media.screen_share && !offered.controls.screen_share_paused;
-        if resume_screen && !self.acquire_screen() {
-            self.call.leave();
-            let request = self
-                .realtime
-                .request(ui::realtime_continuity::RealtimeCommand::TargetFailed { session });
-            self.realtime.requests.push(request);
-            self.realtime.offer = None;
+        if resume_screen {
+            // The share resumes only once the host grants a fresh source; the
+            // answer completes the target (or fails it) in
+            // `settle_screen_capture`.
+            let purpose = crate::call::ScreenCapturePurpose::Resume {
+                session: session.clone(),
+            };
+            if !self.request_screen(purpose) {
+                self.fail_realtime_target(session);
+                return;
+            }
+            self.settle_screen_capture();
             return;
         }
-        self.call.sharing = resume_screen;
+        self.call.sharing = false;
         self.realtime.session = Some(session);
         self.realtime.target_media_ready = true;
+    }
+
+    /// The target could not re-establish the offered media: leave the call and
+    /// tell the broker, so the source call stays live.
+    pub(crate) fn fail_realtime_target(&mut self, session: String) {
+        self.call.leave();
+        let request = self
+            .realtime
+            .request(ui::realtime_continuity::RealtimeCommand::TargetFailed { session });
+        self.realtime.requests.push(request);
+        self.realtime.offer = None;
     }
 
     pub(crate) fn apply_realtime_stop(&mut self, doc: &mut AutoCommit) {
@@ -248,7 +264,7 @@ fn portable_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use automerge::ROOT;
-    use ui::widget::Widget;
+    use ui::widget::{Collaborative, Continuable, Widget};
 
     use super::*;
 
@@ -265,7 +281,7 @@ mod tests {
         app.call.join("c_huddle");
         app.call.muted = true;
         app.call.sharing = true;
-        let metadata = Widget::continuation_metadata(&app, &doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&app, &doc, &ROOT).unwrap();
         let json = String::from_utf8(metadata.bytes.clone()).unwrap();
         assert!(json.contains("c_huddle") && json.contains("ws_acme"));
         for forbidden in [
@@ -288,9 +304,9 @@ mod tests {
     fn restore_is_inert_and_requires_a_real_synced_voice_channel() {
         let (mut source, source_doc) = app_and_doc();
         source.call.join("c_huddle");
-        let metadata = Widget::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
+        let metadata = Continuable::continuation_metadata(&source, &source_doc, &ROOT).unwrap();
         let (mut target, mut target_doc) = app_and_doc();
-        assert!(Widget::restore_continuation_metadata(
+        assert!(Continuable::restore_continuation_metadata(
             &mut target,
             &metadata,
             &mut target_doc,
@@ -305,7 +321,7 @@ mod tests {
             schema_version: CHAT_CONTINUATION_SCHEMA,
             bytes: serde_json::to_vec(&unknown).unwrap(),
         };
-        assert!(!Widget::restore_continuation_metadata(
+        assert!(!Continuable::restore_continuation_metadata(
             &mut target,
             &unknown,
             &mut target_doc,
@@ -361,7 +377,7 @@ mod tests {
         let (mut app, mut doc) = app_and_doc();
         app.call.join("c_huddle");
         app.realtime.session = Some("session-1".into());
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::RolledBack {
@@ -371,7 +387,7 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(app.call.active, "rollback must leave source media live");
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -381,7 +397,7 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(app.call.active, "foreign cutover cannot stop this call");
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::StopSource {
@@ -395,6 +411,70 @@ mod tests {
         );
         Widget::sync(&mut app, &mut doc, &ROOT);
         assert!(!app.call.active);
+    }
+
+    /// Drive a target to the point where it establishes an offered call that
+    /// was sharing its screen, with the host answering the capture request.
+    fn establish_shared_screen_target(
+        outcome: ui::capture::ScreenCaptureOutcome,
+    ) -> (ChatApp, AutoCommit, ui::host::HostRecorder) {
+        let (mut app, mut doc) = app_and_doc();
+        let offered = ChatCallContinuation {
+            workspace_id: "ws_acme".into(),
+            channel_id: "c_huddle".into(),
+            media: ui::realtime_continuity::RealtimeMediaFacets {
+                microphone: true,
+                screen_share: true,
+                ..Default::default()
+            },
+            controls: ui::realtime_continuity::RealtimeControlIntent::default(),
+        };
+        let metadata = ui::collaboration::ContinuationMetadata {
+            schema_version: CHAT_CONTINUATION_SCHEMA,
+            bytes: serde_json::to_vec(&offered).unwrap(),
+        };
+        assert!(app.restore_call_continuation(&metadata, &doc));
+        app.realtime.offer = Some(("target-session".into(), offered));
+        app.realtime.accepted_target = true;
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_screen_capture(outcome);
+        ui::host::scoped(&services, || Widget::sync(&mut app, &mut doc, &ROOT));
+        assert_eq!(recorder.screen_capture_requests().len(), 1);
+        (app, doc, recorder)
+    }
+
+    #[test]
+    fn a_resumed_screen_share_waits_for_a_fresh_host_grant() {
+        let grant = ui::capture::ScreenCaptureOutcome::Granted(ui::capture::ScreenCaptureGrant {
+            stream: ui::capture::CaptureStream::PipeWire { node_id: 7 },
+            size: None,
+        });
+        let (mut app, _doc, _recorder) = establish_shared_screen_target(grant);
+        assert!(app.call.active && app.call.sharing);
+        assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
+        assert!(matches!(
+            Collaborative::take_collab_requests(&mut app).as_slice(),
+            [ui::collaboration::CollabRequest::RealtimeCommand {
+                command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
+                ..
+            }]
+        ));
+    }
+
+    #[test]
+    fn a_declined_screen_grant_fails_the_target_and_keeps_the_source_live() {
+        let (mut app, _doc, _recorder) =
+            establish_shared_screen_target(ui::capture::ScreenCaptureOutcome::Cancelled);
+        assert!(!app.call.active && !app.call.sharing);
+        assert!(app.realtime.session.is_none());
+        assert!(app.realtime.offer.is_none());
+        assert!(matches!(
+            Collaborative::take_collab_requests(&mut app).as_slice(),
+            [ui::collaboration::CollabRequest::RealtimeCommand {
+                command: ui::realtime_continuity::RealtimeCommand::TargetFailed { .. },
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -419,7 +499,7 @@ mod tests {
         };
         assert!(app.restore_call_continuation(&metadata, &doc));
         app.realtime.offer = Some(("target-session".into(), offered));
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::Realtime(
                 ui::realtime_continuity::RealtimeEvent::CaptureAuthorized {
@@ -431,13 +511,13 @@ mod tests {
             ),
         );
         assert!(matches!(
-            Widget::take_collab_requests(&mut app).as_slice(),
+            Collaborative::take_collab_requests(&mut app).as_slice(),
             [ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::Accept { .. },
                 ..
             }]
         ));
-        Widget::handle_collab_event(
+        Collaborative::handle_collab_event(
             &mut app,
             &ui::collaboration::CollabEvent::RealtimeCommandResult {
                 request_id: 1,
@@ -449,7 +529,7 @@ mod tests {
         assert!(app.call.active && app.call.muted && !app.call.audio_only);
         assert_eq!(app.realtime.session.as_deref(), Some("target-session"));
         assert!(matches!(
-            Widget::take_collab_requests(&mut app).as_slice(),
+            Collaborative::take_collab_requests(&mut app).as_slice(),
             [ui::collaboration::CollabRequest::RealtimeCommand {
                 command: ui::realtime_continuity::RealtimeCommand::MediaReady { .. },
                 ..

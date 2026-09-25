@@ -20,6 +20,7 @@ use ui::LocalState;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::{Metrics, Spacing, TypeScale};
 use ui::widget::{Button, ColorPicker, Dropdown, Slider, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -29,22 +30,119 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::draw;
 use crate::model::{self, FONTS, ThemeSpec, TokenId};
 
-const PAD: f32 = 16.0;
-const GRID_H: f32 = 152.0;
-const GAP: f32 = 22.0;
-/// Child-control heights, mirrored from the `ui` widgets, so the panel's
-/// intrinsic height can be computed for the narrow stacked/scrolling layout
-/// (where the panel can't claim `percent(1.0)`).
+/// Panel inset on every side — the toolkit's `s4` step.
+const PAD: f32 = Spacing::BASE.s4;
+/// The 1× line box of a control's `sm` label — the one text metric the
+/// panel's vertical rhythm is built on, read from the toolkit's line-height
+/// formula rather than carried as a copy of `size × 1.25`.
+fn control_label_line_h() -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a 1× line box of a 12 pt label is a small logical-pixel value"
+    )]
+    let line = ui::text_metrics::line_height_px(TypeScale::default().sm, 1.0) as f32;
+    line
+}
+/// Vertical rhythm between the panel's controls, stated as its relationship
+/// rather than a number: each control's label rides in the gap above it, so
+/// the gap is one `s1` from the previous control to the label's line box and
+/// one `s1` from the label to its own control (HIG §7b: label ↔ control is
+/// `s1`). Every control in the panel gets this same step.
+fn gap() -> f32 {
+    Spacing::BASE.s1 + control_label_line_h() + Spacing::BASE.s1
+}
+/// Child-control heights, named from the same metrics the `ui` widgets lay
+/// themselves out with, so the panel's intrinsic height (used by the narrow
+/// stacked/scrolling layout, where the panel can't claim `percent(1.0)`)
+/// matches what the controls actually take. A stale mirror here under-
+/// reserved the stack by 4 px and the column squeezed the font dropdown to
+/// 38 px beside 40 px action buttons.
 const PICKER_H: f32 = 220.0;
-const SLIDER_H: f32 = 30.0;
-const DROPDOWN_H: f32 = 40.0;
-const ACTIONS_H: f32 = 34.0;
+/// `Slider` lays out on `metrics.min_pointer_target`.
+const SLIDER_H: f32 = Metrics::BASE.min_pointer_target;
+/// `Dropdown` lays out on `metrics.bar_height`.
+const DROPDOWN_H: f32 = Metrics::BASE.bar_height;
+/// The action buttons share the dropdown's control height, so the panel's
+/// last two rows never mix a 40 px chooser with shorter buttons.
+const ACTIONS_H: f32 = DROPDOWN_H;
+
+/// The colour-token chip grid: a header (panel title, theme name and the
+/// "COLORS" label), the chips wrapped to the width the panel actually has,
+/// and the selected-token caption directly under the last chip row.
+const CHIP_SIZE: f64 = 28.0;
+/// Gap between chips — the `s2` step.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: f64::from is not const, and an f32 -> f64 widening is exact"
+)]
+const CHIP_GAP: f64 = Spacing::BASE.s2 as f64;
+/// Height of the header block above the first chip row.
+const CHIP_HEADER_H: f64 = 58.0;
+/// Air between the last chip row and the caption, and the caption's own line.
+const CHIP_CAPTION_GAP: f64 = 15.0;
+const CHIP_CAPTION_H: f64 = 15.0;
+
+/// How many chips fit on one row at a content width of `avail` logical px.
+/// The one wrap rule shared by the reserved grid height and the drawn /
+/// hit-tested chip rects, so the two can never disagree.
+fn chips_per_row(avail: f64) -> usize {
+    let per_row = ((avail.max(0.0) + CHIP_GAP) / (CHIP_SIZE + CHIP_GAP)).floor();
+    (per_row as usize).max(1)
+}
+
+/// How many rows the colour-token chips wrap into at a content width of
+/// `avail` logical px (the panel width minus its two insets).
+pub fn chip_rows_for_width(avail: f32) -> usize {
+    TokenId::ALL.len().div_ceil(chips_per_row(f64::from(avail)))
+}
+
+/// Height of the chip-grid region (header, wrapped chip rows, caption) at a
+/// content width of `avail`, at 1×. Measured from the row count instead of a
+/// fixed band, so a wide panel that fits every chip on one row does not leave
+/// a dead strip between the chips and their caption.
+pub fn chip_grid_height(avail: f32) -> f32 {
+    chip_grid_height_scaled(avail, 1.0)
+}
+
+/// [`chip_grid_height`] at the accessibility text scale: the header block
+/// and the caption seat glyphs the renderer draws at that scale, so they
+/// grow with it; the chips themselves do not.
+pub fn chip_grid_height_scaled(avail: f32, text_scale: f32) -> f32 {
+    let scale = f64::from(text_scale.max(1.0));
+    let rows = chip_rows_for_width(avail) as f64;
+    let chips = rows * (CHIP_SIZE + CHIP_GAP) - CHIP_GAP;
+    ((CHIP_HEADER_H + CHIP_CAPTION_GAP + CHIP_CAPTION_H) * scale + chips) as f32
+}
 
 /// Intrinsic content height of the customizer column (grid + picker + two
-/// sliders + font dropdown + actions, plus padding and inter-row gaps).
-/// Used to stack it under the preview inside the narrow vertical scroll.
-pub fn intrinsic_height() -> f32 {
-    PAD * 2.0 + GRID_H + GAP * 5.0 + PICKER_H + SLIDER_H * 2.0 + DROPDOWN_H + ACTIONS_H
+/// sliders + font dropdown + actions, plus padding and inter-row gaps) when
+/// the panel is `panel_width` wide, at 1×. Used to stack it under the
+/// preview inside the narrow vertical scroll, where the panel can't claim
+/// `percent(1.0)`.
+pub fn intrinsic_height_for_width(panel_width: f32) -> f32 {
+    intrinsic_height_for_width_scaled(panel_width, 1.0)
+}
+
+/// [`intrinsic_height_for_width`] at the accessibility text scale. The
+/// inter-control gap carries each control's label (drawn one label offset
+/// above the control), so it grows with the type as the grid's header does;
+/// the toolkit controls keep their own heights.
+pub fn intrinsic_height_for_width_scaled(panel_width: f32, text_scale: f32) -> f32 {
+    let scale = text_scale.max(1.0);
+    PAD * 2.0
+        + chip_grid_height_scaled(panel_width - PAD * 2.0, scale)
+        + gap() * scale * 5.0
+        + PICKER_H
+        + SLIDER_H * 2.0
+        + DROPDOWN_H
+        + ACTIONS_H
+}
+
+/// Vertical offset (logical px, at 1×) of a control's label above its
+/// control — the label's line box plus its `s1` caption gap, the same two
+/// terms [`gap`] is built from so the label always lands inside the gap.
+fn control_label_offset() -> f64 {
+    f64::from(control_label_line_h() + Spacing::BASE.s1)
 }
 
 /// Panic-free leaf/parent node construction for [`Widget::build_layout`].
@@ -105,6 +203,15 @@ pub struct Customizer {
     /// Last known cursor position (logical px), tracked from `CursorMoved`
     /// so a press — which carries no position — can hit-test the chips.
     cursor: Option<Point>,
+    /// Panel width (logical px) the next `build_layout` sizes the chip grid
+    /// for. The owning app sets it from the layout class it is building
+    /// (docked column or full narrow width) before every `build_layout`.
+    layout_width: f32,
+    /// The OS theme's text scale as `build_layout` last saw it. The panel's
+    /// hand-laid text (header, caption, control labels) is drawn at that
+    /// scale by the renderer, so the offsets that seat it follow the same
+    /// factor.
+    text_scale: f32,
 }
 
 impl Default for Customizer {
@@ -160,7 +267,41 @@ impl Customizer {
             grid_rect: Rect::ZERO,
             structure_dirty: false,
             cursor: None,
+            layout_width: 0.0,
+            text_scale: 1.0,
         }
+    }
+
+    /// Tell the next `build_layout` how wide the panel will be, so the chip
+    /// grid reserves exactly the rows its chips wrap into at that width.
+    pub fn set_layout_width(&mut self, panel_width: f32) {
+        self.layout_width = panel_width;
+    }
+
+    /// Intrinsic content height of the panel at the width it was last told
+    /// about (see [`Self::set_layout_width`]); the narrow stacked layout uses
+    /// it to size the panel as a scrolling stack member.
+    pub fn intrinsic_height(&self, text_scale: f32) -> f32 {
+        intrinsic_height_for_width_scaled(self.layout_width, text_scale)
+    }
+
+    /// The text scale the panel's hand-laid text geometry follows, as
+    /// `build_layout` last saw it on the OS theme.
+    fn scale(&self) -> f64 {
+        f64::from(self.text_scale.max(1.0))
+    }
+
+    /// Renderer-relative size for a theme-resolved type size, so the theme's
+    /// text scale is applied exactly once.
+    fn renderer_size(tr: &TextRenderer, size: f32) -> f32 {
+        tr.renderer_input_style(&ui::text_render::TextStyle::new(size))
+            .size
+    }
+
+    /// Content width the chip grid is sized for: the declared panel width
+    /// minus the panel's two insets.
+    fn grid_content_width(&self) -> f32 {
+        (self.layout_width - PAD * 2.0).max(0.0)
     }
 
     pub fn set_view(&mut self, spec: ThemeSpec, edit_token: TokenId, editable: bool) {
@@ -262,12 +403,16 @@ impl Widget for Customizer {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.text_scale = theme.text_scale;
         let grid = leaf_node(
             taffy,
             Style {
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(GRID_H),
+                    height: Dimension::length(chip_grid_height_scaled(
+                        self.grid_content_width(),
+                        theme.text_scale,
+                    )),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -295,12 +440,12 @@ impl Widget for Customizer {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Row,
                 gap: Size {
-                    width: length(8.0_f32),
+                    width: length(theme.tokens.spacing.s2),
                     height: length(0.0_f32),
                 },
                 size: Size {
                     width: Dimension::percent(1.0),
-                    height: Dimension::length(34.0),
+                    height: Dimension::length(ACTIONS_H),
                 },
                 flex_shrink: 0.0,
                 ..Default::default()
@@ -314,9 +459,11 @@ impl Widget for Customizer {
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
+                // Each control's label rides in the gap above it, so the
+                // gap grows with the type.
                 gap: Size {
                     width: length(0.0_f32),
-                    height: length(GAP),
+                    height: length(gap() * theme.text_scale.max(1.0)),
                 },
                 padding: taffy::Rect {
                     left: length(PAD),
@@ -393,14 +540,16 @@ impl Widget for Customizer {
         theme: &Theme,
         p: &PresenceCtx,
     ) {
-        // Panel background + left divider.
+        // Panel background + left divider. The divider is a hairline derived
+        // from the panel's own fill (HIG §9.5), so it separates the customizer
+        // from the preview on the dark preset where `border_standard` did not.
         draw::fill_rect(scene, t, self.rect, theme.bg_app);
         draw::line(
             scene,
             t,
-            Point::new(self.rect.x0, self.rect.y0),
-            Point::new(self.rect.x0, self.rect.y1),
-            theme.border_standard,
+            Point::new(self.rect.x0 + 0.5, self.rect.y0),
+            Point::new(self.rect.x0 + 0.5, self.rect.y1),
+            ui::surface::edge_on(theme.bg_app),
             1.0,
         );
 
@@ -426,7 +575,10 @@ impl Widget for Customizer {
         self.font_dropdown.draw_overlay(scene, t, tr, theme, p);
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the Widget event signature carries input, CRDT location, handled/focus outputs and layout context to child controls"
+    )]
     fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -488,12 +640,19 @@ impl Widget for Customizer {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        vec![
+        // Mirror `children_mut`: the action buttons are part of the read-only
+        // tree too, so the accessibility tree, inspection and named targets
+        // see the same controls the event path drives.
+        let mut v: Vec<&dyn Widget> = vec![
             &self.color_picker,
             &self.radius_slider,
             &self.spacing_slider,
             &self.font_dropdown,
-        ]
+        ];
+        for b in &self.buttons {
+            v.push(b as &dyn Widget);
+        }
+        v
     }
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         let mut v: Vec<&mut (dyn Widget + '_)> = vec![
@@ -526,18 +685,15 @@ impl Customizer {
     fn layout_chips(&mut self) {
         self.chip_rects.clear();
         let x0 = self.grid_rect.x0;
-        let y0 = self.grid_rect.y0 + 58.0;
-        let size = 28.0;
-        let gap = 8.0;
-        let avail = self.grid_rect.width();
-        let per_row = (((avail + gap) / (size + gap)).floor() as usize).max(1);
+        let y0 = self.grid_rect.y0 + CHIP_HEADER_H * self.scale();
+        let per_row = chips_per_row(self.grid_rect.width());
         for (i, tok) in TokenId::ALL.iter().enumerate() {
             let col = (i % per_row) as f64;
             let row = (i / per_row) as f64;
-            let x = x0 + col * (size + gap);
-            let y = y0 + row * (size + gap);
+            let x = x0 + col * (CHIP_SIZE + CHIP_GAP);
+            let y = y0 + row * (CHIP_SIZE + CHIP_GAP);
             self.chip_rects
-                .push((*tok, Rect::new(x, y, x + size, y + size)));
+                .push((*tok, Rect::new(x, y, x + CHIP_SIZE, y + CHIP_SIZE)));
         }
     }
 
@@ -549,15 +705,20 @@ impl Customizer {
             .as_ref()
             .map(|s| s.name.clone())
             .unwrap_or_default();
+        // Panel title in the theme's `lg` step, the theme name and section
+        // label in `sm`; the header's 1× offsets scale with the type.
+        let scale = self.scale();
+        let title_size = Self::renderer_size(tr, theme.tokens.typography.scale.lg);
+        let small_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
         draw::text_w(
             tr,
             scene,
             t,
             "Customize",
-            16.0,
+            title_size,
             theme.text_primary,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 2.0,
+            self.grid_rect.y0 + 2.0 * scale,
             TextWeight::Bold,
         );
         draw::text(
@@ -565,10 +726,10 @@ impl Customizer {
             scene,
             t,
             &name,
-            11.0,
+            small_size,
             theme.text_dim,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 22.0,
+            self.grid_rect.y0 + 22.0 * scale,
         );
 
         draw::text_w(
@@ -576,10 +737,10 @@ impl Customizer {
             scene,
             t,
             "COLORS",
-            11.0,
+            small_size,
             theme.text_dim,
             self.grid_rect.x0,
-            self.grid_rect.y0 + 40.0,
+            self.grid_rect.y0 + 40.0 * scale,
             TextWeight::Semibold,
         );
     }
@@ -592,14 +753,7 @@ impl Customizer {
                 .spec
                 .as_ref()
                 .map_or([128, 128, 128], |s| s.token(*tok));
-            draw::fill_rrect(scene, t, *r, 6.0, model::color(col));
-            let sel = *tok == self.edit_token;
-            let ring = if sel {
-                theme.accent_primary
-            } else {
-                theme.border_standard
-            };
-            draw::stroke_rrect(scene, t, *r, 6.0, ring, if sel { 2.5 } else { 1.0 });
+            draw_token_chip(scene, t, theme, *r, col, *tok == self.edit_token);
         }
         // Caption: selected token + hex.
         if let Some(spec) = &self.spec {
@@ -610,10 +764,10 @@ impl Customizer {
                 scene,
                 t,
                 &cap,
-                12.0,
+                Self::renderer_size(tr, theme.tokens.typography.scale.sm),
                 theme.text_primary,
                 self.grid_rect.x0,
-                self.grid_rect.y1 - 15.0,
+                self.grid_rect.y1 - CHIP_CAPTION_H * self.scale(),
                 TextWeight::Medium,
             );
         }
@@ -636,26 +790,30 @@ impl Customizer {
         let radius_r = self.radius_slider.get_rect();
         let spacing_r = self.spacing_slider.get_rect();
         let font_r = self.font_dropdown.get_rect();
+        // Labels are the theme's `sm` step, one scaled label offset above
+        // their control (the inter-control gap grows by the same factor).
+        let label_size = Self::renderer_size(tr, theme.tokens.typography.scale.sm);
+        let label_offset = control_label_offset() * self.scale();
         if let Some(spec) = &self.spec {
             draw::text(
                 tr,
                 scene,
                 t,
                 &format!("Corner radius — {:.0}px", spec.radius_px()),
-                12.0,
+                label_size,
                 theme.text_dim,
                 radius_r.x0,
-                radius_r.y0 - 18.0,
+                radius_r.y0 - label_offset,
             );
             draw::text(
                 tr,
                 scene,
                 t,
                 &format!("Spacing — {:.0}px", spec.spacing_px()),
-                12.0,
+                label_size,
                 theme.text_dim,
                 spacing_r.x0,
-                spacing_r.y0 - 18.0,
+                spacing_r.y0 - label_offset,
             );
         }
         draw::text(
@@ -663,10 +821,10 @@ impl Customizer {
             scene,
             t,
             "Font family",
-            12.0,
+            label_size,
             theme.text_dim,
             font_r.x0,
-            font_r.y0 - 18.0,
+            font_r.y0 - label_offset,
         );
 
         self.radius_slider.draw(scene, t, tr, theme, p);
@@ -940,5 +1098,70 @@ impl Customizer {
                 break;
             }
         }
+    }
+}
+
+/// The same color swatch paint used by live customization and frozen library views.
+fn draw_token_chip(
+    scene: &mut Scene,
+    t: Affine,
+    theme: &Theme,
+    rect: Rect,
+    rgb: [u8; 3],
+    selected: bool,
+) {
+    // The rest ring derives from the chip's own colour, so a chip that
+    // matches the panel ground (a dark theme's `base` on the dark app) still
+    // has a rim; the selected chip carries the accent ring instead.
+    let fill = model::color(rgb);
+    if selected {
+        draw::fill_rrect(scene, t, rect, 6.0, fill);
+        draw::stroke_rrect(scene, t, rect, 6.0, theme.accent_primary, 2.5);
+    } else {
+        ui::surface::card(scene, t, rect, 6.0, fill);
+    }
+}
+
+pub(crate) fn draw_snapshot_tokens(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    theme: &Theme,
+    spec: &ThemeSpec,
+    rect: Rect,
+) {
+    draw::text(
+        tr,
+        scene,
+        t,
+        &format!(
+            "{} · radius {:.2} · spacing {:.2}",
+            spec.font, spec.radius_norm, spec.spacing_norm
+        ),
+        13.,
+        theme.text_primary,
+        rect.x0,
+        rect.y0,
+    );
+    for (i, token) in TokenId::ALL.iter().enumerate() {
+        let y = rect.y0 + 34. + i as f64 * 38.;
+        draw_token_chip(
+            scene,
+            t,
+            theme,
+            Rect::new(rect.x0, y, rect.x0 + 28., y + 28.),
+            spec.token(*token),
+            false,
+        );
+        draw::text(
+            tr,
+            scene,
+            t,
+            &format!("{} · {}", token.label(), model::hex(spec.token(*token))),
+            12.,
+            theme.text_primary,
+            rect.x0 + 40.,
+            y + 5.,
+        );
     }
 }

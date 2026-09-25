@@ -17,6 +17,9 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" \
   "$repo/apps/imager/packaging/verify-linux-release.sh" \
   "$repo/apps/imager/packaging/sign-linux-release-file.sh" \
+  "$repo/apps/imager/packaging/assert-github-installation-token.sh" \
+  "$repo/apps/imager/packaging/revoke-github-installation-token.sh" \
+  "$repo/apps/imager/packaging/publish-github-release.sh" \
   "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
   "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
   "$repo/apps/imager/packaging/publish-site-release.sh" \
@@ -28,9 +31,11 @@ bash -n "$repo/apps/imager/packaging/package-host.sh" \
   || bad 'an imager release script does not parse'
 
 bash "$repo/os/tests/forgejo_release_publication.sh" \
-  || bad 'Forgejo release publication is not idempotent and immutable'
+  || bad 'GitHub release publication is not target-scoped, idempotent, and immutable'
 bash "$repo/os/tests/public_release_origin.sh" \
   || bad 'installer catalog is not bound to the configured public release origin'
+bash "$repo/os/tests/winget_publication_idempotency.sh" \
+  || bad 'WinGet publication retry does not recognize exact accepted manifests'
 bash "$repo/os/tests/winget_acceptance_monitor.sh" \
   || bad 'WinGet acceptance monitor is not fail-closed and version-bound'
 
@@ -136,14 +141,15 @@ grep -Fq 'acquire-release-credentials.sh' "$workflow" \
   && ok 'release brokers, signer paths, publisher identities, and cleanup fail closed' \
   || bad 'release credential outputs or signing identities are insufficiently constrained'
 
-publisher="$repo/apps/imager/packaging/publish-forgejo-release.sh"
-if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo/releases}\"" "$publisher" \
+publisher="$repo/apps/imager/packaging/publish-github-release.sh"
+publish_job="$(sed -n '/^  publish:/,/^  homebrew:/p' "$workflow")"
+if grep -Fq "release_repository=\"\${TILO_RELEASE_REPOSITORY:-tilo-os/releases}\"" "$publisher" \
    && grep -Fq 'release repository must be public' "$publisher" \
-   && grep -Fq 'release repository must be separate from the source repository' "$publisher" \
+   && grep -Fq 'assert-github-installation-token.sh' "$publisher" \
    && grep -Fq 'release "$CREDENTIAL_BROKER" "$token_file"' "$workflow" \
    && grep -Fq 'IMAGER_PUBLIC_RELEASE_REPOSITORY' "$workflow" \
-   && sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq 'persist-credentials: false' \
-   && ! sed -n '/^  publish:/,/^  homebrew:/p' "$workflow" | grep -Fq '${{ github.token }}' \
+   && grep -Fq 'persist-credentials: false' <<<"$publish_job" \
+   && ! grep -Fq '${{ github.token }}' <<<"$publish_job" \
    && grep -Fq '.releaseRoot = $release_root' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && grep -Fq 'landing page does not consume the public releaseRoot manifest field' "$repo/apps/imager/packaging/publish-site-release.sh" \
    && ! grep -Fq 'tilo/tilo/releases/download' \
@@ -220,7 +226,7 @@ grep -Fq 'AppImage.asc' "$workflow" \
   && grep -Fq 'IMAGER_LINUX_SIGNING_FINGERPRINT' "$workflow" \
   && grep -Fq 'verify-linux-release.sh release-assets' "$workflow" \
   && grep -Fq 'verify-linux-release.sh" "$asset_root"' \
-    "$repo/apps/imager/packaging/publish-forgejo-release.sh" \
+    "$repo/apps/imager/packaging/publish-github-release.sh" \
   && grep -Fq 'tilo-imager-linux-*.flatpak.asc' "$workflow" \
   && ok 'Linux signatures, release key, and protected fingerprint are a fail-closed publication gate' \
   || bad 'Linux release trust bundle is incomplete or bypassable'
@@ -233,9 +239,9 @@ for artifact in \
     || bad "$artifact is linked by the website but absent from the publication gate"
 done
 if python3 -m unittest discover -s "$repo/tools/tests" -p test_imager_enabled_platforms.py; then
-  ok 'enabled Linux/Windows releases retain strict artifacts and disabled macOS workflows'
+  ok 'enabled Linux/Windows/macOS releases retain a strict complete artifact matrix'
 else
-  bad 'enabled platform matrix or deferred macOS preservation failed'
+  bad 'enabled native platform matrix or publication gate failed'
 fi
 grep -Fq 'sha256sum --check --strict "$(basename "$path").sha256"' "$workflow" \
   && ok 'every required release sidecar is validated before publication' \
@@ -267,7 +273,7 @@ flatpak_manifest="$repo/apps/imager/packaging/flatpak/org.tilo.Imager.yml"
 flatpak_package="$repo/apps/imager/packaging/package-flatpak.sh"
 if grep -Fq -- '--system-talk-name=org.freedesktop.UDisks2' "$flatpak_manifest" \
   && ! grep -Eq -- '--(device=all|filesystem=host|talk-name=org.freedesktop.Flatpak)' "$flatpak_manifest" \
-  && grep -Fq 'flatpak-media-writer = ["dep:zbus"]' "$repo/apps/imager/Cargo.toml" \
+  && grep -Fq 'flatpak-media-writer = ["dep:zbus", "block-devices/udisks"]' "$repo/apps/imager/Cargo.toml" \
   && grep -Fq 'O_EXCL | libc::O_SYNC | libc::O_CLOEXEC' \
     "$repo/apps/imager/src/write.rs" \
   && grep -Fq 'cargo test -p imager --lib --locked --features flatpak-media-writer' "$workflow" \
@@ -324,6 +330,10 @@ grep -Fq 'Build the complete native Linux package set' "$workflow" \
   && grep -Fq 'Launch the packaged Linux UI offscreen' "$workflow" \
   && grep -Fq 'Install and launch the packaged Windows UI offscreen' "$workflow" \
   && grep -Fq 'Mount and launch the packaged macOS UI offscreen' "$workflow" \
+  && grep -Fq 'xcrun stapler validate "$app"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
+  && grep -Fq 'xcrun stapler validate "$out/$artifact_base.dmg"' \
+    "$repo/apps/imager/packaging/package-host.sh" \
   && grep -Fq 'system bin/"tilo-imager-bin", "--shots"' \
     "$repo/apps/imager/packaging/homebrew/tilo-imager.rb.in" \
   && ok 'every native package is required and executes its packaged UI before publication' \
@@ -337,7 +347,9 @@ grep -Fq 'tilo-imager-linux-aarch64.tar.gz' \
   && ok 'Homebrew selects native Linux and macOS artifacts by architecture' \
   || bad 'Homebrew does not cover the requested Linux/macOS architectures'
 
-grep -Fq 'tilo/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+grep -Fq 'tilo-os/homebrew-tilo' "$repo/apps/imager/packaging/publish-homebrew-tap.sh" \
+  && [ "$(grep -Fc 'brew tap tilo/tilo https://github.com/tilo-os/homebrew-tilo.git' "$workflow")" -eq 2 ] \
+  && ! grep -Fq 'code.sandbox.example/tilo/homebrew-tilo.git' "$workflow" \
   && grep -Fq 'microsoft/winget-pkgs/pulls' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq -- '--retry 6 --retry-all-errors --retry-max-time 180' "$repo/apps/imager/packaging/publish-winget.sh" \
   && grep -Fq 'state=open&base=master&head=' "$repo/apps/imager/packaging/publish-winget.sh" \
@@ -353,6 +365,10 @@ grep -Fq 'site-downloads:' "$workflow" \
   && grep -Fq '.linuxSigningFingerprint = $fingerprint' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.homebrew = "available"' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq '.channels.winget = $winget_state' "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'for asset_key in macosX64Dmg macosX64Portable macosArm64Dmg macosArm64Portable' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
+  && grep -Fq 'landing page does not expose required macOS asset' \
+    "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/q/Tilo/Imager/${version}/Tilo.Imager.yaml' "$repo/apps/imager/packaging/publish-site-release.sh" \
   && grep -Fq 'TILO_LINUX_SIGNING_FINGERPRINT: ${{ vars.IMAGER_LINUX_SIGNING_FINGERPRINT }}' "$workflow" \
   && ok 'landing-page manifest advances only through the gated release workflow' \
@@ -406,9 +422,16 @@ else
 fi
 
 cycle="$repo/os/dev/test-installer-cycle.sh"
+release_vars="$repo/os/dev/prepare-release-secureboot-vars.sh"
 boot_verify="$repo/scripts/perf/qemu-install-boot-verify.sh"
+image_tools_line="$(grep -nF 'name: Install native image-build and full-cycle VM dependencies' "$workflow" | cut -d: -f1 || true)"
+image_auth_line="$(grep -nF 'name: Authenticate the native image builder' "$workflow" | cut -d: -f1 || true)"
 if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'needs: plan' "$workflow" \
+  && [ -n "$image_tools_line" ] && [ -n "$image_auth_line" ] \
+  && [ "$image_tools_line" -lt "$image_auth_line" ] \
+  && grep -Fq 'ntfs-3g podman' "$workflow" \
+  && grep -Fq 'mtype ntfscp podman qemu-img' "$workflow" \
   && grep -Fq -- '--prepared-alongside' "$workflow" \
   && grep -Fq -- '--guided-alongside' "$workflow" \
   && grep -Fq 'dist/installer-guided-alongside-cycle' "$workflow" \
@@ -416,9 +439,9 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'qemu-system-aarch64' "$workflow" \
   && grep -Fq 'qemu-efi-aarch64 qemu-system-arm' "$workflow" \
   && grep -Fq 'edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core' "$workflow" \
-  && grep -Fq 'dosfstools e2fsprogs fdisk imagemagick mtools ntfs-3g' "$workflow" \
-  && grep -Fq 'ImageMagick mtools ntfs-3g util-linux' "$workflow" \
-  && grep -Fq 'debugfs mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat mtype ntfscp' "$workflow" \
+  && grep -Fq 'clang dosfstools e2fsprogs fdisk imagemagick lld mtools ntfs-3g' "$workflow" \
+  && grep -Fq 'clang dosfstools e2fsprogs ImageMagick lld mtools ntfs-3g util-linux' "$workflow" \
+  && grep -Fq 'clang debugfs ld.lld mattrib mcopy mdir mmd mkfs.ext4 mkfs.ntfs mkfs.vfat' "$workflow" \
   && grep -Fq 'qemu-img "$qemu_binary" sfdisk socat tesseract' "$workflow" \
   && grep -Fq 'name: tilo-installer-full-cycle-${{ matrix.arch }}' "$workflow" \
   && grep -Fxq 'os/tests/installer_cycle_graphics.py' "$repo/tools/security-boundary-invariants.txt" \
@@ -440,6 +463,11 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'Linux filesystem bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Windows EFI loader bytes changed during alongside install' "$cycle" \
   && grep -Fq 'Linux EFI loader bytes changed during alongside install' "$cycle" \
+  && grep -Fq 'build-foreign-boot-fixture.sh' "$cycle" \
+  && grep -Fq 'Windows fixture entry never executed from the installed boot menu' "$cycle" \
+  && grep -Fq 'Linux fixture entry never executed from the installed boot menu' "$cycle" \
+  && grep -Fq 'real_windows_boot_verified=false' "$cycle" \
+  && grep -Fq 'real_linux_distribution_boot_verified=false' "$cycle" \
   && grep -Fq 'foreign shared EFI partition changed during guided alongside install' "$cycle" \
   && grep -Fq 'tilo-windows.conf' "$cycle" \
   && grep -Fq 'tilo-linux-fedora.conf' "$cycle" \
@@ -451,10 +479,14 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   && grep -Fq 'guided Tilo EFI partition contains an invalid cross-ESP chainloader shortcut' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb4' "$cycle" \
   && grep -Fq 'confirmation=/dev/vdb' "$cycle" \
-  && grep -Fq "wait_private_screen 'Tilo" "$cycle" \
-  && grep -Fq '"$vm" keys ret tab spc tab tab ret' "$cycle" \
+  && grep -Fq 'python3 "$dev_dir/installer-console.py" --socket "$console"' "$cycle" \
+  && grep -Fq 'ic invoke begin@installer.review "{\"confirmation_phrase\":\"$confirmation\"}"' "$cycle" \
+  && grep -Fq 'installer began an install confirmed with the wrong device' "$cycle" \
+  && grep -Fq -- '--secret passphrase=TILO_PASS --secret confirmation=TILO_PASS' "$cycle" \
+  && grep -Fq 'confirm-saved@installer.recovery' "$cycle" \
+  && grep -Fq 'power-off@installer.power' "$cycle" \
+  && ! grep -Fq 'finish-recovery' "$cycle" \
   && grep -Fq '"$vm" keys spc tab tab ret' "$cycle" \
-  && grep -Fq 'rm -f -- "$run/private-observe.png"' "$cycle" \
   && grep -Fq '::tilo-recovery-key::' "$cycle" \
   && grep -Fq '.artifact-secret-canary.txt' "$cycle" \
   && grep -Fq 'test ! -s "$out/.artifact-secret-canary.txt"' "$cycle" \
@@ -474,6 +506,23 @@ if grep -Fq './os/dev/test-installer-cycle.sh' "$workflow" \
   ok 'trusted main and tagged media must pass erase, prepared-alongside, and guided-alongside graphical install cycles'
 else
   bad 'release media lack a fail-closed native full graphical installation cycle'
+fi
+
+if grep -Fq "if: startsWith(github.ref, 'refs/tags/imager-v') && matrix.arch == 'x86_64'" "$workflow" \
+  && grep -Fq 'python3-virt-firmware qemu-system-x86' "$workflow" \
+  && grep -Fq 'command -v swtpm virt-fw-vars' "$workflow" \
+  && grep -Fq './os/dev/prepare-release-secureboot-vars.sh' "$workflow" \
+  && grep -Fq 'TILO_SECBOOT_KEYS="${TILO_RELEASE_SECBOOT_VARS:?}"' "$workflow" \
+  && grep -Fq -- '--software-tpm' "$workflow" \
+  && grep -Fq 'dist/installer-software-tpm-pin-cycle' "$workflow" \
+  && grep -Fq '"$signer" export-efi-cert' "$release_vars" \
+  && grep -Fq 'tilo-crypto certificate-sha256' "$release_vars" \
+  && grep -Fq -- '--add-db a0baa8a3-041d-48a8-bc87-c36d121b5e3d "$work/release-efi.crt"' "$release_vars" \
+  && grep -Fq -- '--microsoft-kek none --no-microsoft --secure-boot' "$release_vars" \
+  && ! grep -Fq 'TILO_VM_ARCH=aarch64' "$release_vars"; then
+  ok 'tagged x86 media must pass the graphical TPM2/PIN cycle with the exact release certificate enforced'
+else
+  bad 'tag promotion can bypass the supported x86 measured-boot TPM2/PIN installation cycle'
 fi
 
 grep -Fq 'BOOT_SIGNAL="serial-getty"' "$boot_verify" \

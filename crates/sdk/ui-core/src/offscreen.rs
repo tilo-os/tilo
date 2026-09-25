@@ -26,7 +26,6 @@
 
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Instant;
 
 use crate::damage::{Region, coalesce_regions};
 use crate::gpu::RenderContext;
@@ -1111,6 +1110,33 @@ impl OffscreenRenderer {
         reason = "the width/height assert is a caller-bug panic, not a recoverable failure — every real failure mode already has its own OffscreenError variant"
     )]
     pub fn try_new(width: u32, height: u32) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(
+            width,
+            height,
+            std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+        )
+    }
+
+    /// Exact pixel oracles can use stable CPU segment ordering while keeping
+    /// Vello's fine rasterization on the GPU. Avoid process-global env mutation.
+    #[cfg(test)]
+    pub(crate) fn try_new_for_pixel_test(
+        width: u32,
+        height: u32,
+        use_cpu: bool,
+    ) -> Result<Self, OffscreenError> {
+        Self::try_new_with_preprocessing(width, height, use_cpu)
+    }
+
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "zero dimensions are a caller bug"
+    )]
+    fn try_new_with_preprocessing(
+        width: u32,
+        height: u32,
+        use_cpu: bool,
+    ) -> Result<Self, OffscreenError> {
         assert!(width > 0 && height > 0, "width and height must be > 0");
 
         let context = shared_render_context();
@@ -1151,7 +1177,7 @@ impl OffscreenRenderer {
         let renderer = Renderer::new(
             device,
             RendererOptions {
-                use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+                use_cpu,
                 // Only `Area` is ever asked for; `all()` would also build
                 // the msaa8/msaa16 pipelines nothing selects.
                 antialiasing_support: AaSupport::area_only(),
@@ -1440,7 +1466,7 @@ impl OffscreenRenderer {
         for _ in 0..RESILIENT_RENDER_ATTEMPTS {
             attempts = attempts.saturating_add(1);
             if timing.is_some() {
-                let start = Instant::now();
+                let start = crate::time::now();
                 self.renderer
                     .render_to_texture(
                         &device,
@@ -1487,7 +1513,7 @@ impl OffscreenRenderer {
             let dispatch_timestamp_submission =
                 self.dispatch_timestamp_submission_id(timing.is_some());
             if timing.is_some() {
-                let start = Instant::now();
+                let start = crate::time::now();
                 overflowed = self.renderer.settle_bump_budget(&device);
                 if let Some(profile) = timing.as_mut() {
                     profile.settle_wait_us = profile
@@ -1634,7 +1660,7 @@ impl OffscreenRenderer {
                 .expect("this renderer's device entry is missing from the shared RenderContext");
             (handle.device.clone(), handle.queue.clone())
         };
-        let setup_start = timing.is_some().then(Instant::now);
+        let setup_start = timing.is_some().then(crate::time::now);
         let texture_limit = device.limits().max_texture_dimension_2d;
         let regions = coalesce_regions(
             damage
@@ -1683,7 +1709,7 @@ impl OffscreenRenderer {
                 })
                 .collect();
             let sparse_setup_us = setup_start.map(|start| start.elapsed().as_micros());
-            let sparse_start = timing.is_some().then(Instant::now);
+            let sparse_start = timing.is_some().then(crate::time::now);
             if let Some(stats) = self
                 .renderer
                 .render_to_texture_with_damage(
@@ -1803,7 +1829,7 @@ impl OffscreenRenderer {
                         .saturating_add(stats.coarse_pixels);
                 }
                 let overflowed = if let Some(profile) = timing.as_mut() {
-                    let start = Instant::now();
+                    let start = crate::time::now();
                     let overflowed = self.renderer.settle_bump_budget(&device);
                     profile.settle_wait_us = profile
                         .settle_wait_us
@@ -1906,7 +1932,7 @@ impl OffscreenRenderer {
                 .damage_setup_us
                 .saturating_add(setup_start.elapsed().as_micros());
         }
-        let render_start = timing.is_some().then(Instant::now);
+        let render_start = timing.is_some().then(crate::time::now);
         let mut copy_encode_us = 0u128;
         self.renderer
             .render_to_texture_with_post_render(
@@ -1921,7 +1947,7 @@ impl OffscreenRenderer {
                     antialiasing_method: AaConfig::Area,
                 },
                 |encoder| {
-                    let copy_start = timing.is_some().then(Instant::now);
+                    let copy_start = timing.is_some().then(crate::time::now);
                     for region in &regions {
                         encoder.copy_texture_to_texture(
                             wgpu::TexelCopyTextureInfo {
@@ -1976,7 +2002,7 @@ impl OffscreenRenderer {
         }
         self.coarse_pool_high_water_pixels = self.coarse_pool_high_water_pixels.max(raster_pixels);
         let overflowed = if let Some(timing) = timing.as_mut() {
-            let start = Instant::now();
+            let start = crate::time::now();
             let overflowed = self.renderer.settle_bump_budget(&device);
             timing.settle_wait_us = timing
                 .settle_wait_us
@@ -2060,15 +2086,7 @@ impl OffscreenRenderer {
         reason = "PNG encoding is internal to the explicitly infallible render_png debug helper"
     )]
     fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut bytes, width, height);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().expect("png header");
-            writer.write_image_data(rgba).expect("png write");
-        }
-        bytes
+        crate::png::encode_rgba8(width, height, rgba).expect("png encode")
     }
 
     /// Convenience: render `scene` and write the result to `path` as a
@@ -2181,16 +2199,9 @@ mod tests {
         atomic_file::write_creating_parent(&path, &OffscreenRenderer::encode_png(1, 1, &rgba))
             .expect("publish png");
 
-        let file = std::fs::File::open(&path).expect("published png exists");
-        let mut reader = png::Decoder::new(std::io::BufReader::new(file))
-            .read_info()
-            .expect("published png header is complete");
-        let mut decoded = vec![0; reader.output_buffer_size().expect("decoded output size")];
-        let info = reader
-            .next_frame(&mut decoded)
-            .expect("published png image is complete");
-        assert_eq!((info.width, info.height), (1, 1));
-        assert_eq!(&decoded[..info.buffer_size()], &rgba);
+        let decoded = crate::png::read_rgba8(&path).expect("published png is complete");
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.rgba, rgba);
     }
 
     #[test]

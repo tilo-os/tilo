@@ -22,7 +22,7 @@
 //!   apps); read its module docs before touching it.
 //!
 //! The launcher-facing manifest surface is kept in [`manifest`]; policy types
-//! are shared with `tilo-pkg`.
+//! are shared with `tilo-app-package`.
 
 #![cfg_attr(
     test,
@@ -39,8 +39,10 @@
 
 pub mod appdir;
 pub mod capabilities;
+pub mod capture;
 #[cfg(target_os = "linux")]
 pub mod dbus_proxy;
+pub mod dev_env;
 pub mod gpu;
 pub mod hardening;
 #[cfg(target_os = "linux")]

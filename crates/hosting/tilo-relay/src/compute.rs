@@ -20,12 +20,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use launcher::capture::{
+    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination,
+};
 use launcher::manifest::{MinimalManifest, read_manifest};
 use launcher::registry::InstalledPackage;
-use launcher::run::{
-    CaptureCancellation, CapturedResourcePlan, CapturedRunOutput, CapturedTermination, LaunchMode,
-    RunOptions, run_with_captured_bounded,
-};
+#[cfg(target_os = "linux")]
+use launcher::run::{IdentitySource, LaunchMode, RunOptions, run_with_captured_bounded};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -339,62 +340,70 @@ impl LauncherComputeSandbox {
 
 impl ComputeSandbox for LauncherComputeSandbox {
     fn gpu_available(&self) -> bool {
-        self.render_node.is_some()
+        cfg!(target_os = "linux") && self.render_node.is_some()
     }
 
     fn launch(
         &self,
         invocation: ComputeSandboxInvocation<'_>,
     ) -> Result<CapturedRunOutput, String> {
-        if invocation.require_gpu && self.render_node.is_none() {
-            return Err("advertised GPU has no launcher-approved render node".into());
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = invocation;
+            Err("local sandboxed compute execution requires a Linux worker".into())
         }
-        let mounted_dir = launcher::appdir::host_data_home()
-            .map(|data_home| {
-                launcher::appdir::host_app_dir(
-                    &data_home,
-                    &launcher::appdir::room_slug(Some(invocation.workspace_slug)),
-                    &invocation.manifest.package_id,
-                )
-            })
-            .ok_or_else(|| "launcher has no trusted data home".to_string())?;
-        if mounted_dir != invocation.host_job_dir {
-            return Err("staged compute directory is not the launcher's mounted appdir".into());
+        #[cfg(target_os = "linux")]
+        {
+            if invocation.require_gpu && self.render_node.is_none() {
+                return Err("advertised GPU has no launcher-approved render node".into());
+            }
+            let mounted_dir = launcher::appdir::host_data_home()
+                .map(|data_home| {
+                    launcher::appdir::host_app_dir(
+                        &data_home,
+                        &launcher::appdir::room_slug(Some(invocation.workspace_slug)),
+                        &invocation.manifest.package_id,
+                    )
+                })
+                .ok_or_else(|| "launcher has no trusted data home".to_string())?;
+            if mounted_dir != invocation.host_job_dir {
+                return Err("staged compute directory is not the launcher's mounted appdir".into());
+            }
+            let opts = RunOptions {
+                no_services: true,
+                mode: LaunchMode::Cli {
+                    command: invocation.entrypoint.to_string(),
+                    passthrough_argv: vec![
+                        "--tilo-compute-request".into(),
+                        "/run/tilo/app/.tilo-compute/request.json".into(),
+                        "--tilo-compute-output".into(),
+                        "/run/tilo/app/.tilo-compute/outputs".into(),
+                    ],
+                },
+                workspace_id: Some(invocation.workspace_slug.to_string()),
+                app_id: Some(invocation.manifest.package_id.clone()),
+                // A CPU-only request receives no DRM node even on a GPU worker.
+                render_node: invocation
+                    .require_gpu
+                    .then(|| self.render_node.clone())
+                    .flatten(),
+                wayland_socket: None,
+                capabilities_path: None,
+                identity: IdentitySource::UserStore,
+                trusted_identities_host_path: None,
+                open_document: None,
+                open_uri: None,
+                ..RunOptions::default()
+            };
+            run_with_captured_bounded(
+                invocation.manifest,
+                &invocation.package.payload_root,
+                &opts,
+                invocation.plan,
+                invocation.cancellation,
+            )
+            .map_err(|error| error.to_string())
         }
-        let opts = RunOptions {
-            no_services: true,
-            mode: LaunchMode::Cli {
-                command: invocation.entrypoint.to_string(),
-                passthrough_argv: vec![
-                    "--tilo-compute-request".into(),
-                    "/run/tilo/app/.tilo-compute/request.json".into(),
-                    "--tilo-compute-output".into(),
-                    "/run/tilo/app/.tilo-compute/outputs".into(),
-                ],
-            },
-            workspace_id: Some(invocation.workspace_slug.to_string()),
-            app_id: Some(invocation.manifest.package_id.clone()),
-            // A CPU-only request receives no DRM node even on a GPU worker.
-            render_node: invocation
-                .require_gpu
-                .then(|| self.render_node.clone())
-                .flatten(),
-            wayland_socket: None,
-            capabilities_path: None,
-            identity_host_path: None,
-            trusted_identities_host_path: None,
-            open_document: None,
-            open_uri: None,
-            ..RunOptions::default()
-        };
-        run_with_captured_bounded(
-            invocation.manifest,
-            &invocation.package.payload_root,
-            &opts,
-            invocation.plan,
-            invocation.cancellation,
-        )
-        .map_err(|error| error.to_string())
     }
 }
 
@@ -1014,8 +1023,8 @@ mod tests {
     use super::*;
     use crate::{DeviceRole, ServiceCapabilities};
     use ed25519_dalek::{Signer, SigningKey};
-    use pkg::blobs::{BlobHash, Collection};
-    use pkg::signed::SignedRoot;
+    use tilo_app_package::blobs::{BlobHash, Collection};
+    use tilo_app_package::signed::SignedRoot;
 
     fn spec() -> ComputeJobSpec {
         ComputeJobSpec {
@@ -1024,7 +1033,7 @@ mod tests {
             requester: [2; 32],
             worker: [3; 32],
             workspace_id: 7,
-            app_id: "dev.tilo.video-editor".into(),
+            app_id: "so.tilo.video-editor".into(),
             package_digest: [4; 32],
             entrypoint: "render-export-v1".into(),
             arguments: Vec::new(),
@@ -1046,7 +1055,7 @@ mod tests {
             role: DeviceRole::AlwaysOnServer,
             services: ServiceCapabilities::personal_server(),
             workspaces: BTreeSet::from([7]),
-            apps: BTreeSet::from(["dev.tilo.video-editor".into()]),
+            apps: BTreeSet::from(["so.tilo.video-editor".into()]),
             accelerators: BTreeSet::from([ComputeAccelerator::Gpu]),
             priority: 0,
             latency_ms: 4,

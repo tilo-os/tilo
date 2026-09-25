@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(
             peer.get(&ROOT, "note")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("written".to_string()),
             "the peer never received the change the agent made"
         );
@@ -890,7 +890,7 @@ mod tests {
         assert_eq!(
             peer.get(&ROOT, "note")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("typed".to_string())
         );
     }

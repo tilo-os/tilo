@@ -1,6 +1,6 @@
 //! Remote fetch — resolve an app-id through the registry protocol,
-//! download the qpkg over iroh-blobs, verify it fail-closed, and hand
-//! the bytes to [`crate::install::install_qpkg`].
+//! download the tapp over iroh-blobs, verify it fail-closed, and hand
+//! the bytes to [`crate::install::install_tapp`].
 //!
 //! The heavy lifting (signed index, target selection, iroh transport,
 //! signature/hash verification) lives in the `app-registry` crate; this
@@ -17,7 +17,7 @@ use app_registry::resolve::{self, FetchOutcome};
 use crate::install::{self, InstallError};
 use crate::registry::Pinning;
 use crate::store::Store;
-use pkg::id::PackageId;
+use tilo_app_package::id::PackageId;
 
 #[derive(Debug, Error)]
 pub enum FetchError {
@@ -31,7 +31,7 @@ pub enum FetchError {
     Install(#[from] InstallError),
 }
 
-/// Resolve + download + verify the qpkg for `app_id` (optionally
+/// Resolve + download + verify the tapp for `app_id` (optionally
 /// constrained by a semver `version` requirement), then install it
 /// into `store` with the requested pinning. Returns the installed
 /// [`PackageId`].
@@ -43,7 +43,7 @@ pub enum FetchError {
 /// # Errors
 ///
 /// Returns [`FetchError::Resolve`] if resolving or downloading `app_id`
-/// fails, or [`FetchError::Install`] if the fetched qpkg fails to
+/// fails, or [`FetchError::Install`] if the fetched tapp fails to
 /// install (bad signature, unpack failure, or a store write error).
 pub async fn fetch_and_install(
     store: &Store,
@@ -53,13 +53,13 @@ pub async fn fetch_and_install(
     pinning: Pinning,
 ) -> Result<PackageId, FetchError> {
     let outcome = fetch_remote(workspace_root, app_id, version).await?;
-    // `install_qpkg` re-verifies and does blocking IO; the caller
+    // `install_tapp` re-verifies and does blocking IO; the caller
     // (service task) already runs this off the capnp event loop.
-    let id = install::install_qpkg(store, &outcome.bytes, pinning)?;
+    let id = install::install_tapp(store, &outcome.bytes, pinning)?;
     Ok(id)
 }
 
-/// Resolve + download + verify the qpkg for `app_id` WITHOUT
+/// Resolve + download + verify the tapp for `app_id` WITHOUT
 /// installing. Bytes are returned only after the blake3 hash and the
 /// publisher signature have been checked (fail-closed).
 ///

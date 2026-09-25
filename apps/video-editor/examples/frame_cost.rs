@@ -49,7 +49,7 @@ use video_editor::shot;
 /// the phases have to be timed separately, and production has no business
 /// carrying timing hooks for a probe. If `compose` changes shape, this
 /// diverges and the totals stop matching — which is the signal to update it.
-#[allow(clippy::type_complexity)]
+
 fn phases(
     widget: &mut dyn Widget,
     (w, h): (u32, u32),
@@ -65,7 +65,7 @@ fn phases(
     let t = Instant::now();
     widget.sync(&mut state.doc, &state.root);
     let status = state.undo_status(None);
-    widget.set_undo_status(&status);
+    widget.set_undo_status(&mut || status.clone());
     let sync_us = t.elapsed().as_micros();
 
     let t = Instant::now();

@@ -178,9 +178,9 @@ impl UserIdentity {
         created_at_ns: u64,
     ) -> (ed25519_dalek::SigningKey, Self) {
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use getrandom::{SysRng, rand_core::UnwrapErr};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let signing = SigningKey::generate(&mut rng);
         let public_key = signing.verifying_key().to_bytes();
         (signing, Self::new(public_key, label, created_at_ns))
@@ -216,9 +216,9 @@ impl DeviceIdentity {
         created_at_ns: u64,
     ) -> (ed25519_dalek::SigningKey, Self) {
         use ed25519_dalek::SigningKey;
-        use rand::rngs::OsRng;
+        use getrandom::{SysRng, rand_core::UnwrapErr};
 
-        let mut rng = OsRng;
+        let mut rng = UnwrapErr(SysRng);
         let signing = SigningKey::generate(&mut rng);
         let public_key = signing.verifying_key().to_bytes();
         (
@@ -245,25 +245,25 @@ mod tests {
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG, b"tilo-devcert-v1\0");
         assert_eq!(cert::DEVCERT_PREIMAGE_TAG.len(), 16);
 
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"qos-revocation-v1\0");
-        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 18);
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG, b"tilo-revocation-v1\0");
+        assert_eq!(revocation::REVOCATION_PREIMAGE_TAG.len(), 19);
 
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG, b"tilo-enrollment-v2\0");
         assert_eq!(enrollment::ENROLLMENT_PREIMAGE_TAG.len(), 19);
 
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"qos-dir-delta-v1\0");
-        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 17);
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG, b"tilo-dir-delta-v1\0");
+        assert_eq!(directory::DIR_DELTA_PREIMAGE_TAG.len(), 18);
 
         assert_eq!(
             approval::APPROVAL_REQUEST_TAG,
-            b"qos-device-approval-request-v1\0"
+            b"tilo-device-approval-request-v1\0"
         );
-        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 31);
+        assert_eq!(approval::APPROVAL_REQUEST_TAG.len(), 32);
         assert_eq!(
             approval::APPROVAL_RESPONSE_TAG,
-            b"qos-device-approval-response-v1\0"
+            b"tilo-device-approval-response-v1\0"
         );
-        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 32);
+        assert_eq!(approval::APPROVAL_RESPONSE_TAG.len(), 33);
     }
 
     #[test]

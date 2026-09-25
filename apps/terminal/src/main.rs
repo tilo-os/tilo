@@ -39,21 +39,13 @@
     )
 )]
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
 
-use taffy::prelude::*;
 use terminal::TerminalWidget;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
+use vello::kurbo::Point;
 
 /// Default offscreen viewport for `--shots`. Big enough to show a few
 /// rows of terminal output at the toolkit's default font size; small
@@ -70,7 +62,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.terminal", live_root)
+        &LaunchSpec::new_with_args("so.tilo.terminal", live_root)
             .live_handler(run_live)
             .shot_handler(run_shot)
             .shot_viewport(|_| DEFAULT_SHOTS_VIEWPORT)
@@ -104,7 +96,7 @@ fn run_live(_args: &LaunchArgs) -> Result<(), LaunchError> {
     // polling at ~60 Hz: grab the handle before moving the widget into the App,
     // then store the loop's proxy once it exists.
     let waker = widget.waker_handle();
-    let (state, autosave) = ui::persist::open("dev.tilo.terminal");
+    let (state, autosave) = ui::persist::open("so.tilo.terminal");
     let app =
         ui::App::from_scoped_parts(wake_scope, state, Box::new(widget)).with_autosave(autosave);
     app.run_with_setup(move |proxy| {
@@ -126,7 +118,12 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         Some("shell" | "shell-select") | None => TerminalWidget::spawn_default(),
         Some("ended") => {
             #[cfg(unix)]
-            let command = terminal::CommandBuilder::new("/bin/true");
+            let command = {
+                // Spawn the portable shell path: macOS has no /bin/true.
+                let mut command = terminal::CommandBuilder::new("/bin/sh");
+                command.args(["-c", "exit 0"]);
+                command
+            };
             #[cfg(windows)]
             let command = {
                 let mut command = terminal::CommandBuilder::new("cmd.exe");
@@ -146,96 +143,44 @@ fn run_shot(args: &LaunchArgs) -> Result<(), LaunchError> {
         .shots
         .as_deref()
         .ok_or_else(|| LaunchError::Operation("missing screenshot output".into()))?;
-    render_shot_to_png(&mut widget, viewport, out, scenario)
-        .map_err(|error| LaunchError::Operation(error.to_string()))
+    render_shot_to_png(
+        &mut widget,
+        viewport,
+        ui::launch::shot_theme(args),
+        out,
+        scenario,
+    )
+    .map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
 /// resulting RGBA to `out` as a PNG.
 ///
-/// Mirrors `ui::App`'s layout/draw cycle for a single redraw:
-/// `sync` → `build_layout` → `compute_layout` → `apply_layout` → `draw`.
-/// Skips the event loop entirely because we render exactly one frame
-/// before exiting. When `scenario` is set, canned VT byte sequences are
-/// fed through the widget *after* layout (so the grid is sized to the
-/// viewport) and then re-synced before the draw.
+/// When `scenario` is set, canned VT byte sequences are fed through the
+/// widget *after* layout (so the grid is sized to the viewport) and then
+/// re-synced before the draw.
 fn render_shot_to_png(
     widget: &mut TerminalWidget,
     viewport: (u32, u32),
+    theme: Theme,
     out: &std::path::Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    theme.reduce_motion = matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    );
-    if let Some(scale) = std::env::var("TILO_SHOTS_TEXT_SCALE")
-        .ok()
-        .and_then(|raw| raw.parse::<f32>().ok())
-        .filter(|scale| scale.is_finite())
-    {
-        theme = theme.with_text_scale(scale);
-    }
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    // Sync the widget's view-state from its CRDT once.
-    let mut state = ui::State::new();
-    widget.sync(&mut state.doc, &state.root);
-
-    // Build the layout tree, then wrap it in a viewport-sized root so
-    // taffy has a definite extent to size from.
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(widget);
+    frame.layout(widget)?;
 
     // Drive the scenario now that the grid is sized to the viewport, then
     // re-sync so the mirrored grid reflects the fed sequences. The `shell`
     // scenario drives the real PTY instead of feeding canned bytes.
     if let Some(name) = scenario {
+        let state = &mut frame.state;
         if name == "shell" || name == "shell-select" {
             drive_live_shell(widget, &mut state.doc, &state.root)?;
         } else {
             run_scenario(widget, &mut state.doc, &state.root, name);
         }
-        widget.sync(&mut state.doc, &state.root);
+        frame.sync(widget);
         // `shell-select` additionally highlights a line of real shell output so
         // the shot demonstrates the selection highlight over a live session.
         if name == "shell-select" {
@@ -243,21 +188,8 @@ fn render_shot_to_png(
         }
     }
 
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let scene = frame.draw(widget);
+    frame.write_png(&scene, out);
     println!("terminal: wrote shot to {}", out.display());
     Ok(())
 }

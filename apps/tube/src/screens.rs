@@ -17,14 +17,42 @@ use crate::model::{Category, Channel, Playlist, Route, SearchType, SkipMode, Tub
 use crate::util::{clock, human_count, human_views};
 use crate::widgets::{
     Align, ChannelAvatar, Flex, ImageBox, IntoElement, Justify, LargeVideoMeta, Len, PlayerHost,
-    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, gap,
-    hover_fill, hover_pill_surface, spring, subtle_fill, subtle_surface, text, text_c,
+    SharedPlayer, Surface, Switch, Thumbnail, card_surface, chip_surface, dim, divider, divider_on,
+    gap, hover_fill, hover_pill_surface, spring, subtle_edge, subtle_fill, subtle_surface, text,
+    text_c,
 };
 
 use crate::contrast::SelectedStyle;
 
+/// Gap and padding values on the 4 px scale read `theme.tokens.spacing`
+/// (`s1` 4, `s2` 8, `s3` 12, `s4` 16, `s6` 24, `s12` 48) and control sizes on
+/// a HIG metric read `theme.tokens.metrics`; the values below are the
+/// authored off-scale ones this app keeps (judged by outcome in review, see
+/// `docs/superpowers/audits/2026-09-16-ui-alignment-review/a8-media.md` T3).
+/// Pill vertical padding (14 px label → 40 px capsule with its 22 px line).
+const PILL_PAD_Y: f32 = 9.0;
+/// Video-card body and avatar/text gaps.
+const CARD_BODY_GAP: f32 = 9.0;
+const CARD_AVATAR_GAP: f32 = 10.0;
+/// Card grid gutter; the section heading's icon/title gap.
+const GRID_GAP: f32 = 18.0;
+const HEADING_GAP: f32 = 10.0;
+/// Chip and status-pill insets.
+const CHIP_PAD_X: f32 = 14.0;
+const CHIP_PAD_Y: f32 = 7.0;
+const STATUS_PILL_PAD_X: f32 = 10.0;
+const STATUS_PILL_PAD_Y: f32 = 6.0;
+/// Top bar: 66 px bar with a 20 px side inset holding a 42 px search field
+/// (lens/field gap 10).
+const TOP_BAR_H: f32 = 66.0;
+const TOP_BAR_PAD_X: f32 = 20.0;
+const SEARCH_FIELD_H: f32 = 42.0;
+const SEARCH_FIELD_GAP: f32 = 10.0;
 const CARD_W: f32 = 300.0;
 const THUMB_H: f32 = 169.0;
+/// Inner padding of a grid card (thumbnail and meta inset from the hover
+/// surface). Section headings share it so heading and card content align.
+const CARD_PAD: f32 = 6.0;
 
 // --- watch page responsive geometry (logical px) ---
 /// Outer padding around the watch content.
@@ -145,11 +173,15 @@ fn pill(
         (
             Some(subtle_fill(theme)),
             theme.text_primary,
-            Some((1.0, theme.border_standard)),
+            Some((1.0, subtle_edge(theme))),
             hover_fill(theme),
         )
     };
-    let mut row = Flex::row().gap(8.0).pad_xy(16.0, 9.0).align(Align::Center);
+    let sp = &theme.tokens.spacing;
+    let mut row = Flex::row()
+        .gap(sp.s2)
+        .pad_xy(sp.s4, PILL_PAD_Y)
+        .align(Align::Center);
     if let Some(k) = leading {
         row = row.push(icon(k, 16.0, fg));
     }
@@ -171,15 +203,12 @@ fn pill(
 /// A non-interactive stat pill (leading icon + label) — the outlined-pill look
 /// without a click handler. Used for the read-only dislike count.
 fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
+    let sp = &theme.tokens.spacing;
     Flex::row()
-        .gap(8.0)
-        .pad_xy(16.0, 9.0)
+        .gap(sp.s2)
+        .pad_xy(sp.s4, PILL_PAD_Y)
         .align(Align::Center)
-        .surface(Surface {
-            fill: Some(subtle_fill(theme)),
-            radius: f64::from(theme.tokens.radii.full),
-            border: Some((1.0, theme.border_standard)),
-        })
+        .surface(subtle_surface(theme))
         .push(icon(leading, 16.0, theme.text_primary))
         .push(text_c(label, 14.0, theme.text_primary))
 }
@@ -187,11 +216,12 @@ fn stat_pill(theme: &Theme, label: &str, leading: Icon) -> Flex {
 /// A small icon-only round button.
 fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Flex {
     let label = action.accessible_label();
+    let m = &theme.tokens.metrics;
     Flex::row()
-        .fixed(40.0, 40.0)
+        .fixed(m.bar_height, m.bar_height)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(kind, 20.0, theme.text_primary))
+        .push(icon(kind, m.icon_md, theme.text_primary))
         .surface(subtle_surface(theme))
         .hover_surface(hover_pill_surface(theme))
         .on_click(bus, action)
@@ -203,12 +233,13 @@ fn icon_button(theme: &Theme, bus: &ActionBus, kind: Icon, action: Action) -> Fl
 /// way to summon the rail once it has collapsed into an overlay flap on a
 /// narrow one.
 fn menu_button(theme: &Theme) -> Flex {
+    let m = &theme.tokens.metrics;
     let button = Flex::row()
         .id("nav_toggle")
-        .fixed(40.0, 40.0)
+        .fixed(m.bar_height, m.bar_height)
         .justify(Justify::Center)
         .align(Align::Center)
-        .push(icon(Icon::Menu, 20.0, theme.text_primary))
+        .push(icon(Icon::Menu, m.icon_md, theme.text_primary))
         .surface(Surface {
             fill: None,
             radius: f64::from(theme.tokens.radii.full),
@@ -226,7 +257,11 @@ fn menu_button(theme: &Theme) -> Flex {
 fn section_header(theme: &Theme, kind: Icon, title: &str, subtitle: &str) -> Flex {
     let title_row = Flex::row()
         .fill_w()
-        .gap(10.0)
+        // Cards inset their content by `CARD_PAD` inside the grid; the heading
+        // row insets the same so its icon and trailing label sit on the card
+        // content's left and right edges instead of 6 px outside them.
+        .pad_xy(CARD_PAD, 0.0)
+        .gap(HEADING_GAP)
         .align(Align::Center)
         .push(icon(kind, 22.0, theme.accent_primary))
         .push(text(title, 21.0));
@@ -309,9 +344,8 @@ fn video_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v: 
     // column (which the grid sizes between CARD_W and its natural max).
     Flex::col()
         .id(&format!("video_card_{}", v.id))
-        .fill_w()
-        .gap(9.0)
-        .pad(6.0)
+        .gap(CARD_BODY_GAP)
+        .pad(CARD_PAD)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
             radius: f64::from(theme.tokens.radii.lg),
@@ -328,8 +362,8 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
     let dearrow = model.settings.dearrow_titles_on();
     Flex::row()
         .fill_w()
-        .gap(10.0)
-        .pad(6.0)
+        .gap(CARD_AVATAR_GAP)
+        .pad(CARD_PAD)
         .align(Align::Start)
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
@@ -349,7 +383,7 @@ fn compact_card(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs, v
         .push(
             Flex::col()
                 .grow(1.0)
-                .gap(4.0)
+                .gap(theme.tokens.spacing.s1)
                 .push(text(v.display_title(dearrow), 13.0))
                 .push(dim(theme, &v.channel_name, 12.0))
                 // Join only the parts we actually have, so a playlist entry with no
@@ -452,7 +486,7 @@ fn grid_with_id(theme: &Theme, cards: Vec<Flex>, id: &str) -> Flex {
         .id(id)
         .fill_w()
         .grid(CARD_W)
-        .gap(18.0)
+        .gap(GRID_GAP)
         .align(Align::Start);
     for c in cards {
         row = row.push(c);
@@ -479,8 +513,8 @@ fn skeleton_block(theme: &Theme, width: Len, height: f32, radius: f64) -> Flex {
 fn skeleton_card(theme: &Theme) -> Flex {
     Flex::col()
         .fill_w()
-        .gap(9.0)
-        .pad(6.0)
+        .gap(CARD_BODY_GAP)
+        .pad(CARD_PAD)
         .push(skeleton_block(
             theme,
             Len::Fill,
@@ -489,7 +523,7 @@ fn skeleton_card(theme: &Theme) -> Flex {
         ))
         .push(
             Flex::row()
-                .gap(10.0)
+                .gap(CARD_AVATAR_GAP)
                 .fill_w()
                 .align(Align::Start)
                 .push(skeleton_block(theme, Len::Px(36.0), 36.0, 18.0))
@@ -600,10 +634,11 @@ pub fn nav_rail(model: &TubeModel, theme: &Theme, _bus: &ActionBus, width: f64) 
         .pad_xy(8.0, 14.0)
         .gap(8.0)
         .align(Align::Center)
+        // Bar-role chrome (the rail): base fill, one derived hairline.
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.base),
             radius: 0.0,
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
         .push(
             Flex::col()
@@ -715,18 +750,15 @@ pub fn top_bar(
 
     // A single search lens (leading) — Enter submits, so there is no second
     // trailing lens/button cluttering the field.
+    let sp = &theme.tokens.spacing;
     let search_field = Flex::row()
         .grow(1.0)
         .max_w(560.0)
-        .h(Len::Px(42.0))
-        .gap(10.0)
-        .pad_xy(16.0, 0.0)
+        .h(Len::Px(SEARCH_FIELD_H))
+        .gap(SEARCH_FIELD_GAP)
+        .pad_xy(sp.s4, 0.0)
         .align(Align::Center)
-        .surface(Surface {
-            fill: Some(subtle_fill(theme)),
-            radius: f64::from(theme.tokens.radii.full),
-            border: Some((1.0, theme.border_standard)),
-        })
+        .surface(subtle_surface(theme))
         .push(icon(Icon::Search, 18.0, theme.text_dim))
         .push(Flex::row().grow(1.0).push(search_input));
     let search = if compact {
@@ -738,21 +770,22 @@ pub fn top_bar(
     // Only surface the data-source indicator when we're NOT on live data
     // (connecting or offline) — in the normal live case the top bar stays clean.
     // SponsorBlock / DeArrow are settings, not top-bar toggles; they live in Settings.
-    let status = Flex::row().gap(8.0).align(Align::Center).push_if(
+    let status = Flex::row().gap(sp.s2).align(Align::Center).push_if(
         !compact && !model.data_source.live,
         data_source_pill(theme, model),
     );
 
     Flex::row()
         .fill_w()
-        .h(Len::Px(66.0))
-        .gap(16.0)
-        .pad_xy(20.0, 0.0)
+        .h(Len::Px(TOP_BAR_H))
+        .gap(sp.s4)
+        .pad_xy(TOP_BAR_PAD_X, 0.0)
         .align(Align::Center)
+        // Bar-role chrome (the top bar): base fill, one derived hairline.
         .surface(Surface {
             fill: Some(theme.tokens.colors.surfaces.base),
             radius: 0.0,
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::chrome_hairline(theme))),
         })
         .push(menu_button(theme))
         .push_if(can_back, back_button(theme, bus))
@@ -786,8 +819,8 @@ fn data_source_pill(theme: &Theme, model: &TubeModel) -> Flex {
         (theme.text_dim, theme.text_dim, "Offline")
     };
     Flex::row()
-        .gap(6.0)
-        .pad_xy(10.0, 6.0)
+        .gap(theme.tokens.metrics.icon_label_gap)
+        .pad_xy(STATUS_PILL_PAD_X, STATUS_PILL_PAD_Y)
         .align(Align::Center)
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
@@ -832,7 +865,7 @@ fn chip(theme: &Theme, bus: &ActionBus, label: &str, action: Action, active: boo
         )
     };
     Flex::row()
-        .pad_xy(14.0, 7.0)
+        .pad_xy(CHIP_PAD_X, CHIP_PAD_Y)
         .surface(resting)
         .hover_surface(Surface {
             fill: Some(hover_bg),
@@ -886,8 +919,8 @@ pub fn home(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Sc
     scroll(
         Flex::col()
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .push(section_header(
                 theme,
                 Icon::Home,
@@ -908,8 +941,8 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
     scroll(
         Flex::col()
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .push(section_header(
                 theme,
                 Icon::Flame,
@@ -921,7 +954,7 @@ pub fn trending(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -
 }
 
 pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
-    let mut rail = Flex::row().fill_w().wrap().gap(18.0);
+    let mut rail = Flex::row().fill_w().wrap().gap(GRID_GAP);
     for cid in &model.subscriptions {
         if let Some(ch) = model.channel(cid) {
             rail = rail.push(
@@ -929,7 +962,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
                     .w(Len::Px(96.0))
                     .gap(6.0)
                     .align(Align::Center)
-                    .pad(6.0)
+                    .pad(CARD_PAD)
                     .hover_surface(Surface {
                         fill: Some(hover_fill(theme)),
                         radius: f64::from(theme.tokens.radii.lg),
@@ -961,8 +994,8 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
     scroll(
         Flex::col()
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .push(section_header(
                 theme,
                 Icon::GalleryVerticalEnd,
@@ -978,7 +1011,7 @@ pub fn subscriptions(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Im
 
 pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) -> Scrollable {
     let vids = model.history_videos();
-    let mut col = Flex::col().fill_w().gap(8.0);
+    let mut col = Flex::col().fill_w().gap(theme.tokens.spacing.s2);
     if vids.is_empty() {
         col = col.push(empty_state(
             theme,
@@ -995,8 +1028,8 @@ pub fn history(model: &TubeModel, theme: &Theme, bus: &ActionBus, imgs: Imgs) ->
     scroll(
         Flex::col()
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .max_w(820.0)
             .push(
                 Flex::row()
@@ -1175,7 +1208,11 @@ fn type_chip(theme: &Theme, bus: &ActionBus, t: SearchType, active: bool) -> Fle
 /// individual chips (see [`crate::model::SearchTypeFilter`]).
 fn search_type_chips(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
     let f = &model.search_type_filter;
-    let mut row = Flex::row().id("search_type_chips").fill_w().wrap().gap(8.0);
+    let mut row = Flex::row()
+        .id("search_type_chips")
+        .fill_w()
+        .wrap()
+        .gap(theme.tokens.spacing.s2);
     for t in SearchType::ALL {
         row = row.push(type_chip(theme, bus, t, f.shows(t)));
     }
@@ -1233,7 +1270,7 @@ fn playlist_card(theme: &Theme, bus: &ActionBus, imgs: Imgs, p: &Playlist) -> Fl
     Flex::col()
         .fill_w()
         .gap(9.0)
-        .pad(6.0)
+        .pad(CARD_PAD)
         .id(&format!("playlist_card_{}", p.id))
         .hover_surface(Surface {
             fill: Some(hover_fill(theme)),
@@ -1507,8 +1544,8 @@ pub fn playlist(
         Flex::col()
             .id("playlist_page")
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .push(header)
             .push(divider(theme))
             .push(text("Videos", 16.0))
@@ -1591,8 +1628,8 @@ pub fn channel(
     scroll(
         Flex::col()
             .fill_w()
-            .pad(24.0)
-            .gap(18.0)
+            .pad(theme.tokens.spacing.s6)
+            .gap(GRID_GAP)
             .push(banner)
             .push(header)
             .push(divider(theme))
@@ -2000,7 +2037,7 @@ fn quality_menu(model: &TubeModel, theme: &Theme, bus: &ActionBus) -> Flex {
         .surface(Surface {
             fill: Some(subtle_fill(theme)),
             radius: f64::from(theme.tokens.radii.md),
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, subtle_edge(theme))),
         })
         .on_click(bus, Action::SetQuality(next.to_string()))
         .accessible_name(format!(
@@ -2151,7 +2188,7 @@ fn settings_card(theme: &Theme, title: &str, rows: Vec<Flex>) -> Flex {
         .push(gap(1.0, 8.0));
     for (i, r) in rows.into_iter().enumerate() {
         if i > 0 {
-            col = col.push(divider(theme));
+            col = col.push(divider_on(theme.tokens.colors.surfaces.raised));
         }
         col = col.push(r);
     }
@@ -2176,9 +2213,18 @@ fn mode_pill(theme: &Theme, bus: &ActionBus, cat: Category, mode: SkipMode) -> F
         SkipMode::Show => (
             Some(subtle_fill(theme)),
             theme.text_primary,
-            Some((1.0, theme.border_standard)),
+            Some((1.0, subtle_edge(theme))),
         ),
-        SkipMode::Disabled => (None, theme.text_dim, Some((1.0, theme.border_standard))),
+        // An outline-only pill sits straight on the card, so its edge derives
+        // from that surface.
+        SkipMode::Disabled => (
+            None,
+            theme.text_dim,
+            Some((
+                1.0,
+                ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
+            )),
+        ),
     };
     Flex::row()
         .id(&format!("mode_{}", cat.api_key()))
@@ -2439,7 +2485,7 @@ fn device_action(
                 if danger {
                     danger_color
                 } else {
-                    theme.border_standard
+                    subtle_edge(theme)
                 },
             )),
         })
@@ -2514,11 +2560,7 @@ fn device_sync_header(theme: &Theme, summary: &str, status: &str) -> Flex {
         .push(
             Flex::row()
                 .pad_xy(10.0, 6.0)
-                .surface(Surface {
-                    fill: Some(subtle_fill(theme)),
-                    radius: f64::from(theme.tokens.radii.full),
-                    border: Some((1.0, theme.border_standard)),
-                })
+                .surface(subtle_surface(theme))
                 .push(text_c(status, 12.0, theme.text_dim)),
         )
 }
@@ -2861,17 +2903,19 @@ pub fn command_palette(
         .max_w(560.0)
         .gap(10.0)
         .pad(14.0)
+        // A floating dialog: Panel role ground + border (HIG §9.5); the rule
+        // between field and list derives against that ground.
         .surface(Surface {
-            fill: Some(theme.tokens.colors.surfaces.raised),
+            fill: Some(ui::chrome::panel_ground(theme)),
             radius: f64::from(theme.tokens.radii.lg),
-            border: Some((1.0, theme.border_standard)),
+            border: Some((1.0, ui::chrome::panel_border(theme))),
         })
         // Swallow clicks on the card chrome so they don't reach the scrim and
         // close the palette. `OpenPalette` is idempotent (already open).
         .on_click(bus, Action::OpenPalette)
         .accessible_name("Action search dialog")
         .push(field)
-        .push(divider(theme))
+        .push(divider_on(ui::chrome::panel_ground(theme)))
         .push(list);
 
     // Full-bleed scrim; clicking it (outside the card) closes the palette.
@@ -2968,15 +3012,7 @@ mod search_screen_tests {
         for _ in 0..(w * h) {
             rgba.extend_from_slice(&[20, 200, 60, 255]);
         }
-        let mut out = Vec::new();
-        {
-            let mut enc = png::Encoder::new(&mut out, w, h);
-            enc.set_color(png::ColorType::Rgba);
-            enc.set_depth(png::BitDepth::Eight);
-            let mut writer = enc.write_header().unwrap();
-            writer.write_image_data(&rgba).unwrap();
-        }
-        out
+        ui::png::encode_rgba8(w, h, &rgba).unwrap()
     }
 
     /// Search preserves query/result context after the top bar scrolls away,

@@ -10,39 +10,26 @@ promotion model, service levels and phased production plan.
 ## Routine change lifecycle
 
 Routine work starts on a task branch and lands through one updated pull request.
-The protected check and lint contexts must pass for the exact head before merge.
+The required check and lint contexts must pass for the exact head before merge.
 `check.yml` and `lint.yml` preserve a result for every `main` commit; dependency
 selection keeps the Rust lane focused while nightly CI remains the full-workspace
 backstop.
 
-The trusted merge controller classifies changes using the deployed
-[admission code](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/admission.py)
-and [path policy](https://code.sandbox.example/PodestaAI/infra/src/branch/main/apps/forgejo/qos-merge-controller/policy.json).
-Ordinary product and documentation changes are routine; tools are classified by
-path, not by being tools. CI/policy, publication, signing and named security
-boundaries use the protected scope, as does an existing file's executable-mode
-change. Named dependency exceptions carry their own CI checks. No scope requires
-review.
-
-After exact-head checks pass, the author posts `/merge <full-head-sha>` or follows
-the controller's queue instructions. Reviews are informational and never block
-integration. A new push requires fresh checks and intent.
-
-Review state does **not** turn a routine documentation PR into a protected-scope
-change. Such a PR still uses routine integration, respecting queue priority. The
-operator command is only for changes the classifier assigns to the protected
-scope. See [Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow)
-for the command and limits, and [Release pipeline](release-pipeline.md) for
-heavy-build and publication triggers.
+A PR merges once the required checks pass for its current head and the branch
+is up to date with `main`; reviews are informational and never block
+integration. A new push requires fresh checks. See
+[Routine delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow) for the
+rule, and [Release pipeline](release-pipeline.md) for heavy-build and
+publication triggers.
 
 ## What runs for each event
 
 | Event | Routine feedback | Packaging and release behavior |
 | --- | --- | --- |
 | Task-branch push | Fast quality for that commit: changed-file formatting, lint-exception policy, repository policy, `cargo deny`, and `cargo machete` | No app publication or OS build |
-| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No qpkg publication and no full OS build |
-| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built qpkgs to the signed registry; OS publication remains off |
-| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published only by an OS tag or a `main` dispatch with `publish=true` |
+| Pull request to `main` | Fast quality plus affected reverse-dependency checks and applicable security contracts; the app workflow reports its dependency-selected plan | No tapp publication and no full OS build |
+| Push to `main` | Fast quality and affected checks retain a result for that exact commit | Relevant app/package inputs publish the dependency-selected x86-64 app set, reuse unchanged collection members, and submit newly built tapps to the signed registry; no OS build or publication runs per push |
+| Nightly, tag, or explicit dispatch | Full-workspace and product-specific qualification according to the workflow | App and desktop release matrices expand only on their documented triggers; an OS version is published by an OS tag, a `main` dispatch with `publish=true`, or the nightly `main` run when `main` has moved |
 
 Do not interpret a skipped Rust row as missing CI. The aggregate accepts it only
 for the audited documentation/helper allowlist; quality remains required. Use the
@@ -51,13 +38,14 @@ exact head.
 
 | Product | Existing path | Remaining qualification or deferral |
 | --- | --- | --- |
-| Linux/qOS native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed qpkg and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. qOS ISA policy is explicit; this is not a universal Linux standalone installer. |
+| Linux/Tilo native apps | `release-apps.yml`: affected-app PR planning; continuous dependency-selected x86-64 packaging on `main`; explicit/tagged signed tapp and runtime collection on x86-64 and ARM64 | Main compiles and packages selected app binaries and reuses immutable collection members; full-collection dependency features preserve the shared runtime ABI. ARM64 remains available for explicit/tagged releases while ordinary main packaging stays on the configured x86-64 lane. Tilo ISA policy is explicit; this is not a universal Linux standalone installer. |
 | Whole desktop / Linux distributions | `package-desktop.yml`: Arch, Nix, Ubuntu 24.04, Debian 13, Fedora 44; architecture jobs run distro builds serially | PR contracts remain cheap; weekly/manual distribution builds and main payload publication remain. ARM requires the workflow's native capability gate. Distribution install tests do not establish bootable OS/device acceptance. |
 | Setup application, Linux | `release-imager.yml`: default explicit Linux x86 smoke; full native/tag lanes add ARM64, AppImage and release checks | Catalog, signing, installation and physical-media qualification remain distinct. |
 | Setup application, Windows | Existing x86-64/ARM64 jobs use `imager-windows-x86_64` / `imager-windows-aarch64`, MSVC targets, imager tests, package build and signature checks | Enabled for imager tags or explicit `full_native=true`, not ordinary pushes. Actual native host availability must be checked before dispatch. |
 | Native Windows apps | Merged toolkit plus `tools/windows/install-apps.ps1`; production allowlist currently contains 30 selectable apps | This is a local build/install path, not continuous distributable app packaging. Versioned archive/MSIX format, signing/promotion, native dependency identity, disposable installation and runtime tests are not a qualified release path. Consider broad app coverage after a bounded native qualification. |
-| OS x86-64/ARM64 | `build-image.yml`: weekly integration, explicit builds and deliberate tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
-| macOS products | Imager and Homebrew cask lane definitions remain disabled | Deliberately deferred. Do not delete definitions or restore macOS publication with Windows work. No current standalone macOS app release qualification is asserted. |
+| OS x86-64/ARM64 | `build-image.yml`: nightly `main` publication (skipped when `main` is already published), explicit builds and tag/manual publication | Retained component/development workflows cover targeted kernel, source, Windows compatibility guest and resume/finalize work. A generic architecture image is not qualification for every laptop/device. Keep device acceptance explicit. |
+| Dev VM disks | `dev-disk.yml`: requested after each `main` OS build (from the signed release when one was promoted, otherwise from the unsigned `tilo-ci` integration image as a `-ci` tag) or by explicit dispatch; builds `tilo-vm` on the verified same-commit OS image, boots the disk, publishes `tilo-vm:<tag>` and qcow2 (optional VHDX) disks with a `tilo-vm-disk.json` manifest | Default lane is x86-64; aarch64 is an `architectures` input. The boot check proves SSH reachability only. UTM, libvirt and Hyper-V import are not qualified. |
+| macOS Imager | Native x86-64 and ARM64 signed/notarized DMG and app-zip lanes; first-party Homebrew cask with native install tests | Enabled for `full_native` rehearsal and release tags; requires ephemeral native runners and protected signing/notarization brokers. This does not qualify unrelated standalone macOS apps. |
 
 At this audit, neither the admin runner listing nor the repository runner listing
 advertised a Windows/imager Windows label. Ephemeral runners can be absent while
@@ -74,13 +62,14 @@ Do not route Windows work onto Linux `runner` just because it is available.
 2. Observe dependency-selected app packaging on `main`, including shared-runtime
    compatibility, immutable receipts and atomic channel promotion; extend routine
    packaging to ARM64 after its native lane has sustained reliable throughput.
-3. Keep OS publication manual through a release tag or a `main` dispatch with
-   `publish=true`, after image, reproducibility and VM gates pass.
+3. Publish the OS through a release tag, a `main` dispatch with `publish=true`,
+   or the nightly `main` run, only after image, reproducibility and VM gates
+   pass; never per push.
 4. If native Windows app distribution becomes worthwhile, qualify a versioned,
    signed archive or MSIX on disposable native hosts. The shared toolkit and local
    installer already exist; distribution and clean-machine runtime evidence do not.
-5. Retain the disabled macOS imager and Homebrew definitions so later
-   qualification can resume without recreating the release design.
+5. Keep the enabled macOS Imager and Homebrew gates fail-closed so missing
+   native infrastructure or qualification evidence blocks publication.
 
 ## Executable planning without installation
 
@@ -115,7 +104,7 @@ and its clean-machine consumer are defined and tested.
 
 Use separate Windows architecture/compiler/SDK/native-library cache identities.
 Reuse Cargo downloads and qualified compiler outputs; do not share writable target
-directories, reuse Linux qpkg runtime artifacts as Windows binaries, or set
+directories, reuse Linux tapp runtime artifacts as Windows binaries, or set
 `CARGO_TARGET_DIR`. The toolkit's dependency changes must invalidate affected
 apps. Coalesce future pending packaging requests while preserving the active build;
 keep cheap per-commit checks and deliberate OS releases independent.

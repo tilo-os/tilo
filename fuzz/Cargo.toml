@@ -14,13 +14,13 @@ postcard = { version = "1", features = ["alloc"] }
 serde_json = "1"
 
 collab-types = { path = "../crates/collab/collab-types" }
-pkg = { path = "../crates/packaging/pkg" }
+tilo-app-package = { path = "../crates/packaging/tilo-app-package" }
 launcher = { path = "../crates/packaging/launcher" }
 tilo-user-identity = { path = "../crates/collab/tilo-user-identity" }
 
 [[bin]]
-name = "qpkg_ingress"
-path = "fuzz_targets/qpkg_ingress.rs"
+name = "tapp_ingress"
+path = "fuzz_targets/tapp_ingress.rs"
 test = false
 doc = false
 bench = false

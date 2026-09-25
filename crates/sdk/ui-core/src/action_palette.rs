@@ -1,4 +1,4 @@
-//! `ActionPalette` — the one Ctrl+K surface for a `ui::App`.
+//! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
 //! The **resource + action model** ([`tilo_actions`]) is the foundation: the
 //! focused app instance publishes a tree of open [`Resource`]s, each
@@ -58,7 +58,10 @@ const NAV_PREFIX: &str = "\u{1}nav\u{1f}";
 const FIELD_H: f64 = 38.0;
 const GAP: f64 = 10.0;
 /// Cap per group so one busy provider can't flood the overlay.
-const PER_GROUP_CAP: usize = 8;
+// Dense resource types routinely expose a handful of collection actions plus
+// contextual item actions. Eight hid basic operations such as Rename/Delete
+// as soon as Notes added one platform-visible daily-note action.
+const PER_GROUP_CAP: usize = 12;
 /// Maximum number of provider hits materialised for one keystroke. Providers
 /// may emit several groups, so leave room for each while keeping work bounded.
 const PROVIDER_HIT_BUDGET: usize = 32;
@@ -401,6 +404,7 @@ impl ActionPalette {
             arguments,
         )
     }
+
     pub fn open(&mut self) {
         self.open = true;
         self.arg = None;
@@ -995,12 +999,14 @@ impl ActionPalette {
         }
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn take_scoped_navigation(
         &mut self,
     ) -> Option<(String, Option<crate::bound_dispatch::CallbackBinding>)> {
         self.pending_nav.take()
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn referenced_bound_targets(&self) -> Vec<crate::bound_dispatch::BoundActionTarget> {
         self.index
             .values()
@@ -1180,6 +1186,19 @@ impl ActionPalette {
                 let mut r = SearchResult::new(ACTIONS_KIND, title, fa.key.clone());
                 if let Some(desc) = &fa.action.description {
                     r = r.with_subtitle(desc.clone());
+                } else if let Some(detail) = fa
+                    .resource_presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.detail.as_ref())
+                {
+                    r = r.with_subtitle(detail.clone());
+                }
+                if let Some(preview) = fa
+                    .resource_presentation
+                    .as_ref()
+                    .and_then(|presentation| presentation.preview.as_ref())
+                {
+                    r = r.with_preview(preview.clone());
                 }
                 index.insert(
                     fa.key.clone(),
@@ -1302,6 +1321,7 @@ impl ActionPalette {
         );
     }
 
+    #[cfg(feature = "native")]
     pub(crate) fn layout_with_text(
         &mut self,
         theme: &Theme,
@@ -1993,7 +2013,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("yes".to_string()),
         );
         assert!(!p.is_open(), "an immediate action closes the palette");
@@ -2200,7 +2220,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "name")
                 .unwrap()
-                .and_then(|(v, _)| v.to_str().map(str::to_string)),
+                .and_then(|(v, _)| v.as_str().map(str::to_string)),
             Some("Sprocket".to_string()),
             "the action carries the typed argument",
         );
@@ -2271,7 +2291,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "marked")
                 .unwrap()
-                .and_then(|(value, _)| value.to_str().map(str::to_owned)),
+                .and_then(|(value, _)| value.as_str().map(str::to_owned)),
             Some("yes".into())
         );
     }

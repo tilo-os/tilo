@@ -174,6 +174,9 @@ impl TimelineProjection {
     }
 
     pub fn day_offset(&self, day: &str, viewport: f64) -> Option<f64> {
+        // Synced metadata has day buckets before its first layout. Their zero
+        // offsets are placeholders, so let semantic navigation build geometry.
+        self.geometry?;
         self.days
             .iter()
             .find(|entry| entry.key == day)

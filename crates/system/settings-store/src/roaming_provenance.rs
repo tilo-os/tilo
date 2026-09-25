@@ -270,7 +270,7 @@ fn origin_order(left: &Origin, right: &Origin) -> std::cmp::Ordering {
 
 #[must_use]
 pub fn path() -> Option<PathBuf> {
-    crate::config_root().map(|root| root.join(FILE_NAME))
+    crate::config_path(std::path::Path::new(FILE_NAME))
 }
 
 #[cfg(test)]

@@ -33,19 +33,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 /// Narrow capture viewport — below the bin's collapse breakpoint so `--shots`
@@ -57,7 +47,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.video-editor", video_editor::app_root)
+        &LaunchSpec::new("so.tilo.video-editor", video_editor::app_root)
             .shot_handler(shot_handler)
             .allowed_flags(&["--empty", "--narrow"])
             .allowed_options(&["--import"])
@@ -70,8 +60,14 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot(args).map_err(|error| LaunchError::Operation(error.to_string()))
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the one-shot capture handler runs on the main thread before the launcher \
+              has spawned any thread, and the capture reads the media directory afterwards"
+)]
 fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
     let out = args.shots.as_deref().ok_or("missing screenshot output")?;
+    let theme = ui::launch::shot_theme(args);
     // Point the FUSE-media seam at the bundled sample-media/ dir so the
     // capture resolves the demo project's media to local (hydrated)
     // sources — exercising the hydration branch without a live mount.
@@ -115,9 +111,9 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
         render_shot_to_png(
             Box::new(app),
             args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+            &theme,
             out,
             state,
-            args.text_scale,
         )?;
         return Ok(());
     }
@@ -125,17 +121,17 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
         render_shot_to_png(
             video_editor::app_root(),
             args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
+            &theme,
             out,
             ui::State::new(),
-            args.text_scale,
         )?;
     } else if args.has("--narrow") {
         render_shot_to_png(
             video_editor::app_root_narrow(),
             args.viewport.unwrap_or(NARROW_SHOTS_VIEWPORT),
+            &theme,
             out,
             ui::State::new(),
-            args.text_scale,
         )?;
     } else {
         let viewport = args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT);
@@ -146,17 +142,17 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
             Some(s) => render_shot_to_png(
                 Box::new(video_editor::VideoEditorApp::new_for_shot(s)),
                 viewport,
+                &theme,
                 out,
                 ui::State::new(),
-                args.text_scale,
             )?,
             None => {
                 render_shot_to_png(
                     video_editor::app_root_demo(),
                     viewport,
+                    &theme,
                     out,
                     ui::State::new(),
-                    args.text_scale,
                 )?;
             }
         }
@@ -165,7 +161,6 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// Run one offscreen frame against `widget` and write RGBA to `out` as PNG.
-/// Mirrors `ui::App`'s cycle: sync → `build_layout` → `compute_layout` → `apply_layout` → draw.
 ///
 /// `state` carries the document: a fresh one for the seeded/demo scenarios, or
 /// a **warmed** one (already synced through the import + decode warm-up) so the
@@ -174,81 +169,15 @@ fn render_shot(args: &LaunchArgs) -> Result<(), Box<dyn std::error::Error>> {
 fn render_shot_to_png(
     mut widget: Box<dyn Widget>,
     viewport: (u32, u32),
+    theme: &Theme,
     out: &std::path::Path,
-    mut state: ui::State,
-    text_scale: Option<f32>,
+    state: ui::State,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    // Keep visual-review captures faithful to the live accessibility setting:
-    // an animation that settles in the host must also settle in a one-frame
-    // reduced-motion screenshot instead of preserving an arbitrary midpoint.
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = theme
-        .with_text_scale(text_scale.unwrap_or(1.0))
-        .with_reduce_motion(matches!(
-            std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-            Some("1" | "true" | "yes")
-        ));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    text_renderer.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let mut frame = ShotFrame::new(viewport, theme.clone()).with_state(state);
+    frame.sync(widget.as_mut());
+    frame.layout(widget.as_mut())?;
+    let scene = frame.draw(widget.as_mut());
+    frame.write_png(&scene, out);
     println!("video_editor: wrote shot to {}", out.display());
     Ok(())
 }

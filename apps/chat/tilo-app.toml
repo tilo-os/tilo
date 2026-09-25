@@ -11,7 +11,7 @@
 
 
 [package]
-id       = "dev.tilo.chat"
+id       = "so.tilo.chat"
 name     = "Chat"
 category = "Network"
 version  = "0.1.0"

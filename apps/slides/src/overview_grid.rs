@@ -1,5 +1,7 @@
 //! Slide-sorter overview grid.
 
+use std::cell::Cell;
+
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -12,13 +14,45 @@ use crate::chrome;
 use crate::model::{Deck, Palette, SLIDE_H, SLIDE_W, Slide};
 use crate::render;
 
+/// Classic 1× header (title line, subtitle line, divider, `s1` seam); the
+/// floor of the measured header and the value used before the first draw.
+const HEADER_H_1X: f64 = 64.0;
+/// Least advance from the title's top to the subtitle's (1×), and from the
+/// subtitle's top to the divider.
+const HEADER_LINE_ADV: f64 = 22.0;
+/// Side inset of the header text and the thumbnail grid.
+const PAD: f64 = 36.0;
+
 pub(crate) struct OverviewGrid {
     scroll: f64,
+    /// Header height measured at the last draw — title and subtitle line
+    /// boxes plus their seams — so `geometry` (hit-testing, wheel, clamp)
+    /// starts the grid where the painter drew its divider at every text
+    /// scale. `HEADER_H_1X` until the first draw.
+    header_h: Cell<f64>,
 }
 
 impl OverviewGrid {
     pub(crate) fn new() -> Self {
-        Self { scroll: 0.0 }
+        Self {
+            scroll: 0.0,
+            header_h: Cell::new(HEADER_H_1X),
+        }
+    }
+
+    /// Resolve the header rows for this frame's renderer and remember the
+    /// resulting height for `geometry`. Returns `(title_top, subtitle_top,
+    /// divider_y)` in window space.
+    fn header_rows(&self, text: &mut TextRenderer, theme: &Theme, window: Rect) -> (f64, f64, f64) {
+        let sp = &theme.tokens.spacing;
+        let (_, lh_title) = text.measure_weighted("Ag", 18.0, None, TextWeight::Bold);
+        let (_, lh_sub) = text.measure_weighted("Ag", 12.0, None, TextWeight::Regular);
+        let title_top = window.y0 + f64::from(sp.s4);
+        let sub_top = title_top + f64::from(lh_title).max(HEADER_LINE_ADV);
+        let divider_y = sub_top + (f64::from(lh_sub) + f64::from(sp.s1)).max(HEADER_LINE_ADV);
+        self.header_h
+            .set((divider_y + f64::from(sp.s1) - window.y0).max(HEADER_H_1X));
+        (title_top, sub_top, divider_y)
     }
 
     pub(crate) fn scroll(&self) -> f64 {
@@ -30,8 +64,13 @@ impl OverviewGrid {
     }
 
     pub(crate) fn geometry(&self, window: Rect, count: usize) -> (Rect, Vec<(usize, Rect)>, f64) {
-        let area = Rect::new(window.x0, window.y0 + 64.0, window.x1, window.y1);
-        let pad = 36.0;
+        let area = Rect::new(
+            window.x0,
+            window.y0 + self.header_h.get(),
+            window.x1,
+            window.y1,
+        );
+        let pad = PAD;
         let gap = 26.0;
         let avail_w = (area.width() - 2.0 * pad).max(200.0);
         let cols = (((avail_w + gap) / 286.0).floor().max(1.0)) as usize;
@@ -85,7 +124,10 @@ impl OverviewGrid {
             .map(|(index, _)| index)
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The overview paints deck thumbnails using window bounds, current-slide selection, slide palette, and image store beside render context."
+    )]
     pub(crate) fn draw(
         &self,
         scene: &mut Scene,
@@ -100,33 +142,44 @@ impl OverviewGrid {
     ) {
         let colors = &theme.tokens.colors;
         chrome::fill_rect(scene, transform, window, colors.surfaces.base);
+        // Header rows follow the measured title and subtitle line boxes, so a
+        // 2× title never paints over the hint beneath it; the title is elided
+        // to the window rather than running under its right edge.
+        let (title_top, sub_top, divider_y) = self.header_rows(text, theme, window);
+        let text_w = (window.width() - 2.0 * PAD).max(0.0) as f32;
+        let title = text.elide_to_width_weighted(&deck.title, 18.0, text_w, TextWeight::Bold);
         text.draw_text_weighted(
             scene,
-            &deck.title,
+            &title,
             18.0,
             colors.text_primary,
-            transform * Affine::translate((window.x0 + 36.0, window.y0 + 16.0)),
+            transform * Affine::translate((window.x0 + PAD, title_top)),
             None,
             TextWeight::Bold,
         );
+        let hint = crate::strings::tr_args(
+            "slides-overview-hint",
+            &[("count", ui::i18n::ArgValue::from(deck.slides.len() as i64))],
+        );
+        let hint = text.elide_to_width_weighted(&hint, 12.0, text_w, TextWeight::Regular);
         text.draw_text_weighted(
             scene,
-            &format!(
-                "{} slides  ·  click to open  ·  Esc / G to return",
-                deck.slides.len()
-            ),
+            &hint,
             12.0,
             colors.text_dim,
-            transform * Affine::translate((window.x0 + 36.0, window.y0 + 38.0)),
+            transform * Affine::translate((window.x0 + PAD, sub_top)),
             None,
             TextWeight::Regular,
         );
-        scene.stroke(
-            &vello::kurbo::Stroke::new(1.0),
+        // The header rule is the window ground's derived edge on one crisp
+        // pixel row.
+        chrome::hairline_h(
+            scene,
             transform,
-            colors.border_standard,
-            None,
-            &vello::kurbo::Line::new((window.x0, window.y0 + 60.0), (window.x1, window.y0 + 60.0)),
+            window.x0,
+            window.x1,
+            divider_y.floor(),
+            ui::surface::edge_on(colors.surfaces.base),
         );
         let (area, thumbs, max) = self.geometry(window, deck.slides.len());
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &area);
@@ -140,14 +193,14 @@ impl OverviewGrid {
         }
         scene.pop_layer();
         if let Some((track, thumb)) = scrollbar_rects(area, self.scroll.clamp(0.0, max), max) {
-            chrome::fill_rrect(
+            chrome::fill_round(
                 scene,
                 transform,
                 track,
                 3.0,
                 render::with_alpha(colors.text_primary, 18),
             );
-            chrome::fill_rrect(
+            chrome::fill_round(
                 scene,
                 transform,
                 thumb,
@@ -177,7 +230,7 @@ impl OverviewGrid {
         slide: &Slide,
     ) {
         let colors = &theme.tokens.colors;
-        chrome::fill_rrect(
+        chrome::fill_round(
             scene,
             transform,
             (rect + vello::kurbo::Vec2::new(0.0, 4.0)).inflate(1.0, 1.0),
@@ -187,7 +240,9 @@ impl OverviewGrid {
         render::draw_slide(
             scene, transform, text, theme, palette, slide, rect, 8.0, images,
         );
-        chrome::stroke_rrect(
+        // The thumbnail frame is the window ground's derived edge; the
+        // current slide keeps its accent ring.
+        chrome::stroke_round(
             scene,
             transform,
             rect,
@@ -195,7 +250,7 @@ impl OverviewGrid {
             if index == current {
                 palette.accent
             } else {
-                render::with_alpha(colors.text_primary, 30)
+                ui::surface::edge_on(colors.surfaces.base)
             },
             if index == current { 2.5 } else { 1.0 },
         );

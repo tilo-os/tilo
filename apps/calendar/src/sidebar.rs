@@ -4,14 +4,17 @@
 //! with the controls that operate that state. Calendar-specific lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::{Color, Fill};
 
 use crate::app::{
     center_text, draw_chevron, draw_cross, draw_download, draw_icon_button, draw_upload,
 };
-use crate::draw_util::{PaintContext, fill_rect, fill_round, stroke_line, stroke_round};
+use crate::draw_util::{fill_rect, fill_round, hairline, selected_row};
 use crate::model::View;
+use ui::surface::card;
 
 const WIDTH: f64 = 252.0;
 const PERSISTENT_MIN: f64 = 900.0;
@@ -39,26 +42,6 @@ pub(crate) enum Action {
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) hits: Vec<(Rect, Action)>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ChromeModel {
-    pub(crate) window: Rect,
-    pub(crate) content: Rect,
-    pub(crate) detail: Rect,
-    pub(crate) switcher_in_topbar: bool,
-    pub(crate) view: View,
-    pub(crate) pointer: Point,
-}
-
-#[derive(Clone, Copy)]
-struct ChromeLayout {
-    rect: Rect,
-    window: Rect,
-    overlay: bool,
-    pointer: Point,
-    pad: f64,
-    y: f64,
 }
 
 pub(crate) struct Sidebar {
@@ -151,25 +134,27 @@ impl Sidebar {
         self.collapsed = !self.collapsed;
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "sidebar chrome combines paint context, window/content/detail bounds, view-switcher placement and pointer hover"
+    )]
     pub(crate) fn draw_chrome(
         &self,
-        paint: &mut PaintContext<'_>,
-        model: ChromeModel,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        window: Rect,
+        content: Rect,
+        detail: Rect,
+        switcher_in_topbar: bool,
+        view: View,
+        pointer: Point,
     ) -> Option<Chrome> {
-        let ChromeModel {
-            window,
-            content,
-            detail,
-            switcher_in_topbar,
-            view,
-            pointer,
-        } = model;
         if !self.visible() {
             return None;
         }
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let colors = &paint.theme.tokens.colors;
+        let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
         let overlay = self.mode == Mode::Overlay;
         if overlay && (content.area() > 0.0 || detail.area() > 0.0) {
@@ -178,50 +163,41 @@ impl Sidebar {
             } else {
                 detail
             };
-            fill_rect(scene, transform, colors.surfaces.overlay, behind);
+            fill_rect(scene, transform, behind, colors.surfaces.overlay);
             hits.push((behind, Action::Dismiss));
         }
 
         let rect = self.rect;
-        fill_rect(scene, transform, colors.surfaces.raised, rect);
         if overlay {
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                Color::from_rgba8(0, 0, 0, 70),
-                None,
-                &Rect::new(rect.x1, rect.y0, rect.x1 + 8.0, rect.y1),
-            );
+            // The drawer's elevation over the dimmed content: the theme's
+            // shadow token, not a literal black band.
+            ui::surface::elevation(scene, transform, rect, &theme.tokens.elevation.e3);
         }
-        stroke_line(
+        fill_rect(scene, transform, rect, colors.surfaces.raised);
+        hairline(
             scene,
             transform,
-            colors.border_standard,
+            colors.surfaces.raised,
             Point::new(rect.x1, rect.y0),
             Point::new(rect.x1, rect.y1),
-            1.0,
         );
 
         let pad = 18.0;
         let mut y = rect.y0 + 22.0;
-        let mut layout = ChromeLayout {
-            rect,
-            window,
-            overlay,
-            pointer,
-            pad,
-            y,
-        };
-        Self::draw_chrome_collapse_or_dismiss(paint, layout, &mut hits);
+        Self::draw_chrome_collapse_or_dismiss(
+            scene, transform, theme, rect, window, overlay, pointer, pad, y, &mut hits,
+        );
         y += 30.0;
-        layout.y = y;
 
         if overlay && !switcher_in_topbar {
-            y += Self::draw_chrome_view_switcher(paint, layout, view, &mut hits);
-            layout.y = y;
+            y += Self::draw_chrome_view_switcher(
+                scene, transform, text, theme, rect, view, pointer, y, &mut hits,
+            );
         }
 
-        Self::draw_chrome_footer_buttons(paint, layout, &mut hits);
+        Self::draw_chrome_footer_buttons(
+            scene, transform, text, theme, rect, y, pointer, &mut hits,
+        );
 
         Some(Chrome {
             body_y: y + 46.0,
@@ -234,26 +210,22 @@ impl Sidebar {
     /// header. Split out of [`Self::draw_chrome`] to keep that under the
     /// line cap.
     fn draw_chrome_collapse_or_dismiss(
-        paint: &mut PaintContext<'_>,
-        layout: ChromeLayout,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        window: Rect,
+        overlay: bool,
+        pointer: Point,
+        pad: f64,
+        y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let theme = paint.theme;
-        let ChromeLayout {
-            rect,
-            window,
-            overlay,
-            pointer,
-            pad,
-            y,
-        } = layout;
         let colors = &theme.tokens.colors;
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
             if button.contains(pointer) {
-                fill_round(scene, transform, colors.lift(0.35), button, 7.0);
+                fill_round(scene, transform, button, 7.0, colors.lift(0.35));
             }
             draw_chevron(scene, transform, colors.neutral[7], button.center(), true);
             hits.push((button, Action::ToggleCollapsed));
@@ -270,30 +242,31 @@ impl Sidebar {
     /// vertical space it consumed (`0.0` if not drawn). Split out of
     /// [`Self::draw_chrome`] to keep that under the line cap.
     fn draw_chrome_view_switcher(
-        paint: &mut PaintContext<'_>,
-        layout: ChromeLayout,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
         view: View,
+        pointer: Point,
+        y: f64,
         hits: &mut Vec<(Rect, Action)>,
     ) -> f64 {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
-        let ChromeLayout {
-            rect, pointer, y, ..
-        } = layout;
         let colors = &theme.tokens.colors;
-        let segmented = Rect::new(rect.x0 + 12.0, y, rect.x1 - 12.0, y + 36.0);
-        fill_round(scene, transform, colors.surfaces.base, segmented, 9.0);
-        stroke_round(
+        let inset = f64::from(theme.tokens.spacing.s3);
+        let segmented = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + 36.0);
+        let track_radius = f64::from(theme.tokens.radii.lg);
+        // Segmented track (HIG §9.5): the base tier with its derived edge; the
+        // chosen segment is the selection lift, never an accent fill.
+        card(
             scene,
             transform,
-            colors.border_standard,
             segmented,
-            9.0,
-            1.0,
+            track_radius,
+            colors.surfaces.base,
         );
         let cell_width = segmented.width() / View::ALL.len() as f64;
+        let seg_inset = f64::from(theme.tokens.spacing.s1) / 2.0 + 1.0;
         for (index, candidate) in View::ALL.iter().enumerate() {
             let cell = Rect::new(
                 segmented.x0 + cell_width * index as f64,
@@ -301,30 +274,23 @@ impl Sidebar {
                 segmented.x0 + cell_width * (index as f64 + 1.0),
                 segmented.y1,
             );
-            if view == *candidate {
-                fill_round(
-                    scene,
-                    transform,
-                    colors.accent[5],
-                    cell.inflate(-3.0, -3.0),
-                    7.0,
-                );
-            } else if cell.contains(pointer) {
-                fill_round(
-                    scene,
-                    transform,
-                    colors.lift(0.35),
-                    cell.inflate(-3.0, -3.0),
-                    7.0,
-                );
-            }
+            selected_row(
+                scene,
+                transform,
+                theme,
+                colors.surfaces.base,
+                cell.inflate(-seg_inset, -seg_inset),
+                track_radius - seg_inset,
+                view == *candidate,
+                cell.contains(pointer),
+            );
             center_text(
                 scene,
                 text,
                 candidate.label(),
                 13.0,
                 if view == *candidate {
-                    Color::WHITE
+                    colors.text_primary
                 } else {
                     colors.neutral[7]
                 },
@@ -340,17 +306,15 @@ impl Sidebar {
     /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
     /// the line cap.
     fn draw_chrome_footer_buttons(
-        paint: &mut PaintContext<'_>,
-        layout: ChromeLayout,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        rect: Rect,
+        y: f64,
+        pointer: Point,
         hits: &mut Vec<(Rect, Action)>,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
-        let ChromeLayout {
-            rect, pointer, y, ..
-        } = layout;
         let colors = &theme.tokens.colors;
         let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
         let export = Rect::new(rect.x0 + 12.0, y, rect.x0 + 12.0 + button_width, y + 32.0);

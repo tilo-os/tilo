@@ -3,9 +3,10 @@
 //!
 //! What it measures, from the engine thread and the widget:
 //!  * **frame throughput** — inter-frame intervals → frames/sec,
-//!  * **input→paint latency** — time from an interactive command being
-//!    sent to the next distinct frame arriving (the number that governs
-//!    how responsive scrolling / clicking feels),
+//!  * **input→next-frame interval** — time from an interactive command
+//!    being sent to the next observed engine frame. This is uncorrelated:
+//!    the frame may belong to another tab or unrelated animation, and
+//!    arrival does not prove that the window displayed it,
 //!  * **SHM swizzle cost** — the per-frame BGRA→RGBA copy time,
 //!  * **geometry** — each frame's pixel size and each draw's rect, so a
 //!    size/rect mismatch (a stretched or mispositioned frame) is visible.
@@ -15,13 +16,13 @@
 //! first [`TRACE_FRAMES`] frames and draws are logged individually — the
 //! fast path to diagnosing a visual glitch.
 //!
-//! All timing uses `std::time::Instant`; the whole module is a no-op
+//! All timing uses `crate::time::Instant`; the whole module is a no-op
 //! (one relaxed atomic load) when disabled.
 
+use crate::time::{Duration, Instant};
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 /// Frames between periodic stderr summaries.
 const SUMMARY_EVERY: u64 = 120;
@@ -32,6 +33,7 @@ const SAMPLES: usize = 512;
 
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static TRACE: AtomicBool = AtomicBool::new(false);
+static RESIZE_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STATE: OnceLock<Mutex<State>> = OnceLock::new();
 
 /// Read the env once and latch the on/off + trace flags. Called from
@@ -102,7 +104,7 @@ pub fn record_input(kind: &'static str) {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if s.pending_input.is_none() {
-        s.pending_input = Some((Instant::now(), kind));
+        s.pending_input = Some((crate::time::now(), kind));
     }
 }
 
@@ -112,7 +114,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
     if !enabled() {
         return;
     }
-    let now = Instant::now();
+    let now = crate::time::now();
     let mut s = state()
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -129,7 +131,7 @@ pub fn record_frame(width: u32, height: u32, swizzle: Duration) {
         let ms = now.duration_since(sent).as_secs_f64() * 1000.0;
         s.latency_ms.push(ms);
         if TRACE.load(Ordering::Relaxed) && s.frame_count < TRACE_FRAMES {
-            eprintln!("[webview-profile] input({kind})→paint {ms:.1}ms");
+            eprintln!("[webview-profile] input({kind})→next-frame (uncorrelated) {ms:.1}ms");
         }
     }
 
@@ -179,6 +181,47 @@ pub fn record_draw(rect_w: f64, rect_h: f64, frame_dims: Option<(u32, u32)>) {
     }
 }
 
+/// Record physical resize commands so startup traces can distinguish a stale
+/// frame from a missing or downgraded device-scale request.
+pub fn record_resize(width: u32, height: u32, scale_factor: f32) {
+    if !enabled() || !TRACE.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(n) = next_resize_trace(&RESIZE_COUNT) {
+        eprintln!("[webview-profile] resize #{n} {width}x{height} scale {scale_factor:.2}");
+    }
+}
+
+fn next_resize_trace(counter: &std::sync::atomic::AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+            (n < TRACE_FRAMES).then(|| n.saturating_add(1))
+        })
+        .ok()
+        .map(|n| n.saturating_add(1))
+}
+
+#[cfg(test)]
+mod resize_trace_tests {
+    use super::*;
+    use std::sync::atomic::AtomicU64;
+
+    #[test]
+    fn trace_limit_never_wraps_or_reopens_logging() {
+        let counter = AtomicU64::new(0);
+        for expected in 1..=TRACE_FRAMES {
+            assert_eq!(next_resize_trace(&counter), Some(expected));
+        }
+        for _ in 0..3 {
+            assert_eq!(next_resize_trace(&counter), None);
+            assert_eq!(counter.load(Ordering::Relaxed), TRACE_FRAMES);
+        }
+        let exhausted = AtomicU64::new(u64::MAX);
+        assert_eq!(next_resize_trace(&exhausted), None);
+        assert_eq!(exhausted.load(Ordering::Relaxed), u64::MAX);
+    }
+}
+
 impl State {
     fn print_summary(&self) {
         let elapsed = self.started.map_or(0.0, |s| s.elapsed().as_secs_f64());
@@ -200,7 +243,8 @@ impl State {
             dims = self.dims_changes,
         );
         self.intervals_ms.report("frame interval (ms)");
-        self.latency_ms.report("input→paint (ms)");
+        self.latency_ms
+            .report("input→next-frame, uncorrelated (ms)");
         self.swizzle_us.report("SHM swizzle (us)");
     }
 }

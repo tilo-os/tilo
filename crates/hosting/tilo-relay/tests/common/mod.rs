@@ -1,6 +1,9 @@
 //! Test fixtures shared across the integration suite.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each integration module uses a different subset of these fixtures"
+)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -77,7 +80,10 @@ impl TestDevice {
 pub struct TestRelay {
     pub relay: Relay,
     pub state_root: PathBuf,
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "keeps the temporary state root alive for the relay's lifetime"
+    )]
     tmp: TempDir,
 }
 
@@ -112,6 +118,44 @@ pub async fn spawn_relay_on(
     workspaces: &[u64],
     members: &[[u8; 32]],
 ) -> Relay {
+    spawn_relay_with(state_root, user, relay_dev, workspaces, members, None).await
+}
+
+/// [`spawn_relay`] for a host that serves apps through `plane` and asks to
+/// advertise `app_serving`.
+pub async fn spawn_relay_serving_apps(
+    user: &TestUser,
+    relay_dev: TestDevice,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+    plane: std::sync::Arc<dyn tilo_relay::AppServingPlane>,
+) -> TestRelay {
+    let tmp = tempfile::tempdir().unwrap();
+    let state_root = tmp.path().to_path_buf();
+    let relay = spawn_relay_with(
+        &state_root,
+        user,
+        relay_dev,
+        workspaces,
+        members,
+        Some(plane),
+    )
+    .await;
+    TestRelay {
+        relay,
+        state_root,
+        tmp,
+    }
+}
+
+async fn spawn_relay_with(
+    state_root: &std::path::Path,
+    user: &TestUser,
+    relay_dev: TestDevice,
+    workspaces: &[u64],
+    members: &[[u8; 32]],
+    plane: Option<std::sync::Arc<dyn tilo_relay::AppServingPlane>>,
+) -> Relay {
     let mut cfg = RelayConfig {
         state_root: state_root.to_path_buf(),
         ..Default::default()
@@ -130,7 +174,10 @@ pub async fn spawn_relay_on(
         device_cert: relay_dev.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let relay = Relay::start(cfg, identity).await.unwrap();
+    cfg.services.app_serving = plane.is_some();
+    let relay = Relay::start_with_app_serving(cfg, identity, plane)
+        .await
+        .unwrap();
     for id in workspaces {
         relay
             .set_workspace_membership(*id, true, members.to_vec(), state_root.to_path_buf())
@@ -157,5 +204,8 @@ pub async fn wait_for(mut cond: impl FnMut() -> bool, attempts: u32) -> bool {
     cond()
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "names RelayHandle so the fixture import stays exercised"
+)]
 pub fn _keep_symbols_used(_h: &RelayHandle) {}

@@ -1,6 +1,10 @@
 //! Hosted clients must not silently weaken the local broker's access controls.
 #![cfg(not(unix))]
 #![allow(clippy::expect_used, reason = "test fixture setup must succeed")]
+#![allow(
+    clippy::disallowed_methods,
+    reason = "integration tests may read the real clock; the rule guards the library"
+)]
 
 use std::time::SystemTime;
 use tilo_ui::widget::identity_flow::{

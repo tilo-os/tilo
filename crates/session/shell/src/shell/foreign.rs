@@ -1394,7 +1394,12 @@ impl ForeignSurfaceWidget {
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
     fn refresh_cache(&mut self) -> bool {
         let seq = store().frame_seq(self.surface_id);
-        if seq == self.cached_seq {
+        // A cache can be empty at a non-zero sequence when an earlier paint
+        // observed the sequence edge before its snapshot became available.
+        // Retry that state instead of permanently pinning the fallback card;
+        // steady clients with a real cached image retain the zero-copy fast
+        // path below.
+        if seq == self.cached_seq && (seq == 0 || self.cached.is_some()) {
             return false;
         }
         self.cached_seq = seq;
@@ -1707,6 +1712,10 @@ impl Widget for ForeignSurfaceWidget {
 }
 
 impl AppWidget for ForeignSurfaceWidget {
+    fn uses_host_record(&self) -> bool {
+        false
+    }
+
     fn app_kind(&self) -> AppKind {
         // No `AppKind` describes "arbitrary external client"; `Settings` is the catch-all `to_ui_kind` already uses for unknown kinds.
         AppKind::Settings
@@ -1738,7 +1747,7 @@ pub struct ForeignTab {
 /// traversal order — scoped since callers ask what's on screen; use [`foreign_tabs_anywhere`] to ask whether a surface *has* a tab.
 pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
     let mut out = Vec::new();
-    let Some(ws) = tree.active_workspace() else {
+    let Some(ws) = tree.desktop.active_workspace() else {
         return out;
     };
     collect_foreign_tabs(ws, &mut out);
@@ -1751,7 +1760,7 @@ pub fn foreign_tabs(tree: &WorkspaceTree) -> Vec<ForeignTab> {
 /// launch can place one in a workspace never made active — asking only the active workspace would report an existing window as missing.
 pub fn foreign_tabs_anywhere(tree: &WorkspaceTree) -> Vec<ForeignTab> {
     let mut out = Vec::new();
-    for ws in &tree.workspaces {
+    for ws in &tree.desktop.workspaces {
         collect_foreign_tabs(ws, &mut out);
     }
     out
@@ -1776,7 +1785,7 @@ fn collect_foreign_tabs(ws: &crate::shell::state::Workspace, out: &mut Vec<Forei
 
 /// Whether `surface_id` is the active tab of its group in the active workspace — i.e. whether its pixels are on screen.
 pub fn is_visible_tab(tree: &WorkspaceTree, surface_id: SurfaceId) -> bool {
-    let Some(ws) = tree.active_workspace() else {
+    let Some(ws) = tree.desktop.active_workspace() else {
         return false;
     };
     for strip in &ws.strips {
@@ -1861,7 +1870,7 @@ pub fn reconcile_foreign_tabs(source: &WorkspaceTree, rendered: &mut WorkspaceTr
         {
             changed = true;
         }
-        for ws in &mut rendered.workspaces {
+        for ws in &mut rendered.desktop.workspaces {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
                     for tab in &mut group.tabs {
@@ -1898,6 +1907,7 @@ fn drop_duplicate_foreign_tabs(tree: &mut WorkspaceTree) -> bool {
     // frame while leaving it in the room document, so the next revision
     // resurrected it.
     let duplicate_tabs: Vec<_> = tree
+        .desktop
         .workspaces
         .iter()
         .flat_map(|workspace| workspace.strips.iter())
@@ -2273,14 +2283,14 @@ mod tests {
     /// What a person reads on a window's own card is the app's name, never the wayland app-id — a machine identifier the user never chose.
     #[test]
     fn a_card_in_a_windows_place_names_the_app_not_its_id() {
-        let w = ForeignSurfaceWidget::new(sid(53), "dev.tilo.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(sid(53), "so.tilo.never-launched-fixture".into());
         let name = w.display_name();
         assert_eq!(
             name, "Never Launched Fixture",
             "a window's card must carry the app's name; got {name:?}",
         );
         assert!(
-            !name.contains("dev.tilo."),
+            !name.contains("so.tilo."),
             "a reverse-DNS package id reached a card somebody is reading",
         );
     }
@@ -2295,7 +2305,7 @@ mod tests {
     fn a_window_that_cannot_be_shown_says_so_in_plain_words() {
         let id = sid(54);
         store().forget(id);
-        let w = ForeignSurfaceWidget::new(id, "dev.tilo.never-launched-fixture".into());
+        let w = ForeignSurfaceWidget::new(id, "so.tilo.never-launched-fixture".into());
 
         let (headline, detail) = w.unshowable_text();
         assert_eq!(headline, "Never Launched Fixture", "the app's own name");
@@ -2311,7 +2321,7 @@ mod tests {
             let lower = text.to_lowercase();
             for jargon in [
                 "frame", "buffer", "surface", "dmabuf", "modifier", "wayland", "toplevel",
-                "dev.tilo", "install",
+                "so.tilo", "install",
             ] {
                 assert!(
                     !lower.contains(jargon),
@@ -2464,6 +2474,26 @@ mod tests {
 
         // A non-draining read: a second snapshot still sees the frame.
         assert!(store().snapshot(id).is_some());
+        store().forget(id);
+    }
+
+    #[test]
+    fn an_empty_widget_cache_retries_the_current_nonzero_sequence() {
+        let id = sid(23);
+        store().forget(id);
+        store().publish_rgba(id, &[0xE0, 0x18, 0xA0, 0xFF], 1, 1);
+
+        let mut widget = ForeignSurfaceWidget::new(id, "org.example.retry".into());
+        // Model the interrupted observation that previously pinned the
+        // fallback card: the sequence was recorded but no image survived.
+        widget.cached_seq = store().frame_seq(id);
+        widget.cached = None;
+        assert!(widget.refresh_cache(), "the empty cache must retry");
+        assert!(
+            widget.cached.is_some(),
+            "the current frame must be restored"
+        );
+
         store().forget(id);
     }
 
@@ -2661,7 +2691,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         let mut source = WorkspaceTree::bootstrap_demo();
         let mut rendered = source.clone();
-        let target = source.workspaces[0].strips[0].window_groups[0].id;
+        let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
         crate::shell::launcher::set_pending_placement(
             "org.example.electron",
             crate::shell::tab_binding::Placement::TabIn(target),
@@ -2681,6 +2711,7 @@ mod tests {
         let mirrored = foreign_tabs_anywhere(&rendered);
         assert_eq!(mirrored.len(), 1);
         let mirrored_group = rendered
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -2701,7 +2732,7 @@ mod tests {
         crate::shell::launcher::clear_pending_placements();
         let mut source = WorkspaceTree::bootstrap_demo();
         let mut rendered = source.clone();
-        let target = source.workspaces[0].strips[0].window_groups[0].id;
+        let target = source.desktop.workspaces[0].strips[0].window_groups[0].id;
         let surface = 0x502;
         crate::shell::launcher::set_pending_placement_for_identities(
             "chatgpt",
@@ -2728,7 +2759,7 @@ mod tests {
         assert_eq!(mirrored.len(), 1);
         assert_eq!(mirrored[0].app_id, "Chatgpt");
         assert_eq!(mirrored[0].title, "ChatGPT");
-        let mirrored_group = rendered.workspaces[0].strips[0]
+        let mirrored_group = rendered.desktop.workspaces[0].strips[0]
             .window_groups
             .iter()
             .find(|group| group.tabs.iter().any(|tab| tab.id == mirrored[0].tab_id))
@@ -2793,7 +2824,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.word-processor".into()),
+            Some("so.tilo.word-processor".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
         assert_eq!(
@@ -2804,12 +2835,13 @@ mod tests {
 
         // The user goes to another workspace — nothing about the window changed, it's simply no longer the one on screen.
         let elsewhere = rendered
+            .desktop
             .workspaces
             .iter()
             .map(|w| w.id)
-            .find(|id| *id != rendered.active)
+            .find(|id| *id != rendered.desktop.active)
             .expect("the demo tree has more than one workspace");
-        rendered.active = elsewhere;
+        rendered.desktop.active = elsewhere;
 
         reconcile_foreign_tabs(&source, &mut rendered);
         assert_eq!(
@@ -2819,7 +2851,7 @@ mod tests {
         );
 
         // And back again, which is the sequence a person actually performs.
-        rendered.active = source.active;
+        rendered.desktop.active = source.desktop.active;
         reconcile_foreign_tabs(&source, &mut rendered);
         assert_eq!(
             tabs_for_surface(&rendered, surface),
@@ -2839,19 +2871,21 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
         // Move the adopted tab into a workspace that isn't the active one, the way a recorded placement or a peer's room does.
         let elsewhere = rendered
+            .desktop
             .workspaces
             .iter()
             .map(|w| w.id)
-            .find(|id| *id != rendered.active)
+            .find(|id| *id != rendered.desktop.active)
             .expect("the demo tree has more than one workspace");
         let moved = take_foreign_tab(&mut rendered, surface).expect("the adopted tab");
         let ws = rendered
+            .desktop
             .workspaces
             .iter_mut()
             .find(|w| w.id == elsewhere)
@@ -2883,7 +2917,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         assert!(reconcile_foreign_tabs(&source, &mut rendered));
 
@@ -2903,6 +2937,7 @@ mod tests {
             }
         };
         let group = rendered
+            .desktop
             .active_workspace_mut()
             .and_then(|w| w.strips.first_mut())
             .and_then(|s| s.window_groups.first_mut())
@@ -2926,6 +2961,7 @@ mod tests {
 
         // And the group is still showing something that exists.
         let group = rendered
+            .desktop
             .active_workspace()
             .and_then(|w| w.strips.first())
             .and_then(|s| s.window_groups.first())
@@ -2946,7 +2982,7 @@ mod tests {
         crate::shell::tab_binding::adopt_toplevel(
             &mut source,
             surface,
-            Some("dev.tilo.photos".into()),
+            Some("so.tilo.photos".into()),
         );
         source.seed_doc_from_cache();
         let mut rendered = source.clone();
@@ -2956,6 +2992,7 @@ mod tests {
             .find(|tab| tab.surface_id == surface)
             .expect("the source foreign tab");
         let group = rendered
+            .desktop
             .active_workspace_mut()
             .and_then(|workspace| workspace.strips.first_mut())
             .and_then(|strip| strip.window_groups.first_mut())
@@ -3000,7 +3037,7 @@ mod tests {
         let state_dir = tempfile::tempdir().expect("state directory");
         let state_path = state_dir.path().join("state.json");
         let mut source = WorkspaceTree::bootstrap_demo();
-        let strip_id = source.workspaces[0].strips[0].id;
+        let strip_id = source.desktop.workspaces[0].strips[0].id;
 
         // Build a three-window shared baseline. The app that is closed is a
         // symbolic hosted app, so its deletion is an actual room-document
@@ -3038,7 +3075,7 @@ mod tests {
             "the closed app must leave the rendered document"
         );
         assert!(
-            rendered.workspaces[0].strips[0]
+            rendered.desktop.workspaces[0].strips[0]
                 .window_groups
                 .iter()
                 .all(|group| group.id != closed_group),
@@ -3054,7 +3091,7 @@ mod tests {
             .apply_changes(&stale_revision)
             .expect("a later peer revision applies");
         assert!(
-            rendered.workspaces[0].strips[0]
+            rendered.desktop.workspaces[0].strips[0]
                 .window_groups
                 .iter()
                 .all(|group| group.id != closed_group),
@@ -3088,7 +3125,7 @@ mod tests {
         let restarted = crate::shell::persist::load_tree_from(&state_path)
             .expect("the post-revision layout restarts cleanly");
         assert!(
-            restarted.workspaces[0].strips[0]
+            restarted.desktop.workspaces[0].strips[0]
                 .window_groups
                 .iter()
                 .all(|group| group.id != closed_group),
@@ -3127,11 +3164,13 @@ mod tests {
         rendered.persist_path = Some(state_path.clone());
 
         let strip = rendered
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.strips.first())
             .expect("demo workspace strip")
             .id;
         let anchor = rendered
+            .desktop
             .active_group_for(strip)
             .expect("demo workspace active group");
         let local_tab = open_hosted_app(
@@ -3187,6 +3226,7 @@ mod tests {
         let duplicate_id = original.tab_id.saturating_add(9_000_000);
         let owner = group_for_tab(&rendered, original.tab_id);
         let group = rendered
+            .desktop
             .workspaces
             .iter_mut()
             .flat_map(|workspace| workspace.strips.iter_mut())
@@ -3215,6 +3255,7 @@ mod tests {
         assert!(remove_tab(&mut rendered, close_tab));
         assert!(
             rendered
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| workspace.strips.iter())
@@ -3224,6 +3265,7 @@ mod tests {
         );
 
         let moved_group = rendered
+            .desktop
             .active_workspace()
             .and_then(|workspace| workspace.strips.first())
             .and_then(|strip| strip.window_groups.last())
@@ -3242,6 +3284,7 @@ mod tests {
         assert_eq!(tabs_for_surface(&rendered, surface), 1);
         assert!(
             rendered
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| workspace.strips.iter())
@@ -3263,6 +3306,7 @@ mod tests {
         let future_base = future_peer.current_heads();
         let local_group = group_for_tab(&future_peer, local_tab);
         let group = future_peer
+            .desktop
             .workspaces
             .iter()
             .flat_map(|workspace| workspace.strips.iter())
@@ -3289,6 +3333,7 @@ mod tests {
         assert_eq!(tabs_for_surface(&rendered, surface), 0);
         assert!(
             rendered
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| workspace.strips.iter())
@@ -3304,6 +3349,7 @@ mod tests {
         assert_eq!(tabs_for_surface(&restarted, surface), 0);
         assert!(
             restarted
+                .desktop
                 .workspaces
                 .iter()
                 .flat_map(|workspace| workspace.strips.iter())
@@ -3317,7 +3363,7 @@ mod tests {
 
     /// How many tabs anywhere in `tree` show `surface` — walks the tree the chrome renders from, so a duplicate is counted where it'd draw.
     fn tabs_for_surface(tree: &WorkspaceTree, surface: SurfaceId) -> usize {
-        tree.workspaces
+        tree.desktop.workspaces
             .iter()
             .flat_map(|w| w.strips.iter())
             .flat_map(|s| s.window_groups.iter())
@@ -3329,7 +3375,8 @@ mod tests {
     }
 
     fn group_for_tab(tree: &WorkspaceTree, tab_id: u64) -> u64 {
-        tree.workspaces
+        tree.desktop
+            .workspaces
             .iter()
             .flat_map(|workspace| &workspace.strips)
             .flat_map(|strip| &strip.window_groups)
@@ -3339,8 +3386,9 @@ mod tests {
     }
 
     fn assert_active_groups_are_valid(tree: &WorkspaceTree) {
-        for (workspace, strip_id) in &tree.active_strip {
+        for (workspace, strip_id) in &tree.desktop.active_strip {
             let Some(strip) = tree
+                .desktop
                 .workspaces
                 .iter()
                 .find(|candidate| candidate.id == *workspace)
@@ -3348,7 +3396,7 @@ mod tests {
             else {
                 panic!("active workspace points to a missing strip");
             };
-            if let Some(group_id) = tree.active_group_for(*strip_id) {
+            if let Some(group_id) = tree.desktop.active_group_for(*strip_id) {
                 assert!(
                     strip.window_groups.iter().any(|group| group.id == group_id),
                     "active strip points to a deleted group"
@@ -3362,7 +3410,7 @@ mod tests {
         tree: &mut WorkspaceTree,
         surface: SurfaceId,
     ) -> Option<crate::shell::state::Tab> {
-        for ws in &mut tree.workspaces {
+        for ws in &mut tree.desktop.workspaces {
             for strip in &mut ws.strips {
                 for group in &mut strip.window_groups {
                     if let Some(i) = group.tabs.iter().position(|t| {
@@ -3401,10 +3449,10 @@ mod tests {
     /// The window itself has to answer with the same name its tab does.
     ///
     /// The tab title was fixed once already; the widget kept handing back
-    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `dev.tilo.chat`, an address nobody chose.
+    /// the raw wayland app-id from `app_title()`, so asking the tile directly (not the tab's stored title) got `so.tilo.chat`, an address nobody chose.
     #[test]
     fn a_foreign_window_answers_with_its_name_not_its_app_id() {
-        let w = ForeignSurfaceWidget::new(3, "dev.tilo.chat".into());
+        let w = ForeignSurfaceWidget::new(3, "so.tilo.chat".into());
         assert_eq!(
             w.app_title(),
             "Chat",
@@ -3412,7 +3460,7 @@ mod tests {
         );
 
         // A dotted id with a multi-word tail humanises the same way the package registry does, so an app reaches one name by either route.
-        let w = ForeignSurfaceWidget::new(4, "dev.tilo.word-processor".into());
+        let w = ForeignSurfaceWidget::new(4, "so.tilo.word-processor".into());
         assert_eq!(w.app_title(), "Word Processor");
     }
 
@@ -3423,13 +3471,15 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         // A lone selected window, so each adoption opens its own column rather than joining a tabbed group — the arrangement this test is about.
         {
-            let strip_id = tree.workspaces[0].strips[0].id;
-            let g = &mut tree.workspaces[0].strips[0].window_groups[0];
+            let strip_id = tree.desktop.workspaces[0].strips[0].id;
+            let g = &mut tree.desktop.workspaces[0].strips[0].window_groups[0];
             g.tabs.truncate(1);
             g.active_tab = g.tabs[0].id;
             let gid = g.id;
-            tree.active_strip.insert(tree.active, strip_id);
-            tree.set_active_group(strip_id, gid);
+            tree.desktop
+                .active_strip
+                .insert(tree.desktop.active, strip_id);
+            tree.desktop.set_active_group(strip_id, gid);
         }
         let first = adopt_toplevel(&mut tree, 11, None);
         assert!(is_visible_tab(&tree, 11), "a fresh adoption becomes active");
@@ -3444,6 +3494,7 @@ mod tests {
 
         // Stacking into the *same* group is what puts a window behind another — the tab dimension, not the strip one.
         let owner = tree
+            .desktop
             .active_workspace()
             .unwrap()
             .strips

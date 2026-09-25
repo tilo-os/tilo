@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "installer.back")
                 .unwrap()
-                .and_then(|(value, _)| value.to_bool()),
+                .and_then(|(value, _)| value.as_bool()),
             Some(true)
         );
         assert!(button.is_focused(), "activation must not move focus");
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(
             doc.get(&ROOT, "installer.reboot")
                 .unwrap()
-                .and_then(|(value, _)| value.to_bool()),
+                .and_then(|(value, _)| value.as_bool()),
             Some(true)
         );
         assert!(button.is_focused(), "AT activation must not steal focus");

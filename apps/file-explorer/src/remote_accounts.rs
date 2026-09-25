@@ -179,12 +179,7 @@ fn bounded_label(label: &str) -> String {
 /// Stable, non-path identity used by the resource tree and search. Account
 /// ids can contain punctuation, so hex keeps action-address parsing simple.
 pub fn resource_id(id: &AccountId) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::from("files.remote-account:");
-    for byte in id.as_str().as_bytes() {
-        let _ = write!(out, "{byte:02x}");
-    }
-    out
+    format!("files.remote-account:{}", hex::encode(id.as_str()))
 }
 
 pub fn type_id(kind: RemoteAccountKind) -> AccountTypeId {

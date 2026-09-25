@@ -43,6 +43,49 @@ api_call() {
   fi
 }
 
+# A release retry commonly runs after Microsoft has already merged the original
+# submission. The fork branch is not automatically updated in that state, so
+# prove the exact three manifests in the accepted index before touching the
+# fork or attempting to open another pull request.
+accepted="$work/accepted.json"
+api_call "$accepted" \
+  "$api/repos/microsoft/winget-pkgs/contents/manifests/q/Tilo/Imager/$version?ref=master"
+case "$API_CODE" in
+  200)
+    if python3 - "$accepted" "$manifest_source" <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+rows = json.load(open(sys.argv[1], encoding="utf-8"))
+source = pathlib.Path(sys.argv[2])
+expected = {}
+for path in sorted(source.glob("*.yaml")):
+    data = path.read_bytes()
+    header = f"blob {len(data)}\0".encode()
+    expected[path.name] = hashlib.sha1(header + data).hexdigest()
+actual = {row.get("name"): row.get("sha") for row in rows
+          if isinstance(row, dict) and row.get("type") == "file"
+          and str(row.get("name", "")).endswith(".yaml")}
+if actual != expected:
+    raise SystemExit(1)
+PY
+    then
+      printf 'WinGet already accepted Tilo.Imager %s\n' "$version"
+      exit 0
+    fi
+    printf 'accepted WinGet manifests for %s differ from this signed release\n' "$version" >&2
+    exit 1
+    ;;
+  404) ;;
+  *)
+    cat "$accepted" >&2
+    [ "$API_RC" -ne 0 ] || API_RC=1
+    exit "$API_RC"
+    ;;
+esac
+
 repo_response="$work/repo.json"
 api_call "$repo_response" "$api/repos/${WINGET_GITHUB_USER}/winget-pkgs"
 case "$API_CODE" in
@@ -93,7 +136,7 @@ destination="$work/repo/manifests/q/Tilo/Imager/$version"
 mkdir -p "$destination"
 cp "$manifest_source"/*.yaml "$destination/"
 git -C "$work/repo" config user.name "Tilo release automation"
-git -C "$work/repo" config user.email "release-bot@tilo.dev"
+git -C "$work/repo" config user.email "release-bot@tilo.so"
 git -C "$work/repo" add "$destination"
 git -C "$work/repo" commit -m "New version: Tilo.Imager version $version"
 GIT_ASKPASS="$askpass" GIT_TERMINAL_PROMPT=0 git -C "$work/repo" push -f origin "$branch"

@@ -43,7 +43,7 @@ extern crate runtime_dylib;
 
 pub fn main() {
     ui::launch::run_or_exit(
-        &LaunchSpec::new_with_args("dev.tilo.ebook", live_root)
+        &LaunchSpec::new_with_args("so.tilo.ebook", live_root)
             .max_positionals(1)
             .shot_root(shot_root)
             .shot_handler(shot)

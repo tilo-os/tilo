@@ -22,6 +22,7 @@ thin = ["dep:runtime-dylib"]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 # The Tilo action model: every document-mutating operation is a serializable,
 # replayable action dispatched through one executor, so undo, multi-peer replay
@@ -54,9 +55,11 @@ unicode-normalization = "0.1.25"
 
 [target.'cfg(unix)'.dependencies]
 # Launcher-authenticated priority projection to the Tilo shell notification service.
-zbus.workspace = true
+zbus = { workspace = true, features = ["tokio", "blocking-api"] }
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 # Serialises the tests that construct scratch files / drive the portal
 # drain path so parallel runs don't race on the shared temp dir.
 serial_test.workspace = true
@@ -64,7 +67,7 @@ tempfile.workspace = true
 # Schema-validate the app manifest (`tilo-app.toml`) in a test so the vCard
 # file-type association it declares is checked against the packaging schema.
 # Already resolved in the workspace lockfile.
-pkg = { path = "../../crates/packaging/pkg" }
+tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 
 [[test]]
 name = "it"

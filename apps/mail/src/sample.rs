@@ -74,17 +74,17 @@ const HOUR_MIN: i64 = 60;
 /// Build the bundled mailbox. The account is a plausible self-host config so
 /// the account-setup screen has real values to display.
 pub fn sample_mailbox() -> Mailbox {
-    let me = Addr::new("You", "you@tilo.example");
+    let me = Addr::new("You", "you@example.test");
     let account = AccountConfig {
         display_name: "You".into(),
-        email: "you@tilo.example".into(),
-        imap_host: "imap.tilo.example".into(),
+        email: "you@example.test".into(),
+        imap_host: "imap.example.test".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.tilo.example".into(),
+        smtp_host: "smtp.example.test".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@tilo.example".into(),
+        username: "you@example.test".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -95,8 +95,8 @@ pub fn sample_mailbox() -> Mailbox {
     let alan = Addr::new("Alan Turing", "alan@bletchley.example");
     let katherine = Addr::new("Katherine Johnson", "katherine@nasa.example");
     let linus = Addr::new("Linus Torvalds", "linus@kernel.example");
-    let ci = Addr::new("Tilo CI", "ci@tilo.example");
-    let calendar = Addr::new("Calendar", "noreply@cal.tilo.example");
+    let ci = Addr::new("Tilo CI", "ci@example.test");
+    let calendar = Addr::new("Calendar", "noreply@cal.example.test");
 
     insert_launch_plan_thread(&mut mb, &me, &ada, &grace);
     insert_standalone_inbox_items(
@@ -145,7 +145,7 @@ pub fn sample_mailbox() -> Mailbox {
 /// the list's threading and unread-head rendering have something to group.
 fn insert_launch_plan_thread(mb: &mut Mailbox, me: &Addr, ada: &Addr, grace: &Addr) {
     // ---- Thread 1: "Launch plan for the spatial shell" (3 msgs, unread head)
-    let root_id = "sample-launch-plan-root@tilo.example";
+    let root_id = "sample-launch-plan-root@example.test";
     let mut root = SampleMessage {
         from: ada.clone(),
         to: vec![me.clone()],
@@ -176,7 +176,7 @@ the bubblewrap policy is solid.\n\nGrace",
         attachments: vec![],
     }
     .build();
-    reply.rfc_message_id = Some("sample-launch-plan-reply@tilo.example".into());
+    reply.rfc_message_id = Some("sample-launch-plan-reply@example.test".into());
     reply.in_reply_to = Some(root_id.into());
     mb.insert(reply);
     let mut latest = SampleMessage {
@@ -192,7 +192,7 @@ revised gantt. Can you review the collaboration section before Friday?",
         attachments: vec![att("rollout-gantt.pdf", "application/pdf", 184_320)],
     }
     .build();
-    latest.rfc_message_id = Some("sample-launch-plan-latest@tilo.example".into());
+    latest.rfc_message_id = Some("sample-launch-plan-latest@example.test".into());
     latest.in_reply_to = Some(root_id.into());
     mb.insert(latest);
 }
@@ -210,7 +210,7 @@ fn insert_standalone_inbox_items(
             from: correspondents.ci,
             to: vec![me.clone()],
             subject: "Build #4821 failed on shell --lib",
-            body: "Pipeline tilo/tilo run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
+            body: "Pipeline qos/qos run #4821 FAILED.\n\nstage: cargo test -p shell --lib\n\
 error: process didn't exit successfully: SIGSEGV (parallel wgpu instance \
 contention?)\n\nFull log attached. Re-run threshold was 4 OK / 8 SIGSEGV.",
             ago_min: 14,
@@ -260,7 +260,7 @@ I have thoughts on the focus model.",
     mb.insert(
         SampleMessage {
             from: correspondents.linus,
-            to: vec![Addr::bare("tilo-app@lists.tilo.example")],
+            to: vec![Addr::bare("tilo-app@lists.example.test")],
             subject: "Re: [PATCH] fuse: hydrate-on-read for projected blobs",
             body: "On Tue, the patch looks mostly fine, but the readahead window is \
 hard-coded to 1MB. Make it a mount option. Also your error path leaks the \
@@ -375,14 +375,14 @@ is definitely not a scam.",
 pub fn sample_account_store() -> AccountStore {
     let personal = AccountConfig {
         display_name: "You".into(),
-        email: "you@tilo.example".into(),
-        imap_host: "imap.tilo.example".into(),
+        email: "you@example.test".into(),
+        imap_host: "imap.example.test".into(),
         imap_port: 993,
         imap_tls: true,
-        smtp_host: "smtp.tilo.example".into(),
+        smtp_host: "smtp.example.test".into(),
         smtp_port: 465,
         smtp_tls: true,
-        username: "you@tilo.example".into(),
+        username: "you@example.test".into(),
         auth: crate::model::AuthMethod::Password,
         password: "********".into(),
     };
@@ -412,7 +412,7 @@ pub fn sample_account_store() -> AccountStore {
 
 /// A plain text/plain message, parsed live by mail-parser.
 const RAW_PLAIN: &str = "From: Margaret Hamilton <margaret@apollo.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Priority display + error detection\r\n\
 Message-ID: <apollo-2026@apollo.example>\r\n\
 Date: Tue, 30 Jun 2026 08:30:00 +0000\r\n\
@@ -425,7 +425,7 @@ rather than queueing them. Happy to pair on it.\r\n";
 
 /// A multipart/mixed message with a PDF attachment, parsed live.
 const RAW_WITH_PDF: &str = "From: Radia Perlman <radia@spanning.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Spanning-tree notes for the gossip mesh\r\n\
 Message-ID: <stp-2026@spanning.example>\r\n\
 Date: Tue, 30 Jun 2026 07:05:00 +0000\r\n\
@@ -448,10 +448,10 @@ JVBERi0xLjQgZmFrZSBwZGYgYm9keSBmb3IgdGhlIHNhbXBsZSBtYWlsYm94Lg==\r\n\
 
 /// A multipart/alternative message with a plain-text part and a rich HTML part
 /// (including a **remote** image the reader must block by default), parsed live.
-const RAW_HTML: &str = "From: Tilo Weekly <news@weekly.tilo.example>\r\n\
-To: you@tilo.example\r\n\
+const RAW_HTML: &str = "From: Tilo Weekly <news@weekly.example.test>\r\n\
+To: you@example.test\r\n\
 Subject: This week in Tilo — spatial shells & collab buffers\r\n\
-Message-ID: <weekly-2026-27@weekly.tilo.example>\r\n\
+Message-ID: <weekly-2026-27@weekly.example.test>\r\n\
 Date: Tue, 30 Jun 2026 13:13:00 +0000\r\n\
 MIME-Version: 1.0\r\n\
 Content-Type: multipart/alternative; boundary=\"=_tilo_alt_=\"\r\n\
@@ -466,13 +466,13 @@ Content-Type: text/html; charset=utf-8\r\n\
 \r\n\
 <html><body style=\"font-family:sans-serif\">\
 <h1 style=\"color:#4f7cff\">This week in Tilo</h1>\
-<img src=\"https://track.weekly.tilo.example/open.gif?u=you\" width=\"1\" height=\"1\">\
+<img src=\"https://track.example.test/open.gif?u=you\" width=\"1\" height=\"1\">\
 <p>The <strong>scrollable-strip shell</strong> landed, and collaboration \
 buffers now stream over gossip.</p>\
 <ul><li>Spatial window model</li><li>Per-workspace sandboxing</li>\
 <li>Live collab presence</li></ul>\
 <blockquote>\u{201c}It feels like one shared desktop.\u{201d}</blockquote>\
-<p><a href=\"https://tilo.example/weekly/27\">Read the full issue \u{2192}</a></p>\
+<p><a href=\"https://example.test/weekly/27\">Read the full issue \u{2192}</a></p>\
 </body></html>\r\n\
 --=_tilo_alt_=--\r\n";
 

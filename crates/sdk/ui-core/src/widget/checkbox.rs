@@ -13,6 +13,17 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+/// The box itself: 24 px (`spacing.s6` at 1×), centred in the interaction
+/// minimum target so the tap area stays 32/48 px while the mark reads at
+/// label size. Fixed rather than read from the scaled spacing tokens because
+/// the target it sits in does not follow `ui_scale` either.
+const BOX_EDGE: f64 = 24.0;
+/// Space between the target's trailing edge and the label; shared by
+/// `measure` and `draw` so the label lands where it was measured. 10 px is
+/// deliberately between `s2` and `s3`: the 24 px box already leaves 4 px of
+/// its 32 px target empty on that side.
+const LABEL_GAP: f32 = 10.0;
+
 /// Interaction state for an immediate-mode checkbox face. Canvas apps keep
 /// their own hit-testing while sharing the retained checkbox's visual states.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -294,12 +305,15 @@ impl Checkbox {
             );
         }
 
+        // HIG §9.5: unchecked is the raised control surface with an edge
+        // derived from it — `bg_active` was the pressed tier at rest, and a
+        // declared `border_standard` vanished on a raised dark card.
         let box_color = if face.checked {
             theme.accent_primary
         } else if face.interact.hovered {
             theme.bg_hover
         } else {
-            theme.bg_active
+            theme.tokens.colors.surfaces.raised
         };
         if face.checked || face.fill_unchecked || face.interact.hovered {
             scene.fill(
@@ -311,18 +325,25 @@ impl Checkbox {
             );
         }
 
-        let stroke_color = if face.interact.focused {
-            theme.border_focus
+        // Focus ring wins; the accent-filled checked box is self-defining
+        // (like a Primary button) and takes no rest edge.
+        let edge = if face.interact.focused {
+            Some((2.0, theme.border_focus))
+        } else if face.checked {
+            None
         } else {
-            theme.tokens.colors.border_standard
+            Some((1.0, crate::surface::edge_on(box_color)))
         };
-        scene.stroke(
-            &Stroke::new(if face.interact.focused { 2.0 } else { 1.0 }),
-            transform,
-            stroke_color,
-            None,
-            &shape,
-        );
+        if let Some((width, color)) = edge {
+            // Rest edge and focus ring share one half-pixel-inset outline.
+            scene.stroke(
+                &Stroke::new(width),
+                transform,
+                color,
+                None,
+                &crate::surface::edge_outline(face.rect, f64::from(theme.tokens.radii.md)),
+            );
+        }
 
         if face.checked {
             let mut path = BezPath::new();
@@ -434,7 +455,7 @@ impl Widget for Checkbox {
                 height: known_dimensions.height.unwrap_or(target),
             };
         };
-        let gap = 10.0;
+        let gap = LABEL_GAP;
         let available_width = known_dimensions.width.or(match available_space.width {
             taffy::AvailableSpace::Definite(width) => Some(width),
             taffy::AvailableSpace::MinContent => Some(target + gap),
@@ -486,7 +507,7 @@ impl Widget for Checkbox {
         } else {
             self.rect.center()
         };
-        let visual = Rect::from_center_size(visual_center, (24.0, 24.0));
+        let visual = Rect::from_center_size(visual_center, (BOX_EDGE, BOX_EDGE));
         Self::paint(
             scene,
             transform,
@@ -498,7 +519,7 @@ impl Widget for Checkbox {
         );
         if let Some(label) = self.label.as_ref() {
             let label = crate::i18n!(label);
-            let gap = 10.0;
+            let gap = f64::from(LABEL_GAP);
             let x = self.rect.x0 + target + gap;
             let max_width = (self.rect.x1 - x).max(0.0);
             let style = self.renderer_label_style(text_renderer);

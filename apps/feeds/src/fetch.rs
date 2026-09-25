@@ -155,8 +155,8 @@ fn worker_main(req_rx: &Receiver<FetchRequest>, res_tx: &Sender<FetchResult>) {
         }
     };
 
-    let client = reqwest::Client::builder()
-        .user_agent("Tilo-Feeds/0.1 (+https://tilo.local)")
+    let client = tilo_net::http::client()
+        .user_agent("Tilo-Feeds/0.1 (+https://tilo.so)")
         .timeout(Duration::from_secs(20))
         .build()
         .ok();

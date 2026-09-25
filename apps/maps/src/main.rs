@@ -1,3 +1,10 @@
+#![allow(
+    clippy::manual_clamp,
+    clippy::manual_midpoint,
+    clippy::needless_pass_by_value,
+    reason = "migration stack lint debt is scoped to this target"
+)]
+
 //! Maps — thin binary entry point. All logic lives in the library.
 //!
 //! Modes:
@@ -34,19 +41,9 @@
     )
 )]
 
-use std::collections::HashMap;
-
-use taffy::prelude::*;
-use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
+use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
 
 const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 
@@ -54,14 +51,8 @@ const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1280, 800);
 extern crate runtime_dylib;
 
 pub fn main() {
-    // Install the rustls crypto provider before any HTTPS fetch. The tile worker
-    // and the geocoding/routing client also call this, but doing it here at
-    // startup keeps the provider set for the whole process regardless of which
-    // request runs first. See `net::ensure_crypto_provider` for why it's needed.
-    maps::net::ensure_crypto_provider();
-
     ui::launch::run_or_exit(
-        &LaunchSpec::new("dev.tilo.maps", maps::app_root)
+        &LaunchSpec::new("so.tilo.maps", maps::app_root)
             .shot_root(shot_root)
             .shot_handler(shot_handler)
             .allowed_flags(&[
@@ -166,7 +157,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
     render_shot_to_png(
         shot_app(args),
         args.viewport.unwrap_or(DEFAULT_SHOTS_VIEWPORT),
-        args.text_scale.unwrap_or(1.0),
+        ui::launch::shot_theme(args),
         out,
         floating_navigation_stage(args),
     )
@@ -192,87 +183,20 @@ fn apply_panel(s: &str, panel: &mut Option<maps::Panel>, transit_mode: &mut bool
 fn render_shot_to_png(
     mut app: maps::MapsApp,
     viewport: (u32, u32),
-    text_scale: f32,
+    theme: Theme,
     out: &std::path::Path,
     floating_navigation: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let (w, h) = viewport;
-    let theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    }
-    .with_text_scale(text_scale)
-    .with_reduce_motion(matches!(
-        std::env::var("TILO_SHOTS_REDUCE_MOTION").ok().as_deref(),
-        Some("1" | "true" | "yes")
-    ));
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut state = ui::State::new();
-    let widget: &mut dyn Widget = &mut app;
-    widget.set_motion_reduced(theme.reduce_motion);
-    widget.sync(&mut state.doc, &state.root);
-
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy.new_with_children(
-        Style {
-            size: Size {
-                width: Dimension::length(w as f32),
-                height: Dimension::length(h as f32),
-            },
-            ..Default::default()
-        },
-        &[child],
-    )?;
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(w as f32),
-                height: AvailableSpace::Definite(h as f32),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )?;
-    }
-    widget.apply_layout(&taffy, child, Point::ORIGIN);
+    app.set_motion_reduced(theme.reduce_motion);
+    let mut frame = ShotFrame::new(viewport, theme);
+    frame.sync(&mut app);
+    frame.layout(&mut app)?;
     if let Some(stage) = floating_navigation {
         app.debug_stage_navigation_for_shot(stage);
     }
-    let widget: &mut dyn Widget = &mut app;
-    let mut scene = Scene::new();
-    widget.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-        &permission,
-    );
-    widget.draw_floating_surfaces(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
-
-    if let Some(parent) = out.parent() {
-        std::fs::create_dir_all(parent).ok();
-    }
-    let mut renderer = OffscreenRenderer::new(w, h);
-    renderer.render_png(&scene, Color::TRANSPARENT, out);
+    let mut scene = frame.draw(&mut app);
+    frame.draw_floating_surfaces(&mut app, &mut scene);
+    frame.write_png(&scene, out);
     println!("maps: wrote shot to {}", out.display());
     Ok(())
 }

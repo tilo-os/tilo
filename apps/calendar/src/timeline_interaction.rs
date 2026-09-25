@@ -5,19 +5,26 @@
 //! effects; [`CalendarApp`](crate::app::CalendarApp) remains responsible for
 //! applying those effects to the calendar model and CRDT.
 
+use crate::input_context::InputContext;
 use chrono::{Datelike, NaiveDate};
+use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
-use vello::peniko::{Color, Fill};
+use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::date;
-use crate::draw_util::{
-    PaintContext, elide_to_width, fill_rect, fill_round, stroke_line, stroke_round,
-};
-use crate::input_context::InputContext;
-use crate::model::{Id, Palette};
-use crate::timeline_viewport::{TimelineGeom, TimelineViewport};
 use ui::dnd::DRAG_START_THRESHOLD_PX;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+
+use crate::date;
+use crate::draw_util::{fill_rect, fill_round, hairline, stroke_line, stroke_round};
+use crate::model::{Id, Palette};
+use crate::timeline_viewport::{
+    TIMELINE_DAY_TEXT, TIMELINE_HOUR_TEXT, TIMELINE_STRIP_TEXT, TIMELINE_SUBTITLE_TEXT,
+    TIMELINE_TITLE_TEXT, TIMELINE_WEEKDAY_TEXT, TimelineGeom, TimelineViewport,
+};
+use ui::surface::card;
+use ui::tokens::colors::over;
 
 pub(super) const TIMELINE_SNAP_MIN: i64 = 15;
 
@@ -175,7 +182,7 @@ impl TimelineInteraction {
                 button: MouseButton::Left,
                 ..
             } => {
-                let body = Self::geometry(area).body(area.x0, area.x1);
+                let body = self.geometry(area).body(area.x0, area.x1);
                 if !body.contains(self.pointer) {
                     return TimelineOutcome::ignored();
                 }
@@ -236,7 +243,7 @@ impl TimelineInteraction {
         spans: &[TimelineSpan],
         point: Point,
     ) -> bool {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         if let Some(span) = self.event_at(area, days, spans, point) {
             let press_min = self.minute_at(geom, point.y);
             self.drag = Some(TimelineDrag::Move {
@@ -282,7 +289,7 @@ impl TimelineInteraction {
         spans: &[TimelineSpan],
         point: Point,
     ) -> Option<TimelineSpan> {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         if point.x < area.x0 + geom.gutter || point.x > area.x1 {
             return None;
         }
@@ -302,7 +309,7 @@ impl TimelineInteraction {
         days: &[NaiveDate],
         drag: TimelineDrag,
     ) -> Option<TimelineEffect> {
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         match drag {
             TimelineDrag::Create {
                 day,
@@ -353,7 +360,7 @@ impl TimelineInteraction {
         if drag.is_active() {
             return self.effect_for_drag(area, days, drag);
         }
-        let body = Self::geometry(area).body(area.x0, area.x1);
+        let body = self.geometry(area).body(area.x0, area.x1);
         body.contains(self.pointer)
             .then(|| self.event_at(area, days, spans, self.pointer))
             .flatten()
@@ -387,28 +394,29 @@ impl TimelineInteraction {
     /// emitted directly by pointer gestures.
     pub fn draw_timeline(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
     ) -> Vec<(Rect, TimelineEffect)> {
-        let transform = paint.transform;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
-        fill_rect(paint.scene, transform, colors.surfaces.base, area);
+        fill_rect(scene, transform, area, colors.surfaces.base);
 
-        let geom = Self::geometry(area);
+        let geom = self.geometry(area);
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
-        Self::draw_headers(paint, area, model, grid_x0, col_w, &mut hits);
-        let scene = &mut *paint.scene;
-        stroke_line(
+        Self::draw_headers(
+            scene, transform, text, theme, area, model, grid_x0, col_w, geom, &mut hits,
+        );
+        hairline(
             scene,
             transform,
-            colors.border_standard,
+            colors.surfaces.base,
             Point::new(area.x0, geom.body_top),
             Point::new(geom.grid_right, geom.body_top),
-            0.5,
         );
 
         let body = geom.body(area.x0, area.x1);
@@ -419,39 +427,46 @@ impl TimelineInteraction {
             transform,
             &body,
         );
-        self.draw_grid(paint, area, model, geom);
-        self.draw_events(paint, area, model, geom, body, &mut hits);
-        self.draw_drag_ghost(paint, area, model, geom);
-        paint.scene.pop_layer();
-        self.viewport.draw(paint.scene, transform, theme);
+        self.draw_grid(scene, transform, text, theme, area, model, geom);
+        self.draw_events(
+            scene, transform, text, theme, area, model, geom, body, &mut hits,
+        );
+        self.draw_drag_ghost(scene, transform, text, theme, area, model, geom);
+        scene.pop_layer();
+        self.viewport.draw(scene, transform, theme);
         hits
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Header painting combines render context, visible days, column geometry, and the header action hit list."
+    )]
     fn draw_headers(
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         grid_x0: f64,
         col_w: f64,
+        geom: TimelineGeom,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
+        // Weekday label, then the day number directly beneath it: both rows
+        // come from the measured lines the header height was solved from.
+        let weekday_h = f64::from(text.measure("Mon", TIMELINE_WEEKDAY_TEXT, None).1);
+        let weekday_y = area.y0 + f64::from(theme.tokens.spacing.s2);
+        let day_y = weekday_y + weekday_h;
+        let strip_text_h = f64::from(text.measure("Ag", TIMELINE_STRIP_TEXT, None).1);
         for (index, day) in model.days.iter().enumerate() {
             let x0 = grid_x0 + col_w * index as f64;
-            let header = Rect::new(
-                x0,
-                area.y0,
-                x0 + col_w,
-                area.y0 + crate::timeline_viewport::TIMELINE_HEAD_H,
-            );
+            let header = Rect::new(x0, area.y0, x0 + col_w, area.y0 + geom.head_h);
             let is_today = *day == model.today;
             let weekend = day.weekday().num_days_from_monday() >= 5;
             if is_today {
-                fill_rect(scene, transform, colors.accent[5].with_alpha(0.10), header);
+                fill_rect(scene, transform, header, colors.accent[5].with_alpha(0.10));
             }
             text.draw_text(
                 scene,
@@ -459,51 +474,57 @@ impl TimelineInteraction {
                     .get(day.weekday().num_days_from_monday() as usize)
                     .copied()
                     .unwrap_or(""),
-                11.0,
+                TIMELINE_WEEKDAY_TEXT,
                 if weekend {
                     colors.text_dim
                 } else {
                     colors.neutral[7]
                 },
-                transform * Affine::translate((x0 + 10.0, area.y0 + 8.0)),
+                transform * Affine::translate((x0 + 10.0, weekday_y)),
                 None,
             );
             text.draw_text(
                 scene,
                 &format!("{}", day.day()),
-                20.0,
+                TIMELINE_DAY_TEXT,
                 if is_today {
                     colors.accent[5]
                 } else {
                     colors.neutral[9]
                 },
-                transform * Affine::translate((x0 + 10.0, area.y0 + 24.0)),
+                transform * Affine::translate((x0 + 10.0, day_y)),
                 None,
             );
             hits.push((header, TimelineEffect::OpenDay(*day)));
 
             let strip = Rect::new(
                 x0 + 2.0,
-                area.y0 + crate::timeline_viewport::TIMELINE_HEAD_H + 2.0,
+                area.y0 + geom.head_h + 2.0,
                 x0 + col_w - 2.0,
-                area.y0
-                    + crate::timeline_viewport::TIMELINE_HEAD_H
-                    + crate::timeline_viewport::TIMELINE_ALLDAY_H
-                    - 2.0,
+                area.y0 + geom.head_h + geom.allday_h - 2.0,
             );
             if let Some(event) = model
                 .events
                 .iter()
                 .find(|event| event.day == *day && event.all_day)
             {
-                fill_round(scene, transform, event.color.color(theme), strip, 4.0);
-                let line = elide_to_width(text, event.title, 10.0, strip.width() - 12.0);
+                let strip_fill = event.color.color(theme);
+                card(scene, transform, strip, 4.0, strip_fill);
+                let line = text.elide_to_width(
+                    event.title,
+                    TIMELINE_STRIP_TEXT,
+                    ui::num::f32_of_f64(strip.width() - 12.0),
+                );
                 text.draw_text(
                     scene,
                     &line,
-                    10.0,
-                    Color::WHITE,
-                    transform * Affine::translate((strip.x0 + 6.0, strip.y0 + 4.0)),
+                    TIMELINE_STRIP_TEXT,
+                    ui::widget::Avatar::initial_ink(strip_fill),
+                    transform
+                        * Affine::translate((
+                            strip.x0 + 6.0,
+                            strip.y0 + (strip.height() - strip_text_h) / 2.0,
+                        )),
                     None,
                 );
                 hits.push((strip, TimelineEffect::Select(event.id)));
@@ -511,17 +532,20 @@ impl TimelineInteraction {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The time grid needs render context, visible days, viewport bounds, and measured hour/gutter geometry."
+    )]
     fn draw_grid(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let grid_x0 = area.x0 + geom.gutter;
         let col_w = Self::column_width(area, model.days.len(), geom);
@@ -530,19 +554,18 @@ impl TimelineInteraction {
         let body = geom.body(area.x0, area.x1);
         for hour in 0..=24 {
             let y = y_at(f64::from(hour) * 60.0);
-            stroke_line(
+            hairline(
                 scene,
                 transform,
-                colors.border_standard.with_alpha(0.5),
+                colors.surfaces.base,
                 Point::new(grid_x0, y),
                 Point::new(geom.grid_right, y),
-                0.5,
             );
             if hour < 24 {
                 text.draw_text(
                     scene,
                     &format!("{hour:02}:00"),
-                    10.0,
+                    TIMELINE_HOUR_TEXT,
                     colors.text_dim,
                     transform * Affine::translate((area.x0 + 12.0, y + 2.0)),
                     None,
@@ -551,13 +574,12 @@ impl TimelineInteraction {
         }
         for index in 0..=model.days.len() {
             let x = grid_x0 + col_w * index as f64;
-            stroke_line(
+            hairline(
                 scene,
                 transform,
-                colors.border_standard.with_alpha(0.5),
+                colors.surfaces.base,
                 Point::new(x, body.y0),
                 Point::new(x, body.y1),
-                0.5,
             );
         }
         if let Some((now_day, now_min)) = model.now
@@ -583,19 +605,22 @@ impl TimelineInteraction {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Event painting combines render context, day/event data, timeline and clipping geometry, and action hit regions."
+    )]
     fn draw_events(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
         body: Rect,
         hits: &mut Vec<(Rect, TimelineEffect)>,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let moving_id = self.moving_id();
         for (index, day) in model.days.iter().enumerate() {
@@ -613,13 +638,21 @@ impl TimelineInteraction {
                     event.end_min,
                 );
                 let color = event.color.color(theme);
-                fill_round(scene, transform, color.with_alpha(0.22), block, 6.0);
+                // The block is a wash of the calendar colour resolved onto the
+                // grid, so its own edge can be derived from it (HIG §9.5).
+                card(
+                    scene,
+                    transform,
+                    block,
+                    6.0,
+                    over(colors.surfaces.base, color, 0.22),
+                );
                 fill_round(
                     scene,
                     transform,
-                    color,
                     Rect::new(block.x0, block.y0, block.x0 + 3.0, block.y1),
                     2.0,
+                    color,
                 );
                 scene.push_layer(
                     Fill::NonZero,
@@ -629,29 +662,43 @@ impl TimelineInteraction {
                     &block,
                 );
                 let text_width = block.width() - 20.0;
-                let title = elide_to_width(text, event.title, 11.0, text_width);
+                let title = text.elide_to_width(
+                    event.title,
+                    TIMELINE_TITLE_TEXT,
+                    ui::num::f32_of_f64(text_width),
+                );
+                // The subtitle starts where the measured title line ends, and
+                // only appears when both lines fit inside the block's padding.
+                let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
+                let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
+                let block_pad = f64::from(theme.tokens.spacing.s1);
                 text.draw_text(
                     scene,
                     &title,
-                    11.0,
+                    TIMELINE_TITLE_TEXT,
                     colors.neutral[9],
-                    transform * Affine::translate((block.x0 + 10.0, block.y0 + 4.0)),
+                    transform * Affine::translate((block.x0 + 10.0, block.y0 + block_pad)),
                     None,
                 );
-                if block.height() > 34.0 {
+                if block.height() > 2.0 * block_pad + title_h + subtitle_h {
                     let subtitle = format!(
                         "{}–{} {}",
                         fmt_event_min(event.start_min),
                         fmt_event_min(event.end_min),
                         event.location
                     );
-                    let subtitle = elide_to_width(text, &subtitle, 10.0, text_width);
+                    let subtitle = text.elide_to_width(
+                        &subtitle,
+                        TIMELINE_SUBTITLE_TEXT,
+                        ui::num::f32_of_f64(text_width),
+                    );
                     text.draw_text(
                         scene,
                         &subtitle,
-                        10.0,
+                        TIMELINE_SUBTITLE_TEXT,
                         colors.text_dim,
-                        transform * Affine::translate((block.x0 + 10.0, block.y0 + 18.0)),
+                        transform
+                            * Affine::translate((block.x0 + 10.0, block.y0 + block_pad + title_h)),
                         None,
                     );
                 }
@@ -664,17 +711,20 @@ impl TimelineInteraction {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The drag preview uses render context, visible days and events, viewport bounds, and measured timeline geometry."
+    )]
     fn draw_drag_ghost(
         &self,
-        paint: &mut PaintContext<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
         area: Rect,
         model: &TimelineRenderModel<'_, '_>,
         geom: TimelineGeom,
     ) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
         let colors = &theme.tokens.colors;
         let Some(preview) = self.preview(area, model.days) else {
             return;
@@ -722,8 +772,8 @@ impl TimelineInteraction {
             TimelineEffect::Select(_) | TimelineEffect::OpenDay(_) => return,
         };
         let block = self.block_rect(area, model.days.len(), geom, column, start_min, end_min);
-        fill_round(scene, transform, fill, block, 6.0);
-        stroke_round(scene, transform, stroke, block, 6.0, 1.5);
+        fill_round(scene, transform, block, 6.0, fill);
+        stroke_round(scene, transform, block, 6.0, stroke, 1.5);
         scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
@@ -731,30 +781,45 @@ impl TimelineInteraction {
             transform,
             &block,
         );
-        let title = elide_to_width(text, title, 11.0, block.width() - 16.0);
+        let title = text.elide_to_width(
+            title,
+            TIMELINE_TITLE_TEXT,
+            ui::num::f32_of_f64(block.width() - 16.0),
+        );
+        let title_h = f64::from(text.measure(&title, TIMELINE_TITLE_TEXT, None).1);
+        let subtitle_h = f64::from(text.measure("Ag", TIMELINE_SUBTITLE_TEXT, None).1);
+        let block_pad = f64::from(theme.tokens.spacing.s1);
         text.draw_text(
             scene,
             &title,
-            11.0,
+            TIMELINE_TITLE_TEXT,
             colors.neutral[9],
-            transform * Affine::translate((block.x0 + 8.0, block.y0 + 4.0)),
+            transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad)),
             None,
         );
-        if block.height() > 30.0 {
+        if block.height() > block_pad + title_h + subtitle_h {
             text.draw_text(
                 scene,
                 &format!("{} – {}", fmt_min(start_min), fmt_min(end_min)),
-                10.0,
+                TIMELINE_SUBTITLE_TEXT,
                 colors.text_dim,
-                transform * Affine::translate((block.x0 + 8.0, block.y0 + 18.0)),
+                transform * Affine::translate((block.x0 + 8.0, block.y0 + block_pad + title_h)),
                 None,
             );
         }
         scene.pop_layer();
     }
 
-    fn geometry(area: Rect) -> TimelineGeom {
-        TimelineViewport::geometry(area)
+    /// Geometry at the viewport's text scale, so paint, hit-testing and drag
+    /// mapping all read one description of the header / strip / body bands.
+    fn geometry(&self, area: Rect) -> TimelineGeom {
+        TimelineViewport::geometry_for(area, self.viewport.text_scale(), self.viewport.spacing())
+    }
+
+    /// Forward the theme's text scale so header, strip and block heights grow
+    /// with the type they carry. Called from the app's layout pass.
+    pub fn set_layout_tokens(&mut self, text_scale: f32, spacing: &ui::tokens::spacing::Spacing) {
+        self.viewport.set_layout_tokens(text_scale, spacing);
     }
 
     fn column_width(area: Rect, days_len: usize, geom: TimelineGeom) -> f64 {
@@ -801,7 +866,7 @@ impl TimelineInteraction {
 
     #[cfg(test)]
     pub(super) fn test_geometry(area: Rect) -> TimelineGeom {
-        Self::geometry(area)
+        TimelineViewport::geometry(area)
     }
 
     #[cfg(test)]
@@ -882,7 +947,7 @@ mod tests {
 
     fn point_at(day_col: usize, minute: i64) -> Point {
         let area = area();
-        let geom = TimelineInteraction::geometry(area);
+        let geom = TimelineInteraction::test_geometry(area);
         let col_w = TimelineInteraction::column_width(area, 7, geom);
         Point::new(
             area.x0 + geom.gutter + col_w * (day_col as f64 + 0.5),

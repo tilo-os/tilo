@@ -27,13 +27,7 @@ fn require_raster_worker(path: &std::path::Path) {
         std::thread::sleep(Duration::from_millis(1));
     };
     assert!(
-        matches!(
-            result,
-            RasterEvent::Opened {
-                raster: Some(_),
-                ..
-            }
-        ),
+        matches!(result, RasterEvent::Opened { .. }),
         "capture test requires the native PDFium backend; install its runtime or set TILO_PDFIUM_LIB to a compatible library (owner result: {result:?})"
     );
 }

@@ -18,7 +18,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
+use getrandom::{SysRng, rand_core::UnwrapErr};
 use registry_server::{
     AppState, ModerationService, PublisherAllowlist, PublisherRow, ServerIdentity, Storage,
     bind_and_run,
@@ -51,7 +51,7 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     let tmp = tempfile::tempdir().expect("tempdir");
     let storage = Storage::open(tmp.path()).expect("open storage");
 
-    let owner_key = SigningKey::generate(&mut OsRng);
+    let owner_key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let identity = ServerIdentity {
         owner_pubkey_hex: hex::encode(owner_key.verifying_key().to_bytes()),
         name: "test registry".into(),
@@ -60,8 +60,8 @@ async fn spawn_server(publisher_can_add_new: bool) -> Harness {
     };
     storage.save_identity(&identity).expect("save identity");
 
-    let publisher = SigningKey::generate(&mut OsRng);
-    let outsider = SigningKey::generate(&mut OsRng);
+    let publisher = SigningKey::generate(&mut UnwrapErr(SysRng));
+    let outsider = SigningKey::generate(&mut UnwrapErr(SysRng));
     let mut allow = PublisherAllowlist::empty();
     allow.upsert(PublisherRow {
         pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
@@ -99,7 +99,7 @@ fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerati
         now.saturating_add(300),
         ModerationActorRole::Reporter,
         ModerationMutation::FileReport {
-            package_id: "dev.tilo.editor".into(),
+            package_id: "so.tilo.editor".into(),
             category: "security".into(),
             summary: "Unexpected outbound connection during offline editing".into(),
             evidence_digest_hex: "ab".repeat(32),
@@ -113,14 +113,14 @@ fn signed_report(key: &SigningKey, request_id: &str, now: u64) -> SignedModerati
 async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
     let h = spawn_server(true).await;
     let entry = sample_entry(&h.publisher, 100);
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     client
         .post(url(h.addr, "/entries"))
         .json(&sign_change_request(EntryAction::Add, entry, &h.publisher))
         .send()
         .await
         .unwrap();
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -218,7 +218,9 @@ async fn moderation_http_is_signed_idempotent_authorized_and_verifiable() {
 #[tokio::test]
 async fn oversized_moderation_body_is_rejected_before_parse_or_disk_write() {
     let h = spawn_server(true).await;
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .post(url(h.addr, "/moderation/mutations"))
         .header(reqwest::header::CONTENT_TYPE, "application/json")
         .body("x".repeat(70 * 1024))
@@ -226,7 +228,9 @@ async fn oversized_moderation_body_is_rejected_before_parse_or_disk_write() {
         .await
         .unwrap();
     assert_eq!(response.status(), reqwest::StatusCode::PAYLOAD_TOO_LARGE);
-    let page: TransparencyPage = reqwest::Client::new()
+    let page: TransparencyPage = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .get(url(h.addr, "/moderation/transparency?from=1&limit=10"))
         .send()
         .await
@@ -284,26 +288,32 @@ fn publish_snapshot(storage: &Storage, allowlist: &PublisherAllowlist, owner: &S
 
 fn sample_entry(publisher: &SigningKey, updated_at: u64) -> RegistryEntry {
     RegistryEntry {
-        package_id: "dev.tilo.editor".into(),
+        package_id: "so.tilo.editor".into(),
         name: "Editor".into(),
         description: "CRDT-native text editor".into(),
+        tagline: "Edit together".into(),
+        images: registry_types::LocalizedImages::english_icon(
+            "https://apps.tilo.so/images/test-icon.svg",
+            "Test icon",
+        ),
+        supported_languages: vec!["en".into()],
         categories: vec!["Productivity".into()],
-        icon_url: None,
         source_url: None,
         homepage: None,
         publisher_pubkey_hex: hex::encode(publisher.verifying_key().to_bytes()),
         versions: vec![RegistryVersion {
             version: "2026.06".into(),
-            qpkg_url: "https://apps.tilo.dev/editor/2026.06.qpkg".into(),
-            qpkg_root_hash_hex: "cd".repeat(32),
-            qpkg_size_bytes: 1024,
+            tapp_url: "https://apps.tilo.so/artifacts/editor/2026.06.tapp".into(),
+            tapp_root_hash_hex: "cd".repeat(32),
+            tapp_size_bytes: 1024,
             released_at_unix: 1_800_000_000,
-            qpkg_blake3_hex: Some("ef".repeat(32)),
-            target: Some(registry_types::RegistryTarget {
+            tapp_blake3_hex: "ef".repeat(32),
+            target: registry_types::RegistryTarget {
+                platform: registry_types::TILO_OS_PLATFORM.into(),
                 architecture: "x86_64".into(),
                 isa: "x86_64-v3".into(),
                 runtime: None,
-            }),
+            },
         }],
         updated_at_unix: updated_at,
         signature_hex: String::new(),
@@ -317,7 +327,7 @@ fn url(addr: SocketAddr, path: &str) -> String {
 #[tokio::test]
 async fn health_endpoint_returns_ok() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let body: serde_json::Value = client
         .get(url(h.addr, "/health"))
         .send()
@@ -339,7 +349,9 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
         serde_json::to_vec_pretty(&snapshot).unwrap(),
     )
     .unwrap();
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .get(url(h.addr, "/entries"))
         .send()
         .await
@@ -350,7 +362,7 @@ async fn server_refuses_a_tampered_or_expired_published_snapshot() {
 #[tokio::test]
 async fn registry_handshake_uses_stored_identity() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let body: RegistryHandshake = client
         .get(url(h.addr, "/registry"))
         .send()
@@ -370,7 +382,7 @@ async fn signed_post_stays_private_until_approval() {
     let entry = sample_entry(&h.publisher, 100);
     let req = sign_change_request(EntryAction::Add, entry.clone(), &h.publisher);
 
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let resp = client
         .post(url(h.addr, "/entries"))
         .json(&req)
@@ -430,7 +442,7 @@ async fn signed_post_stays_private_until_approval() {
 
     // GET /entries/<id> returns the same row.
     let single: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get single")
@@ -446,7 +458,7 @@ async fn add_then_update_bumps_stored_entry() {
 
     let entry_v1 = sample_entry(&h.publisher, 100);
     let req_v1 = sign_change_request(EntryAction::Add, entry_v1, &h.publisher);
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     client
         .post(url(h.addr, "/entries"))
         .json(&req_v1)
@@ -455,7 +467,7 @@ async fn add_then_update_bumps_stored_entry() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     // updated_at bumped, description changed.
     let mut entry_v2 = sample_entry(&h.publisher, 200);
@@ -470,7 +482,7 @@ async fn add_then_update_bumps_stored_entry() {
     assert_eq!(resp.status(), reqwest::StatusCode::ACCEPTED);
 
     let still_v1: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get still-public v1")
@@ -478,26 +490,32 @@ async fn add_then_update_bumps_stored_entry() {
         .await
         .expect("decode still-public v1");
     assert_eq!(still_v1.entries[0].updated_at_unix, 100);
-    assert_ne!(still_v1.entries[0].description, "improved editor");
+    assert_ne!(
+        still_v1.entries[0].description.resolve("en"),
+        Some("improved editor")
+    );
 
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let stored: SignedRegistrySnapshot = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get")
         .json()
         .await
         .expect("decode");
-    assert_eq!(stored.entries[0].description, "improved editor");
+    assert_eq!(
+        stored.entries[0].description.resolve("en"),
+        Some("improved editor")
+    );
     assert_eq!(stored.entries[0].updated_at_unix, 200);
 }
 
 #[tokio::test]
 async fn update_rejects_when_updated_at_not_strictly_greater() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let v1 = sample_entry(&h.publisher, 100);
     client
@@ -508,7 +526,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
         .expect("v1")
         .error_for_status()
         .expect("v1 accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     // Same timestamp — server must reject with 409.
     let v_same = sample_entry(&h.publisher, 100);
@@ -528,7 +546,7 @@ async fn update_rejects_when_updated_at_not_strictly_greater() {
 #[tokio::test]
 async fn delete_keeps_entry_public_until_approval() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     client
@@ -543,7 +561,7 @@ async fn delete_keeps_entry_public_until_approval() {
         .expect("add")
         .error_for_status()
         .expect("add accepted");
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let delete = client
         .post(url(h.addr, "/entries"))
@@ -558,16 +576,16 @@ async fn delete_keeps_entry_public_until_approval() {
     assert_eq!(delete.status(), reqwest::StatusCode::ACCEPTED);
 
     let before = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get before approval");
     assert_eq!(before.status(), reqwest::StatusCode::OK);
 
-    approve(&h, "dev.tilo.editor");
+    approve(&h, "so.tilo.editor");
 
     let resp = client
-        .get(url(h.addr, "/entries/dev.tilo.editor"))
+        .get(url(h.addr, "/entries/so.tilo.editor"))
         .send()
         .await
         .expect("get");
@@ -577,7 +595,7 @@ async fn delete_keeps_entry_public_until_approval() {
 #[tokio::test]
 async fn unauthorised_publisher_gets_403() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     // Build a request signed by the outsider — a valid Ed25519
     // signature, but the pubkey is not in the allowlist.
@@ -597,7 +615,7 @@ async fn unauthorised_publisher_gets_403() {
 #[tokio::test]
 async fn tampered_signature_gets_403() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     let mut req = sign_change_request(EntryAction::Add, entry, &h.publisher);
@@ -621,7 +639,7 @@ async fn add_denied_when_publisher_cannot_add_new() {
     // Same publisher as normal, but the allowlist says
     // can_add_new = false — they may only edit their own rows.
     let h = spawn_server(false).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     let entry = sample_entry(&h.publisher, 100);
     let req = sign_change_request(EntryAction::Add, entry, &h.publisher);
@@ -637,7 +655,7 @@ async fn add_denied_when_publisher_cannot_add_new() {
 #[tokio::test]
 async fn publisher_cannot_hijack_another_publishers_entry() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
 
     // The allowlisted publisher creates an entry.
     let entry_v1 = sample_entry(&h.publisher, 100);
@@ -657,7 +675,7 @@ async fn publisher_cannot_hijack_another_publishers_entry() {
     // A different allowlisted publisher (we'll add one on the fly)
     // tries to update the same package_id. Simulate by asking the
     // storage layer to add the outsider as a full member.
-    let second = SigningKey::generate(&mut OsRng);
+    let second = SigningKey::generate(&mut UnwrapErr(SysRng));
     // Use the CLI-equivalent path: modify allowlist via server
     // restart is heavy; instead sign a change with a mismatched
     // publisher pubkey — the entry-level sig now doesn't verify
@@ -680,7 +698,7 @@ async fn publisher_cannot_hijack_another_publishers_entry() {
 #[tokio::test]
 async fn bad_json_returns_400() {
     let h = spawn_server(true).await;
-    let client = reqwest::Client::new();
+    let client = tilo_net::http::client().build().expect("http client");
     let resp = client
         .post(url(h.addr, "/entries"))
         .header("content-type", "application/json")
@@ -694,7 +712,9 @@ async fn bad_json_returns_400() {
 #[tokio::test]
 async fn oversized_change_request_returns_413_without_touching_disk() {
     let h = spawn_server(true).await;
-    let response = reqwest::Client::new()
+    let response = tilo_net::http::client()
+        .build()
+        .expect("http client")
         .post(url(h.addr, "/entries"))
         .body(vec![b'x'; 1024 * 1024 + 1])
         .send()

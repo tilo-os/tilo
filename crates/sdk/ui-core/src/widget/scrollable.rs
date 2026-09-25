@@ -1,6 +1,6 @@
+use crate::time::{Duration, Instant};
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
@@ -92,6 +92,8 @@ struct TrackHold {
 )]
 pub struct Scrollable {
     axis: ScrollAxis,
+    reveal_focus: bool,
+    last_focus_path: Option<Vec<usize>>,
     offset_x: f32,
     offset_y: f32,
     content_w: f32,
@@ -116,6 +118,8 @@ pub struct Scrollable {
     /// Absorbs the parent's remaining flex height instead of claiming
     /// `percent(1.0)`. `fixed_height` wins if both are set.
     fill_parent_height: bool,
+    /// Opt-in inherited decision, consumed by the retained content wrapper.
+    content_min_viewport_height: Option<Rc<Cell<f32>>>,
     child: Option<Element>,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
@@ -186,6 +190,8 @@ impl Scrollable {
     pub fn new(axis: ScrollAxis) -> Self {
         Self {
             axis,
+            reveal_focus: false,
+            last_focus_path: None,
             offset_x: 0.0,
             offset_y: 0.0,
             content_w: 0.0,
@@ -199,6 +205,7 @@ impl Scrollable {
             fixed_height: None,
             max_height: None,
             fill_parent_height: false,
+            content_min_viewport_height: None,
             child: None,
             child_node: None,
             rect: Rect::ZERO,
@@ -233,9 +240,32 @@ impl Scrollable {
     }
     #[must_use]
     pub fn with_child(mut self, c: Element) -> Self {
-        self.child = Some(c);
+        self.child = Some(match &self.content_min_viewport_height {
+            Some(minimum) => Box::new(ViewportContent::new(c, Rc::clone(minimum))),
+            None => c,
+        });
         self
     }
+    /// Let auto-height content fill at least the measured viewport height,
+    /// retaining its intrinsic height when it overflows. This does not change
+    /// an explicitly sized child's authored height. Ordinary form fields stay
+    /// content-sized unless their Scrollable opts in.
+    ///
+    /// Adds a presentational single-child wrapper to normal widget traversal;
+    /// the content keeps its identity, focus and action bindings. Hosts must
+    /// use the shared measured layout solver to resolve the viewport minimum.
+    #[must_use]
+    pub fn with_content_min_viewport_height(mut self) -> Self {
+        if self.content_min_viewport_height.is_none() {
+            let minimum = Rc::new(Cell::new(0.0));
+            if let Some(child) = self.child.take() {
+                self.child = Some(Box::new(ViewportContent::new(child, Rc::clone(&minimum))));
+            }
+            self.content_min_viewport_height = Some(minimum);
+        }
+        self
+    }
+
     #[must_use]
     pub fn with_sticky_header(mut self, h: f32) -> Self {
         self.sticky_header_height = h;
@@ -447,7 +477,7 @@ impl Scrollable {
     }
 
     fn wake(&mut self) {
-        self.last_activity = Some(Instant::now());
+        self.last_activity = Some(crate::time::now());
         self.bar_dirty = true;
     }
     pub fn fling(&mut self, vx: f32, vy: f32) {
@@ -472,6 +502,14 @@ impl Scrollable {
             self.cursor_initialized = false;
         }
     }
+    /// Reveal newly focused controls while allowing manual scroll away from
+    /// unchanged focus. Opt-in for form panels; ordinary scrolling is unchanged.
+    #[must_use]
+    pub fn with_focus_reveal(mut self) -> Self {
+        self.reveal_focus = true;
+        self
+    }
+
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
         let (ox, oy) = (self.offset_x, self.offset_y);
         if y < self.offset_y {
@@ -638,29 +676,50 @@ impl Scrollable {
     }
 
     fn bar_opacity(&self, theme: &Theme) -> f32 {
-        self.bar_opacity_at(Instant::now(), theme.reduce_motion)
+        self.bar_opacity_at(crate::time::now(), theme.reduce_motion)
     }
 
-    fn fade_in_progress(&self) -> bool {
+    fn fade_in_progress_at(&self, now: Instant) -> bool {
         if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
             return false;
         }
-        match self.last_activity {
-            None => false,
-            Some(t) => t.elapsed() < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS),
+        self.last_activity.is_some_and(|activity| {
+            let elapsed = now.saturating_duration_since(activity);
+            elapsed >= Duration::from_millis(VISIBLE_HOLD_MS)
+                && elapsed < Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
+        })
+    }
+
+    fn fade_in_progress(&self) -> bool {
+        self.fade_in_progress_at(crate::time::now())
+    }
+
+    fn fade_start_deadline_at(&self, now: Instant) -> Option<Instant> {
+        if !self.overlay || self.reduce_motion_active || self.bar_pinned() {
+            return None;
         }
+        self.last_activity?
+            .checked_add(Duration::from_millis(VISIBLE_HOLD_MS))
+            .filter(|deadline| *deadline > now)
     }
 
     /// Once the fade deadline passes, the compositor still needs one frame to
-    /// replace the last visible thumb with the transparent scene.
-    fn needs_terminal_fade_frame(&self) -> bool {
+    /// replace the last visible thumb with the transparent scene. The opaque
+    /// hold is neither an animation nor an expired fade.
+    fn needs_terminal_fade_frame_at(&self, now: Instant) -> bool {
         self.terminal_fade_damage.get()
             || (self.bar_visible_last_draw.get()
                 && self.overlay
                 && !self.reduce_motion_active
                 && !self.bar_pinned()
-                && self.last_activity.is_some()
-                && !self.fade_in_progress())
+                && self.last_activity.is_some_and(|activity| {
+                    now.saturating_duration_since(activity)
+                        >= Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS)
+                }))
+    }
+
+    fn needs_terminal_fade_frame(&self) -> bool {
+        self.needs_terminal_fade_frame_at(crate::time::now())
     }
 
     fn advance_hold(&mut self, now: Instant) {
@@ -719,11 +778,7 @@ impl Scrollable {
         let radius = BAR_THICKNESS / 2.0;
         // An idle overlay bar is just the thumb, like macOS/GNOME.
         let expanded = !self.overlay || self.bar_pinned();
-        let track_color = theme
-            .tokens
-            .colors
-            .surface_white_5
-            .with_alpha_factor(opacity);
+        let track_color = crate::widget::scrollbar::track_color(theme).with_alpha_factor(opacity);
         for (track, thumb, active) in [
             (
                 self.vertical_track(),
@@ -746,13 +801,9 @@ impl Scrollable {
                 );
             }
             if let Some(thumb) = thumb {
-                // Hover/drag/focus brightens the idle border-token thumb.
-                let base = if active || self.focused {
-                    theme.text_dim
-                } else {
-                    theme.border_standard
-                };
-                let color = base.with_alpha_factor(opacity);
+                // Hover/drag/focus brightens the derived idle thumb.
+                let color = crate::widget::scrollbar::thumb_color(theme, active || self.focused)
+                    .with_alpha_factor(opacity);
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
@@ -847,7 +898,7 @@ impl Scrollable {
                             vertical: true,
                             dir,
                             anchor: cur,
-                            next_at: deadline_after(Instant::now(), HOLD_INITIAL_MS),
+                            next_at: deadline_after(crate::time::now(), HOLD_INITIAL_MS),
                         });
                     }
                     return true;
@@ -870,7 +921,7 @@ impl Scrollable {
                             vertical: false,
                             dir,
                             anchor: cur,
-                            next_at: deadline_after(Instant::now(), HOLD_INITIAL_MS),
+                            next_at: deadline_after(crate::time::now(), HOLD_INITIAL_MS),
                         });
                     }
                     return true;
@@ -935,6 +986,164 @@ impl Scrollable {
     }
 }
 
+/// A presentational Grid surface. Container supplies the ordinary single-child
+/// lifecycle; we register its layout node as this wrapper's own node so only
+/// this hook adjusts its minimum. The child style is never rewritten.
+struct ViewportContent {
+    inner: crate::widget::Container,
+    minimum: Rc<Cell<f32>>,
+}
+
+impl ViewportContent {
+    fn new(child: Element, minimum: Rc<Cell<f32>>) -> Self {
+        Self {
+            inner: crate::widget::Container::new()
+                .with_no_padding()
+                .with_child(child),
+            minimum,
+        }
+    }
+}
+
+impl Widget for ViewportContent {
+    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+        self.inner.sync(state, path);
+    }
+
+    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+        self.inner.update(state, path)
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        nodes: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use taffy::style_helpers::{fr, length, min_content, minmax};
+        let node = self.inner.build_layout(taffy, theme, nodes);
+        let _ = taffy.set_style(
+            node,
+            Style {
+                display: taffy::Display::Grid,
+                // The flexible track fills short content; its intrinsic minimum
+                // keeps a long measured editor taller than the viewport.
+                grid_template_rows: vec![minmax(min_content(), fr(1.0_f32))],
+                grid_template_columns: vec![minmax(length(0.0_f32), fr(1.0_f32))],
+                size: Size {
+                    width: Dimension::percent(1.0),
+                    height: Dimension::auto(),
+                },
+                min_size: Size {
+                    width: Dimension::length(0.0),
+                    height: Dimension::length(self.minimum.get()),
+                },
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        );
+        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+        node
+    }
+
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Ok(style) = taffy.style(node) else {
+            return false;
+        };
+        let height = Dimension::length(self.minimum.get());
+        if style.min_size.height == height {
+            return false;
+        }
+        let mut style = style.clone();
+        style.min_size.height = height;
+        taffy.set_style(node, style).is_ok()
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.inner.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.inner.draw(scene, transform, text, theme, presence);
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.inner
+            .draw_with_presence(scene, transform, text, theme, presence, permissions);
+    }
+
+    fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        mods: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) {
+        self.inner
+            .handle_event(event, scale, mods, state, path, handled, focus, node, taffy);
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+    fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
+        self.inner.for_each_child(visitor);
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        self.inner.take_structure_dirty()
+    }
+    fn wants_pointer_capture(&self) -> bool {
+        self.inner.wants_pointer_capture()
+    }
+    fn get_rect(&self) -> Rect {
+        self.inner.get_rect()
+    }
+    fn name(&self) -> &'static str {
+        "ScrollableContent"
+    }
+
+    fn start_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        self.inner
+            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
+    }
+
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.inner
+            .for_each_child(&mut |child| child.collect_damage(regions));
+    }
+}
+
 /// Maximum `rect.y1` across a widget subtree, for finding the true bottom
 /// edge when taffy's `content_size` under-reports.
 fn max_bottom_edge(w: &dyn Widget) -> f64 {
@@ -949,13 +1158,23 @@ fn max_bottom_edge(w: &dyn Widget) -> f64 {
 }
 
 impl Widget for Scrollable {
+    fn has_action_control_bindings(&self) -> bool {
+        let mut found = false;
+        self.for_each_child(&mut |child| {
+            if !found {
+                found = child.has_action_control_bindings();
+            }
+        });
+        found
+    }
+
     fn child_clip_rect(&self) -> Option<Rect> {
         Some(self.content_viewport_rect())
     }
     fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
         // Drives click-and-hold auto-repeat while the host pumps frames.
         if self.hold.is_some() {
-            self.advance_hold(Instant::now());
+            self.advance_hold(crate::time::now());
         }
         if let Some(c) = &mut self.child {
             c.sync(s, p);
@@ -1027,6 +1246,23 @@ impl Widget for Scrollable {
         node
     }
 
+    fn adjust_layout_style(&mut self, taffy: &mut TaffyTree<()>, node: NodeId) -> bool {
+        let Some(minimum) = &self.content_min_viewport_height else {
+            return false;
+        };
+        let Ok(layout) = taffy.layout(node) else {
+            return false;
+        };
+        let height = layout.size.height.max(0.0);
+        if (minimum.get() - height).abs() < f32::EPSILON {
+            return false;
+        }
+        // Inherited decision only. The wrapper's hook changes its OWN style,
+        // regardless of the host's node visitation order.
+        minimum.set(height);
+        true
+    }
+
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         // Geometry may have moved beneath a stationary pointer. The next
         // same-position event must therefore be routed once again.
@@ -1073,6 +1309,47 @@ impl Widget for Scrollable {
             self.clamp();
         }
         // Flash the overlay bar the first frame content overflows.
+        if self.reveal_focus {
+            fn focused(widget: &dyn Widget, path: &mut Vec<usize>) -> Option<(Vec<usize>, Rect)> {
+                if widget.is_focusable() && widget.is_focused() {
+                    return Some((path.clone(), widget.get_rect()));
+                }
+                for (index, child) in widget.children().into_iter().enumerate() {
+                    path.push(index);
+                    if let Some(found) = focused(child, path) {
+                        return Some(found);
+                    }
+                    path.pop();
+                }
+                None
+            }
+            let focus = self
+                .child
+                .as_ref()
+                .and_then(|child| focused(child.as_ref(), &mut Vec::new()));
+            let path = focus.as_ref().map(|(path, _)| path.clone());
+            if path != self.last_focus_path {
+                self.last_focus_path = path;
+                if let Some((_, rect)) = focus {
+                    self.scroll_into_view(
+                        px(rect.x0 - self.rect.x0) + self.offset_x,
+                        px(rect.y0 - self.rect.y0) + self.offset_y,
+                        px(rect.width()),
+                        px(rect.height()),
+                    );
+                    if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
+                        child.apply_layout(
+                            taffy,
+                            node,
+                            Point::new(
+                                self.rect.x0 - f64::from(self.offset_x),
+                                self.rect.y0 - f64::from(self.offset_y),
+                            ),
+                        );
+                    }
+                }
+            }
+        }
         let scrollable_now = self.vbar_active() || self.hbar_active();
         if scrollable_now && !self.was_overflowing && self.last_activity.is_none() {
             self.wake();
@@ -1170,13 +1447,9 @@ impl Widget for Scrollable {
                 ..
             } => {
                 let cur = self.last_cursor;
-                // A child that consumes the press overwrites `focus_target`
-                // afterward, so focus still lands on the deepest target.
-                if self.content_viewport_rect().contains(cur) {
-                    *focus_target = Some(node_id);
-                }
                 // Thumb press → drag; track press → page + hold.
                 if self.on_track_or_thumb_press(cur) {
+                    *focus_target = Some(node_id);
                     *handled = true;
                     return;
                 }
@@ -1282,6 +1555,23 @@ impl Widget for Scrollable {
                 taffy,
             );
         }
+        // An already-focused editor can consume a press without requesting
+        // focus again. Only use the pane as a fallback for an unhandled
+        // background press; never displace the child's existing focus.
+        if !*handled
+            && focus_target.is_none()
+            && pointer_in_content
+            && matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            )
+        {
+            *focus_target = Some(node_id);
+        }
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1335,7 +1625,8 @@ impl Widget for Scrollable {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.hold.is_some()
+        self.momentum_speed() > 0.0
+            || self.hold.is_some()
             || self.fade_in_progress()
             || self.needs_terminal_fade_frame()
             || self
@@ -1344,9 +1635,19 @@ impl Widget for Scrollable {
                 .is_some_and(|c| c.needs_animation_frame())
     }
 
-    /// A wheel-only event mutates no child and a fade tick mutates nothing
-    /// at all, so without the fade/hold clauses the next frame would
-    /// silently not get scheduled.
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.fade_start_deadline_at(crate::time::now())
+            .into_iter()
+            .chain(
+                self.child
+                    .as_ref()
+                    .and_then(|child| child.next_wake_deadline()),
+            )
+            .min()
+    }
+
+    /// Wheel activity damages the viewport immediately. During the opaque
+    /// hold the thumb stays unchanged; only the fade itself needs new damage.
     fn needs_redraw(&self) -> bool {
         self.scroll_dirty
             || self.bar_dirty
@@ -1922,6 +2223,65 @@ mod tests {
     use crate::widget::{Column, Text};
     use std::collections::HashMap;
 
+    #[test]
+    fn focus_reveal_scrolls_new_focus_but_preserves_manual_scroll() {
+        use crate::{LocalState, widget::TextInput};
+        let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
+        input.set_focus(true);
+        let mut column = Column::new().with_intrinsic_height();
+        for _ in 0..15 {
+            column = column.push(Box::new(Text::new("Spacer row")));
+        }
+        column = column.push(Box::new(input));
+        let mut scroll = Scrollable::new_vertical()
+            .with_height(150.0)
+            .with_focus_reveal()
+            .with_child(Box::new(column));
+        let theme = Theme::dark();
+        let mut tree = TaffyTree::<()>::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut tree, &theme, &mut nodes);
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(150.0),
+            },
+            |known, available, node, _, _| {
+                nodes
+                    .get(&node)
+                    .map(|p| unsafe { (**p).measure(known, available, &mut text) })
+                    .unwrap_or(Size::ZERO)
+            },
+        )
+        .unwrap();
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        assert!(
+            scroll.offset_y() > 0.0,
+            "keyboard focus below viewport must be revealed"
+        );
+        let rect = scroll
+            .child
+            .as_ref()
+            .unwrap()
+            .children()
+            .last()
+            .unwrap()
+            .get_rect();
+        assert!(
+            rect.y0 >= scroll.rect.y0 && rect.y1 <= scroll.rect.y1 + 0.5,
+            "focused input must be visible: {rect:?}"
+        );
+        scroll.set_offset_y(0.0);
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        assert_eq!(
+            scroll.offset_y(),
+            0.0,
+            "manual scrolling must not snap back to unchanged focus"
+        );
+    }
+
     fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         let theme = Theme::dark();
         let mut taffy = TaffyTree::<()>::new();
@@ -2433,6 +2793,8 @@ mod tests {
             s.hold.is_some(),
             "a track press below the thumb arms a hold"
         );
+        assert!(s.needs_animation_frame(), "track repeat must still pump");
+        assert_eq!(s.next_wake_deadline(), None, "a held track pins the bar");
         let after_first = s.offset_y();
         assert!(after_first > 0.0, "first page moved down: {after_first}");
         assert!(
@@ -2480,7 +2842,7 @@ mod tests {
         s.last_activity = None; // as freshly constructed
         s.pointer_near_bar = false;
         assert_eq!(
-            s.bar_opacity_at(Instant::now(), false),
+            s.bar_opacity_at(crate::time::now(), false),
             0.0,
             "idle overlay is hidden"
         );
@@ -2516,7 +2878,7 @@ mod tests {
     fn terminal_fade_frame_damages_the_track_after_draw_omits_the_thumb() {
         let mut s = vertical(1200.0);
         s.last_activity = Some(
-            Instant::now()
+            crate::time::now()
                 .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
                 .expect("the test duration is far shorter than the monotonic clock"),
         );
@@ -2564,14 +2926,110 @@ mod tests {
         let mut persistent = vertical(1200.0).always_visible();
         persistent.last_activity = None;
         assert_eq!(
-            persistent.bar_opacity_at(Instant::now(), false),
+            persistent.bar_opacity_at(crate::time::now(), false),
             1.0,
             "persistent bar always visible"
         );
     }
 
     #[test]
-    fn needs_animation_frame_only_while_fading_or_holding() {
+    fn opaque_hold_sleeps_until_fade_start_without_losing_initial_damage() {
+        let mut s = vertical(1200.0);
+        s.wake();
+        let activity = s.last_activity.unwrap();
+        assert!(s.needs_redraw(), "activity must still paint the thumb");
+        s.bar_visible_last_draw.set(true);
+        s.mark_drawn();
+        assert!(
+            !s.needs_animation_frame(),
+            "opaque hold must not pump frames"
+        );
+        assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
+        assert!(
+            !s.needs_terminal_fade_frame(),
+            "hold is not an expired fade"
+        );
+        assert_eq!(
+            s.next_wake_deadline(),
+            Some(activity + Duration::from_millis(900))
+        );
+    }
+
+    #[test]
+    fn opaque_hold_boundaries_preserve_fade_and_terminal_clear() {
+        let mut s = vertical(1200.0);
+        let start = crate::time::now();
+        s.last_activity = Some(start);
+        s.bar_visible_last_draw.set(true);
+        let fade_start = start + Duration::from_millis(900);
+        let fade_end = start + Duration::from_millis(1220);
+        assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
+        assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
+        assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
+        assert!(s.fade_in_progress_at(fade_start));
+        assert_eq!(s.fade_start_deadline_at(fade_start), None);
+        assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
+        assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
+        assert!(!s.fade_in_progress_at(fade_end));
+        assert!(s.needs_terminal_fade_frame_at(fade_end));
+        s.last_activity = Some(start + Duration::from_millis(50));
+        assert_eq!(
+            s.fade_start_deadline_at(start + Duration::from_millis(50)),
+            Some(fade_start + Duration::from_millis(50))
+        );
+        s.focused = true;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+        s.focused = false;
+        s.reduce_motion_active = true;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+        s.reduce_motion_active = false;
+        s.overlay = false;
+        assert_eq!(s.fade_start_deadline_at(start), None);
+    }
+
+    #[test]
+    fn opaque_hold_preserves_earlier_child_deadline() {
+        let now = crate::time::now();
+        let mut child = vertical(1200.0);
+        child.last_activity = Some(now - Duration::from_millis(100));
+        let mut outer = vertical(1200.0);
+        outer.last_activity = Some(now);
+        outer.child = Some(Box::new(child));
+        assert_eq!(
+            outer.next_wake_deadline(),
+            Some(now + Duration::from_millis(800))
+        );
+    }
+
+    #[test]
+    fn opaque_hold_removal_preserves_independent_momentum_demand() {
+        let mut s = vertical(1200.0);
+        s.fling(0.0, 120.0);
+        assert!(
+            s.needs_animation_frame(),
+            "momentum must not depend on scrollbar opacity"
+        );
+        let mut doc = AutoCommit::new();
+        // Match the admitted primary-frame lifecycle: update runs even when
+        // the prior frame consumed all ordinary dirty flags.
+        for _ in 0..240 {
+            if !s.needs_animation_frame() {
+                break;
+            }
+            s.update(&mut doc, &automerge::ROOT);
+            s.sync(&mut doc, &automerge::ROOT);
+            s.mark_drawn();
+        }
+        assert!(s.offset_y() > 0.0, "the demanded frames advance content");
+        assert_eq!(s.momentum_speed(), 0.0);
+        assert!(
+            !s.needs_animation_frame(),
+            "settled momentum must stop the pump"
+        );
+    }
+
+    #[test]
+    fn needs_animation_frame_only_while_fading_or_repeating() {
         let s = vertical(1200.0);
         assert!(
             !Widget::needs_animation_frame(&s),
@@ -2583,7 +3041,8 @@ mod tests {
             "persistent bar is static"
         );
         let mut fading = vertical(1200.0);
-        fading.wake();
+        fading.last_activity =
+            Some(crate::time::now() - Duration::from_millis(VISIBLE_HOLD_MS + 1));
         assert!(
             Widget::needs_animation_frame(&fading),
             "a fading bar pumps frames"

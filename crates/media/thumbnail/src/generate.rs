@@ -4,7 +4,7 @@
 //! this module owns the always-on, pure-Rust paths (raster images and EPUB
 //! covers) plus shared encode/decode helpers.
 
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::path::Path;
 
 use crate::category::FileCategory;
@@ -150,7 +150,10 @@ fn downscale_to_rgba(img: image::DynamicImage, max_edge: u32) -> Option<RgbaThum
 /// Wrap raw RGBA (e.g. a decoded PDF page or video frame) into an [`RgbaThumb`],
 /// downscaling if it exceeds `max_edge`. Used by the rich-decoder modules (so it
 /// is dead code when neither `pdf` nor `video` is enabled).
-#[cfg_attr(not(any(feature = "pdf", feature = "video")), allow(dead_code))]
+#[cfg_attr(
+    not(any(feature = "pdf", feature = "video")),
+    allow(dead_code, reason = "only the pdf and video decoders wrap raw RGBA")
+)]
 pub(crate) fn rgba_to_thumb(rgba: Vec<u8>, w: u32, h: u32, max_edge: u32) -> Option<RgbaThumb> {
     if w == 0 || h == 0 || rgba.len() != (w as usize).saturating_mul(h as usize).saturating_mul(4) {
         return None;
@@ -184,17 +187,6 @@ pub fn decode_png(bytes: &[u8]) -> Option<RgbaThumb> {
         height,
     };
     out.is_valid().then_some(out)
-}
-
-/// Read all bytes from a reader with a hard cap, so a hostile or corrupt input
-/// can never make a worker allocate without bound. Returns `None` past `cap`.
-pub(crate) fn read_capped<R: Read>(mut r: R, cap: usize) -> Option<Vec<u8>> {
-    let mut buf = Vec::new();
-    let taken = (&mut r)
-        .take((cap as u64).saturating_add(1))
-        .read_to_end(&mut buf)
-        .ok()?;
-    if taken > cap { None } else { Some(buf) }
 }
 
 #[cfg(test)]

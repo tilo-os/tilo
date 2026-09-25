@@ -13,16 +13,15 @@
 //! Ed25519 secret) can be passed in without threading it through the widget
 //! event surface.
 
+use crate::time::SystemTime;
 use std::collections::HashMap;
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
-use collab_types::{ChannelId, Ed25519PublicKey, Role};
+use collab_types::{ChannelId, Ed25519PublicKey, Role as ChannelRole};
 use ed25519_dalek::SigningKey as DalekSigningKey;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Color, Fill};
+use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::presence::PresenceCtx;
@@ -31,8 +30,52 @@ use crate::text_selection::clipboard_copy;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::identity_flow::sheet::{
+    Align, BodyScroll, FORM_SHEET_WIDTH, Resolved, Role, Rows, SheetSpec, line_height, paint_qr,
+    paint_segments, paint_text, paragraph_height, resolve, segment_rects, with_layout_renderer,
+    wrap_chars,
+};
 use crate::widget::identity_flow::{InviteEnvelope, InviteExpiry, ScreenOutcome, mint_invite};
+use crate::widget::modal_frame::ModalAction;
 use crate::widget::qr::QrWidget;
+
+const EXPIRY_LABEL: &str = "Expires after";
+const LINK_LABEL: &str = "Invite link";
+const EMPTY_HINT: &str = "Generate an invite to get a link and a QR code to share.";
+const GENERATE_LABEL: &str = "Generate invite";
+const COPY_LABEL: &str = "Copy URL";
+const REVOKE_LABEL: &str = "Revoke";
+
+/// The four expiry presets in segment order.
+const EXPIRIES: [InviteExpiry; 4] = [
+    InviteExpiry::OneHour,
+    InviteExpiry::OneDay,
+    InviteExpiry::OneWeek,
+    InviteExpiry::Never,
+];
+
+/// Action-row indices, in authoring order.
+const ACTION_COPY: usize = 0;
+const ACTION_REVOKE: usize = 1;
+const ACTION_GENERATE: usize = 2;
+
+/// Every rect the screen paints and hit-tests, from one pass over the rows.
+#[derive(Clone, Debug, Default)]
+struct Plan {
+    expiry_label: Rect,
+    segments: Vec<Rect>,
+    /// The QR and the link under it, once an invite exists. The link is
+    /// one unbreakable token, so it is wrapped by character into as many
+    /// rows as it needs — never elided, so it can be read back.
+    qr: Option<Rect>,
+    link_label: Option<Rect>,
+    link_lines: Vec<(String, Rect)>,
+    /// The empty-state hint while nothing has been minted.
+    hint: Option<Rect>,
+    clipboard: Option<Rect>,
+    error: Option<Rect>,
+    bottom: f64,
+}
 
 /// Screen 5: invite-mint form.
 pub struct InviteMintScreen {
@@ -53,6 +96,11 @@ pub struct InviteMintScreen {
     pub qr: Option<QrWidget>,
     clipboard_msg: Option<String>,
     error: Option<String>,
+    /// The theme `build_layout` saw, so `apply_layout` can resolve the rows
+    /// without waiting for a paint.
+    layout_theme: Option<Theme>,
+    scroll: BodyScroll,
+    body_height: f64,
 }
 
 impl Default for InviteMintScreen {
@@ -78,6 +126,9 @@ impl InviteMintScreen {
             qr: None,
             clipboard_msg: None,
             error: None,
+            layout_theme: None,
+            scroll: BodyScroll::default(),
+            body_height: 0.0,
         }
     }
 
@@ -130,7 +181,7 @@ impl InviteMintScreen {
         owner_pubkey: Ed25519PublicKey,
         owner_signing_key: &DalekSigningKey,
         inviter_label: impl Into<String>,
-        role: Role,
+        role: ChannelRole,
         now: SystemTime,
     ) -> Result<&InviteEnvelope, crate::widget::identity_flow::IdentityFlowError> {
         let channel = self.channel.ok_or_else(|| {
@@ -179,7 +230,10 @@ impl InviteMintScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Invite-screen routing mirrors the host Widget event contract, including CRDT, focus/handled, and layout parameters."
+    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
@@ -204,22 +258,17 @@ impl InviteMintScreen {
             } => {
                 for (i, r) in self.expiry_rects.iter().enumerate() {
                     if r.contains(self.last_cursor) {
-                        self.expiry = match i {
-                            0 => InviteExpiry::OneHour,
-                            1 => InviteExpiry::OneDay,
-                            2 => InviteExpiry::OneWeek,
-                            _ => InviteExpiry::Never,
-                        };
+                        self.expiry = EXPIRIES.get(i).copied().unwrap_or(InviteExpiry::Never);
                         *handled = true;
                         return ScreenOutcome::Stay;
                     }
                 }
-                if self.revoke_rect.contains(self.last_cursor) {
+                if self.last_url.is_some() && self.revoke_rect.contains(self.last_cursor) {
                     self.revoke();
                     *handled = true;
                     return ScreenOutcome::Stay;
                 }
-                if self.copy_rect.contains(self.last_cursor) {
+                if self.last_url.is_some() && self.copy_rect.contains(self.last_cursor) {
                     self.copy_url_to_clipboard();
                     *handled = true;
                     return ScreenOutcome::Stay;
@@ -233,296 +282,206 @@ impl InviteMintScreen {
                 }
                 ScreenOutcome::Stay
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.scroll.wheel(delta) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
+            WindowEvent::KeyboardInput {
+                event:
+                    winit::event::KeyEvent {
+                        logical_key,
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                ..
+            } => {
+                if self.scroll.key(logical_key, self.body_height) {
+                    *handled = true;
+                }
+                ScreenOutcome::Stay
+            }
             _ => ScreenOutcome::Stay,
         }
     }
 
-    /// The centered dialog card rect, derived from `self.rect`. Recomputed
-    /// rather than cached so `draw`'s split-out helpers below don't need
-    /// it threaded through as a parameter.
-    fn card_rect(&self) -> Rect {
-        let card_w = 600.0;
-        let card_h = 480.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        Rect::new(card_x, card_y, card_x + card_w, card_y + card_h)
+    /// One geometry pass for both `apply_layout` and `draw`; hit rects are
+    /// clipped to the visible body.
+    fn resolve(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) -> Resolved<Plan> {
+        let title = self.title();
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: &title,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let mut scroll = self.scroll;
+        let resolved = resolve(
+            self.rect,
+            &spec,
+            &mut scroll,
+            text_renderer,
+            theme,
+            |rows, control_h, tr, theme| {
+                let plan = self.plan(rows, control_h, tr, theme);
+                let bottom = plan.bottom;
+                (plan, bottom)
+            },
+        );
+        self.scroll = scroll;
+        let body = resolved.sheet.body();
+        self.body_height = body.height();
+        self.expiry_rects = resolved
+            .plan
+            .segments
+            .iter()
+            .map(|r| BodyScroll::visible(body, *r))
+            .collect();
+        self.copy_rect = resolved.sheet.action(ACTION_COPY);
+        self.revoke_rect = resolved.sheet.action(ACTION_REVOKE);
+        self.generate_rect = resolved.sheet.action(ACTION_GENERATE);
+        resolved
     }
 
-    /// Backdrop, card background/border, and the title + "Expires after"
-    /// labels.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_frame(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let card = self.card_rect();
-        let backdrop = Color::from_rgba8(0, 0, 0, 180);
-        scene.fill(Fill::NonZero, transform, backdrop, None, &self.rect);
-        let pad = 24.0;
-        let radius = 12.0;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(card, radius),
-        );
-        let title = if self.channel_name.is_empty() {
-            "Generate invite".to_string()
+    fn title(&self) -> String {
+        if self.channel_name.is_empty() {
+            GENERATE_LABEL.to_string()
         } else {
             format!("Invite to #{}", self.channel_name)
-        };
-        text_renderer.draw_text(
-            scene,
-            &title,
-            22.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, card.y0 + pad)),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            "Expires after",
-            13.0,
-            theme.tokens.colors.text_dim,
-            transform * Affine::translate((card.x0 + pad, card.y0 + 100.0)),
-            None,
-        );
-    }
-
-    /// The four expiry-preset segments (`self.expiry_rects`), highlighting
-    /// whichever matches `self.expiry`.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_expiry_options(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        for (i, r) in self.expiry_rects.iter().enumerate() {
-            let label = match i {
-                0 => InviteExpiry::OneHour.label(),
-                1 => InviteExpiry::OneDay.label(),
-                2 => InviteExpiry::OneWeek.label(),
-                _ => InviteExpiry::Never.label(),
-            };
-            let selected = matches!(
-                (self.expiry, i),
-                (InviteExpiry::OneHour, 0)
-                    | (InviteExpiry::OneDay, 1)
-                    | (InviteExpiry::OneWeek, 2)
-                    | (InviteExpiry::Never, 3)
-            );
-            let bg = if selected {
-                theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX]
-            } else {
-                theme.tokens.colors.surfaces.base
-            };
-            let text_color = if selected {
-                Color::from_rgb8(255, 255, 255)
-            } else {
-                theme.tokens.colors.text_primary
-            };
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                bg,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &RoundedRect::from_rect(*r, 6.0),
-            );
-            let (lw, _) = text_renderer.measure(label, 13.0, None);
-            text_renderer.draw_text(
-                scene,
-                label,
-                13.0,
-                text_color,
-                transform
-                    * Affine::translate((
-                        r.x0 + (r.width() - f64::from(lw)) / 2.0,
-                        r.y0 + (r.height() - 13.0) / 2.0,
-                    )),
-                None,
-            );
         }
     }
 
-    /// The "Generate invite" call-to-action button.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_generate_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            None,
-            &RoundedRect::from_rect(self.generate_rect, 8.0),
-        );
-        let (gw, _) = text_renderer.measure("Generate invite", 13.0, None);
-        text_renderer.draw_text(
-            scene,
-            "Generate invite",
-            13.0,
-            Color::from_rgb8(255, 255, 255),
-            transform
-                * Affine::translate((
-                    self.generate_rect.x0 + (self.generate_rect.width() - f64::from(gw)) / 2.0,
-                    self.generate_rect.y0 + (self.generate_rect.height() - 13.0) / 2.0,
-                )),
-            None,
-        );
+    fn selected_index(&self) -> usize {
+        EXPIRIES.iter().position(|e| *e == self.expiry).unwrap_or(1)
     }
 
-    /// The minted invite URL, shown once `self.last_url` is populated.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_url_line(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let Some(url) = &self.last_url else {
-            return;
-        };
-        let card = self.card_rect();
-        let pad = 24.0;
-        let text_y = card.y0 + 240.0;
-        text_renderer.draw_text(
-            scene,
-            url,
-            12.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + pad, text_y)),
-            None,
-        );
+    fn actions(&self) -> [ModalAction<'static>; 3] {
+        let minted = self.last_url.is_some();
+        [
+            ModalAction::secondary(COPY_LABEL)
+                .enabled(minted)
+                .hovered(self.copy_rect.contains(self.last_cursor)),
+            ModalAction::danger(REVOKE_LABEL)
+                .enabled(minted)
+                .hovered(self.revoke_rect.contains(self.last_cursor)),
+            ModalAction::primary(GENERATE_LABEL)
+                .hovered(self.generate_rect.contains(self.last_cursor)),
+        ]
     }
 
-    /// The "Copy URL" and "Revoke" footer buttons.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_copy_and_revoke_buttons(
+    /// Walk the body rows once: the expiry control, then either the minted
+    /// QR + link or the empty-state hint, then any status lines.
+    fn plan(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
+        mut rows: Rows,
+        control_h: f64,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-    ) {
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &RoundedRect::from_rect(self.copy_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Copy URL",
-            13.0,
-            theme.tokens.colors.text_primary,
-            transform * Affine::translate((self.copy_rect.x0 + 16.0, self.copy_rect.y0 + 12.0)),
-            None,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &RoundedRect::from_rect(self.revoke_rect, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            Color::from_rgb8(220, 80, 80),
-            None,
-            &RoundedRect::from_rect(self.revoke_rect, 8.0),
-        );
-        text_renderer.draw_text(
-            scene,
-            "Revoke",
-            13.0,
-            Color::from_rgb8(220, 80, 80),
-            transform * Affine::translate((self.revoke_rect.x0 + 16.0, self.revoke_rect.y0 + 12.0)),
-            None,
-        );
-    }
-
-    /// The clipboard-copy confirmation and mint-error messages, stacked
-    /// above the "Copy URL" button.
-    #[allow(
-        clippy::arithmetic_side_effects,
-        reason = "the `transform * Affine::translate(..)` calls below compose 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
-    )]
-    fn draw_status_messages(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-    ) {
-        let card = self.card_rect();
-        let pad = 24.0;
-        if let Some(msg) = &self.clipboard_msg {
-            text_renderer.draw_text(
-                scene,
+    ) -> Plan {
+        let sp = &theme.tokens.spacing;
+        let width = rows.width();
+        let expiry_label = rows.row(line_height(text_renderer, theme, Role::Label));
+        rows.gap(sp.s1);
+        let segments = segment_rects(rows.row(control_h), EXPIRIES.len());
+        rows.gap(sp.s6);
+        let (mut qr, mut link_label, mut link_lines, mut hint) = (None, None, Vec::new(), None);
+        if let Some(url) = self.last_url.as_deref() {
+            // A QR wants to be as large as the body allows, up to four
+            // `s16` — big enough to scan from a phone across a desk.
+            let side = width.min(f64::from(sp.s16) * 4.0);
+            let qr_row = rows.row(side);
+            let x0 = qr_row.x0 + (qr_row.width() - side) / 2.0;
+            qr = Some(Rect::new(x0, qr_row.y0, x0 + side, qr_row.y1));
+            rows.gap(sp.s3);
+            link_label = Some(rows.row(line_height(text_renderer, theme, Role::Label)));
+            rows.gap(sp.s1);
+            let line_h = line_height(text_renderer, theme, Role::Value);
+            link_lines = wrap_chars(text_renderer, theme, Role::Value, url, width)
+                .into_iter()
+                .map(|line| (line, rows.row(line_h)))
+                .collect();
+        } else {
+            hint = Some(rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Caption,
+                EMPTY_HINT,
+                width,
+            )));
+        }
+        let clipboard = self.clipboard_msg.as_deref().map(|msg| {
+            rows.gap(sp.s3);
+            rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Caption,
                 msg,
-                12.0,
-                theme.tokens.colors.text_dim,
-                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 20.0)),
-                None,
+                width,
+            ))
+        });
+        let error = self.error.as_deref().map(|err| {
+            rows.gap(sp.s3);
+            rows.row(paragraph_height(
+                text_renderer,
+                theme,
+                Role::Error,
+                err,
+                width,
+            ))
+        });
+        Plan {
+            expiry_label,
+            segments,
+            qr,
+            link_label,
+            link_lines,
+            hint,
+            clipboard,
+            error,
+            bottom: rows.bottom(),
+        }
+    }
+
+    /// The minted state: QR, its label, and the whole link wrapped under it.
+    fn draw_minted(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        plan: &Plan,
+    ) {
+        if self.last_url.is_none() {
+            return;
+        }
+        if let (Some(qr), Some(rect)) = (&self.qr, plan.qr) {
+            paint_qr(scene, transform, text_renderer, theme, qr, rect);
+        }
+        if let Some(rect) = plan.link_label {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                LINK_LABEL,
+                Role::Label,
+                Align::Center,
+                false,
             );
         }
-        if let Some(err) = &self.error {
-            text_renderer.draw_text(
+        for (line, rect) in &plan.link_lines {
+            paint_text(
                 scene,
-                err,
-                12.0,
-                Color::from_rgb8(220, 80, 80),
-                transform * Affine::translate((card.x0 + pad, self.copy_rect.y0 - 36.0)),
-                None,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                line,
+                Role::Value,
+                Align::Center,
+                false,
             );
         }
     }
@@ -534,13 +493,16 @@ impl Widget for InviteMintScreen {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
+        theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.layout_theme = Some(theme.clone());
+        // The screen owns the viewport, so the sheet centres on the window
+        // rather than inside a fixed box at the origin.
         let node = taffy.leaf_node(Style {
             size: Size {
-                width: Dimension::length(720.0),
-                height: Dimension::length(580.0),
+                width: Dimension::percent(1.0),
+                height: Dimension::percent(1.0),
             },
             ..Default::default()
         });
@@ -556,38 +518,11 @@ impl Widget for InviteMintScreen {
             origin.x + f64::from(layout.location.x) + f64::from(layout.size.width),
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
-        let card_w = 600.0;
-        let card_h = 480.0;
-        let card_x = self.rect.x0 + (self.rect.width() - card_w) / 2.0;
-        let card_y = self.rect.y0 + (self.rect.height() - card_h) / 2.0;
-        let pad = 24.0;
-        let seg_w = (card_w - 2.0 * pad) / 4.0;
-        let seg_h = 36.0;
-        let seg_y = card_y + 130.0;
-        self.expiry_rects.clear();
-        for i in 0..4 {
-            let x = card_x + pad + f64::from(i) * seg_w;
-            self.expiry_rects
-                .push(Rect::new(x, seg_y, x + seg_w, seg_y + seg_h));
+        if let Some(theme) = self.layout_theme.clone() {
+            with_layout_renderer(&theme, |tr| {
+                self.resolve(&theme, tr);
+            });
         }
-        self.generate_rect = Rect::new(
-            card_x + card_w - pad - 160.0,
-            card_y + 180.0,
-            card_x + card_w - pad,
-            card_y + 180.0 + 40.0,
-        );
-        self.copy_rect = Rect::new(
-            card_x + pad,
-            card_y + card_h - pad - 44.0,
-            card_x + pad + 140.0,
-            card_y + card_h - pad,
-        );
-        self.revoke_rect = Rect::new(
-            card_x + card_w - pad - 140.0,
-            card_y + card_h - pad - 44.0,
-            card_x + card_w - pad,
-            card_y + card_h - pad,
-        );
     }
 
     fn draw(
@@ -598,12 +533,87 @@ impl Widget for InviteMintScreen {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
-        self.draw_frame(scene, transform, text_renderer, theme);
-        self.draw_expiry_options(scene, transform, text_renderer, theme);
-        self.draw_generate_button(scene, transform, text_renderer, theme);
-        self.draw_url_line(scene, transform, text_renderer, theme);
-        self.draw_copy_and_revoke_buttons(scene, transform, text_renderer, theme);
-        self.draw_status_messages(scene, transform, text_renderer, theme);
+        let resolved = self.resolve(theme, text_renderer);
+        let title = self.title();
+        let actions = self.actions();
+        let spec = SheetSpec {
+            title: &title,
+            max_width: FORM_SHEET_WIDTH,
+            actions: &actions,
+        };
+        let sheet = &resolved.sheet;
+        let plan = &resolved.plan;
+
+        sheet.paint_frame(scene, transform, text_renderer, theme, &spec);
+        sheet.clip_body(scene, transform);
+        paint_text(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            plan.expiry_label,
+            EXPIRY_LABEL,
+            Role::Label,
+            Align::Start,
+            false,
+        );
+        let labels: Vec<&str> = EXPIRIES.iter().map(super::InviteExpiry::label).collect();
+        let hovered = plan
+            .segments
+            .iter()
+            .position(|r| r.contains(self.last_cursor));
+        paint_segments(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &plan.segments,
+            &labels,
+            self.selected_index(),
+            hovered,
+        );
+        self.draw_minted(scene, transform, text_renderer, theme, plan);
+        if let Some(rect) = plan.hint {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                EMPTY_HINT,
+                Role::Caption,
+                Align::Start,
+                true,
+            );
+        }
+        if let (Some(rect), Some(msg)) = (plan.clipboard, self.clipboard_msg.as_deref()) {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                msg,
+                Role::Caption,
+                Align::Start,
+                true,
+            );
+        }
+        if let (Some(rect), Some(err)) = (plan.error, self.error.as_deref()) {
+            paint_text(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                err,
+                Role::Error,
+                Align::Start,
+                true,
+            );
+        }
+        scene.pop_layer();
+        sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
     }
 
     fn handle_event(
@@ -644,8 +654,8 @@ impl Widget for InviteMintScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use collab_types::generate_keypair;
-    use std::time::Duration;
 
     #[test]
     fn mint_now_produces_url_and_envelope() {
@@ -654,11 +664,11 @@ mod tests {
         s.set_expiry(InviteExpiry::OneHour);
         let (sk, pk) = generate_keypair();
         let env = s
-            .mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap()
             .clone();
         assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
-        assert_eq!(env.role, Role::Editor);
+        assert_eq!(env.role, ChannelRole::Editor);
     }
 
     #[test]
@@ -666,7 +676,7 @@ mod tests {
         let mut s = InviteMintScreen::new();
         let (sk, pk) = generate_keypair();
         let err = s
-            .mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap_err();
         assert!(matches!(
             err,
@@ -679,7 +689,7 @@ mod tests {
         let mut s = InviteMintScreen::new();
         s.set_channel(ChannelId::new(), "engineering");
         let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", Role::Editor, SystemTime::now())
+        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
             .unwrap();
         assert!(s.last_envelope().is_some());
         s.revoke();
@@ -696,5 +706,46 @@ mod tests {
             expires.duration_since(now).unwrap(),
             Duration::from_secs(3600)
         );
+    }
+
+    /// Before an invite exists the body is the control plus a hint; after
+    /// one exists the QR is square, centred, and the link sits under it —
+    /// nothing at an absolute offset, nothing running off the card.
+    #[test]
+    fn plan_shows_a_centred_qr_and_link_only_once_minted() {
+        let theme = Theme::dark();
+        let mut tr = TextRenderer::new();
+        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+        let mut s = InviteMintScreen::new();
+        let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        assert_eq!(empty.segments.len(), 4);
+        assert_eq!(empty.segments[0].height(), 34.0);
+        assert!(empty.qr.is_none() && empty.link_lines.is_empty());
+        assert!(
+            empty.hint.is_some(),
+            "an empty state is designed, not blank"
+        );
+
+        s.set_channel(ChannelId::new(), "engineering");
+        let (sk, pk) = generate_keypair();
+        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+            .unwrap();
+        let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+        let qr = minted.qr.expect("a minted invite shows its QR");
+        assert!((qr.width() - qr.height()).abs() < 1e-9, "the QR is square");
+        assert!((qr.center().x - body.center().x).abs() < 1e-9, "centred");
+        assert!(qr.width() <= body.width());
+        assert!(
+            minted.link_lines.len() > 1,
+            "a 200-character link needs more than one row at this width"
+        );
+        let whole: String = minted.link_lines.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(whole, s.last_url().unwrap(), "the link is readable in full");
+        let (_, first) = &minted.link_lines[0];
+        let (_, last) = minted.link_lines.last().unwrap();
+        assert!(first.y0 > qr.y1);
+        assert!(first.x1 <= body.x1, "the link rows stay inside the body");
+        assert!(minted.hint.is_none());
+        assert!((minted.bottom - last.y1).abs() < 1e-9);
     }
 }

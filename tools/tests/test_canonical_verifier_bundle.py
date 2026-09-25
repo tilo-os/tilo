@@ -42,7 +42,7 @@ class BundleTests(unittest.TestCase):
             (root / 'pkg').write_bytes(b'new application-build compiler output')
             (root / 'runtime').unlink()
             materialized = bundle.materialize(archive, descriptor, root / 'installed', BUILDER, 'x86_64')
-            self.assertEqual(bundle.channel.sha(materialized / 'tilo-pkg'), descriptor['canonical_binaries']['tilo_pkg_sha256'])
+            self.assertEqual(bundle.channel.sha(materialized / 'tilo-app-package'), descriptor['canonical_binaries']['tilo_pkg_sha256'])
 
     def test_tampered_archive_binary_policy_and_incompatible_builder_rejected(self):
         with tempfile.TemporaryDirectory() as d:
@@ -71,12 +71,12 @@ class BundleTests(unittest.TestCase):
                 with tarfile.open(altered, 'w:gz') as output:
                     for name, data in contents.items():
                         info = tarfile.TarInfo(name)
-                        if name == 'tilo-pkg' and kind == 'link':
+                        if name == 'tilo-app-package' and kind == 'link':
                             info.type = tarfile.SYMTYPE
                             info.linkname = '/outside'
                             output.addfile(info)
                         else:
-                            if name == 'tilo-pkg':
+                            if name == 'tilo-app-package':
                                 data += b'tamper'
                             info.size = len(data)
                             output.addfile(info, io.BytesIO(data))
@@ -130,7 +130,7 @@ class BundleTests(unittest.TestCase):
             policy_path = root / 'policy.json'
             policy_path.write_text(json.dumps(policy))
             with patch.object(bundle, 'native_arch', return_value='x86_64'), patch.object(final, '__file__', str(candidate / 'final_app_receipt.py')):
-                _, adapter = final.preflight(installed / 'tilo-pkg', installed / 'tilo-runtime-bundle',
+                _, adapter = final.preflight(installed / 'tilo-app-package', installed / 'tilo-runtime-bundle',
                                              policy_path, bundle.channel.sha(policy_path))
             self.assertEqual(adapter, installed / 'canonical_app_verifier.py')
 
@@ -151,7 +151,7 @@ class BundleTests(unittest.TestCase):
     def test_workflow_consumes_platform_bundle_without_shipping_per_build_tools(self):
         text = (Path(__file__).parents[2] / '.forgejo/workflows/release-apps.yml').read_text()
         self.assertNotIn('name: canonical-verifiers-', text)
-        self.assertNotIn('cp target/release/tilo-pkg target/release/tilo-runtime-bundle', text)
+        self.assertNotIn('cp target/release/tilo-app-package target/release/tilo-runtime-bundle', text)
         self.assertEqual(text.count('python3 -I tools/ci/python.py tools/canonical_verifier_bundle.py fetch'), 2)
         self.assertIn('    branches: [main]', text)
 

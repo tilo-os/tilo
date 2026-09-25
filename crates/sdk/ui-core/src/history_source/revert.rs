@@ -22,7 +22,7 @@ use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, Patch, PatchAction, Prop
 
 use crate::history_source::authors::AuthorDirectory;
 use crate::history_source::entry_id_from_hash;
-use crate::state::write_patches;
+use crate::state::write_selected_patches;
 use crate::widget::history::{HistoryAuthor, HistoryEntryId};
 
 /// A contiguous run of changes, addressed by its first and last change.
@@ -178,7 +178,9 @@ pub fn run_bounds(
 fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
     let is_text = matches!(doc.object_type(&p.obj), Ok(ObjType::Text));
     match &p.action {
-        PatchAction::SpliceText { .. } => Some(Slot::Text(p.obj.clone())),
+        PatchAction::SpliceText { .. } | PatchAction::Mark { .. } => {
+            Some(Slot::Text(p.obj.clone()))
+        }
         PatchAction::DeleteSeq { .. } | PatchAction::Insert { .. } | PatchAction::PutSeq { .. } => {
             is_text.then(|| Slot::Text(p.obj.clone()))
         }
@@ -189,9 +191,8 @@ fn slot_of(doc: &AutoCommit, p: &Patch) -> Option<Slot> {
             Prop::Map(k) => Some(Slot::Field(p.obj.clone(), k.clone())),
             Prop::Seq(_) => is_text.then(|| Slot::Text(p.obj.clone())),
         },
-        // A conflict marker carries no content, and marks are formatting spans
-        // the revert path already ignores.
-        PatchAction::Conflict { .. } | PatchAction::Mark { .. } => None,
+        // A conflict marker carries no content.
+        PatchAction::Conflict { .. } => None,
     }
 }
 
@@ -264,7 +265,10 @@ fn later_writers(
     // `i - 1`/`i == 0` need the absolute version index itself, so an
     // `.iter().enumerate()` rewrite would just reconstruct `i` from the
     // enumerated offset for no clarity gain.
-    #[allow(clippy::needless_range_loop)]
+    #[allow(
+        clippy::needless_range_loop,
+        reason = "the absolute history index drives prefix-head reconstruction"
+    )]
     for i in start_at..versions.len() {
         // `i` is always `< versions.len()` by the loop bound; retain the
         // checked access for a panic-free path.
@@ -329,6 +333,10 @@ fn blocked_container(
 /// the run created that somebody has since written inside would delete
 /// their work outright. A multi-element removal is split so the elements
 /// nobody touched still go.
+#[allow(
+    clippy::too_many_lines,
+    reason = "classification keeps the patch shadow, conflict attribution, and write decision in one auditable pass"
+)]
 fn classify(
     doc: &AutoCommit,
     inverse: Vec<Patch>,
@@ -336,8 +344,9 @@ fn classify(
     after: &[ChangeHash],
     covered: usize,
     authors: &AuthorDirectory,
-) -> (RevertOutcome, Vec<Patch>) {
-    let mut writable: Vec<Patch> = Vec::new();
+) -> (RevertOutcome, Vec<(Patch, bool)>) {
+    let mut writable = Vec::new();
+    let mut list_indices: HashMap<ObjId, Vec<Option<usize>>> = HashMap::new();
     let mut kept: Vec<KeptSlot> = Vec::new();
     let mut kept_seen: HashSet<Slot> = HashSet::new();
     let mut reverted_slots: HashSet<Slot> = HashSet::new();
@@ -346,42 +355,56 @@ fn classify(
     for p in inverse {
         // Removals first: they are the patches that can destroy a container.
         match &p.action {
-            PatchAction::DeleteSeq { index, length } => {
-                let mut removable = Vec::new();
-                let mut blocked = false;
-                for k in 0..*length {
-                    let at = index.saturating_add(k);
-                    match blocked_container(doc, after, &p.obj, at, later) {
-                        Some((slot, actor)) => {
-                            blocked = true;
-                            if kept_seen.insert(slot.clone()) {
-                                kept.push(KeptSlot {
-                                    by: authors.resolve(&actor),
-                                    slot,
-                                    actor_hex: actor,
-                                });
-                            }
+            PatchAction::Insert { index, values }
+                if matches!(doc.object_type(&p.obj), Ok(ObjType::List)) =>
+            {
+                let order = list_indices
+                    .entry(p.obj.clone())
+                    .or_insert_with(|| (0..doc.length_at(&p.obj, after)).map(Some).collect());
+                let index = (*index).min(order.len());
+                order.splice(index..index, std::iter::repeat_n(None, values.len()));
+            }
+            PatchAction::DeleteSeq { index, length }
+                if matches!(doc.object_type(&p.obj), Ok(ObjType::List)) =>
+            {
+                let order = list_indices
+                    .entry(p.obj.clone())
+                    .or_insert_with(|| (0..doc.length_at(&p.obj, after)).map(Some).collect());
+                let end = index.saturating_add(*length).min(order.len());
+                let anchors = if *index < end {
+                    order.drain(*index..end).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                for anchor in anchors {
+                    let blocked =
+                        anchor.and_then(|at| blocked_container(doc, after, &p.obj, at, later));
+                    let apply = if let Some((slot, actor)) = blocked {
+                        if kept_seen.insert(slot.clone()) {
+                            kept.push(KeptSlot {
+                                by: authors.resolve(&actor),
+                                slot,
+                                actor_hex: actor,
+                            });
                         }
-                        None => removable.push(at),
-                    }
-                }
-                if blocked {
-                    // Each surviving removal is anchored on its own element, so
-                    // splitting the run does not disturb the others.
-                    for at in removable {
+                        false
+                    } else {
                         structural = structural.saturating_add(1);
-                        writable.push(Patch {
+                        true
+                    };
+                    // Every unit removal occupies this same evolving index.
+                    // Skipped removals still advance the replay's logical shadow.
+                    writable.push((
+                        Patch {
                             obj: p.obj.clone(),
                             path: p.path.clone(),
                             action: PatchAction::DeleteSeq {
-                                index: at,
+                                index: *index,
                                 length: 1,
                             },
-                        });
-                    }
-                } else {
-                    structural = structural.saturating_add(1);
-                    writable.push(p);
+                        },
+                        apply,
+                    ));
                 }
                 continue;
             }
@@ -396,6 +419,7 @@ fn classify(
                             actor_hex: actor,
                         });
                     }
+                    writable.push((p, false));
                     continue;
                 }
             }
@@ -411,13 +435,14 @@ fn classify(
                         actor_hex: actor.clone(),
                     });
                 }
+                writable.push((p, false));
             } else {
                 reverted_slots.insert(s);
-                writable.push(p);
+                writable.push((p, true));
             }
         } else {
             structural = structural.saturating_add(1);
-            writable.push(p);
+            writable.push((p, true));
         }
     }
 
@@ -480,13 +505,13 @@ pub fn revert_run(
     let later = later_writers(doc, &after, by, &created);
     let (mut outcome, patches) = classify(doc, inverse, &later, &after, covered, authors);
 
-    if patches.is_empty() {
+    if !patches.iter().any(|(_, apply)| *apply) {
         return Ok(outcome);
     }
     let pending_before = doc.pending_ops();
     // `after` is the state the reverted elements still exist in; `before` is the
     // state a re-inserted element's boundary is expressed in.
-    write_patches(doc, patches, &before, &after);
+    write_selected_patches(doc, patches, &before, &after);
     outcome.wrote = doc.pending_ops() > pending_before;
     Ok(outcome)
 }
@@ -523,4 +548,84 @@ pub fn latest_run_by(doc: &mut AutoCommit, actor_hex: &str) -> Option<ChangeRun>
         entry_id_from_hash(start_hash),
         entry_id_from_hash(end_hash),
     ))
+}
+#[cfg(test)]
+mod replay_regressions {
+    use super::*;
+    use automerge::{ActorId, ROOT};
+
+    fn insert(doc: &mut AutoCommit, list: &ObjId, index: usize, label: &str) -> ObjId {
+        let block = doc.insert_object(list, index, ObjType::Map).unwrap();
+        doc.put(&block, "label", label).unwrap();
+        block
+    }
+
+    #[test]
+    fn filtered_removal_keeps_middle_peer_child_and_targets_later_original_element() {
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
+        let list = doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
+        insert(&mut doc, &list, 0, "keep-tail");
+        doc.commit();
+        insert(&mut doc, &list, 0, "remove-a");
+        let protected = insert(&mut doc, &list, 1, "protect-b");
+        insert(&mut doc, &list, 2, "remove-c");
+        insert(&mut doc, &list, 4, "remove-e");
+        let change = doc.commit().unwrap();
+        doc.set_actor(ActorId::from(b"bob".as_slice()));
+        doc.put(&protected, "label", "peer edited b").unwrap();
+        doc.commit();
+        let run = ChangeRun::single(entry_id_from_hash(&change.to_string()));
+        let result = revert_run(&mut doc, &run, None, &AuthorDirectory::default()).unwrap();
+        assert!(result.wrote);
+        assert_eq!(result.kept.len(), 1);
+        let labels = (0..doc.length(&list))
+            .map(|index| {
+                let block = doc.get(&list, index).unwrap().unwrap().1;
+                doc.get(block, "label")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["peer edited b", "keep-tail"]);
+    }
+
+    #[test]
+    fn filtered_mark_revert_preserves_later_peer_formatting() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut doc = AutoCommit::new().with_actor(ActorId::from(b"alice".as_slice()));
+        let text = doc.put_object(ROOT, "body", ObjType::Text).unwrap();
+        doc.splice_text(&text, 0, 0, "hello").unwrap();
+        doc.commit();
+        doc.mark(
+            &text,
+            Mark::new("bold".into(), true, 0, 5),
+            ExpandMark::After,
+        )
+        .unwrap();
+        let change = doc.commit().unwrap();
+        doc.set_actor(ActorId::from(b"bob".as_slice()));
+        doc.mark(
+            &text,
+            Mark::new("italic".into(), true, 0, 5),
+            ExpandMark::After,
+        )
+        .unwrap();
+        doc.commit();
+        let before = doc.marks(&text).unwrap();
+        let result = revert_run(
+            &mut doc,
+            &ChangeRun::single(entry_id_from_hash(&change.to_string())),
+            None,
+            &AuthorDirectory::default(),
+        )
+        .unwrap();
+        assert!(!result.wrote);
+        assert_eq!(result.kept.len(), 1);
+        assert_eq!(doc.marks(&text).unwrap(), before);
+        assert_eq!(doc.text(&text).unwrap(), "hello");
+    }
 }

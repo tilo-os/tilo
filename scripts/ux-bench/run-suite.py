@@ -31,11 +31,16 @@ def read_result(out, returncode, log):
 # Authored from the actual first H in Home and first A in the shortcut hint.
 # These fixed glyph interiors exclude icons/borders and are reviewed in the
 # task3 matrix screenshots. Other variants preserve the original pixel probes.
+# 2026-09-17 (S1 round two): the shortcut-hint probes followed the launchpad
+# card, which sits at `workspace_rail_clearance_for_viewport` — the
+# wheel-to-strip gutter went from 28 px to `spacing.s8` (32): +4 px at
+# compact, +2 px at large text (the card is centred in its budget there;
+# measured glyph run 319..321 → 321..323 on row 598).
 VARIANT_PIXEL_PROBES = {
-    "compact": {"App shortcut hint": ([275, 591], [272, 590])},
+    "compact": {"App shortcut hint": ([279, 591], [276, 590])},
     "large-text": {
         "Workspace name": ([139, 17], [150, 35]),
-        "App shortcut hint": ([320, 598], [314, 598]),
+        "App shortcut hint": ([322, 598], [316, 598]),
     },
 }
 
