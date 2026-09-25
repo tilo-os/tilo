@@ -22,6 +22,18 @@ on:
         description: "Include the browser + WPE WebKit engine stage (0 = omit, ~45min faster)"
         required: false
         default: "1"
+      hardware_profile:
+        description: "generic or lenovo-83ed; board builds require pinned firmware inputs"
+        required: false
+        default: "generic"
+      firmware_candidate:
+        description: "Immutable firmware-only OCI artifact for lenovo-83ed"
+        required: false
+        default: ""
+      firmware_manifest_sha256:
+        description: "Independently reviewed SHA-256 of the firmware manifest"
+        required: false
+        default: ""
       app_collection_url:
         description: "Pinned tilo-apps-<arch>.tar.gz URL; empty uses vars.TILO_APP_COLLECTION_URL."
         required: false
@@ -62,6 +74,7 @@ jobs:
       build-matrix: ${{ steps.matrix.outputs.build-matrix }}
       publish: ${{ steps.matrix.outputs.publish }}
       skip: ${{ steps.matrix.outputs.skip }}
+      hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
     steps:
       # The nightly run exists to keep a fresh image available, not to spend a
       # generation and two native lanes on a revision that is already out.
@@ -120,8 +133,28 @@ jobs:
           # they are configured the nightly run is a main integration build, so
           # dev VMs still get a same-commit image every night.
           PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
+          HARDWARE_PROFILE: ${{ github.event.inputs.hardware_profile }}
+          FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
+          FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
         run: |
           set -euo pipefail
+          profile=${HARDWARE_PROFILE:-generic}
+          case "$profile" in
+            generic)
+              [[ -z ${FIRMWARE_CANDIDATE:-} && -z ${FIRMWARE_MANIFEST_SHA256:-} ]] || {
+                echo '::error::generic builds cannot accept board firmware inputs'; exit 1;
+              } ;;
+            lenovo-83ed)
+              [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
+                 && ${REQUESTED_PUBLISH:-false} == true ]] || {
+                echo '::error::Lenovo image publication requires an explicit main-branch publish dispatch'; exit 1;
+              }
+              [[ ${FIRMWARE_CANDIDATE:-} =~ ^code\.podesta\.ai/qos/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
+                 && ${FIRMWARE_MANIFEST_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || {
+                echo '::error::Lenovo publication requires immutable firmware and reviewed manifest SHA-256'; exit 1;
+              } ;;
+            *) echo '::error::unsupported hardware profile'; exit 1 ;;
+          esac
           publish=false
           skip=false
           if [[ $GITHUB_REF == refs/tags/v* \
@@ -145,7 +178,11 @@ jobs:
               echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
             fi
           fi
-          if [[ $publish == true ]]; then
+          if [[ $profile == lenovo-83ed ]]; then
+            # One ARM-only, immutable board image. It must not enter the generic
+            # multiarch latest/genN channel or consume its rollback series.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"}]}'
+          elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"}]}'
             else
@@ -172,6 +209,7 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "hardware-profile=$profile" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
     needs: plan
@@ -518,6 +556,43 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
 
+      - name: Import independently pinned Lenovo firmware data
+        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
+          FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          if ! command -v podman >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              sudo -n apt-get -o Acquire::Retries=3 update
+              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman jq
+            elif command -v dnf >/dev/null; then
+              sudo -n dnf --setopt=retries=3 install -y podman jq
+            else
+              echo '::error::native board runner needs Podman'; exit 1
+            fi
+          fi
+          printf '%s' "$REGISTRY_TOKEN" | sudo -n podman login code.sandbox.example \
+            --username "${{ github.actor }}" --password-stdin
+          sudo -n python3 os/dev/hardware-firmware-artifact.py import \
+            --reference "$FIRMWARE_CANDIDATE" \
+            --manifest-sha256 "$FIRMWARE_MANIFEST_SHA256" \
+            --profile lenovo-83ed --architecture aarch64 \
+            --repo "$GITHUB_WORKSPACE" > firmware-import.json
+          jq -e --arg reference "$FIRMWARE_CANDIDATE" \
+            '.purpose == "tilo-hardware-firmware-import" and .reference == $reference and .profile == "lenovo-83ed"' \
+            firmware-import.json >/dev/null
+
+      - name: Retain public Lenovo firmware import evidence
+        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-lenovo-firmware-import-${{ github.sha }}
+          path: firmware-import.json
+          if-no-files-found: error
+
       # Generation selection trusts signed provenance, never registry tag text.
       # Install on build-only runs too so every CI build exercises that check.
       - name: Install checksum-pinned Cosign from the persistent asset cache
@@ -837,8 +912,16 @@ jobs:
           # that genesis for one exact commit; once gen1 exists the repository
           # does too, and the variable no longer changes anything.
           SERIES_GENESIS_REVISION: ${{ vars.TILO_OS_SERIES_GENESIS_REVISION }}
+          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
+          if [[ ${HARDWARE_PROFILE:-generic} == lenovo-83ed ]]; then
+            # This first board artifact has an immutable update reference and
+            # no automatic upgrade series. Do not allocate a generic genN.
+            echo 'TILO_GENERATION=1' >> "$GITHUB_ENV"
+            echo '::notice::building one-off Lenovo image at generation 1'
+            exit 0
+          fi
           if [[ $PUBLISH != true ]]; then
             export TILO_ALLOW_EMPTY_SERIES=1
           elif [[ $SERIES_GENESIS_REVISION =~ ^[0-9a-f]{40}$ && $SERIES_GENESIS_REVISION == "$GITHUB_SHA" ]]; then
@@ -879,20 +962,21 @@ jobs:
         with:
           images: code.sandbox.example/qos/tilo
           tags: |
-            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' }}
-            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=ref,event=pr
+            type=raw,value=lenovo-83ed-${{ github.sha }},enable=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' }}
+            type=raw,value=latest,enable=${{ steps.release-mode.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=sha,prefix=main-,enable=${{ github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') && needs.plan.outputs.hardware-profile == 'generic' }}
+            type=ref,event=pr,enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
             # workflow_dispatch off a non-main branch — without this, the metadata
             # step emits zero tags and the push fails "tag is needed". Derives a
             # "<branch>-<sha>" tag so a manual dispatch from a feature branch still
             # produces a discoverable image without polluting the `latest` channel.
-            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+            type=raw,value=${{ github.ref_name }}-${{ github.sha }},enable=${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' }}
             # The generation tag is what makes the series self-recording: the next
             # build reads these back to learn which numbers are taken. It is only
             # ever pushed on a run that publishes, so a number is consumed exactly
             # when an image carrying it becomes reachable.
-            type=raw,value=gen${{ env.TILO_GENERATION }}
+            type=raw,value=gen${{ env.TILO_GENERATION }},enable=${{ needs.plan.outputs.hardware-profile == 'generic' }}
 
       # Build and export the compile stages (WPE engine and the Rust builder)
       # before anything else. A registry cache is only written when its build
@@ -921,6 +1005,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.sandbox.example/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
@@ -986,6 +1072,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.sandbox.example/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
@@ -1080,6 +1168,8 @@ jobs:
             WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
             TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
             TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.sandbox.example/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
             TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
@@ -1134,6 +1224,7 @@ jobs:
           TILO_REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           TILO_RESEALED_DIGEST_FILE: /var/tmp/tilo-resealed-composefs-digest
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
+          HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
         run: |
           set -euo pipefail
 
@@ -1229,6 +1320,7 @@ jobs:
             echo "::notice::final sealed OS image reproduced manifest sha256:$final_manifest"
           fi
 
+          if [[ $HARDWARE_PROFILE == generic ]]; then
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           trap './os/dev/vm.sh stop || true' EXIT
           # The installed Files AT-SPI gate needs the running Tilo compositor.
@@ -1310,6 +1402,13 @@ jobs:
           ./os/dev/vm.sh ssh /usr/libexec/tilo/native-atspi-smoke.sh lock
           ./os/dev/vm.sh type "$TILO_PASS"
           ./os/dev/vm.sh keys ret
+          else
+            # A Lenovo DTB cannot describe QEMU virt hardware. The sealed
+            # disk-install and independent reproduction above remain required;
+            # the generic ARM VM gate covers the common desktop separately.
+            # Physical boot remains a distinct acceptance test.
+            echo '::notice::Lenovo board image sealed and disk-installed; QEMU virt desktop boot is inapplicable'
+          fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
             # Upload through a non-channel candidate tag. latest, semver and
@@ -1384,6 +1483,10 @@ jobs:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
           RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+          TILO_HARDWARE_PROFILE: ${{ needs.plan.outputs.hardware-profile }}
+          TILO_RELEASE_ARCHITECTURE: ${{ matrix.arch }}
+          TILO_FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
+          TILO_FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
         run: |
           . os/dev/configure-cosign-kms.sh
           ./os/dev/release-provenance.sh provenance.json
@@ -1473,7 +1576,7 @@ jobs:
 
   promote-multiarch:
     needs: [plan, build-and-push]
-    if: needs.plan.outputs.publish == 'true'
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'generic'
     runs-on: runner
     timeout-minutes: 120
     enable-openid-connect: true
@@ -1700,6 +1803,88 @@ jobs:
           name: tilo-os-release-index
           path: tilo-os-release-index.json
           if-no-files-found: error
+
+  # Board images stay outside the generic multiarch latest/genN series. This
+  # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
+  # installation; it intentionally has no mutable upgrade channel yet.
+  promote-lenovo:
+    needs: [plan, build-and-push]
+    if: needs.plan.outputs.publish == 'true' && needs.plan.outputs.hardware-profile == 'lenovo-83ed'
+    runs-on: runner
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: tilo-os-child-aarch64
+          path: release-child
+      - name: Install signed-image verification tools
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends jq skopeo
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y jq skopeo
+          else
+            echo '::error::board promotion runner needs apt-get or dnf'; exit 1
+          fi
+          ./os/dev/install-cached-cosign.sh
+      - name: Authenticate to the image registry
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: code.sandbox.example
+          username: ${{ github.actor }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Verify and publish immutable Lenovo ARM64 image
+        env:
+          FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
+          FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
+        run: |
+          set -euo pipefail
+          child=release-child/aarch64.json
+          digest="$(jq -er --arg source "$GITHUB_SHA" '
+            select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)
+            | .digest | select(test("^sha256:[0-9a-f]{64}$"))' "$child")"
+          image="code.sandbox.example/qos/tilo@$digest"
+          target="code.sandbox.example/qos/tilo:lenovo-83ed-$GITHUB_SHA"
+          cosign verify --key keys/cosign.pub "$image" >/dev/null
+          cosign verify-attestation --key keys/cosign.pub --type spdxjson "$image" >/dev/null
+          freshness="$(cosign verify-attestation --key keys/cosign.pub \
+            --type https://tilo.sh/security/release-freshness/v1 "$image")"
+          now="$(date -u +%s)"
+          printf '%s' "$freshness" | jq -e --arg digest "$digest" \
+            --arg source "$GITHUB_SHA" --argjson now "$now" '
+              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+              | any(.digest == $digest and .sourceRevision == $source
+                    and .generation == 1 and .issuedAt <= $now
+                    and .expiresAt > $now and (.expiresAt - .issuedAt) <= 604800)' >/dev/null
+          provenance="$(cosign verify-attestation --key keys/cosign.pub --type slsaprovenance1 "$image")"
+          printf '%s' "$provenance" | jq -e \
+            --arg source "git+ssh://code.sandbox.example/qos/qos@$GITHUB_SHA" \
+            --arg digest "$digest" --arg firmware "$FIRMWARE_CANDIDATE" \
+            --arg manifest "$FIRMWARE_MANIFEST_SHA256" '
+              [(if type == "array" then .[] else . end) | .payload | @base64d | fromjson | .predicate]
+              | any(.buildDefinition.internalParameters.expectedReleaseDigest == $digest
+                    and .buildDefinition.externalParameters.generation == 1
+                    and .buildDefinition.externalParameters.hardwareProfile == "lenovo-83ed"
+                    and .buildDefinition.externalParameters.architecture == "aarch64"
+                    and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
+                    and any(.buildDefinition.resolvedDependencies[]?; .uri == $source)
+                    and any(.buildDefinition.resolvedDependencies[]?; .uri == $firmware))' >/dev/null
+          actual_arch="$(skopeo inspect "docker://$image" | jq -er .Architecture)"
+          [[ $actual_arch == arm64 ]] || { echo '::error::Lenovo image is not ARM64'; exit 1; }
+          existing="$(skopeo inspect --raw "docker://$target" 2>/dev/null | sha256sum | awk '{print "sha256:" $1}')" || existing=''
+          [[ -z $existing || $existing == "$digest" ]] || {
+            echo '::error::immutable Lenovo tag already points to different bytes'; exit 1;
+          }
+          if [[ -z $existing ]]; then
+            skopeo copy --preserve-digests "docker://$image" "docker://$target"
+          fi
+          actual="$(skopeo inspect --raw "docker://$target" | sha256sum | awk '{print "sha256:" $1}')"
+          [[ $actual == "$digest" ]] || { echo '::error::Lenovo tag digest changed'; exit 1; }
+          echo "::notice::CI-built and signed Lenovo ARM64 image: $image; immutable update reference: $target"
 
   # Integration images remain unsigned and outside the production tilo
   # repository. Publish an index only after both native lanes complete; the
