@@ -75,7 +75,7 @@ mod view;
 
 pub use app::{ResourceApp, definition, launch_spec, run};
 pub use controls::{ActionControl, Actions};
-pub use dispatch::Dispatcher;
+pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
