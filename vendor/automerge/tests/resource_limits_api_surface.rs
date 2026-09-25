@@ -7,11 +7,12 @@
 #![allow(dead_code, unused_variables, unreachable_code, clippy::type_complexity)]
 
 use automerge::resource_limits::{
-    CheckedStorage, NativeAllocationSet, NativeAllowance, NativeApplyResult, NativeChanges, NativeCloneCandidate,
-    NativeDependencyPolicy, NativeFootprint, NativeHashes, NativeHostCredit, NativeId, NativeIncomingOutcome,
-    NativeLimits, NativeListEntry, NativeMutationError, NativeObject, NativeOwned, NativeReadError,
-    NativeReadSession, NativeReadSteps, NativeReservation, NativeResourceError, NativeRetention, NativeSaved,
-    NativeScalar, NativeSelection, NativeShape, NativeValue, NativeWorkTurn, NormalizedStorage,
+    CheckedStorage, NativeAllocationSet, NativeAllowance, NativeApplyResult, NativeChanges,
+    NativeCloneCandidate, NativeDependencyPolicy, NativeFootprint, NativeHashes, NativeHostCredit,
+    NativeId, NativeIncomingOutcome, NativeLimits, NativeListEntry, NativeMutationError,
+    NativeObject, NativeOwned, NativeReadError, NativeReadSession, NativeReadSteps,
+    NativeReservation, NativeResourceError, NativeRetention, NativeSaved, NativeScalar,
+    NativeSelection, NativeShape, NativeValue, NativeWorkTurn, NormalizedStorage,
 };
 use automerge::{AutoCommit, ChangeHash, ObjType, SaveOptions};
 use std::ops::ControlFlow;
@@ -34,7 +35,18 @@ fn ledger_and_limits_surface() {
         max_value_bytes: _,
     } = NativeLimits::default();
     let l = NativeLimits::default();
-    let _: (usize, usize, u64, usize, usize, usize, usize, usize, usize, usize) = (
+    let _: (
+        usize,
+        usize,
+        u64,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+        usize,
+    ) = (
         l.max_normalized_bytes,
         l.max_operations,
         l.max_operation_counter,
@@ -76,7 +88,8 @@ fn ledger_and_limits_surface() {
 
     // NativeAllowance / NativeReservation / NativeHostCredit.
     let _: fn(usize) -> R<NativeAllowance> = NativeAllowance::new;
-    let _: fn(usize, Box<dyn NativeHostCredit>) -> R<NativeAllowance> = NativeAllowance::with_host_credit;
+    let _: fn(usize, Box<dyn NativeHostCredit>) -> R<NativeAllowance> =
+        NativeAllowance::with_host_credit;
     let _: fn(&NativeAllowance, usize) -> R<NativeReservation> = NativeAllowance::reserve;
     let _: fn(&NativeAllowance) -> usize = NativeAllowance::available_bytes;
     let _: fn(&NativeAllowance) = NativeAllowance::finish_turn;
@@ -107,35 +120,47 @@ fn ledger_and_limits_surface() {
 fn storage_surface<'s>() {
     let _: for<'b> fn(&'b CheckedStorage<'s>) -> &'b [u8] = CheckedStorage::original_bytes;
     let _: for<'b> fn(&'b CheckedStorage<'s>) -> &'b NativeShape = CheckedStorage::shape;
-    let _: fn(CheckedStorage<'s>, &NativeAllowance) -> R<NormalizedStorage<'s>> = CheckedStorage::normalize;
+    let _: fn(CheckedStorage<'s>, &NativeAllowance) -> R<NormalizedStorage<'s>> =
+        CheckedStorage::normalize;
     let _: for<'b> fn(&'b NormalizedStorage<'s>) -> &'b [u8] = NormalizedStorage::bytes;
     let _: for<'b> fn(&'b NormalizedStorage<'s>) -> &'b [u8] = NormalizedStorage::original_bytes;
     let _: for<'b> fn(&'b NormalizedStorage<'s>) -> &'b NativeShape = NormalizedStorage::shape;
     // Load.
-    let _: fn(NormalizedStorage<'s>, &mut NativeAllocationSet, &NativeWorkTurn) -> R<NativeOwned<AutoCommit>> =
-        NormalizedStorage::reconstruct;
+    let _: fn(
+        NormalizedStorage<'s>,
+        &mut NativeAllocationSet,
+        &NativeWorkTurn,
+    ) -> R<NativeOwned<AutoCommit>> = NormalizedStorage::reconstruct;
 }
 
 #[test]
 fn custody_surface() {
     let _: fn(NativeAllowance) -> R<NativeAllocationSet> = NativeAllocationSet::new;
-    let _: fn(&NativeAllocationSet, NativeAllowance) -> R<NativeWorkTurn> = NativeAllocationSet::work_turn;
+    let _: fn(&NativeAllocationSet, NativeAllowance) -> R<NativeWorkTurn> =
+        NativeAllocationSet::work_turn;
     let _: fn(&mut NativeAllocationSet) = NativeAllocationSet::reconcile;
     let _: for<'a> fn(&NativeWorkTurn, &'a [u8], &NativeLimits) -> R<NormalizedStorage<'a>> =
         NativeWorkTurn::normalize_input;
     let _: fn(&NativeWorkTurn, usize) -> R<NativeReservation> = NativeWorkTurn::reserve;
 
     let _: fn(&AutoCommit, &NativeAllowance) -> R<NativeFootprint> = AutoCommit::native_footprint;
-    let _: fn(&AutoCommit, &mut NativeAllocationSet, &NativeWorkTurn) -> R<NativeCloneCandidate<AutoCommit>> =
-        AutoCommit::clone_bounded;
+    let _: fn(
+        &AutoCommit,
+        &mut NativeAllocationSet,
+        &NativeWorkTurn,
+    ) -> R<NativeCloneCandidate<AutoCommit>> = AutoCommit::clone_bounded;
     let _: fn(&NativeFootprint) -> usize = NativeFootprint::owned_bytes;
     let _: fn(&NativeFootprint) -> usize = NativeFootprint::shared_bytes;
     let _: fn(&NativeFootprint) -> usize = NativeFootprint::total_bytes;
 
     let _: fn(&NativeOwned<AutoCommit>) -> usize = NativeOwned::<AutoCommit>::pending_ops;
-    let _: fn(&NativeOwned<AutoCommit>, &mut NativeAllocationSet, &NativeWorkTurn) -> R<NativeOwned<AutoCommit>> =
-        NativeOwned::<AutoCommit>::clone_bounded;
-    let _: fn(&NativeCloneCandidate<AutoCommit>) -> usize = NativeCloneCandidate::<AutoCommit>::pending_ops;
+    let _: fn(
+        &NativeOwned<AutoCommit>,
+        &mut NativeAllocationSet,
+        &NativeWorkTurn,
+    ) -> R<NativeOwned<AutoCommit>> = NativeOwned::<AutoCommit>::clone_bounded;
+    let _: fn(&NativeCloneCandidate<AutoCommit>) -> usize =
+        NativeCloneCandidate::<AutoCommit>::pending_ops;
     let _: fn(
         &NativeCloneCandidate<AutoCommit>,
         &mut NativeAllocationSet,
@@ -149,15 +174,21 @@ fn custody_surface() {
         NativeOwned::<AutoCommit>::save_bounded_with_limit;
     let _: fn(&NativeOwned<AutoCommit>, &NativeWorkTurn, SaveOptions) -> R<NativeSaved> =
         NativeOwned::<AutoCommit>::save_bounded;
-    let _: fn(&NativeCloneCandidate<AutoCommit>, &NativeWorkTurn, SaveOptions, usize) -> R<NativeSaved> =
-        NativeCloneCandidate::<AutoCommit>::save_bounded_with_limit;
+    let _: fn(
+        &NativeCloneCandidate<AutoCommit>,
+        &NativeWorkTurn,
+        SaveOptions,
+        usize,
+    ) -> R<NativeSaved> = NativeCloneCandidate::<AutoCommit>::save_bounded_with_limit;
     let _: fn(&NativeCloneCandidate<AutoCommit>, &NativeWorkTurn, SaveOptions) -> R<NativeSaved> =
         NativeCloneCandidate::<AutoCommit>::save_bounded;
     let _: fn(&NativeSaved) -> &[u8] = NativeSaved::bytes;
     let _: fn(&NativeOwned<AutoCommit>, &[ChangeHash], &NativeWorkTurn) -> R<NativeChanges> =
         NativeOwned::<AutoCommit>::changes_since_bounded;
-    let _: fn(&NativeOwned<AutoCommit>, &NativeWorkTurn) -> R<NativeHashes> = NativeOwned::<AutoCommit>::base_heads_bounded;
-    let _: fn(&NativeOwned<AutoCommit>) -> bool = NativeOwned::<AutoCommit>::has_missing_dependencies;
+    let _: fn(&NativeOwned<AutoCommit>, &NativeWorkTurn) -> R<NativeHashes> =
+        NativeOwned::<AutoCommit>::base_heads_bounded;
+    let _: fn(&NativeOwned<AutoCommit>) -> bool =
+        NativeOwned::<AutoCommit>::has_missing_dependencies;
     let _: fn(&NativeHashes) -> &[ChangeHash] = NativeHashes::as_slice;
     let _: fn(&NativeChanges) -> usize = NativeChanges::len;
     let _: fn(&NativeChanges) -> bool = NativeChanges::is_empty;
@@ -195,7 +226,8 @@ fn apply_surface() {
         NativeDependencyPolicy,
         &mut NativeAllocationSet,
         &NativeWorkTurn,
-    ) -> Result<NativeApplyResult, NativeMutationError> = NativeOwned::<AutoCommit>::apply_checked_bounded;
+    ) -> Result<NativeApplyResult, NativeMutationError> =
+        NativeOwned::<AutoCommit>::apply_checked_bounded;
     let _: fn(
         &mut AutoCommit,
         &[u8],
@@ -222,9 +254,11 @@ fn apply_surface() {
     let _: NativeMutationError = NativeResourceError::WorkBytes.into();
     fn result(r: NativeApplyResult) -> Option<(NativeOwned<AutoCommit>, bool, bool)> {
         match r {
-            NativeApplyResult::Applied { document, changed, missing_dependencies } => {
-                Some((document, changed, missing_dependencies))
-            }
+            NativeApplyResult::Applied {
+                document,
+                changed,
+                missing_dependencies,
+            } => Some((document, changed, missing_dependencies)),
             NativeApplyResult::MissingDependencies => None,
         }
     }
@@ -243,7 +277,11 @@ fn apply_surface() {
 
 /// Generic read API: typed calls in a function that is compiled, never run.
 #[allow(clippy::diverging_sub_expression)]
-fn read_surface(owned: &NativeOwned<AutoCommit>, candidate: &NativeCloneCandidate<AutoCommit>, turn: &NativeWorkTurn) {
+fn read_surface(
+    owned: &NativeOwned<AutoCommit>,
+    candidate: &NativeCloneCandidate<AutoCommit>,
+    turn: &NativeWorkTurn,
+) {
     let read: NativeReadSession<'_, '_> = owned.read(turn).unwrap();
     let _: NativeReadSession<'_, '_> = candidate.read_unqualified(turn).unwrap();
     let _: R<NativeReservation> = read.reserve_output(1);
@@ -255,18 +293,30 @@ fn read_surface(owned: &NativeOwned<AutoCommit>, candidate: &NativeCloneCandidat
     let _: R<()> = steps.charge(1);
     let _: usize = steps.remaining();
 
-    let _: Result<usize, NativeReadError<()>> =
-        read.visit_property(root, "k", NativeSelection::Winner, |value: NativeValue<'_, '_>, id: NativeId<'_>| Ok(()));
+    let _: Result<usize, NativeReadError<()>> = read.visit_property(
+        root,
+        "k",
+        NativeSelection::Winner,
+        |value: NativeValue<'_, '_>, id: NativeId<'_>| Ok(()),
+    );
     let _: Result<usize, NativeReadError<()>> =
         read.visit_property_with_steps(root, "k", NativeSelection::All, &steps, |value, id| Ok(()));
     let _: Result<usize, NativeReadError<()>> = read.visit_keys(root, |key: &str| Ok(()));
     let _: Result<usize, NativeReadError<()>> =
         read.visit_keys_with_steps(root, &steps, |key: &str| Ok(ControlFlow::Continue(())));
-    let _: Result<usize, NativeReadError<()>> = read.visit_list(root, &steps, |entry: NativeListEntry<'_, '_>| {
-        let NativeListEntry { index, value, id, is_mark, conflict } = entry;
-        let _: (usize, NativeValue<'_, '_>, NativeId<'_>, bool, bool) = (index, value, id, is_mark, conflict);
-        Ok(ControlFlow::Break(()))
-    });
+    let _: Result<usize, NativeReadError<()>> =
+        read.visit_list(root, &steps, |entry: NativeListEntry<'_, '_>| {
+            let NativeListEntry {
+                index,
+                value,
+                id,
+                is_mark,
+                conflict,
+            } = entry;
+            let _: (usize, NativeValue<'_, '_>, NativeId<'_>, bool, bool) =
+                (index, value, id, is_mark, conflict);
+            Ok(ControlFlow::Break(()))
+        });
     let _: R<usize> = read.visit_heads(4, |hash: ChangeHash| {});
     let id = root.id();
     let mut sink = [0u8; 64];
@@ -274,7 +324,9 @@ fn read_surface(owned: &NativeOwned<AutoCommit>, candidate: &NativeCloneCandidat
     let _: R<usize> = read.write_id(id, &mut sink);
     let _: R<usize> = read.id_bytes_len(id);
     let _: R<usize> = read.write_id_bytes(id, &mut sink);
-    let _: R<Option<u64>> = read.visit_id_parts(id, |parts: Option<(u64, &[u8])>| parts.map(|(counter, actor)| counter));
+    let _: R<Option<u64>> = read.visit_id_parts(id, |parts: Option<(u64, &[u8])>| {
+        parts.map(|(counter, actor)| counter)
+    });
 
     // Value shapes.
     fn value(v: NativeValue<'_, '_>) {
@@ -336,13 +388,20 @@ fn read_surface(owned: &NativeOwned<AutoCommit>, candidate: &NativeCloneCandidat
 
 #[test]
 fn read_surface_compiles() {
-    let _: fn(&NativeOwned<AutoCommit>, &NativeCloneCandidate<AutoCommit>, &NativeWorkTurn) = read_surface;
+    let _: fn(&NativeOwned<AutoCommit>, &NativeCloneCandidate<AutoCommit>, &NativeWorkTurn) =
+        read_surface;
 }
 
 #[test]
 fn read_steps_bounds_are_the_08_contract() {
-    assert_eq!(NativeReadSteps::new(0).unwrap_err(), NativeResourceError::Operations);
-    assert_eq!(NativeReadSteps::new(1_000_001).unwrap_err(), NativeResourceError::Operations);
+    assert_eq!(
+        NativeReadSteps::new(0).unwrap_err(),
+        NativeResourceError::Operations
+    );
+    assert_eq!(
+        NativeReadSteps::new(1_000_001).unwrap_err(),
+        NativeResourceError::Operations
+    );
     let steps = NativeReadSteps::new(1_000_000).unwrap();
     steps.charge(999_999).unwrap();
     assert_eq!(steps.remaining(), 1);

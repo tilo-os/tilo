@@ -10,11 +10,20 @@
 //! - clone peak against the reservation `clone_bounded` makes;
 //! - usefulness: `bound / measured` for non-trivial documents.
 //!
-//! Run with `--nocapture` to print the ratio table.
+//! Run with `--nocapture` to print the ratio tables.
+#![allow(
+    unsafe_code,
+    clippy::all,
+    clippy::pedantic,
+    clippy::nursery,
+    clippy::restriction,
+    reason = "heap-probe calibration harness: counting allocator and ratio arithmetic"
+)]
 
+use automerge::resource_limits::NativeLimits;
 use automerge::resource_limits::{NativeAllocationSet, NativeAllowance, NativeWorkTurn};
 use automerge::transaction::Transactable;
-use automerge::{ActorId, AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue};
+use automerge::{ActorId, AutoCommit, Change, ChangeHash, ObjType, ROOT, ReadDoc, ScalarValue};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -242,84 +251,214 @@ fn loaded(doc: &mut AutoCommit) -> AutoCommit {
 
 // ── measurement ─────────────────────────────────────────────────────────────
 
-/// Usefulness ceiling for `footprint / retained` on non-trivial documents.
+/// Usefulness ceiling for `bound / measured` on non-trivial documents.
 const USEFUL_RATIO: f64 = 8.0;
-
-struct Row {
-    name: &'static str,
-    retained: usize,
-    footprint: usize,
-    clone_peak: usize,
-    clone_bound: usize,
-}
+/// Below this many measured bytes a ratio is not asserted (fixed terms
+/// such as the DEFLATE state or per-column bases dominate).
+const USEFUL_FLOOR: usize = 256 * 1024;
 
 fn allowance() -> NativeAllowance {
     NativeAllowance::new(64 * 1024 * 1024).unwrap()
 }
 
-fn measure(name: &'static str, doc: &AutoCommit) -> Row {
+/// Bounds from `AutoCommit::native_bound_probe`.
+struct NativeBoundProbe {
+    clone_peak: usize,
+    apply_peak: usize,
+    save_output: usize,
+    save_peak: usize,
+    history_peak: usize,
+    incoming_changes: usize,
+}
+
+fn probe(doc: &AutoCommit, incoming: &[Change]) -> NativeBoundProbe {
+    let [
+        _retained,
+        clone_peak,
+        apply_peak,
+        _superlinear,
+        save_output,
+        save_peak,
+        history_peak,
+        incoming_changes,
+    ] = doc.native_bound_probe(incoming, op_preds(incoming)).unwrap();
+    NativeBoundProbe {
+        clone_peak,
+        apply_peak,
+        save_output,
+        save_peak,
+        history_peak,
+        incoming_changes,
+    }
+}
+
+/// Op predecessor references in `changes` (the real paths take them from
+/// the inspected shape).
+fn op_preds(changes: &[Change]) -> usize {
+    changes
+        .iter()
+        .map(|c| {
+            c.decode()
+                .operations
+                .iter()
+                .map(|o| o.pred.len())
+                .sum::<usize>()
+        })
+        .sum()
+}
+
+fn fragments(changes: &[Change]) -> usize {
+    changes.iter().filter(|c| c.hash().as_ref()[0] == 0).count()
+}
+
+/// One measured quantity against its bound.
+struct Check {
+    shape: String,
+    what: &'static str,
+    measured: usize,
+    bound: usize,
+    /// Whether the usefulness ratio is asserted for this quantity.
+    useful: bool,
+}
+
+#[derive(Default)]
+struct Table(Vec<Check>);
+impl Table {
+    fn add(
+        &mut self,
+        shape: &str,
+        what: &'static str,
+        measured: usize,
+        bound: usize,
+        useful: bool,
+    ) {
+        self.0.push(Check {
+            shape: shape.to_string(),
+            what,
+            measured,
+            bound,
+            useful,
+        });
+    }
+    fn finish(&self) {
+        println!(
+            "{:<36} {:<16} {:>12} {:>12} {:>8}",
+            "shape", "quantity", "measured", "bound", "ratio"
+        );
+        let mut failures = Vec::new();
+        for c in &self.0 {
+            let ratio = c.bound as f64 / c.measured.max(1) as f64;
+            println!(
+                "{:<36} {:<16} {:>12} {:>12} {:>8.2}",
+                c.shape, c.what, c.measured, c.bound, ratio
+            );
+            if c.measured > c.bound {
+                failures.push(format!(
+                    "{} {}: measured {} > bound {}",
+                    c.shape, c.what, c.measured, c.bound
+                ));
+            }
+            if c.useful && c.measured > USEFUL_FLOOR && ratio > USEFUL_RATIO {
+                failures.push(format!(
+                    "{} {}: bound/measured {:.2} > {USEFUL_RATIO}",
+                    c.shape, c.what, ratio
+                ));
+            }
+        }
+        assert!(failures.is_empty(), "{failures:#?}");
+    }
+}
+
+/// Retained, clone, save, history and load measurements for one document.
+fn measure_doc(t: &mut Table, name: &str, doc: &AutoCommit) {
     let a = allowance();
     let footprint = doc.native_footprint(&a).unwrap().total_bytes();
-    // Retained: a fresh clone allocates exactly what it retains.
     let (copy, retained) = retained_of(|| doc.clone());
     drop(copy);
+    t.add(name, "retained", retained, footprint, true);
     let (copy, clone_peak) = peak_of(|| doc.clone());
     drop(copy);
-    // The clone reservation is the retained bound (clone_peak_bound).
+    let p = probe(doc, &[]);
+    t.add(name, "clone peak", clone_peak, p.clone_peak, true);
+
+    // clone_bounded reserves before copying and keeps the retained bound.
     let mut set = NativeAllocationSet::new(allowance()).unwrap();
     let turn: NativeWorkTurn = set.work_turn(a.clone()).unwrap();
     let before = a.available_bytes();
     let candidate = doc.clone_bounded(&mut set, &turn).unwrap();
-    let clone_bound = footprint;
     assert!(before > a.available_bytes());
     drop(candidate);
-    Row {
-        name,
-        retained,
-        footprint,
-        clone_peak,
-        clone_bound,
+
+    // save (deflate) and save_nocompress
+    let mut work = doc.clone();
+    let (bytes, save_peak) = peak_of(|| work.save());
+    t.add(name, "save peak", save_peak, p.save_peak, false);
+    t.add(name, "save len", bytes.len(), p.save_output, false);
+    let mut work = doc.clone();
+    let (raw, raw_peak) = peak_of(|| work.save_nocompress());
+    t.add(name, "save_nc peak", raw_peak, p.save_peak, false);
+    t.add(name, "save_nc len", raw.len(), p.save_output, false);
+    drop(raw);
+
+    // history export
+    let mut work = doc.clone();
+    let (changes, history_peak) = peak_of(|| work.get_changes(&[]));
+    t.add(name, "history peak", history_peak, p.history_peak, false);
+    drop(work);
+    let (held, history_retained) = retained_of(|| changes.clone());
+    drop(held);
+    let inc = probe(&AutoCommit::new(), &changes).incoming_changes;
+    t.add(name, "changes held", history_retained, inc, true);
+
+    // load (the loader adds the fragment term once hashes are known)
+    let mut limits = NativeLimits::default();
+    limits.max_normalized_bytes = 64 * 1024 * 1024;
+    limits.max_value_bytes = 64 * 1024 * 1024;
+    let mut scratch = allowance();
+    if let Ok(checked) = AutoCommit::inspect_bounded(&bytes, &limits, &mut scratch) {
+        let actors = doc.get_actors_len();
+        let bound = checked
+            .shape()
+            .native_load_peak_probe(fragments(&changes), actors)
+            .unwrap();
+        let (loaded, load_peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+        drop(loaded);
+        t.add(name, "load peak", load_peak, bound, false);
     }
 }
 
-fn check(rows: &[Row]) {
-    println!(
-        "{:<34} {:>11} {:>11} {:>7} {:>11} {:>11} {:>7}",
-        "shape", "retained", "footprint", "ratio", "clone_peak", "clone_bnd", "ratio"
-    );
-    let mut failures = Vec::new();
-    for r in rows {
-        let ratio = r.footprint as f64 / r.retained.max(1) as f64;
-        let cratio = r.clone_bound as f64 / r.clone_peak.max(1) as f64;
-        println!(
-            "{:<34} {:>11} {:>11} {:>7.2} {:>11} {:>11} {:>7.2}",
-            r.name, r.retained, r.footprint, ratio, r.clone_peak, r.clone_bound, cratio
-        );
-        if r.retained > r.footprint {
-            failures.push(format!(
-                "{}: retained {} > footprint {}",
-                r.name, r.retained, r.footprint
-            ));
-        }
-        if r.clone_peak > r.clone_bound {
-            failures.push(format!(
-                "{}: clone peak {} > bound {}",
-                r.name, r.clone_peak, r.clone_bound
-            ));
-        }
-        if r.retained > 64 * 1024 && ratio > USEFUL_RATIO {
-            failures.push(format!(
-                "{}: footprint/retained {:.2} > {USEFUL_RATIO}",
-                r.name, ratio
-            ));
-        }
-    }
-    assert!(failures.is_empty(), "{failures:#?}");
+/// Apply `incoming` to a clone of `base`, measuring the peak against
+/// `apply_peak_bound` (existing retained bytes are held by the document's
+/// own credit, so only the rise above the start is measured).
+fn measure_apply(t: &mut Table, name: &str, base: &AutoCommit, incoming: Vec<Change>) {
+    let p = probe(base, &incoming);
+    let mut doc = base.clone();
+    let (result, peak) = peak_of(move || {
+        let r = doc.apply_changes_batch(incoming);
+        (r, doc)
+    });
+    let (r, doc) = result;
+    r.unwrap();
+    drop(doc);
+    t.add(name, "apply peak", peak, p.apply_peak, false);
 }
 
-#[test]
-fn retained_and_clone_bounds_cover_adversarial_shapes() {
-    let mut shapes: Vec<(&'static str, AutoCommit)> = vec![
+trait ActorsLen {
+    fn get_actors_len(&self) -> usize;
+}
+impl ActorsLen for AutoCommit {
+    fn get_actors_len(&self) -> usize {
+        let mut c = self.clone();
+        let mut actors = std::collections::BTreeSet::new();
+        for ch in c.get_changes(&[]) {
+            actors.insert(ch.actor_id().clone());
+        }
+        actors.len().max(1)
+    }
+}
+
+fn shapes() -> Vec<(&'static str, AutoCommit)> {
+    vec![
         ("empty", AutoCommit::new()),
         ("1 actor x 4000 changes", one_actor_many_changes(4000)),
         ("300 actors x 3 changes", many_actors_few_changes(300, 3)),
@@ -329,16 +468,130 @@ fn retained_and_clone_bounds_cover_adversarial_shapes() {
         ("counter 5k increments", counter_increments(5_000)),
         ("large values 40 x 64KiB", large_values(40, 64 * 1024)),
         ("queued orphans 500", queued_orphans(500)),
-    ];
-    let mut loaded_shapes = Vec::new();
-    for (name, doc) in &mut shapes {
-        let l = loaded(doc);
-        let leaked: &'static str = Box::leak(format!("{name} (loaded)").into_boxed_str());
-        loaded_shapes.push((leaked, l));
+    ]
+}
+
+#[test]
+fn bounds_cover_adversarial_shapes() {
+    let mut t = Table::default();
+    for (name, mut doc) in shapes() {
+        measure_doc(&mut t, name, &doc);
+        let l = loaded(&mut doc);
+        measure_doc(&mut t, &format!("{name} (loaded)"), &l);
     }
-    shapes.extend(loaded_shapes);
-    let rows: Vec<Row> = shapes.iter().map(|(n, d)| measure(n, d)).collect();
-    check(&rows);
+    t.finish();
+}
+
+fn edits(doc: &mut AutoCommit, commits: usize) {
+    let list = doc.put_object(ROOT, "edits", ObjType::List).unwrap();
+    for c in 0..commits {
+        for i in 0..10 {
+            doc.put(ROOT, format!("e{c}-{i}"), (c * 10 + i) as i64)
+                .unwrap();
+            doc.insert(&list, 0, i as i64).unwrap();
+        }
+        doc.commit();
+    }
+}
+
+fn since(doc: &mut AutoCommit, heads: &[ChangeHash]) -> Vec<Change> {
+    doc.get_changes(heads)
+}
+
+#[test]
+fn apply_peak_covers_adversarial_batches() {
+    let mut t = Table::default();
+    for (name, mut base) in shapes() {
+        let heads = base.get_heads();
+        // A concurrent editor (actor sorting last) adds 40 commits.
+        let mut fork = base.fork().with_actor(ActorId::from([0xffu8; 16]));
+        edits(&mut fork, 40);
+        let incoming = since(&mut fork, &heads);
+        measure_apply(&mut t, &format!("{name} +fork"), &base, incoming);
+        // A new actor that sorts before every existing one (actor remap).
+        let mut first = base.fork().with_actor(ActorId::from([0u8; 16]));
+        edits(&mut first, 5);
+        let incoming = since(&mut first, &heads);
+        measure_apply(&mut t, &format!("{name} +first actor"), &base, incoming);
+        // Bulk: every change into an empty document.
+        let all = base.get_changes(&[]);
+        measure_apply(&mut t, &format!("{name} bulk"), &AutoCommit::new(), all);
+    }
+    // Orphans resolved: the missing dependency arrives.
+    let mut source = AutoCommit::new().with_actor(actor(9));
+    source.put(ROOT, "missing", 1).unwrap();
+    source.commit();
+    let skip = source.get_heads();
+    for i in 0..500 {
+        source.put(ROOT, format!("q{i}"), i as i64).unwrap();
+        source.commit();
+    }
+    let all = source.get_changes(&[]);
+    let (first, rest): (Vec<_>, Vec<_>) = all.into_iter().partition(|c| skip.contains(&c.hash()));
+    let mut doc = AutoCommit::new().with_actor(actor(1));
+    doc.apply_changes_batch(rest).unwrap();
+    measure_apply(&mut t, "orphans resolved", &doc, first);
+    t.finish();
+}
+
+#[test]
+fn load_of_document_plus_many_change_chunks_fits_64_mib() {
+    // L3's restored-state shape: a document chunk of 600 changes followed by
+    // 600 separate change chunks.
+    let mut doc = one_actor_many_changes(600);
+    let mut bytes = doc.save();
+    let heads = doc.get_heads();
+    for i in 0..600 {
+        doc.put(ROOT, format!("later{i}"), i as i64).unwrap();
+        doc.commit();
+    }
+    for mut c in doc.get_changes(&heads) {
+        bytes.extend_from_slice(&c.bytes());
+    }
+    let mut scratch = allowance();
+    let checked =
+        AutoCommit::inspect_bounded(&bytes, &NativeLimits::default(), &mut scratch).unwrap();
+    let changes = doc.get_changes(&[]);
+    let bound = checked
+        .shape()
+        .native_load_peak_probe(fragments(&changes), 1)
+        .unwrap();
+    let (loaded, peak) = peak_of(|| AutoCommit::load(&bytes).unwrap());
+    drop(loaded);
+    println!("600 + 600 chunks: load peak {peak} bound {bound}");
+    assert!(peak <= bound, "{peak} > {bound}");
+    assert!(bound <= 64 * 1024 * 1024, "{bound} > 64 MiB");
+}
+
+#[test]
+fn diff_cursor_patch_log_and_diff_cache_are_measured() {
+    let mut doc = text_with_marks(2_000, 50);
+    doc.update_diff_cursor();
+    let text = doc.put_object(ROOT, "t2", ObjType::Text).unwrap();
+    doc.splice_text(&text, 0, 0, "hello world, a longer inserted string")
+        .unwrap();
+    let mark = automerge::marks::Mark::new(
+        "bold".into(),
+        ScalarValue::Str("a-long-mark-value-exceeding-inline".into()),
+        0,
+        5,
+    );
+    doc.mark(&text, mark, automerge::marks::ExpandMark::After)
+        .unwrap();
+    doc.put(ROOT, "k", "v".repeat(100)).unwrap();
+    doc.commit();
+    let _ = doc.diff_incremental();
+    doc.put(ROOT, "k2", 1).unwrap();
+    doc.commit();
+    let a = allowance();
+    let footprint = doc.native_footprint(&a).unwrap().total_bytes();
+    let (copy, retained) = retained_of(|| doc.clone());
+    drop(copy);
+    println!("diff/patch caches: retained {retained} footprint {footprint}");
+    assert!(retained <= footprint, "{retained} > {footprint}");
+    let mut set = NativeAllocationSet::new(allowance()).unwrap();
+    let turn = set.work_turn(a.clone()).unwrap();
+    doc.clone_bounded(&mut set, &turn).unwrap();
 }
 
 #[test]
@@ -373,7 +626,6 @@ fn clone_refuses_before_copying_when_credit_is_short() {
     assert!(result.is_err());
     let peak = PEAK.with(Cell::get) - start;
     assert_eq!(small.available_bytes(), before);
-    // No document copy was attempted (only the error value may exist).
     assert!(peak < 1024, "peak {peak}");
 }
 

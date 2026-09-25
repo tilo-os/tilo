@@ -1,7 +1,7 @@
 //! qOS bounded admission (lane L1): read-only op-set dimensions.
 //! Allocates nothing; O(actors + mark-cache entries + string-column runs).
 use super::{ObjInfo, OpSet};
-use crate::resource_limits::dims::{actor_heap_bytes, hash_table_bytes, vec_bytes, DocDims, Slabs};
+use crate::resource_limits::dims::{actor_heap_bytes, hash_table_bytes, vec_bytes, DocDims};
 use crate::types::{ActorId, OpId};
 use std::mem::size_of;
 
@@ -28,8 +28,7 @@ impl OpSet {
             self.obj_info.0.capacity(),
             size_of::<(OpId, ObjInfo)>(),
         ));
-        let (marks, mark_cap, mark_table, mark_owned, mark_slabs, mark_heap) =
-            c.index.mark.native_dims();
+        let (marks, mark_cap, mark_table, mark_owned, mark_heap) = c.index.mark.native_dims();
         d.marks = marks;
         add(mark_table);
         add(mark_owned);
@@ -76,36 +75,6 @@ impl OpSet {
             c.index.inc.heap_bytes(),
             mark_heap,
         ]);
-        d.op_slabs = Slabs {
-            // 16 op columns + text, top, visible, inc and mark index columns
-            // (the raw value column is bounded separately).
-            columns: 20,
-            u32s: sum(&[
-                c.id_actor.slab_count(),
-                c.obj_actor.slab_count(),
-                c.obj_ctr.slab_count(),
-                c.key_actor.slab_count(),
-                c.succ_count.slab_count(),
-                c.succ_actor.slab_count(),
-                c.index.text.slab_count(),
-            ]),
-            u64s: sum(&[
-                c.id_ctr.slab_count(),
-                c.key_ctr.slab_count(),
-                c.succ_ctr.slab_count(),
-                c.action.slab_count(),
-                c.value_meta.slab_count(),
-                c.index.inc.slab_count(),
-            ]),
-            bools: sum(&[
-                c.insert.slab_count(),
-                c.expand.slab_count(),
-                c.index.top.slab_count(),
-                c.index.visible.slab_count(),
-            ]),
-            marks: mark_slabs,
-            strs: sum(&[c.key_str.slab_count(), c.mark_name.slab_count()]),
-            str_bytes: strs,
-        };
+        d.op_str_bytes = strs;
     }
 }

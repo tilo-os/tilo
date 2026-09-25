@@ -9,7 +9,7 @@ use automerge::resource_limits::{
     NativeWorkTurn,
 };
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ChangeHash, ObjType, ReadDoc, SaveOptions, ScalarValue, ROOT};
+use automerge::{AutoCommit, ChangeHash, ObjType, ROOT, ReadDoc, SaveOptions, ScalarValue};
 
 // ---- per-thread allocation meter -------------------------------------------
 
@@ -562,10 +562,12 @@ fn changes_since_matches_get_changes() {
             assert_eq!(changes.raw_bytes(i), Some(change.raw_bytes()));
         }
     }
-    assert!(native
-        .changes_since_bounded(&source.get_heads(), &owner.turn)
-        .unwrap()
-        .is_empty());
+    assert!(
+        native
+            .changes_since_bounded(&source.get_heads(), &owner.turn)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
