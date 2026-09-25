@@ -93,6 +93,50 @@ class SelectorTests(unittest.TestCase):
         self.assertIn("suites_required=true", lines)
         self.assertIn("suites=os/tests/a.sh", lines)
 
+    def test_cross_package_readers_are_checked_and_tested_when_their_inputs_change(self):
+        # "base" reads leaf's sources and a shipped OS file from outside itself,
+        # the way tilo-ui's design audit reads every app.
+        manifest = ci_select.path_suites.parse(
+            '[[cargo]]\npackage = "base"\ninputs = ["leaf/*.rs", "os/usr/share/x.json"]\n'
+            'readers = ["base/tests/audit.rs"]\n')
+        def plan(changes, **options):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest, **options)
+        leaf = plan(["leaf/src/main.rs"])
+        self.assertEqual(set(leaf["tested"]), {"leaf", "base", "qdoc", "pkg", "collab-types"})
+        # The reader's code did not change, so its dependants are not re-checked.
+        self.assertNotIn("middle", leaf["selected"])
+        self.assertIn("read the changed files", leaf["reason"])
+        row = leaf["matrix"]["include"][0]
+        self.assertIn("base", row["test_packages"].split()[1::2])
+        # A file no package owns selects the package that reads it.
+        self.assertIn("base", plan(["os/usr/share/x.json"])["tested"])
+        # Paths that no declared reader reads select nothing extra.
+        self.assertNotIn("base", plan(["leaf/Cargo.toml"])["tested"])
+        self.assertNotIn("base", plan(["os/usr/share/other.json"])["selected"])
+        # Without a manifest nothing is attributed.
+        self.assertNotIn("base", ci_select.make_plan(
+            self.metadata, self.root, ["leaf/src/main.rs"], 2)["tested"])
+
+    def test_a_read_input_is_never_treated_as_quality_only(self):
+        (self.root / "DEVELOPMENT.md").write_text("")
+        manifest = ci_select.path_suites.parse(
+            '[[cargo]]\npackage = "leaf"\ninputs = ["DEVELOPMENT.md"]\nreaders = ["leaf/src/lib.rs"]\n')
+        plan = ci_select.make_plan(self.metadata, self.root, ["DEVELOPMENT.md"], 2,
+                                   suite_manifest=manifest)
+        self.assertTrue(plan["rust_required"])
+        self.assertIn("leaf", plan["tested"])
+
+    def test_production_manifest_selects_the_ui_audit_for_an_app_change(self):
+        # The regression that motivated reader declarations: an app ported to
+        # the resource framework broke tilo-ui's launcher audit, whose tests
+        # the dependency graph never selected for an app-only change.
+        manifest = ci_select.path_suites.load(REPO_ROOT)
+        for path in ("apps/scratchpad/src/main.rs", "apps/scratchpad/src/lib.rs",
+                     "apps/scratchpad/tilo-app.toml"):
+            with self.subTest(path=path):
+                self.assertIn("tilo-ui", ci_select.path_suites.select_packages(manifest, [path]))
+
     def test_suite_manifest_changes_are_quality_only(self):
         paths = ("tools/ci/suites.py", "tools/ci/suites.toml", "tools/tests/test_suites.py")
         for path in paths:
