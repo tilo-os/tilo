@@ -43,19 +43,12 @@ class KernelBuildEnvironmentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), BUILDROOT)
 
-    def test_prefers_the_buildroot_over_any_rpm_snapshot(self):
+    def test_ignores_any_rpm_snapshot_the_provenance_also_names(self):
         result = run(envelope([SOURCE, BUILDROOT, BASE, RPMS]), as_array=True)
         self.assertEqual(result.stdout.strip(), BUILDROOT)
 
-    def test_accepts_a_kernel_published_before_the_buildroot(self):
-        result = run(envelope([SOURCE, BASE, RPMS]))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), RPMS)
-
-    def test_ignores_the_os_rpm_snapshot_and_base(self):
-        # Any signed RPM snapshot is accepted; no equality with the OS pins.
-        other = "code.sandbox.example/qos/rpms@sha256:" + "6" * 64
-        self.assertEqual(run(envelope([SOURCE, other])).stdout.strip(), other)
+    def test_rejects_a_kernel_built_from_an_rpm_snapshot(self):
+        self.assertEqual(run(envelope([SOURCE, BASE, RPMS])).returncode, 1)
 
     def test_rejects_missing_or_ambiguous_environments(self):
         other = "code.sandbox.example/qos/tilo-kernel-buildroot@sha256:" + "7" * 64

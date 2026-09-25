@@ -204,7 +204,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   repository access; the branch is already pushed, so a PR can be opened from
   it by hand in the meantime. OS CI selects the matching pin, verifies
   its Cosign signature, OCI architecture, and SLSA source, architecture and
-  digest provenance, then verifies the signature of the build environment
+  digest provenance, then verifies the signature of the kernel buildroot
   that provenance binds (`os/dev/verify-kernel-provenance.sh`), before
   BuildKit can consume it. The kernel is not compared with the OS image's own
   RPM snapshot or base: the kernel packages carry no userspace, and their
