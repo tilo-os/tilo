@@ -25,6 +25,7 @@
 )]
 
 use std::time::{Duration, Instant};
+use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
 use tilo_agent::{Config, Session};
@@ -222,7 +223,7 @@ fn drive_peer_and_type(
                     continue;
                 };
                 replica
-                    .load_incremental(&data)
+                    .load_incoming(&data)
                     .expect("apply the agent's change");
 
                 // The person is typing through all of this. One character

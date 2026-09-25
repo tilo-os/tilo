@@ -502,6 +502,7 @@ impl FeedsDoc {
 mod tests {
     use super::*;
     use crate::model::{BlockKind, ContentBlock};
+    use tilo_automerge::ApplyIncoming;
     use uuid::Uuid;
 
     fn sample_store() -> Store {
@@ -611,7 +612,7 @@ mod tests {
 
         FeedsDoc::set_tags(&mut alice, id, &["example".into(), "design".into()]);
         FeedsDoc::set_tags(&mut bob, id, &["example".into(), "later".into()]);
-        alice.merge(&mut bob).expect("replicas merge");
+        alice.merge_incoming(&mut bob).expect("replicas merge");
 
         assert_eq!(
             FeedsDoc::load(&alice).article(id).expect("article").tags,
@@ -676,7 +677,7 @@ mod tests {
         FeedsDoc::set_read(&mut a, id, true);
 
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
-        a.merge(&mut b_loaded).unwrap();
+        a.merge_incoming(&mut b_loaded).unwrap();
         let loaded = FeedsDoc::load(&a);
         assert!(loaded.articles[0].read, "A's read flag survived merge");
     }

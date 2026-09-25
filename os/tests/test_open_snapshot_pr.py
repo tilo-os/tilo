@@ -239,6 +239,39 @@ class RpmAndKernelSnapshotPullRequestTests(unittest.TestCase):
             with self.subTest(source=source), self.assertRaises(SystemExit):
                 run_main(self.argv(source=source))
 
+    def test_closes_superseded_open_pin_pulls_only(self):
+        older = "automation/rpm-snapshot-" + "1" * 16
+        gone = "automation/kernel-snapshot-" + "2" * 16
+        argv = self.argv()
+        argv[argv.index("kernel"):argv.index("kernel")] = [
+            "--supersede", older, "--supersede", gone]
+        opened = {older: {"number": 5}, gone: None, self.branch: None}
+        calls = []
+
+        def request(server, repository, token, path, method="GET", payload=None):
+            calls.append((path, method, payload))
+            return {"number": 8, "html_url": "https://forge.invalid/qos/qos/pulls/8"}
+
+        with mock.patch.dict(os.environ, {"FORGEJO_TOKEN": "secret"}), \
+                mock.patch.object(sys, "argv", argv), \
+                mock.patch.object(MODULE, "find_open",
+                                  side_effect=lambda s, r, t, branch: opened[branch]), \
+                mock.patch.object(MODULE, "request", side_effect=request), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(MODULE.main(), 0)
+        self.assertEqual(calls[-1], ("/pulls/5", "PATCH", {"state": "closed"}))
+        self.assertEqual([c for c in calls if c[1] == "PATCH"], [calls[-1]])
+
+    def test_never_supersedes_a_non_automation_branch(self):
+        argv = self.argv()
+        argv[argv.index("kernel"):argv.index("kernel")] = ["--supersede", "main"]
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+            result, request = run_main(argv)
+        self.assertEqual(result, 1)
+        self.assertNotIn("PATCH", [call.args[4] for call in request.call_args_list
+                                   if len(call.args) > 4])
+
     def test_rejects_digest_or_branch_not_bound_to_both_pins(self):
         kernel_only = MODULE.kernel_contents(self.x86_ref, self.arm_ref)
         kernel_digest = hashlib.sha256(kernel_only.encode()).hexdigest()
@@ -311,6 +344,75 @@ class WpeSnapshotPullRequestTests(unittest.TestCase):
     def test_rejects_digest_or_branch_not_bound_to_refs(self):
         for overrides in ({"digest": "e" * 64},
                           {"branch": "automation/kernel-snapshot-" + self.digest[:16]}):
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+
+class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
+    x86_ref = "code.sandbox.example/qos/tilo-kernel-buildroot@sha256:" + "a" * 64
+    arm_ref = "code.sandbox.example/qos/tilo-kernel-buildroot@sha256:" + "b" * 64
+
+    def setUp(self):
+        contents = MODULE.kernel_buildroot_contents(self.x86_ref, self.arm_ref)
+        self.digest = hashlib.sha256(contents.encode()).hexdigest()
+        self.branch = "automation/kernel-buildroot-snapshot-" + self.digest[:16]
+
+    def argv(self, **overrides):
+        values = {"branch": self.branch, "digest": self.digest,
+                  "x86": self.x86_ref, "arm": self.arm_ref}
+        values.update(overrides)
+        return [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "qos/qos", "--branch", values["branch"],
+            "--snapshot-digest", values["digest"], "kernel-buildroot",
+            "--x86-ref", values["x86"], "--arm-ref", values["arm"],
+        ]
+
+    def test_main_creates_digest_bound_pull(self):
+        result, request = run_main(self.argv())
+        self.assertEqual(result, 0)
+        payload = request.call_args.args[5]
+        self.assertEqual(payload["head"], self.branch)
+        self.assertEqual(payload["title"],
+                         "build(os): refresh native kernel buildroot snapshots")
+        self.assertIn(self.digest, payload["body"])
+
+    def test_workflow_writes_the_canonical_pin_file(self):
+        workflow = (REPO / ".forgejo/workflows/snapshot-kernel-buildroot.yml").read_text()
+        for line in MODULE.kernel_buildroot_contents("$X", "$Y").splitlines()[:2]:
+            self.assertIn(f"'{line}'", workflow)
+        self.assertIn('"KERNEL_BUILDROOT_X86_64_REF=$KERNEL_BUILDROOT_X86_64_REF"', workflow)
+        self.assertIn('"KERNEL_BUILDROOT_AARCH64_REF=$KERNEL_BUILDROOT_AARCH64_REF"', workflow)
+        self.assertIn('branch="automation/kernel-buildroot-snapshot-${snapshot_digest:0:16}"',
+                      workflow)
+
+    def test_committed_pins_use_the_canonical_names(self):
+        committed = (REPO / "os/kernel-buildroot-snapshot.env").read_text()
+        refs = dict(line.split("=", 1) for line in committed.splitlines()
+                    if line and not line.startswith("#"))
+        self.assertEqual(set(refs), {"KERNEL_BUILDROOT_X86_64_REF",
+                                     "KERNEL_BUILDROOT_AARCH64_REF"})
+        if all(refs.values()):
+            self.assertEqual(
+                MODULE.kernel_buildroot_contents(refs["KERNEL_BUILDROOT_X86_64_REF"],
+                                                 refs["KERNEL_BUILDROOT_AARCH64_REF"]),
+                committed,
+            )
+
+    def test_rejects_shared_mutable_or_foreign_ref(self):
+        cases = (
+            {"arm": self.x86_ref},
+            {"arm": "code.sandbox.example/qos/tilo-kernel-buildroot:latest"},
+            {"arm": "code.sandbox.example/qos/tilo-wpe-buildroot@sha256:" + "b" * 64},
+            {"arm": "code.sandbox.example/qos/rpms@sha256:" + "b" * 64},
+        )
+        for overrides in cases:
+            with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
+                run_main(self.argv(**overrides))
+
+    def test_rejects_digest_or_branch_not_bound_to_refs(self):
+        for overrides in ({"digest": "e" * 64},
+                          {"branch": "automation/wpe-buildroot-snapshot-" + self.digest[:16]}):
             with self.subTest(overrides=overrides), self.assertRaises(SystemExit):
                 run_main(self.argv(**overrides))
 

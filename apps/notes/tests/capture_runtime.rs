@@ -43,36 +43,101 @@ fn canonical_markdown_and_title_affordance_captures_reach_real_mounted_states() 
     }
 }
 
-#[test]
-fn canonical_document_feature_captures_use_the_real_component() {
+fn render_canonical_document_feature(scenario: &str, viewport: (u32, u32)) {
     let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../target/notes-review/canonical-document-features");
     std::fs::create_dir_all(&directory).unwrap();
-    for (scenario, viewport) in [
-        ("paragraph_click", (740, 700)),
-        ("mixed_outline", (740, 800)),
-        ("recipes", (1000, 700)),
-        ("formula", (1000, 800)),
-        ("transclusion", (1000, 700)),
-        ("external_link", (740, 700)),
-        ("table", (1000, 700)),
-        ("table_large", (1000, 800)),
-        ("table_large_scrolled", (390, 844)),
-        ("table_cell_edit", (1000, 700)),
-        ("image", (1000, 700)),
-        ("image_edit", (1000, 700)),
-        ("scrolled", (390, 844)),
-    ] {
-        let path = directory.join(format!("{scenario}.png"));
-        notes::shots::render_to_path(viewport, &path, Some(scenario), None)
-            .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
-        assert!(
-            std::fs::read(&path)
-                .unwrap()
-                .starts_with(b"\x89PNG\r\n\x1a\n")
-        );
-    }
+    let path = directory.join(format!("{scenario}.png"));
+    notes::shots::render_to_path(viewport, &path, Some(scenario), None)
+        .unwrap_or_else(|error| panic!("{scenario}: {error:?}"));
+    assert!(
+        std::fs::read(&path)
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n")
+    );
 }
+
+macro_rules! canonical_document_feature_captures {
+    ($(($test:ident, $scenario:literal, $viewport:expr)),+ $(,)?) => {
+        $(
+            #[test]
+            fn $test() {
+                render_canonical_document_feature($scenario, $viewport);
+            }
+        )+
+    };
+}
+
+// Keep each genuine full-frame render under its own nextest timeout. Capture
+// runtime tests reserve the complete runner in `.config/nextest.toml`, so this
+// finer reporting does not increase renderer concurrency.
+canonical_document_feature_captures!(
+    (
+        canonical_document_feature_paragraph_click_capture,
+        "paragraph_click",
+        (740, 700)
+    ),
+    (
+        canonical_document_feature_mixed_outline_capture,
+        "mixed_outline",
+        (740, 800)
+    ),
+    (
+        canonical_document_feature_recipes_capture,
+        "recipes",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_formula_capture,
+        "formula",
+        (1000, 800)
+    ),
+    (
+        canonical_document_feature_transclusion_capture,
+        "transclusion",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_external_link_capture,
+        "external_link",
+        (740, 700)
+    ),
+    (
+        canonical_document_feature_table_capture,
+        "table",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_large_table_capture,
+        "table_large",
+        (1000, 800)
+    ),
+    (
+        canonical_document_feature_scrolled_large_table_capture,
+        "table_large_scrolled",
+        (390, 844)
+    ),
+    (
+        canonical_document_feature_table_cell_edit_capture,
+        "table_cell_edit",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_image_capture,
+        "image",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_image_edit_capture,
+        "image_edit",
+        (1000, 700)
+    ),
+    (
+        canonical_document_feature_scrolled_document_capture,
+        "scrolled",
+        (390, 844)
+    ),
+);
 
 #[test]
 fn canonical_navigation_and_overlay_captures_use_real_input_paths() {

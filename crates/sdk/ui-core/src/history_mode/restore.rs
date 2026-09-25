@@ -3,6 +3,7 @@ use automerge::{
     AutoCommit, AutomergeError, ChangeHash, ObjType, ReadDoc, TextEncoding,
     transaction::Transactable,
 };
+use tilo_automerge::ApplyIncoming;
 mod projection;
 mod schema;
 mod selection;
@@ -13,6 +14,17 @@ pub use projection::ContentProjection;
 pub enum RestoreValueType {
     Object(ObjType),
     Scalar(ScalarType),
+    /// Whatever the property holds. For content whose stored representation
+    /// may vary (text written as a scalar by an older schema, an integer read
+    /// as a float); the schema's `validate` functions own its shape.
+    Any,
+}
+
+impl RestoreValueType {
+    /// Whether a stored value of type `actual` satisfies this expectation.
+    pub fn accepts(self, actual: Self) -> bool {
+        self == Self::Any || self == actual
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -240,7 +252,7 @@ pub fn prepare_content_restore(
     if target_doc.text_encoding() != doc.text_encoding() {
         let mut encoded = AutoCommit::new_with_encoding(doc.text_encoding());
         encoded
-            .apply_changes(target_doc.get_changes(&[]))
+            .apply_incoming(target_doc.get_changes(&[]))
             .map_err(|error| RestoreError::read("historical target", &error))?;
         target_doc = encoded;
     }
@@ -309,7 +321,7 @@ fn committed_heads(doc: &AutoCommit) -> Result<Vec<ChangeHash>, RestoreError> {
     require_committed(doc)?;
     let mut copy = doc.clone();
     let visible = sorted_heads(&copy.get_heads());
-    copy.integrate();
+    copy.integrate_all();
     if visible != sorted_heads(&copy.get_heads()) {
         return Err(RestoreError::StaleReview);
     }

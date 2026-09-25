@@ -44,10 +44,10 @@ pub struct HostApp {
 /// `xdg_activation_v1` token on the compositor thread.
 #[derive(Debug, Clone)]
 pub struct QueuedLaunch {
-    pub desktop_id: String,
-    pub display_name: String,
+    pub app: HostApp,
     pub placement: crate::shell::tab_binding::Placement,
     pub portal_workspace_id: Option<String>,
+    pub requested_at: std::time::Instant,
 }
 
 fn queued_launches() -> &'static std::sync::Mutex<Vec<QueuedLaunch>> {
@@ -262,6 +262,12 @@ pub fn find(desktop_id: &str) -> Option<HostApp> {
         .map(HostApp::from_entry)
 }
 
+/// Resolve a durable host-app identity. New saves use the exact desktop-file
+/// id, while older state may still carry a window-system identity.
+pub fn resolve(identity: &str) -> Option<HostApp> {
+    find(identity).or_else(|| app_for_window_id(identity))
+}
+
 /// Pure — no I/O, so the exact command is assertable. No
 /// `--workspace-id` and no `--capabilities`: a host app is in no room
 /// and confined by nothing Tilo controls, so passing either would
@@ -371,6 +377,18 @@ pub fn launch_with_document_and_activation(
             desktop_id: desktop_id.to_string(),
         });
     };
+    launch_resolved_with_activation(app, document, portal_workspace_id, activation_token)
+}
+
+/// Launch an entry already resolved by the catalogue/search provider. This
+/// preserves the exact trusted projection selected by the user and removes a
+/// second catalogue lookup between request and spawn.
+pub(crate) fn launch_resolved_with_activation(
+    app: HostApp,
+    document: Option<&Path>,
+    portal_workspace_id: Option<String>,
+    activation_token: Option<&str>,
+) -> Result<HostApp, LaunchError> {
     let Some(socket) = launcher::wayland_socket() else {
         launcher::clear_pending_placement(&app.desktop_id);
         return Err(LaunchError::NoDisplay);
@@ -575,10 +593,10 @@ mod tests {
         set_x11_session(None);
         let _ = drain_queued_launches();
         queue_launch(QueuedLaunch {
-            desktop_id: "org.example.Legacy.desktop".into(),
-            display_name: "Legacy".into(),
+            app: app("org.example.Legacy.desktop", "Legacy", &["Legacy"]),
             placement: crate::compositor::tab_binding::Placement::NewGroup,
             portal_workspace_id: None,
+            requested_at: std::time::Instant::now(),
         })
         .expect("Linux accepts a queued host launch");
 
@@ -596,7 +614,7 @@ mod tests {
         assert!(x11_ready());
         let requests = drain_queued_launches();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].desktop_id, "org.example.Legacy.desktop");
+        assert_eq!(requests[0].app.desktop_id, "org.example.Legacy.desktop");
         set_x11_session(None);
         set_x11_unavailable();
     }

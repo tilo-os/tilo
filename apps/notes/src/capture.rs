@@ -3,7 +3,7 @@
 use std::{cell::RefCell, fmt::Write as _, path::Path, rc::Rc};
 use ui::application::{ApplicationHost, ComponentRunnerInputs, PreparedComponentInputs};
 use ui::headless::{FrameHarness, SemanticExpectation};
-use ui::launch::LaunchError;
+use ui::launch::{LaunchError, LaunchRecovery};
 use ui::permissions::{Actor, PermissionContext, Role, UserId};
 
 thread_local! {
@@ -646,11 +646,21 @@ pub fn drive_fixture(driver: &mut FrameHarness, scenario: Option<&str>) -> Resul
         }
         Some("multiline_typing" | "paragraph_click") => {
             new_note(driver)?;
-            driver.type_text(FIRST);
+            let enter_text = |driver: &mut FrameHarness, text: &str| {
+                if scenario == Some("paragraph_click") {
+                    // This capture proves caret placement after pointer input;
+                    // a real IME commit builds the same document without
+                    // rendering hundreds of unrelated key frames first.
+                    driver.commit_text(text);
+                } else {
+                    driver.type_text(text);
+                }
+            };
+            enter_text(driver, FIRST);
             driver.key("Enter");
-            driver.type_text(SECOND);
+            enter_text(driver, SECOND);
             chord(driver, &["shift"], "Enter");
-            driver.type_text(CONTINUATION);
+            enter_text(driver, CONTINUATION);
             if scenario == Some("paragraph_click") {
                 driver.relayout();
                 let rects = visible_block_rects(driver);
@@ -1358,7 +1368,7 @@ pub fn render_to_path(
     if let Err(source) = result {
         return Err(LaunchError::ComponentCapture {
             source: Box::new(source),
-            reports,
+            recovery: LaunchRecovery::reports(reports),
         });
     }
     if reports.iter().any(|report| {
@@ -1368,7 +1378,7 @@ pub fn render_to_path(
     }) {
         return Err(LaunchError::ComponentCapture {
             source: Box::new(LaunchError::Operation("capture close failed".into())),
-            reports,
+            recovery: LaunchRecovery::reports(reports),
         });
     }
     Ok(())

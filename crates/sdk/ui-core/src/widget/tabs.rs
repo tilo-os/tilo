@@ -224,6 +224,10 @@ pub struct TabBar {
     hover_close_idx: Option<usize>,
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
+    /// Candidate pill and the instant its deliberate-hover dwell began.
+    hover_intent: Option<(usize, Instant)>,
+    /// Previous pointer sample used to reject fast transit across tabs.
+    hover_motion_sample: Option<(Point, Instant)>,
     hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
     /// Offset from the pressed pill's top-left to the cursor at press time; the
@@ -338,6 +342,8 @@ impl TabBar {
             hover_close_idx: None,
             hover_max_idx: None,
             hover_search_idx: None,
+            hover_intent: None,
+            hover_motion_sample: None,
             hover_new_tab: false,
             pinned_ids: HashSet::new(),
             accent_ids: HashMap::new(),
@@ -406,6 +412,8 @@ impl TabBar {
         self.hover_close_idx = None;
         self.hover_max_idx = None;
         self.hover_search_idx = None;
+        self.hover_intent = None;
+        self.hover_motion_sample = None;
         self.hover_new_tab = false;
         self.press_origin = None;
         self.pending_drag = None;
@@ -1086,7 +1094,12 @@ impl TabBar {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
-        if Some(i) == self.hover_idx || pressed {
+        let hover_intended = self.hover_intent.is_some_and(|(idx, started)| {
+            idx == i && started.elapsed() >= Duration::from_millis(HOVER_INTENT_MS)
+        });
+        // Keyboard focus is explicit intent and must remain immediate. Pointer
+        // hover, by contrast, waits so crossing the tab row does not move it.
+        if hover_intended || pressed || self.keyboard_focus && t.id == self.active_id {
             // With the maximize chip withheld there is nothing above `Close` to
             // open into, and reserving `Full`'s width for a chip that will
             // never be placed would just push the title around for nothing.
@@ -1177,6 +1190,18 @@ impl TabBar {
             },
         );
         from
+    }
+
+    /// Test/shot clock control for the pointer-intent dwell. Production input
+    /// still arms this exclusively through `on_cursor_moved`.
+    #[cfg(any(test, debug_assertions))]
+    pub fn hold_hover_intent_at(&mut self, at: Duration) -> bool {
+        let Some((idx, _)) = self.hover_intent else {
+            return false;
+        };
+        let now = crate::time::now();
+        self.hover_intent = Some((idx, now.checked_sub(at).unwrap_or(now)));
+        true
     }
 
     /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
@@ -1642,6 +1667,9 @@ impl TabBar {
     pub fn bar_rect(&self) -> Rect {
         self.rect
     }
+    pub(crate) fn max_rects_internal(&self) -> &[Rect] {
+        &self.max_rects
+    }
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
@@ -2021,6 +2049,11 @@ const HOVER_GROWTH_PX: f64 = Reveal::Full.reserve() - Reveal::None.reserve();
 /// Matched to [`LAYOUT_ANIM_MS`] so a pill opening and neighbours sliding
 /// aside read as one motion.
 const REVEAL_ANIM_MS: u64 = LAYOUT_ANIM_MS;
+/// A pointer merely crossing the row must not reflow it. Secondary actions
+/// appear only after a short, deliberate hover.
+const HOVER_INTENT_MS: u64 = 200;
+/// Cursor travel faster than this is navigation, not intent.
+const HOVER_INTENT_MAX_SPEED_PX_PER_MS: f64 = 0.45;
 
 /// First-frame estimate before `draw` records the real advance into
 /// [`TabBar::title_advance`]. Deliberately an over-estimate: guessing wide is
@@ -2622,7 +2655,17 @@ impl Widget for TabBar {
             && self
                 .drag_lifted_at
                 .is_some_and(|started| started.elapsed() < self.drag_lift_duration);
-        drop_zone || layout || insert_fade || close_fade || hover_drop_fade || reveal || drag_lift
+        let hover_intent = self
+            .hover_intent
+            .is_some_and(|(_, started)| started.elapsed() < Duration::from_millis(HOVER_INTENT_MS));
+        drop_zone
+            || layout
+            || insert_fade
+            || close_fade
+            || hover_drop_fade
+            || reveal
+            || drag_lift
+            || hover_intent
     }
 }
 
@@ -3058,6 +3101,16 @@ impl TabBar {
         handled: &mut bool,
     ) {
         let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+        let now = crate::time::now();
+        let speed = self.hover_motion_sample.map_or(0.0, |(previous, sampled)| {
+            let elapsed_ms = now.duration_since(sampled).as_secs_f64() * 1000.0;
+            if elapsed_ms <= f64::EPSILON {
+                f64::INFINITY
+            } else {
+                point_delta(p, previous).hypot() / elapsed_ms
+            }
+        });
+        self.hover_motion_sample = Some((p, now));
         self.last_cursor = p;
         // Pinned pills leave their close/max/search rects at `Rect::ZERO`;
         // skip them so a cursor crossing (0,0) doesn't latch a hover on a
@@ -3067,8 +3120,14 @@ impl TabBar {
                 .get(i)
                 .is_some_and(|t| self.pinned_ids.contains(&t.id))
         };
-        self.hover_close_idx = (0..self.tabs.len())
-            .find(|&i| self.close_hit_rect(i).is_some_and(|r| r.contains(p)))
+        // The forgiving 32px click target can consume an entire squeezed pill.
+        // Only the painted glyph suppresses reveal intent; the larger target
+        // remains in force for presses without making the other chips
+        // unreachable on narrow active or modified tabs.
+        self.hover_close_idx = self
+            .close_rects
+            .iter()
+            .position(|r| r.area() > 0.0 && r.contains(p))
             .filter(|&i| !is_pinned_at(i));
         // One point lights one chip: the close target first, then a painted
         // action glyph, then the enlarged action targets by priority — the
@@ -3085,6 +3144,21 @@ impl TabBar {
             .filter(|&(_, chip)| chip == ActionChip::Search)
             .map(|(i, _)| i);
         self.hover_idx = self.tab_rects.iter().position(|r| r.contains(p));
+        let close_excluded = self.hover_close_idx.is_some();
+        self.hover_intent = match (self.hover_intent, self.hover_idx) {
+            (_, None) => None,
+            (_, Some(_)) if close_excluded => None,
+            (Some((candidate, started)), Some(idx))
+                if candidate == idx && speed <= HOVER_INTENT_MAX_SPEED_PX_PER_MS =>
+            {
+                Some((candidate, started))
+            }
+            // Entering quickly starts a fresh dwell instead of dropping the
+            // candidate. If the pointer stops here there is no later motion
+            // event to arm it; if transit continues, each event resets the
+            // timestamp and the reveal still cannot mature mid-flight.
+            (_, Some(idx)) => Some((idx, now)),
+        };
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some((idx, origin)) = self.press_origin
             && point_delta(p, origin).hypot() > DRAG_START_THRESHOLD_PX
@@ -3614,6 +3688,12 @@ mod tests {
             }
             if hover {
                 b.hover_idx = Some(1);
+                b.hover_intent = Some((
+                    1,
+                    Instant::now()
+                        .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
+                        .expect("hover intent instant"),
+                ));
             }
 
             let theme = Theme::dark();
@@ -4276,8 +4356,8 @@ mod tests {
         );
         assert_eq!(b.drop_zone_target(), None, "release clears target");
         assert!(
-            !b.needs_animation_frame(),
-            "at rest (no drag) the bar must not pump frames"
+            b.hover_intent.is_some() && b.needs_animation_frame(),
+            "release clears the drag target but preserves the stationary pill-hover dwell",
         );
     }
 
@@ -5274,6 +5354,12 @@ mod tests {
 
         // The affordance is reachable via hover, just not permanent.
         b.hover_idx = Some(1);
+        b.hover_intent = Some((
+            1,
+            Instant::now()
+                .checked_sub(Duration::from_millis(HOVER_INTENT_MS + 1))
+                .expect("hover intent instant"),
+        ));
         assert!(
             b.close_affordance_visible_for_tests(1, &theme),
             "a hovered pill has a lifted body to host the ×",
@@ -5285,6 +5371,7 @@ mod tests {
 
         // Pressing does the same, so the glyph never blinks out mid-click.
         b.hover_idx = None;
+        b.hover_intent = None;
         b.press_origin = Some((2, Point::ZERO));
         assert!(
             b.close_affordance_visible_for_tests(2, &theme),
@@ -6063,6 +6150,7 @@ mod tests {
         let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
         let mut handled = false;
         dispatch_cursor(b, p, &mut handled);
+        assert!(b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1))));
         lay_out_at_width_with(b, width, theme);
     }
 
@@ -6137,6 +6225,70 @@ mod tests {
             ],
             1,
         )
+    }
+
+    #[test]
+    fn pointer_reveal_waits_for_hover_intent_timeout() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let width = 900.0;
+        let mut b = four_tab_bar();
+        lay_out_at_width_with(&mut b, width, &theme);
+        let idle = b.tab_rects()[1].width();
+        let p = Point::new(b.tab_rects()[1].x0 + 12.0, b.tab_rects()[1].center().y);
+        let mut handled = false;
+        dispatch_cursor(&mut b, p, &mut handled);
+        lay_out_at_width_with(&mut b, width, &theme);
+        assert!((b.tab_rects()[1].width() - idle).abs() < 0.01);
+        assert!(b.max_rects()[1].area() == 0.0 && b.search_rects()[1].area() == 0.0);
+
+        assert!(b.hold_hover_intent_at(Duration::from_millis(HOVER_INTENT_MS.saturating_add(1))));
+        lay_out_at_width_with(&mut b, width, &theme);
+        assert!(b.tab_rects()[1].width() > idle + 1.0);
+        assert!(b.max_rects()[1].area() > 0.0 && b.search_rects()[1].area() > 0.0);
+    }
+
+    #[test]
+    fn leaving_or_hovering_close_cancels_hover_intent() {
+        let mut b = ghost_test_bar();
+        let mut handled = false;
+        dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
+        assert!(b.hover_intent.is_some());
+        dispatch_cursor(&mut b, Point::new(90.0, 50.0), &mut handled);
+        assert_eq!(b.hover_intent, None);
+
+        b.hover_motion_sample = None;
+        dispatch_cursor(&mut b, Point::new(90.0, 20.0), &mut handled);
+        dispatch_cursor(&mut b, Point::new(150.0, 20.0), &mut handled);
+        assert_eq!(b.hover_close_idx, Some(1));
+        assert_eq!(b.hover_intent, None);
+    }
+
+    #[test]
+    fn fast_transit_across_tabs_restarts_the_reveal_dwell() {
+        let mut b = ghost_test_bar();
+        let now = Instant::now();
+        b.hover_motion_sample = Some((Point::new(10.0, 20.0), now));
+        let mut handled = false;
+        dispatch_cursor(&mut b, Point::new(190.0, 20.0), &mut handled);
+        assert_eq!(b.hover_idx, Some(2));
+        let (candidate, started) = b.hover_intent.expect("destination dwell starts");
+        assert_eq!(candidate, 2);
+        assert!(
+            started.elapsed() < Duration::from_millis(HOVER_INTENT_MS),
+            "fast transit must not carry a mature reveal into its destination",
+        );
+    }
+
+    #[test]
+    fn keyboard_focus_reveals_active_actions_immediately() {
+        let theme = Theme::dark().with_reduce_motion(true);
+        let mut b = four_tab_bar();
+        Widget::set_focus(&mut b, true);
+        lay_out_at_width_with(&mut b, 900.0, &theme);
+        assert!(b.max_rects()[0].area() > 0.0);
+        assert!(b.search_rects()[0].area() > 0.0);
+        let a11y = Widget::accessibility(&b).expect("tab bar accessibility");
+        assert!(a11y.state.focused);
     }
 
     #[test]

@@ -644,6 +644,7 @@ mod tests {
     use super::*;
     use crate::model::{Source, SourceKind, sample_targets};
     use tilo_actions::{ActionInput, LocalTransport};
+    use tilo_automerge::ApplyIncoming;
     use ui::widget::Widget;
 
     fn registry() -> ActionRegistry {
@@ -1059,7 +1060,7 @@ mod tests {
             .unwrap();
         left.commit();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let profile = ImagerDoc::profile(&left);
         assert_eq!(profile.hostname, "studio");
         assert_eq!(profile.keyboard, "de");
@@ -1112,7 +1113,7 @@ mod tests {
         .unwrap();
         left.commit();
         right.commit();
-        left.merge(&mut right).unwrap();
+        left.merge_incoming(&mut right).unwrap();
         let head = ImagerDoc::recent(&left);
         assert_eq!(
             head[0].path,

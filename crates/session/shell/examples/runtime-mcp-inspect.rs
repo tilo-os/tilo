@@ -6,6 +6,7 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
+use tilo_automerge::ApplyIncoming;
 
 const WRITER: &str = "dev.qos.word-processor";
 use serde_json::json;
@@ -107,12 +108,12 @@ fn reconstruct(
             collab_types::RoutedDocumentPayload::Cleartext(
                 collab_types::DocumentMutation::Snapshot(data),
             ) => {
-                doc.merge(&mut automerge::AutoCommit::load(&data)?)?;
+                doc.merge_incoming(&mut automerge::AutoCommit::load(&data)?)?;
             }
             collab_types::RoutedDocumentPayload::Cleartext(
                 collab_types::DocumentMutation::Incremental(data),
             ) => {
-                doc.load_incremental(&data)?;
+                doc.load_incoming(&data)?;
             }
             _ => return Err("unexpected encrypted Writer evidence".into()),
         }

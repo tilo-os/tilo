@@ -14,6 +14,7 @@ use crate::sheet::snapshot::{CellType, CellView, SheetView, WorkbookSnapshot};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use std::collections::BTreeMap;
+use tilo_automerge::ApplyIncoming;
 
 /// The data written into a cell: its value + type, an optional preserved formula
 /// (source without the leading `=`), and an optional opaque style ref.
@@ -525,7 +526,7 @@ impl Workbook {
         let take = version.saturating_add(1).min(changes.len());
         let mut rebuilt = AutoCommit::new();
         rebuilt
-            .apply_changes(changes.into_iter().take(take))
+            .apply_incoming(changes.into_iter().take(take))
             .map_err(|e| DocError::Invalid(format!("apply_changes: {e}")))?;
         let c = open(&rebuilt, &ROOT)?;
         Ok(materialize(&rebuilt, &c))

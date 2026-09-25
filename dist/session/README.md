@@ -32,6 +32,20 @@ Package checks should assert that the installed wrapper contains both
 `--host-desktop-session` and `--firstboot`, and that the Wayland desktop entry
 executes that wrapper rather than the shell binary directly.
 
+## Crash and performance records
+
+Host sessions retain private diagnostics in
+`$XDG_STATE_HOME/tilo/session-logs` (or `~/.local/state/tilo/session-logs`).
+`latest.log` is the bounded compositor/application stream and
+`frame-trace.csv` is the structured per-loop phase trace. On the next login
+both rotate to `previous.log` and `previous-frame-trace.csv`; every file is
+mode `0600`. The trace is flushed once per second, so a hard reset loses at
+most its final second rather than all timing evidence.
+
+`/usr/libexec/tilo-session-report --previous` converts those two prior-login
+files to one JSON report. It is deliberately read-only: production sessions do
+not expose the developer input/control socket.
+
 ## Switching back to another desktop
 
 The wrapper owns `tilo-graphical-session.target` only while the compositor is
