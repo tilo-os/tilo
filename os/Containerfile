@@ -1327,9 +1327,14 @@ RUN chmod 755 /usr/bin/shell /usr/bin/fs /usr/bin/terminal \
               /usr/libexec/tilo-fluxcast \
     && { [ ! -e /usr/bin/browser ] || chmod 755 /usr/bin/browser; } \
     && missing="$(ldd /usr/bin/shell | awk '/not found/ { print $1 }')" \
-    && test -z "$missing" \
-    && /usr/libexec/tilo-doubletake -h >/dev/null \
-    && /usr/libexec/tilo-fluxcast --help >/dev/null
+    && { if [ -n "$missing" ]; then \
+         printf 'shell has unresolved runtime libraries:\n%s\n' "$missing" >&2; \
+         exit 1; \
+       fi; } \
+    && { /usr/libexec/tilo-doubletake -h >/dev/null \
+         || { echo 'doubletake help smoke test failed' >&2; exit 1; }; } \
+    && { /usr/libexec/tilo-fluxcast --help >/dev/null \
+         || { echo 'fluxcast help smoke test failed' >&2; exit 1; }; }
 
 # Exercise the AirPlay CLI path that ships: PIN pairing, FairPlay setup,
 # encrypted RTSP/video transport and H.264 media into the
