@@ -85,7 +85,10 @@ RUN --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
 
 # sshd for `tilo-vm`, rsync for worktree sync, and the production builder's
 # packages. openssh-server is the one package the production image removes on
-# purpose (the runtime crypto policy forbids an SSH server there).
+# purpose (the runtime crypto policy forbids an SSH server there). The sealed
+# base also removes openssh, so the frozen repo must carry its exact matching
+# core RPM even when the snapshot's original base already had it installed.
+# tilo-rpm-snapshot-package: openssh
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,from=dev-inputs,source=/tilo,target=/run/tilo-dev \
     grep -v '^#' /run/tilo-dev/os/scripts/builder-packages.txt > /run/tilo-dev-builder-packages \
