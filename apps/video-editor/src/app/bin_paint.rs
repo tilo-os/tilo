@@ -1,3 +1,7 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
+)]
 use super::*;
 
 impl VideoEditorApp {
@@ -190,7 +194,7 @@ impl VideoEditorApp {
                 TextWeight::Medium,
             );
         }
-        let subtitle = self.bin_subtitle(media);
+        let subtitle = VideoEditorApp::bin_subtitle(media);
         let (long, short) = if self.media_is_unreadable(media_id) {
             (Some(MEDIA_UNREADABLE), Some(MEDIA_UNREADABLE_SHORT))
         } else if self.media_is_projected(media_id) {
@@ -384,6 +388,10 @@ impl VideoEditorApp {
 
     /// Draw feedback for a live bin→timeline drag: highlight the drop lane, mark
     /// the insertion point at the drop time, and float a ghost chip at the cursor.
+    #[expect(
+        clippy::many_single_char_names,
+        reason = "the paint pass's shorthands: colours c, regions r, pointer p, drop time t and its x"
+    )]
     pub(super) fn draw_bin_drag(
         &self,
         scene: &mut Scene,
@@ -459,7 +467,7 @@ impl VideoEditorApp {
         else {
             return;
         };
-        let rect = self.bin_name_rect(row);
+        let rect = VideoEditorApp::bin_name_rect(row);
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
             label.draw(scene, tf, tr, theme, presence);

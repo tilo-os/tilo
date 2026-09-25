@@ -14,9 +14,10 @@ description = "Format-provider build of qdoc's Markdown codec, for the Tilo form
 crate-type = ["cdylib"]
 
 [dependencies]
-# Import/export delegates to `qdoc::MarkdownCodec`; the resulting document is
+# Import/export delegates to `qdoc_codecs::MarkdownCodec`; the resulting document is
 # serialized with Automerge, whose actor ids need host entropy.
 qdoc = { path = "../qdoc" }
+qdoc-codecs = { path = "../qdoc-codecs", default-features = false, features = ["markdown"] }
 format-provider-abi = { path = "../format-provider-abi", features = ["entropy"] }
 
 [profile.release]
