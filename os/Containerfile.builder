@@ -107,7 +107,18 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
         > /usr/local/share/tilo-builder/mold-source.txt \
     && rm -rf "/tmp/${source}" \
     && mold --version
+#
+# mold is every job's default linker for the native GNU target. CI jobs point
+# CARGO_HOME at their restored download cache, so the image's own CARGO_HOME
+# config would not be read. The root /.cargo/config.toml is: Cargo searches it
+# from every working directory. It sets only the linker and the wrapper's
+# explicit target, so the workspace's hardening rustflags still apply, and a
+# cross target keeps its ordinary linker.
 COPY tools/ci/native-mold-linker.sh /usr/local/bin/tilo-ci-mold
 RUN --mount=type=bind,source=tools/ci/verify-native-mold.sh,target=/tmp/verify-native-mold.sh,ro \
     chmod 0755 /usr/local/bin/tilo-ci-mold \
+    && target="$(uname -m)-unknown-linux-gnu" \
+    && mkdir -p /.cargo \
+    && printf '[target.%s]\nlinker = "/usr/local/bin/tilo-ci-mold"\n\n[env]\nTILO_CI_MOLD_TARGET = "%s"\n' \
+        "$target" "$target" > /.cargo/config.toml \
     && bash /tmp/verify-native-mold.sh
