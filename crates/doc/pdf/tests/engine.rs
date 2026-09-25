@@ -48,19 +48,15 @@ fn engine() -> Option<Engine> {
         eprintln!("skipping: no pdfium library on this host (set TILO_PDFIUM_LIB)");
         return None;
     }
-    match Engine::with_helper(Path::new(env!("CARGO_BIN_EXE_tilo-pdf-helper"))) {
-        Ok(engine) => Some(engine),
-        // A container that cannot enforce the sandbox cannot run the helper
-        // at all; production refuses the same way. Say so rather than fail,
-        // unless the environment promises a sandbox-capable kernel.
-        Err(Error::Unavailable(message))
-            if (message.contains("landlock") || message.contains("seccomp"))
-                && std::env::var_os("TILO_REQUIRE_PDF_SANDBOX").is_none() =>
-        {
-            eprintln!("skipping: this host cannot confine the PDF helper: {message}");
-            None
-        }
-        Err(e) => panic!("the PDF helper does not start: {e}"),
+    // A host that cannot enforce the sandbox cannot run the helper at all;
+    // production refuses the same way.
+    match tilo_pdf::sandboxed_for_test(
+        Engine::with_helper(Path::new(env!("CARGO_BIN_EXE_tilo-pdf-helper"))),
+        "a helper engine test",
+    ) {
+        tilo_pdf::HelperGate::Sandboxed(engine) => Some(engine),
+        tilo_pdf::HelperGate::StandDown => None,
+        tilo_pdf::HelperGate::Failed(e) => panic!("the PDF helper does not start: {e}"),
     }
 }
 
