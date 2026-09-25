@@ -24,17 +24,7 @@ pub struct Caret {
     pub offset: usize,
 }
 
-/// One block of a copied rich fragment — text plus its formatting (marks +
-/// paragraph attributes), with mark offsets relative to the block's own text.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ClipBlock {
-    pub kind: String,
-    pub text: String,
-    pub marks: Vec<qdoc::document::MarkSpan>,
-    pub level: Option<i64>,
-    pub ordered: Option<bool>,
-    pub align: Option<String>,
-}
+pub use qdoc::rich_text::ClipBlock;
 
 /// One entry of the document outline / navigation pane: a heading block's id,
 /// its `level` (1-based; defaults to 1), and its current text.
@@ -1278,7 +1268,7 @@ impl WordProcessor {
     // ---- action planning (pure reads shared with the action model) ----------
     //
     // These expose the selection/mark resolution the private edit ops use, so
-    // the widget can build the matching `WordProcessorAction` and dispatch it
+    // the widget can build the matching `RichTextAction` and dispatch it
     // through the Tilo executor instead of mutating the document directly. They
     // never mutate — the action's `apply` performs the write.
 
@@ -2178,6 +2168,33 @@ impl WordProcessor {
 
     /// Resolve the document model under `root` (initialising the schema if
     /// absent), guarantee at least one block, and keep the caret on a real block.
+    /// Bind to a document this participant may only view: resolve it and
+    /// seat the caret, writing nothing.
+    pub fn bind_view_only(&mut self, state: &AutoCommit, root: &ObjId) {
+        if self.containers.is_none() {
+            let Ok(c) = qdoc::model::open(state, root) else {
+                return;
+            };
+            self.containers = Some(c);
+        }
+        let Some(c) = self.containers.as_ref() else {
+            return;
+        };
+        let seated = matches!(
+            state.get(&c.blocks, &self.caret.block),
+            Ok(Some((automerge::Value::Object(automerge::ObjType::Map), _)))
+        );
+        if !seated {
+            self.region = Region::Body;
+            self.caret = qdoc::model::blocks_in_order(state, c)
+                .into_iter()
+                .next()
+                .map(|block| Caret { block, offset: 0 })
+                .unwrap_or_default();
+            self.selection_anchor = None;
+        }
+    }
+
     pub fn bind(&mut self, state: &mut AutoCommit, root: &ObjId) {
         // A canonical body caret proves that the body is nonempty. Resolve
         // only its block instead of sorting the entire body twice per sync.

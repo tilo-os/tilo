@@ -316,9 +316,9 @@ fn assert_person_typed(replica: &AutoCommit, typed: usize, shown: &[(String, Str
 fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: &str) {
     // Both authors are in the history, so the strip attributes each edit
     // to whoever made it rather than folding them into one.
-    let versions = qdoc::history::versions(replica);
+    let versions = tilo_resource::history::versions(replica);
     let actors: std::collections::HashSet<String> =
-        versions.iter().map(|v| v.actor_hex.clone()).collect();
+        versions.iter().map(|v| v.actor.clone()).collect();
     let action_actor = hex::encode(invocation_actor);
     assert!(
         actors.contains(&action_actor),
@@ -340,13 +340,10 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
     // that made it, the peer recovered all of them by applying the raw
     // incremental bytes, and no frame here was signed — so a receiver can
     // attribute an edit from what it already has.
-    let scribe = versions
-        .iter()
-        .filter(|v| v.actor_hex == action_actor)
-        .count();
+    let scribe = versions.iter().filter(|v| v.actor == action_actor).count();
     let human = versions
         .iter()
-        .filter(|v| v.actor_hex == hex::encode("ada"))
+        .filter(|v| v.actor == hex::encode("ada"))
         .count();
     assert!(
         scribe >= 1 && human >= typed,
@@ -355,7 +352,9 @@ fn assert_attribution(replica: &mut AutoCommit, typed: usize, invocation_actor: 
         versions.len()
     );
     assert!(
-        versions.iter().all(|v| !v.change_hash.is_empty()),
+        versions
+            .iter()
+            .all(|v| v.hash.as_ref().iter().any(|byte| *byte != 0)),
         "a change with no hash cannot be joined to what it touched"
     );
 }

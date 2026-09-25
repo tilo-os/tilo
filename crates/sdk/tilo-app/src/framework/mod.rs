@@ -85,5 +85,6 @@ pub use controls::{ActionControl, Actions};
 pub use dispatch::{DispatchGroup, Dispatcher};
 pub use each::Each;
 pub use live::Live;
+pub use preview::PastVersion;
 pub use surface::{ResourceSelection, ResourceSurface, SurfaceCx};
 pub use view::ViewCx;
