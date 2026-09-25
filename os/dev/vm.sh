@@ -155,11 +155,12 @@ cmd_boot() {
 # self-installs the booted image onto /dev/vdb. After it finishes, boot the
 # result with:  vm.sh boot-target [--gl]
 cmd_boot_installer() {
-  local mode=2d
+  local mode=2d install_proof=0
   while [ $# -gt 0 ]; do case "$1" in
     --gl) mode=gl;; --2d) mode=2d;; --window) mode=window;;
     --tpm) TILO_TPM=1;; --no-tpm) TILO_TPM=0;;
     --secboot) TILO_SECBOOT=1;;
+    --install-proof) install_proof=1;;
     *) die "boot-installer: unknown arg $1";; esac; shift; done
   local disk="$TILO_INSTALLER_DISK"
   [ -f "$disk" ] || die "installer disk not found: $disk (run ./os/dev/build-custom-installer.sh)"
@@ -175,6 +176,12 @@ cmd_boot_installer() {
   local target="$TILO_TARGET_DISK"
   inenv "test -f '$target' || qemu-img create -f qcow2 '$target' '$TILO_TARGET_SIZE'" >/dev/null
   display="$(display_qemu_args "$mode")"
+  local proof_arg=""
+  if [ "$install_proof" -eq 1 ]; then
+    [ ! -L "$TILO_RUN/install-proof.txt" ] || die "install proof path is a symlink"
+    rm -f -- "$TILO_RUN/install-proof.txt"
+    proof_arg="-chardev file,id=tiloproof,path=$TILO_RUN/install-proof.txt -device virtserialport,chardev=tiloproof,name=org.tilo.vm-install-proof"
+  fi
   msg "boot-installer ($mode, ${TILO_XRES}x${TILO_YRES}) medium=$disk work-overlay=$work_disk target=$target (/dev/vdb)"
   # First virtio disk = installer (/dev/vda); second = blank target (/dev/vdb).
   local args="$(machine_args) $(qemu_accel_args) -m $TILO_MEM -smp $TILO_SMP \
@@ -182,7 +189,7 @@ cmd_boot_installer() {
     -drive file=$work_disk,format=qcow2,if=virtio,serial=tilo-installer-medium \
     -drive file=$target,format=qcow2,if=virtio,serial=tilo-install-target \
     $display -nic user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$TILO_SSH_PORT-:22 $(input_qemu_args) \
-    $(console_qemu_args) \
+    $(console_qemu_args) $proof_arg \
     -monitor unix:$TILO_MON,server,nowait -serial file:$TILO_SERIAL \
     -pidfile $TILO_PIDFILE -name tilo-custom-installer"
   swtpm_start
