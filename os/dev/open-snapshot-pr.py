@@ -31,6 +31,7 @@ import urllib.request
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 KERNEL_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-kernel@sha256:([0-9a-f]{64})$")
 RPMS_REF = re.compile(r"^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$")
+REVISION = re.compile(r"^[0-9a-f]{40}$")
 WPE_REF = re.compile(r"^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:([0-9a-f]{64})$")
 # Forgejo reports a repository the token cannot see as 404, not 403.
 ACCESS_DENIED = (401, 403, 404)
@@ -53,12 +54,13 @@ def kernel_contents(x86_ref: str, arm_ref: str) -> str:
     ))
 
 
-def rpms_contents(rpms_ref: str) -> str:
+def rpms_contents(rpms_ref: str, source_revision: str) -> str:
     """Return the canonical os/rpms-snapshot.env for the frozen RPM index."""
     return "\n".join((
         "# Digest-pinned frozen RPM repository used by os/Containerfile.",
         "# Updated by the snapshot-rpms workflow when the package set changes.",
         f"RPMS_REF={rpms_ref}",
+        f"RPMS_SOURCE_REVISION={source_revision}",
         "",
     ))
 
@@ -92,7 +94,9 @@ def kernel_snapshot(args, parser) -> tuple[str, dict]:
         }
     if RPMS_REF.fullmatch(args.rpms_ref) is None:
         parser.error("--rpms-ref must be an immutable qos/rpms sha256 reference")
-    return rpms_contents(args.rpms_ref) + kernels, {
+    if REVISION.fullmatch(args.rpms_source_revision or "") is None:
+        parser.error("--rpms-source-revision must be the full commit the index was built from")
+    return rpms_contents(args.rpms_ref, args.rpms_source_revision) + kernels, {
         "label": "RPM and kernel",
         "branch_prefix": "automation/rpm-kernel-snapshot-",
         "title": "build(os): refresh the RPM snapshot and its native kernels",
@@ -170,6 +174,7 @@ def promote() -> int:
     kernel.add_argument("--x86-ref", required=True)
     kernel.add_argument("--arm-ref", required=True)
     kernel.add_argument("--rpms-ref", help="the frozen RPM index the kernels were built against")
+    kernel.add_argument("--rpms-source-revision", help="the commit that index was built from")
     kernel.set_defaults(snapshot=kernel_snapshot)
     wpe = kinds.add_parser("wpe", help="both native WPE buildroots")
     wpe.add_argument("--x86-ref", required=True)
