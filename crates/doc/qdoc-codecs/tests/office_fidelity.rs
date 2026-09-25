@@ -652,3 +652,38 @@ fn second_round_trip_keeps_part_set() {
         }
     }
 }
+
+/// Exporting to the other office format leaves out what one codec kept verbatim: its markup
+/// means nothing there, and its placeholders are not text.
+#[test]
+fn cross_format_export_leaves_out_the_other_formats_markup() {
+    /// Fixtures, the codec they are imported with, the one exported with, its body part.
+    type Case<'a> = (
+        &'a [Fixture],
+        &'a dyn FormatProvider,
+        &'a dyn FormatProvider,
+        &'a str,
+    );
+    let cases: [Case; 2] = [
+        (DOCX_FIXTURES, &DocxCodec, &OdtCodec, "content.xml"),
+        (ODT_FIXTURES, &OdtCodec, &DocxCodec, "word/document.xml"),
+    ];
+    for (fixtures, from, to, body_part) in cases {
+        for fx in fixtures {
+            let d = import(from, fx.bytes, fx.name);
+            let out = to.export(d.as_ref()).expect("export");
+            let parts = unzip(&out);
+            let body = parts.get(body_part).expect("body part");
+            if let Err(e) = namespace_well_formed(body) {
+                panic!("{} exported across: {e}", fx.name);
+            }
+            assert!(
+                !text_nodes(body)
+                    .concat()
+                    .contains(qdoc::schema::FIELD_PLACEHOLDER),
+                "{} exported across: placeholder written as text",
+                fx.name
+            );
+        }
+    }
+}

@@ -1157,14 +1157,14 @@ fn push_run_group(out: &mut String, run: &qdoc::export::InlineRun<'_>, is_del: b
     };
     let rpr =
         super::paragraph::run_props_xml(&run_props(&run.marks), mark(super::paragraph::MARK_RPR));
-    let atom = mark(MARK_DOCX_XML);
+    let atom = crate::preserve::inline_atom(&run.marks, MARK_DOCX_XML);
     let pieces = match atom {
         Some(_) => inline_pieces(run.text),
         None => vec![InlinePiece::Text(run.text)],
     };
     for piece in pieces {
         match piece {
-            InlinePiece::Atom => out.push_str(atom.unwrap_or_default()),
+            InlinePiece::Atom => out.push_str(atom.flatten().unwrap_or_default()),
             InlinePiece::Text(text) => push_run(out, text, &rpr, is_del),
         }
     }
