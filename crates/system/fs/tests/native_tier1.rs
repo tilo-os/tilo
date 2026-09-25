@@ -1125,6 +1125,10 @@ fn logged_after(daemon: &Daemon, after: usize, needle: &str) -> bool {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one crash scenario: publish, kill, restart and check the peer at each step"
+)]
 fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none() {
     const BURST: usize = 1500;
     let Some((a, b)) = stores("native_changeset_crash") else {
