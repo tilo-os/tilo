@@ -153,6 +153,19 @@ class OfflineTargetTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "config differs"):
                 target.read_target(root)
 
+    def test_import_rejects_metadata_changed_after_preflight(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root, metadata, _, _ = self.fixture(directory)
+            receipt = Path(directory) / "offline-target.json"
+            receipt.write_text(json.dumps(metadata))
+            metadata["update_origin"] = UPDATE[:-1] + "b"
+            (root / "target.json").write_text(json.dumps(metadata))
+            with patch.object(target, "RECEIPT", receipt), \
+                    patch.object(target, "run") as run:
+                with self.assertRaisesRegex(ValueError, "changed after verified preflight"):
+                    target.import_image(root)
+                run.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()
