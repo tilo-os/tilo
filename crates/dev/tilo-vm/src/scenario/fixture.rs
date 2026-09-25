@@ -97,8 +97,9 @@ fn preserved_names(layout: Layout) -> &'static [&'static str] {
     }
 }
 
-/// Build the alongside target as a raw image at `raw`, returning the
-/// extents to verify after the install. The caller converts it to qcow2.
+/// Build the alongside target as a sparse raw image at `raw`, returning the
+/// extents to verify after the install. The caller creates a qcow2 child with
+/// this immutable raw image as its backing file.
 ///
 /// # Errors
 ///
@@ -164,6 +165,65 @@ pub fn changed(raw: &Path, preserved: &[Preserved]) -> std::io::Result<Vec<Strin
     let mut changed = Vec::new();
     for extent in preserved {
         if hash_range(raw, extent.offset, extent.length)? != extent.sha256 {
+            changed.push(extent.name.clone());
+        }
+    }
+    Ok(changed)
+}
+
+/// Re-hash only the preserved extents through the installed qcow2 chain.
+/// Reading those ranges avoids converting the entire target back to raw.
+///
+/// # Errors
+///
+/// A tool failure, truncated extraction, or an I/O error.
+pub fn changed_cow(
+    qcow2: &Path,
+    scratch: &Path,
+    preserved: &[Preserved],
+    tools: &mut dyn Tools,
+) -> Result<Vec<String>, String> {
+    std::fs::create_dir_all(scratch).map_err(io("creating verification scratch"))?;
+    let mut changed = Vec::new();
+    for (index, extent) in preserved.iter().enumerate() {
+        if extent.offset % MIB != 0 || extent.length % MIB != 0 {
+            return Err(format!("{} is not MiB-aligned", extent.name));
+        }
+        let extracted = scratch.join(format!("preserved-{index}.raw"));
+        let input = format!("if={}", qcow2.display());
+        let output = format!("of={}", extracted.display());
+        let skip = format!("skip={}", extent.offset / MIB);
+        let count = format!("count={}", extent.length / MIB);
+        tools.run(
+            "qemu-img",
+            &[
+                "dd",
+                "-f",
+                "qcow2",
+                "-O",
+                "raw",
+                &input,
+                &output,
+                "bs=1048576",
+                &skip,
+                &count,
+            ],
+            None,
+        )?;
+        let result = (|| {
+            let actual_len = std::fs::metadata(&extracted)
+                .map_err(io("checking extracted extent length"))?
+                .len();
+            if actual_len != extent.length {
+                return Err(format!(
+                    "{} extraction has {actual_len} bytes, expected {}",
+                    extent.name, extent.length
+                ));
+            }
+            hash_range(&extracted, 0, extent.length).map_err(io("hashing an extracted extent"))
+        })();
+        let _ = std::fs::remove_file(&extracted);
+        if result? != extent.sha256 {
             changed.push(extent.name.clone());
         }
     }

@@ -337,18 +337,18 @@ impl App {
                 .run(
                     "qemu-img",
                     &[
-                        "convert",
+                        "create",
                         "-f",
-                        "raw",
-                        "-O",
                         "qcow2",
+                        "-F",
+                        "raw",
+                        "-b",
                         &raw.display().to_string(),
                         &target,
                     ],
                     None,
                 )
                 .map_err(|detail| failed("prepare", detail, plan))?;
-            let _ = std::fs::remove_file(&raw);
             write_json(&plan.out, "alongside-before.json", &json!(preserved))?;
         }
         self.receipt
@@ -423,25 +423,13 @@ impl App {
 
         if !preserved.is_empty() {
             let verify = Instant::now();
-            let raw = plan.cycle_dir.join("installed.raw");
-            VmTools { plan }
-                .run(
-                    "qemu-img",
-                    &[
-                        "convert",
-                        "-f",
-                        "qcow2",
-                        "-O",
-                        "raw",
-                        &plan.target().display().to_string(),
-                        &raw.display().to_string(),
-                    ],
-                    None,
-                )
-                .map_err(|detail| failed("verify-alongside", detail, plan))?;
-            let changed = fixture::changed(&raw, &preserved)
-                .map_err(CliError::io("reading the installed target"))?;
-            let _ = std::fs::remove_file(&raw);
+            let changed = fixture::changed_cow(
+                &plan.target(),
+                &plan.cycle_dir.join("verify-extents"),
+                &preserved,
+                &mut VmTools { plan },
+            )
+            .map_err(|detail| failed("verify-alongside", detail, plan))?;
             write_json(
                 &plan.out,
                 "alongside-after.json",
