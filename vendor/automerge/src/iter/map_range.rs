@@ -252,8 +252,11 @@ impl<'a> Iterator for MapDiff<'a> {
             let inc;
             if let ScalarValue::Counter(c) = &map.value {
                 let (inc1, inc2) = op_set.get_increment_diff_at_pos(map.pos, &self.clock);
-                inc = inc2 - inc1;
-                value = ValueRef::from_action_value(map.action, ScalarValue::Counter(*c + inc2));
+                inc = inc2.wrapping_sub(inc1);
+                value = ValueRef::from_action_value(
+                    map.action,
+                    ScalarValue::Counter(c.wrapping_add(inc2)),
+                );
             } else {
                 value = ValueRef::from_action_value(map.action, map.value.clone());
                 inc = 0;

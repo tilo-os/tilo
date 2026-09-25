@@ -1950,7 +1950,7 @@ impl Automerge {
         let mut to_convert = Vec::new();
         for (obj, ops) in self.ops.iter_objs() {
             match obj.typ {
-                ObjType::Map | ObjType::List => {
+                ObjType::Map | ObjType::Table | ObjType::List => {
                     for op in ops.visible_slow(None) {
                         //if !op.visible() {
                         //    continue;
