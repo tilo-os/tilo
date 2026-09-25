@@ -299,8 +299,12 @@ struct VmSelectedTarget {
 #[serde(deny_unknown_fields)]
 struct VmSelectedProvenance {
     source_revision: String,
-    firmware_manifest_sha256: String,
-    firmware_candidate: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    firmware_manifest_sha256: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    firmware_candidate: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    generation: Option<u64>,
     invocation_id: String,
 }
 
@@ -389,6 +393,46 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             .as_deref()
             .ok_or("VM v2 install proof has no installed update origin")?;
         let source = &selected.provenance.source_revision;
+        let profile_matches = match selected.hardware_profile.as_str() {
+            "lenovo-83ed" => {
+                selected
+                    .provenance
+                    .firmware_manifest_sha256
+                    .as_deref()
+                    .is_some_and(|value| lowercase_hex(value, 64))
+                    && selected
+                        .provenance
+                        .firmware_candidate
+                        .as_deref()
+                        .is_some_and(|value| {
+                            value
+                                .strip_prefix(
+                                    "code.podesta.ai/qos/tilo-lenovo-83ed-firmware@sha256:",
+                                )
+                                .is_some_and(|hex| lowercase_hex(hex, 64))
+                        })
+                    && selected
+                        .provenance
+                        .generation
+                        .is_none_or(|generation| generation == 1)
+                    && selected.update_origin
+                        == format!("code.podesta.ai/qos/tilo:lenovo-83ed-{source}")
+            }
+            "generic" => {
+                selected.provenance.firmware_candidate.is_none()
+                    && selected.provenance.firmware_manifest_sha256.is_none()
+                    && selected
+                        .provenance
+                        .generation
+                        .is_some_and(|generation| generation > 0)
+                    && selected.update_origin
+                        == format!(
+                            "code.podesta.ai/qos/tilo:gen{}",
+                            selected.provenance.generation.unwrap_or_default()
+                        )
+            }
+            _ => false,
+        };
         if proof.schema != "tilo.vm-install-image-proof.v2"
             || !lowercase_hex(booted_composefs, 128)
             || !lowercase_hex(installed_composefs, 128)
@@ -397,18 +441,8 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
             || selected.target_ref != format!("code.podesta.ai/qos/tilo@{}", selected.target_digest)
             || selected.target_digest != proof.installed_image_digest
             || selected.architecture != "aarch64"
-            || selected.hardware_profile != "lenovo-83ed"
+            || !profile_matches
             || !lowercase_hex(source, 40)
-            || !lowercase_hex(&selected.provenance.firmware_manifest_sha256, 64)
-            || !selected
-                .provenance
-                .firmware_candidate
-                .starts_with("code.podesta.ai/qos/tilo-lenovo-83ed-firmware@sha256:")
-            || !selected
-                .provenance
-                .firmware_candidate
-                .rsplit_once("@sha256:")
-                .is_some_and(|(_, hex)| lowercase_hex(hex, 64))
             || selected.provenance.invocation_id.is_empty()
             || !selected
                 .provenance
@@ -416,7 +450,6 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit())
             || !lowercase_hex(&selected.verifier_key_sha256, 64)
-            || selected.update_origin != format!("code.podesta.ai/qos/tilo:lenovo-83ed-{source}")
             || update_origin
                 != format!(
                     "ostree-unverified-image:docker://{}",
@@ -587,11 +620,18 @@ impl App {
         } else {
             std::env::current_dir().unwrap_or_default().join(medium)
         };
-        if !medium.is_file() {
+        let medium_metadata = std::fs::symlink_metadata(&medium);
+        if !medium_metadata
+            .as_ref()
+            .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        {
             return Err(CliError::ScenarioMedium {
                 path: medium.display().to_string(),
             });
         }
+        let medium = medium
+            .canonicalize()
+            .map_err(CliError::io("resolving installer medium"))?;
         let external_target = if let Some(target) = &args.target_disk {
             let metadata = std::fs::symlink_metadata(target)
                 .map_err(CliError::io("inspecting external install target"))?;
@@ -760,6 +800,7 @@ impl App {
         #[cfg(windows)]
         if let Some(mut checked) = checked_install_proof {
             checked["first_boot_verified"] = json!(!plan.skip_target_boot);
+            checked["installer_medium_sha256"] = json!(crate::disk::file_sha256(&plan.medium)?);
             write_json(&plan.out, "vm-install-proof-checked.json", &checked)?;
         }
         #[cfg(not(windows))]
@@ -1233,6 +1274,18 @@ mod tests {
         assert!(
             super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
                 .is_err()
+        );
+        payload["selected_target"]["target_digest"] = json!(target);
+        payload["selected_target"]["hardware_profile"] = json!("generic");
+        payload["selected_target"]["update_origin"] = json!("code.podesta.ai/qos/tilo:gen7");
+        payload["selected_target"]["provenance"]["generation"] = json!(7);
+        payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
+        payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
+        payload["installed_update_origin"] =
+            json!("ostree-unverified-image:docker://code.podesta.ai/qos/tilo:gen7");
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+                .is_ok()
         );
     }
     use super::*;
