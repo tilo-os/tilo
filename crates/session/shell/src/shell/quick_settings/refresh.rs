@@ -10,7 +10,7 @@
 //! open. A worker owns no `Rc` and sends plain data over a channel,
 //! keeping it safe alongside the shell's single-threaded `RefCell` tree.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 use os_actions as qs;
@@ -38,7 +38,7 @@ pub struct FastReading {
 pub enum QsReading {
     Fast(Box<FastReading>),
     Firmware(Option<Vec<qs::FirmwareUpdate>>),
-    WifiNetworks(Option<Vec<qs::WifiNetworkInfo>>),
+    WifiNetworks(Result<Vec<qs::WifiNetworkInfo>, String>),
     BtDevices(Option<Vec<qs::BtDeviceInfo>>),
     WifiJoin(WifiJoinResult),
 }
@@ -62,11 +62,21 @@ enum Tier {
     WifiJoin,
 }
 
+type PendingWork = Box<dyn FnOnce() -> QsReading + Send + 'static>;
+
 pub struct QsRefresh {
     tx: Sender<QsReading>,
     rx: Receiver<QsReading>,
+    /// Wakes the owning UI instance when a detached read finishes. Without
+    /// this edge an idle compositor can leave "Scanning…" or stale slider
+    /// values on screen until the next unrelated input event.
+    wake: ui::WakeHandle,
     /// Which tiers currently have a worker outstanding.
     in_flight: HashSet<Tier>,
+    /// The latest follow-up requested for each busy tier. Repeated input while
+    /// a daemon read is outstanding collapses to one rerun, but is never
+    /// discarded: the active read may have sampled state before the input.
+    rerun: HashMap<Tier, PendingWork>,
     /// Turned off when the host's action dispatcher has been replaced,
     /// so a seeded Wi-Fi list can't get overwritten by a real scan.
     enabled: bool,
@@ -92,7 +102,9 @@ impl QsRefresh {
         Self {
             tx,
             rx,
+            wake: ui::WakeHandle::new(),
             in_flight: HashSet::new(),
+            rerun: HashMap::new(),
             enabled,
         }
     }
@@ -108,6 +120,7 @@ impl QsRefresh {
 
     pub fn disable_os_reads(&mut self) {
         self.enabled = false;
+        self.rerun.clear();
     }
 
     fn spawn<F>(&mut self, tier: Tier, work: F)
@@ -119,14 +132,23 @@ impl QsRefresh {
         }
         #[cfg(test)]
         crate::shell::test_support::ambient_start("QS worker");
-        if !self.in_flight.insert(tier) {
+        if self.in_flight.contains(&tier) {
+            self.rerun.insert(tier, Box::new(work));
             return;
         }
+        self.spawn_boxed(tier, Box::new(work));
+    }
+
+    fn spawn_boxed(&mut self, tier: Tier, work: PendingWork) {
+        self.in_flight.insert(tier);
         let tx = self.tx.clone();
+        let wake = self.wake.clone();
         // Detached: bounded by `os_actions::DEFAULT_TIMEOUT`, and a
         // send into a dropped receiver is a no-op.
         std::thread::spawn(move || {
-            let _ = tx.send(work());
+            if tx.send(work()).is_ok() {
+                wake.wake();
+            }
         });
     }
 
@@ -160,7 +182,7 @@ impl QsRefresh {
 
     pub fn kick_wifi_networks(&mut self) {
         self.spawn(Tier::Wifi, || {
-            QsReading::WifiNetworks(qs::log_get("list_wifi_networks", qs::list_wifi_networks()))
+            QsReading::WifiNetworks(qs::list_wifi_networks())
         });
     }
 
@@ -202,6 +224,9 @@ impl QsRefresh {
                 QsReading::WifiJoin(_) => Tier::WifiJoin,
             };
             self.in_flight.remove(&tier);
+            if let Some(work) = self.rerun.remove(&tier) {
+                self.spawn_boxed(tier, work);
+            }
             out.push(reading);
         }
         out
@@ -264,47 +289,65 @@ mod tests {
         }))
     }
 
+    /// A read that blocks until the test releases it, and records whether
+    /// it had finished — so "did the caller wait for it" is a fact, not a
+    /// wall-clock guess. An inline read would only finish after the hang
+    /// guard expires, and then report itself finished.
+    fn gated_read() -> (
+        std::sync::mpsc::Sender<()>,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        impl FnOnce() + Send + 'static,
+    ) {
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_finished = std::sync::Arc::clone(&finished);
+        let wait = move || {
+            let _ = release_rx.recv_timeout(Duration::from_secs(30));
+            worker_finished.store(true, std::sync::atomic::Ordering::SeqCst);
+        };
+        (release_tx, finished, wait)
+    }
+
     #[test]
     fn dispatching_a_slow_read_does_not_block_the_caller() {
         let mut r = QsRefresh::new();
-        let read_cost = Duration::from_millis(400);
-        let started = Instant::now();
+        let (release, finished, wait) = gated_read();
         r.kick_fast_with(move || {
-            std::thread::sleep(read_cost);
+            wait();
             empty_fast()
         });
-        let dispatch = started.elapsed();
         assert!(
-            dispatch < read_cost / 4,
-            "kick returned after {dispatch:?}; a {read_cost:?} read was performed inline"
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "kick returned only after the read finished: it was performed inline"
         );
         assert!(r.is_in_flight(), "the tier should be marked outstanding");
         assert!(
             r.drain().is_empty(),
             "no reading can have landed yet — draining must not block waiting for one"
         );
+        release.send(()).expect("release the read");
     }
 
     #[test]
     fn dispatching_a_slow_wifi_join_does_not_block_and_delivers_its_result() {
-        use std::sync::mpsc;
-
         let mut refresh = QsRefresh::without_os_reads();
         // Explicit test work must remain enabled even though ambient host
         // reads are disabled for this deterministic fixture.
         refresh.enabled = true;
-        let (release_tx, release_rx) = mpsc::channel();
-        let started = std::time::Instant::now();
+        let (release_tx, finished, wait) = gated_read();
         refresh.kick_wifi_join_with("Cafe".into(), Some("secret".into()), false, move |_, _| {
-            let _ = release_rx.recv();
+            wait();
             Ok(())
         });
-        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(
+            !finished.load(std::sync::atomic::Ordering::SeqCst),
+            "the join ran inline"
+        );
         assert!(refresh.is_in_flight());
         assert!(refresh.drain().is_empty());
         release_tx.send(()).expect("release wifi worker");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             let readings = refresh.drain();
             if let Some(QsReading::WifiJoin(result)) = readings.into_iter().next() {
@@ -361,27 +404,78 @@ mod tests {
     }
 
     #[test]
-    fn a_second_dispatch_while_in_flight_is_coalesced() {
+    fn completed_read_wakes_its_owning_ui_instance() {
+        let (wake_tx, wake_rx) = std::sync::mpsc::channel();
+        let mut scope = ui::WakeScope::new();
+        scope
+            .bind(move |_| wake_tx.send(()).expect("wake receiver alive"))
+            .expect("bind wake destination");
+        let mut refresh = {
+            let _entered = scope.enter();
+            QsRefresh::new()
+        };
+
+        refresh.kick_fast_with(empty_fast);
+
+        wake_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("worker completion must wake an otherwise-idle UI");
+        assert_eq!(refresh.drain().len(), 1);
+    }
+
+    #[test]
+    fn dispatches_while_in_flight_collapse_to_one_latest_rerun() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
         let mut r = QsRefresh::new();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let runs = std::sync::Arc::new(AtomicUsize::new(0));
+        let first_runs = std::sync::Arc::clone(&runs);
         r.kick_fast_with(move || {
-            std::thread::sleep(Duration::from_millis(250));
+            first_runs.fetch_add(1, Ordering::SeqCst);
+            started_tx.send(()).expect("test is waiting for worker");
+            release_rx.recv().expect("test releases first worker");
             empty_fast()
         });
-        for _ in 0..3 {
-            r.kick_fast_with(empty_fast);
+
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("first worker must be active before reruns are queued");
+        let selected_rerun = std::sync::Arc::new(AtomicUsize::new(0));
+        for marker in 1..=3 {
+            let rerun_runs = std::sync::Arc::clone(&runs);
+            let selected_rerun = std::sync::Arc::clone(&selected_rerun);
+            r.kick_fast_with(move || {
+                rerun_runs.fetch_add(1, Ordering::SeqCst);
+                selected_rerun.store(marker, Ordering::SeqCst);
+                empty_fast()
+            });
         }
+        assert_eq!(
+            runs.load(Ordering::SeqCst),
+            1,
+            "queued reruns must not overlap the active worker"
+        );
+
+        release_tx.send(()).expect("release first worker");
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut total = 0;
-        while total == 0 && Instant::now() < deadline {
+        while (total < 2 || r.is_in_flight()) && Instant::now() < deadline {
             total += r.drain().len();
             std::thread::sleep(Duration::from_millis(5));
         }
-        std::thread::sleep(Duration::from_millis(120));
-        total += r.drain().len();
         assert_eq!(
-            total, 1,
-            "expected one reading for one outstanding tier, got {total}"
+            total, 2,
+            "one active read plus one coalesced rerun must complete"
         );
+        assert_eq!(runs.load(Ordering::SeqCst), 2, "only two workers may run");
+        assert_eq!(
+            selected_rerun.load(Ordering::SeqCst),
+            3,
+            "the latest queued read must provide the authoritative state"
+        );
+        assert!(!r.is_in_flight());
     }
 
     #[test]

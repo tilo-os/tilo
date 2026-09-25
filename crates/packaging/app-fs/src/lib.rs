@@ -3,7 +3,7 @@
 //!
 //! ## Mental model
 //!
-//! Every `.qpkg` carries a payload "Collection" — a small,
+//! Every `.tapp` carries a payload "Collection" — a small,
 //! deterministic table of `(payload-relative-path -> blob-hash)`
 //! pairs (see [`Collection`]). The on-disk file tree is a view
 //! of that table; each file's bytes live as a single
@@ -28,7 +28,7 @@
 //!
 //! - [`store`] — `BlobStore` trait + `MemoryBlobStore` /
 //!   `DiskBlobStore` / `CountingStore` impls.
-//! - [`cache`] — LRU page cache that wraps a store.
+//! - [`cache`] — bounded page cache that wraps a store.
 //! - [`fs`] — `fuser::Filesystem` impl.
 //! - [`mount`] — mount / unmount lifecycle handles.
 

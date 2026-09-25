@@ -42,8 +42,10 @@
               redesigning around the RPC library"
 )]
 
+#[cfg(feature = "client")]
 use std::rc::Rc;
 
+#[cfg(feature = "client")]
 use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 
 // Checked-in bindings let app developers build `tilo-app` without installing
@@ -58,10 +60,12 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
     clippy::restriction,
     reason = "generated Cap'n Proto bindings do not follow repository lint policy"
 )]
+#[cfg(feature = "client")]
 pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
 
+#[cfg(feature = "client")]
 use capnp_rpc::rpc_twoparty_capnp;
 
 /// Opaque capability naming MLS state held by the shell's vault provider.
@@ -214,20 +218,30 @@ pub enum WorkspaceControlInput {
     },
 }
 
-pub use collab_capnp::action_catalogue_stream::Client as ActionCatalogueStreamClient;
+#[cfg(feature = "client")]
 /// Client endpoint for an application-owned paged action directory.  Apps
 /// implement the matching `action_directory::Server` and hand this capability
 /// to [`ChannelHandle::publish_action_directory`]; the broker owns neither the
 /// widget nor a complete copy of its rows.
+#[cfg(feature = "client")]
 pub use collab_capnp::action_directory::Client as ActionDirectoryClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::action_stream::Client as ActionStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::blob_stream::Client as BlobStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::collab_service::Client as CollabServiceClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::realtime_stream::Client as RealtimeStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::stream::Client as StreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::task_run_stream::Client as TaskRunStreamClient;
 
 /// Version tag distinguishing a certified join presentation from invalid
@@ -290,6 +304,7 @@ impl CertifiedJoinIdentity {
 /// Returns [`NotAvailable::ServiceFdMissing`] if the launcher didn't hand
 /// this process a collab service fd, or another [`NotAvailable`] variant
 /// if the connection fails to establish.
+#[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
     let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
     let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
@@ -299,10 +314,12 @@ pub fn try_connect() -> Result<CollabClient, NotAvailable> {
 
 /// Idiomatic Rust wrapper over the generated [`CollabServiceClient`].
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct CollabClient {
     inner: Rc<CollabServiceClient>,
 }
 
+#[cfg(feature = "client")]
 impl CollabClient {
     /// Wrap an existing generated client (mainly useful for tests
     /// that own their own RPC system).
@@ -381,6 +398,7 @@ impl CollabClient {
 /// broker; dropping the handle closes the subscription. Cheap to
 /// clone (the underlying capability is reference-counted).
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
@@ -760,6 +778,7 @@ impl NearbyTransferReply {
     }
 }
 
+#[cfg(feature = "client")]
 impl ChannelHandle {
     /// Ask the broker to direct one current route holder to publish a complete
     /// document snapshot for this late joiner.
@@ -1238,69 +1257,6 @@ impl ChannelHandle {
         Ok(())
     }
 
-    /// Query the authenticated session-wide resource/action directory.
-    ///
-    /// The broker enforces authority and clamps the supplied limits before
-    /// forwarding them to an application's directory capability. A returned
-    /// stale cursor must be discarded and the query restarted with an empty
-    /// cursor; it is never valid across revisions.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the connection drops or the broker returns
-    /// malformed directory data.
-    pub async fn query_action_directory(
-        &self,
-        query: &ActionDirectoryQuery,
-    ) -> Result<ActionDirectoryPage, NotAvailable> {
-        let mut request = self.inner.query_action_directory_request();
-        {
-            let mut wire = request.get().init_query();
-            wire.set_revision(&query.revision);
-            wire.set_cursor(&query.cursor);
-            wire.set_needle(&query.needle);
-            wire.set_parent_resource(&query.parent_resource);
-            wire.set_max_results(query.max_results);
-            wire.set_max_bytes(query.max_bytes);
-            wire.set_max_work(query.max_work);
-            wire.set_max_depth(query.max_depth);
-            wire.set_peer_id(query.peer_id);
-        }
-        let reply = request.send().promise.await?;
-        Ok(decode_action_directory_page(reply.get()?.get_page()?)?)
-    }
-
-    /// Re-materialize an exact action at the revision that yielded it.
-    ///
-    /// Call this immediately before beginning an invocation. `Found` is the
-    /// only outcome that may be used for execution; stale/disconnected rows
-    /// are not served from a broker cache.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the connection drops or the broker returns
-    /// a malformed exact-resolution response.
-    pub async fn resolve_published_action(
-        &self,
-        peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
-    ) -> Result<ActionDirectoryResolution, NotAvailable> {
-        let mut request = self.inner.resolve_published_action_request();
-        {
-            let mut wire = request.get();
-            wire.set_peer_id(peer_id);
-            wire.set_revision(revision);
-            wire.set_resource(resource);
-            wire.set_action(action);
-        }
-        let reply = request.send().promise.await?;
-        Ok(decode_action_directory_resolution(
-            reply.get()?.get_resolution()?,
-        )?)
-    }
-
     /// Open a server-pulled stream of invocations the session has addressed
     /// to *this* application — distinct from [`Self::subscribe_actions`]
     /// (room-wide fan-out): an invocation names one connection, an
@@ -1380,6 +1336,7 @@ impl ChannelHandle {
         action: &str,
         argument: Option<&str>,
         confirmation_json: &str,
+        invocation: &str,
     ) -> Result<(u64, String), NotAvailable> {
         let mut request = self.inner.invoke_task_action_request();
         {
@@ -1392,6 +1349,7 @@ impl ChannelHandle {
             params.set_argument(argument.unwrap_or(""));
             params.set_has_argument(argument.is_some());
             params.set_confirmation_json(confirmation_json);
+            params.set_invocation(invocation);
         }
         let reply = request.send().promise.await?;
         let result = reply.get()?;
@@ -1507,154 +1465,19 @@ impl ChannelHandle {
         Ok(reply.get()?.get_cancelled())
     }
 
-    /// Snapshot the authenticated session action directory.
+    /// Send one `tilo_actions::remote::RemoteActionFrame` request and
+    /// return the answering frame. The broker derives the caller from this
+    /// admitted channel; the frame never names it.
     ///
     /// # Errors
     ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn action_catalogue(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.action_catalogue_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
-
-    /// Subscribe to complete, level-triggered action-directory snapshots.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable or
-    /// drops during the call.
-    pub async fn subscribe_action_catalogue(&self) -> Result<ActionCatalogueStream, NotAvailable> {
-        let reply = self
-            .inner
-            .subscribe_action_catalogue_request()
-            .send()
-            .promise
-            .await?;
-        Ok(ActionCatalogueStream {
-            inner: Rc::new(reply.get()?.get_stream()?),
-        })
-    }
-
-    /// Invoke one broker-published action. Actor identity and policy are
-    /// resolved by the broker from this certified channel.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed initial invocation
-    /// update.
-    pub async fn invoke_published_action(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        confirmation_json: &str,
-    ) -> Result<(u64, String), NotAvailable> {
-        let mut request = self.inner.invoke_published_action_request();
-        {
-            let mut params = request.get();
-            params.set_peer_id(peer_id);
-            params.set_resource(resource);
-            params.set_action(action);
-            params.set_argument(argument.unwrap_or(""));
-            params.set_has_argument(argument.is_some());
-            params.set_confirmation_json(confirmation_json);
-        }
+    /// Returns [`NotAvailable`] if the connection drops or the broker
+    /// refuses the frame.
+    pub async fn remote_action(&self, frame: &[u8]) -> Result<Vec<u8>, NotAvailable> {
+        let mut request = self.inner.remote_action_request();
+        request.get().set_frame(frame);
         let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        Ok((
-            result.get_id(),
-            result
-                .get_update_json()?
-                .to_str()
-                .map_err(|error| {
-                    capnp::Error::failed(format!("invalid invocation update: {error}"))
-                })?
-                .to_owned(),
-        ))
-    }
-
-    /// Fetch the latest lifecycle update for a broker-published invocation.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed invocation update.
-    pub async fn published_invocation_status(
-        &self,
-        id: u64,
-    ) -> Result<Option<String>, NotAvailable> {
-        let mut request = self.inner.published_invocation_status_request();
-        request.get().set_id(id);
-        let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        if result.get_found() {
-            Ok(Some(
-                result
-                    .get_update_json()?
-                    .to_str()
-                    .map_err(|error| {
-                        capnp::Error::failed(format!("invalid invocation status: {error}"))
-                    })?
-                    .to_owned(),
-            ))
-        } else {
-            Ok(None)
-        }
-    }
-
-    /// Request cancellation of a broker-published invocation and return its
-    /// resulting lifecycle update.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed cancellation update.
-    pub async fn cancel_published_invocation(&self, id: u64) -> Result<String, NotAvailable> {
-        let mut request = self.inner.cancel_published_invocation_request();
-        request.get().set_id(id);
-        let reply = request.send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_update_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid cancellation update: {error}")))?
-            .to_owned())
-    }
-
-    /// Ask the broker to launch an application from the published catalogue.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns a malformed launch update.
-    pub async fn launch_published_application(
-        &self,
-        app_id: &str,
-        content_hash: Option<&str>,
-    ) -> Result<(u64, String), NotAvailable> {
-        let mut request = self.inner.launch_published_application_request();
-        request.get().set_app_id(app_id);
-        request
-            .get()
-            .set_content_hash(content_hash.unwrap_or_default());
-        let reply = request.send().promise.await?;
-        let result = reply.get()?;
-        Ok((
-            result.get_id(),
-            result
-                .get_update_json()?
-                .to_str()
-                .map_err(|error| capnp::Error::failed(format!("invalid launch update: {error}")))?
-                .to_owned(),
-        ))
+        Ok(reply.get()?.get_frame()?.to_vec())
     }
 
     /// Ask this session to open the "say something about this" surface,
@@ -1731,10 +1554,12 @@ impl ChannelHandle {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct WorkspaceControlHandle {
     inner: Rc<collab_capnp::workspace_control_handle::Client>,
 }
 
+#[cfg(feature = "client")]
 impl WorkspaceControlHandle {
     /// Wait for the next workspace-control event.
     ///
@@ -1793,10 +1618,12 @@ pub struct OpEvent {
 
 /// Client-pulled op stream. Each `.read()` is a single RPC.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct OpStream {
     inner: Rc<StreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl OpStream {
     /// Pull the next op along with the broker's attribution string
     /// for its author. Resolves when the broker has one available.
@@ -1838,10 +1665,12 @@ pub struct BlobEvent {
 /// Client-pulled stream of arrived document content. Each `.read()` is a
 /// single RPC, like every other stream in this schema.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct BlobStream {
     inner: Rc<BlobStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl BlobStream {
     /// Pull the next piece of arrived content. The caller MUST verify the
     /// bytes against `hash` before storing them — the key is the content's
@@ -1883,33 +1712,12 @@ pub struct ActionEvent {
 
 /// Client-pulled stream of actions published into this room.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ActionStream {
     inner: Rc<ActionStreamClient>,
 }
 
-#[derive(Clone)]
-pub struct ActionCatalogueStream {
-    inner: Rc<ActionCatalogueStreamClient>,
-}
-
-impl ActionCatalogueStream {
-    /// Pull the next complete action-catalogue snapshot.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the broker connection is unavailable,
-    /// drops during the call, or returns malformed catalogue data.
-    pub async fn read(&self) -> Result<String, NotAvailable> {
-        let reply = self.inner.read_request().send().promise.await?;
-        Ok(reply
-            .get()?
-            .get_catalogue_json()?
-            .to_str()
-            .map_err(|error| capnp::Error::failed(format!("invalid action catalogue: {error}")))?
-            .to_owned())
-    }
-}
-
+#[cfg(feature = "client")]
 impl ActionStream {
     /// Pull the next action published into this room.
     ///
@@ -2041,12 +1849,14 @@ pub enum ActionDirectoryResolution {
     Unavailable,
 }
 
+#[cfg(feature = "client")]
 fn capnp_text(value: capnp::text::Reader<'_>) -> Result<String, capnp::Error> {
     value.to_str().map(str::to_owned).map_err(|error| {
         capnp::Error::failed(format!("invalid UTF-8 in action directory: {error}"))
     })
 }
 
+#[cfg(feature = "client")]
 fn decode_exported_action(
     row: collab_capnp::exported_action::Reader<'_>,
 ) -> Result<ExportedAction, capnp::Error> {
@@ -2073,6 +1883,7 @@ fn decode_exported_action(
     })
 }
 
+#[cfg(feature = "client")]
 fn decode_action_directory_row(
     row: collab_capnp::action_directory_row::Reader<'_>,
 ) -> Result<ActionDirectoryRow, capnp::Error> {
@@ -2107,6 +1918,7 @@ fn decode_action_directory_row(
 ///
 /// Returns a Cap'n Proto error when a field is absent, malformed, or cannot
 /// be decoded into the typed resource/action representation.
+#[cfg(feature = "client")]
 pub fn decode_action_directory_page(
     page: collab_capnp::action_directory_page::Reader<'_>,
 ) -> Result<ActionDirectoryPage, capnp::Error> {
@@ -2132,6 +1944,7 @@ pub fn decode_action_directory_page(
 ///
 /// Returns a Cap'n Proto error when the union or a contained action row is
 /// malformed.
+#[cfg(feature = "client")]
 pub fn decode_action_directory_resolution(
     resolution: collab_capnp::action_directory_resolution::Reader<'_>,
 ) -> Result<ActionDirectoryResolution, capnp::Error> {
@@ -2175,16 +1988,19 @@ pub struct Invocation {
 
 /// Client-pulled stream of invocations addressed to this application.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct InvocationStream {
     inner: Rc<InvocationStreamClient>,
 }
 
 /// Client-pulled active-session lifecycle stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct RealtimeStream {
     inner: Rc<RealtimeStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl RealtimeStream {
     /// Pull one bounded, versioned event payload.
     ///
@@ -2197,6 +2013,7 @@ impl RealtimeStream {
     }
 }
 
+#[cfg(feature = "client")]
 impl InvocationStream {
     /// Pull the next invocation addressed to this application.
     ///
@@ -2272,10 +2089,12 @@ pub enum TaskRunUpdate {
 
 /// Client-pulled stream of broker-addressed task leases.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct TaskRunStream {
     inner: Rc<TaskRunStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl TaskRunStream {
     /// Pull the next task run, rejecting malformed broker data rather than
     /// presenting an agent with an ambiguous authority envelope.
@@ -2337,10 +2156,12 @@ mod task_run_tests {
 
 /// Per-channel presence handle.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct PresenceHandle {
     inner: Rc<collab_capnp::presence_handle::Client>,
 }
 
+#[cfg(feature = "client")]
 impl PresenceHandle {
     /// Publish a cursor position. The broker fan-outs to peers.
     ///
@@ -2607,10 +2428,12 @@ pub struct PresenceEvent {
 
 /// Client-pulled unified presence stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct PresenceStream {
     inner: Rc<PresenceStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl PresenceStream {
     /// Pull the next presence event across all payload kinds.
     ///
@@ -2639,6 +2462,7 @@ impl PresenceStream {
     }
 }
 
+#[cfg(feature = "client")]
 fn decode_presence_payload(
     reader: collab_capnp::presence_payload::Reader<'_>,
 ) -> Result<PresencePayload, capnp::Error> {
@@ -2726,10 +2550,12 @@ pub struct ChannelContext {
 
 /// Client-pulled channel-context stream.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct ContextStream {
     inner: Rc<ContextStreamClient>,
 }
 
+#[cfg(feature = "client")]
 impl ContextStream {
     /// Pull the next roster / permission snapshot.
     ///
@@ -2811,6 +2637,7 @@ pub struct ScrollbackBatch {
 
 /// Re-export the raw generated module for power users that need to
 /// reach below the idiomatic wrappers (server impls, tests).
+#[cfg(feature = "client")]
 pub mod raw {
     pub use super::collab_capnp::*;
 }
@@ -2841,22 +2668,24 @@ mod certified_join_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 mod tests {
     use super::*;
     use std::env;
 
-    fn clear_tilo_env() {
+    fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
+        let mut scoped = tilo_test_env::ScopedEnv::new();
         for (key, _) in env::vars() {
             if key.starts_with("TILO_") {
-                unsafe { env::remove_var(&key) };
+                scoped.remove(&key);
             }
         }
+        scoped
     }
 
     #[test]
     fn try_connect_without_env_returns_service_fd_missing() {
-        clear_tilo_env();
+        let _env = clear_tilo_env();
         // Not using `expect_err` because `CollabClient` intentionally
         // doesn't implement `Debug` (the underlying capnp client hook
         // isn't `Debug`).

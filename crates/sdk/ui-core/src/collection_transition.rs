@@ -4,7 +4,7 @@
 //! then animates surviving keys between geometries, fades arriving keys in,
 //! and retains the old payload for departing-row paint ghosts.
 
-use std::time::{Duration, Instant};
+use crate::time::{Duration, Instant};
 
 use crate::animation::Curve;
 
@@ -63,7 +63,7 @@ impl<K, P> KeyedTransitionSet<K, P> {
     pub fn new() -> Self {
         Self {
             tracks: Vec::new(),
-            started: Instant::now(),
+            started: crate::time::now(),
             duration: Duration::ZERO,
             curve: Curve::EaseInOut,
         }
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn surviving_key_moves_between_old_and_new_geometry() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut set = KeyedTransitionSet::new();
         set.reconcile(
             &[row(1, 0.0)],
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn arrivals_fade_in_and_departures_retain_payload() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut set = KeyedTransitionSet::new();
         set.reconcile(
             &[row(1, 0.0)],
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn reduced_motion_has_no_active_or_ghost_state() {
-        let now = Instant::now();
+        let now = crate::time::now();
         let mut set = KeyedTransitionSet::new();
         set.reconcile(
             &[row(1, 0.0)],

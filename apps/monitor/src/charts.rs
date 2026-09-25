@@ -5,18 +5,36 @@
 
 use std::f64::consts::FRAC_PI_2;
 
-use ui::ColorCompat;
-use ui::text_render::{TextRenderer, TextWeight};
+pub use ui::paint::with_alpha;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Arc, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-/// Same colour with a replaced 8-bit alpha. Lets us tint theme colours
-/// for fills/grids without depending on `ui`'s internal colour-compat
-/// trait.
-pub fn with_alpha(c: Color, a: u8) -> Color {
-    Color::from_rgba8(c.r(), c.g(), c.b(), a)
+/// Theme type sizes (`theme.tokens.typography.scale.*`) already carry the
+/// accessibility text scale, and the legacy size-based renderer APIs
+/// (`measure`, `draw_text*`, `ButtonFace::text_size`) apply that scale once
+/// more. Route every token through here so the multiplier lands exactly once:
+/// 2× glyphs at 200 %, not 4×. Identity at 1×.
+pub fn ts(tr: &TextRenderer, resolved: f32) -> f32 {
+    tr.renderer_input_style(&TextStyle::new(resolved)).size
+}
+
+/// Measured line height of a token size as the renderer will paint it —
+/// the single number the app's text-bearing rows derive their pitch from.
+pub fn line_h(tr: &mut TextRenderer, resolved: f32) -> f64 {
+    line_box(tr, ts(tr, resolved))
+}
+
+/// Measured line box of an already renderer-relative `size` (the value the
+/// app passes to `draw_text*`). Vertical steps between stacked lines and
+/// centring inside a band use this, never the bare font size: cosmic-text
+/// lays a legacy line out at `1.25 × size`, and the gap grows with the
+/// accessibility scale.
+pub fn line_box(tr: &mut TextRenderer, size: f32) -> f64 {
+    let (_, h) = tr.measure("0", size, None);
+    f64::from(h)
 }
 
 pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
@@ -52,19 +70,21 @@ pub fn stroke_rrect(
     );
 }
 
-/// Draw a raised, bordered card and return the padded inner content rect.
+/// Draw a raised card with its derived rest edge (HIG §7, §9.5) and return
+/// the padded inner content rect. Routed through [`ui::surface::card`] so the
+/// edge is measured against the card itself — the declared `border_standard`
+/// it replaced is three shades from the dark `raised` tier and vanished.
 pub fn panel(scene: &mut Scene, t: Affine, rect: Rect, theme: &Theme, pad: f64) -> Rect {
     let radius = f64::from(theme.tokens.radii.md) + 2.0;
-    fill_rrect(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
-    stroke_rrect(
-        scene,
-        t,
-        rect,
-        radius,
-        theme.tokens.colors.border_standard,
-        1.0,
-    );
+    ui::surface::card(scene, t, rect, radius, theme.tokens.colors.surfaces.raised);
     Rect::new(rect.x0 + pad, rect.y0 + pad, rect.x1 - pad, rect.y1 - pad)
+}
+
+/// A faint rule or track *inside* a raised card (chart grid, gauge track,
+/// scrollbar groove): the card's hairline polarity at `alpha`, so it reads on
+/// dark and light alike instead of a declared border at a fixed alpha.
+pub fn inner_rule(theme: &Theme, alpha: u8) -> Color {
+    ui::surface::edge_on_with(theme.tokens.colors.surfaces.raised, alpha)
 }
 
 /// A single data series for [`area_chart`].
@@ -79,7 +99,10 @@ pub struct Series<'a> {
 /// `max` is the y-axis ceiling; pass the data's own max (with headroom)
 /// for unbounded units like network throughput, or a fixed `100.0` for a
 /// percentage chart. `axis_hi`/`axis_lo` are right-aligned tick labels.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "area charts combine paint context and bounds with title, series, numeric ceiling and formatted axis labels"
+)]
 pub fn area_chart(
     scene: &mut Scene,
     t: Affine,
@@ -99,7 +122,7 @@ pub fn area_chart(
     tr.draw_text_weighted(
         scene,
         title,
-        theme.tokens.typography.scale.sm,
+        ts(tr, theme.tokens.typography.scale.sm),
         colors.text_primary,
         t * Affine::translate((inner.x0, inner.y0)),
         None,
@@ -107,12 +130,12 @@ pub fn area_chart(
     );
     let mut lx = inner.x1;
     for s in series.iter().rev() {
-        let (lw, _) = tr.measure(&s.legend, theme.tokens.typography.scale.xs, None);
+        let (lw, _) = tr.measure(&s.legend, ts(tr, theme.tokens.typography.scale.xs), None);
         lx -= f64::from(lw);
         tr.draw_text(
             scene,
             &s.legend,
-            theme.tokens.typography.scale.xs,
+            ts(tr, theme.tokens.typography.scale.xs),
             colors.text_dim,
             t * Affine::translate((lx, inner.y0 + 1.0)),
             None,
@@ -126,7 +149,7 @@ pub fn area_chart(
     // Plot area sits below the header.
     let plot = Rect::new(inner.x0, inner.y0 + 22.0, inner.x1, inner.y1);
     // Grid: four horizontal rules.
-    let grid = with_alpha(colors.border_standard, 90);
+    let grid = inner_rule(theme, 26);
     for i in 0..=4 {
         let y = plot.y0 + plot.height() * (f64::from(i) / 4.0);
         scene.stroke(
@@ -141,7 +164,7 @@ pub fn area_chart(
     tr.draw_text(
         scene,
         axis_hi,
-        theme.tokens.typography.scale.xs,
+        ts(tr, theme.tokens.typography.scale.xs),
         colors.text_dim,
         t * Affine::translate((plot.x1 - 46.0, plot.y0 - 1.0)),
         None,
@@ -149,7 +172,7 @@ pub fn area_chart(
     tr.draw_text(
         scene,
         axis_lo,
-        theme.tokens.typography.scale.xs,
+        ts(tr, theme.tokens.typography.scale.xs),
         colors.text_dim,
         t * Affine::translate((plot.x1 - 46.0, plot.y1 - 12.0)),
         None,
@@ -192,7 +215,10 @@ pub fn area_chart(
 /// A radial ring gauge. `frac` is 0..=1; draws a track ring plus an arc
 /// that sweeps clockwise from 12 o'clock, with a big value and a small
 /// caption centred inside.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "ring gauges combine paint context, center/radius/thickness, fraction and color with value and caption text"
+)]
 pub fn ring_gauge(
     scene: &mut Scene,
     t: Affine,
@@ -211,7 +237,7 @@ pub fn ring_gauge(
     scene.stroke(
         &Stroke::new(thickness),
         t,
-        with_alpha(colors.border_standard, 150),
+        inner_rule(theme, 56),
         None,
         &Circle::new(center, radius),
     );
@@ -233,7 +259,7 @@ pub fn ring_gauge(
     }
 
     // Centre labels.
-    let big_size = theme.tokens.typography.scale.xl;
+    let big_size = ts(tr, theme.tokens.typography.scale.xl);
     let (bw, bh) = tr.measure_weighted(big, big_size, None, TextWeight::Bold);
     tr.draw_text_weighted(
         scene,
@@ -247,7 +273,7 @@ pub fn ring_gauge(
         None,
         TextWeight::Bold,
     );
-    let small_size = theme.tokens.typography.scale.xs;
+    let small_size = ts(tr, theme.tokens.typography.scale.xs);
     let (sw, _) = tr.measure(small, small_size, None);
     tr.draw_text(
         scene,
@@ -265,7 +291,10 @@ pub fn ring_gauge(
 /// A labelled horizontal bar gauge. `rect` covers the label row + the
 /// track; the label sits on the first line, the value is right-aligned,
 /// and the fill bar is drawn along the bottom of `rect`.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "bar gauges combine paint context and bounds with fraction, fill color, label and formatted value"
+)]
 pub fn bar_gauge(
     scene: &mut Scene,
     t: Affine,
@@ -278,7 +307,7 @@ pub fn bar_gauge(
     value: &str,
 ) {
     let colors = &theme.tokens.colors;
-    let fs = theme.tokens.typography.scale.xs;
+    let fs = ts(tr, theme.tokens.typography.scale.xs);
     tr.draw_text_weighted(
         scene,
         label,
@@ -299,13 +328,7 @@ pub fn bar_gauge(
     );
     let bar_h = 8.0;
     let track = Rect::new(rect.x0, rect.y1 - bar_h, rect.x1, rect.y1);
-    fill_rrect(
-        scene,
-        t,
-        track,
-        bar_h / 2.0,
-        with_alpha(colors.border_standard, 150),
-    );
+    fill_rrect(scene, t, track, bar_h / 2.0, inner_rule(theme, 56));
     let frac = f64::from(frac.clamp(0.0, 1.0));
     if frac > 0.0 {
         let fill = Rect::new(

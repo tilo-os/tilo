@@ -29,7 +29,7 @@ stays written. This cuts both ways and both ways are worth knowing: your work is
 never lost by rolling back, and a bug that *corrupted* your data is not fixed by
 rolling back either.
 
-**Packages you installed yourself do not revert.** A `.qpkg` lives under `/var`,
+**Packages you installed yourself do not revert.** A `.tapp` lives under `/var`,
 so it survives, but the runtime bundle it links against went back with `/usr`. An
 app built for a newer runtime can stop launching after a rollback. Reinstall it,
 or roll forward again.

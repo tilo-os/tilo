@@ -1,241 +1,69 @@
-//! Self-critique screenshot harness: render the live app in N
-//! states + dump PNGs. Not a CI test — gated on `NOTES_CRITIQUE_DIR`
-//! env var.
+//! Generate genuine desktop and narrow interaction states through the same
+//! scenario driver used by the executable's --shots path. Always render:
+//! absence of an output override must never make this visual check pass empty.
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::indexing_slicing,
-    clippy::string_slice,
-    clippy::panic,
-    clippy::unreachable,
-    reason = "in a test these are the assertion, not a hazard"
-)]
-
-use std::collections::HashMap;
-
-use notes::NotesApp;
-use taffy::prelude::*;
-use tempfile::TempDir;
-use ui::offscreen::OffscreenRenderer;
-use ui::permissions::PermissionContext;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
-use vello::peniko::Color;
-
-fn render_state(
-    app: &mut NotesApp,
-    state: &mut ui::State,
-    out: &str,
-    w: u16,
-    h: u16,
-    theme: &Theme,
-) -> Result<(), String> {
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut text_renderer = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    (app as &mut dyn Widget).sync(&mut state.doc, &state.root);
-    let child = (app as &mut dyn Widget).build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(f32::from(w)),
-                    height: Dimension::length(f32::from(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .map_err(|e| e.to_string())?;
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(f32::from(w)),
-                    height: AvailableSpace::Definite(f32::from(h)),
-                },
-                |known, avail, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, avail, tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .map_err(|e| e.to_string())?;
-    }
-    (app as &mut dyn Widget).apply_layout(&taffy, child, Point::ORIGIN);
-
-    let mut scene = Scene::new();
-    (app as &mut dyn Widget).draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut text_renderer,
-        theme,
-        &presence,
-        &permission,
-    );
-    let mut renderer = OffscreenRenderer::new(u32::from(w), u32::from(h));
-    renderer.render_png(&scene, Color::TRANSPARENT, std::path::Path::new(out));
-    eprintln!("notes: snapshot written to {out}");
-    Ok(())
-}
+#![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
 #[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the linear visual-review scenario list is clearer when every captured state remains together"
-)]
 fn critique_state_dump() {
-    let Ok(dir) = std::env::var("NOTES_CRITIQUE_DIR") else {
-        return;
-    };
-    std::fs::create_dir_all(&dir).unwrap();
-    let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).expect("spawn ok");
-    let mut state = ui::State::new();
-    app.tick_for_test();
-
-    // 1) Default landing state — full Welcome page.
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/01-welcome.png"),
-        1280,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-
-    // 2) Shortcuts overlay open (the user pressed `?`).
-    app.shortcuts_mut().set_visible(true);
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/02-shortcuts.png"),
-        1280,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-    app.shortcuts_mut().set_visible(false);
-
-    // 3) Cmd-K palette open.
-    app.palette_mut().set_visible(true);
-    app.palette_mut().set_anchor(Point::new(450.0, 200.0));
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/03-palette.png"),
-        1280,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-    app.palette_mut().set_visible(false);
-
-    // 4) Empty page (a brand new page with no body yet).
-    let new_id = uuid::Uuid::new_v4();
-    {
-        let panel = app.main_panel_mut();
-        panel.load_page(new_id, "New page", String::new());
-    }
-    app.tick_for_test();
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/04-empty-page.png"),
-        1280,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-
-    // 5) Many pages in the sidebar so the tree pattern shows up.
-    let many = [
-        "Daily 2026-06-01",
-        "Daily 2026-06-02",
-        "Project: notes",
-        "Ideas",
-        "Reading list",
-        "Inbox",
-    ];
-    for title in many {
-        app.dispatch_event_for_test(
-            &mut state.doc,
-            notes::sidebar::OutEvent::CreateChild { parent: None },
-        );
-        // Find the most recent page and rename it
-        if let Some(last) = app.workspace_pages_for_test().last().cloned() {
-            app.dispatch_event_for_test(
-                &mut state.doc,
-                notes::sidebar::OutEvent::Rename {
-                    id: last.id,
-                    new_title: title.to_string(),
-                },
-            );
+    let directory = std::env::var_os("NOTES_CRITIQUE_DIR").map_or_else(
+        || std::path::PathBuf::from("target/notes-critique"),
+        std::path::PathBuf::from,
+    );
+    std::fs::create_dir_all(&directory).expect("create screenshot evidence directory");
+    let only = std::env::var("NOTES_CRITIQUE_SCENARIO").ok();
+    for (name, scenario, viewport) in [
+        ("01-overview", None, (1280, 800)),
+        ("25-typed-lists", Some("typed_lists"), (1280, 800)),
+        ("26-code-keyboard", Some("code_keyboard"), (1280, 800)),
+        ("27-code-active", Some("code_keyboard_active"), (390, 844)),
+        ("28-rich-outline", Some("rich_outline"), (1280, 800)),
+        ("29-narrow-rich-outline", Some("rich_outline"), (390, 844)),
+        ("30-multiline-typing", Some("multiline_typing"), (1280, 800)),
+        ("31-clicked-caret", Some("paragraph_click"), (1280, 800)),
+        ("32-find-in-note", Some("find"), (1280, 800)),
+        ("33-block-type-menu", Some("block_type_menu"), (1280, 800)),
+        ("02-empty-workspace", Some("first_note"), (1280, 800)),
+        ("03-title-edit", Some("title_edit"), (1280, 800)),
+        ("04-block-drag", Some("block_drag"), (1280, 800)),
+        ("05-menu", Some("menu"), (1280, 800)),
+        ("06-narrow-menu", Some("menu"), (390, 844)),
+        ("07-narrow-heading", Some("heading"), (390, 844)),
+        ("08-narrow-slash-applied", Some("slash_applied"), (390, 844)),
+        ("09-narrow-shortcuts", Some("shortcuts"), (390, 844)),
+        ("10-table", Some("table"), (1280, 800)),
+        ("11-image", Some("image"), (1280, 800)),
+        ("12-note-menu", Some("note_menu"), (1280, 800)),
+        ("13-narrow-note-menu", Some("note_menu"), (390, 844)),
+        ("14-large-table", Some("table_large"), (1280, 800)),
+        ("15-narrow-large-table", Some("table_large"), (390, 844)),
+        (
+            "16-large-table-bottom",
+            Some("table_large_scrolled"),
+            (1280, 800),
+        ),
+        (
+            "17-narrow-large-table-bottom",
+            Some("table_large_scrolled"),
+            (390, 844),
+        ),
+        ("18-table-cell-edit", Some("table_cell_edit"), (1280, 800)),
+        ("19-image-edit", Some("image_edit"), (1280, 800)),
+        ("22-fence-opening", Some("fenced_code_opening"), (1280, 800)),
+        ("23-typed-python", Some("fenced_code"), (1280, 800)),
+        ("24-narrow-typed-python", Some("fenced_code"), (390, 844)),
+    ] {
+        if only.as_deref().is_some_and(|only| scenario != Some(only)) {
+            continue;
         }
+        let path = directory.join(format!("{name}.png"));
+        notes::shots::render_to_path(viewport, &path, scenario, None)
+            .expect("scenario must reach its requested state and render");
+        let bytes = std::fs::read(&path).expect("rendered evidence must exist");
+        assert!(
+            bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+            "screenshot must be a PNG"
+        );
+        eprintln!("notes: reviewed scenario evidence {}", path.display());
     }
-    app.sync_sidebar_for_test();
-    app.tick_for_test();
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/05-many-pages.png"),
-        1280,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-
-    // Narrow layout takes one frame to rebuild from the wide tree. Warm it
-    // first, then capture the drawer/top-bar composition at phone width.
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/warm-narrow.png"),
-        540,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/06-narrow.png"),
-        540,
-        800,
-        &Theme::dark(),
-    )
-    .unwrap();
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/warm-wide.png"),
-        1280,
-        800,
-        &Theme::high_contrast(),
-    )
-    .unwrap();
-    render_state(
-        &mut app,
-        &mut state,
-        &format!("{dir}/07-high-contrast.png"),
-        1280,
-        800,
-        &Theme::high_contrast(),
-    )
-    .unwrap();
-    let _ = std::fs::remove_file(format!("{dir}/warm-narrow.png"));
-    let _ = std::fs::remove_file(format!("{dir}/warm-wide.png"));
 }

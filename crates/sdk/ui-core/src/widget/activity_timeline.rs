@@ -9,14 +9,14 @@
 //!
 //! Naming is retroactive (click `[Name]`, or shift-click a run to name it).
 //! The widget has no document, so naming only fires [`NameGroupCallback`];
-//! the host persists it through `ui::history_source::groups`.
+//! the host persists it through `tilo_ui::history_source::groups`.
 //!
 //! The filter chip strip's grouping is computed over the *unfiltered*
 //! history, so toggling a chip narrows the list without re-chunking it under
 //! the reader.
 
+use crate::time::SystemTime;
 use std::collections::{HashMap, HashSet};
-use std::time::SystemTime;
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,6 +27,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, Window
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
@@ -53,12 +54,44 @@ const REVERT_CHIP_W: f64 = 64.0;
 const TIME_SLOT_W: f64 = 80.0;
 const AUTHOR_SLOT_W: f64 = 160.0;
 const INDENT: f64 = 20.0;
+/// Right-hand gutter shared by every trailing element — a row's relative
+/// time and a band header's — so the time column lines up down the pane.
+/// A constant alongside `PADDING` and `INDENT`, which the row geometry that
+/// hit-testing reads is built from without a theme; pinned to `spacing.s3`
+/// by `gutter_constants_equal_the_spacing_tokens`.
+const TRAILING_INSET: f64 = 12.0;
 /// Budget of auto-expanded rows: a short history should read as a flat
 /// list, a long one has to read as collapsed bands. This is the line
 /// between the two, spent newest-first.
 const AUTO_EXPAND_BUDGET: usize = 14;
 /// Past this many top-level bands, nothing auto-expands regardless of budget.
 const DENSE_GROUP_COUNT: usize = 6;
+
+/// The pane paints on `surfaces.raised` (its own card, or the host's), where
+/// `Colors::lift` (base → raised) has nowhere left to go, so every tier
+/// inside it — hovered row, band backdrop, selected row — is **one ordered
+/// ramp** of translucent steps against that fill, polarity chosen the way
+/// `hairline_on` chooses it (HIG §9.3 caveat, §9.5). Ascending: hover /
+/// band rest, band hover, selected.
+const WASH_HOVER: u8 = 26;
+const WASH_BAND_HOVER: u8 = 40;
+const WASH_SELECTED: u8 = 56;
+
+/// Sibling filter chips keep one `s2` (HIG §7b: siblings of equal weight
+/// in a compact strip); the 6 px they kept before was off the scale.
+const CHIP_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+
+/// A lifted entry row (hover, selection) is inset this much top and bottom,
+/// so two lifted neighbours keep one `s1` between them — the same clearance
+/// a band's backdrop keeps from the rows around it — instead of fusing into
+/// one block (HIG §7 "nothing touches").
+const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+
+/// One step of the pane's own ramp: `alpha` of white or black, whichever
+/// moves `surface` further.
+fn wash(surface: Color, alpha: u8) -> Color {
+    crate::tokens::colors::Colors::hairline_on(surface, alpha)
+}
 
 /// A nesting depth, row count or dot count, widened for pixel-space layout
 /// math. Lossless in practice — none of these ever approach `u32::MAX` — but
@@ -79,6 +112,16 @@ fn px(n: usize) -> f64 {
 )]
 fn translated(transform: Affine, offset: (f64, f64)) -> Affine {
     transform * Affine::translate(offset)
+}
+
+/// Top edge that centres one line of `size`-px text on `center_y`. The line
+/// box the renderer paints is `line_height × size` — a quarter taller than
+/// the font size at the default 1.25 — and it carries the accessibility text
+/// scale, so centring on the *measured* height (never on `size / 2`) is what
+/// keeps a row's text on the same centre line as its avatar dot at every
+/// type scale.
+fn text_top(tr: &mut TextRenderer, size: f32, center_y: f64) -> f64 {
+    center_y - f64::from(tr.measure("Ag", size, None).1) / 2.0
 }
 
 /// Ordered left-to-right so a flat `[i]` lookup matches the visual.
@@ -302,6 +345,9 @@ pub struct ActivityTimeline {
     /// matches what was actually painted.
     chip_rects: Vec<(ChipKind, Rect)>,
     author_pill_rect: Rect,
+    /// `metrics.min_pointer_target`, taken from the theme each `draw` so the
+    /// theme-less hit-test accessors can grow a chip's target to it.
+    min_pointer_target: f64,
     /// `RoomActivity` may supply its own Everyone/person selector; suppressing
     /// this duplicate leaves the op-class strip intact.
     show_author_pill: bool,
@@ -315,6 +361,7 @@ pub struct ActivityTimeline {
     on_clear_filters: Option<ClearFiltersCallback>,
     /// `false` when the host has already painted a surface underneath.
     draws_own_surface: bool,
+    preview_selection: bool,
     dirty: bool,
 }
 
@@ -359,6 +406,7 @@ impl ActivityTimeline {
             newest_first: true,
             chip_rects: Vec::new(),
             author_pill_rect: Rect::ZERO,
+            min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
             show_author_pill: true,
             clear_chip_rect: Rect::ZERO,
             name_selection_rect: Rect::ZERO,
@@ -366,8 +414,16 @@ impl ActivityTimeline {
             time_range_label: None,
             on_clear_filters: None,
             draws_own_surface: true,
+            preview_selection: false,
             dirty: true,
         }
+    }
+
+    /// Use selection/inspection without offering metadata or direct revert actions.
+    #[must_use]
+    pub fn with_preview_selection(mut self) -> Self {
+        self.preview_selection = true;
+        self
     }
 
     pub fn with_entries(entries: Vec<HistoryEntry>) -> Self {
@@ -406,7 +462,7 @@ impl ActivityTimeline {
     }
 
     /// The widget has no document; the host reads names
-    /// (`ui::history_source::groups`) and pushes them here.
+    /// (`tilo_ui::history_source::groups`) and pushes them here.
     pub fn set_named_ranges(&mut self, named: Vec<NamedRange>) {
         if self.named != named {
             self.named = named;
@@ -786,6 +842,9 @@ impl ActivityTimeline {
     }
 
     pub fn begin_naming_group_at_row(&mut self, i: usize) -> bool {
+        if self.preview_selection {
+            return false;
+        }
         if self.on_name_group.is_none() {
             return false;
         }
@@ -806,7 +865,7 @@ impl ActivityTimeline {
 
     /// `false` when nothing is selected or the host cannot persist a name.
     pub fn begin_naming_selection(&mut self) -> bool {
-        if self.selection.is_none() || self.on_name_group.is_none() {
+        if self.preview_selection || self.selection.is_none() || self.on_name_group.is_none() {
             return false;
         }
         self.naming = Some(NamingState {
@@ -1107,7 +1166,7 @@ impl ActivityTimeline {
     pub fn revert_chip_rect(&self, i: usize) -> Option<Rect> {
         let row = self.row_rect(i)?;
         let entry = self.row_entry(i)?;
-        if self.on_revert.is_none() || !entry.is_revertible() {
+        if self.preview_selection || self.on_revert.is_none() || !entry.is_revertible() {
             return None;
         }
         let depth = self.row_depth(i);
@@ -1122,6 +1181,35 @@ impl ActivityTimeline {
         ))
     }
 
+    /// The pointer target for a chip painted as `painted` inside `within`:
+    /// grown vertically to the minimum pointer target, centred on the paint
+    /// and clamped to its container, while the paint stays the designed
+    /// 20 / 28 px pill. Neighbouring chips only ever differ in x, so grown
+    /// targets never overlap each other. Hit-testing and accessibility read
+    /// this rect; painting reads the original.
+    fn hit_rect_within(&self, painted: Rect, within: Rect) -> Rect {
+        if painted.is_zero_area() {
+            return Rect::ZERO;
+        }
+        let target = self.min_pointer_target.max(painted.height());
+        let mut y0 = painted.y0 - (target - painted.height()) / 2.0;
+        let mut y1 = y0 + target;
+        // Against a container edge the target slides rather than shrinks,
+        // so a chip near the top of its row still gets the full height.
+        if y0 < within.y0 {
+            y1 += within.y0 - y0;
+            y0 = within.y0;
+        }
+        if y1 > within.y1 {
+            y0 -= y1 - within.y1;
+            y1 = within.y1;
+            y0 = y0.max(within.y0);
+        }
+        Rect::new(painted.x0, y0, painted.x1, y1.max(y0))
+    }
+
+    /// `(name, restore)` pointer targets — see [`Self::hit_rect_within`].
+    /// `restore` is `None` when nothing in the range can be restored to.
     /// `(name, restore)`. `name` is zero-sized without a naming callback;
     /// `restore` is `None` without a restore callback or restorable change.
     pub fn group_chip_rects(&self, i: usize) -> Option<(Rect, Option<Rect>)> {
@@ -1136,7 +1224,11 @@ impl ActivityTimeline {
             full.x1,
             full.y1 - 2.0,
         );
-        Some(self.group_chip_rects_local(row, rg))
+        let (name, restore) = self.group_chip_rects_local(row, rg);
+        Some((
+            self.hit_rect_within(name, row),
+            restore.map(|r| self.hit_rect_within(r, row)),
+        ))
     }
 
     /// `None` when the line is not a band header, is off-screen, holds
@@ -1154,7 +1246,9 @@ impl ActivityTimeline {
             full.x1,
             full.y1 - 2.0,
         );
-        self.group_chip_rects_full(row, rg).undo
+        self.group_chip_rects_full(row, rg)
+            .undo
+            .map(|r| self.hit_rect_within(r, row))
     }
 
     /// `None` on a line that is not a band header.
@@ -1172,7 +1266,7 @@ impl ActivityTimeline {
     }
 
     fn now(&self) -> SystemTime {
-        self.now_override.unwrap_or_else(SystemTime::now)
+        self.now_override.unwrap_or_else(crate::time::wall)
     }
 
     fn passes(&self, e: &HistoryEntry, chip_ops: &[OpClass], needle: &str) -> bool {
@@ -1582,37 +1676,38 @@ fn draw_chip(
     if rect.width() <= 2.0 || rect.height() <= 2.0 {
         return;
     }
-    let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-    scene.fill(
-        vello::peniko::Fill::NonZero,
-        transform,
-        if accent {
-            theme.tokens.colors.accent[5]
-        } else {
-            theme.tokens.colors.surface_white_10
-        },
-        None,
-        &shape,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        if accent {
-            theme.tokens.colors.border_focus
-        } else {
-            theme.tokens.colors.border_white_20
-        },
-        None,
-        &shape,
-    );
-    let size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+    let radius = f64::from(theme.tokens.radii.sm);
+    let shape = RoundedRect::from_rect(rect, radius);
+    let colors = &theme.tokens.colors;
+    // Accent chip: the face is its own contrast step, no edge (HIG §9.5
+    // "selected accent, no edge"). Quiet chip: the raised rest fill under an
+    // edge derived from it — a Button Neutral in miniature.
+    if accent {
+        scene.fill(
+            vello::peniko::Fill::NonZero,
+            transform,
+            colors.accent[5],
+            None,
+            &shape,
+        );
+    } else {
+        crate::surface::card(scene, transform, rect, radius, colors.surfaces.raised);
+    }
+    let size = renderer_type_size(tr, (theme.tokens.typography.scale.sm - 1.0).max(10.0));
     let shown = fit_text(tr, label, size, rect.width() - 8.0);
     let (lw, lh) = tr.measure(&shown, size, None);
+    // Ink chosen against the face it sits on: `text_primary` is near-black
+    // on the light preset and vanished on its blue accent.
+    let ink = if accent {
+        colors.on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+    } else {
+        colors.text_primary
+    };
     tr.draw_text(
         scene,
         &shown,
         size,
-        theme.tokens.colors.text_primary,
+        ink,
         translated(
             transform,
             (
@@ -1664,7 +1759,7 @@ impl ActivityTimeline {
         let cy = f64::midpoint(row.y0, row.y1);
         let dot_x = Self::draw_row_avatar(scene, transform, row, cy, entry);
 
-        let text_size = theme.tokens.typography.scale.sm;
+        let text_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         // The indent comes out of the author cluster, not the summary — the
         // summary is what the reader is here for.
         let author_slot_w = (self.author_slot_w() - px(depth) * INDENT).max(72.0);
@@ -1763,12 +1858,13 @@ impl ActivityTimeline {
     ) {
         // The rail: a hairline per nesting level, so rows read as belonging
         // to the bands above them rather than just starting further right.
+        let surface = theme.tokens.colors.surfaces.raised;
         for level in 1..=depth {
             let x = full_row.x0 + (px(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                theme.tokens.colors.border_standard,
+                crate::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
@@ -1777,13 +1873,24 @@ impl ActivityTimeline {
         if is_selected {
             // A neutral raise plus an accent edge, not an accent *fill*: the
             // pale end of the accent ramp behind primary text is unreadable.
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+            // The raise is the top step of the pane's own ramp under a
+            // derived edge, so it reads on a light pane as well as a dark one.
+            let radius = f64::from(theme.tokens.radii.sm);
+            let lift = row.inflate(0.0, -ROW_LIFT_INSET);
+            let shape = RoundedRect::from_rect(lift, radius);
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.surface_white_20,
+                wash(surface, WASH_SELECTED),
                 None,
                 &shape,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                crate::surface::edge_on(surface),
+                None,
+                &crate::surface::edge_outline(lift, radius),
             );
             let edge = RoundedRect::from_rect(
                 Rect::new(row.x0, row.y0 + 2.0, row.x0 + 2.5, row.y1 - 2.0),
@@ -1797,11 +1904,14 @@ impl ActivityTimeline {
                 &edge,
             );
         } else if is_hovered {
-            let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+            let shape = RoundedRect::from_rect(
+                row.inflate(0.0, -ROW_LIFT_INSET),
+                f64::from(theme.tokens.radii.sm),
+            );
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                theme.tokens.colors.neutral[3],
+                wash(surface, WASH_HOVER),
                 None,
                 &shape,
             );
@@ -1866,24 +1976,26 @@ impl ActivityTimeline {
             text_size,
             name_budget,
         );
+        let name_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
             scene,
             &name,
             text_size,
             theme.tokens.colors.text_primary,
-            translated(transform, (x_cursor, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (x_cursor, name_top)),
             None,
         );
         let (name_w, _) = text_renderer.measure(&name, text_size, None);
         x_cursor += f64::from(name_w) + 6.0;
 
         if short_w > 0.0 {
+            let short_top = text_top(text_renderer, short_size, cy);
             text_renderer.draw_text(
                 scene,
                 short,
                 short_size,
                 theme.tokens.colors.text_dim,
-                translated(transform, (x_cursor, cy - f64::from(short_size) / 2.0)),
+                translated(transform, (x_cursor, short_top)),
                 None,
             );
         }
@@ -1912,17 +2024,18 @@ impl ActivityTimeline {
         text_size: f32,
     ) -> bool {
         let glyph = op_class_glyph(entry.op_class);
+        let line_top = text_top(text_renderer, text_size, cy);
         text_renderer.draw_text(
             scene,
             glyph,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (glyph_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (glyph_x, line_top)),
             None,
         );
 
         let summary_x = glyph_x + 24.0;
-        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - 12.0;
+        let summary_x_end = row.x1 - self.time_slot_w() - chip_reserve - TRAILING_INSET;
         let (summary_owned, is_redacted_row): (String, bool) =
             if let Some(redaction) = entry.redaction.as_ref() {
                 (
@@ -1958,7 +2071,7 @@ impl ActivityTimeline {
             &drawn_summary,
             text_size,
             summary_color,
-            translated(transform, (summary_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (summary_x, line_top)),
             None,
         );
         // Drawn after the text so a regression that forgets to gate on
@@ -2006,20 +2119,25 @@ impl ActivityTimeline {
             text_size,
             self.time_slot_w(),
         );
-        let (tw, _) = text_renderer.measure(&rel, text_size, None);
-        let time_x = row.x1 - chip_reserve - 12.0 - f64::from(tw);
+        let (tw, th) = text_renderer.measure(&rel, text_size, None);
+        let time_x = row.x1 - chip_reserve - TRAILING_INSET - f64::from(tw);
         text_renderer.draw_text(
             scene,
             &rel,
             text_size,
             theme.tokens.colors.text_dim,
-            translated(transform, (time_x, cy - f64::from(text_size) / 2.0)),
+            translated(transform, (time_x, cy - f64::from(th) / 2.0)),
             None,
         );
 
         // Two veto conditions on the chip: op-class non-revertibility, and a
         // redaction — we never offer "revert" across a redaction boundary.
-        if self.on_revert.is_some() && is_hovered && entry.is_revertible() && !is_redacted_row {
+        if !self.preview_selection
+            && self.on_revert.is_some()
+            && is_hovered
+            && entry.is_revertible()
+            && !is_redacted_row
+        {
             let chip_h = ROW_HEIGHT - 16.0;
             let chip_rect = Rect::new(
                 row.x1 - self.revert_chip_w() - 6.0,
@@ -2069,7 +2187,7 @@ impl ActivityTimeline {
             scene, transform, theme, full_row, row, rg, is_hovered, is_focused,
         );
 
-        let title_size = theme.tokens.typography.scale.sm;
+        let title_size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         let title_x = row.x0 + 26.0;
         let chips = self.group_chip_rects_local(row, rg);
         Self::draw_group_row_title(
@@ -2083,16 +2201,26 @@ impl ActivityTimeline {
             naming,
             title_x,
             title_size,
-            self.group_chip_rects_full(row, rg).left_edge(row.x1),
+            if self.preview_selection {
+                row.x1 + 8.0
+            } else {
+                self.group_chip_rects_full(row, rg).left_edge(row.x1)
+            },
         );
 
-        // Line two: who and how much, plus — right-aligned — when.
-        let meta_y = row.y0 + 27.0;
+        // Line two: who and how much, plus — right-aligned — when. Stacked
+        // under the title's *measured* line box (top pad + line + gap; 27 px
+        // at 1×, the literal this replaces) so a larger text scale keeps the
+        // two lines apart. The group row itself is still a fixed
+        // `GROUP_ROW_HEIGHT`, so at 2× line two overhangs the row's bottom —
+        // the row height has to follow the text scale for that (F5).
+        let (_, title_h) = tr.measure("Ag", title_size, None);
+        let meta_y = row.y0 + 6.0 + f64::from(title_h) + 6.0;
         Self::draw_group_row_meta(
             scene, transform, tr, theme, row, rg, now, title_x, meta_y, title_size,
         );
 
-        if is_hovered || naming.is_some() {
+        if !self.preview_selection && (is_hovered || naming.is_some()) {
             let (name_rect, restore_rect) = chips;
             if name_rect.area() > 0.0 {
                 draw_chip(
@@ -2131,28 +2259,43 @@ impl ActivityTimeline {
         is_focused: bool,
     ) {
         let colors = &theme.tokens.colors;
+        let surface = colors.surfaces.raised;
         for level in 1..=rg.depth {
             let x = full_row.x0 + (px(level) - 0.5) * INDENT;
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                colors.border_standard,
+                crate::surface::edge_on(surface),
                 None,
                 &Line::new(Point::new(x, full_row.y0), Point::new(x, full_row.y1)),
             );
         }
 
-        let shape = RoundedRect::from_rect(row, f64::from(theme.tokens.radii.sm));
+        // The band's backdrop is a step of the pane's own ramp under an edge
+        // derived from the pane, so a band reads as a band on a light pane
+        // too — the white veneers it replaces were one colour per theme.
+        let radius = f64::from(theme.tokens.radii.sm);
+        let shape = RoundedRect::from_rect(row, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            if is_hovered {
-                colors.surface_white_10
-            } else {
-                colors.surface_white_5
-            },
+            wash(
+                surface,
+                if is_hovered {
+                    WASH_BAND_HOVER
+                } else {
+                    WASH_HOVER
+                },
+            ),
             None,
             &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(surface),
+            None,
+            &crate::surface::edge_outline(row, radius),
         );
         if is_focused {
             scene.stroke(
@@ -2250,8 +2393,9 @@ impl ActivityTimeline {
                 None,
             );
             if rg.open {
-                // "Still open" has to read as live, not as a label.
-                let (w, _) = tr.measure(&title, title_size, None);
+                // "Still open" has to read as live, not as a label — and sit
+                // on the title's measured centre line, not the font size's.
+                let (w, h) = tr.measure(&title, title_size, None);
                 let dot_x = title_x + f64::from(w) + 8.0;
                 if dot_x + 5.0 < row.x1 - actions_w {
                     scene.fill(
@@ -2259,10 +2403,7 @@ impl ActivityTimeline {
                         transform,
                         colors.accent[4],
                         None,
-                        &Circle::new(
-                            Point::new(dot_x, title_y + f64::from(title_size) / 2.0),
-                            3.0,
-                        ),
+                        &Circle::new(Point::new(dot_x, title_y + f64::from(h) / 2.0), 3.0),
                     );
                 }
             }
@@ -2290,11 +2431,12 @@ impl ActivityTimeline {
         let colors = &theme.tokens.colors;
         let meta_size = (title_size - 2.0).max(10.0);
         let rel = format_relative_time(rg.last_time, now);
-        let (rel_w, _) = tr.measure(&rel, meta_size, None);
+        let (rel_w, rel_h) = tr.measure(&rel, meta_size, None);
         // Author dots sit between the subtitle and the timestamp; reserve them.
         let dots = rg.authors.len().min(3);
         let dots_w = if dots > 0 { px(dots) * 10.0 + 6.0 } else { 0.0 };
-        let sub_budget = (row.x1 - title_x - f64::from(rel_w) - dots_w - 24.0).max(0.0);
+        let sub_budget =
+            (row.x1 - title_x - f64::from(rel_w) - dots_w - TRAILING_INSET - 16.0).max(0.0);
         let subtitle = if rg.expanded {
             rg.subtitle.clone()
         } else {
@@ -2312,17 +2454,23 @@ impl ActivityTimeline {
             translated(transform, (title_x, meta_y)),
             None,
         );
+        // Right-aligned to the same gutter as the rows' time column, so the
+        // band header's "2 h ago" and the rows' "1 h ago" share one edge.
         tr.draw_text(
             scene,
             &rel,
             meta_size,
             colors.text_dim,
-            translated(transform, (row.x1 - 8.0 - f64::from(rel_w), meta_y)),
+            translated(
+                transform,
+                (row.x1 - TRAILING_INSET - f64::from(rel_w), meta_y),
+            ),
             None,
         );
 
-        // Author dots, packed tight.
-        let mut dx = row.x1 - 16.0 - f64::from(rel_w);
+        // Author dots, packed tight, on the meta line's measured centre.
+        let dot_cy = meta_y + f64::from(rel_h) / 2.0;
+        let mut dx = row.x1 - TRAILING_INSET - 8.0 - f64::from(rel_w);
         for a in rg.authors.iter().take(3) {
             let (r, g, b) = hue_to_rgb(a.avatar_hue);
             scene.fill(
@@ -2330,7 +2478,7 @@ impl ActivityTimeline {
                 transform,
                 Color::from_rgba8(r, g, b, 255),
                 None,
-                &Circle::new(Point::new(dx, meta_y + f64::from(meta_size) / 2.0), 4.0),
+                &Circle::new(Point::new(dx, dot_cy), 4.0),
             );
             dx -= 10.0;
         }
@@ -2340,6 +2488,13 @@ impl ActivityTimeline {
     /// document actions sit together. `[Undo]` only allocates when a host
     /// installed [`ActivityTimeline::on_undo_band`].
     fn group_chip_rects_full(&self, row: Rect, rg: &RowGroup) -> GroupChips {
+        if self.preview_selection {
+            return GroupChips {
+                name: Rect::ZERO,
+                undo: None,
+                restore: None,
+            };
+        }
         let chip_h = 20.0;
         let cy = row.y0 + 15.0;
         let narrow = self.rect.width() < NARROW_WIDTH;
@@ -2386,11 +2541,20 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let strip = self.filter_strip_rect();
-        let chip_text_size = (theme.tokens.typography.scale.sm - 1.0).max(10.0);
+        let chip_text_size = renderer_type_size(
+            text_renderer,
+            (theme.tokens.typography.scale.sm - 1.0).max(10.0),
+        );
 
-        let active_fill = theme.tokens.colors.accent[5];
-        let idle_fill = theme.tokens.colors.surface_white_5;
-        let active_text = theme.tokens.colors.text_primary;
+        // Chip quiet (HIG §9.5): raised rest fill under a derived edge (added
+        // where the chip is painted); selected: solid accent with ink chosen
+        // against it, no edge.
+        let (active_fill, _) = crate::surface::chip_colors(theme, true);
+        let (idle_fill, _) = crate::surface::chip_colors(theme, false);
+        let active_text = theme
+            .tokens
+            .colors
+            .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST);
         let idle_text = theme.tokens.colors.text_dim;
 
         // Rebuild the chip-rect cache every frame so click hit-testing lines up
@@ -2424,7 +2588,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + 6.0;
+                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
             }
             total
         };
@@ -2490,12 +2654,13 @@ impl ActivityTimeline {
                 break;
             }
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
-            self.chip_rects.push((chip, chip_rect));
+            self.chip_rects
+                .push((chip, self.hit_rect_within(chip_rect, strip)));
             let active = self.active_chip == chip;
             let body = if active { active_fill } else { idle_fill };
             let text_color = if active { active_text } else { idle_text };
-            let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-            scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+            let edge = (!active).then(|| crate::surface::edge_on(body));
+            crate::surface::pill(scene, transform, chip_rect, body, edge, None);
             let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
@@ -2511,7 +2676,7 @@ impl ActivityTimeline {
                 ),
                 None,
             );
-            x += chip_w + 6.0;
+            x += chip_w + CHIP_GAP;
         }
     }
 
@@ -2536,7 +2701,7 @@ impl ActivityTimeline {
         let arx1 = strip.x1;
         let arx0 = arx1 - author_full_w;
         let chip_rect = Rect::new(arx0, cy - chip_h / 2.0, arx1, cy + chip_h / 2.0);
-        self.author_pill_rect = chip_rect;
+        self.author_pill_rect = self.hit_rect_within(chip_rect, strip);
         let drawn_author = fit_text(
             text_renderer,
             author_label,
@@ -2553,8 +2718,11 @@ impl ActivityTimeline {
         } else {
             active_text
         };
-        let shape = RoundedRect::from_rect(chip_rect, chip_h / 2.0);
-        scene.fill(vello::peniko::Fill::NonZero, transform, body, None, &shape);
+        let edge = self
+            .author_query
+            .is_empty()
+            .then(|| crate::surface::edge_on(body));
+        crate::surface::pill(scene, transform, chip_rect, body, edge, None);
         let (lw, lh) = text_renderer.measure(&drawn_author, chip_text_size, None);
         text_renderer.draw_text(
             scene,
@@ -2589,23 +2757,18 @@ impl ActivityTimeline {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(bar, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Overlay bar under an edge derived from it: the bar announces a
+        // selection through its copy and actions, not by wearing the focus
+        // ring — `border_focus` means keyboard focus (HIG §9.4/§9.5).
+        crate::surface::card(
+            scene,
             transform,
+            bar,
+            f64::from(theme.tokens.radii.sm),
             colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_focus,
-            None,
-            &shape,
         );
 
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(tr, theme.tokens.typography.scale.sm);
         // `selection` is normalised so `b >= a` (see `set_selection`).
         let n = b.saturating_sub(a).saturating_add(1);
         let naming = matches!(
@@ -2614,7 +2777,7 @@ impl ActivityTimeline {
         );
 
         let clear_w = 54.0_f64;
-        let action_w = if naming || self.on_name_group.is_none() {
+        let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
             0.0
         } else {
             96.0_f64
@@ -2631,15 +2794,13 @@ impl ActivityTimeline {
         let label = format!("{n} change{} selected", if n == 1 { "" } else { "s" });
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, size, label_budget);
+        let label_top = text_top(tr, size, bar.center().y);
         tr.draw_text(
             scene,
             &shown,
             size,
             colors.text_primary,
-            translated(
-                transform,
-                (bar.x0 + 10.0, bar.center().y - f64::from(size) / 2.0),
-            ),
+            translated(transform, (bar.x0 + 10.0, label_top)),
             None,
         );
 
@@ -2663,7 +2824,7 @@ impl ActivityTimeline {
                 clear.x0 - 6.0,
                 bar.center().y + 11.0,
             );
-            if action.x0 > bar.x0 + 10.0 {
+            if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
                 self.name_selection_rect = action;
                 draw_chip(scene, transform, tr, theme, action, "Name these", true);
             }
@@ -2716,6 +2877,7 @@ impl Widget for ActivityTimeline {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        self.min_pointer_target = f64::from(theme.tokens.metrics.min_pointer_target);
         if self.draws_own_surface {
             self.draw_surface_chrome(scene, transform, theme);
         }
@@ -3023,20 +3185,15 @@ impl ActivityTimeline {
     /// The pane's own rounded backdrop, painted only when no host has
     /// already put a surface behind it.
     fn draw_surface_chrome(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // Raised card under an edge derived from it: the declared
+        // `border_standard` this replaces is three shades from the dark
+        // preset's raised surface and vanished there (HIG §9.5).
+        crate::surface::card(
+            scene,
             transform,
+            self.rect,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.border_standard,
-            None,
-            &shape,
         );
     }
 
@@ -3050,7 +3207,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) {
         let (title, detail) = self.empty_state_lines();
-        let size = theme.tokens.typography.scale.sm;
+        let size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         let small = (size - 1.0).max(10.0);
         let rows_top = self.rows_top();
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
@@ -3289,7 +3446,10 @@ impl ActivityTimeline {
                 return;
             }
             Key::Named(NamedKey::Escape) => {
-                if self.selection.take().is_some() {
+                if !self.author_query.is_empty() {
+                    self.author_query.clear();
+                    self.rebuild();
+                } else if self.selection.take().is_some() {
                     self.selection_anchor = None;
                     self.rebuild_rows();
                 }
@@ -3336,10 +3496,16 @@ impl ActivityTimeline {
                     *handled = true;
                 }
             }
-            Key::Named(NamedKey::Escape) if self.selection.take().is_some() => {
-                self.selection_anchor = None;
-                self.rebuild_rows();
-                *handled = true;
+            Key::Named(NamedKey::Escape) => {
+                if !self.author_query.is_empty() {
+                    self.author_query.clear();
+                    self.rebuild();
+                    *handled = true;
+                } else if self.selection.take().is_some() {
+                    self.selection_anchor = None;
+                    self.rebuild_rows();
+                    *handled = true;
+                }
             }
             _ => {}
         }
@@ -3547,12 +3713,167 @@ impl ActivityTimeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
+
+    /// Relative luminance of the composited pixel at (`x`, `y`).
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "probe coordinates are non-negative pixel positions inside the test surface"
+    )]
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    }
+
+    /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
+    fn ux1x_out(theme: &Theme, name: &str) -> Option<std::path::PathBuf> {
+        let dir = std::path::PathBuf::from(std::env::var_os("UX1X_F4_OUT")?)
+            .join(theme.name.to_lowercase());
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(dir.join(name))
+    }
+
+    /// Eight changes by two authors — enough for a band and loose rows —
+    /// with two rows selected so the selection bar and its chips paint.
+    fn ux1x_fixture() -> ActivityTimeline {
+        let entries: Vec<HistoryEntry> = (0..8u8)
+            .map(|i| {
+                let who = if i < 5 { "Alice" } else { "Bob" };
+                entry(OpClass::Splice, who, 1_000 + u64::from(i) * 30, i)
+            })
+            .collect();
+        let mut t = ActivityTimeline::with_entries(entries);
+        t.set_now_for_test(
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(2_000))
+                .unwrap_or(SystemTime::UNIX_EPOCH),
+        );
+        t.set_all_expanded(true);
+        t.set_selection(Some((5, 6)));
+        t
+    }
+
+    /// The pane, its quiet chips, the band backdrops and the selected rows
+    /// keep a **visible derived edge** at 1× on both presets (HIG §9.5).
+    /// Before, the pane wore `border_standard` (three shades from the dark
+    /// raised surface), chips and bands literal white veneers, hover
+    /// `neutral[3]`, and the selection bar the focus ring.
+    ///
+    /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the harness
+    /// inspection when that variable is set; asserts regardless.
+    #[test]
+    fn ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        let (pw, ph) = (520.0, 520.0);
+        // Evidence first, for both presets, so a failing assertion on one
+        // preset still leaves the other's PNG and inspection on disk.
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            if let Some(png) = ux1x_out(&theme, "activity_timeline.png") {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "a small test viewport"
+                )]
+                let harness = crate::headless::FrameHarness::new_with_theme(
+                    crate::State::new(),
+                    Box::new(ux1x_fixture()),
+                    (pw as u32, ph as u32),
+                    theme.clone(),
+                );
+                harness.render_window_png(&png);
+                if let Ok(json) = harness.inspection_json() {
+                    std::fs::write(png.with_extension("inspection.json"), json)
+                        .expect("write inspection");
+                }
+            }
+        }
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut t = ux1x_fixture();
+            let pane = Rect::new(margin, margin, margin + pw, margin + ph);
+            t.set_rect(pane);
+            let (w, h) = (pane.x1 + margin, pane.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            t.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32).render(&scene, theme.bg_app);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            // Pane edge against its own fill, on the pane's centre line (clear
+            // of the corner arcs; rows start one `PADDING` in, so the columns
+            // beside the edge are bare fill).
+            let y = pane.center().y;
+            let edge = lum(pane.x0, y);
+            let fill = lum(pane.x0 + 3.0, y);
+            assert!(
+                (edge - fill).abs() >= EDGE_MIN,
+                "{}: pane edge {edge:.4} vs fill {fill:.4} did not register",
+                theme.name
+            );
+
+            // Quiet chip (the second filter chip, not the active first one):
+            // its top edge — the straight run of the capsule, where the 1 px
+            // stroke covers the whole pixel row — against its own fill just
+            // under it, above the label's line box. `chip_rects` holds the
+            // pointer target, so recover the painted capsule from the strip.
+            let (_, hit) = t.chip_rects.get(1).copied().expect("a second filter chip");
+            let strip = t.filter_strip_rect();
+            let chip_h = (strip.height() - 8.0).max(20.0);
+            let chip_top = strip.center().y - chip_h / 2.0;
+            let cx = hit.center().x;
+            let cedge = lum(cx, chip_top);
+            let cfill = lum(cx, chip_top + 3.0);
+            assert!(
+                (cedge - cfill).abs() >= EDGE_MIN,
+                "{}: chip edge {cedge:.4} vs fill {cfill:.4} did not register",
+                theme.name
+            );
+
+            // Band backdrop against the pane beside its inset.
+            let band_row = (0..t.row_count())
+                .find(|i| t.group_at_row(*i).is_some())
+                .expect("two authors' runs produce a band");
+            let band = t.row_rect(band_row).expect("the band row is laid out");
+            let inner = Rect::new(band.x0, band.y0 + 2.0, band.x1, band.y1 - 2.0);
+            let bfill = lum(inner.x1 - 3.0, inner.center().y);
+            let pane_fill = lum(pane.x1 - PADDING / 2.0, inner.center().y);
+            assert!(
+                (bfill - pane_fill).abs() >= EDGE_MIN,
+                "{}: band {bfill:.4} vs pane {pane_fill:.4} did not register",
+                theme.name
+            );
+        }
+    }
 
     fn entry(op: OpClass, author: &str, ts: u64, id: u8) -> HistoryEntry {
         let mut id_bytes = [0u8; 16];
@@ -4127,7 +4448,7 @@ mod tests {
     }
 
     #[test]
-    fn typing_narrows_by_author_and_backspace_widens_again() {
+    fn typing_narrows_by_author_and_escape_or_backspace_widens_again() {
         let entries = vec![
             entry(OpClass::Splice, "Alice", 1, 1),
             entry(OpClass::Splice, "Bob", 2, 2),
@@ -4140,6 +4461,17 @@ mod tests {
         assert_eq!(t.author_query(), "b");
         assert_eq!(t.visible_len(), 1);
         assert_eq!(t.visible_entry(0).unwrap().author.name, "Bob");
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Named(NamedKey::Escape)),
+        );
+        assert_eq!(t.author_query(), "");
+        assert_eq!(t.visible_len(), 2);
+
+        dispatch(
+            &mut t,
+            &key_press(winit::keyboard::Key::Character("b".into())),
+        );
         dispatch(
             &mut t,
             &key_press(winit::keyboard::Key::Named(NamedKey::Backspace)),
@@ -4206,12 +4538,12 @@ mod tests {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+    use crate::time::Duration;
     use crate::widget::history::HistoryAuthor;
     use crate::widget::history_group::NamedRange;
     use collab_types::ArtifactKind;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::time::Duration;
     use winit::event::Modifiers;
 
     const NOW: u64 = 2_000_000;
@@ -5180,5 +5512,103 @@ mod group_tests {
         timeline.set_selection(Some((0, 0)));
         timeline.set_filter(HistoryFilter::default().with_author("Maren"));
         assert_eq!(timeline.selection(), None);
+    }
+
+    /// The gutters are constants because hit-testing has no theme; they must
+    /// nevertheless be the tokens' values, so a token change surfaces here.
+    #[test]
+    fn gutter_constants_equal_the_spacing_tokens() {
+        let spacing = crate::tokens::Spacing::default();
+        assert!(
+            (PADDING - f64::from(spacing.s2)).abs() < 1e-9,
+            "PADDING is s2"
+        );
+        assert!(
+            (TRAILING_INSET - f64::from(spacing.s3)).abs() < 1e-9,
+            "TRAILING_INSET is s3"
+        );
+    }
+
+    /// Row text is centred on the renderer's measured line box, which is
+    /// what keeps it on the avatar's centre line when type is scaled.
+    /// Every chip the timeline offers the pointer — the filter strip's
+    /// class chips, the author pill, a band header's Name/Restore — is at
+    /// least the minimum pointer target tall and no two claim the same
+    /// pixels, while the strip's chips stay inside their strip. The paint
+    /// is still the 28 / 20 px pill; only the target grew.
+    #[test]
+    fn chip_targets_meet_the_minimum_pointer_target_and_never_overlap() {
+        let mut t = ActivityTimeline::with_entries(typing_run(20))
+            .on_revert(|_| {})
+            .on_name_group(|_| {});
+        t.set_rect(Rect::new(0.0, 0.0, 520.0, 500.0));
+        t.set_now_for_test(SystemTime::UNIX_EPOCH + Duration::from_secs(NOW));
+        let theme = Theme::dark();
+        let min = f64::from(theme.tokens.metrics.min_pointer_target);
+        let mut tr = TextRenderer::new();
+        let mut scene = Scene::new();
+        t.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            &theme,
+            &PresenceCtx::default(),
+        );
+
+        let strip = t.filter_strip_rect();
+        let mut targets: Vec<(String, Rect)> = t
+            .chip_rects
+            .iter()
+            .map(|(k, r)| (format!("{k:?}"), *r))
+            .collect();
+        assert!(targets.len() >= 2, "the strip painted no chips");
+        for (k, r) in &targets {
+            assert!(
+                r.y0 >= strip.y0 - 1e-6 && r.y1 <= strip.y1 + 1e-6,
+                "{k} target {r:?} leaves the strip {strip:?}"
+            );
+        }
+        targets.push(("author".to_string(), t.author_pill_rect()));
+        let (name, restore) = t.group_chip_rects(0).expect("a band header has chips");
+        targets.push(("name".to_string(), name));
+        if let Some(r) = restore {
+            targets.push(("restore".to_string(), r));
+        }
+        for (k, r) in &targets {
+            assert!(
+                r.height() >= min - 1e-6,
+                "{k} target {r:?} is under the {min}px minimum pointer target"
+            );
+        }
+        for (i, (a_name, a)) in targets.iter().enumerate() {
+            for (b_name, b) in targets.iter().skip(i + 1) {
+                assert!(
+                    a.intersect(*b).is_zero_area(),
+                    "{a_name} {a:?} and {b_name} {b:?} claim the same pixels"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn row_text_centring_tracks_the_measured_line_box_at_every_text_scale() {
+        let theme = Theme::dark();
+        let size = theme.tokens.typography.scale.sm;
+        for scale in [1.0_f32, 2.0] {
+            let mut tr = TextRenderer::new();
+            tr.set_text_scale(scale);
+            let cy = 40.0;
+            let top = text_top(&mut tr, size, cy);
+            let (_, h) = tr.measure("Alice", size, None);
+            assert!(
+                (top + f64::from(h) / 2.0 - cy).abs() < 1e-6,
+                "at {scale}x: top {top} + half of {h} misses the row centre {cy}"
+            );
+            assert!(
+                f64::from(h) > f64::from(size) * f64::from(scale),
+                "the line box {h} is taller than the bare size {size} × {scale}; centring on \
+                 size/2 would sit the text low"
+            );
+        }
     }
 }

@@ -13,7 +13,8 @@ use std::os::unix::ffi::OsStrExt as _;
 use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::{Component, Path, PathBuf};
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 pub const STORE_SCHEMA_VERSION: u16 = 1;
@@ -24,10 +25,14 @@ pub const MAX_FOLDER_ENTRIES: usize = 100_000;
 pub const TRANSFER_LIFETIME_MS: u64 = 7 * 24 * 60 * 60 * 1000;
 pub const CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
 
+#[cfg(target_os = "linux")]
 const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
+#[cfg(target_os = "linux")]
 const RESOLVE_NO_SYMLINKS: u64 = 0x04;
+#[cfg(target_os = "linux")]
 const RESOLVE_BENEATH: u64 = 0x08;
 
+#[cfg(target_os = "linux")]
 #[repr(C)]
 struct OpenHow {
     flags: u64,
@@ -68,17 +73,30 @@ impl SecureNearbyDestination {
         })
     }
 
+    #[cfg(not(target_os = "macos"))]
     fn anchored_root(&self) -> PathBuf {
         PathBuf::from(format!("/proc/self/fd/{}", self.directory.as_raw_fd()))
     }
 
     pub(crate) fn install_inline(&self, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
-        let anchored = install_bytes_create_new(&self.anchored_root(), name, bytes)?;
-        Ok(self.display_root.join(
-            anchored
-                .file_name()
-                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            if bytes.is_empty() || u64::try_from(bytes.len()).map_err(display)? > MAX_TRANSFER_BYTES
+            {
+                return Err("nearby transfer exceeds the size limit".into());
+            }
+            return install_capability_file(&self.directory, name, &mut io::Cursor::new(bytes))
+                .map(|name| self.display_root.join(name));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let anchored = install_bytes_create_new(&self.anchored_root(), name, bytes)?;
+            Ok(self.display_root.join(
+                anchored
+                    .file_name()
+                    .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+            ))
+        }
     }
 }
 
@@ -133,6 +151,7 @@ impl SecureNearbySource {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
     validate_relative(relative)?;
     let path = CString::new(relative.as_os_str().as_bytes())
@@ -430,7 +449,10 @@ impl NearbyTransferStore {
     ///
     /// # Errors
     /// Returns an error for invalid/mismatched manifests, quota, or durable I/O failure.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Incoming transfers bind source and request IDs to name, kind, byte length, content hash, and the timestamp used for expiry."
+    )]
     pub fn begin_incoming(
         &mut self,
         id: [u8; 16],
@@ -571,17 +593,40 @@ impl NearbyTransferStore {
             self.cancel_incoming(id)?;
             return Err("nearby transfer integrity check failed".into());
         }
-        let root = destination.anchored_root();
-        let installed = match entry.kind {
-            TransferKind::File => install_file_create_new(&part, &root, &entry.name)?,
-            TransferKind::FolderArchive => extract_archive_create_new(&part, &root, &entry.name)?,
-        };
-        self.cancel_incoming(id)?;
-        Ok(destination.display_root.join(
-            installed
-                .file_name()
-                .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
-        ))
+        #[cfg(target_os = "macos")]
+        {
+            let installed = match entry.kind {
+                TransferKind::File => {
+                    let mut input = OpenOptions::new()
+                        .read(true)
+                        .custom_flags(libc::O_NOFOLLOW)
+                        .open(&part)
+                        .map_err(display)?;
+                    install_capability_file(&destination.directory, &entry.name, &mut input)?
+                }
+                TransferKind::FolderArchive => {
+                    extract_capability_archive(&part, &destination.directory, &entry.name)?
+                }
+            };
+            self.cancel_incoming(id)?;
+            return Ok(destination.display_root.join(installed));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let root = destination.anchored_root();
+            let installed = match entry.kind {
+                TransferKind::File => install_file_create_new(&part, &root, &entry.name)?,
+                TransferKind::FolderArchive => {
+                    extract_archive_create_new(&part, &root, &entry.name)?
+                }
+            };
+            self.cancel_incoming(id)?;
+            Ok(destination.display_root.join(
+                installed
+                    .file_name()
+                    .ok_or_else(|| "Nearby Send destination name is unavailable".to_string())?,
+            ))
+        }
     }
 
     /// Remove outgoing metadata and staged bytes.
@@ -846,29 +891,39 @@ fn archive_open_folder(source: File, destination: &Path) -> Result<(), String> {
     if !source.metadata().map_err(display)?.is_dir() {
         return Err("nearby transfer source changed type".into());
     }
-    let root = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
-    let mut entries = walkdir::WalkDir::new(&root)
-        .follow_links(false)
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(display)?;
-    entries.sort_by(|a, b| {
-        a.path()
-            .strip_prefix(&root)
-            .unwrap_or_else(|_| a.path())
-            .cmp(b.path().strip_prefix(&root).unwrap_or_else(|_| b.path()))
-    });
-    if entries.len() > MAX_FOLDER_ENTRIES {
-        return Err("folder contains too many entries".into());
-    }
+    #[cfg(target_os = "macos")]
+    let entries = capability_entries(&source)?;
+    #[cfg(not(target_os = "macos"))]
+    let entries = {
+        let root = PathBuf::from(format!("/proc/self/fd/{}", source.as_raw_fd()));
+        let mut entries = walkdir::WalkDir::new(&root)
+            .follow_links(false)
+            .into_iter()
+            .skip(1)
+            .map(|entry| {
+                let entry = entry.map_err(display)?;
+                let relative = entry
+                    .path()
+                    .strip_prefix(&root)
+                    .map_err(display)?
+                    .to_owned();
+                Ok((relative, entry.file_type().is_dir()))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        if entries.len() >= MAX_FOLDER_ENTRIES {
+            return Err("folder contains too many entries".into());
+        }
+        entries
+    };
     let output = create_private_new(destination)?;
     let mut archive = tar::Builder::new(output);
     archive.mode(tar::HeaderMode::Deterministic);
     let mut source_bytes = 0_u64;
-    for entry in entries.into_iter().skip(1) {
-        let relative = entry.path().strip_prefix(&root).map_err(display)?;
+    for (relative, is_directory) in entries {
+        let relative = relative.as_path();
         validate_relative(relative)?;
-        let mut opened = openat2_beneath(&source, relative, entry.file_type().is_dir())?;
+        let mut opened = openat2_beneath(&source, relative, is_directory)?;
         let metadata = opened.metadata().map_err(display)?;
         if !metadata.is_dir() && !metadata.is_file() {
             return Err("folder contains a link or special file".into());
@@ -1131,7 +1186,7 @@ fn remove_if_exists(path: &Path) -> Result<(), String> {
 
 fn random_id() -> [u8; 16] {
     let mut id = [0; 16];
-    OsRng.fill_bytes(&mut id);
+    UnwrapErr(SysRng).fill_bytes(&mut id);
     id
 }
 fn id_hex(id: [u8; 16]) -> String {
@@ -1307,6 +1362,7 @@ mod tests {
         let destination = tmp.path().join("approved");
         fs::create_dir(&destination).unwrap();
         fs::write(destination.join("report.txt"), b"existing").unwrap();
+        let expected_destination = fs::canonicalize(&destination).unwrap();
         let capability = SecureNearbyDestination::open_grant(&destination).unwrap();
         let moved = tmp.path().join("moved");
         fs::rename(&destination, &moved).unwrap();
@@ -1315,9 +1371,54 @@ mod tests {
         let installed = capability
             .install_inline("report.txt", b"received")
             .unwrap();
-        assert_eq!(installed, destination.join("report (1).txt"));
+        assert_eq!(installed, expected_destination.join("report (1).txt"));
         assert_eq!(fs::read(moved.join("report.txt")).unwrap(), b"existing");
         assert_eq!(fs::read(moved.join("report (1).txt")).unwrap(), b"received");
+    }
+
+    #[test]
+    fn secure_folder_round_trip_stays_anchored_and_does_not_replace_an_existing_folder() {
+        let tmp = TempDir::new().unwrap();
+        let source_path = tmp.path().join("folder");
+        fs::create_dir_all(source_path.join("nested")).unwrap();
+        fs::write(source_path.join("nested/report.txt"), b"received").unwrap();
+        let source = SecureNearbySource::open_beneath(tmp.path(), &source_path).unwrap();
+        let mut sender = NearbyTransferStore::open(tmp.path().join("sender"), 10).unwrap();
+        let entry = sender
+            .stage_secure_with_id(source, "peer".into(), 10, [41; 16])
+            .unwrap();
+        let bytes = fs::read(sender.object_path(entry.id)).unwrap();
+        let approved = tmp.path().join("approved");
+        fs::create_dir_all(approved.join("folder")).unwrap();
+        fs::write(approved.join("folder/keep.txt"), b"keep").unwrap();
+        let expected_destination = fs::canonicalize(&approved).unwrap();
+        let destination = SecureNearbyDestination::open_grant(&approved).unwrap();
+        let moved = tmp.path().join("moved");
+        fs::rename(&approved, &moved).unwrap();
+        std::os::unix::fs::symlink(&source_path, &approved).unwrap();
+        let mut receiver = NearbyTransferStore::open(tmp.path().join("receiver"), 10).unwrap();
+        receiver
+            .begin_incoming(
+                entry.id,
+                "peer".into(),
+                [42; 16],
+                entry.name,
+                entry.kind,
+                entry.total_bytes,
+                entry.content_hash,
+                10,
+            )
+            .unwrap();
+        receiver.append(entry.id, 0, &bytes).unwrap();
+        let installed = receiver.finish_secure(entry.id, &destination).unwrap();
+        assert_eq!(installed, expected_destination.join("folder (1)"));
+        assert_eq!(fs::read(moved.join("folder/keep.txt")).unwrap(), b"keep");
+        assert_eq!(
+            fs::read(moved.join("folder (1)/nested/report.txt")).unwrap(),
+            b"received"
+        );
+        assert!(!source_path.join("folder (1)").exists());
+        assert!(!receiver.partial_path(entry.id).exists());
     }
 
     #[test]
@@ -1398,4 +1499,269 @@ mod tests {
         assert!(reopened.outbox().is_empty());
         assert!(!object.exists());
     }
+}
+
+// Walk one component at a time relative to owned directory descriptors. The
+// validated path contains neither parent traversal nor absolute components,
+// and O_NOFOLLOW rejects a symlink at every step, including the final file.
+#[cfg(not(target_os = "linux"))]
+fn openat2_beneath(root: &File, relative: &Path, directory: bool) -> Result<File, String> {
+    validate_relative(relative)?;
+    let mut current = root.try_clone().map_err(display)?;
+    let mut parts = relative.components().peekable();
+    while let Some(Component::Normal(component)) = parts.next() {
+        let name = CString::new(component.as_bytes()).map_err(display)?;
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if directory || parts.peek().is_some() {
+                libc::O_DIRECTORY
+            } else {
+                0
+            };
+        // SAFETY: name is NUL terminated and current owns a live directory fd.
+        let fd = unsafe { libc::openat(current.as_raw_fd(), name.as_ptr(), flags) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        // SAFETY: openat returned a fresh owned descriptor.
+        current = unsafe { File::from_raw_fd(fd) };
+    }
+    Ok(current)
+}
+
+#[cfg(target_os = "macos")]
+fn capability_entries(root: &File) -> Result<Vec<(PathBuf, bool)>, String> {
+    let mut entries = Vec::new();
+    let mut pending = vec![PathBuf::new()];
+    while let Some(relative) = pending.pop() {
+        let directory = if relative.as_os_str().is_empty() {
+            root.try_clone().map_err(display)?
+        } else {
+            openat2_beneath(root, &relative, true)?
+        };
+        // fdopendir owns its descriptor; duplicate it without passing ownership
+        // of the capability itself. Every directory is enumerated once.
+        let fd = unsafe { libc::fcntl(directory.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        let stream = unsafe { libc::fdopendir(fd) };
+        if stream.is_null() {
+            let error = io::Error::last_os_error();
+            unsafe {
+                libc::close(fd);
+            }
+            return Err(error.to_string());
+        }
+        struct DirectoryStream(*mut libc::DIR);
+        impl Drop for DirectoryStream {
+            fn drop(&mut self) {
+                unsafe {
+                    libc::closedir(self.0);
+                }
+            }
+        }
+        let stream = DirectoryStream(stream);
+        unsafe {
+            libc::rewinddir(stream.0);
+        }
+        loop {
+            // readdir uses errno to distinguish end-of-stream from failure.
+            unsafe {
+                *libc::__error() = 0;
+            }
+            let entry = unsafe { libc::readdir(stream.0) };
+            if entry.is_null() {
+                let error = io::Error::last_os_error();
+                if error.raw_os_error() != Some(0) {
+                    return Err(error.to_string());
+                }
+                break;
+            }
+            let name = unsafe { std::ffi::CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            let path = relative.join(std::ffi::OsStr::from_bytes(name));
+            let file = openat2_beneath(root, &path, false)?;
+            let metadata = file.metadata().map_err(display)?;
+            if !metadata.is_dir() && !metadata.is_file() {
+                return Err("folder contains a link or special file".into());
+            }
+            if metadata.is_dir() {
+                pending.push(path.clone());
+            }
+            entries.push((path, metadata.is_dir()));
+            if entries.len() >= MAX_FOLDER_ENTRIES {
+                return Err("folder contains too many entries".into());
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+#[cfg(target_os = "macos")]
+fn create_capability_file(root: &File, name: impl AsRef<std::ffi::OsStr>) -> io::Result<File> {
+    let name = CString::new(name.as_ref().as_bytes())?;
+    // O_EXCL prevents overwriting either existing files or symlinks.
+    let fd = unsafe {
+        libc::openat(
+            root.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+    };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(unsafe { File::from_raw_fd(fd) })
+}
+
+#[cfg(target_os = "macos")]
+fn install_capability_file(
+    root: &File,
+    name: &str,
+    input: &mut impl Read,
+) -> Result<String, String> {
+    for suffix in 0..1000 {
+        let candidate = collision_name(name, suffix);
+        match create_capability_file(root, &candidate) {
+            Ok(mut output) => {
+                io::copy(input, &mut output).map_err(display)?;
+                output.sync_all().map_err(display)?;
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("too many nearby transfer name collisions".into())
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_capability_directory(root: &File, relative: &Path) -> Result<File, String> {
+    if relative.as_os_str().is_empty() {
+        return root.try_clone().map_err(display);
+    }
+    validate_relative(relative)?;
+    let mut current = root.try_clone().map_err(display)?;
+    for component in relative.components() {
+        let Component::Normal(component) = component else {
+            unreachable!()
+        };
+        let name = CString::new(component.as_bytes()).map_err(display)?;
+        let result = unsafe { libc::mkdirat(current.as_raw_fd(), name.as_ptr(), 0o700) };
+        if result != 0 && io::Error::last_os_error().kind() != io::ErrorKind::AlreadyExists {
+            return Err(io::Error::last_os_error().to_string());
+        }
+        current = openat2_beneath(&current, Path::new(component), true)?;
+    }
+    Ok(current)
+}
+
+#[cfg(target_os = "macos")]
+fn extract_capability_archive(source: &Path, root: &File, name: &str) -> Result<String, String> {
+    let temporary = format!(".{}.partial", id_hex(random_id()));
+    let temporary_c = CString::new(temporary.as_str()).map_err(display)?;
+    // Reserve a private directory exclusively; do not reuse a planted entry.
+    if unsafe { libc::mkdirat(root.as_raw_fd(), temporary_c.as_ptr(), 0o700) } != 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let directory = openat2_beneath(root, Path::new(&temporary), true)?;
+    let result = (|| {
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(source)
+            .map_err(display)?;
+        let mut archive = tar::Archive::new(file);
+        let mut total = 0u64;
+        for (index, item) in archive.entries().map_err(display)?.enumerate() {
+            if index >= MAX_FOLDER_ENTRIES {
+                return Err("archive contains too many entries".into());
+            }
+            let mut item = item.map_err(display)?;
+            let path = item.path().map_err(display)?.into_owned();
+            validate_relative(&path)?;
+            let kind = item.header().entry_type();
+            if kind.is_dir() {
+                ensure_capability_directory(&directory, &path)?;
+            } else if kind.is_file() {
+                total = total
+                    .checked_add(item.size())
+                    .ok_or_else(|| "archive exceeds size limit".to_string())?;
+                if total > MAX_TRANSFER_BYTES {
+                    return Err("archive exceeds size limit".into());
+                }
+                let parent = ensure_capability_directory(
+                    &directory,
+                    path.parent().unwrap_or(Path::new("")),
+                )?;
+                let leaf = path
+                    .file_name()
+                    .ok_or_else(|| "archive path is not portable".to_string())?;
+                let mut output = create_capability_file(&parent, leaf).map_err(display)?;
+                io::copy(&mut item, &mut output).map_err(display)?;
+                output.sync_all().map_err(display)?;
+            } else {
+                return Err("archive contains a link or special entry".into());
+            }
+        }
+        for suffix in 0..1000 {
+            let candidate = collision_name(name, suffix);
+            let candidate_c = CString::new(candidate.as_str()).map_err(display)?;
+            // RENAME_EXCL atomically publishes without replacing any existing
+            // directory, including one created after our collision check.
+            if unsafe {
+                libc::renameatx_np(
+                    root.as_raw_fd(),
+                    temporary_c.as_ptr(),
+                    root.as_raw_fd(),
+                    candidate_c.as_ptr(),
+                    libc::RENAME_EXCL,
+                )
+            } == 0
+            {
+                return Ok(candidate);
+            }
+            let error = io::Error::last_os_error();
+            if error.kind() != io::ErrorKind::AlreadyExists {
+                return Err(error.to_string());
+            }
+        }
+        Err("too many nearby transfer name collisions".into())
+    })();
+    if result.is_err() {
+        // Enumerate only our private directory, then remove children deepest
+        // first through their retained parent capabilities.
+        if let Ok(entries) = capability_entries(&directory) {
+            for (path, is_dir) in entries.into_iter().rev() {
+                if let Ok(parent) = if path.parent() == Some(Path::new("")) {
+                    directory.try_clone().map_err(display)
+                } else {
+                    openat2_beneath(&directory, path.parent().unwrap(), true)
+                } {
+                    if let Some(leaf) = path
+                        .file_name()
+                        .and_then(|s| CString::new(s.as_bytes()).ok())
+                    {
+                        unsafe {
+                            libc::unlinkat(
+                                parent.as_raw_fd(),
+                                leaf.as_ptr(),
+                                if is_dir { libc::AT_REMOVEDIR } else { 0 },
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        unsafe {
+            libc::unlinkat(root.as_raw_fd(), temporary_c.as_ptr(), libc::AT_REMOVEDIR);
+        }
+    }
+    result
 }

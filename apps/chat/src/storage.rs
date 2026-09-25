@@ -32,8 +32,8 @@ pub fn data_dir() -> Option<PathBuf> {
     if let Some(dir) = std::env::var_os("TILO_CHAT_DATA") {
         return Some(PathBuf::from(dir));
     }
-    dirs::data_dir()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".local/share")))
+    xdg_paths::data_dir()
+        .or_else(|| xdg_paths::home().map(|h| h.join(".local/share")))
         .map(|d| d.join("tilo-chat"))
 }
 

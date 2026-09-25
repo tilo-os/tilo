@@ -192,10 +192,20 @@ fn primitive(width: u32, scale: f32) -> Element {
         Container::new()
             .with_no_padding()
             .filling()
-            .with_fill(Theme::dark().bg_app)
+            .with_fill(shot_theme().bg_app)
             .with_child(scroll),
     )
 }
+/// `QOS_SHOTS_THEME=<preset>` (`light`, `high-contrast`, any `Theme::named`)
+/// renders every capture on that preset; PNGs are composited on the theme's
+/// own `bg_app`.
+fn shot_theme() -> Theme {
+    std::env::var("QOS_SHOTS_THEME")
+        .ok()
+        .and_then(|name| Theme::named(&name))
+        .unwrap_or_else(Theme::dark)
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
@@ -217,10 +227,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tilo_ui::State::new(),
                 root,
                 viewport,
-                Theme::dark().with_text_scale(scale),
+                shot_theme().with_text_scale(scale),
             );
             let stem = format!("{mode}-{name}");
-            harness.render_png(&output.join(format!("{stem}.png")));
+            harness.render_window_png(&output.join(format!("{stem}.png")));
             std::fs::write(
                 output.join(format!("{stem}.json")),
                 harness.inspection_json()?,
@@ -228,7 +238,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if name == "narrow-large-text" {
                 harness.click_at(5.0, 5.0);
                 harness.scroll(0.0, -10000.0);
-                harness.render_png(&output.join(format!("{stem}-end.png")));
+                harness.render_window_png(&output.join(format!("{stem}-end.png")));
                 std::fs::write(
                     output.join(format!("{stem}-end.json")),
                     harness.inspection_json()?,
@@ -240,10 +250,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         tilo_ui::State::new(),
         automatic(),
         (1080, 800),
-        Theme::dark(),
+        shot_theme(),
     );
     resized.resize((340, 800))?;
-    resized.render_png(&output.join("automatic-resized-narrow.png"));
+    resized.render_window_png(&output.join("automatic-resized-narrow.png"));
     std::fs::write(
         output.join("automatic-resized-narrow.json"),
         resized.inspection_json()?,

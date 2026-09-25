@@ -44,6 +44,7 @@ pub mod fetch;
 pub mod gemtext;
 pub mod html;
 pub mod icons;
+pub mod list_layout;
 pub mod modal;
 pub mod model;
 pub mod opml;

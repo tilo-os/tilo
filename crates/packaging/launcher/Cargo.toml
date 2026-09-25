@@ -23,6 +23,12 @@ path = "src/main.rs"
 name = "launcher"
 path = "src/lib.rs"
 
+[features]
+# Honour the developer-only environment overrides (`src/dev_env.rs`) in a
+# release build. Debug builds always honour them; shipped images never enable
+# this.
+dev-overrides = []
+
 [dependencies]
 clap.workspace = true
 serde.workspace = true
@@ -40,7 +46,7 @@ runtime-bundle = { path = "../runtime-bundle" }
 # `MinimalManifest` decoder, but security-relevant enums that both
 # sides must agree on (portal policy) come from here rather than
 # being duplicated.
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 # The capability vocabulary. Workspace grants arrive as `CapOverride`
 # records and are evaluated with the same fail-closed decision function
 # the compositor and the filesystem use — a launcher-local permission
@@ -55,14 +61,18 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 # Resolves the explicit active identity selector and hosts its per-app signing
 # broker. Private records are never mounted into the sandbox.
 runtime-identity = { path = "../../runtime/runtime-identity" }
+# Landlock ruleset construction and the baseline seccomp filter. A leaf
+# crate, so the launcher still depends on nothing in the compositor.
+sandbox-core = { path = "../../system/sandbox-core" }
 
 [dev-dependencies]
-# `HOME` / `XDG_CONFIG_HOME` are process-wide, so the tests that set them
-# have to be serialised against each other across modules. Same pattern
-# (and same crate) the shell uses for its static-state tests.
-serial_test.workspace = true
+# Tests whose subject is the environment itself (session variables, service
+# and store lookups) scope their changes through it and restore them.
+tilo-test-env = { path = "../../dev/test-env" }
 ed25519-dalek.workspace = true
 tempfile.workspace = true
+# Kernel probes proving the resolved seccomp profile is what the kernel enforces.
+sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 
 [[test]]
 name = "it"
@@ -72,5 +82,4 @@ path = "tests/it.rs"
 workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
-seccompiler.workspace = true
 landlock.workspace = true

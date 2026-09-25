@@ -24,14 +24,15 @@ audio = ["dep:gstreamer", "dep:tokio", "ui/portal", "ui/mpris"]
 # YouTube Music search and stream resolution through the pure-Rust `rustypipe`
 # InnerTube client. Shots/tests select their hermetic backend at runtime; `reqwest`
 # supports `--probe` verification.
-live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:rquickjs"]
+live = ["dep:rustypipe", "dep:tokio", "dep:reqwest", "dep:tilo-net", "dep:rquickjs"]
 # Enable network lyrics without the full live backend; live already enables them.
-lyrics = ["dep:reqwest"]
+lyrics = ["dep:reqwest", "dep:tilo-net"]
 
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 dirs.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo action model: document-mutating library edits (playlist create/rename/
@@ -49,6 +50,7 @@ base64.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
+hex.workspace = true
 sha2.workspace = true
 vello.workspace = true
 winit.workspace = true
@@ -57,7 +59,8 @@ taffy.workspace = true
 # Optional: enabled only by the `audio` / `live` / `lyrics`
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
-reqwest = { workspace = true, optional = true, features = ["blocking", "json", "rustls-tls"] }
+reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
+tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
 gstreamer = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "rt-multi-thread", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream
@@ -75,6 +78,7 @@ bounded-command = { path = "../../crates/system/bounded-command" }
 [dev-dependencies]
 serial_test.workspace = true
 tempfile.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true

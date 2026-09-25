@@ -258,8 +258,8 @@ mod tests {
         let (host, app) = UnixStream::pair().unwrap();
         let thread = std::thread::spawn(move || serve(host, identity).unwrap());
         let raw = app.into_raw_fd();
-        // SAFETY: this test is the sole user of the broker env variable.
-        unsafe { std::env::set_var(BROKER_ENV_VAR, raw.to_string()) };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set(BROKER_ENV_VAR, raw.to_string());
         let connected = connect_from_env().unwrap();
         match connect_from_env() {
             Err(NotAvailable::ConnectionFailed(error)) => {
@@ -267,8 +267,7 @@ mod tests {
             }
             other => panic!("second claim did not fail safely: {other:?}"),
         }
-        // SAFETY: this test owns the variable under the identity_env serial lock.
-        unsafe { std::env::remove_var(BROKER_ENV_VAR) };
+        drop(env);
         drop(connected);
         thread.join().unwrap();
     }

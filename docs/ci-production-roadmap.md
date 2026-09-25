@@ -24,13 +24,13 @@ feedback after the coordinator is in service.
 
 | Product | Present evidence | Next production step |
 | --- | --- | --- |
-| qOS/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It compiles selected app binaries with full-collection dependency features and publishes immutable qpkgs and collections to Forgejo, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Populate the signed development catalogue at `registry.podesta.ai`, then make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
+| Tilo/Linux apps | [`release-apps.yml`](../.forgejo/workflows/release-apps.yml) plans every PR and packages affected apps on relevant `main` pushes. It compiles selected app binaries with full-collection dependency features and publishes immutable tapps and collections to Forgejo, reusing unchanged members. Explicit and tagged runs retain x86-64 and ARM64. | Populate the signed development catalogue at `apps.tilo.so`, then make ARM64 continuous after its native lane meets the same reliability target. A toolkit change rebuilds only its transitive app closure. |
 | Windows apps | The toolkit and local installer exist; [`ci-product-matrix.md`](ci-product-matrix.md) records the missing release qualification. | Keep this optional. Qualify a small x86-64 set on a disposable native host before choosing archive or MSIX, signing, update and rollback contracts. Add ARM64 only after x86-64 is useful. |
 | macOS apps | No standalone release path is qualified. | Deferred. Do not allocate runners or publish packages. |
 | Linux desktop | [`package-desktop.yml`](../.forgejo/workflows/package-desktop.yml) defines Debian 13, Ubuntu 24.04, Fedora 44, Arch and Nix packages. PRs run preflight; scheduled, manual and tagged runs perform native builds. | Install-test each emitted repository package, retain a last-known-good set per distribution and architecture, then promote one signed desktop release manifest. |
 | Linux setup program | [`release-imager.yml`](../.forgejo/workflows/release-imager.yml) builds installer media, AppImage, tar and Flatpak outputs on native x86-64 and ARM64 lanes. | Record clean-machine install, update and rollback receipts against the exact published OS digest. |
 | Windows setup program | The same workflow retains native x86-64 and ARM64 build, signing and WinGet publication jobs. | Prove runner availability and clean-VM install/uninstall on both architectures before calling a tag releasable. |
-| macOS setup program | The macOS, Homebrew and native cask-test jobs remain in `release-imager.yml` behind `if: false`. | Keep them disabled until macOS packaging is scheduled for qualification. Do not delete them. |
+| macOS setup program | Native Intel and Apple-silicon jobs build, sign, notarize, staple, mount, and launch the Imager; publication requires both DMGs/app zips and both Homebrew cask installs. | Supply ephemeral native runners and the protected macOS/Homebrew brokers before a release tag; absent infrastructure fails closed. |
 | Generic OS | [`build-image.yml`](../.forgejo/workflows/build-image.yml) runs weekly or explicitly, publishes only from a version tag or an explicit `main` dispatch, and retains x86-64/ARM64 signing, SBOM, provenance, reproducibility and VM gates. | Keep OS publication manual. Shorten release lead time by consuming already qualified app, desktop, kernel, RPM and WPE digests rather than rebuilding them. |
 | Device OS | [`os/hardware/README.md`](../os/hardware/README.md) separates architecture from hardware profile; Lenovo 83ED has a profile and a manual development path. | Treat each device profile as a signed overlay on a qualified generic generation. Require physical boot, input, display, network, suspend, update and rollback evidence; a generic VM result cannot replace it. |
 
@@ -54,7 +54,7 @@ an accepted receipt permits skipping the build.
 ```mermaid
 flowchart LR
   S[Source and locked inputs] --> R[Runtime bundle]
-  S --> A[App qpkg]
+  S --> A[App tapp]
   R --> A
   A --> C[Signed app channel]
   S --> D[Desktop packages]
@@ -84,8 +84,8 @@ not hidden dependency drift.
 | Compiler | S3-backed sccache, separated by compiler, target and trust domain | Aim for unchanged dependency hits. Release verification that needs stronger producer trust uses a restricted namespace or rebuilds cold. |
 | Regional OCI/ECR | CI images, builder images, frozen inputs and BuildKit caches close to runners | Replicate by digest before rollout. Runner startup must not depend on repeatedly pulling large images through the Forgejo control-plane node. |
 | Shared Actions cache | Workflow caches restored across disposable runners | Save/restore is qualified by the small cross-runner smoke below; measure real dependency archives separately. This is distinct from sccache and immutable release artifacts. |
-| Forgejo packages | Immutable qpkgs, collections, desktop packages, receipts and workflow-local handoffs | Use immutable versions and digests. Mutable names only point to accepted artifacts. |
-| Tilo registry | Signed app catalogue, channel metadata and public app downloads | Public HTTPS at `registry.podesta.ai` is deployed through Argo ([infra PR 219](https://code.podesta.ai/PodestaAI/infra/pulls/219)). Every app qpkg published by `release-apps.yml` is also submitted as a signed add/update request; the registry's isolated collector and publisher jobs verify and promote accepted first-party entries. Both x86-64 and ARM64 entry metadata are supported. The separate `tilo.dev` hostname remains deferred. |
+| Forgejo packages | Immutable tapps, collections, desktop packages, receipts and workflow-local handoffs | Use immutable versions and digests. Mutable names only point to accepted artifacts. |
+| Tilo registry | Signed app store metadata, channel metadata and public app downloads | Public HTTPS at `apps.tilo.so` is deployed through Argo. Every app tapp published by `release-apps.yml` is also submitted as a signed add/update request; the registry's isolated collector and publisher jobs verify and promote accepted first-party entries. Both x86-64 and ARM64 entry metadata are supported. |
 
 Eviction starts with reconstructible local data. Accepted artifacts, receipts,
 signatures and the inputs required for cross-time reproduction follow a defined
@@ -96,8 +96,8 @@ is released.
 
 | Boundary | Required work |
 | --- | --- |
-| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. Changes use explicit `/merge <full-head-sha>` or `/queue <full-head-sha>` intent; review state is informational and never blocks integration. CI policy, publication, signing and named security boundaries retain their protected-path CI and provenance checks without requiring approval. A bounded generated-branch queue pilot has landed one exact tested candidate; this does not establish general queue availability or reliability. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
-| `main` | Preserve check/lint for every commit. Package the affected qOS/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
+| Pull request | Cheap applicability plan, lint and affected checks for the exact head. Do not build the whole OS. Show the selected products and expected expensive work before merge. A PR merges once the required checks pass for its current head and the branch is up to date with `main`; review state is informational and never blocks integration. See [delivery workflow](../DEVELOPMENT.md#routine-delivery-workflow). |
+| `main` | Preserve check/lint for every commit. Package the affected Tilo/Linux apps and update immutable collection inputs. Advance a public development channel only after registry publication is enabled. Coalesce superseded expensive work without discarding fast results. |
 | Scheduled integration | Rebuild full app baselines, Linux desktop packages and a generic x86-64 OS candidate. Rotate ARM64 and other costly coverage according to measured drift and capacity. |
 | App/desktop release | Reuse accepted build nodes, install-test the release set, sign artifacts and provenance, then atomically move a channel manifest. |
 | OS release | Manual tag or explicit publish dispatch only. Require native x86-64 and ARM64 outputs, independent reproducibility, installed-VM boot/update/rollback, signatures, SBOM and provenance before promotion. |
@@ -164,7 +164,7 @@ rollout.
 
 1. **Make continuous apps boring.** Recover the failed offsite backup and verify
    restore, qualify and enable CI submission to the public registry,
-   publish the verified x86-64 qpkgs already produced from `main` into its signed
+   publish the verified x86-64 tapps already produced from `main` into its signed
    development catalogue, retain the last-known-good channel on failure, and show
    timing and selection in every run. Exit when 30 consecutive relevant changes
    need no manual recovery and meet the app SLO.

@@ -119,7 +119,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     // to every laid-out widget by sweeping `node_map`.
     let status = state.undo_status(Some(&author()));
     for &w_ptr in node_map.values() {
-        unsafe { (*w_ptr).set_undo_status(&status) };
+        unsafe { (*w_ptr).set_undo_status(&mut || status.clone()) };
     }
     println!(
         "  {:>8}  can_undo={} can_redo={} undo={:?}",

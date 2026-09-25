@@ -10,7 +10,6 @@ use taffy::{NodeId, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use vello::peniko::Color;
 use winit::event::{Modifiers, WindowEvent};
 
 use ui::text_render::{TextRenderer, TextWeight};
@@ -51,14 +50,6 @@ impl InputEventCtx<'_> {
     }
 }
 
-/// Paint services shared by the reader's retained input widgets.
-pub(crate) struct InputPaintCtx<'a> {
-    pub scene: &'a mut Scene,
-    pub transform: Affine,
-    pub text: &'a mut TextRenderer,
-    pub theme: &'a Theme,
-}
-
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum NumberField {
     FontScale,
@@ -67,6 +58,19 @@ pub(crate) enum NumberField {
 }
 
 impl NumberField {
+    /// The widest strings this field can display, in the shared
+    /// `NumberInput`'s own `"{value} {suffix}"` form, so a caller can size
+    /// the value slot once from a measurement instead of a fixed width that
+    /// clips wider digit runs. Two digit variants cover fonts whose widest
+    /// digit is `0` and those where it is `8`.
+    pub(crate) fn widest_displays(&self) -> [&'static str; 2] {
+        match self {
+            Self::FontScale => ["000 %", "888 %"],
+            Self::LineSpacing => ["0.00", "8.88"],
+            Self::FontMult(_) => ["0.00 ×", "8.88 ×"],
+        }
+    }
+
     fn semantic_target(&self) -> String {
         match self {
             Self::FontScale => "books.number.text-size".into(),
@@ -166,12 +170,19 @@ impl NumberControls {
         }
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The numeric-control painter takes field identity, current value, bounds, and the scene, transform, text renderer, and theme."
+    )]
     pub(crate) fn draw(
         &mut self,
         field: &NumberField,
         value: f64,
         rect: Rect,
-        ctx: &mut InputPaintCtx<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
     ) {
         let index = self
             .controls
@@ -194,10 +205,10 @@ impl NumberControls {
         }
         control.input.apply_layout_external(rect);
         control.input.draw(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
+            scene,
+            transform,
+            text_renderer,
+            theme,
             &ui::presence::PresenceCtx::empty(),
         );
     }
@@ -277,12 +288,6 @@ struct NoteLayout {
     inner_width: f32,
     excerpt: String,
     input_rect: Rect,
-}
-
-pub(crate) struct NoteView<'a> {
-    pub bounds: Rect,
-    pub anchor_y: Option<f64>,
-    pub annotation: &'a Annotation,
 }
 
 impl Default for NoteComposer {
@@ -478,81 +483,67 @@ impl NoteComposer {
 
     /// Shadow, card background/border, the "Note" header, excerpt and the
     /// (already laid-out) shared text input.
+
     fn draw_note_chrome(
         &mut self,
-        ctx: &mut InputPaintCtx<'_>,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
         layout: &NoteLayout,
         annotation: &Annotation,
     ) {
-        let colors = &ctx.theme.tokens.colors;
-        let shadow = Rect::new(
-            layout.card.x0 - 1.0,
-            layout.card.y0 + 4.0,
-            layout.card.x1 + 1.0,
-            layout.card.y1 + 7.0,
-        );
-        paint::fill_round(
-            ctx.scene,
-            ctx.transform,
-            shadow,
-            12.0,
-            Color::from_rgba8(0, 0, 0, 80),
-        );
-        paint::fill_round(
-            ctx.scene,
-            ctx.transform,
-            layout.card,
-            f64::from(ctx.theme.tokens.radii.lg),
-            colors.surfaces.raised,
-        );
-        paint::stroke_round(
-            ctx.scene,
-            ctx.transform,
-            layout.card,
-            f64::from(ctx.theme.tokens.radii.lg),
-            ctx.theme.border_focus,
-            1.4,
-        );
+        let colors = &theme.tokens.colors;
+        // A floating Panel: elevation, ground and the derived Panel border.
+        // The focus ring belongs to the text input inside, not to the card.
+        crate::chrome::panel(scene, transform, theme, layout.card);
 
         let y = layout.card.y0 + layout.pad;
         paint::circle(
-            ctx.scene,
-            ctx.transform,
+            scene,
+            transform,
             Point::new(layout.left + 6.0, y + 7.0),
             6.0,
             ReaderPalette::highlight_swatch(annotation.color),
         );
-        ctx.text.draw_text_weighted(
-            ctx.scene,
+        text_renderer.draw_text_weighted(
+            scene,
             "Note",
             13.5,
             colors.text_primary,
-            ctx.transform * Affine::translate((layout.left + 20.0, y)),
+            transform * Affine::translate((layout.left + 20.0, y)),
             None,
             TextWeight::Semibold,
         );
         let excerpt_y = y + 26.0;
-        ctx.text.draw_text(
-            ctx.scene,
+        text_renderer.draw_text(
+            scene,
             &layout.excerpt,
             12.0,
             colors.text_dim,
-            ctx.transform * Affine::translate((layout.left, excerpt_y)),
+            transform * Affine::translate((layout.left, excerpt_y)),
             Some(layout.inner_width),
         );
 
         self.input.apply_layout_external(layout.input_rect);
         self.input.draw(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
+            scene,
+            transform,
+            text_renderer,
+            theme,
             &ui::presence::PresenceCtx::empty(),
         );
     }
 
     /// Delete/Save buttons beneath the input box.
-    fn draw_note_buttons(&mut self, ctx: &mut InputPaintCtx<'_>, layout: &NoteLayout) {
+    fn draw_note_buttons(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        layout: &NoteLayout,
+    ) {
         let button_y = layout.input_rect.y1 + 16.0;
         self.delete = Rect::new(layout.left, button_y, layout.left + 76.0, button_y + 32.0);
         self.save = Rect::new(
@@ -562,10 +553,10 @@ impl NoteComposer {
             button_y + 32.0,
         );
         Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
+            scene,
+            transform,
+            text_renderer,
+            theme,
             &ButtonFace::new(self.delete, "Delete")
                 .danger()
                 .radius(16.0)
@@ -573,10 +564,10 @@ impl NoteComposer {
                 .hovered(self.delete.contains(self.cursor)),
         );
         Button::paint(
-            ctx.scene,
-            ctx.transform,
-            ctx.text,
-            ctx.theme,
+            scene,
+            transform,
+            text_renderer,
+            theme,
             &ButtonFace::new(self.save, "Save")
                 .primary()
                 .radius(16.0)
@@ -585,18 +576,30 @@ impl NoteComposer {
         );
     }
 
-    pub(crate) fn draw(&mut self, ctx: &mut InputPaintCtx<'_>, view: &NoteView<'_>) {
-        if self.id != Some(view.annotation.id) {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The note editor combines render context with viewport bounds, optional anchor position, and the annotation being edited."
+    )]
+    pub(crate) fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        bounds: Rect,
+        anchor_y: Option<f64>,
+        annotation: &Annotation,
+    ) {
+        if self.id != Some(annotation.id) {
             return;
         }
-        if !self.input.is_focused() && self.input.value() != view.annotation.note {
-            self.input.set_text(&view.annotation.note);
+        if !self.input.is_focused() && self.input.value() != annotation.note {
+            self.input.set_text(&annotation.note);
         }
-        let layout =
-            Self::compute_note_layout(ctx.text, view.bounds, view.anchor_y, view.annotation);
+        let layout = Self::compute_note_layout(text_renderer, bounds, anchor_y, annotation);
         self.card = layout.card;
-        self.draw_note_chrome(ctx, &layout, view.annotation);
-        self.draw_note_buttons(ctx, &layout);
+        self.draw_note_chrome(scene, transform, text_renderer, theme, &layout, annotation);
+        self.draw_note_buttons(scene, transform, text_renderer, theme, &layout);
     }
 }
 

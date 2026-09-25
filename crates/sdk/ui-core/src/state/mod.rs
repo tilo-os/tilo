@@ -4,6 +4,12 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, PatchAction, ReadDoc, Value};
 use std::collections::HashMap;
 
+pub(crate) mod owned_restore;
+#[cfg(test)]
+pub(crate) mod owned_restore_tests;
+
+pub mod collab;
+pub use collab::{CollaborationState, RemoteCursor};
 pub mod diagnostics;
 pub use diagnostics::{DocumentDiagnostics, FrontierDiagnostics};
 pub mod revision;
@@ -345,37 +351,18 @@ impl UndoLog {
         if !self.can_bump() {
             return false;
         }
-        let before = self.last_heads.clone();
-        // Stamp the change with wall-clock time. `AutoCommit::commit` leaves
-        // automerge's advisory timestamp at zero, which is why a history pane
-        // built over a document committed that way can show authorship but not
-        // *when* — and why a date-range filter over it matches nothing.
-        if qdoc::history::commit_stamped_with_message(doc, message).is_some() {
-            let after = doc.get_heads();
-            push_history(
-                &mut self.undo_stack,
-                UndoEntry {
-                    before,
-                    after,
-                    focused_node_idx,
-                    widget_metadata: metadata,
-                    author,
-                    instance_id: None,
-                },
-            );
-            self.redo_stack.clear();
-            self.last_heads = doc.get_heads();
-            self.bump();
-            true
-        } else {
-            // Nothing to undo, but the baseline still moves up: `last_heads` is
-            // where the *next* action starts from, and changes reach a document
-            // by routes that never pass through here — a peer's ops merged in,
-            // the shared schema genesis. A baseline left behind would put those
-            // inside the next action's bracket, and one Ctrl+Z would revert both.
-            self.last_heads = doc.get_heads();
-            false
-        }
+        self.commit_owned_pending(
+            doc,
+            self.last_heads.clone(),
+            owned_restore::OwnedActionAttribution {
+                author,
+                instance_id: None,
+                focused_node_idx,
+                widget_metadata: metadata,
+                message,
+            },
+        )
+        .changed
     }
 
     /// Record an action already committed into `doc` out-of-band, bracketed
@@ -788,6 +775,8 @@ impl UndoLog {
 
 /// The unified state object that holds our CRDT document.
 pub struct State {
+    /// Compatibility cursor surface; modern collaboration uses `PresenceCtx`.
+    pub collab: CollaborationState,
     /// Process-local document lifetime, distinct from a persistent record name
     /// or committed frontier. Captured readers must not survive replacement.
     document_identity: uuid::Uuid,
@@ -818,6 +807,7 @@ impl State {
             doc,
             root,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -1116,7 +1106,7 @@ impl State {
 
     /// Wrap an already-loaded document.
     ///
-    /// The entry point for persistence (`ui::persist`): the store hands back
+    /// The entry point for persistence (`tilo_ui::persist`): the store hands back
     /// the previous session's `AutoCommit` — history, actor identity and all
     /// — and this adopts it as the live document without a byte round-trip.
     pub fn from_doc(mut doc: AutoCommit) -> Self {
@@ -1127,6 +1117,7 @@ impl State {
             doc,
             root: automerge::ROOT,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         }
     }
@@ -1147,6 +1138,7 @@ impl State {
             doc,
             root,
             outbound,
+            collab: CollaborationState::new(),
             undo,
         })
     }
@@ -1243,9 +1235,9 @@ pub fn write_revert_patches(
 /// Write an already-derived patch set forward into `doc`'s open transaction.
 ///
 /// The half of [`write_revert_patches`] after the diff, split out so a caller
-/// that needs to *filter* the patch set can reuse the index translation rather
-/// than reimplement it — [`crate::history_source::revert`] drops the patches
-/// that would overwrite somebody's later edit and writes the rest.
+/// that already derived a full patch stream can reuse the index translation.
+/// Filtered history uses `write_selected_patches` to retain skipped structural
+/// steps in the logical index stream without changing their live content.
 ///
 /// The two anchors are the head sets the patch indices are expressed against.
 /// `insert_anchor` is the state in which a re-inserted element's boundary is
@@ -1259,16 +1251,61 @@ pub fn write_patches(
     insert_anchor: &[ChangeHash],
     index_anchor: &[ChangeHash],
 ) {
+    write_selected_patches(
+        doc,
+        patches.into_iter().map(|patch| (patch, true)).collect(),
+        insert_anchor,
+        index_anchor,
+    );
+}
+
+/// Filtered history must retain skipped structural patches: later diff indices
+/// still include their logical effects, even though their live content survives.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the patch replay must share object remapping and list cursor state across every Automerge patch variant"
+)]
+pub(crate) fn write_selected_patches(
+    doc: &mut AutoCommit,
+    patches: Vec<(automerge::Patch, bool)>,
+    insert_anchor: &[ChangeHash],
+    index_anchor: &[ChangeHash],
+) {
     let entry_after = index_anchor;
     let entry_before = insert_anchor;
     // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
     // so nested child patches target the new object.
     let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
-    for patch in patches {
+    // Diff indices refer to the sequence as earlier patches transform it.
+    // Keep that order separately from the live list, which can also contain
+    // later collaborator edits and must never resolve deleted cursor anchors.
+    let mut list_orders: HashMap<ObjId, Vec<automerge::Cursor>> = HashMap::new();
+    for (patch, apply) in patches {
+        let recreated = remap.contains_key(&patch.obj);
         let target = remap
             .get(&patch.obj)
             .cloned()
             .unwrap_or_else(|| patch.obj.clone());
+        let mut list_order = if matches!(doc.object_type(&target), Ok(automerge::ObjType::List)) {
+            Some(list_orders.entry(patch.obj.clone()).or_insert_with(|| {
+                (0..doc.length_at(&patch.obj, index_anchor))
+                    .filter_map(|index| doc.get_cursor(&patch.obj, index, Some(index_anchor)).ok())
+                    .collect()
+            }))
+        } else {
+            None
+        };
+        if !apply {
+            if let (Some(order), PatchAction::DeleteSeq { index, length }) =
+                (list_order.as_deref_mut(), &patch.action)
+            {
+                let end = index.saturating_add(*length).min(order.len());
+                if *index < end {
+                    order.drain(*index..end);
+                }
+            }
+            continue;
+        }
         match patch.action {
             PatchAction::PutMap { key, value, .. } => match value.0 {
                 Value::Scalar(s) => {
@@ -1282,7 +1319,17 @@ pub fn write_patches(
             },
             PatchAction::PutSeq { index, value, .. } => {
                 // The element still exists post-action; anchor at `after`.
-                let li = live_index_at(doc, &target, index, entry_after);
+                let li = if let Some(order) = list_order.as_deref() {
+                    let Some(position) = order
+                        .get(index)
+                        .and_then(|cursor| visible_list_index(doc, &target, cursor))
+                    else {
+                        continue;
+                    };
+                    position
+                } else {
+                    live_index_at(doc, &target, index, entry_after)
+                };
                 match value.0 {
                     Value::Scalar(s) => {
                         let _ = doc.put(&target, li, s.into_owned());
@@ -1297,7 +1344,10 @@ pub fn write_patches(
             PatchAction::Insert { index, values } => {
                 // Re-inserting elements the local action deleted; the
                 // boundary is expressed in `before` coordinates.
-                let start = live_insert_boundary(doc, &target, index, entry_before);
+                let start = list_order.as_deref().map_or_else(
+                    || live_insert_boundary(doc, &target, index, entry_before),
+                    |order| visible_list_boundary(doc, &target, order, index),
+                );
                 for (li, (val, old_id, _)) in (start..).zip(&values) {
                     match val {
                         Value::Scalar(s) => {
@@ -1310,11 +1360,74 @@ pub fn write_patches(
                         }
                     }
                 }
+                if let Some(order) = list_order.as_deref_mut() {
+                    let cursors = (start..start.saturating_add(values.len()))
+                        .filter_map(|position| doc.get_cursor(&target, position, None).ok())
+                        .collect::<Vec<_>>();
+                    order.splice(index.min(order.len())..index.min(order.len()), cursors);
+                }
             }
-            PatchAction::SpliceText { index, value, .. } => {
-                // Re-inserting text the local action deleted.
-                let li = live_insert_boundary(doc, &target, index, entry_before);
-                let _ = doc.splice_text(&target, li, 0, &value.make_string());
+            PatchAction::SpliceText {
+                index,
+                value,
+                marks,
+            } => {
+                // Re-inserting text the local action deleted, including native
+                // formatting when a move/undo recreates its owning object.
+                let li = if recreated {
+                    index
+                } else {
+                    live_insert_boundary(doc, &target, index, entry_before)
+                };
+                let previous_length = doc.length(&target);
+                if doc
+                    .splice_text(&target, li, 0, &value.make_string())
+                    .is_ok()
+                {
+                    let end =
+                        li.saturating_add(doc.length(&target).saturating_sub(previous_length));
+                    // Insertion can inherit formatting from its new neighbors.
+                    // The patch markset describes the complete restored span,
+                    // so names absent from it must be removed, including when
+                    // marks is None (an intentionally unformatted insertion).
+                    let mut inherited = doc
+                        .marks(&target)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|mark| mark.start < end && mark.end > li)
+                        .filter(|mark| {
+                            !marks.as_ref().is_some_and(|wanted| {
+                                wanted.iter().any(|(name, _)| name == mark.name.as_str())
+                            })
+                        })
+                        .map(|mark| mark.name.to_string())
+                        .collect::<Vec<_>>();
+                    inherited.sort();
+                    inherited.dedup();
+                    for name in inherited {
+                        let _ = doc.unmark(
+                            &target,
+                            &name,
+                            li,
+                            end,
+                            automerge::marks::ExpandMark::After,
+                        );
+                    }
+                    if let Some(marks) = marks {
+                        for (name, value) in marks.iter() {
+                            let _ = doc.mark(
+                                &target,
+                                automerge::marks::Mark::new(
+                                    name.to_string(),
+                                    value.clone(),
+                                    li,
+                                    end,
+                                ),
+                                automerge::marks::ExpandMark::After,
+                            );
+                        }
+                    }
+                }
             }
             PatchAction::Increment { prop, value } => {
                 let _ = doc.increment(&target, prop, value);
@@ -1325,17 +1438,80 @@ pub fn write_patches(
             PatchAction::DeleteSeq { index, length } => {
                 // Removing elements the local action inserted; they exist
                 // post-action, so each position is anchored at `after`.
-                for _ in 0..length {
-                    let li = live_index_at(doc, &target, index, entry_after);
-                    let _ = doc.delete(&target, li);
+                if let Some(order) = list_order {
+                    let end = index.saturating_add(length).min(order.len());
+                    if index < end {
+                        for cursor in order.drain(index..end) {
+                            if let Some(position) = visible_list_index(doc, &target, &cursor) {
+                                let _ = doc.delete(&target, position);
+                            }
+                        }
+                    }
+                } else {
+                    for _ in 0..length {
+                        let li = live_index_at(doc, &target, index, entry_after);
+                        let _ = doc.delete(&target, li);
+                    }
                 }
             }
-            // A conflict marker carries no content to revert, and marks
-            // (text formatting spans) are not produced by the editor's
-            // undo-tracked actions; both are safely ignored.
-            PatchAction::Conflict { .. } | PatchAction::Mark { .. } => {}
+            PatchAction::Mark { marks } => {
+                for mut mark in marks {
+                    if !recreated {
+                        mark.start = live_insert_boundary(doc, &target, mark.start, entry_before);
+                        mark.end = live_insert_boundary(doc, &target, mark.end, entry_before);
+                    }
+                    let _ = doc.mark(&target, mark, automerge::marks::ExpandMark::After);
+                }
+            }
+            // Conflict markers carry no content to revert.
+            PatchAction::Conflict { .. } => {}
         }
     }
+    // Automerge 0.8's ExposeQueue::flush_obj emits re-exposed Text contents
+    // with marks=None (its TODO for text_spans). Recreated text therefore needs
+    // its native marks restored from the same historical frontier as its body.
+    // Only fresh objects are touched; surviving peer text is never overwritten.
+    for (old, fresh) in remap {
+        if !matches!(doc.object_type(&fresh), Ok(automerge::ObjType::Text)) {
+            continue;
+        }
+        let Ok(restored) = doc.marks_at(&old, insert_anchor) else {
+            continue;
+        };
+        for mark in doc.marks(&fresh).unwrap_or_default() {
+            let _ = doc.unmark(
+                &fresh,
+                mark.name.as_str(),
+                mark.start,
+                mark.end,
+                automerge::marks::ExpandMark::After,
+            );
+        }
+        for mark in restored {
+            let _ = doc.mark(&fresh, mark, automerge::marks::ExpandMark::After);
+        }
+    }
+}
+
+// Resolving only visible identities avoids Automerge's tombstoned-list cursor
+// fast path and never substitutes an unrelated numeric neighbor for a deletion.
+fn visible_list_index(doc: &AutoCommit, obj: &ObjId, cursor: &automerge::Cursor) -> Option<usize> {
+    (0..doc.length(obj))
+        .find(|&index| doc.get_cursor(obj, index, None).ok().as_ref() == Some(cursor))
+}
+
+fn visible_list_boundary(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    order: &[automerge::Cursor],
+    index: usize,
+) -> usize {
+    order
+        .iter()
+        .take(index)
+        .rev()
+        .find_map(|cursor| visible_list_index(doc, obj, cursor))
+        .map_or(0, |position| position.saturating_add(1))
 }
 
 /// Translate a sequence index expressed as-of `anchor_heads` into its position
@@ -1382,6 +1558,137 @@ mod tests {
     use automerge::{ReadDoc, ScalarValue, transaction::Transactable};
 
     #[test]
+    fn undo_unformatted_text_between_formatted_neighbors_does_not_inherit_marks() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut state = State::new();
+        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+        state.doc.splice_text(&text, 0, 0, "aXb").unwrap();
+        state
+            .doc
+            .mark(
+                &text,
+                Mark::new("bold".into(), true, 0, 1),
+                ExpandMark::After,
+            )
+            .unwrap();
+        state
+            .doc
+            .mark(
+                &text,
+                Mark::new("bold".into(), true, 2, 3),
+                ExpandMark::After,
+            )
+            .unwrap();
+        state.commit_action(None, None);
+        let before = state.doc.marks(&text).unwrap();
+        assert_eq!(
+            before
+                .iter()
+                .map(|mark| (mark.start, mark.end))
+                .collect::<Vec<_>>(),
+            [(0, 1), (2, 3)]
+        );
+        state.doc.splice_text(&text, 1, 1, "").unwrap();
+        state.commit_action(None, None);
+        let after = state.doc.marks(&text).unwrap();
+        assert_eq!(state.doc.text(&text).unwrap(), "ab");
+        for _ in 0..2 {
+            state.undo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), "aXb");
+            assert_eq!(
+                state.doc.marks(&text).unwrap(),
+                before,
+                "restored X must remain unformatted"
+            );
+            state.redo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), "ab");
+            assert_eq!(state.doc.marks(&text).unwrap(), after);
+        }
+    }
+
+    #[test]
+    fn grouped_list_reorder_undo_redo_preserves_objects_marks_and_order() {
+        fn insert(doc: &mut AutoCommit, list: &ObjId, index: usize, label: &str) {
+            let block = doc.insert_object(list, index, ObjType::Map).unwrap();
+            doc.put(&block, "id", label).unwrap();
+            let text = doc.put_object(&block, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, label).unwrap();
+            doc.mark(
+                &text,
+                automerge::marks::Mark::new("bold".into(), true, 0, label.len()),
+                automerge::marks::ExpandMark::After,
+            )
+            .unwrap();
+        }
+        fn rows(
+            doc: &AutoCommit,
+            list: &ObjId,
+        ) -> Vec<(String, String, Vec<automerge::marks::Mark>)> {
+            (0..doc.length(list))
+                .map(|index| {
+                    let block = doc.get(list, index).unwrap().unwrap().1;
+                    let id = doc
+                        .get(&block, "id")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str()
+                        .unwrap()
+                        .to_string();
+                    let text = doc.get(&block, "text").unwrap().unwrap().1;
+                    (id, doc.text(&text).unwrap(), doc.marks(&text).unwrap())
+                })
+                .collect()
+        }
+        let mut state = State::new();
+        let list = state.doc.put_object(ROOT, "blocks", ObjType::List).unwrap();
+        for (index, label) in [
+            "parent-a", "child-a", "task-a", "parent-b", "child-b", "parent-c",
+        ]
+        .iter()
+        .enumerate()
+        {
+            insert(&mut state.doc, &list, index, label);
+        }
+        state.commit_action(None, None);
+        let before = rows(&state.doc, &list);
+        let base = state.doc.get_heads();
+        let mut peer = state.doc.fork_at(&base).unwrap();
+        insert(&mut peer, &list, 2, "peer-child");
+        peer.commit();
+        let peer_row = rows(&peer, &list)[2].clone();
+        // The same delete/reinsert operations emitted by a Notes subtree move.
+        state.doc.delete(&list, 3).unwrap();
+        insert(&mut state.doc, &list, 0, "parent-b");
+        state.doc.delete(&list, 4).unwrap();
+        insert(&mut state.doc, &list, 1, "child-b");
+        state.commit_action(None, None);
+        let after = rows(&state.doc, &list);
+        assert_eq!(
+            after.iter().map(|row| row.0.as_str()).collect::<Vec<_>>(),
+            [
+                "parent-b", "child-b", "parent-a", "child-a", "task-a", "parent-c"
+            ]
+        );
+        for cycle in 0..3 {
+            state.undo(None, None).unwrap();
+            assert_eq!(rows(&state.doc, &list), before, "undo cycle {cycle}");
+            state.redo(None, None).unwrap();
+            assert_eq!(rows(&state.doc, &list), after, "redo cycle {cycle}");
+        }
+        state.load_incremental(&peer.save_after(&base)).unwrap();
+        let mut before_with_peer = before;
+        before_with_peer.insert(2, peer_row.clone());
+        let mut after_with_peer = after;
+        after_with_peer.insert(4, peer_row);
+        assert_eq!(rows(&state.doc, &list), after_with_peer);
+        state.undo(None, None).unwrap();
+        assert_eq!(rows(&state.doc, &list), before_with_peer);
+        state.redo(None, None).unwrap();
+        assert_eq!(rows(&state.doc, &list), after_with_peer);
+    }
+
+    #[test]
     fn document_identity_is_stable_for_edits_and_fresh_for_adoption() {
         let mut state = State::new();
         let identity = state.document_identity();
@@ -1405,7 +1712,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str(),
+                .as_str(),
             Some("first")
         );
     }
@@ -1640,7 +1947,7 @@ mod tests {
         // Sanity: the doc itself is back at the post-second-mutation
         // state so renderers stay in sync.
         let (val, _) = state.doc.get(&automerge::ROOT, "k").unwrap().unwrap();
-        assert_eq!(val.to_str(), Some("v2"));
+        assert_eq!(val.as_str(), Some("v2"));
     }
 
     use crate::permissions::UserId;
@@ -1743,7 +2050,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_string()
         };

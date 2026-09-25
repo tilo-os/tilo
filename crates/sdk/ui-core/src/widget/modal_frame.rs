@@ -22,6 +22,7 @@ use vello::peniko::{Color, Fill};
 
 use crate::icons::Icon;
 use crate::platform::{DialogActionOrder, PlatformConventions};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::widget::button::{Button, ButtonFace, ButtonStyle};
@@ -327,7 +328,10 @@ pub struct ModalFrame;
 impl ModalFrame {
     /// The card's own fill.
     pub fn card_fill(theme: &Theme) -> Color {
-        theme.tokens.colors.surfaces.raised
+        // Panel role (HIG §9.1): the panel ground, walked clear of both the
+        // desktop and the window card, so the sheet separates by value as
+        // well as by edge on every preset.
+        crate::chrome::panel_ground(theme)
     }
 
     /// Ink that is legible on the modal card, as `(primary, dim)`.
@@ -345,6 +349,49 @@ impl ModalFrame {
         }
     }
 
+    /// The factor the frame's own chrome — padding, viewport margin, title
+    /// and action rows, the close target — scales by. Read in exactly one
+    /// place so the rule can change once.
+    ///
+    /// Today this is `text_scale`. The spacing/metrics rule says chrome
+    /// follows `ui_scale` only (`Theme::with_ui_scale`), but
+    /// `identity_flow::sheet` hands its measured body heights back divided
+    /// by `text_scale` and predicts the body width with the same formula, so
+    /// flipping this alone would mis-size every identity sheet at a large
+    /// text setting. Once that consumer reads [`Self::body_width`] and
+    /// [`Self::action_height`], this becomes `f64::from(theme.ui_scale)`.
+    fn chrome_scale(theme: &Theme) -> f64 {
+        f64::from(theme.text_scale)
+    }
+
+    /// Width of the card for `spec` inside `viewport`, knowable before any
+    /// body row is measured: it depends on the viewport and the spec's
+    /// maximum, never on the body's height. Clamped to the viewport minus
+    /// [`MODAL_VIEWPORT_MARGIN`] on both sides, and never narrower than
+    /// [`MODAL_MIN_WIDTH`] unless the viewport itself is.
+    pub fn card_width(viewport: Rect, spec: &ModalSpec<'_>, theme: &Theme) -> f64 {
+        let scale = Self::chrome_scale(theme);
+        let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
+        (spec.max_width * scale)
+            .min(avail_w)
+            .max((MODAL_MIN_WIDTH * scale).min(avail_w))
+    }
+
+    /// Width the caller's body is laid into — the card minus its padding on
+    /// both sides. Equal to `layout(..).body.width()` for the same inputs,
+    /// so a caller can size its rows before it knows how tall they are.
+    pub fn body_width(viewport: Rect, spec: &ModalSpec<'_>, theme: &Theme) -> f64 {
+        let scale = Self::chrome_scale(theme);
+        (Self::card_width(viewport, spec, theme) - MODAL_PAD * scale * 2.0).max(0.0)
+    }
+
+    /// Height of one action button, in the same pixels as the rects
+    /// [`Self::layout`] hands back. A body control that wants to sit on the
+    /// action row's line reads this rather than restating the number.
+    pub fn action_height(theme: &Theme) -> f64 {
+        ACTION_H * Self::chrome_scale(theme)
+    }
+
     /// Compute the geometry for `spec` inside `viewport`.
     pub fn layout(
         viewport: Rect,
@@ -353,16 +400,14 @@ impl ModalFrame {
         theme: &Theme,
     ) -> ModalLayout {
         let tokens = &theme.tokens;
-        let scale = f64::from(theme.text_scale);
+        let scale = Self::chrome_scale(theme);
         // `TextRenderer` applies the accessibility multiplier. Theme type
         // tokens already carry it too, so recover the design size for direct
         // renderer calls and scale the surrounding geometry exactly once.
-        let body_size = (tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let body_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
 
-        let avail_w = (viewport.width() - MODAL_VIEWPORT_MARGIN * scale * 2.0).max(0.0);
-        let w = (spec.max_width * scale)
-            .min(avail_w)
-            .max((MODAL_MIN_WIDTH * scale).min(avail_w));
+        let w = Self::card_width(viewport, spec, theme);
+        let button_h = Self::action_height(theme);
 
         let action_h = if spec.actions.is_empty() {
             0.0
@@ -414,7 +459,7 @@ impl ModalFrame {
         // visual positions from semantic emphasis and platform convention.
         let mut actions = vec![Rect::ZERO; spec.actions.len()];
         if !spec.actions.is_empty() {
-            let by = card.y1 - MODAL_PAD * scale - ACTION_H * scale;
+            let by = card.y1 - MODAL_PAD * scale - button_h;
             let mut bx = card.x1 - MODAL_PAD * scale;
             let mut visual_order: Vec<usize> = (0..spec.actions.len()).collect();
             visual_order.sort_by_key(|&index| {
@@ -435,7 +480,7 @@ impl ModalFrame {
                 };
                 let (tw, _) = text_renderer.measure(a.label, body_size, None);
                 let bw = (f64::from(tw) + ACTION_PAD_X * scale).max(ACTION_MIN_W * scale);
-                let r = Rect::new(bx - bw, by, bx, by + ACTION_H * scale);
+                let r = Rect::new(bx - bw, by, bx, by + button_h);
                 let Some(action_rect) = actions.get_mut(index) else {
                     continue;
                 };
@@ -472,12 +517,11 @@ impl ModalFrame {
         spec: &ModalSpec<'_>,
     ) {
         let tokens = &theme.tokens;
-        let colors = &tokens.colors;
         let (ink, _dim) = Self::ink(theme);
 
         crate::chrome::fill_scrim(scene, transform, layout.scrim, MODAL_SCRIM_ALPHA, theme);
 
-        let scale = f64::from(theme.text_scale);
+        let scale = Self::chrome_scale(theme);
         let radius = f64::from(tokens.radii.lg) * scale;
         // Top of the elevation ramp: a modal is the one surface that is
         // unambiguously above everything, and reading as *lifted* is what
@@ -491,16 +535,18 @@ impl ModalFrame {
             None,
             &card,
         );
+        // The derived panel edge (HIG §9.5), never a declared
+        // `border_standard` that sat within rounding distance of the fill.
         scene.stroke(
             &Stroke::new(1.0 * scale),
             transform,
-            colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
             &card,
         );
 
         if !spec.title.is_empty() {
-            let size = (tokens.typography.scale.base / theme.text_scale).max(14.0);
+            let size = renderer_type_size(text_renderer, tokens.typography.scale.base);
             // Title-band width is a bounded screen dimension; the f64->f32
             // narrowing for the text layout call cannot lose meaningful
             // precision at UI scale.
@@ -555,7 +601,7 @@ impl ModalFrame {
         layout: &ModalLayout,
         spec: &ModalSpec<'_>,
     ) {
-        let body_size = (theme.tokens.typography.scale.sm / theme.text_scale).max(12.0);
+        let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
         for (i, a) in spec.actions.iter().enumerate() {
             let Some(rect) = layout.actions.get(i).copied() else {
                 continue;
@@ -567,7 +613,7 @@ impl ModalFrame {
             };
             let face = ButtonFace::new(rect, a.label)
                 .style(style)
-                .radius(ACTION_H * f64::from(theme.text_scale) / 2.0)
+                .radius(Self::action_height(theme) / 2.0)
                 .text_size(body_size)
                 .weight(TextWeight::Medium)
                 .hovered(a.hovered && a.enabled)
@@ -1014,5 +1060,68 @@ mod tests {
         let spec = ModalSpec::new("T").body_height(100.0);
         let l = lay(&spec, &Theme::dark());
         assert_eq!(l.hit(Point::new(-10.0, -10.0)), None);
+    }
+
+    /// The width a caller predicts before measuring its rows is the width
+    /// the layout hands back — on every scale axis a theme can carry, and
+    /// on a viewport too small for the card's natural size.
+    #[test]
+    fn body_width_is_what_the_layout_hands_back() {
+        let actions = [ModalAction::primary("Continue")];
+        let cases = [
+            ("dark", Theme::dark(), VIEWPORT),
+            ("light", Theme::light(), VIEWPORT),
+            ("text-1.5", Theme::dark().with_text_scale(1.5), VIEWPORT),
+            ("ui-1.25", Theme::dark().with_ui_scale(1.25), VIEWPORT),
+            (
+                "small output",
+                Theme::dark(),
+                Rect::new(0.0, 0.0, 300.0, 240.0),
+            ),
+        ];
+        for (name, theme, viewport) in cases {
+            for max_width in [MODAL_MAX_WIDTH, 560.0] {
+                let spec = ModalSpec::new("Title")
+                    .actions(&actions)
+                    .max_width(max_width)
+                    .body_height(120.0);
+                let predicted = ModalFrame::body_width(viewport, &spec, &theme);
+                let mut tr = TextRenderer::new();
+                let l = ModalFrame::layout(viewport, &spec, &mut tr, &theme);
+                assert!(
+                    (l.body.width() - predicted).abs() < 0.01,
+                    "{name} @ max {max_width}: predicted {predicted}, layout gave {}",
+                    l.body.width(),
+                );
+                assert!(
+                    (l.card.width() - ModalFrame::card_width(viewport, &spec, &theme)).abs() < 0.01,
+                    "{name} @ max {max_width}: card_width disagrees with the layout",
+                );
+            }
+        }
+    }
+
+    /// `action_height` is the height of every action rect the layout
+    /// produces, so a body control sized from it shares the row's line.
+    #[test]
+    fn action_height_is_the_height_of_every_action_rect() {
+        let actions = [
+            ModalAction::secondary("Back"),
+            ModalAction::primary("Continue"),
+        ];
+        for theme in [Theme::dark(), Theme::dark().with_text_scale(2.0)] {
+            let spec = ModalSpec::new("Title").actions(&actions).body_height(80.0);
+            let l = lay(&spec, &theme);
+            let expected = ModalFrame::action_height(&theme);
+            assert!(expected > 0.0);
+            for (i, r) in l.actions.iter().enumerate() {
+                assert!(
+                    (r.height() - expected).abs() < 0.01,
+                    "text_scale {}: action {i} is {} tall, action_height says {expected}",
+                    theme.text_scale,
+                    r.height(),
+                );
+            }
+        }
     }
 }

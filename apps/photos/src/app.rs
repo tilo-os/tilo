@@ -30,15 +30,17 @@ use taffy::prelude::*;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
-use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
+use vello::peniko::ImageData;
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessAction, Politeness, Role};
 use ui::animation::{Animated, Curve, Transition};
 use ui::chrome::fill_scrim;
 use ui::icons::{Icon, draw_icon};
 use ui::presence::PresenceCtx;
+use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
+use ui::tokens::Spacing;
 use ui::widget::{
     Button, ButtonFace, ButtonStyle, DateIndexIntent, DateIndexMarker, DateIndexMarkerKind,
     DateIndexedScrollbar, EmptyState, ImageViewer, ModalAction, ModalFrame, ModalHit, ModalLayout,
@@ -56,12 +58,132 @@ use crate::timeline_projection::{TimelineGeometry, TimelinePhoto, TimelineProjec
 /// Toolbar height, and the status bar's. Both are chrome around the canvas,
 /// which takes everything left over.
 const BAR_H: f32 = 48.0;
-const PAD: f32 = 12.0;
+const PAD: f32 = Spacing::BASE.s3;
+
+/// A `Spacing::BASE` step as the `f64` this painter's geometry uses.
+#[allow(
+    clippy::cast_lossless,
+    reason = "const context: `f64::from` is not const; f32 -> f64 is exact"
+)]
+const fn step(px: f32) -> f64 {
+    px as f64
+}
+
+/// The photo-details sheet on one rhythm (HIG §7b): `s4` sheet padding,
+/// title ↔ subtitle `s2` (related rows), subtitle ↔ first field `s6` (the
+/// next group), label ↔ its input `s1`, field ↔ field `s2`, body ↔ footer
+/// `s2`. The line boxes are measured, so a wrapped 200% subtitle pushes the
+/// fields down instead of under "Folder", and the field list scrolls beneath
+/// the pinned footer when the viewport caps the sheet.
+const SHEET_INSET: f64 = step(Spacing::BASE.s4);
+const SHEET_TOP_PAD: f64 = step(Spacing::BASE.s4);
+const SHEET_TITLE_GAP: f64 = step(Spacing::BASE.s2);
+const SHEET_SUBTITLE_GAP: f64 = step(Spacing::BASE.s6);
+const SHEET_LABEL_GAP: f64 = step(Spacing::BASE.s1);
+const SHEET_INPUT_H: f64 = 38.0;
+const SHEET_FIELD_GAP: f64 = step(Spacing::BASE.s2);
+const SHEET_BODY_FOOTER_GAP: f64 = step(Spacing::BASE.s2);
+/// Library shelf rhythm: chips beside each other are siblings (`s2` on the
+/// dense shelf), the album chip row keeps `s3` above the filter chips, the
+/// filter row keeps `s2` above the grid, and the phone's album actions keep
+/// `s2` below the filters and above the grid.
+const LIB_CHIP_GAP: f64 = step(Spacing::BASE.s2);
+const LIB_ROW_GAP: f64 = step(Spacing::BASE.s3);
+const LIB_ROW_GAP_TIGHT: f64 = step(Spacing::BASE.s2);
+
+/// The rest face of a neutral control that sits on `ground`: one control
+/// hairline (`HAIRLINE_ALPHA`) composited over that ground, so the face is a
+/// measured lift off whatever it is painted on — on a `raised` card footer or
+/// sheet, where `Colors::lift(1.0)` would resolve to the ground itself and
+/// the face would vanish into it. Its edge then derives from this face via
+/// [`surface::card`].
+const SHEET_BUTTON_H: f64 = 44.0;
 const RETAINED_CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
 /// Button height. Deliberately shorter than the bar so the controls sit in
 /// the strip rather than filling it edge to edge.
 const BTN_H: f32 = 34.0;
+
+/// The shared `Button` face paints its label at this renderer-relative size
+/// (`Button::measure`), and the renderer applies the accessibility text scale
+/// plus the default `TextStyle` line height. The toolbar capsules and the
+/// status band keep their authored 1× heights until that measured line no
+/// longer fits, then grow just enough to contain it — so 200% labels stop
+/// colliding with the capsule edge while 1× density is untouched.
+/// (Alignment review 2026-09-16; kept local to this file because the toolbar
+/// is sized in `build_layout`, which sees the theme but no renderer.)
+const BUTTON_LABEL_SIZE: f32 = 14.0;
+const STATUS_TEXT_SIZE: f32 = 13.0;
+const BTN_PAD_Y: f32 = 8.0;
+const STATUS_PAD_Y: f32 = 4.0;
+
+/// Line height the renderer will give `size` at `text_scale` — the default
+/// `TextStyle` leading on the scaled size, not a local copy of that factor.
+fn line_h(size: f32, text_scale: f32) -> f32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a line height in logical px fits f32 exactly as the renderer reports it"
+    )]
+    let line = ui::text_metrics::line_height_px(size, text_scale) as f32;
+    line
+}
+
+/// Toolbar capsule height at `text_scale`: the authored [`BTN_H`] at 1×.
+fn btn_h(text_scale: f32) -> f32 {
+    BTN_H.max(line_h(BUTTON_LABEL_SIZE, text_scale) + 2.0 * BTN_PAD_Y)
+}
+
+/// Status band height at `text_scale`: the authored `BAR_H * 0.6` at 1×, and
+/// tall enough to contain the filename line at any scale (plan task 19).
+fn status_h(text_scale: f32) -> f32 {
+    (BAR_H * 0.6).max(line_h(STATUS_TEXT_SIZE, text_scale) + 2.0 * STATUS_PAD_Y)
+}
+
+/// A library card's action row: Details on the left, remove and favourite on
+/// the right, all inset [`CARD_ACTION_EDGE_INSET`] from the card's edges.
+///
+/// This is the *one* description of that row. `draw_library` paints these
+/// rects, `handle_event` hit-tests them, `accessibility_tree` exports them and
+/// `library_card_action_rects` hands them to tests — four call sites that used
+/// to carry their own copies of the arithmetic (and the right-hand cluster ran
+/// flush to `card.x1`, 5 px from the edge against Details' 12).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CardActions {
+    details: Rect,
+    remove: Rect,
+    favorite: Rect,
+}
+
+const CARD_ACTION_EDGE_INSET: f64 = 8.0;
+const CARD_ACTION_ROW_H: f64 = 44.0;
+const CARD_ACTION_CONTROL_W: f64 = 44.0;
+
+fn card_action_controls(card: Rect) -> CardActions {
+    let action_y = card.y1 - CARD_ACTION_ROW_H;
+    let favorite = Rect::new(
+        card.x1 - CARD_ACTION_EDGE_INSET - CARD_ACTION_CONTROL_W,
+        action_y,
+        card.x1 - CARD_ACTION_EDGE_INSET,
+        card.y1,
+    );
+    let remove = Rect::new(
+        favorite.x0 - CARD_ACTION_CONTROL_W,
+        action_y,
+        favorite.x0,
+        card.y1,
+    );
+    let details = Rect::new(
+        card.x0 + CARD_ACTION_EDGE_INSET,
+        action_y,
+        (card.x0 + 108.0).min(remove.x0),
+        card.y1,
+    );
+    CardActions {
+        details,
+        remove,
+        favorite,
+    }
+}
 
 /// Per-character label width used to size a button in `build_layout`, which
 /// gets a [`Theme`] but no [`TextRenderer`] to shape text with.
@@ -194,15 +316,11 @@ const COLLECTION_PAGE_SIZE: usize = 4;
 /// shelf works well; below this a single card preserves independent Details,
 /// favourite, and removal targets at the 44px touch minimum.
 const LIBRARY_TWO_COLUMN_MAX_W: f64 = 720.0;
+
 const LIBRARY_ONE_COLUMN_MAX_W: f64 = 460.0;
 /// The full masthead needs room for destinations, density and selection.
 /// Tablets retain photo density but use the compact masthead below this width.
 const LIBRARY_DESKTOP_MASTHEAD_MIN_W: f64 = 960.0;
-/// The gallery controls use the shared 44px minimum target with a little
-/// breathing room. Keeping this one value in both paint and test geometry
-/// prevents a visual refinement from silently shrinking an accessible hit.
-const LIBRARY_ACTION_H: f64 = 48.0;
-
 /// Presentation-only density for the chronological library.  It is deliberately
 /// pure: a pinch and the visible +/- buttons must land on the same geometry.
 /// The lower bound protects the 44 px card actions; the upper bound keeps a
@@ -748,6 +866,7 @@ const SELECTION_ALBUMS_PER_PAGE: usize = 6;
 #[derive(Clone)]
 struct LibraryItem {
     id: String,
+    thumbnail_key: String,
     name: String,
     favorite: bool,
     captured_at: String,
@@ -889,12 +1008,14 @@ const COMPACT_SLOTS: &[Slot] = &[
 ];
 
 /// Width a button needs to show `face` with `label`.
-fn item_width(face: Face, label: &str) -> f32 {
+/// Width of one toolbar item whose capsule is `btn_h` tall ([`btn_h`] at the
+/// current text scale; [`BTN_H`] at 1×). An icon-only item is square.
+fn item_width(face: Face, label: &str, btn_h: f32) -> f32 {
     match face {
-        Face::IconOnly => BTN_H,
+        Face::IconOnly => btn_h,
         Face::Labelled => {
             let text = label.chars().count() as f32 * APPROX_CHAR_W;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
         }
         // The normal estimate is calibrated for 100% text.  At the supported
         // 200% screenshot scale the overflow label needs a real word-sized
@@ -902,7 +1023,7 @@ fn item_width(face: Face, label: &str) -> f32 {
         // icon in the compact menu.
         Face::LargeOverflow => {
             let text = label.chars().count() as f32 * APPROX_CHAR_W * 2.0;
-            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(BTN_H)
+            (LABEL_PAD_X * 2.0 + ICON_W + ICON_GAP + text).max(btn_h)
         }
     }
 }
@@ -912,6 +1033,13 @@ fn item_width(face: Face, label: &str) -> f32 {
 /// Exposed so a test can assert the strip fits a window rather than
 /// discovering it does not by finding Save missing from a screenshot.
 pub fn toolbar_width(faces: &[Face]) -> f32 {
+    toolbar_width_at(faces, BTN_H)
+}
+
+/// [`toolbar_width`] for capsules `btn_h` tall — the height `refit_toolbar`
+/// builds the buttons with, so the fit decision uses the same widths the strip
+/// will actually lay out at the theme's text scale.
+fn toolbar_width_at(faces: &[Face], btn_h: f32) -> f32 {
     let mut w = PAD * 2.0;
     for (i, slot) in SLOTS.iter().enumerate() {
         if i > 0 {
@@ -921,7 +1049,7 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
             // Unreachable: `faces` and `TOOLBAR` are always built the same
             // length, one entry per `SLOTS::Item` index.
             Slot::Item(n) => match (faces.get(n), TOOLBAR.get(n)) {
-                (Some(&face), Some(item)) => item_width(face, &tr(item.1)),
+                (Some(&face), Some(item)) => item_width(face, &tr(item.1), btn_h),
                 _ => 0.0,
             },
             Slot::Separator => SEP_W,
@@ -931,16 +1059,16 @@ pub fn toolbar_width(faces: &[Face]) -> f32 {
     w
 }
 
-/// Each item's presentation at a given strip width.
+/// Each item's presentation at a given strip width, for capsules `btn_h` tall.
 ///
 /// The labelled items give up their words rather than the strip giving up an
 /// item: a control that has shrunk to its glyph is still reachable, one that
 /// has fallen off the edge is not.
-fn faces_for_width(width: f32) -> Vec<Face> {
+fn faces_for_width(width: f32, btn_h: f32) -> Vec<Face> {
     let roomy: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
     // Width 0 is the first frame, before a layout has happened. Assume room;
     // the next frame corrects it with a real measurement.
-    if width <= 0.0 || toolbar_width(&roomy) <= width {
+    if width <= 0.0 || toolbar_width_at(&roomy, btn_h) <= width {
         return roomy;
     }
     if width < 600.0 {
@@ -962,12 +1090,29 @@ fn faces_for_width(width: f32) -> Vec<Face> {
     TOOLBAR.iter().map(|_| Face::IconOnly).collect()
 }
 
+/// Authored content observed by local transient work, excluding operational metadata.
+#[derive(Clone, PartialEq)]
+struct LiveContent {
+    image: Option<OpenImage>,
+    edits: Edits,
+    library: crate::model::PhotoLibrary,
+}
+impl LiveContent {
+    fn read(doc: &AutoCommit) -> Self {
+        Self {
+            image: PhotosDoc::image(doc),
+            edits: PhotosDoc::edits(doc),
+            library: PhotosDoc::library(doc),
+        }
+    }
+}
+
 /// The rendered image, and the inputs it was rendered from.
 ///
 /// Keeping the inputs beside the output is what lets `sync` decide in a couple
 /// of comparisons whether anything needs redoing.
 struct Rendered {
-    path: String,
+    identity: String,
     edits: Edits,
     /// The edited pixels, kept so Copy and Save export exactly what is shown
     /// rather than re-running the pipeline and hoping it agrees.
@@ -1017,6 +1162,10 @@ pub struct PhotosApp {
     last_library_action: Option<tilo_actions::EncodedAction>,
     /// Decoded original, before any edit. `None` until a file opens.
     original: Option<(String, Rgba)>,
+    original_identity: Option<String>,
+    observed_content: Option<LiveContent>,
+    import_content: Option<LiveContent>,
+    picker_stale: bool,
     rendered: Option<Rendered>,
     viewer: Option<ImageViewer>,
     /// Bounded presentation projection for the open-view information card.
@@ -1041,6 +1190,9 @@ pub struct PhotosApp {
     /// Kept local: text preference changes presentation, never document
     /// contents or another collaborator's toolbar.
     large_text_toolbar: bool,
+    /// Capsule height the toolbar was last built for ([`btn_h`] at the
+    /// theme's text scale). A change rebuilds the strip like a face change.
+    toolbar_btn_h: f32,
     compact_more_open: bool,
     compact_more_focus: usize,
     compact_more_hits: Vec<(Hit, Rect)>,
@@ -1256,6 +1408,18 @@ pub struct PhotosApp {
     /// Tab order within the active section plus Cancel and Save.
     metadata_editor_focus: usize,
     metadata_editor_hits: Vec<(MetadataEditorHit, Rect)>,
+    /// Scroll offset of the sheet's field list. The sheet is capped at the
+    /// viewport and its footer is pinned, so when the fields need more room
+    /// than that leaves (200% text on an 800×900 window) they scroll under
+    /// the footer instead of the footer painting over the last field.
+    metadata_editor_scroll: f64,
+    /// The field list's visible region from the last paint — where wheel
+    /// events scroll and outside which presses are not forwarded to a
+    /// scrolled-away input.
+    metadata_editor_body: Rect,
+    /// Set when keyboard focus moves; the next paint scrolls that field into
+    /// view.
+    metadata_editor_reveal_focus: bool,
     /// The metadata sheet is laid out over the media canvas, but its command
     /// controls are still real toolkit buttons. Keeping them retained gives
     /// hover/press/focus treatment, native action publication and keyboard
@@ -1266,6 +1430,7 @@ pub struct PhotosApp {
     /// scanned at draw time, and a large library cannot turn a frame into a
     /// disk-I/O loop.
     library_thumbnails: HashMap<String, ImageData>,
+    thumbnail_resource_keys: HashMap<String, String>,
     /// The visible entries whose bytes were unavailable or invalid in the
     /// current document generation. Keeping this negative cache avoids
     /// decoding the same corrupt peer payload every frame; it is cleared when
@@ -1863,7 +2028,8 @@ impl PhotosApp {
         let faces: Vec<Face> = TOOLBAR.iter().map(|t| t.3).collect();
         let mut buttons = Vec::new();
         for ((hit, key, icon, _), face) in TOOLBAR.iter().zip(faces.iter()) {
-            buttons.push((*hit, build_button(*hit, key, *icon, *face, &pending)));
+            // 1× capsules; the first `build_layout` refits them to the theme.
+            buttons.push((*hit, build_button(*hit, key, *icon, *face, BTN_H, &pending)));
         }
         let initial_analysis_capability = Self::discover_library_analysis_capability().ok();
         Self {
@@ -1871,6 +2037,10 @@ impl PhotosApp {
             #[cfg(test)]
             last_library_action: None,
             original: None,
+            original_identity: None,
+            observed_content: None,
+            import_content: None,
+            picker_stale: false,
             rendered: None,
             viewer: None,
             viewer_details: None,
@@ -1885,6 +2055,7 @@ impl PhotosApp {
             separator_rects: Vec::new(),
             faces,
             large_text_toolbar: false,
+            toolbar_btn_h: BTN_H,
             compact_more_open: false,
             compact_more_focus: 0,
             compact_more_hits: Vec::new(),
@@ -2044,9 +2215,13 @@ impl PhotosApp {
             metadata_editor_section: MetadataEditorSection::Organize,
             metadata_editor_focus: 0,
             metadata_editor_hits: Vec::new(),
+            metadata_editor_scroll: 0.0,
+            metadata_editor_body: Rect::ZERO,
+            metadata_editor_reveal_focus: false,
             metadata_editor_buttons: build_metadata_editor_buttons(&metadata_editor_pending),
             metadata_editor_pending,
             library_thumbnails: HashMap::new(),
+            thumbnail_resource_keys: HashMap::new(),
             thumbnail_unavailable: HashSet::new(),
             original_decode_failed: None,
             thumbnail_tx,
@@ -2077,7 +2252,7 @@ impl PhotosApp {
     /// label for its lifetime. The cost lands only on a resize that crosses
     /// the threshold, and it carries the enabled state across so a rebuild
     /// never re-enables a control the document says is unavailable.
-    fn refit_toolbar(&mut self, width: f32) {
+    fn refit_toolbar(&mut self, width: f32, btn_h: f32) {
         let want = if self.large_text_toolbar {
             TOOLBAR
                 .iter()
@@ -2091,9 +2266,15 @@ impl PhotosApp {
                 })
                 .collect()
         } else {
-            faces_for_width(width)
+            faces_for_width(width, btn_h)
         };
-        if want == self.faces {
+        // Both heights come from the same pure `btn_h()` on the theme's scale,
+        // so exact comparison is the honest one.
+        #[allow(
+            clippy::float_cmp,
+            reason = "outputs of one pure function on one input"
+        )]
+        if want == self.faces && btn_h == self.toolbar_btn_h {
             return;
         }
         let enabled: Vec<bool> = self.buttons.iter().map(|(_, b)| b.is_enabled()).collect();
@@ -2101,11 +2282,12 @@ impl PhotosApp {
         for (((hit, key, icon, _), face), was_enabled) in
             TOOLBAR.iter().zip(want.iter()).zip(enabled)
         {
-            let mut button = build_button(*hit, key, *icon, *face, &self.pending);
+            let mut button = build_button(*hit, key, *icon, *face, btn_h, &self.pending);
             button.set_enabled(was_enabled);
             self.buttons.push((*hit, button));
         }
         self.faces = want;
+        self.toolbar_btn_h = btn_h;
     }
 
     /// Import `path` through the canonical durable action. The decoded source
@@ -2127,6 +2309,7 @@ impl PhotosApp {
                 };
                 let open = OpenImage::from_path(path, img.w, img.h).with_content(content);
                 self.original = Some((path.to_string(), img));
+                self.original_identity = Some(decode_key(&open.clone().portable()));
                 self.rendered = None;
                 self.viewer = None;
                 self.original_decode_failed = None;
@@ -2207,27 +2390,13 @@ impl PhotosApp {
         self.library_cards
             .iter()
             .filter_map(|(id, card, _)| {
-                let details = self
-                    .library_details_cards
+                self.library_details_cards
                     .iter()
-                    .find(|(candidate, _)| candidate == id)
-                    .map(|(_, bounds)| *bounds)?;
-                Some((
-                    *card,
-                    details,
-                    Rect::new(
-                        card.x1 - LIBRARY_ACTION_H * 2.0,
-                        card.y1 - LIBRARY_ACTION_H,
-                        card.x1 - LIBRARY_ACTION_H,
-                        card.y1,
-                    ),
-                    Rect::new(
-                        card.x1 - LIBRARY_ACTION_H,
-                        card.y1 - LIBRARY_ACTION_H,
-                        card.x1,
-                        card.y1,
-                    ),
-                ))
+                    .any(|(candidate, _)| candidate == id)
+                    .then(|| {
+                        let actions = card_action_controls(*card);
+                        (*card, actions.details, actions.remove, actions.favorite)
+                    })
             })
             .collect()
     }
@@ -3652,6 +3821,8 @@ impl PhotosApp {
         self.metadata_longitude_input.set_focus(false);
         self.metadata_editor_section = MetadataEditorSection::Organize;
         self.metadata_editor_focus = 0;
+        self.metadata_editor_scroll = 0.0;
+        self.metadata_editor_reveal_focus = true;
         self.album_editor = false;
         // The sheet owns the full privacy explanation. Keeping a duplicate
         // in the persistent status band made it wrap below a phone viewport.
@@ -3805,6 +3976,7 @@ impl PhotosApp {
             5
         };
         self.metadata_editor_focus = focus.min(max);
+        self.metadata_editor_reveal_focus = true;
         let organize = self.metadata_editor_section == MetadataEditorSection::Organize;
         self.metadata_folder_input.set_focus(organize && focus == 0);
         self.metadata_people_input.set_focus(organize && focus == 1);
@@ -3820,6 +3992,7 @@ impl PhotosApp {
 
     fn set_metadata_editor_section(&mut self, section: MetadataEditorSection) {
         self.metadata_editor_section = section;
+        self.metadata_editor_scroll = 0.0;
         self.set_metadata_editor_focus(0);
     }
 
@@ -4387,7 +4560,21 @@ impl PhotosApp {
         // retained controls explicitly. They still use the normal widget
         // event contract and publish the same action surface as every other
         // button in the app.
-        for (_, button) in &mut self.metadata_editor_buttons {
+        for (hit, button) in &mut self.metadata_editor_buttons {
+            let body_control = matches!(
+                hit,
+                MetadataEditorHit::ClearFolder
+                    | MetadataEditorHit::ClearPeople
+                    | MetadataEditorHit::ClearTags
+                    | MetadataEditorHit::ClearCapturedAt
+                    | MetadataEditorHit::ClearLocation
+            );
+            if body_control
+                && matches!(event, winit::event::WindowEvent::MouseInput { .. })
+                && !self.metadata_editor_body.contains(self.pointer)
+            {
+                continue;
+            }
             let mut sink = None;
             button.handle_event(
                 event,
@@ -4449,6 +4636,31 @@ impl PhotosApp {
                 _ => {}
             }
         }
+        // A wheel over the sheet scrolls its field list (clamped at paint,
+        // where the content height is known).
+        if let winit::event::WindowEvent::MouseWheel { delta, .. } = event
+            && self.metadata_editor_body.contains(self.pointer)
+        {
+            let dy = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 40.0,
+                // Physical pixels, like every pointer position this app
+                // converts; without the division a 2× display scrolls twice
+                // the trackpad distance.
+                winit::event::MouseScrollDelta::PixelDelta(position) => position.y / scale_factor,
+            };
+            self.metadata_editor_scroll = (self.metadata_editor_scroll - dy).max(0.0);
+            *handled = true;
+            return true;
+        }
+        // A press outside the field list's visible region belongs to the
+        // pinned footer (or the scrim), never to an input scrolled under it.
+        let press_outside_body = matches!(
+            event,
+            winit::event::WindowEvent::MouseInput {
+                state: winit::event::ElementState::Pressed,
+                ..
+            }
+        ) && !self.metadata_editor_body.contains(self.pointer);
         for input in [
             &mut self.metadata_folder_input,
             &mut self.metadata_people_input,
@@ -4458,6 +4670,9 @@ impl PhotosApp {
             &mut self.metadata_latitude_input,
             &mut self.metadata_longitude_input,
         ] {
+            if press_outside_body {
+                break;
+            }
             let mut sink = None;
             input.handle_event(
                 event,
@@ -4501,6 +4716,8 @@ impl PhotosApp {
             // Resource/search routing has already brought this Photos
             // instance forward. Viewing does not alter document or OS state.
             crate::actions::PhotosOperation::Open { path: None } => {
+                self.import_content = Some(LiveContent::read(doc));
+                self.picker_stale = false;
                 self.picker = Some(
                     ui::portal::PickRequest::open(&tr("photos-open-title"), &tr("photos-open"))
                         .thread_name("photos-portal-open")
@@ -4585,6 +4802,9 @@ impl PhotosApp {
                 if let Some(open) = PhotosDoc::image(doc) {
                     self.save_to(path.as_deref().unwrap_or(&Self::suggested_save_path(&open)));
                 }
+            }
+            crate::actions::PhotosOperation::ExportEditedContent { .. } => {
+                return Err("edited content export requires lifecycle dispatch".into());
             }
             crate::actions::PhotosOperation::View => {
                 self.library_mode = false;
@@ -4836,7 +5056,8 @@ impl PhotosApp {
 
         // Load the original if this is a picture we have not decoded yet. A
         // peer may have opened it, so this is not only the local Open path.
-        if self.original.as_ref().map(|(p, _)| p.as_str()) != Some(open.path.as_str()) {
+        let identity = decode_key(&open);
+        if self.original_identity.as_ref() != Some(&identity) || self.original.is_none() {
             let key = decode_key(&open);
             if self.original_decode_failed.as_deref() == Some(&key) {
                 self.original = None;
@@ -4847,7 +5068,8 @@ impl PhotosApp {
             }
             let bytes = crate::doc::bytes_of(&open);
             if let Some(img) = bytes.as_deref().and_then(pixels::decode) {
-                self.original = Some((open.path.clone(), img));
+                self.original = Some((open.path, img));
+                self.original_identity = Some(identity.clone());
                 self.original_decode_failed = None;
             } else {
                 self.original = None;
@@ -4869,7 +5091,7 @@ impl PhotosApp {
         let unchanged = self
             .rendered
             .as_ref()
-            .is_some_and(|r| r.path == open.path && r.edits == edits);
+            .is_some_and(|r| r.identity == identity && r.edits == edits);
         if unchanged {
             return;
         }
@@ -4884,7 +5106,7 @@ impl PhotosApp {
         self.viewer = Some(ImageViewer::new(image));
         self.canvas_state = CanvasState::Ready;
         self.rendered = Some(Rendered {
-            path: open.path,
+            identity,
             edits,
             rgba,
         });
@@ -5394,17 +5616,12 @@ impl PhotosApp {
                                     .with_action_target(open_target)
                             }];
                             if !self.album_editor && !self.selection_mode {
+                                let actions = card_action_controls(*bounds);
                                 let favorite_target = format!("photos:library-favorite:{id}");
-                                let favorite_bounds = Rect::new(
-                                    bounds.x1 - 44.0,
-                                    bounds.y1 - 44.0,
-                                    bounds.x1,
-                                    bounds.y1,
-                                );
                                 children.push(
                                     AccessNode::new(Role::ToggleButton)
                                         .with_name("Favorite")
-                                        .with_bounds(favorite_bounds)
+                                        .with_bounds(actions.favorite)
                                         .with_state(AccessState {
                                             focusable: true,
                                             checked: Some(*favorite),
@@ -5423,12 +5640,7 @@ impl PhotosApp {
                                         .with_description(
                                             "Removes this photograph from every album",
                                         )
-                                        .with_bounds(Rect::new(
-                                            bounds.x1 - 88.0,
-                                            bounds.y1 - 44.0,
-                                            bounds.x1 - 44.0,
-                                            bounds.y1,
-                                        ))
+                                        .with_bounds(actions.remove)
                                         .with_state(AccessState {
                                             focusable: true,
                                             ..Default::default()
@@ -5441,12 +5653,7 @@ impl PhotosApp {
                                         .with_description(
                                             "Edit shared folder, people, tags, and capture date",
                                         )
-                                        .with_bounds(Rect::new(
-                                            bounds.x0 + 8.0,
-                                            bounds.y1 - 44.0,
-                                            (bounds.x0 + 108.0).min(bounds.x1 - 88.0),
-                                            bounds.y1,
-                                        ))
+                                        .with_bounds(actions.details)
                                         .with_state(AccessState {
                                             focusable: true,
                                             ..Default::default()
@@ -7156,10 +7363,32 @@ impl PhotosApp {
         match rx.try_recv() {
             Ok(ui::portal::PortalOutcome::Opened(path)) => {
                 self.picker = None;
+                self.import_content = None;
+                if self.picker_stale {
+                    // The chooser already ran. Settle its real selection outcome
+                    // without importing into content changed since dispatch.
+                    let message = format!(
+                        "Selected {}; import was invalidated by changed document content",
+                        path.display()
+                    );
+                    self.notice = Some(message.clone());
+                    if let Some(invocation) = self.resource_invocation.take() {
+                        self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                            invocation,
+                            error: tilo_actions::ActionFailure {
+                                code: "photos.stale_selection".into(),
+                                message,
+                                details: None,
+                                retryable: false,
+                            },
+                        });
+                    }
+                    return;
+                }
                 let path = path.to_string_lossy().into_owned();
                 self.open_path(doc, &path);
                 if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(if self.open_image_path().is_some() {
+                    self.resource_result = Some(if self.notice.is_none() {
                         tilo_actions::InvocationUpdate::Succeeded {
                             invocation,
                             output: tilo_actions::ActionOutput::default(),
@@ -7648,7 +7877,7 @@ impl PhotosApp {
                     .new_leaf(Style {
                         size: Size {
                             width: Dimension::length(SEP_W),
-                            height: Dimension::length(BTN_H * 0.6),
+                            height: Dimension::length(self.toolbar_btn_h * 0.6),
                         },
                         flex_shrink: 0.0,
                         ..Default::default()
@@ -7675,7 +7904,9 @@ impl PhotosApp {
                 Style {
                     size: Size {
                         width: Dimension::percent(1.0),
-                        height: Dimension::length(BAR_H),
+                        // `bar_h` at the scale the capsules were built for:
+                        // the authored BAR_H at 1×.
+                        height: Dimension::length(self.toolbar_btn_h + (BAR_H - BTN_H)),
                     },
                     flex_shrink: 0.0,
                     align_items: Some(AlignItems::Center),
@@ -8049,7 +8280,7 @@ impl PhotosApp {
         clippy::unwrap_used,
         reason = "this taffy node is freshly built with a fixed, valid style"
     )]
-    fn build_status_node(&self, taffy: &mut TaffyTree<()>, theme: &Theme) -> NodeId {
+    fn build_status_node(&self, taffy: &mut TaffyTree<()>, text_scale: f32) -> NodeId {
         taffy
             .new_leaf(Style {
                 size: Size {
@@ -8057,7 +8288,7 @@ impl PhotosApp {
                     height: Dimension::length(if self.status.is_empty() {
                         0.0
                     } else {
-                        (BAR_H * 0.8 * theme.text_scale).max(BAR_H * 0.6)
+                        status_h(text_scale)
                     }),
                 },
                 flex_shrink: 0.0,
@@ -10021,6 +10252,7 @@ impl PhotosApp {
     ) {
         use vello::peniko::Fill;
 
+        let chip_radius = f64::from(theme.tokens.radii.sm);
         self.library_cards.clear();
         self.album_cards.clear();
         self.metadata_filter_cards.clear();
@@ -10061,8 +10293,8 @@ impl PhotosApp {
         // transient popover. Give it an actual layout lane so filters, cards,
         // and destructive controls never continue underneath an opaque sheet
         // and emerge as clipped half-targets at its edge.
-        if self.metadata_editor && theme.text_scale <= 1.25 && bounds.width() >= 620.0 {
-            bounds.x1 = (bounds.x1 - 432.0).max(bounds.x0);
+        if self.metadata_editor && theme.text_scale <= 1.25 && bounds.width() >= 720.0 {
+            bounds.x1 = (bounds.x1 - 560.0).max(bounds.x0);
         }
         // Enlarged text needs its own density rule. Five desktop cards leave
         // only a few words of metadata per card at 200%, which makes labels
@@ -10279,39 +10511,34 @@ impl PhotosApp {
                 }
                 let chip = Rect::new(x, y, x + width, y + if large_text { 44.0 } else { 26.0 });
                 let selected = album_id == self.active_album;
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    if selected {
-                        theme.tokens.colors.neutral[3]
-                    } else {
-                        theme.tokens.colors.surfaces.raised
-                    },
-                    None,
-                    &chip,
-                );
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(chip.x0, chip.y1 - 1.0, chip.x1, chip.y1),
-                );
+                // A quiet chip is a small card: raised fill plus derived edge;
+                // the album in force carries the accent (HIG §9.4/§9.5 "Chip
+                // quiet: selected accent, no edge") with ink chosen against it.
+                let ink = if selected {
+                    let fill = theme.tokens.colors.accent[6];
+                    surface::pill(scene, transform, chip, fill, None, Some(chip_radius));
+                    theme.on_surface(fill).ink
+                } else {
+                    surface::card(
+                        scene,
+                        transform,
+                        chip,
+                        chip_radius,
+                        theme.tokens.colors.surfaces.raised,
+                    );
+                    theme.text_primary
+                };
                 text_renderer.draw_text_weighted(
                     scene,
                     &label,
                     12.0,
-                    theme.text_primary,
-                    transform
-                        * Affine::translate((
-                            chip.x0 + 8.0,
-                            chip.y0 + if large_text { 10.0 } else { 6.0 },
-                        )),
+                    ink,
+                    transform * Affine::translate((chip.x0 + 8.0, chip.y0 + 6.0)),
                     Some((width - 16.0) as f32),
                     TextWeight::Regular,
                 );
                 self.album_cards.push((album_id, chip));
-                x += width + 8.0;
+                x += width + LIB_CHIP_GAP;
             }
             self.draw_collection_pager(
                 scene,
@@ -10421,24 +10648,26 @@ impl PhotosApp {
                 && tag.as_ref() == self.active_tag.as_ref()
                 && self.active_favorites == favorites
                 && self.active_album.is_none();
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                if selected {
-                    theme.tokens.colors.accent[6]
-                } else {
-                    theme.tokens.colors.surfaces.raised
-                },
-                None,
-                &chip,
-            );
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.border_standard,
-                None,
-                &Rect::new(chip.x0, chip.y1 - 1.0, chip.x1, chip.y1),
-            );
+            if selected {
+                // Accent means live (HIG §9.4): the filter in force carries
+                // the accent fill and needs no edge against it.
+                surface::pill(
+                    scene,
+                    transform,
+                    chip,
+                    theme.tokens.colors.accent[6],
+                    None,
+                    Some(chip_radius),
+                );
+            } else {
+                surface::card(
+                    scene,
+                    transform,
+                    chip,
+                    chip_radius,
+                    theme.tokens.colors.surfaces.raised,
+                );
+            }
             text_renderer.draw_text_weighted(
                 scene,
                 &label,
@@ -10718,16 +10947,26 @@ impl PhotosApp {
         let visible_days = self
             .timeline_projection
             .visible_days(self.timeline_scroll_y, viewport_height);
+        // Visible geometry can move beyond the queued thumbnail window before
+        // the next sync. Resolve identities from the full authored snapshot.
+        let photo_images: HashMap<_, _> = self
+            .observed_content
+            .iter()
+            .flat_map(|content| &content.library.photos)
+            .map(|photo| (photo.id.as_str(), &photo.image))
+            .collect();
         let visible_items: Vec<_> = if large_text && self.metadata_editor {
             Vec::new()
         } else {
             self.timeline_projection
                 .visible_photos(self.timeline_scroll_y, viewport_height)
                 .into_iter()
-                .map(|entry| {
-                    (
+                .filter_map(|entry| {
+                    let image = photo_images.get(entry.photo.id.as_str())?;
+                    Some((
                         LibraryItem {
                             id: entry.photo.id.clone(),
+                            thumbnail_key: thumbnail_key(image),
                             name: entry.photo.name.clone(),
                             favorite: entry.photo.favorite,
                             captured_at: entry.photo.day.clone(),
@@ -10738,7 +10977,7 @@ impl PhotosApp {
                         },
                         timeline_left + entry.x,
                         top + entry.y,
-                    )
+                    ))
                 })
                 .collect()
         };
@@ -10816,7 +11055,7 @@ impl PhotosApp {
                 None,
                 &preview,
             );
-            if let Some(image) = self.library_thumbnails.get(id) {
+            if let Some(image) = self.library_thumbnails.get(&item.thumbnail_key) {
                 let scale = (preview.width() / f64::from(image.width))
                     .min(preview.height() / f64::from(image.height));
                 let drawn_w = f64::from(image.width) * scale;
@@ -10833,7 +11072,7 @@ impl PhotosApp {
                 // skeleton tells the difference between "arriving" and an
                 // unavailable source without fabricating a thumbnail or
                 // covering the gallery in a repeated generic image glyph.
-                let unavailable = self.thumbnail_unavailable.contains(id);
+                let unavailable = self.thumbnail_unavailable.contains(&item.thumbnail_key);
                 scene.fill(
                     Fill::NonZero,
                     transform,
@@ -10878,30 +11117,12 @@ impl PhotosApp {
                     );
                 }
             }
-            let action_y = card.y1 - LIBRARY_ACTION_H;
-            let control_w = LIBRARY_ACTION_H;
-            let details = if desktop_library {
-                Rect::new(
-                    card.x1 - control_w * 3.0,
-                    action_y,
-                    card.x1 - control_w * 2.0,
-                    card.y1,
-                )
-            } else {
-                Rect::new(
-                    card.x0 + 8.0,
-                    action_y,
-                    (card.x0 + 108.0).min(card.x1 - control_w * 2.0),
-                    card.y1,
-                )
-            };
-            let remove = Rect::new(
-                card.x1 - control_w * 2.0,
-                action_y,
-                card.x1 - control_w,
-                card.y1,
-            );
-            let star = Rect::new(card.x1 - control_w, action_y, card.x1, card.y1);
+            let actions = card_action_controls(card);
+            let action_y = actions.details.y0;
+            let control_w = CARD_ACTION_CONTROL_W;
+            let details = actions.details;
+            let remove = actions.remove;
+            let star = actions.favorite;
             // Both text rows are explicitly constrained to this card. The
             // action row owns the bottom 44px, so no title can collide with a
             // neighboring column or a control.
@@ -11465,7 +11686,11 @@ impl PhotosApp {
                 &Circle::new(point, radius),
             );
             if let Some(photo_id) = cluster.photo_ids.first()
-                && let Some(image) = self.library_thumbnails.get(photo_id)
+                && let Some(image) = self.library_thumbnails.get(
+                    self.thumbnail_resource_keys
+                        .get(photo_id)
+                        .unwrap_or(photo_id),
+                )
             {
                 let side = (radius * 1.25).max(18.0);
                 let scale = (side / f64::from(image.width)).min(side / f64::from(image.height));
@@ -12228,12 +12453,15 @@ impl PhotosApp {
         let album_chips_h = if self.library_albums.is_empty() {
             0.0
         } else {
-            38.0
+            26.0 + LIB_ROW_GAP
         };
+        let control_radius = f64::from(theme.tokens.radii.md);
+        let panel_radius = f64::from(theme.tokens.radii.lg);
         let panel_y = if !self.album_editor && narrow {
             // Kept in lock-step with `draw_library`'s album and metadata
-            // filter rows before the compact action reserve.
-            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 34.0 + 3.0
+            // filter rows: the buttons start where the filter row (chip +
+            // `s2`) ends, so the shelf keeps one rhythm.
+            bounds.y0 + f64::from(PAD) + 31.0 + album_chips_h + 28.0 + LIB_ROW_GAP_TIGHT
         } else if narrow {
             bounds.y1 - panel_h - 8.0
         } else {
@@ -12294,7 +12522,6 @@ impl PhotosApp {
             }
             return;
         }
-        let panel_radius = f64::from(theme.tokens.radii.lg);
         ui::surface::shadow(
             scene,
             transform,
@@ -12302,19 +12529,13 @@ impl PhotosApp {
             panel_radius,
             &theme.tokens.elevation.e3,
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        // The sheet is a card over the grid: raised fill, derived edge.
+        surface::card(
+            scene,
             transform,
+            panel,
+            panel_radius,
             theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(panel, panel_radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -12365,12 +12586,22 @@ impl PhotosApp {
             Some((panel.width() - 150.0) as f32),
             TextWeight::Medium,
         );
+        // Right-aligned to the sheet's 16 px inset — the Next button's edge on
+        // the row below — from its measured width, instead of starting at a
+        // fixed offset and ending wherever the digits stop.
+        let selected = format!("{} selected", self.album_editor_members.len());
+        let (selected_w, _) =
+            text_renderer.measure_weighted(&selected, 13.0, Some(100.0), TextWeight::Regular);
         text_renderer.draw_text_weighted(
             scene,
-            &format!("{} selected", self.album_editor_members.len()),
+            &selected,
             13.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x1 - 116.0, panel.y0 + 147.0)),
+            transform
+                * Affine::translate((
+                    panel.x1 - 16.0 - f64::from(selected_w.min(100.0)),
+                    panel.y0 + 147.0,
+                )),
             Some(100.0),
             TextWeight::Regular,
         );
@@ -12423,7 +12654,7 @@ impl PhotosApp {
                 theme,
                 &ButtonFace::new(rect, label)
                     .style(style)
-                    .radius(10.0)
+                    .radius(control_radius)
                     .hovered(rect.contains(self.pointer))
                     .focused(focused),
             );
@@ -12442,7 +12673,7 @@ impl PhotosApp {
                 theme,
                 &ButtonFace::new(delete, label)
                     .style(ButtonStyle::Danger)
-                    .radius(10.0)
+                    .radius(control_radius)
                     .hovered(delete.contains(self.pointer))
                     .focused(self.album_editor_focus == 2),
             );
@@ -12503,19 +12734,12 @@ impl PhotosApp {
             panel_radius,
             &theme.tokens.elevation.e3,
         );
-        scene.fill(
-            Fill::NonZero,
+        surface::card(
+            scene,
             transform,
+            panel,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(panel, panel_radius),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &RoundedRect::from_rect(panel, panel_radius),
         );
         text_renderer.draw_text_weighted(
             scene,
@@ -12748,6 +12972,17 @@ impl PhotosApp {
             self.metadata_editor_hits.clear();
             return;
         }
+        for input in [
+            &mut self.metadata_folder_input,
+            &mut self.metadata_people_input,
+            &mut self.metadata_tags_input,
+            &mut self.metadata_captured_at_input,
+            &mut self.metadata_place_input,
+            &mut self.metadata_latitude_input,
+            &mut self.metadata_longitude_input,
+        ] {
+            input.apply_layout_external(Rect::ZERO);
+        }
         for (_, button) in &mut self.metadata_editor_buttons {
             button.apply_layout_external(Rect::ZERO);
         }
@@ -12775,20 +13010,12 @@ impl PhotosApp {
             bounds.x1 - if narrow { 8.0 } else { 14.0 },
             panel_bottom,
         );
-        let panel_shape = RoundedRect::from_rect(panel, 12.0);
-        scene.fill(
-            Fill::NonZero,
+        surface::card(
+            scene,
             transform,
+            panel,
+            f64::from(theme.tokens.radii.lg),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &panel_shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.border_standard,
-            None,
-            &panel_shape,
         );
 
         let count = self.metadata_editor_ids.len();
@@ -12802,13 +13029,28 @@ impl PhotosApp {
         } else {
             "Only fields you change are applied. Mixed values stay untouched."
         };
+        let scale = f64::from(theme.text_scale);
+        let inset = SHEET_INSET;
+        let inner_width = (panel.width() - 2.0 * inset).max(0.0) as f32;
+        let title_h = f64::from(
+            text_renderer
+                .measure_weighted(&title, 20.0, Some(inner_width), TextWeight::Medium)
+                .1,
+        );
+        let subtitle_h = f64::from(
+            text_renderer
+                .measure_weighted(subtitle, 11.0, Some(inner_width), TextWeight::Regular)
+                .1,
+        );
+        let title_y = panel.y0 + SHEET_TOP_PAD;
+        let subtitle_y = title_y + title_h + SHEET_TITLE_GAP;
         text_renderer.draw_text_weighted(
             scene,
             &title,
             20.0,
             theme.text_primary,
-            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 18.0)),
-            Some((panel.width() - 32.0) as f32),
+            transform * Affine::translate((panel.x0 + inset, title_y)),
+            Some(inner_width),
             TextWeight::Medium,
         );
         text_renderer.draw_text_weighted(
@@ -12816,12 +13058,13 @@ impl PhotosApp {
             subtitle,
             11.0,
             theme.text_dim,
-            transform * Affine::translate((panel.x0 + 20.0, panel.y0 + 50.0)),
-            Some((panel.width() - 32.0) as f32),
+            transform * Affine::translate((panel.x0 + inset, subtitle_y)),
+            Some(inner_width),
             TextWeight::Regular,
         );
 
-        let tab_y = panel.y0 + if theme.text_scale > 1.25 { 92.0 } else { 82.0 };
+        let tab_y = subtitle_y + subtitle_h + SHEET_SUBTITLE_GAP;
+        let tab_h = 40.0 * scale;
         let tab_gap = 8.0;
         let tab_w = (panel.width() - 40.0 - tab_gap) * 0.5;
         let mut hits = Vec::new();
@@ -12839,7 +13082,7 @@ impl PhotosApp {
                 panel.x0 + 20.0 + tab_w + tab_gap,
             ),
         ] {
-            let rect = Rect::new(x, tab_y, x + tab_w, tab_y + 40.0);
+            let rect = Rect::new(x, tab_y, x + tab_w, tab_y + tab_h);
             if let Some((_, button)) = self
                 .metadata_editor_buttons
                 .iter_mut()
@@ -12855,8 +13098,65 @@ impl PhotosApp {
             }
         }
 
-        let fields_y = tab_y + 58.0;
-        let footer_y = panel.y1 - 68.0;
+        let fields_top = tab_y + tab_h + SHEET_FIELD_GAP * scale;
+        let footer_y = panel.y1 - SHEET_BUTTON_H * scale - SHEET_INSET;
+        let body = Rect::new(
+            panel.x0,
+            fields_top,
+            panel.x1,
+            (footer_y - SHEET_BODY_FOOTER_GAP).max(fields_top),
+        );
+        self.metadata_editor_body = body;
+        let label_h = f64::from(
+            text_renderer
+                .measure_weighted(
+                    "Captured · Mixed — unchanged",
+                    11.0,
+                    Some((inner_width - 100.0 * theme.text_scale).max(1.0)),
+                    TextWeight::Medium,
+                )
+                .1,
+        )
+        .max(36.0 * scale);
+        let label_gap = SHEET_LABEL_GAP * scale;
+        let input_h = SHEET_INPUT_H * scale;
+        let field_gap = SHEET_FIELD_GAP * scale;
+        let row_h = label_h + label_gap + input_h + field_gap;
+        let map_h = 154.0 * scale;
+        let time_and_place = self.metadata_editor_section == MetadataEditorSection::TimeAndPlace;
+        let content_h = 3.0 * row_h
+            + if time_and_place {
+                map_h + field_gap
+            } else {
+                0.0
+            };
+        if std::mem::take(&mut self.metadata_editor_reveal_focus) {
+            let field_top = match (time_and_place, self.metadata_editor_focus) {
+                (false, focus @ 0..=2) => Some(focus as f64 * row_h),
+                (true, focus @ 0..=1) => Some(focus as f64 * row_h),
+                (true, 2 | 3) => Some(2.0 * row_h + map_h + field_gap),
+                _ => None,
+            };
+            if let Some(top) = field_top {
+                let bottom = top + row_h - field_gap;
+                if top < self.metadata_editor_scroll {
+                    self.metadata_editor_scroll = top;
+                } else if bottom > self.metadata_editor_scroll + body.height() {
+                    self.metadata_editor_scroll = bottom - body.height();
+                }
+            }
+        }
+        self.metadata_editor_scroll = self
+            .metadata_editor_scroll
+            .clamp(0.0, (content_h - body.height()).max(0.0));
+        let fields_y = fields_top - self.metadata_editor_scroll;
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &body,
+        );
         let label_and_input =
             |scene: &mut Scene,
              text_renderer: &mut TextRenderer,
@@ -12878,10 +13178,15 @@ impl PhotosApp {
                     11.0,
                     theme.text_dim,
                     transform * Affine::translate((rect.x0, rect.y0)),
-                    Some((rect.width() - 64.0) as f32),
+                    Some((rect.width() - 100.0 * scale).max(1.0) as f32),
                     TextWeight::Medium,
                 );
-                let clear = Rect::new(rect.x1 - 92.0, rect.y0 - 8.0, rect.x1, rect.y0 + 28.0);
+                let clear = Rect::new(
+                    rect.x1 - 92.0 * scale,
+                    rect.y0,
+                    rect.x1,
+                    rect.y0 + 36.0 * scale,
+                );
                 if let Some((_, button)) = buttons
                     .iter_mut()
                     .find(|(candidate, _)| *candidate == clear_hit)
@@ -12894,13 +13199,17 @@ impl PhotosApp {
                     button.apply_layout_external(clear);
                     button.draw(scene, transform, text_renderer, theme, presence);
                 }
-                input.apply_layout_external(Rect::new(rect.x0, rect.y0 + 24.0, rect.x1, rect.y1));
+                input.apply_layout_external(Rect::new(
+                    rect.x0,
+                    rect.y0 + label_h + label_gap,
+                    rect.x1,
+                    rect.y1,
+                ));
                 input.draw(scene, transform, text_renderer, theme, presence);
             };
 
         match self.metadata_editor_section {
             MetadataEditorSection::Organize => {
-                let row_h = ((footer_y - fields_y - 12.0) / 3.0).clamp(70.0, 94.0);
                 for (index, (label, input, hit)) in [
                     (
                         "Folder",
@@ -12930,7 +13239,7 @@ impl PhotosApp {
                         self.metadata_mixed[index],
                         hit,
                         self.metadata_force_clear[index],
-                        Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - 8.0),
+                        Rect::new(panel.x0 + 20.0, y, panel.x1 - 20.0, y + row_h - field_gap),
                         &mut self.metadata_editor_buttons,
                     );
                 }
@@ -12940,8 +13249,6 @@ impl PhotosApp {
                 // strip that made every coordinate edit feel accidental.
                 // Keep enough fixed room for the date, place and coordinate
                 // fields first; the map absorbs the responsive remainder.
-                let row_h = 68.0;
-                let map_h = (footer_y - fields_y - row_h * 3.0 - 42.0).clamp(94.0, 154.0);
                 label_and_input(
                     scene,
                     text_renderer,
@@ -12954,7 +13261,7 @@ impl PhotosApp {
                         panel.x0 + 20.0,
                         fields_y,
                         panel.x1 - 20.0,
-                        fields_y + row_h - 8.0,
+                        fields_y + row_h - field_gap,
                     ),
                     &mut self.metadata_editor_buttons,
                 );
@@ -12970,7 +13277,7 @@ impl PhotosApp {
                         panel.x0 + 20.0,
                         fields_y + row_h,
                         panel.x1 - 20.0,
-                        fields_y + row_h * 2.0 - 8.0,
+                        fields_y + row_h * 2.0 - field_gap,
                     ),
                     &mut self.metadata_editor_buttons,
                 );
@@ -13032,8 +13339,8 @@ impl PhotosApp {
                     Some((map.width() - 20.0) as f32),
                     TextWeight::Medium,
                 );
-                hits.push((MetadataEditorHit::PlaceOnMap, map));
-                let y = map.y1 + 12.0;
+                hits.push((MetadataEditorHit::PlaceOnMap, map.intersect(body)));
+                let y = map.y1 + field_gap;
                 let gap = 10.0;
                 let field_w = (panel.width() - 40.0 - gap) * 0.5;
                 for (label, input, x) in [
@@ -13064,15 +13371,16 @@ impl PhotosApp {
                     );
                     input.apply_layout_external(Rect::new(
                         x,
-                        y + 24.0,
+                        y + label_h + label_gap,
                         x + field_w,
-                        y + row_h - 8.0,
+                        y + row_h - field_gap,
                     ));
                     input.draw(scene, transform, text_renderer, theme, presence);
                 }
             }
         }
 
+        scene.pop_layer();
         scene.fill(
             Fill::NonZero,
             transform,
@@ -13243,6 +13551,7 @@ fn build_button(
     key: &str,
     icon: Icon,
     face: Face,
+    btn_h: f32,
     pending: &Rc<Cell<Option<Hit>>>,
 ) -> Button {
     let label = tr(key);
@@ -13258,7 +13567,7 @@ fn build_button(
     let width = if key == "photos-library" && matches!(face, Face::Labelled) {
         104.0
     } else {
-        item_width(face, &label)
+        item_width(face, &label, btn_h)
     };
     let button = Button::new(key, shown, None);
     // The large-text overflow face paints a deliberately smaller “More”
@@ -13271,7 +13580,7 @@ fn build_button(
         button.with_icon(icon)
     };
     button
-        .with_size(width, BTN_H)
+        .with_size(width, btn_h)
         .tooltip(label.clone())
         .with_accessible_name(&label)
         .on_effect(move || slot.set(Some(hit)))
@@ -13552,13 +13861,7 @@ fn build_library_analysis_buttons(
 
 /// Wrap an RGBA buffer as the image type the scene draws.
 fn to_peniko(img: &Rgba) -> ImageData {
-    ImageData {
-        data: Blob::new(Arc::new(img.bytes.clone())),
-        format: ImageFormat::Rgba8,
-        alpha_type: ImageAlphaType::Alpha,
-        width: img.w,
-        height: img.h,
-    }
+    pixels::to_peniko(img)
 }
 
 /// A local decode-cache key. The content hash, when present, is immutable;
@@ -13569,6 +13872,10 @@ fn decode_key(open: &OpenImage) -> String {
         open.path,
         open.content.as_deref().unwrap_or_default()
     )
+}
+
+fn thumbnail_key(open: &OpenImage) -> String {
+    format!("{}:320x180", decode_key(open))
 }
 
 /// Turn the portable capture value into a calm timeline label without parsing
@@ -13646,6 +13953,65 @@ fn bounded_file_bytes(path: &str) -> Option<Vec<u8>> {
 }
 
 impl PhotosApp {
+    fn reconcile_content(&mut self, doc: &AutoCommit) {
+        let current = LiveContent::read(doc);
+        if self
+            .import_content
+            .as_ref()
+            .is_some_and(|old| old != &current)
+        {
+            self.picker_stale = true;
+            if let Some((invocation, _)) = self.pending_resource_open.take() {
+                self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("Photo import invalidated by changed document content".into()),
+                });
+                self.import_content = None;
+            }
+        }
+        if let Some(old) = &self.observed_content
+            && old != &current
+        {
+            self.pending.take();
+            self.album_page_pending.take();
+            self.compact_more_open = false;
+            self.library_cards.clear();
+            self.library_details_cards.clear();
+            let metadata_changed = self
+                .metadata_editor_ids
+                .iter()
+                .any(|id| old.library.photo(id) != current.library.photo(id));
+            let album_changed = self
+                .album_editor_id
+                .as_ref()
+                .is_some_and(|id| old.library.album(id) != current.library.album(id))
+                || self
+                    .album_editor_members
+                    .iter()
+                    .any(|id| current.library.photo(id).is_none());
+            if metadata_changed {
+                self.cancel_metadata_editor();
+                self.notice = Some("Photo changed; unsaved details discarded".into());
+            }
+            if album_changed {
+                self.cancel_album_editor();
+                self.notice =
+                    Some("Album or membership changed; unsaved album changes discarded".into());
+            }
+            if self
+                .active_album
+                .as_ref()
+                .is_some_and(|id| current.library.album(id).is_none())
+            {
+                self.active_album = None;
+            }
+        }
+        self.observed_content = Some(current);
+        // Recreating the viewer on changed immutable identity/edits also drops
+        // an active drag before the next input can apply its stale viewport.
+        self.refresh(doc);
+    }
+
     /// Take completed thumbnail work without blocking the UI thread.
     fn drain_thumbnail_results(&mut self) {
         while let Ok(result) = self.thumbnail_rx.try_recv() {
@@ -13793,7 +14159,14 @@ impl PhotosApp {
     /// decoding off the UI thread while avoiding a 24-frame wait for a single
     /// visible shelf to become useful after a scroll or first library open.
     fn schedule_library_thumbnail(&mut self, sources: Vec<LibraryPhoto>, document_changed: bool) {
-        let ids: Vec<_> = sources.iter().map(|photo| photo.id.clone()).collect();
+        self.thumbnail_resource_keys = sources
+            .iter()
+            .map(|photo| (photo.id.clone(), thumbnail_key(&photo.image)))
+            .collect();
+        let ids: Vec<_> = sources
+            .iter()
+            .map(|photo| thumbnail_key(&photo.image))
+            .collect();
         if document_changed || ids != self.thumbnail_visible_ids {
             let Some(next_generation) = self
                 .thumbnail_generation
@@ -13811,6 +14184,9 @@ impl PhotosApp {
             self.thumbnail_generation = Some(next_generation);
             self.thumbnail_visible_ids = ids;
             self.thumbnail_queued.clear();
+            if document_changed {
+                self.library_thumbnails.clear();
+            }
             self.library_thumbnails
                 .retain(|id, _| self.thumbnail_visible_ids.contains(id));
             self.thumbnail_unavailable
@@ -13830,13 +14206,17 @@ impl PhotosApp {
             if self.thumbnail_queued.len() >= THUMBNAIL_QUEUE_LIMIT {
                 break;
             }
-            if self.library_thumbnails.contains_key(&photo.id)
-                || self.thumbnail_unavailable.contains(&photo.id)
-                || self.thumbnail_queued.contains(&photo.id)
+            if self
+                .library_thumbnails
+                .contains_key(&thumbnail_key(&photo.image))
+                || self
+                    .thumbnail_unavailable
+                    .contains(&thumbnail_key(&photo.image))
+                || self.thumbnail_queued.contains(&thumbnail_key(&photo.image))
             {
                 continue;
             }
-            let id = photo.id.clone();
+            let id = thumbnail_key(&photo.image);
             let job = ThumbnailJob {
                 generation,
                 id: id.clone(),
@@ -13851,6 +14231,9 @@ impl PhotosApp {
 }
 
 impl Widget for PhotosApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.places_motion_reduced = reduced;
         if reduced {
@@ -14013,7 +14396,18 @@ impl Widget for PhotosApp {
         let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
             return Ok(None);
         };
+        if let crate::actions::PhotosOperation::ExportEditedContent {
+            resource_id,
+            source_content,
+            edits,
+        } = &operation
+        {
+            let output =
+                crate::actions::export_edited_content(resource_id, source_content, *edits, doc)?;
+            return Ok(Some(ui::widget::ResourceOperationStart::Completed(output)));
+        }
         if let crate::actions::PhotosOperation::Open { path: Some(file) } = operation {
+            self.import_content = Some(LiveContent::read(doc));
             self.pending_resource_open = Some((invocation, file));
             return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
         }
@@ -14261,12 +14655,13 @@ impl Widget for PhotosApp {
         reason = "synchronization derives the bounded library, filters, search, and thumbnail work from one document snapshot"
     )]
     fn sync(&mut self, doc: &mut AutoCommit, path: &ObjId) {
-        PhotosDoc::seed(doc);
+        self.reconcile_content(doc);
         self.drain_action_control_pending(doc);
         self.drain_analysis_results(doc);
         if let Some((invocation, path)) = self.pending_resource_open.take() {
+            self.import_content = None;
             self.open_path(doc, &path);
-            self.resource_result = Some(if self.open_image_path().is_some() {
+            self.resource_result = Some(if self.notice.is_none() {
                 tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
                     output: tilo_actions::ActionOutput::default(),
@@ -14396,6 +14791,7 @@ impl Widget for PhotosApp {
             .filter(|photo| matches_filter(photo))
             .map(|photo| LibraryItem {
                 id: photo.id.clone(),
+                thumbnail_key: thumbnail_key(&photo.image),
                 name: photo.image.name.clone(),
                 favorite: photo.favorite,
                 captured_at: photo
@@ -14640,12 +15036,12 @@ impl Widget for PhotosApp {
         // discoverable, while the four immediate navigation/edit controls
         // retain their accessible icon names without colliding.
         self.large_text_toolbar = theme.text_scale > 1.25;
-        self.refit_toolbar(self.rect.width() as f32);
+        self.refit_toolbar(self.rect.width() as f32, btn_h(theme.text_scale));
 
         let bar = self.build_toolbar_node(taffy, theme, node_map);
         let search = self.build_library_search_node(taffy, theme, node_map);
         let canvas = self.build_canvas_node(taffy, theme, node_map);
-        let status = self.build_status_node(taffy, theme);
+        let status = self.build_status_node(taffy, theme.text_scale);
 
         let root = taffy
             .new_with_children(
@@ -14800,23 +15196,36 @@ impl Widget for PhotosApp {
         // same rule above the status line, for the same reason.
         // The status line's rule is drawn only when the line has something in
         // it; an empty band would otherwise be fenced off as if it did.
-        let mut edges = vec![self.toolbar_rect.y1];
+        // Bar-role hairline under the toolbar plate (HIG §9.5); the status
+        // band's rule sits on the base canvas, so it derives from that.
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::chrome_hairline(theme),
+            None,
+            &Rect::new(
+                self.rect.x0,
+                self.toolbar_rect.y1 - 1.0,
+                self.rect.x1,
+                self.toolbar_rect.y1,
+            ),
+        );
         if !self.status.is_empty() {
-            edges.push(self.status_rect.y0);
-        }
-        for edge in edges {
+            let edge = self.status_rect.y0;
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.border_standard,
+                surface::edge_on(theme.tokens.colors.surfaces.base),
                 None,
                 &Rect::new(self.rect.x0, edge - 1.0, self.rect.x1, edge),
             );
         }
 
-        // Group rules: what opens a file, what adjusts it, what exports it.
+        // Group rules: what opens a file, what adjusts it, what exports it —
+        // derived against the raised plate they sit on.
+        let group_rule = surface::edge_on(theme.tokens.colors.surfaces.raised);
         for sep in &self.separator_rects {
-            scene.fill(Fill::NonZero, transform, theme.border_standard, None, sep);
+            scene.fill(Fill::NonZero, transform, group_rule, None, sep);
         }
 
         for slot in self.toolbar_slots() {
@@ -14881,13 +15290,24 @@ impl Widget for PhotosApp {
 
         if !self.status.is_empty() {
             let inner = self.status_rect;
+            // Centre the line on its measured height inside a band sized by
+            // `status_h` — at 2× the filename used to run off the bottom of a
+            // fixed band anchored 4 px from its top (plan task 19).
+            let budget = (inner.width() - 2.0 * f64::from(PAD)) as f32;
+            let (_, line_h) = text_renderer.measure_weighted(
+                &self.status,
+                STATUS_TEXT_SIZE,
+                Some(budget),
+                TextWeight::Regular,
+            );
+            let y = inner.y0 + (inner.height() - f64::from(line_h)).max(0.0) / 2.0;
             text_renderer.draw_text_weighted(
                 scene,
                 &self.status,
-                13.0,
+                STATUS_TEXT_SIZE,
                 theme.text_primary,
-                transform * Affine::translate((inner.x0 + f64::from(PAD), inner.y0 + 4.0)),
-                Some((inner.width() - 2.0 * f64::from(PAD)) as f32),
+                transform * Affine::translate((inner.x0 + f64::from(PAD), y)),
+                Some(budget),
                 TextWeight::Regular,
             );
         }
@@ -14910,6 +15330,7 @@ impl Widget for PhotosApp {
         node_id: NodeId,
         taffy: &TaffyTree<()>,
     ) {
+        self.reconcile_content(doc);
         if let winit::event::WindowEvent::CursorMoved { position, .. } = event {
             let next = Point::new(position.x / scale_factor, position.y / scale_factor);
             if self.library_mode
@@ -15807,7 +16228,8 @@ impl Widget for PhotosApp {
                 && self.pointer.y >= card.y1 - 44.0
                 && self.pointer.x >= card.x1 - 88.0
             {
-                if self.pointer.x >= card.x1 - 44.0 {
+                let actions = card_action_controls(card);
+                if actions.favorite.contains(self.pointer) {
                     self.library_remove_confirm = None;
                     self.commit_library_action(
                         doc,
@@ -15903,6 +16325,7 @@ impl Widget for PhotosApp {
         state: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
+        self.reconcile_content(state);
         self.perform_toolbar_semantic_action(target, action, state)
             || self.perform_directory_semantic_action(target, action)
             || self.perform_library_semantic_action(target, action, state)
@@ -16156,19 +16579,23 @@ impl PhotosApp {
             self.toolbar_rect.x1 - f64::from(PAD),
             self.toolbar_rect.y1 + 4.0 + row_h * entries.len() as f64,
         );
+        // A floating menu: Panel role ground + border (HIG §9.5), rows
+        // separated by inset derived rules rather than full-bleed ones.
+        let menu_radius = f64::from(theme.tokens.radii.md);
+        let ground = ui::chrome::panel_ground(theme);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            theme.tokens.colors.surfaces.raised,
+            ground,
             None,
-            &panel,
+            &vello::kurbo::RoundedRect::from_rect(panel, menu_radius),
         );
-        scene.fill(
-            vello::peniko::Fill::NonZero,
+        scene.stroke(
+            &vello::kurbo::Stroke::new(1.0),
             transform,
-            theme.border_standard,
+            ui::chrome::panel_border(theme),
             None,
-            &Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 1.0),
+            &surface::edge_outline(panel, menu_radius),
         );
         for (index, (hit, label)) in entries.into_iter().enumerate() {
             let row = Rect::new(
@@ -16205,12 +16632,14 @@ impl PhotosApp {
                 TextWeight::Medium,
             );
             if index > 0 {
-                scene.fill(
-                    vello::peniko::Fill::NonZero,
+                surface::separator(
+                    scene,
                     transform,
-                    theme.border_standard,
-                    None,
-                    &Rect::new(row.x0, row.y0, row.x1, row.y0 + 1.0),
+                    row.x0,
+                    row.x1,
+                    row.y0 + 0.5,
+                    step(Spacing::BASE.s3),
+                    ground,
                 );
             }
             if enabled {
@@ -16256,3 +16685,648 @@ impl ui::widget::AppWidget for PhotosApp {
 #[cfg(test)]
 #[path = "app/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod history_reconcile_tests {
+    use super::*;
+    use automerge::ROOT;
+    fn restore(doc: &mut AutoCommit, selected: &[automerge::ChangeHash]) {
+        let heads = doc.get_heads();
+        let plan = ui::history_mode::restore::prepare_content_restore(
+            doc,
+            &crate::framework_history::SCHEMA,
+            &heads,
+            selected,
+        )
+        .unwrap();
+        ui::history_mode::restore::apply_prepared_content_restore(doc, &plan).unwrap();
+    }
+    fn setup() -> (PhotosApp, AutoCommit, String) {
+        let mut doc = AutoCommit::new();
+        let image = OpenImage::from_path("historical-missing.png", 4, 3);
+        PhotosDoc::set_image(&mut doc, Some(&image));
+        let id = PhotosDoc::library(&doc).photos[0].id.clone();
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        (app, doc, id)
+    }
+    #[test]
+    fn history_accepts_current_and_legacy_labels_and_rejects_all_malformed_conflicts() {
+        use automerge::{ObjType, ReadDoc, transaction::Transactable};
+        let (_, mut doc, id) = setup();
+        let mut library = PhotosDoc::library(&doc);
+        library.photos[0].people = vec!["Alice".into()];
+        library.photos[0].tags = vec!["Portrait".into()];
+        PhotosDoc::set_library(&mut doc, &library);
+        crate::framework_history::validate(&doc).unwrap();
+        let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+        for key in ["photo_people", "photo_tags"] {
+            let column = doc.get(&root, key).unwrap().unwrap().1;
+            let row = doc.get(&column, id.as_str()).unwrap().unwrap().1;
+            doc.put(&row, "Removed", false).unwrap();
+            crate::framework_history::validate(&doc).unwrap();
+            let mut legacy = doc.clone();
+            legacy
+                .put(&column, id.as_str(), "[\"Legacy label\"]")
+                .unwrap();
+            crate::framework_history::validate(&legacy).unwrap();
+
+            // Two replicas can create different maps while migrating one JSON array.
+            let mut left = legacy.fork();
+            let mut right = legacy.fork();
+            let left_row = left.put_object(&column, id.as_str(), ObjType::Map).unwrap();
+            let right_row = right
+                .put_object(&column, id.as_str(), ObjType::Map)
+                .unwrap();
+            left.put(&left_row, "Valid", true).unwrap();
+            right.put(&right_row, "Invalid", "not a boolean").unwrap();
+            left.merge(&mut right).unwrap();
+            assert_eq!(left.get_all(&column, id.as_str()).unwrap().len(), 2);
+            assert!(crate::framework_history::validate(&left).is_err());
+
+            // A valid winning/losing membership does not excuse an invalid sibling value.
+            let mut left = doc.fork();
+            let mut right = doc.fork();
+            left.put(&row, "Conflict", true).unwrap();
+            right.put(&row, "Conflict", "not a boolean").unwrap();
+            left.merge(&mut right).unwrap();
+            assert_eq!(left.get_all(&row, "Conflict").unwrap().len(), 2);
+            assert!(crate::framework_history::validate(&left).is_err());
+
+            for invalid_label in [String::new(), "x".repeat(65_537)] {
+                let mut invalid = doc.clone();
+                invalid.put(&row, invalid_label.as_str(), true).unwrap();
+                assert!(crate::framework_history::validate(&invalid).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn history_accepts_album_membership_formats_and_rejects_malformed_conflicts() {
+        use automerge::{ObjType, ReadDoc, transaction::Transactable};
+        let (_, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        // The production writer emits the current absolute JSON membership.
+        crate::framework_history::validate(&doc).unwrap();
+        let root = doc.get(ROOT, "photos_library").unwrap().unwrap().1;
+        let albums = doc.get(&root, "albums").unwrap().unwrap().1;
+        let row = doc
+            .get(&albums, "photos.album:membership")
+            .unwrap()
+            .unwrap()
+            .1;
+        let mut legacy = doc.clone();
+        let members = legacy.put_object(&row, "photo_ids", ObjType::List).unwrap();
+        legacy.insert(&members, 0, ids[0].as_str()).unwrap();
+        crate::framework_history::validate(&legacy).unwrap();
+        assert_eq!(
+            PhotosDoc::library(&legacy).albums[0].photo_ids,
+            vec![ids[0].clone()]
+        );
+
+        // Concurrent migration can retain both legacy and current values.
+        // Neither malformed representation may hide behind a valid sibling.
+        for (invalid_json, invalid_list) in [(false, false), (true, false), (false, true)] {
+            let mut left = legacy.fork();
+            let mut right = legacy.fork();
+            left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
+            right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+            left.put(&row, "photo_ids", if invalid_json { "[7]" } else { "[]" })
+                .unwrap();
+            let conflicting = right.put_object(&row, "photo_ids", ObjType::List).unwrap();
+            if invalid_list {
+                right.insert(&conflicting, 0, 7).unwrap();
+            } else {
+                right.insert(&conflicting, 0, ids[0].as_str()).unwrap();
+            }
+            left.merge(&mut right).unwrap();
+            assert_eq!(left.get_all(&row, "photo_ids").unwrap().len(), 2);
+            assert_eq!(
+                crate::framework_history::validate(&left).is_err(),
+                invalid_json || invalid_list
+            );
+        }
+
+        let mut left = legacy.fork();
+        let mut right = legacy.fork();
+        left.put(&members, 0, ids[3].as_str()).unwrap();
+        right.put(&members, 0, false).unwrap();
+        left.merge(&mut right).unwrap();
+        assert_eq!(left.get_all(&members, 0).unwrap().len(), 2);
+        assert!(crate::framework_history::validate(&left).is_err());
+
+        for invalid_members in [vec!["x".repeat(65_537)], vec![ids[0].clone(); 10_001]] {
+            let mut invalid = doc.clone();
+            invalid
+                .put(
+                    &row,
+                    "photo_ids",
+                    serde_json::to_string(&invalid_members).unwrap(),
+                )
+                .unwrap();
+            assert!(crate::framework_history::validate(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn newly_visible_timeline_photo_uses_immutable_thumbnail_outside_queued_window() {
+        let mut doc = AutoCommit::new();
+        let mut library = crate::model::PhotoLibrary::default();
+        for index in 0..80 {
+            let mut photo = crate::model::LibraryPhoto::from_image(
+                OpenImage::from_path(&format!("missing-timeline-{index}.png"), 30, 20)
+                    .with_content(format!("{index:064x}")),
+            );
+            photo.captured_at = Some(format!("2026-{:02}-{:02}", 1 + index / 28, 1 + index % 28));
+            library.photos.push(photo);
+        }
+        let target = library.photos[2].clone();
+        PhotosDoc::set_library(&mut doc, &library);
+        let mut app = PhotosApp::new();
+        app.show_library();
+        app.canvas_rect = Rect::new(0.0, 0.0, 1_440.0, 900.0);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+        app.view_timeline(
+            &doc,
+            Some(&crate::actions::TimelineAnchor::Day {
+                day: target.captured_at.clone().unwrap(),
+            }),
+        )
+        .unwrap();
+        let mut text = TextRenderer::new();
+        let mut missing = Scene::new();
+        app.draw_library(
+            &mut missing,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+        assert!(!app.thumbnail_resource_keys.contains_key(&target.id));
+        app.library_thumbnails.insert(
+            thumbnail_key(&target.image),
+            to_peniko(&crate::shots_pattern(30, 20)),
+        );
+        let mut hydrated = Scene::new();
+        app.draw_library(
+            &mut hydrated,
+            Affine::IDENTITY,
+            &mut text,
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        assert!(app.library_cards.iter().any(|(id, _, _)| id == &target.id));
+        assert_eq!(
+            hydrated.encoding().resources.patches.len(),
+            missing.encoding().resources.patches.len() + 1,
+            "the production painter records the cached immutable image even before it enters the queued thumbnail window"
+        );
+    }
+
+    #[test]
+    fn changed_target_invalidates_metadata_draft_before_input_but_unrelated_change_preserves_it() {
+        let (mut app, mut doc, id) = setup();
+        let mut lib = PhotosDoc::library(&doc);
+        lib.photos[0].tags = vec!["restored".into()];
+        PhotosDoc::set_library(&mut doc, &lib);
+        let selected = doc.get_heads();
+        lib.photos[0].tags = vec!["live".into()];
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        app.begin_metadata_editor(&doc, &id);
+        app.metadata_tags_input.set_text("unsaved draft");
+        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+        app.sync(&mut doc, &ROOT);
+        assert!(app.metadata_editor);
+        assert_eq!(app.metadata_tags_input.value(), "unsaved draft");
+        restore(&mut doc, &selected);
+        app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+        assert!(
+            !app.metadata_editor,
+            "stale draft must detach before any new input"
+        );
+        app.save_metadata_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["restored"]);
+        app.begin_metadata_editor(&doc, &id);
+        app.metadata_tags_input.set_text("next edit");
+        app.save_metadata_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).photos[0].tags, vec!["next edit"]);
+    }
+    #[test]
+    fn changed_second_batch_photo_invalidates_the_whole_metadata_draft() {
+        let (mut app, mut doc, first) = setup();
+        let second = crate::model::LibraryPhoto::from_image(OpenImage::from_path(
+            "second-missing.png",
+            4,
+            3,
+        ));
+        let second_id = second.id.clone();
+        let mut library = PhotosDoc::library(&doc);
+        library.photos.push(second);
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+        app.begin_metadata_editor_for_ids(&doc, vec![first, second_id.clone()]);
+        app.metadata_tags_input.set_text("unsaved batch draft");
+        library.photos[1].tags = vec!["remote edit".into()];
+        PhotosDoc::set_library(&mut doc, &library);
+        app.perform_semantic_action("nonexistent", &AccessAction::Activate, &mut doc, &ROOT);
+        assert!(
+            !app.metadata_editor,
+            "a changed non-first batch target invalidates the draft before input"
+        );
+        app.save_metadata_editor(&mut doc);
+        assert_eq!(
+            PhotosDoc::library(&doc).photo(&second_id).unwrap().tags,
+            vec!["remote edit"]
+        );
+    }
+
+    #[test]
+    fn changed_photo_identity_invalidates_cached_thumbnail_and_late_old_result() {
+        let (mut app, mut doc, id) = setup();
+        let old = app.thumbnail_generation.unwrap();
+        app.library_thumbnails
+            .insert(id.clone(), to_peniko(&crate::shots_pattern(4, 3)));
+        let mut lib = PhotosDoc::library(&doc);
+        lib.photos[0].image.content = Some("a".repeat(64));
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.library_thumbnails.contains_key(&id));
+        app.accept_thumbnail_result(ThumbnailResult {
+            generation: old,
+            id: id.clone(),
+            preview: Some(crate::shots_pattern(4, 3)),
+        });
+        assert!(!app.library_thumbnails.contains_key(&id));
+    }
+    #[test]
+    fn pending_resource_open_cannot_overwrite_changed_content_and_settles_once() {
+        let (mut app, mut doc, _) = setup();
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("import.png");
+        std::fs::write(
+            &path,
+            pixels::encode_png(&crate::shots_pattern(4, 3)).unwrap(),
+        )
+        .unwrap();
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+            path: Some(path.to_string_lossy().into()),
+        })
+        .unwrap();
+        app.start_resource_operation(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        PhotosDoc::set_image(&mut doc, None);
+        let heads = doc.get_heads();
+        app.sync(&mut doc, &ROOT);
+        assert!(PhotosDoc::image(&doc).is_none());
+        assert_eq!(doc.get_heads(), heads);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Cancelled{invocation:id,..}) if id==invocation)
+        );
+        assert!(
+            app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                .is_none()
+        );
+    }
+    #[test]
+    fn already_dispatched_picker_reports_actual_outcome_without_importing_stale_selection() {
+        for outcome in [0, 1, 2] {
+            let (mut app, mut doc, _) = setup();
+            let invocation = tilo_actions::InvocationId::new();
+            let (tx, rx) = std::sync::mpsc::channel();
+            app.picker = Some(rx);
+            app.resource_invocation = Some(invocation);
+            app.import_content = Some(LiveContent::read(&doc));
+            PhotosDoc::set_image(&mut doc, None);
+            app.sync(&mut doc, &ROOT);
+            tx.send(match outcome {
+                0 => ui::portal::PortalOutcome::Opened(std::path::PathBuf::from("chosen.png")),
+                1 => ui::portal::PortalOutcome::Cancelled,
+                _ => ui::portal::PortalOutcome::Failed("actual picker failure".into()),
+            })
+            .unwrap();
+            let heads = doc.get_heads();
+            app.sync(&mut doc, &ROOT);
+            assert_eq!(doc.get_heads(), heads);
+            assert!(PhotosDoc::image(&doc).is_none());
+            match app
+                .poll_resource_operation(invocation, false, &doc, &ROOT)
+                .unwrap()
+            {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation: id,
+                    error,
+                } => {
+                    assert_eq!(id, invocation);
+                    assert_eq!(
+                        error.code,
+                        if outcome == 0 {
+                            "photos.stale_selection"
+                        } else {
+                            "photos.portal_failed"
+                        }
+                    );
+                    if outcome == 0 {
+                        assert!(error.message.contains("chosen.png"));
+                    } else {
+                        assert_eq!(error.message, "actual picker failure");
+                    }
+                }
+                tilo_actions::InvocationUpdate::Cancelled { invocation: id, .. } => {
+                    assert_eq!(id, invocation);
+                    assert_eq!(outcome, 1);
+                }
+                other => panic!("unexpected settlement {other:?}"),
+            }
+            assert!(
+                app.poll_resource_operation(invocation, false, &doc, &ROOT)
+                    .is_none()
+            );
+        }
+    }
+    #[test]
+    fn changed_album_or_deleted_member_detaches_draft_and_cannot_resurrect_it() {
+        let (mut app, mut doc, id) = setup();
+        let selected = doc.get_heads();
+        let mut lib = PhotosDoc::library(&doc);
+        lib.albums.push(crate::model::Album {
+            id: "photos.album:membership".into(),
+            name: "Original".into(),
+            photo_ids: vec![id],
+        });
+        PhotosDoc::set_library(&mut doc, &lib);
+        app.sync(&mut doc, &ROOT);
+        app.active_album = Some("photos.album:membership".into());
+        app.begin_edit_album(&doc);
+        app.album_name_input.set_text("stale draft");
+        restore(&mut doc, &selected);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.album_editor);
+        app.save_album_editor(&mut doc);
+        assert!(PhotosDoc::library(&doc).albums.is_empty());
+        app.begin_new_album(&doc);
+        app.album_name_input.set_text("Next album");
+        app.save_album_editor(&mut doc);
+        assert_eq!(PhotosDoc::library(&doc).albums[0].name, "Next album");
+    }
+
+    fn album_membership_fixture() -> (PhotosApp, AutoCommit, [String; 4]) {
+        let mut doc = AutoCommit::new();
+        // Browse order deliberately differs from lexical identity order.
+        let photos: Vec<_> = ["c", "a", "d", "b"]
+            .into_iter()
+            .map(|label| {
+                LibraryPhoto::from_image(
+                    OpenImage::from_path(&format!("{label}.png"), 4, 3)
+                        .with_content(label.repeat(64)),
+                )
+            })
+            .collect();
+        let ids = std::array::from_fn(|i| photos[i].id.clone());
+        PhotosDoc::set_library(
+            &mut doc,
+            &crate::model::PhotoLibrary {
+                photos,
+                albums: Vec::new(),
+            },
+        );
+        let mut app = PhotosApp::new();
+        app.library_mode = true;
+        app.sync(&mut doc, &ROOT);
+        (app, doc, ids)
+    }
+
+    fn activate_album_control(app: &mut PhotosApp, doc: &mut AutoCommit, target: &str) {
+        assert!(app.perform_semantic_action(target, &AccessAction::Activate, doc, &ROOT));
+        app.sync(doc, &ROOT);
+    }
+
+    fn seed_membership_album(doc: &mut AutoCommit, ids: &[String; 4]) {
+        let mut library = PhotosDoc::library(doc);
+        library.albums.push(crate::model::Album {
+            id: "photos.album:membership".into(),
+            name: "Original".into(),
+            photo_ids: vec![ids[0].clone(), ids[3].clone()],
+        });
+        PhotosDoc::set_library(doc, &library);
+    }
+
+    #[test]
+    fn album_membership_create_saves_selected_ids_in_browse_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:new");
+        app.album_name_input.set_text("Selected photographs");
+        // Select in reverse browse order; toggle a third photograph off again.
+        for i in [3, 1, 0, 1] {
+            activate_album_control(
+                &mut app,
+                &mut doc,
+                &format!("photos:library-photo:{}", ids[i]),
+            );
+        }
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.albums.len(), 1);
+        assert_eq!(library.albums[0].name, "Selected photographs");
+        assert_eq!(
+            library.albums[0].photo_ids,
+            vec![ids[0].clone(), ids[3].clone()]
+        );
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn album_membership_rename_preserves_selected_ids_and_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        app.sync(&mut doc, &ROOT);
+        activate_album_control(
+            &mut app,
+            &mut doc,
+            "photos:library-album:photos.album:membership",
+        );
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Renamed album");
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        assert_eq!(library.albums.len(), 1);
+        let album = library.album("photos.album:membership").unwrap();
+        assert_eq!(album.name, "Renamed album");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn album_membership_after_restore_supports_normal_edit_and_browse_order() {
+        let (mut app, mut doc, ids) = album_membership_fixture();
+        seed_membership_album(&mut doc, &ids);
+        let selected = doc.get_heads();
+        let mut library = PhotosDoc::library(&doc);
+        library.albums[0].name = "Later album".into();
+        library.albums[0].photo_ids = vec![ids[1].clone(), ids[2].clone()];
+        PhotosDoc::set_library(&mut doc, &library);
+        app.sync(&mut doc, &ROOT);
+        activate_album_control(
+            &mut app,
+            &mut doc,
+            "photos:library-album:photos.album:membership",
+        );
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Unsaved later draft");
+        restore(&mut doc, &selected);
+        app.sync(&mut doc, &ROOT);
+        assert!(!app.album_editor, "restore must detach the obsolete draft");
+        let restored = PhotosDoc::library(&doc);
+        let album = restored.album("photos.album:membership").unwrap();
+        assert_eq!(album.name, "Original");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[3].clone()]);
+
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:edit");
+        app.album_name_input.set_text("Edited after restore");
+        activate_album_control(&mut app, &mut doc, "photos:library-album:all");
+        for i in [3, 2] {
+            activate_album_control(
+                &mut app,
+                &mut doc,
+                &format!("photos:library-photo:{}", ids[i]),
+            );
+        }
+        activate_album_control(&mut app, &mut doc, "photos:album-editor:save");
+        let library = PhotosDoc::library(&doc);
+        let album = library.album("photos.album:membership").unwrap();
+        assert_eq!(album.name, "Edited after restore");
+        assert_eq!(album.photo_ids, vec![ids[0].clone(), ids[2].clone()]);
+        assert_eq!(library.photos.len(), 4);
+        assert!(!app.album_editor);
+    }
+
+    #[test]
+    fn content_restore_drops_active_viewer_drag_before_next_pointer_move() {
+        let mut doc = AutoCommit::new();
+        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let open = OpenImage::from_path("same.png", 6, 4)
+            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        PhotosDoc::set_edits(&mut doc, &Edits::default().rotated_right());
+        let selected = doc.get_heads();
+        PhotosDoc::set_edits(&mut doc, &Edits::default());
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        let mut taffy = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let theme = Theme::dark();
+        let node = app.build_layout(&mut taffy, &theme, &mut nodes);
+        taffy
+            .set_style(
+                node,
+                Style {
+                    size: Size {
+                        width: Dimension::length(800.),
+                        height: Dimension::length(600.),
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(800.),
+                    height: AvailableSpace::Definite(600.),
+                },
+            )
+            .unwrap();
+        app.apply_layout(&taffy, node, Point::ZERO);
+        let center = app.viewer.as_ref().unwrap().get_rect().center();
+        let device_id = unsafe { std::mem::zeroed() };
+        let mut handled = false;
+        let mut focus = None;
+        for event in [
+            winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(center.x, center.y),
+            },
+            winit::event::WindowEvent::MouseInput {
+                device_id,
+                state: winit::event::ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+            },
+        ] {
+            app.viewer.as_mut().unwrap().handle_event(
+                &event,
+                1.,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &taffy,
+            );
+        }
+        restore(&mut doc, &selected);
+        app.handle_event(
+            &winit::event::WindowEvent::CursorMoved {
+                device_id,
+                position: winit::dpi::PhysicalPosition::new(center.x + 40., center.y + 20.),
+            },
+            1.,
+            &winit::event::Modifiers::default(),
+            &mut doc,
+            &ROOT,
+            &mut handled,
+            &mut focus,
+            node,
+            &taffy,
+        );
+        assert_eq!(app.viewer.as_ref().unwrap().pan(), vello::kurbo::Vec2::ZERO);
+        assert!((app.viewer.as_ref().unwrap().zoom() - 1.).abs() < f32::EPSILON);
+        let next = PhotosDoc::edits(&doc).rotated_right();
+        app.commit_edits(&mut doc, next);
+        app.sync(&mut doc, &ROOT);
+        assert_eq!(PhotosDoc::edits(&doc).rotate_quarters, 2);
+    }
+
+    #[test]
+    fn failed_import_reports_failure_even_when_previous_photo_is_still_decoded() {
+        let mut doc = AutoCommit::new();
+        let bytes = pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
+        let open = OpenImage::from_path("existing.png", 6, 4)
+            .with_content(qdoc::blobstore::put(&bytes).unwrap());
+        PhotosDoc::set_image(&mut doc, Some(&open));
+        let mut app = PhotosApp::new();
+        app.sync(&mut doc, &ROOT);
+        assert!(app.open_image_path().is_some());
+        let invocation = tilo_actions::InvocationId::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let payload = serde_json::to_vec(&crate::actions::PhotosOperation::Open {
+            path: Some(tmp.path().join("absent.png").to_string_lossy().into()),
+        })
+        .unwrap();
+        app.start_resource_operation(
+            invocation,
+            tilo_actions::OperationKind::Effect,
+            crate::actions::PHOTOS_OPERATION_TYPE,
+            &payload,
+            &doc,
+            &ROOT,
+        )
+        .unwrap();
+        app.sync(&mut doc, &ROOT);
+        assert!(
+            matches!(app.poll_resource_operation(invocation,false,&doc,&ROOT),Some(tilo_actions::InvocationUpdate::Failed{invocation:id,..}) if id==invocation)
+        );
+        assert_eq!(PhotosDoc::image(&doc), Some(open));
+    }
+}

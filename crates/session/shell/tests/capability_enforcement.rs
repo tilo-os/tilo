@@ -18,6 +18,8 @@
 )]
 
 use shell::shell::persist;
+use shell::shell::state::FreshId as _;
+use shell::shell::state::WorkspaceAuthority as _;
 use shell::shell::state::{
     CapOverride, Capability, Effect, Expiry, FsMode, GRANT_ALWAYS, GRANT_ONCE, GRANT_SESSION,
     Principal, ResourceRef, Scope, Subject, Verb, Workspace, WorkspaceId, WorkspaceTree,
@@ -31,15 +33,16 @@ fn room_owned_by(owner: &str) -> (WorkspaceTree, WorkspaceId) {
     let mut ws = Workspace::new(WorkspaceId::new(), "Design");
     ws.set_owner(owner);
     let id = ws.id;
-    tree.active = id;
-    tree.workspaces.push(ws);
+    tree.desktop.active = id;
+    tree.desktop.workspaces.push(ws);
     // Seed the replicated doc exactly as the compositor's load path does.
     tree.seed_doc_from_cache();
     (tree, id)
 }
 
 fn ws_of(tree: &WorkspaceTree, id: WorkspaceId) -> &Workspace {
-    tree.workspaces
+    tree.desktop
+        .workspaces
         .iter()
         .find(|w| w.id == id)
         .expect("workspace")
@@ -70,7 +73,7 @@ fn an_ownerless_room_has_no_administrators() {
     let mut tree = WorkspaceTree::default();
     let ws = Workspace::new(WorkspaceId::new(), "Orphan");
     let id = ws.id;
-    tree.workspaces.push(ws);
+    tree.desktop.workspaces.push(ws);
 
     assert!(
         !ws_of(&tree, id).may_administer(&ALICE.to_string()),
@@ -336,7 +339,12 @@ fn always_survives_a_restart_and_session_does_not() {
 
     let (mut tree, id) = room_owned_by(ALICE);
     {
-        let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == id)
+            .unwrap();
         ws.grant_app(
             "org.tilo.Ebook",
             &Capability::Filesystem {
@@ -460,7 +468,12 @@ fn re_granting_never_shortens_an_existing_grant() {
     // permanent grant quietly demoted — reducing authority is what revoke
     // and Restrict are for, both explicit acts the user can see.
     let (mut tree, id) = room_owned_by(ALICE);
-    let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
+    let ws = tree
+        .desktop
+        .workspaces
+        .iter_mut()
+        .find(|w| w.id == id)
+        .unwrap();
 
     ws.grant_app(
         "org.tilo.Meet",
@@ -610,7 +623,12 @@ fn the_portal_denies_an_app_a_path_it_was_never_granted() {
 fn a_network_allowlist_is_actually_a_list() {
     let (mut tree, id) = room_owned_by(ALICE);
     {
-        let ws = tree.workspaces.iter_mut().find(|w| w.id == id).unwrap();
+        let ws = tree
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|w| w.id == id)
+            .unwrap();
         ws.grant_app(
             "org.tilo.Browser",
             &Capability::Network {

@@ -1,0 +1,67 @@
+[
+  {
+    "name": "zram0",
+    "model": "zram0",
+    "stable_id": null,
+    "size": 42949672960,
+    "kind": "Ssd",
+    "tran": null,
+    "removable": false,
+    "is_system": false,
+    "partitions": []
+  },
+  {
+    "name": "nvme0n1",
+    "model": "CT2000P310SSD8",
+    "stable_id": "eui.0000000000000000d06885095069cf4e",
+    "size": 2000398934016,
+    "kind": "Nvme",
+    "tran": "nvme",
+    "removable": false,
+    "is_system": true,
+    "partitions": [
+      {
+        "name": "nvme0n1p1",
+        "size": 629145600,
+        "fstype": "vfat",
+        "label": null
+      },
+      {
+        "name": "nvme0n1p2",
+        "size": 1073741824,
+        "fstype": "ext4",
+        "label": null
+      },
+      {
+        "name": "nvme0n1p3",
+        "size": 1998694907904,
+        "fstype": "btrfs",
+        "label": "fedora"
+      }
+    ]
+  },
+  {
+    "name": "nvme1n1",
+    "model": "WD PC SN560 SDDPNQE-1T00-1002",
+    "stable_id": "eui.00000000000000000969bd1af40cbd7e",
+    "size": 1024209543168,
+    "kind": "Nvme",
+    "tran": "nvme",
+    "removable": false,
+    "is_system": false,
+    "partitions": [
+      {
+        "name": "nvme1n1p1",
+        "size": 31999393792,
+        "fstype": "swap",
+        "label": "Swap 2"
+      },
+      {
+        "name": "nvme1n1p2",
+        "size": 992208748544,
+        "fstype": "btrfs",
+        "label": "fedora"
+      }
+    ]
+  }
+]

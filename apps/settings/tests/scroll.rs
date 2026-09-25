@@ -33,11 +33,14 @@ struct Harness {
     taffy: TaffyTree<()>,
     self_node: NodeId,
     state: ui::State,
+    /// Dropped after the app whose account stores it holds.
+    _config: crate::support::ScratchConfig,
 }
 
 impl Harness {
     fn new(category: Category, w: f32, h: f32) -> Self {
-        let mut app = SettingsApp::with_selected(category).with_width_hint(w);
+        let config = crate::support::ScratchConfig::new();
+        let mut app = config.app().with_category(category).with_width_hint(w);
         let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -82,6 +85,7 @@ impl Harness {
             taffy,
             self_node,
             state,
+            _config: config,
         }
     }
 

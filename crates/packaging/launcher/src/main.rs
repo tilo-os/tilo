@@ -22,7 +22,7 @@ use clap::{Parser, Subcommand};
 use desktop_entry::launch::LaunchEnv;
 use launcher::landlock_shim::{SANDBOX_EXEC_SUBCOMMAND, run_sandbox_exec};
 use launcher::registry;
-use launcher::run::{LaunchMode, RunError, RunOptions, run};
+use launcher::run::{IdentitySource, LaunchMode, RunError, RunOptions, run};
 
 const LAUNCH_REGISTRATION_FD_ENV: &str = "TILO_INTERNAL_LAUNCH_REGISTRATION_FD";
 
@@ -37,6 +37,10 @@ fn wait_for_registration_fd(fd: RawFd) -> std::io::Result<()> {
     gate.read_exact(&mut release)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "runs first in main before any thread is spawned, and the internal handoff variable must be removed so launched apps never inherit it"
+)]
 fn wait_for_shell_registration() -> Result<(), String> {
     let Ok(raw_fd) = std::env::var(LAUNCH_REGISTRATION_FD_ENV) else {
         return Ok(());
@@ -415,7 +419,10 @@ fn run_gui_command(args: RunCliArgs) -> ExitCode {
         allow_missing_runtime: args.allow_missing_runtime,
         allow_unsigned_runtime: args.allow_unsigned_runtime,
         require_runtime_publisher: args.require_runtime_publisher,
-        identity_host_path: args.identity,
+        identity: args
+            .identity
+            .map_or(IdentitySource::UserStore, IdentitySource::Record),
+        data_home: None,
         wayland_socket: args.wayland_socket,
         workspace_id: args.workspace_id,
         capabilities_path: args.capabilities,
@@ -449,7 +456,7 @@ fn admit_share_and_open(
         Ok(path) => match received_file_capability(&path) {
             Ok((capability_path, guard)) => {
                 let result = exec_installed(
-                    "dev.tilo.file-explorer",
+                    "so.tilo.file-explorer",
                     ExecArgs {
                         no_services: false,
                         wayland_socket,
@@ -596,7 +603,7 @@ fn received_file_capability(
     std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
         .map_err(|_| "could not secure the temporary capability directory".to_string())?;
     let capability = collab_types::CapOverride::new(
-        collab_types::Subject::app("dev.tilo.file-explorer"),
+        collab_types::Subject::app("so.tilo.file-explorer"),
         collab_types::Scope::FsPath(path.display().to_string()),
         collab_types::Effect::Grant,
         collab_types::Verb::Read,
@@ -794,7 +801,7 @@ fn run_installed(
         return ExitCode::from(2);
     }
 
-    // Installed qpkg command shims are a production launch surface. Their
+    // Installed tapp command shims are a production launch surface. Their
     // inherited environment is app/user input, not trusted launcher policy,
     // so it must never be able to turn off either confinement or runtime
     // verification. Tests and developer harnesses that intentionally need a
@@ -823,7 +830,8 @@ fn run_installed(
         require_runtime_publisher: std::env::var("TILO_LAUNCHER_REQUIRE_RUNTIME_PUBLISHER")
             .ok()
             .filter(|s| !s.is_empty()),
-        identity_host_path: None,
+        identity: IdentitySource::UserStore,
+        data_home: None,
         trusted_identities_host_path: None,
         // CLI launches are stdio-only: no display in the sandbox, and
         // therefore no compositor whose GPU choice they have to match.
@@ -880,7 +888,10 @@ fn init_tracing() {
 }
 
 // Expose RunError so the binary can use #[derive] paths cleanly.
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "the link-only helper keeps RunError reachable for derive-generated binary paths"
+)]
 fn _link_run_error(_: &RunError) {}
 
 #[cfg(test)]

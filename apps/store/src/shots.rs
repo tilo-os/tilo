@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(not(test))]
 use std::sync::Once;
 
 use taffy::prelude::*;
@@ -48,12 +49,18 @@ const SETTLED_CAPTURE_WARMUP_PASSES: usize = 3;
 /// for a fresh offscreen Vulkan scene. Pin Store's hermetic capture path to
 /// Vello's deterministic CPU renderer; the interactive desktop keeps using
 /// its normal GPU renderer.
+#[cfg(not(test))]
 static SHOTS_CPU_RENDERER: Once = Once::new();
 
+#[cfg(not(test))]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "outside tests `render_widget` is only reached from the --shots handler on \
+              the main thread, before the renderer is constructed and before any \
+              application thread exists, so nothing reads the environment concurrently"
+)]
 fn configure_settled_capture_renderer() {
     SHOTS_CPU_RENDERER.call_once(|| {
-        // `render_widget` runs only in headless shots/tests, before the
-        // renderer is constructed. No application threads are started here.
         #[allow(
             unsafe_code,
             reason = "Rust 2024 marks process-environment mutation unsafe; this one-shot headless renderer preference is installed before constructing any Store shot renderer"
@@ -62,6 +69,15 @@ fn configure_settled_capture_renderer() {
             std::env::set_var("QUICK_UI_VELLO_CPU", "1");
         }
     });
+}
+
+/// Unit tests render on one of many test threads, so the CPU renderer
+/// preference is scoped to each render instead of installed for the process.
+#[cfg(test)]
+fn settled_capture_renderer_scope() -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("QUICK_UI_VELLO_CPU", "1");
+    env
 }
 
 /// A hand-rolled fixture of items that shows every card variant:
@@ -80,9 +96,11 @@ fn configure_settled_capture_renderer() {
 pub fn fixture_catalog() -> Vec<StoreItem> {
     let tilo =
         |name: &str, desc: &str, cat: &str, installed: InstalledState, ver: &str| StoreItem {
-            id: format!("dev.tilo.{}", name.to_ascii_lowercase()),
+            id: format!("so.tilo.{}", name.to_ascii_lowercase()),
             name: name.into(),
             description: desc.into(),
+            tagline: String::new(),
+            supported_languages: Vec::new(),
             categories: vec![cat.into()],
             icon_url: Some(format!("https://artwork.invalid/{name}.png")),
             screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -96,7 +114,7 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
             versions: vec![StoreItemVersion {
                 version: ver.into(),
                 released_at_unix: 0,
-                download_url: Some(format!("https://apps.tilo.dev/{name}/{ver}.qpkg")),
+                download_url: Some(format!("https://apps.tilo.so/{name}/{ver}.tapp")),
                 root_hash_hex: Some("de".repeat(32)),
                 size_bytes: 4 * 1024 * 1024,
             }],
@@ -107,6 +125,8 @@ pub fn fixture_catalog() -> Vec<StoreItem> {
         id: format!("org.example.{name}"),
         name: name.into(),
         description: desc.into(),
+        tagline: String::new(),
+        supported_languages: Vec::new(),
         categories: vec![cat.into()],
         icon_url: Some(format!("https://artwork.invalid/{name}.png")),
         screenshot_urls: vec![format!("https://artwork.invalid/{name}-preview.png")],
@@ -215,40 +235,26 @@ pub fn render_scenario_to_path(
     out: &Path,
     scenario: Option<&str>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    render_scenario_to_path_with_preferences(
-        viewport,
-        out,
-        scenario,
-        Some(shot_text_scale()),
-        shot_reduce_motion(),
-    )
+    let theme = legacy_shot_theme();
+    render_scenario_to_path_with_theme(viewport, out, scenario, &theme)
 }
 
-/// Render a named state with the accessibility preferences parsed by the
-/// shared launcher. Store owns its screenshot loop, so these values must be
-/// carried explicitly instead of relying on the live `ui::App` setup path.
-///
-/// # Errors
-///
-/// Returns renderer, layout, or PNG-write failures from the native offscreen
-/// capture path.
-pub fn render_scenario_to_path_with_preferences(
+pub fn render_scenario_to_path_with_theme(
     viewport: (u32, u32),
     out: &Path,
     scenario: Option<&str>,
-    text_scale: Option<f32>,
-    reduce_motion: bool,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut app = seeded_app();
     app.set_layout_width_hint(f64::from(viewport.0));
     match scenario {
-        Some("detail") => app.focus_detail_for_shot("dev.tilo.notes"),
+        Some("detail") => app.focus_detail_for_shot("so.tilo.notes"),
         Some("remotes") => app.show_remotes_for_shot(),
         Some("progress") => {
             // Terminal is already installed and its offered action is Open,
             // so the visible busy card and masthead describe the same real
             // operation rather than claiming an install for an open-only row.
-            app.set_active_operation_for_shot("dev.tilo.terminal", crate::ActionKind::Open);
+            app.set_active_operation_for_shot("so.tilo.terminal", crate::ActionKind::Open);
             app.set_status_line("Starting Terminal · launching installed app…");
             app.set_worker_busy(true);
         }
@@ -293,7 +299,7 @@ pub fn render_scenario_to_path_with_preferences(
     // headless frame captures it (a still can't hover it).
     app.arm_status_bubble_for_shots();
     let mut widget: Box<dyn Widget> = Box::new(app);
-    render_widget_with_preferences(viewport, out, &mut widget, text_scale, reduce_motion)
+    render_widget(viewport, out, &mut widget, theme)
 }
 
 /// Guts of the render pass — mirrors what `ui::App` does for a
@@ -307,47 +313,20 @@ pub fn render_widget(
     viewport: (u32, u32),
     out: &Path,
     widget: &mut Box<dyn Widget>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    render_widget_with_preferences(
-        viewport,
-        out,
-        widget,
-        Some(shot_text_scale()),
-        shot_reduce_motion(),
-    )
-}
-
-fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
-    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
-        Some("light") => Theme::light(),
-        Some("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    if let Some(scale) = text_scale {
-        theme = theme.with_text_scale(scale);
-    }
-    theme.with_reduce_motion(reduce_motion)
-}
-
-fn render_widget_with_preferences(
-    viewport: (u32, u32),
-    out: &Path,
-    widget: &mut Box<dyn Widget>,
-    text_scale: Option<f32>,
-    reduce_motion: bool,
+    theme: &Theme,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let (w, h) = viewport;
-    let theme = configured_shot_theme(text_scale, reduce_motion);
     let presence = PresenceCtx::empty();
     let permission = PermissionContext::permissive();
     let mut text_renderer = TextRenderer::new();
+    text_renderer.set_text_scale(theme.text_scale);
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
 
     let mut state = ui::State::new();
     widget.sync(&mut state.doc, &state.root);
 
-    let child = widget.build_layout(&mut taffy, &theme, &mut node_map);
+    let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
             size: Size {
@@ -359,22 +338,20 @@ fn render_widget_with_preferences(
         &[child],
     )?;
 
-    {
-        let measure_map = node_map.clone();
-        let tr = &mut text_renderer;
-        taffy.compute_layout_with_measure(
+    let mut bindings = ui::bound_dispatch::BoundNodeMap::new();
+    // SAFETY: the bound nodes come from this exact exclusively owned build.
+    unsafe {
+        bindings.rebuild(widget.as_ref(), &taffy, child, &node_map);
+        ui::widget::compute_widget_layout(
+            &mut taffy,
             root,
             taffy::Size {
                 width: AvailableSpace::Definite(w as f32),
                 height: AvailableSpace::Definite(h as f32),
             },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = measure_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, tr) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
+            &node_map,
+            &bindings,
+            &mut text_renderer,
         )?;
     }
     widget.apply_layout(&taffy, child, Point::ORIGIN);
@@ -384,7 +361,7 @@ fn render_widget_with_preferences(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
         &permission,
     );
@@ -394,14 +371,17 @@ fn render_widget_with_preferences(
         &mut scene,
         Affine::IDENTITY,
         &mut text_renderer,
-        &theme,
+        theme,
         &presence,
     );
 
     if let Some(parent) = out.parent() {
         std::fs::create_dir_all(parent).ok();
     }
+    #[cfg(not(test))]
     configure_settled_capture_renderer();
+    #[cfg(test)]
+    let _cpu_renderer = settled_capture_renderer_scope();
     let mut renderer = OffscreenRenderer::new(w, h);
     for _ in 0..SETTLED_CAPTURE_WARMUP_PASSES {
         let _ = renderer.render_rgba_resilient(&scene);
@@ -409,6 +389,10 @@ fn render_widget_with_preferences(
     renderer.render_png(&scene, Color::TRANSPARENT, out);
     println!("store: wrote shot to {}", out.display());
     Ok(())
+}
+
+fn legacy_shot_theme() -> Theme {
+    configured_shot_theme(Some(shot_text_scale()), shot_reduce_motion())
 }
 
 fn shot_reduce_motion() -> bool {
@@ -434,19 +418,14 @@ pub fn parse_viewport(s: &str) -> Option<(u32, u32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufReader;
     use tempfile::TempDir;
 
     fn masthead_ink_pixels(path: &Path) -> usize {
-        let file = std::fs::File::open(path).unwrap();
-        let decoder = png::Decoder::new(BufReader::new(file));
-        let mut reader = decoder.read_info().unwrap();
-        let mut bytes = vec![0; reader.output_buffer_size().unwrap()];
-        let frame = reader.next_frame(&mut bytes).unwrap();
-        assert_eq!(frame.color_type, png::ColorType::Rgba);
+        let frame = ui::png::read_rgba8(path).unwrap();
         let width = usize::try_from(frame.width).unwrap();
         let top_rows = usize::try_from(frame.height.min(180)).unwrap();
-        bytes[..frame.buffer_size()]
+        frame
+            .rgba
             .chunks_exact(4)
             .take(width.saturating_mul(top_rows))
             .filter(|pixel| {
@@ -561,4 +540,16 @@ mod tests {
             );
         }
     }
+}
+
+fn configured_shot_theme(text_scale: Option<f32>, reduce_motion: bool) -> Theme {
+    let mut theme = match std::env::var("TILO_SHOTS_THEME").ok().as_deref() {
+        Some("light") => Theme::light(),
+        Some("high-contrast") => Theme::high_contrast(),
+        _ => Theme::dark(),
+    };
+    if let Some(scale) = text_scale {
+        theme = theme.with_text_scale(scale);
+    }
+    theme.with_reduce_motion(reduce_motion)
 }

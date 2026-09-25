@@ -452,6 +452,13 @@ pub fn serve(socket: &Path, store: &Store, base: &Path) -> anyhow::Result<()> {
 /// addressed to this process. Invalid matching metadata is fatal: falling back
 /// to unlinking and rebinding would race queued clients and could replace an
 /// endpoint systemd already exposed.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "systemd socket activation: LISTEN_* must not leak to guest children; \
+              cleared right after fd 3 is taken, and `serve` calls this before it \
+              spawns any connection thread, from a `tilo-ush serve` main thread \
+              that has started no other threads"
+)]
 fn systemd_listener(expected: &Path) -> anyhow::Result<Option<UnixListener>> {
     const SYSTEMD_LISTEN_FD: libc::c_int = 3;
 
@@ -854,9 +861,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join("usr/bin")).unwrap();
         std::fs::write(dir.path().join("usr/bin/bash"), b"#!elf").unwrap();
-        // SAFETY: single-threaded test setup; no other thread reads the env here.
-        unsafe { std::env::set_var("SHELL", "/usr/bin/definitely-not-here") };
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("SHELL", "/usr/bin/definitely-not-here");
         assert_eq!(guest_shell(dir.path()), PathBuf::from("/usr/bin/bash"));
-        unsafe { std::env::remove_var("SHELL") };
     }
 }

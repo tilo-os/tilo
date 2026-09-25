@@ -5,7 +5,7 @@
 //!
 //! ## What is always compiled
 //! The pure pieces — PKCE generation (SHA-256 + base64url), the authorization
-//! URL builder, and the token-response parser — are dependency-free and always
+//! URL builder, and the token-response parser — need no network and are always
 //! built, so they are unit-tested in every configuration (no network, no
 //! `live` feature). The `authorization_url` a browser would open and the
 //! `code_verifier` an exchange would send are produced here.
@@ -23,9 +23,9 @@
 //! Without it the setup UI still constructs the (correct) authorization URL but
 //! notes that a client id is required to complete sign-in.
 
-use std::fmt::Write as _;
-
+use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 
 /// The OAuth providers we preset for. Both are IMAP/SMTP mail providers that
 /// require OAuth rather than a password.
@@ -153,7 +153,7 @@ impl AuthRequest {
             *first = false;
             url.push_str(k);
             url.push('=');
-            url.push_str(&percent_encode(v));
+            url.push_str(&ui::uri::encode_component(v));
         };
         let mut first = true;
         push("client_id", &self.client_id, &mut first);
@@ -273,38 +273,9 @@ pub fn xoauth2_sasl(user: &str, access_token: &str) -> String {
 
 /// Standard base64 (RFC 4648 §4, `+`/`/` alphabet, `=` padding) — the encoding
 /// SASL/XOAUTH2 mandates (distinct from the URL-safe [`base64url_nopad`] PKCE
-/// uses). Inline + dependency-free so it stays in the default build and is
-/// tested there.
+/// uses).
 pub fn base64_standard(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = u32::from(*chunk.first().unwrap_or(&0));
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        // `shift` always leaves a 6-bit (0..64) index, so `ALPHABET`'s 64
-        // entries always cover it; the fallback is unreachable in practice.
-        let sextet = |shift: u32| {
-            ALPHABET
-                .get(((n >> shift) & 0x3f) as usize)
-                .copied()
-                .unwrap_or(b'A')
-        };
-        out.push(sextet(18) as char);
-        out.push(sextet(12) as char);
-        out.push(if chunk.len() > 1 {
-            sextet(6) as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            sextet(0) as char
-        } else {
-            '='
-        });
-    }
-    out
+    base64::engine::general_purpose::STANDARD.encode(input)
 }
 
 /// Wall-clock unix seconds (0 if the clock is before the epoch).
@@ -336,7 +307,7 @@ pub fn exchange_code(
         ("code", code),
         ("code_verifier", verifier),
     ];
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -530,7 +501,7 @@ pub fn refresh_tokens(
         ("client_id", client_id),
         ("refresh_token", refresh_token),
     ];
-    let client = reqwest::blocking::Client::builder()
+    let client = tilo_net::http::blocking_client()
         .timeout(std::time::Duration::from_secs(20))
         .build()
         .map_err(|e| e.to_string())?;
@@ -586,229 +557,15 @@ pub fn run_loopback_authorization(
         .map(OAuthTokens::stamp_now)
 }
 
-// ---- base64url + SHA-256 (RFC 4648 / FIPS 180-4), inline & dependency-free --
-
 /// URL-safe base64 with no padding (RFC 4648 §5) — the encoding PKCE mandates
 /// for both the verifier and the challenge.
 pub fn base64url_nopad(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b0 = u32::from(*chunk.first().unwrap_or(&0));
-        let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
-        let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        // `shift` always leaves a 6-bit (0..64) index, so `ALPHABET`'s 64
-        // entries always cover it; the fallback is unreachable in practice.
-        let sextet = |shift: u32| {
-            ALPHABET
-                .get(((n >> shift) & 0x3f) as usize)
-                .copied()
-                .unwrap_or(b'A')
-        };
-        out.push(sextet(18) as char);
-        out.push(sextet(12) as char);
-        if chunk.len() > 1 {
-            out.push(sextet(6) as char);
-        }
-        if chunk.len() > 2 {
-            out.push(sextet(0) as char);
-        }
-    }
-    out
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(input)
 }
 
-/// Percent-encode a query-parameter value (RFC 3986 unreserved set kept raw).
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for &b in s.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(b as char);
-            }
-            _ => {
-                let _ = write!(out, "%{b:02X}");
-            }
-        }
-    }
-    out
-}
-
-/// SHA-256 round constants (FIPS 180-4 §4.2.2) — the first 32 bits of the
-/// fractional parts of the cube roots of the first 64 primes.
-const SHA256_K: [u32; 64] = [
-    0x428a_2f98,
-    0x7137_4491,
-    0xb5c0_fbcf,
-    0xe9b5_dba5,
-    0x3956_c25b,
-    0x59f1_11f1,
-    0x923f_82a4,
-    0xab1c_5ed5,
-    0xd807_aa98,
-    0x1283_5b01,
-    0x2431_85be,
-    0x550c_7dc3,
-    0x72be_5d74,
-    0x80de_b1fe,
-    0x9bdc_06a7,
-    0xc19b_f174,
-    0xe49b_69c1,
-    0xefbe_4786,
-    0x0fc1_9dc6,
-    0x240c_a1cc,
-    0x2de9_2c6f,
-    0x4a74_84aa,
-    0x5cb0_a9dc,
-    0x76f9_88da,
-    0x983e_5152,
-    0xa831_c66d,
-    0xb003_27c8,
-    0xbf59_7fc7,
-    0xc6e0_0bf3,
-    0xd5a7_9147,
-    0x06ca_6351,
-    0x1429_2967,
-    0x27b7_0a85,
-    0x2e1b_2138,
-    0x4d2c_6dfc,
-    0x5338_0d13,
-    0x650a_7354,
-    0x766a_0abb,
-    0x81c2_c92e,
-    0x9272_2c85,
-    0xa2bf_e8a1,
-    0xa81a_664b,
-    0xc24b_8b70,
-    0xc76c_51a3,
-    0xd192_e819,
-    0xd699_0624,
-    0xf40e_3585,
-    0x106a_a070,
-    0x19a4_c116,
-    0x1e37_6c08,
-    0x2748_774c,
-    0x34b0_bcb5,
-    0x391c_0cb3,
-    0x4ed8_aa4a,
-    0x5b9c_ca4f,
-    0x682e_6ff3,
-    0x748f_82ee,
-    0x78a5_636f,
-    0x84c8_7814,
-    0x8cc7_0208,
-    0x90be_fffa,
-    0xa450_6ceb,
-    0xbef9_a3f7,
-    0xc671_78f2,
-];
-
-/// SHA-256 initial hash value (FIPS 180-4 §5.3.3) — the first 32 bits of the
-/// fractional parts of the square roots of the first 8 primes.
-const SHA256_H0: [u32; 8] = [
-    0x6a09_e667,
-    0xbb67_ae85,
-    0x3c6e_f372,
-    0xa54f_f53a,
-    0x510e_527f,
-    0x9b05_688c,
-    0x1f83_d9ab,
-    0x5be0_cd19,
-];
-
-/// Pad `input` per FIPS 180-4 §5.1.1 (append `0x80`, zero-pad to `56 mod 64`,
-/// append the 64-bit big-endian bit length) so it splits evenly into 64-byte
-/// blocks.
-fn sha256_pad(input: &[u8]) -> Vec<u8> {
-    let mut msg = input.to_vec();
-    let bit_len = (input.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&bit_len.to_be_bytes());
-    msg
-}
-
-/// Build the 64-word message schedule (FIPS 180-4 §6.2.2 step 1) for one
-/// 64-byte block.
-fn sha256_message_schedule(block: &[u8]) -> [u32; 64] {
-    let mut w = [0u32; 64];
-    for (word, four) in w.iter_mut().take(16).zip(block.chunks_exact(4)) {
-        *word = u32::from_be_bytes(four.try_into().unwrap_or([0; 4]));
-    }
-    for i in 16..64 {
-        let get = |j: usize| w.get(j).copied().unwrap_or(0);
-        let s0 = get(i - 15).rotate_right(7) ^ get(i - 15).rotate_right(18) ^ (get(i - 15) >> 3);
-        let s1 = get(i - 2).rotate_right(17) ^ get(i - 2).rotate_right(19) ^ (get(i - 2) >> 10);
-        let val = get(i - 16)
-            .wrapping_add(s0)
-            .wrapping_add(get(i - 7))
-            .wrapping_add(s1);
-        if let Some(slot) = w.get_mut(i) {
-            *slot = val;
-        }
-    }
-    w
-}
-
-/// Compress one 64-byte block's message schedule into the running hash state
-/// (FIPS 180-4 §6.2.2 steps 2-4). Variable names (`a`..`h`, `w`) mirror the
-/// spec directly so the implementation can be checked line-by-line against
-/// it; that correspondence is worth more here than avoiding short names.
-#[allow(
-    clippy::many_single_char_names,
-    reason = "a..h and w are FIPS 180-4's own names for the working variables and message schedule; keeping them makes this auditable against the published spec"
-)]
-fn sha256_compress(h: &mut [u32; 8], w: &[u32; 64]) {
-    let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-        (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-    for i in 0..64 {
-        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-        let ch = (e & f) ^ (!e & g);
-        let t1 = hh
-            .wrapping_add(s1)
-            .wrapping_add(ch)
-            .wrapping_add(SHA256_K.get(i).copied().unwrap_or(0))
-            .wrapping_add(w.get(i).copied().unwrap_or(0));
-        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-        let maj = (a & b) ^ (a & c) ^ (b & c);
-        let t2 = s0.wrapping_add(maj);
-        hh = g;
-        g = f;
-        f = e;
-        e = d.wrapping_add(t1);
-        d = c;
-        c = b;
-        b = a;
-        a = t1.wrapping_add(t2);
-    }
-    h[0] = h[0].wrapping_add(a);
-    h[1] = h[1].wrapping_add(b);
-    h[2] = h[2].wrapping_add(c);
-    h[3] = h[3].wrapping_add(d);
-    h[4] = h[4].wrapping_add(e);
-    h[5] = h[5].wrapping_add(f);
-    h[6] = h[6].wrapping_add(g);
-    h[7] = h[7].wrapping_add(hh);
-}
-
-/// SHA-256 digest of `input` (FIPS 180-4). Small self-contained implementation
-/// — the only use is the PKCE S256 challenge.
+/// SHA-256 digest of `input` (FIPS 180-4) — the PKCE S256 challenge hash.
 pub fn sha256(input: &[u8]) -> [u8; 32] {
-    let mut h = SHA256_H0;
-    let msg = sha256_pad(input);
-    for block in msg.chunks_exact(64) {
-        let w = sha256_message_schedule(block);
-        sha256_compress(&mut h, &w);
-    }
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        if let Some(slot) = out.get_mut(i * 4..i * 4 + 4) {
-            slot.copy_from_slice(&word.to_be_bytes());
-        }
-    }
-    out
+    Sha256::digest(input).into()
 }
 
 #[cfg(test)]
@@ -835,6 +592,7 @@ mod tests {
     }
 
     fn hex(bytes: &[u8]) -> String {
+        use std::fmt::Write as _;
         bytes.iter().fold(String::new(), |mut out, b| {
             let _ = write!(out, "{b:02x}");
             out
@@ -877,6 +635,77 @@ mod tests {
         assert_eq!(
             pkce.challenge,
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
+        );
+    }
+
+    #[test]
+    fn sha256_matches_nist_multi_block_vectors() {
+        // FIPS 180-4 example vectors that cross the one-block padding boundary
+        // (56 bytes needs a second block for the length) and span two blocks.
+        assert_eq!(
+            hex(&sha256(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        assert_eq!(
+            hex(&sha256(
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+            )),
+            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+        );
+        assert_eq!(
+            hex(&sha256(&vec![b'a'; 1_000_000])),
+            "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+        );
+    }
+
+    #[test]
+    fn base64_variants_differ_only_in_alphabet_and_padding() {
+        // 0xfb 0xff 0xbf hits both alphabet-specific sextets (62 and 63).
+        assert_eq!(base64url_nopad(&[0xfb, 0xff, 0xbf]), "-_-_");
+        assert_eq!(base64_standard(&[0xfb, 0xff, 0xbf]), "+/+/");
+        assert_eq!(base64url_nopad(&[0xfb, 0xff]), "-_8");
+        assert_eq!(base64_standard(&[0xfb, 0xff]), "+/8=");
+        assert_eq!(base64url_nopad(&[0xfb]), "-w");
+        assert_eq!(base64_standard(&[0xfb]), "+w==");
+        // Neither encoder wraps long output into lines.
+        let long = [0xa5_u8; 300];
+        assert_eq!(base64url_nopad(&long).len(), 400);
+        assert_eq!(base64_standard(&long).len(), 400);
+        assert!(!base64_standard(&long).contains(['\r', '\n']));
+    }
+
+    #[test]
+    fn xoauth2_sasl_matches_google_documentation_vector() {
+        // The worked example in Google's XOAUTH2 protocol documentation.
+        assert_eq!(
+            xoauth2_sasl(
+                "someuser@example.com",
+                "ya29.vF9dft4qmTc2Nvb3RlckBhdHRhdmlzdGEuY29tCg"
+            ),
+            "dXNlcj1zb21ldXNlckBleGFtcGxlLmNvbQFhdXRoPUJlYXJlciB5YTI5LnZGOWRmdDRxbVRjMk52YjNSbGNrQmhkSFJoZG1semRHRXVZMjl0Q2cBAQ=="
+        );
+    }
+
+    #[test]
+    fn google_authorization_url_is_pinned_byte_for_byte() {
+        let req = AuthRequest {
+            provider: OAuthProvider::Google,
+            client_id: "cid.apps.googleusercontent.com".into(),
+            redirect_uri: "http://127.0.0.1:8080/oauth".into(),
+            pkce: Pkce::from_verifier("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            state: "xyz 123".into(),
+            login_hint: "person@gmail.com".into(),
+        };
+        assert_eq!(
+            req.authorization_url(),
+            "https://accounts.google.com/o/oauth2/v2/auth?client_id=cid.apps.googleusercontent.com\
+             &response_type=code&redirect_uri=http%3A%2F%2F127.0.0.1%3A8080%2Foauth\
+             &scope=https%3A%2F%2Fmail.google.com%2F\
+             &code_challenge=E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM\
+             &code_challenge_method=S256&state=xyz%20123&access_type=offline\
+             &prompt=consent&login_hint=person%40gmail.com"
         );
     }
 

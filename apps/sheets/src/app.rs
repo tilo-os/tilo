@@ -12,7 +12,6 @@
 //! back into the document.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
 use std::time::{Duration, Instant};
@@ -29,7 +28,7 @@ use ui::collaboration::PresencePayload;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::{PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::command_palette::{CommandEntry, CommandPalette};
 use ui::widget::{EditOutcome, EditableLabel, TextInput, Widget};
@@ -39,7 +38,7 @@ use crate::actions::{self, SheetsAction, SheetsResourceCtx};
 use crate::doc::{ChartKind, ChartSnapshot, CommentThread, SheetsDoc};
 use crate::fill;
 use crate::formula;
-use crate::grid::{Grid, GridCmd};
+use crate::grid::{Grid, GridCmd, GridMetrics};
 use crate::infer::infer_entry;
 use crate::model::{
     Addr, CellFormat, CellValue, Currency, DateStyle, FormatCategory, TimeStyle, a1_to_addr,
@@ -47,14 +46,98 @@ use crate::model::{
 };
 use crate::settings::{DocSettings, EffectiveLocale, GlobalSettings};
 
+/// 1× floors for the three chrome bands. Each band is derived from the
+/// measured line box of the text it carries plus spacing tokens (see
+/// [`ChromeMetrics`]); these floors reproduce the classic density exactly at
+/// 1× and only give way when larger text needs the room.
 const MENUBAR_H: f64 = 44.0;
-const FORMULA_H: f64 = 40.0;
-const TABS_H: f64 = 40.0;
+const MENU_BUTTON_H: f64 = 32.0;
+const FORMULA_FIELD_H: f64 = 32.0;
+const TAB_H: f64 = 32.0;
+const SETTING_CHIP_H: f64 = 26.0;
+const MENU_ROW_H: f64 = 30.0;
 const NAME_BOX_W: f64 = 92.0;
+/// Deliberately off-scale: the sheet tab's colour underline sits 2 px above
+/// the window edge so it reads as part of the tab, not the frame.
+const TAB_STRIP_BOTTOM_INSET: f64 = 2.0;
+/// Thickness of a sheet tab's colour / active underline.
+const TAB_UNDERLINE_H: f64 = 3.0;
+/// Menu rows leave an `s1` seam so the lifted fill of adjacent rows never
+/// merges into one block — a token step, never a touch (HIG §7).
+const MENU_ROW_SEAM: f64 = ui::tokens::Spacing::BASE.s1 as f64;
+/// The name box's inline editor sits 2 px inside the box's top and bottom
+/// edges: an authored inset for the shared `TextInput`, not a gap between
+/// two elements.
+const NAME_BOX_EDITOR_INSET: f64 = 2.0;
+/// Colour swatches in the sheet-tab menu are square targets of this side.
+const TAB_COLOUR_SWATCH: f64 = 20.0;
+/// Classic 1× bounds of a sheet tab (touch-target floor, long-name ceiling);
+/// both grow with the measured text.
+const TAB_MIN_W: f64 = 64.0;
+const TAB_MAX_W: f64 = 180.0;
+/// The inline tab-rename editor gets at least this much room (grown with
+/// the text) so a longer name fits while typing.
+const TAB_RENAME_MIN_W: f64 = 150.0;
+/// Minimum widths of the two menu panels; both grow to their measured labels.
+const FILE_MENU_MIN_W: f64 = 196.0;
+const FORMAT_MENU_MIN_W: f64 = 160.0;
+const TAB_MENU_MIN_W: f64 = 188.0;
+/// The document-settings panel's preferred width, and the floor it shrinks to
+/// on a narrow viewport (chip rows wrap inside it).
+const SETTINGS_PANEL_W: f64 = 440.0;
+/// How far the document-settings dialog dims the sheet behind it
+/// (`ui::chrome::fill_scrim` strength).
+const SETTINGS_SCRIM_STRENGTH: f32 = 0.45;
+const SETTINGS_PANEL_MIN_W: f64 = 300.0;
+/// Reference label the name box is sized for, so it never resizes with the
+/// selection and always fits a two-corner range reference.
+const NAME_BOX_REFERENCE: &str = "ZZ999:ZZ999";
+/// The menu bar's buttons in order: label, the dropdown it opens, the action
+/// it fires. One table feeds layout, paint and the label pre-measurement so a
+/// button is always exactly as wide as the text it paints.
+const MENU_BAR_BUTTONS: [(&str, Option<OpenMenu>, Option<MenuItem>); 4] = [
+    ("File", Some(OpenMenu::File), None),
+    ("Format", Some(OpenMenu::Format), None),
+    ("\u{03A3} Sum", None, Some(MenuItem::AutoSum)),
+    ("Doc settings", None, Some(MenuItem::OpenDocSettings)),
+];
+/// Rows of the sheet-tab context menu, top to bottom.
+const TAB_MENU_ACTIONS: [TabAction; 6] = [
+    TabAction::Rename,
+    TabAction::Duplicate,
+    TabAction::InsertRight,
+    TabAction::MoveLeft,
+    TabAction::MoveRight,
+    TabAction::Delete,
+];
+/// Option chips of the document-settings panel, in display order.
+const DATE_STYLES: [(&str, DateStyle); 4] = [
+    ("ISO", DateStyle::Iso),
+    ("US", DateStyle::Us),
+    ("EU", DateStyle::Eu),
+    ("Long", DateStyle::Long),
+];
+const TIME_STYLES: [(&str, TimeStyle); 2] =
+    [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)];
+const SETTINGS_SECTIONS: [&str; 3] = ["Currency", "Date", "Time"];
 /// Every painted chart/comment command gets a normal touch target, not a
 /// text-baseline-sized link. Kept as a shared constant so the renderer and
 /// regression test cannot silently drift apart.
 const ANNOTATION_ACTION_H: f64 = 44.0;
+/// Classic 1× offsets inside the floating chart / comment cards. They are
+/// the floors of [`ChromeMetrics::chart_card_rows`] /
+/// [`ChromeMetrics::comment_card_rows`]: a 1× card keeps this rhythm exactly,
+/// a larger text scale grows each row from its measured line box instead.
+const CHART_TITLE_TOP: f64 = 21.0;
+/// Least distance from the chart title's top to its action band (1×).
+const CHART_CONTROLS_SEAM: f64 = 5.0;
+/// The chart plot is content-sized, not text-sized.
+const CHART_PLOT_H: f64 = 74.0;
+const COMMENT_HEADING_TOP: f64 = 22.0;
+const COMMENT_BODY_ADV: f64 = 26.0;
+const COMMENT_DETAIL_ADV: f64 = 36.0;
+const COMMENT_CONTROLS_ADV: f64 = 28.0;
+const COMMENT_BOTTOM_PAD: f64 = 22.0;
 /// Importing is deliberately bounded before a parsed workbook can become a
 /// durable action stream.  This is large enough for useful real-world sheets,
 /// while keeping one user-selected file from monopolising a collaborator's
@@ -65,7 +148,7 @@ const MAX_IMPORT_CELLS: usize = actions::MAX_IMPORTED_CELLS;
 /// populated cell at a hostile far-away coordinate must not turn into a
 /// trillion-slot dense `Vec`; this caps the actually materialised rectangle,
 /// independently of the populated-cell action limit above.
-const MAX_CSV_MATERIALIZED_SLOTS: usize = 1_000_000;
+const MAX_CSV_MATERIALIZED_SLOTS: usize = crate::xlsx::MAX_MATERIALIZED_SLOTS;
 
 type ImportedCellWrite = (Addr, String, Option<CellFormat>);
 type ImportedWorkbook = Vec<(String, Vec<ImportedCellWrite>)>;
@@ -301,36 +384,292 @@ struct SettingChip {
     kind: SettingKind,
 }
 
-/// Cursor for laying out wrapped rows of document-convention chips.
-struct SettingsChipFlow {
-    x: f64,
-    y: f64,
-    start_x: f64,
-    wrap_x: f64,
-    chip_h: f64,
-    gap: f64,
+/// Chrome text metrics resolved once per frame from the renderer that paints
+/// the chrome.
+///
+/// Theme typography tokens are already accessibility-scaled and the renderer
+/// scales its input again, so each token is converted through
+/// [`TextRenderer::renderer_input_style`] exactly once here. Every band
+/// height, control height and label slot in `relayout` derives from these
+/// measured line boxes and label widths plus spacing tokens, so layout, paint
+/// and hit-testing share one metric. `fallback()` stands in until the first
+/// draw; `SheetsApp::refresh_chrome_metrics` swaps it for the measured set and
+/// re-runs `relayout` in the same frame, so nothing is ever painted from stale
+/// geometry.
+#[derive(Clone, Debug, PartialEq)]
+struct ChromeMetrics {
+    /// Renderer text scale the line boxes and widths were measured under.
+    scale: f64,
+    /// Renderer-input sizes (theme token ÷ renderer scale).
+    xs: f32,
+    sm: f32,
+    base: f32,
+    lg: f32,
+    /// Measured line boxes of the sizes above, in final pixels.
+    lh_xs: f64,
+    lh_sm: f64,
+    lh_base: f64,
+    /// Measured advance of the italic "fx" glyph at `base`.
+    fx_w: f64,
+    /// Measured width of [`NAME_BOX_REFERENCE`] at `sm` semibold.
+    name_box_label_w: f64,
+    /// Measured size of the add-sheet "+" glyph at `lg`.
+    add_glyph: (f64, f64),
+    /// Measured `sm` semibold widths of every chrome label laid out by
+    /// `relayout` (menu buttons, sheet tabs, setting chips, menu rows).
+    labels: HashMap<String, f64>,
+    /// Theme spacing tokens.
+    s1: f64,
+    s2: f64,
+    s3: f64,
+    s4: f64,
+    s6: f64,
+    /// The grid's share of the same resolution.
+    grid: GridMetrics,
 }
 
-impl SettingsChipFlow {
-    fn start_section(&mut self) {
-        self.x = self.start_x;
-    }
-
-    fn push(&mut self, chips: &mut Vec<SettingChip>, width: f64, kind: SettingKind) {
-        if self.x + width > self.wrap_x {
-            self.x = self.start_x;
-            self.y += self.chip_h + self.gap;
+impl ChromeMetrics {
+    /// Resolve every chrome metric for `theme` against `tr`. `labels` is the
+    /// set of strings `relayout` will size a slot for.
+    fn resolve<'a>(
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        labels: impl IntoIterator<Item = &'a str>,
+    ) -> Self {
+        let scale = &theme.tokens.typography.scale;
+        let input = |size: f32| tr.renderer_input_style(&TextStyle::new(size));
+        let xs = input(scale.xs);
+        let sm = input(scale.sm);
+        let base = input(scale.base);
+        let lg = input(scale.lg);
+        let sm_semibold = sm.clone().with_weight(TextWeight::Semibold);
+        let (_, lh_xs) = tr.measure_style("Ag", None, &xs);
+        let (_, lh_sm) = tr.measure_style("Ag", None, &sm);
+        let (_, lh_base) = tr.measure_style("Ag", None, &base);
+        let (fx_w, _) = tr.measure_style("fx", None, &base.clone().with_italic(true));
+        let (name_box_label_w, _) = tr.measure_style(NAME_BOX_REFERENCE, None, &sm_semibold);
+        let (add_w, add_h) = tr.measure_style("+", None, &lg);
+        let labels = labels
+            .into_iter()
+            .map(|label| {
+                let (w, _) = tr.measure_style(label, None, &sm_semibold);
+                (label.to_owned(), f64::from(w))
+            })
+            .collect();
+        let sp = &theme.tokens.spacing;
+        Self {
+            scale: f64::from(tr.text_scale()),
+            xs: xs.size,
+            sm: sm.size,
+            base: base.size,
+            lg: lg.size,
+            lh_xs: f64::from(lh_xs),
+            lh_sm: f64::from(lh_sm),
+            lh_base: f64::from(lh_base),
+            fx_w: f64::from(fx_w),
+            name_box_label_w: f64::from(name_box_label_w),
+            add_glyph: (f64::from(add_w), f64::from(add_h)),
+            labels,
+            s1: f64::from(sp.s1),
+            s2: f64::from(sp.s2),
+            s3: f64::from(sp.s3),
+            s4: f64::from(sp.s4),
+            s6: f64::from(sp.s6),
+            grid: GridMetrics::resolve(tr, theme),
         }
-        chips.push(SettingChip {
-            rect: Rect::new(self.x, self.y, self.x + width, self.y + self.chip_h),
-            kind,
-        });
-        self.x += width + self.gap;
     }
 
-    fn next_section(&mut self) {
-        self.y += self.chip_h + 18.0;
+    /// The 1× metrics used before the first draw has a renderer. Every band
+    /// lands on its classic floor and label slots fall back to an estimate.
+    fn fallback() -> Self {
+        Self {
+            scale: 1.0,
+            xs: 10.0,
+            sm: 12.0,
+            base: 14.0,
+            lg: 16.0,
+            lh_xs: 12.5,
+            lh_sm: 15.0,
+            lh_base: 17.5,
+            fx_w: 13.0,
+            name_box_label_w: 70.0,
+            add_glyph: (10.0, 20.0),
+            labels: HashMap::new(),
+            s1: 4.0,
+            s2: 8.0,
+            s3: 12.0,
+            s4: 16.0,
+            s6: 24.0,
+            grid: GridMetrics::fallback(),
+        }
     }
+
+    /// Measured `sm` width of `label` in final pixels, or a per-character
+    /// estimate (scaled like the renderer would) until the first draw has
+    /// measured it.
+    fn label_w(&self, label: &str) -> f64 {
+        self.labels.get(label).copied().unwrap_or_else(|| {
+            count_f64(label.chars().count()) * f64::from(self.sm) * 0.6 * self.scale
+        })
+    }
+
+    /// How much the chrome text has grown past the 1× line box; scales the
+    /// classic pixel floors and ceilings that bound text-driven slots.
+    fn text_growth(&self) -> f64 {
+        (self.lh_sm / Self::fallback().lh_sm).max(1.0)
+    }
+
+    /// A menu-bar button: its label plus `s3` each side.
+    fn menu_button_w(&self, label: &str) -> f64 {
+        self.label_w(label) + 2.0 * self.s3
+    }
+
+    /// Menu-bar buttons: the `sm` line box plus `s3`, never below the
+    /// text-scaled fine-pointer target.
+    fn menu_button_h(&self) -> f64 {
+        (self.lh_sm + self.s3).max(MENU_BUTTON_H * self.scale)
+    }
+
+    /// Menu bar: a button plus `s3`, never below 44 px.
+    fn menubar_h(&self) -> f64 {
+        (self.menu_button_h() + self.s3).max(MENUBAR_H)
+    }
+
+    /// Name box + formula field: the `base` line box plus `s2`, never below
+    /// the text-scaled fine-pointer target.
+    fn formula_field_h(&self) -> f64 {
+        (self.lh_base + self.s2).max(FORMULA_FIELD_H * self.scale)
+    }
+
+    /// Formula bar: the field plus `s1` above and below.
+    fn formula_h(&self) -> f64 {
+        self.formula_field_h() + 2.0 * self.s1
+    }
+
+    /// Name box: wide enough for [`NAME_BOX_REFERENCE`] plus `s2` each side,
+    /// never below the classic 92 px.
+    fn name_box_w(&self) -> f64 {
+        (self.name_box_label_w + 2.0 * self.s2).max(NAME_BOX_W)
+    }
+
+    /// The "fx" affordance slot: the glyph plus `s2` each side.
+    fn fx_slot_w(&self) -> f64 {
+        self.fx_w + 2.0 * self.s2
+    }
+
+    /// Sheet tabs: the `sm` line box plus `s3`, never below the text-scaled
+    /// fine-pointer target.
+    fn tab_h(&self) -> f64 {
+        (self.lh_sm + self.s3).max(TAB_H * self.scale)
+    }
+
+    /// Sheet-tab strip: a tab plus `s1` above and the underline inset below.
+    fn tabs_h(&self) -> f64 {
+        self.tab_h() + self.s1 + TAB_STRIP_BOTTOM_INSET
+    }
+
+    /// A sheet tab: its name plus `s3` each side, bounded between the classic
+    /// touch-target floor and ceiling (both grown with the text) so one long
+    /// name can never push the "+" button and later tabs off-screen; the
+    /// painter elides a name that hits the ceiling.
+    fn tab_w(&self, name: &str) -> f64 {
+        let g = self.text_growth();
+        (self.label_w(name) + 2.0 * self.s3).clamp(TAB_MIN_W * g, TAB_MAX_W * g)
+    }
+
+    /// Setting chips: the `sm` line box plus `s2`, never below 26 px.
+    fn chip_h(&self) -> f64 {
+        (self.lh_sm + self.s2).max(SETTING_CHIP_H)
+    }
+
+    /// A setting chip: its label plus `s3` each side.
+    fn chip_w(&self, label: &str) -> f64 {
+        self.label_w(label) + 2.0 * self.s3
+    }
+
+    /// Menu rows: the `sm` line box plus `s3`, never below 30 px.
+    fn menu_row_h(&self) -> f64 {
+        (self.lh_sm + self.s3).max(MENU_ROW_H)
+    }
+
+    /// Top of a line box centred in `rect`.
+    fn centred_top(rect: Rect, line_h: f64) -> f64 {
+        rect.y0 + (rect.height() - line_h) / 2.0
+    }
+
+    /// Top of the action band that follows an `sm` title line at
+    /// `title_top`: the band's centred `xs` label clears the title line box by
+    /// `s1`, and the band never starts closer than the classic seam.
+    fn annotation_controls_top(&self, title_top: f64) -> f64 {
+        let label_top = title_top + self.lh_sm + self.s1;
+        (label_top - (ANNOTATION_ACTION_H - self.lh_xs) / 2.0).max(title_top + CHART_CONTROLS_SEAM)
+    }
+
+    /// Row rhythm of a floating chart card, relative to the card's top:
+    /// title line, action band, plot, bottom `s4`. At 1× this reproduces the
+    /// classic 176 px card; a larger text scale pushes the band and plot down
+    /// so the title never paints under the actions.
+    fn chart_card_rows(&self) -> ChartCardRows {
+        let title_top = CHART_TITLE_TOP;
+        let controls_y0 = self.annotation_controls_top(title_top);
+        let controls_y1 = controls_y0 + ANNOTATION_ACTION_H;
+        let plot_y0 = controls_y1 + self.s4;
+        let plot_y1 = plot_y0 + CHART_PLOT_H;
+        ChartCardRows {
+            title_top,
+            controls_y0,
+            controls_y1,
+            plot_y0,
+            plot_y1,
+            height: plot_y1 + self.s4,
+        }
+    }
+
+    /// Row rhythm of the floating comment card, relative to the card's top:
+    /// heading, body, reply/resolve detail line, action band. Each advance is
+    /// the measured line box plus a spacing token, floored at the classic 1×
+    /// value; the resolve/reopen target is a full action-height band centred
+    /// on its detail line that ends where the action band begins.
+    fn comment_card_rows(&self) -> CommentCardRows {
+        let heading_top = COMMENT_HEADING_TOP;
+        let body_top = heading_top + (self.lh_sm + self.s2).max(COMMENT_BODY_ADV);
+        let detail_top = body_top + (self.lh_sm + self.s4).max(COMMENT_DETAIL_ADV);
+        let controls_y0 = detail_top + (self.lh_xs + self.s3).max(COMMENT_CONTROLS_ADV);
+        let toggle_y1 =
+            (detail_top + self.lh_xs / 2.0 + ANNOTATION_ACTION_H / 2.0).min(controls_y0);
+        CommentCardRows {
+            heading_top,
+            body_top,
+            detail_top,
+            controls_y0,
+            toggle_y0: toggle_y1 - ANNOTATION_ACTION_H,
+            toggle_y1,
+            height: controls_y0 + ANNOTATION_ACTION_H + COMMENT_BOTTOM_PAD,
+        }
+    }
+}
+
+/// See [`ChromeMetrics::chart_card_rows`]. Offsets are relative to the card top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ChartCardRows {
+    title_top: f64,
+    controls_y0: f64,
+    controls_y1: f64,
+    plot_y0: f64,
+    plot_y1: f64,
+    height: f64,
+}
+
+/// See [`ChromeMetrics::comment_card_rows`]. Offsets are relative to the card top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CommentCardRows {
+    heading_top: f64,
+    body_top: f64,
+    detail_top: f64,
+    controls_y0: f64,
+    toggle_y0: f64,
+    toggle_y1: f64,
+    height: f64,
 }
 
 /// Highlight state for one [`SheetsApp::draw_chip`] call: `active` fills
@@ -354,7 +693,7 @@ struct PaletteRouteCtx<'a> {
 
 /// Which per-document convention a settings chip sets. `None` means "inherit
 /// the global default".
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum SettingKind {
     Currency(Option<Currency>),
     Date(Option<DateStyle>),
@@ -486,6 +825,8 @@ pub struct SheetsApp {
     /// Y of each settings section's first chip row (Currency, Date, Time), so
     /// the section labels stay aligned even when a row wraps on narrow widths.
     settings_section_y: [f64; 3],
+    /// Measured chrome text metrics driving `relayout` (see [`ChromeMetrics`]).
+    metrics: ChromeMetrics,
     tab_rects: Vec<(Rect, usize)>,
     add_tab_rect: Rect,
     /// Per-sheet tab colours (palette indices), refreshed on each reload.
@@ -666,6 +1007,7 @@ impl SheetsApp {
             setting_chips: Vec::new(),
             panel_rect: Rect::ZERO,
             settings_section_y: [0.0; 3],
+            metrics: ChromeMetrics::fallback(),
             tab_rects: Vec::new(),
             add_tab_rect: Rect::ZERO,
             sheet_colors: Vec::new(),
@@ -1407,38 +1749,8 @@ impl SheetsApp {
         std::thread::Builder::new()
             .name("sheets-persistence-save".into())
             .spawn(move || {
-                let result = (|| {
-                    let parent = path
-                        .parent()
-                        .ok_or_else(|| "workbook path has no parent directory".to_string())?;
-                    std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-                    // `create_new` avoids trampling an unrelated file, then a
-                    // same-directory rename makes the new, fully flushed image
-                    // visible atomically. A crash can at worst leave our
-                    // bounded, generation-named temporary file behind.
-                    let temporary = parent.join(format!(
-                        ".workbook.automerge-{}-{generation}.tmp",
-                        std::process::id()
-                    ));
-                    let _ = std::fs::remove_file(&temporary);
-                    let write_result = (|| {
-                        let mut file = std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&temporary)
-                            .map_err(|error| error.to_string())?;
-                        file.write_all(&saved_doc.save())
-                            .map_err(|error| error.to_string())?;
-                        file.sync_all().map_err(|error| error.to_string())?;
-                        drop(file);
-                        std::fs::rename(&temporary, &path).map_err(|error| error.to_string())?;
-                        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
-                    })();
-                    if write_result.is_err() {
-                        let _ = std::fs::remove_file(&temporary);
-                    }
-                    write_result
-                })();
+                let result = atomic_file::write_creating_parent(&path, &saved_doc.save())
+                    .map_err(|error| error.to_string());
                 let _ = tx.send(PersistenceResult::Save {
                     generation,
                     heads: result_heads,
@@ -3303,106 +3615,144 @@ impl SheetsApp {
 
     // --- layout -------------------------------------------------------------
 
+    /// The label painted on a menu-bar button: openers carry a ▾ cue.
+    fn menu_button_label(label: &str, opens: bool) -> String {
+        if opens {
+            format!("{label} \u{25BE}") // ▾
+        } else {
+            label.to_string()
+        }
+    }
+
+    /// Every chrome string `relayout` reserves a slot for, so
+    /// [`ChromeMetrics::resolve`] can measure each one with the style it is
+    /// painted in.
+    fn chrome_labels(&self) -> Vec<String> {
+        let mut labels: Vec<String> = MENU_BAR_BUTTONS
+            .iter()
+            .map(|(label, opens, _)| Self::menu_button_label(label, opens.is_some()))
+            .collect();
+        labels.extend(self.sheet_names.iter().cloned());
+        labels.extend(
+            TAB_MENU_ACTIONS
+                .iter()
+                .map(|act| tab_action_label(*act).to_owned()),
+        );
+        labels.push("Colour".to_owned());
+        labels.extend(Self::file_menu_items().iter().map(|(l, _)| (*l).to_owned()));
+        labels.extend(
+            self.format_menu_items()
+                .iter()
+                .map(|(l, _)| (*l).to_owned()),
+        );
+        labels.push("Default".to_owned());
+        labels.extend(Currency::ALL.iter().map(|c| c.code().to_owned()));
+        labels.extend(DATE_STYLES.iter().map(|(l, _)| (*l).to_owned()));
+        labels.extend(TIME_STYLES.iter().map(|(l, _)| (*l).to_owned()));
+        labels.extend(SETTINGS_SECTIONS.iter().map(|s| (*s).to_owned()));
+        labels
+    }
+
+    /// Re-resolve the chrome metrics against the renderer about to paint. A
+    /// change re-runs `relayout` immediately, so the frame that follows paints
+    /// — and later hit-tests — the measured geometry rather than the fallback.
+    fn refresh_chrome_metrics(&mut self, tr: &mut TextRenderer, theme: &Theme) {
+        let labels = self.chrome_labels();
+        let metrics = ChromeMetrics::resolve(tr, theme, labels.iter().map(String::as_str));
+        if metrics == self.metrics {
+            return;
+        }
+        self.grid.set_metrics(metrics.grid);
+        self.metrics = metrics;
+        self.relayout();
+    }
+
     fn relayout(&mut self) {
         let r = self.rect;
-        let scale = self.text_scale;
-        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + MENUBAR_H * scale);
+        let m = &self.metrics;
+        self.menubar_rect = Rect::new(r.x0, r.y0, r.x1, r.y0 + m.menubar_h());
         self.formula_rect = Rect::new(
             r.x0,
             self.menubar_rect.y1,
             r.x1,
-            self.menubar_rect.y1 + FORMULA_H * scale,
+            self.menubar_rect.y1 + m.formula_h(),
         );
-        self.tabs_rect = Rect::new(r.x0, r.y1 - TABS_H * scale, r.x1, r.y1);
+        self.tabs_rect = Rect::new(r.x0, r.y1 - m.tabs_h(), r.x1, r.y1);
         self.grid_rect = Rect::new(r.x0, self.formula_rect.y1, r.x1, self.tabs_rect.y0);
         self.grid.rect = self.grid_rect;
 
-        // Menu bar: File ▾  Format ▾  Σ Sum  Settings ▾. At high text scale on
-        // a narrow window, the latter commands collapse into More instead of
-        // clipping labels or shrinking targets below the shared minimum.
+        // Menu bar: File ▾  Format ▾  Σ Sum  Doc settings. Each button is its
+        // measured label plus `s3` padding, on one centre line, `s2` apart.
         self.menu_buttons.clear();
-        // Fine-pointer controls still honour the shared 32 px minimum; the
-        // same geometry grows for accessibility text and coarse input.
-        let bh = 32.0 * scale;
-        let by = self.menubar_rect.y0 + (MENUBAR_H * scale - bh) / 2.0;
-        let mut x = self.menubar_rect.x0 + 10.0 * scale;
-        let pad = 6.0 * scale;
-        let mk = |label: &str,
-                  x: &mut f64,
-                  w: f64,
-                  item: Option<MenuItem>,
-                  opens: Option<OpenMenu>|
-         -> MenuButton {
-            let rect = Rect::new(*x, by, *x + w, by + bh);
-            *x += w + pad;
-            MenuButton {
-                rect,
+        let bh = m.menu_button_h();
+        let by = self.menubar_rect.y0 + (self.menubar_rect.height() - bh) / 2.0;
+        let mut x = self.menubar_rect.x0 + m.s2;
+        let compact_toolbar = (m.scale > 1.0 && r.width() < 720.0)
+            || MENU_BAR_BUTTONS
+                .iter()
+                .map(|(label, opens, _)| {
+                    m.menu_button_w(&Self::menu_button_label(label, opens.is_some())) + m.s2
+                })
+                .sum::<f64>()
+                > r.width() - 2.0 * m.s2;
+        for (index, (label, opens, item)) in MENU_BAR_BUTTONS.into_iter().enumerate() {
+            if compact_toolbar && index >= 2 {
+                if index == 2 {
+                    let w = m.menu_button_w("More ▾");
+                    self.menu_buttons.push(MenuButton {
+                        rect: Rect::new(x, by, x + w, by + bh),
+                        label: "More".into(),
+                        item: None,
+                        opens: Some(OpenMenu::More),
+                    });
+                }
+                continue;
+            }
+            let w = m.menu_button_w(&Self::menu_button_label(label, opens.is_some()));
+            self.menu_buttons.push(MenuButton {
+                rect: Rect::new(x, by, x + w, by + bh),
                 label: label.to_string(),
                 item,
                 opens,
-            }
-        };
-        let compact_toolbar = r.width() < 360.0 * scale;
-        let (file_w, format_w, sum_w, settings_w) =
-            (56.0 * scale, 76.0 * scale, 66.0 * scale, 108.0 * scale);
-        self.menu_buttons
-            .push(mk("File", &mut x, file_w, None, Some(OpenMenu::File)));
-        self.menu_buttons
-            .push(mk("Format", &mut x, format_w, None, Some(OpenMenu::Format)));
-        if compact_toolbar {
-            self.menu_buttons
-                .push(mk("More", &mut x, 64.0 * scale, None, Some(OpenMenu::More)));
-        } else {
-            self.menu_buttons.push(mk(
-                "\u{03A3} Sum",
-                &mut x,
-                sum_w,
-                Some(MenuItem::AutoSum),
-                None,
-            ));
-            self.menu_buttons.push(mk(
-                "Doc settings",
-                &mut x,
-                settings_w,
-                Some(MenuItem::OpenDocSettings),
-                None,
-            ));
+            });
+            x += w + m.s2;
         }
 
-        // Formula bar field (after the name box + fx label).
-        let fx_w = 30.0 * scale;
-        self.name_box_rect = Rect::new(
-            self.formula_rect.x0 + 6.0 * scale,
-            self.formula_rect.y0 + 4.0 * scale,
-            self.formula_rect.x0 + NAME_BOX_W * scale,
-            self.formula_rect.y1 - 4.0 * scale,
-        );
-        // The clickable "fx" affordance spans the gap between the name box and
-        // the formula field.
-        self.fx_rect = Rect::new(
-            self.formula_rect.x0 + NAME_BOX_W * scale,
-            self.formula_rect.y0 + 4.0 * scale,
-            self.formula_rect.x0 + NAME_BOX_W * scale + fx_w + 8.0 * scale,
-            self.formula_rect.y1 - 4.0 * scale,
-        );
+        // Formula bar: name box · fx · field, all sharing one centre line and
+        // one field height. The "fx" affordance is a slot around its glyph.
+        let field_y0 = self.formula_rect.y0 + m.s1;
+        let field_y1 = self.formula_rect.y1 - m.s1;
+        let nb_x0 = self.formula_rect.x0 + m.s2;
+        let nb_x1 = nb_x0 + m.name_box_w();
+        self.name_box_rect = Rect::new(nb_x0, field_y0, nb_x1, field_y1);
+        self.fx_rect = Rect::new(nb_x1, field_y0, nb_x1 + m.fx_slot_w(), field_y1);
         self.formula_field_rect = Rect::new(
-            self.formula_rect.x0 + NAME_BOX_W * scale + fx_w + 8.0 * scale,
-            self.formula_rect.y0 + 4.0 * scale,
-            self.formula_rect.x1 - 8.0 * scale,
-            self.formula_rect.y1 - 4.0 * scale,
+            self.fx_rect.x1,
+            field_y0,
+            (self.formula_rect.x1 - m.s2).max(self.fx_rect.x1),
+            field_y1,
         );
 
-        // Sheet tabs.
+        // Sheet tabs: measured names plus `s3` padding, `s1` apart, with the
+        // square "+" button after the last tab.
         self.tab_rects.clear();
-        let mut tx = self.tabs_rect.x0 + 8.0 * scale;
-        let ty = self.tabs_rect.y0 + 4.0 * scale;
-        let th = TABS_H * scale - 6.0 * scale;
+        let mut tx = self.tabs_rect.x0 + m.s2;
+        let ty = self.tabs_rect.y0 + m.s1;
+        let th = m.tab_h();
         for (i, name) in self.sheet_names.iter().enumerate() {
-            let w = tab_width(name).max(58.0 * scale);
+            let w = m.tab_w(name);
             self.tab_rects.push((Rect::new(tx, ty, tx + w, ty + th), i));
-            tx += w + 4.0 * scale;
+            tx += w + m.s1;
         }
-        self.add_tab_rect = Rect::new(tx, ty, tx + 30.0 * scale, ty + th);
+        self.add_tab_rect = Rect::new(tx, ty, tx + th, ty + th);
+        // An in-flight rename follows its tab through the reflow, so the
+        // editor never detaches from the tab it renames.
+        if let Some(idx) = self.tab_rename.as_ref().map(|rn| rn.idx) {
+            let rect = self.tab_rename_rect(idx);
+            if let Some(rn) = &mut self.tab_rename {
+                rn.rect = rect;
+            }
+        }
 
         self.relayout_overlays();
     }
@@ -3421,39 +3771,14 @@ impl SheetsApp {
             OpenMenu::None => {}
             OpenMenu::File => {
                 if let Some(anchor) = opener {
-                    let items = [
-                        ("New sheet", MenuItem::NewSheet),
-                        ("Import CSV", MenuItem::ImportCsv),
-                        ("Export CSV", MenuItem::ExportCsv),
-                        ("Import Excel (.xlsx)", MenuItem::ImportXlsx),
-                        ("Export Excel (.xlsx)", MenuItem::ExportXlsx),
-                        ("Import Calc (.ods)", MenuItem::ImportOds),
-                        ("Export Calc (.ods)", MenuItem::ExportOds),
-                    ];
-                    self.layout_dropdown(anchor, &items, 196.0);
+                    let items = Self::file_menu_items();
+                    self.layout_dropdown(anchor, &items, FILE_MENU_MIN_W);
                 }
             }
             OpenMenu::Format => {
                 if let Some(anchor) = opener {
-                    let cur = self.default_currency();
-                    let items = [
-                        ("General", MenuItem::SetFormat(CellFormat::General)),
-                        ("Number", MenuItem::SetFormat(CellFormat::Number)),
-                        ("Currency", MenuItem::SetFormat(CellFormat::Currency(cur))),
-                        ("Percent", MenuItem::SetFormat(CellFormat::Percent)),
-                        (
-                            "Date",
-                            MenuItem::SetFormat(CellFormat::Date(self.locale().date_format)),
-                        ),
-                        (
-                            "Time",
-                            MenuItem::SetFormat(CellFormat::Time(self.locale().time_format)),
-                        ),
-                        ("Boolean", MenuItem::SetFormat(CellFormat::Boolean)),
-                        ("Text", MenuItem::SetFormat(CellFormat::Text)),
-                        ("Clear format", MenuItem::ClearFormat),
-                    ];
-                    self.layout_dropdown(anchor, &items, 160.0);
+                    let items = self.format_menu_items();
+                    self.layout_dropdown(anchor, &items, FORMAT_MENU_MIN_W);
                 }
             }
             OpenMenu::More => {
@@ -3496,214 +3821,292 @@ impl SheetsApp {
             .find(|(_, i)| *i == idx)
             .map_or(self.add_tab_rect, |(r, _)| *r);
 
-        let actions = [
-            TabAction::Rename,
-            TabAction::Duplicate,
-            TabAction::InsertRight,
-            TabAction::MoveLeft,
-            TabAction::MoveRight,
-            TabAction::Delete,
-        ];
-        let width = 188.0_f64;
-        let row_h = 34.0;
-        let pad = 6.0;
-        let swatch = 20.0;
-        let color_block = 18.0 + swatch + 8.0; // "Colour" label + swatch row
-        let h = pad * 2.0 + count_f64(actions.len()) * row_h + color_block;
+        let m = &self.metrics;
+        let row_h = m.menu_row_h();
+        let pad = m.s2;
+        let swatch = TAB_COLOUR_SWATCH;
+        let swatch_count = count_f64(TAB_PALETTE.len() + 1);
+        // The panel is as wide as its widest row label (plus the row inset and
+        // panel padding on each side) or the swatch strip, never narrower than
+        // its classic width.
+        let widest = TAB_MENU_ACTIONS
+            .iter()
+            .map(|act| m.label_w(tab_action_label(*act)))
+            .fold(0.0_f64, f64::max);
+        let swatch_strip_w = swatch_count * swatch + (swatch_count - 1.0) * m.s1;
+        let width = (widest + 2.0 * (pad + m.s2))
+            .max(swatch_strip_w + 2.0 * pad)
+            .max(TAB_MENU_MIN_W);
+        // "Colour" caption (an `xs` line box) sits `s1` above the swatch row.
+        let color_block = m.s2 + m.lh_xs + m.s1 + swatch;
+        let h = pad * 2.0 + count_f64(TAB_MENU_ACTIONS.len()) * row_h + color_block;
 
         let x0 = anchor
             .x0
-            .min(self.rect.x1 - width - 8.0)
-            .max(self.rect.x0 + 4.0);
-        let y1 = anchor.y0 - 6.0;
-        let y0 = (y1 - h).max(self.rect.y0 + 4.0);
+            .min(self.rect.x1 - width - m.s2)
+            .max(self.rect.x0 + m.s1);
+        let y1 = anchor.y0 - m.s1;
+        let y0 = (y1 - h).max(self.rect.y0 + m.s1);
         self.tab_menu_rect = Rect::new(x0, y0, x0 + width, y1);
 
         let mut y = y0 + pad;
-        for act in actions {
-            self.tab_menu_rows.push((
-                Rect::new(x0 + pad, y, x0 + width - pad, y + row_h - 2.0),
-                act,
-            ));
+        for act in TAB_MENU_ACTIONS {
+            self.tab_menu_rows
+                .push((Rect::new(x0 + pad, y, x0 + width - pad, y + row_h), act));
             y += row_h;
         }
-        // Colour swatch strip, below a "Colour" label.
-        let cy = y + 20.0;
+        // Colour swatch strip, below the "Colour" caption.
+        let cy = y + m.s2 + m.lh_xs + m.s1;
         let mut cx = x0 + pad;
         self.tab_menu_swatches
             .push((Rect::new(cx, cy, cx + swatch, cy + swatch), None));
-        cx += swatch + 6.0;
+        cx += swatch + m.s1;
         for i in 0..TAB_PALETTE.len() as u32 {
             self.tab_menu_swatches
                 .push((Rect::new(cx, cy, cx + swatch, cy + swatch), Some(i)));
-            cx += swatch + 6.0;
+            cx += swatch + m.s1;
         }
     }
 
-    fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], width: f64) {
-        let scale = self.text_scale;
-        let row_h = 34.0 * scale;
-        let pad = 6.0 * scale;
-        // Never let an enlarged menu escape a narrow viewport. The menu still
-        // uses normal-size rows; this only bounds its horizontal surface.
-        let width = (width * scale).min((self.rect.width() - 8.0 * scale).max(1.0));
+    /// The File menu's rows, in order.
+    fn file_menu_items() -> [(&'static str, MenuItem); 7] {
+        [
+            ("New sheet", MenuItem::NewSheet),
+            ("Import CSV", MenuItem::ImportCsv),
+            ("Export CSV", MenuItem::ExportCsv),
+            ("Import Excel (.xlsx)", MenuItem::ImportXlsx),
+            ("Export Excel (.xlsx)", MenuItem::ExportXlsx),
+            ("Import Calc (.ods)", MenuItem::ImportOds),
+            ("Export Calc (.ods)", MenuItem::ExportOds),
+        ]
+    }
+
+    /// The Format menu's rows, in order, bound to the workbook's locale.
+    fn format_menu_items(&self) -> [(&'static str, MenuItem); 9] {
+        let cur = self.default_currency();
+        let locale = self.locale();
+        [
+            ("General", MenuItem::SetFormat(CellFormat::General)),
+            ("Number", MenuItem::SetFormat(CellFormat::Number)),
+            ("Currency", MenuItem::SetFormat(CellFormat::Currency(cur))),
+            ("Percent", MenuItem::SetFormat(CellFormat::Percent)),
+            (
+                "Date",
+                MenuItem::SetFormat(CellFormat::Date(locale.date_format)),
+            ),
+            (
+                "Time",
+                MenuItem::SetFormat(CellFormat::Time(locale.time_format)),
+            ),
+            ("Boolean", MenuItem::SetFormat(CellFormat::Boolean)),
+            ("Text", MenuItem::SetFormat(CellFormat::Text)),
+            ("Clear format", MenuItem::ClearFormat),
+        ]
+    }
+
+    /// Lay out a menu-bar dropdown under `anchor`: measured rows `s2` inside a
+    /// panel that grows to its widest label and never below `min_width`.
+    fn layout_dropdown(&mut self, anchor: Rect, items: &[(&str, MenuItem)], min_width: f64) {
+        let m = &self.metrics;
+        let row_h = m.menu_row_h();
+        let pad = m.s2;
+        let widest = items
+            .iter()
+            .map(|(label, _)| m.label_w(label))
+            .fold(0.0_f64, f64::max);
+        let width = (widest + 2.0 * (pad + m.s2))
+            .max(min_width)
+            .min((self.rect.width() - 2.0 * m.s1).max(1.0));
         let x0 = anchor
             .x0
-            .min(self.rect.x1 - width - 4.0 * scale)
-            .max(self.rect.x0 + 4.0 * scale);
-        let y0 = anchor.y1 + 4.0;
+            .min(self.rect.x1 - width - m.s1)
+            .max(self.rect.x0 + m.s1);
+        let y0 = anchor.y1 + m.s1;
         let h = count_f64(items.len()) * row_h + pad * 2.0;
         self.dropdown_rect = Rect::new(x0, y0, x0 + width, y0 + h);
         let mut y = y0 + pad;
-        for (label, item) in items {
-            let rect = Rect::new(x0 + pad, y, x0 + width - pad, y + row_h - 2.0);
+        for (_, item) in items {
+            let rect = Rect::new(x0 + pad, y, x0 + width - pad, y + row_h);
             self.dropdown_rows.push(ClickRow {
                 rect,
                 item: item.clone(),
             });
-            let _ = label;
             y += row_h;
         }
     }
 
     fn layout_settings_panel(&mut self) {
         // Centered modal panel, sized to fit even the narrow viewport. Chip
-        // rows start under the section label and wrap within the panel width.
-        let large_text = self.text_scale > 1.25;
-        let pw = (if large_text { 528.0_f64 } else { 440.0 })
-            .min(self.rect.width() - 32.0)
-            .max(300.0);
-        let ph = if large_text { 388.0 } else { 290.0 };
-        let cx = self.rect.center().x;
-        let cy = self.rect.center().y;
-        self.panel_rect = Rect::new(cx - pw / 2.0, cy - ph / 2.0, cx + pw / 2.0, cy + ph / 2.0);
+        // rows start past the measured section-label column and wrap within
+        // the panel width; the panel's height follows its content so every
+        // section keeps the same rhythm at every text scale.
+        let m = &self.metrics;
+        let pad = m.s6;
+        let pw = SETTINGS_PANEL_W
+            .min(self.rect.width() - 2.0 * m.s4)
+            .max(SETTINGS_PANEL_MIN_W);
+        let px0 = self.rect.center().x - pw / 2.0;
+        let chip_h = m.chip_h();
+        let chip_gap = m.s2;
+        let label_col = SETTINGS_SECTIONS
+            .iter()
+            .map(|s| m.label_w(s))
+            .fold(0.0_f64, f64::max);
+        let left = px0 + pad;
+        let row_start = left + label_col + m.s4;
+        let wrap_x = px0 + pw - pad;
 
-        let chip_h = if large_text { 38.0 } else { 32.0 };
-        let left = self.panel_rect.x0 + 20.0;
-        let row_start = left + 96.0; // clears the section label column
-        let chip_gap = 6.0;
-        let wrap_x = self.panel_rect.x1 - 20.0;
-        let default_w = if large_text { 102.0 } else { 74.0 };
-        let currency_w = if large_text { 58.0 } else { 48.0 };
-        let mut flow = SettingsChipFlow {
-            x: row_start,
-            y: self.panel_rect.y0 + if large_text { 76.0 } else { 64.0 },
-            start_x: row_start,
-            wrap_x,
-            chip_h,
-            gap: chip_gap,
+        // Content height first, so the panel can be centred on it: title,
+        // `s6`, then each chip section separated by `s4`, then the footer.
+        self.setting_chips.clear();
+        let mut chips: Vec<SettingChip> = Vec::new();
+        let mut y = pad + m.lh_base + m.s6;
+        let push = |chips: &mut Vec<SettingChip>, x: &mut f64, y: &mut f64, label: &str, kind| {
+            let w = m.chip_w(label);
+            if *x + w > wrap_x && *x > row_start {
+                *x = row_start;
+                *y += chip_h + chip_gap;
+            }
+            chips.push(SettingChip {
+                rect: Rect::new(*x, *y, *x + w, *y + chip_h),
+                kind,
+            });
+            *x += w + chip_gap;
         };
 
-        self.settings_section_y[0] = flow.y;
-        self.layout_currency_chips(&mut flow, default_w, currency_w);
-        flow.next_section();
-
-        self.settings_section_y[1] = flow.y;
-        self.layout_date_chips(&mut flow, large_text, default_w);
-        flow.next_section();
-
-        self.settings_section_y[2] = flow.y;
-        self.layout_time_chips(&mut flow, large_text, default_w);
-    }
-
-    fn layout_currency_chips(
-        &mut self,
-        flow: &mut SettingsChipFlow,
-        default_w: f64,
-        currency_w: f64,
-    ) {
-        flow.start_section();
-        flow.push(
-            &mut self.setting_chips,
-            default_w,
-            SettingKind::Currency(None),
-        );
-        for currency in Currency::ALL {
-            flow.push(
-                &mut self.setting_chips,
-                currency_w,
-                SettingKind::Currency(Some(currency)),
+        // Section: currency. First an explicit "Default" (inherit global) chip.
+        self.settings_section_y[0] = y;
+        {
+            let mut x = row_start;
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Currency(None),
             );
+            for c in Currency::ALL {
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    c.code(),
+                    SettingKind::Currency(Some(c)),
+                );
+            }
         }
-    }
+        y += chip_h + m.s4;
 
-    fn layout_date_chips(&mut self, flow: &mut SettingsChipFlow, large_text: bool, default_w: f64) {
-        flow.start_section();
-        flow.push(&mut self.setting_chips, default_w, SettingKind::Date(None));
-        for (label, style) in [
-            ("ISO", DateStyle::Iso),
-            ("US", DateStyle::Us),
-            ("EU", DateStyle::Eu),
-            ("Long", DateStyle::Long),
-        ] {
-            let width = if large_text {
-                if label == "Long" { 80.0 } else { 62.0 }
-            } else {
-                (count_f64(label.len()) * 8.0 + 24.0).max(48.0)
-            };
-            flow.push(
-                &mut self.setting_chips,
-                width,
-                SettingKind::Date(Some(style)),
+        // Section: date style.
+        self.settings_section_y[1] = y;
+        {
+            let mut x = row_start;
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Date(None),
             );
+            for (label, d) in DATE_STYLES {
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    label,
+                    SettingKind::Date(Some(d)),
+                );
+            }
         }
-    }
+        y += chip_h + m.s4;
 
-    fn layout_time_chips(&mut self, flow: &mut SettingsChipFlow, large_text: bool, default_w: f64) {
-        flow.start_section();
-        flow.push(&mut self.setting_chips, default_w, SettingKind::Time(None));
-        for (label, style) in [("24-hour", TimeStyle::H24), ("12-hour", TimeStyle::H12)] {
-            let width = if large_text {
-                102.0
-            } else {
-                count_f64(label.len()) * 8.0 + 24.0
-            };
-            flow.push(
-                &mut self.setting_chips,
-                width,
-                SettingKind::Time(Some(style)),
+        // Section: time style.
+        self.settings_section_y[2] = y;
+        {
+            let mut x = row_start;
+            push(
+                &mut chips,
+                &mut x,
+                &mut y,
+                "Default",
+                SettingKind::Time(None),
             );
+            for (label, t) in TIME_STYLES {
+                push(
+                    &mut chips,
+                    &mut x,
+                    &mut y,
+                    label,
+                    SettingKind::Time(Some(t)),
+                );
+            }
         }
+        // Footer note (an `xs` line box) sits `s6` under the last row.
+        let ph = y + chip_h + m.s6 + m.lh_xs + pad;
+
+        let py0 = self.rect.center().y - ph / 2.0;
+        self.panel_rect = Rect::new(px0, py0, px0 + pw, py0 + ph);
+        for section_y in &mut self.settings_section_y {
+            *section_y += py0;
+        }
+        self.setting_chips = chips
+            .into_iter()
+            .map(|chip| SettingChip {
+                rect: chip.rect + vello::kurbo::Vec2::new(0.0, py0),
+                kind: chip.kind,
+            })
+            .collect();
     }
 
     // --- drawing ------------------------------------------------------------
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one chip painter receives its shared paint context, the resolved metrics and the chip's own geometry/state"
+    )]
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        metrics: &ChromeMetrics,
         rect: Rect,
         label: &str,
         style: ChipStyle,
     ) {
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.sm));
-        let bg = if style.active {
-            colors.accent[5]
-        } else if style.accent {
-            colors.accent[5].with_alpha_factor(0.18)
+        let radius = f64::from(theme.tokens.radii.sm);
+        // Rest: the raised face with its derived edge (HIG §9.5 "Button
+        // Neutral"); the AutoSum chip composites its accent wash over that
+        // face first so the edge is measured against what is on screen.
+        // Active: the accent fill alone — a chosen accent carries no hairline.
+        if style.active {
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(rect, radius),
+            );
         } else {
-            colors.surfaces.raised
-        };
-        scene.fill(Fill::NonZero, transform, bg, None, &shape);
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            if style.active {
-                colors.accent[5]
+            let face = if style.accent {
+                colors
+                    .accent_chip_on(
+                        colors.surfaces.raised,
+                        ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    )
+                    .fill
             } else {
-                colors.border_standard
-            },
-            None,
-            &shape,
-        );
-        let size = theme.tokens.typography.scale.sm;
+                colors.surfaces.raised
+            };
+            ui::surface::card(scene, transform, rect, radius, face);
+        }
+        let size = metrics.sm;
         let (tw, _) = tr.measure(label, size, None);
         let tx = rect.center().x - f64::from(tw) / 2.0;
-        let tyy = rect.y0 + (rect.height() - f64::from(size)) / 2.0;
+        let tyy = ChromeMetrics::centred_top(rect, metrics.lh_sm);
         let color = if style.active {
-            Color::WHITE
+            colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
         } else {
             colors.text_primary
         };
@@ -3763,30 +4166,32 @@ impl SheetsApp {
                     | (Some(OpenMenu::More), OpenMenu::More)
             );
             let accent = matches!(b.item, Some(MenuItem::AutoSum));
-            let label = if b.opens.is_some() {
-                format!("{} \u{25BE}", b.label) // ▾
-            } else {
-                b.label.clone()
-            };
+            let label = Self::menu_button_label(&b.label, b.opens.is_some());
             Self::draw_chip(
                 scene,
                 transform,
                 tr,
                 theme,
+                &self.metrics,
                 b.rect,
                 &label,
                 ChipStyle { active, accent },
             );
         }
 
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bar rule: the bar's own derived edge on its last pixel row (a
+        // stroke centred on the boundary straddled two rows and blurred; the
+        // declared `border_standard` was invisible on the dark raised bar).
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.menubar_rect.x0, self.menubar_rect.y1),
-                (self.menubar_rect.x1, self.menubar_rect.y1),
+            &Rect::new(
+                self.menubar_rect.x0,
+                self.menubar_rect.y1 - 1.0,
+                self.menubar_rect.x1,
+                self.menubar_rect.y1,
             ),
         );
     }
@@ -3810,38 +4215,40 @@ impl SheetsApp {
         );
         let name_box = self.name_box_rect;
         let nb_editing = self.name_box_edit.is_some();
-        let nb_shape = RoundedRect::from_rect(name_box, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
+        let nb_radius = f64::from(theme.tokens.radii.sm);
+        // Rest: the raised face with its derived edge; editing: the accent
+        // ring (focus state, not a second edge).
+        ui::surface::card(
+            scene,
             transform,
+            name_box,
+            nb_radius,
             colors.surfaces.raised,
-            None,
-            &nb_shape,
         );
-        scene.stroke(
-            &Stroke::new(if nb_editing { 2.0 } else { 1.0 }),
-            transform,
-            if nb_editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &nb_shape,
-        );
-        let sm = theme.tokens.typography.scale.sm;
-        let nb_text_x = name_box.x0 + 8.0;
-        let nb_text_y = name_box.y0 + (name_box.height() - f64::from(sm)) / 2.0;
+        if nb_editing {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(name_box.inset(-1.0), (nb_radius - 1.0).max(0.0)),
+            );
+        }
+        let sm = self.metrics.sm;
+        let nb_text_x = name_box.x0 + self.metrics.s2;
+        let nb_text_y = ChromeMetrics::centred_top(name_box, self.metrics.lh_sm);
         if let Some(input) = &mut self.name_box_edit {
             // Keep the compact spreadsheet chrome, while the shared editor
             // owns shaping, scrolling, selection, clipboard, IME and caret
-            // hit-testing inside its content band.
+            // hit-testing inside its content band. The editor takes the
+            // renderer-input size, so its text lands at the same final size as
+            // the static label it replaces.
             input.set_font_size(sm);
             input.apply_layout_external(Rect::new(
                 nb_text_x,
-                name_box.y0 + 2.0,
-                name_box.x1 - 4.0,
-                name_box.y1 - 2.0,
+                name_box.y0 + NAME_BOX_EDITOR_INSET,
+                name_box.x1 - self.metrics.s1,
+                name_box.y1 - NAME_BOX_EDITOR_INSET,
             ));
             input.draw(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
@@ -3876,8 +4283,8 @@ impl SheetsApp {
         Self::draw_formula_field_chrome(scene, transform, theme, ff_shape, editing);
 
         let content = self.grid.active_display_raw();
-        let base = theme.tokens.typography.scale.base;
-        let text_x0 = self.formula_field_rect.x0 + 8.0;
+        let base = self.metrics.base;
+        let text_x0 = self.formula_field_rect.x0 + self.metrics.s2;
         // Rebuild the per-character x boundaries for click/caret mapping. This
         // is derived from exactly the text being drawn, so a click maps to the
         // same glyph the user sees (whether it's the live edit buffer or the
@@ -3885,7 +4292,7 @@ impl SheetsApp {
         self.formula_char_x = char_boundaries(tr, &content, base, text_x0);
         let origin = Point::new(
             text_x0,
-            self.formula_field_rect.y0 + (self.formula_field_rect.height() - f64::from(base)) / 2.0,
+            ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base),
         );
         scene.push_layer(
             Fill::NonZero,
@@ -3907,16 +4314,19 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
+        // The glyph is centred in the same `fx_rect` that `handle_event` hit-tests,
+        // so what the pointer lands on is exactly what is painted.
         let colors = &theme.tokens.colors;
+        let m = &self.metrics;
         tr.draw_text_styled(
             scene,
             "fx",
-            theme.tokens.typography.scale.base,
+            m.base,
             colors.text_dim,
             transform
                 * Affine::translate((
-                    self.formula_rect.x0 + NAME_BOX_W + 8.0,
-                    self.formula_rect.y0 + 8.0,
+                    self.fx_rect.center().x - m.fx_w / 2.0,
+                    ChromeMetrics::centred_top(self.fx_rect, m.lh_base),
                 )),
             None,
             TextWeight::Regular,
@@ -3933,24 +4343,20 @@ impl SheetsApp {
         editing: bool,
     ) {
         let colors = &theme.tokens.colors;
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.base,
-            None,
-            &ff_shape,
-        );
-        scene.stroke(
-            &Stroke::new(if editing { 2.0 } else { 1.0 }),
-            transform,
-            if editing {
-                colors.accent[5]
-            } else {
-                colors.border_standard
-            },
-            None,
-            &ff_shape,
-        );
+        // A text field: its fill with the derived rest edge (HIG §9.5
+        // "TextInput"); editing takes the accent ring instead.
+        let field = ff_shape.rect();
+        let radius = ff_shape.radii().top_left;
+        ui::surface::card(scene, transform, field, radius, colors.surfaces.base);
+        if editing {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                colors.accent[5],
+                None,
+                &RoundedRect::from_rect(field.inset(-1.0), (radius - 1.0).max(0.0)),
+            );
+        }
     }
 
     /// Selection highlight behind the text (drawn whenever editing).
@@ -3966,12 +4372,9 @@ impl SheetsApp {
         if editing && let Some((s, e)) = self.grid.edit_selection() {
             let x0 = self.formula_char_x.get(s).copied().unwrap_or(text_x0);
             let x1 = self.formula_char_x.get(e).copied().unwrap_or(x0);
-            let sel_rect = Rect::new(
-                x0,
-                self.formula_field_rect.y0 + 5.0,
-                x1,
-                self.formula_field_rect.y1 - 5.0,
-            );
+            // The highlight spans exactly the text's line box.
+            let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
+            let sel_rect = Rect::new(x0, top, x1, top + self.metrics.lh_base);
             scene.fill(
                 Fill::NonZero,
                 transform,
@@ -3985,7 +4388,10 @@ impl SheetsApp {
     /// Formulas (whether being edited OR merely selected) tint each cell
     /// reference to match the coloured outlines on the grid; plain values
     /// draw in the body colour.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "formula painting passes the render context alongside cell content, font size and the formula-bar origin"
+    )]
     fn draw_formula_content(
         scene: &mut Scene,
         transform: Affine,
@@ -4031,15 +4437,13 @@ impl SheetsApp {
         let colors = &theme.tokens.colors;
         if editing && let Some(caret) = self.grid.edit_caret() {
             let cx = self.formula_char_x.get(caret).copied().unwrap_or(text_x0);
+            let top = ChromeMetrics::centred_top(self.formula_field_rect, self.metrics.lh_base);
             scene.stroke(
                 &Stroke::new(1.5),
                 transform,
                 colors.accent[5],
                 None,
-                &Line::new(
-                    (cx, self.formula_field_rect.y0 + 5.0),
-                    (cx, self.formula_field_rect.y1 - 5.0),
-                ),
+                &Line::new((cx, top), (cx, top + self.metrics.lh_base)),
             );
         }
     }
@@ -4056,7 +4460,8 @@ impl SheetsApp {
         theme: &Theme,
     ) {
         let colors = &theme.tokens.colors;
-        let sm = theme.tokens.typography.scale.sm;
+        let m = &self.metrics;
+        let sm = m.sm;
         scene.fill(
             Fill::NonZero,
             transform,
@@ -4064,25 +4469,28 @@ impl SheetsApp {
             None,
             &self.tabs_rect,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
+        // Bar rule on the strip's first pixel row: the strip's derived edge.
+        scene.fill(
+            Fill::NonZero,
             transform,
-            colors.border_standard,
+            ui::surface::edge_on(colors.surfaces.raised),
             None,
-            &Line::new(
-                (self.tabs_rect.x0, self.tabs_rect.y0),
-                (self.tabs_rect.x1, self.tabs_rect.y0),
+            &Rect::new(
+                self.tabs_rect.x0,
+                self.tabs_rect.y0,
+                self.tabs_rect.x1,
+                self.tabs_rect.y0 + 1.0,
             ),
         );
         for (rect, idx) in &self.tab_rects {
             let active = *idx == self.active_sheet;
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
-            let bg = if active {
-                colors.surfaces.base
-            } else {
-                colors.surfaces.raised
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &shape);
+            // Sheet tabs are selectors (HIG §9.5): idle is the bare label on
+            // the strip, the active one lifts to the base tier — a contrast
+            // step against the raised strip — under its accent underline.
+            if active {
+                let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
+                scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
+            }
             // The tab's colour underline: its assigned palette colour when it
             // has one, otherwise the accent bar for the active tab.
             let tab_color = self
@@ -4098,11 +4506,29 @@ impl SheetsApp {
                     transform,
                     bar_color,
                     None,
-                    &Rect::new(rect.x0 + 4.0, rect.y1 - 3.0, rect.x1 - 4.0, rect.y1),
+                    &Rect::new(
+                        rect.x0 + m.s1,
+                        rect.y1 - TAB_UNDERLINE_H,
+                        rect.x1 - m.s1,
+                        rect.y1,
+                    ),
                 );
             }
-            let name = self.sheet_names.get(*idx).cloned().unwrap_or_default();
-            let (tw, _) = tr.measure(&name, sm, None);
+            let full_name = self.sheet_names.get(*idx).cloned().unwrap_or_default();
+            let weight = if active {
+                TextWeight::Semibold
+            } else {
+                TextWeight::Regular
+            };
+            // A name longer than the tab's ceiling is elided with the painting
+            // style, so it never runs under the neighbouring tab.
+            let name = tr.elide_to_width_weighted(
+                &full_name,
+                sm,
+                (rect.width() - 2.0 * m.s3).max(0.0) as f32,
+                weight,
+            );
+            let (tw, _) = tr.measure_weighted(&name, sm, None, weight);
             let tx = rect.center().x - f64::from(tw) / 2.0;
             let color = if active {
                 colors.text_primary
@@ -4114,51 +4540,60 @@ impl SheetsApp {
                 &name,
                 sm,
                 color,
-                transform
-                    * Affine::translate((tx, rect.y0 + (rect.height() - f64::from(sm)) / 2.0)),
+                transform * Affine::translate((tx, ChromeMetrics::centred_top(*rect, m.lh_sm))),
                 None,
-                if active {
-                    TextWeight::Semibold
-                } else {
-                    TextWeight::Regular
-                },
+                weight,
             );
         }
-        let add_shape = RoundedRect::from_rect(self.add_tab_rect, f64::from(theme.tokens.radii.sm));
-        scene.fill(
-            Fill::NonZero,
+        // The add-sheet button is a Neutral control: its face with the
+        // derived rest edge.
+        ui::surface::card(
+            scene,
             transform,
+            self.add_tab_rect,
+            f64::from(theme.tokens.radii.sm),
             colors.surfaces.base,
-            None,
-            &add_shape,
         );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &add_shape,
-        );
+        // The "+" is centred on its measured glyph box, not nudged by hand.
+        let (add_w, add_h) = m.add_glyph;
         tr.draw_text(
             scene,
             "+",
-            theme.tokens.typography.scale.lg,
+            m.lg,
             colors.text_dim,
             transform
                 * Affine::translate((
-                    self.add_tab_rect.center().x - 4.0,
-                    self.add_tab_rect.y0 + 4.0,
+                    self.add_tab_rect.center().x - add_w / 2.0,
+                    ChromeMetrics::centred_top(self.add_tab_rect, add_h),
                 )),
             None,
         );
     }
 
+    /// Bottom edge of the floating status bubble: `s2` above the grid's
+    /// horizontal scrollbar rail, so the pill floats over the body's
+    /// bottom-right corner and never sits on the scrollbar or the sheet tabs.
+    fn status_bubble_bottom(&self) -> f64 {
+        self.grid_rect.y1 - Grid::scrollbar_thickness() - self.metrics.s2
+    }
+
+    /// Size of the floating status pill for `label`. The shared pill sizes
+    /// itself from the renderer-input `sm`, which is right for its width but
+    /// leaves its height at the 1× value under a larger text scale, so the
+    /// measured `sm` line box plus `s2` above and below is the floor here.
+    /// (Its label centring still assumes the nominal size — see the F2 note
+    /// in the A7 review.)
+    fn status_pill_size(&self, tr: &mut TextRenderer, label: &str) -> (f64, f64) {
+        let (w, shared_h) = ui::status_bubble::pill_size(label, tr, self.metrics.sm, 0.0);
+        (w, shared_h.max(self.metrics.lh_sm + 2.0 * self.metrics.s2))
+    }
+
     /// Draw the transient floating status bubble at the bottom-right of the
-    /// grid area, floated just *above* the sheet-tab strip so it never overlaps
-    /// the tabs. It shows the composed status text (selection summary / active
-    /// format, plus any fresh action message) when that text changes or while
-    /// the pointer hovers the bottom-right reveal band, then fades. All colours
-    /// come from the theme (via `draw_pill`).
+    /// grid area, floated just *above* the scrollbar rail and sheet-tab strip
+    /// so it never overlaps either. It shows the composed status text
+    /// (selection summary / active format, plus any fresh action message) when
+    /// that text changes or while the pointer hovers the bottom-right reveal
+    /// band, then fades. All colours come from the theme (via `draw_pill`).
     fn draw_status_bubble(
         &mut self,
         scene: &mut Scene,
@@ -4170,12 +4605,12 @@ impl SheetsApp {
         let Some(label) = self.status_bubble_label() else {
             return;
         };
-        let text_size = 12.0f32;
-        let (w, h) = ui::status_bubble::pill_size(&label, tr, text_size, 0.0);
-        let margin = 12.0;
-        // Lower bound: a few px above the tab strip, so the pill floats over
-        // the grid's bottom-right corner and never covers the sheet tabs.
-        let y1 = self.tabs_rect.y0 - 8.0;
+        // The pill takes the renderer-input `sm` size, so its text lands at
+        // the same final size as the rest of the chrome at every text scale.
+        let text_size = self.metrics.sm;
+        let (w, h) = self.status_pill_size(tr, &label);
+        let margin = self.metrics.s3;
+        let y1 = self.status_bubble_bottom();
         let rect = Rect::new(self.rect.x1 - margin - w, y1 - h, self.rect.x1 - margin, y1);
         // Reveal zone: the bottom-right corner band of the grid (plus the pill),
         // so nudging the pointer there re-surfaces the status on demand.
@@ -4239,11 +4674,11 @@ impl SheetsApp {
             &veil,
         );
         let label = "Opening workbook…";
-        let size = theme.tokens.typography.scale.base;
-        let (width, _) = tr.measure(label, size, None);
+        let size = self.metrics.base;
+        let (width, height) = tr.measure(label, size, None);
         let origin = Point::new(
             veil.center().x - f64::from(width) / 2.0,
-            veil.center().y - 4.0,
+            veil.center().y - f64::from(height) / 2.0,
         );
         tr.draw_text(
             scene,
@@ -4272,42 +4707,50 @@ impl SheetsApp {
     ) {
         let Some(cache) = &self.cache else { return };
         let max_cards = 3usize;
+        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so a
+        // scaled title never paints under the action band below it.
+        let rows = self.metrics.chart_card_rows();
+        // The cards float over the sheet body, `s3` inside the header bands
+        // and the scrollbar lane (never on either), stacked `s3` apart.
+        let (body_top, body_right) = self.annotation_body_bounds();
+        let pad = self.metrics.s3;
         for (index, chart) in self.sheet_charts.iter().take(max_cards).enumerate() {
             let width = self.grid_rect.width().clamp(180.0, 300.0);
-            let height = 176.0;
-            let x1 = self.grid_rect.x1 - 14.0;
-            let y0 = self.grid_rect.y0 + 14.0 + index as f64 * (height + 10.0);
+            let height = rows.height;
+            let x1 = body_right - pad;
+            let y0 = body_top + pad + index as f64 * (height + pad);
             if y0 + height > self.grid_rect.y1 {
                 break;
             }
             let card = Rect::new(x1 - width, y0, x1, y0 + height);
-            scene.fill(
-                Fill::NonZero,
+            ui::surface::card(
+                scene,
                 transform,
+                card,
+                f64::from(theme.tokens.radii.md),
                 theme.tokens.colors.surfaces.raised,
-                None,
-                &RoundedRect::from_rect(card, 8.0),
             );
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                theme.tokens.colors.border_standard,
-                None,
-                &RoundedRect::from_rect(card, 8.0),
+            // The title is elided to the card so a long or scaled name ends
+            // inside the frame rather than over the sheet beside it.
+            let title = tr.elide_to_width_weighted(
+                &chart.title,
+                self.metrics.sm,
+                (card.width() - 2.0 * pad) as f32,
+                TextWeight::Regular,
             );
             tr.draw_text(
                 scene,
-                &chart.title,
-                theme.tokens.typography.scale.sm,
+                &title,
+                self.metrics.sm,
                 theme.tokens.colors.text_primary,
-                transform * Affine::translate((card.x0 + 12.0, card.y0 + 21.0)),
+                transform * Affine::translate((card.x0 + pad, card.y0 + rows.title_top)),
                 None,
             );
             let controls = Rect::new(
-                card.x0 + 12.0,
-                card.y0 + 26.0,
-                card.x1 - 12.0,
-                card.y0 + 26.0 + ANNOTATION_ACTION_H,
+                card.x0 + pad,
+                card.y0 + rows.controls_y0,
+                card.x1 - pad,
+                card.y0 + rows.controls_y1,
             );
             let actions = [
                 ("Open", AnnotationClick::Open(chart.start)),
@@ -4322,26 +4765,26 @@ impl SheetsApp {
                     controls.x0 + (index + 1) as f64 * action_width,
                     controls.y1,
                 );
-                let (label_width, _) = tr.measure(label, theme.tokens.typography.scale.xs, None);
+                let (label_width, _) = tr.measure(label, self.metrics.xs, None);
                 tr.draw_text(
                     scene,
                     label,
-                    theme.tokens.typography.scale.xs,
+                    self.metrics.xs,
                     theme.tokens.colors.accent[5],
                     transform
                         * Affine::translate((
                             button.center().x - f64::from(label_width) / 2.0,
-                            button.center().y + 4.0,
+                            ChromeMetrics::centred_top(button, self.metrics.lh_xs),
                         )),
                     None,
                 );
                 self.annotation_clicks.push((button, action));
             }
             let plot = Rect::new(
-                card.x0 + 14.0,
-                card.y0 + 86.0,
-                card.x1 - 14.0,
-                card.y1 - 16.0,
+                card.x0 + pad,
+                card.y0 + rows.plot_y0,
+                card.x1 - pad,
+                card.y0 + rows.plot_y1,
             );
             let mut points = Vec::new();
             for row in chart.start.1..=chart.end.1 {
@@ -4361,9 +4804,13 @@ impl SheetsApp {
                 tr.draw_text(
                     scene,
                     "Select numeric cells to plot",
-                    theme.tokens.typography.scale.sm,
+                    self.metrics.sm,
                     theme.tokens.colors.text_tertiary,
-                    transform * Affine::translate((plot.x0, plot.center().y)),
+                    transform
+                        * Affine::translate((
+                            plot.x0,
+                            ChromeMetrics::centred_top(plot, self.metrics.lh_sm),
+                        )),
                     None,
                 );
                 continue;
@@ -4428,25 +4875,27 @@ impl SheetsApp {
             return;
         };
         let width = self.grid_rect.width().clamp(200.0, 310.0);
-        let card = Rect::new(
-            self.grid_rect.x0 + 14.0,
-            self.grid_rect.y0 + 14.0,
-            self.grid_rect.x0 + 14.0 + width,
-            self.grid_rect.y0 + 192.0,
-        );
-        scene.fill(
-            Fill::NonZero,
+        // Rows follow the measured `sm`/`xs` line boxes (1× floors), so the
+        // heading, body and detail lines stay clear of each other and of the
+        // action band at every text scale.
+        let rows = self.metrics.comment_card_rows();
+        // The card floats over the sheet body, `s3` inside the row and column
+        // header bands, so it never covers a header label.
+        let (body_top, _) = self.annotation_body_bounds();
+        let pad = self.metrics.s3;
+        let x0 = self.grid_rect.x0 + self.metrics.grid.row_header_w() + pad;
+        let y0 = body_top + pad;
+        let card = Rect::new(x0, y0, x0 + width, y0 + rows.height);
+        let text_w = (card.width() - 2.0 * pad) as f32;
+        // A card like any other: raised face, derived edge. The accent stays
+        // on the live parts (the reply count / resolve affordance), not on
+        // the frame — accent means live, not selected (HIG §9.4).
+        ui::surface::card(
+            scene,
             transform,
+            card,
+            f64::from(theme.tokens.radii.md),
             theme.tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(card, 8.0),
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            theme.tokens.colors.accent[5],
-            None,
-            &RoundedRect::from_rect(card, 8.0),
         );
         let range = if thread.start == thread.end {
             crate::model::addr_to_a1(thread.start.0, thread.start.1)
@@ -4463,21 +4912,26 @@ impl SheetsApp {
             thread.author,
             if thread.resolved { " · Resolved" } else { "" }
         );
+        // Heading and body are elided to the card: a scaled or long line ends
+        // inside the frame instead of running over the grid beside it.
+        let heading =
+            tr.elide_to_width_weighted(&heading, self.metrics.sm, text_w, TextWeight::Regular);
         tr.draw_text(
             scene,
             &heading,
-            theme.tokens.typography.scale.sm,
+            self.metrics.sm,
             theme.tokens.colors.text_primary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 22.0)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.heading_top)),
             None,
         );
         let body: String = thread.body.chars().take(56).collect();
+        let body = tr.elide_to_width_weighted(&body, self.metrics.sm, text_w, TextWeight::Regular);
         tr.draw_text(
             scene,
             &body,
-            theme.tokens.typography.scale.sm,
+            self.metrics.sm,
             theme.tokens.colors.text_tertiary,
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 48.0)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.body_top)),
             None,
         );
         let detail = format!(
@@ -4493,16 +4947,16 @@ impl SheetsApp {
         tr.draw_text(
             scene,
             &detail,
-            theme.tokens.typography.scale.xs,
+            self.metrics.xs,
             theme.tokens.colors.accent[5],
-            transform * Affine::translate((card.x0 + 12.0, card.y0 + 84.0)),
+            transform * Affine::translate((card.x0 + pad, card.y0 + rows.detail_top)),
             None,
         );
         let controls = Rect::new(
-            card.x0 + 12.0,
-            card.y0 + 112.0,
-            card.x1 - 12.0,
-            card.y0 + 112.0 + ANNOTATION_ACTION_H,
+            card.x0 + pad,
+            card.y0 + rows.controls_y0,
+            card.x1 - pad,
+            card.y0 + rows.controls_y0 + ANNOTATION_ACTION_H,
         );
         let actions = [
             ("Reply", AnnotationClick::Reply(thread.id.clone())),
@@ -4518,32 +4972,100 @@ impl SheetsApp {
                 controls.x0 + (index + 1) as f64 * action_width,
                 controls.y1,
             );
-            let (label_width, _) = tr.measure(label, theme.tokens.typography.scale.xs, None);
+            let (label_width, _) = tr.measure(label, self.metrics.xs, None);
             tr.draw_text(
                 scene,
                 label,
-                theme.tokens.typography.scale.xs,
+                self.metrics.xs,
                 theme.tokens.colors.accent[5],
                 transform
                     * Affine::translate((
                         button.center().x - f64::from(label_width) / 2.0,
-                        button.center().y + 4.0,
+                        ChromeMetrics::centred_top(button, self.metrics.lh_xs),
                     )),
                 None,
             );
             self.annotation_clicks.push((button, action));
         }
         // The state-changing resolve/reopen affordance has its own normal
-        // target height and remains distinct from the action band.
+        // target height, centred on the detail line it labels, and remains
+        // distinct from the action band (it ends where that band begins).
         self.annotation_clicks.push((
             Rect::new(
-                card.x0 + 12.0,
-                card.y0 + 58.0,
-                card.x1 - 12.0,
-                card.y0 + 58.0 + ANNOTATION_ACTION_H,
+                card.x0 + pad,
+                card.y0 + rows.toggle_y0,
+                card.x1 - pad,
+                card.y0 + rows.toggle_y1,
             ),
             AnnotationClick::ToggleComment(thread.id.clone(), !thread.resolved),
         ));
+    }
+
+    /// Where a floating annotation card may sit: the top of the sheet body
+    /// (below the column-header band) and its right edge (left of the
+    /// vertical scrollbar lane). Cards keep `s3` inside both.
+    fn annotation_body_bounds(&self) -> (f64, f64) {
+        (
+            self.grid_rect.y0 + self.metrics.grid.col_header_h(),
+            self.grid_rect.x1 - Grid::scrollbar_thickness(),
+        )
+    }
+
+    /// Paint a floating menu / dialog panel (HIG §9.1 Panel role): elevation,
+    /// the panel ground and the panel border — never a raised fill under a
+    /// declared `border_standard` with a literal black shadow.
+    fn paint_panel(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect, radius: f64) {
+        ui::chrome::panel_shadow(scene, transform, rect, radius, theme, 1.0);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            ui::chrome::panel_ground(theme),
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            ui::chrome::panel_border(theme),
+            None,
+            &ui::surface::edge_outline(rect, radius),
+        );
+    }
+
+    /// Paint a menu row's chosen / hovered state as a lift (HIG §9.3): the
+    /// selection tier's fill and, when lifted, its hairline — never an
+    /// accent wash, which is reserved for live state. `rect` is the row's
+    /// full hit rect; the lift is inset half the row seam top and bottom so
+    /// neighbouring lifts stay `s1` apart while the hit rects stay contiguous.
+    fn paint_row_state(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        rect: Rect,
+        state: ui::chrome::SelectionState,
+    ) {
+        let tier = ui::chrome::selection_tier(theme, state);
+        if tier.fill.components[3] <= 0.0 {
+            return;
+        }
+        let rect = rect.inset((0.0, -MENU_ROW_SEAM / 2.0));
+        let radius = f64::from(theme.tokens.radii.sm);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            tier.fill,
+            None,
+            &RoundedRect::from_rect(rect, radius),
+        );
+        if let Some(border) = tier.border {
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                border,
+                None,
+                &ui::surface::edge_outline(rect, radius),
+            );
+        }
     }
 
     fn draw_dropdown(
@@ -4557,59 +5079,29 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.dropdown_rect, f64::from(theme.tokens.radii.md));
-        // Subtle shadow then panel.
-        scene.fill(
-            Fill::NonZero,
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 60),
-            None,
-            &RoundedRect::from_rect(
-                self.dropdown_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                f64::from(theme.tokens.radii.md),
-            ),
+            theme,
+            self.dropdown_rect,
+            f64::from(theme.tokens.radii.md),
         );
-        // Solid raised base first, then the overlay tint — keeps the panel
-        // fully opaque so the grid never bleeds through.
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
-        );
-        let sm = theme.tokens.typography.scale.sm;
+        let sm = self.metrics.sm;
         let active_cat = self.current_active_format.category();
         for row in &self.dropdown_rows {
             let hovered = row.rect.contains(self.last_mouse);
-            // Highlight the matching format row.
+            // The row matching the active cell's format is the chosen one.
             let matches_active = match &row.item {
                 MenuItem::SetFormat(f) => f.category() == active_cat,
                 _ => false,
             };
-            if hovered || matches_active {
-                let rs = RoundedRect::from_rect(row.rect, f64::from(theme.tokens.radii.sm));
-                let bg = if hovered {
-                    colors.accent[5].with_alpha_factor(0.22)
-                } else {
-                    colors.accent[5].with_alpha_factor(0.10)
-                };
-                scene.fill(Fill::NonZero, transform, bg, None, &rs);
-            }
+            Self::paint_row_state(
+                scene,
+                transform,
+                theme,
+                row.rect,
+                ui::chrome::SelectionState::new(matches_active, hovered, false),
+            );
             let label = menu_item_label(&row.item);
             tr.draw_text(
                 scene,
@@ -4618,8 +5110,8 @@ impl SheetsApp {
                 colors.text_primary,
                 transform
                     * Affine::translate((
-                        row.rect.x0 + 10.0,
-                        row.rect.y0 + (row.rect.height() - f64::from(sm)) / 2.0,
+                        row.rect.x0 + self.metrics.s2,
+                        ChromeMetrics::centred_top(row.rect, self.metrics.lh_sm),
                     )),
                 None,
             );
@@ -4637,68 +5129,46 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        // Dim the backdrop.
-        scene.fill(
-            Fill::NonZero,
+        // Dim the backdrop in the theme's own scrim, then the dialog panel.
+        ui::chrome::fill_scrim(scene, transform, self.rect, SETTINGS_SCRIM_STRENGTH, theme);
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 110),
-            None,
-            &self.rect,
-        );
-        let shape = RoundedRect::from_rect(self.panel_rect, f64::from(theme.tokens.radii.lg));
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
+            theme,
+            self.panel_rect,
+            f64::from(theme.tokens.radii.lg),
         );
 
-        let base = theme.tokens.typography.scale.base;
-        let sm = theme.tokens.typography.scale.sm;
+        let m = &self.metrics;
+        let pad = m.s6;
         let title = "Document settings";
         tr.draw_text_weighted(
             scene,
             title,
-            base,
+            m.base,
             colors.text_primary,
-            transform * Affine::translate((self.panel_rect.x0 + 20.0, self.panel_rect.y0 + 18.0)),
+            transform * Affine::translate((self.panel_rect.x0 + pad, self.panel_rect.y0 + pad)),
             None,
             TextWeight::Bold,
         );
 
-        // Section labels, aligned to the exact chip-row Y captured at layout
-        // time so they stay correct even when the currency row wraps.
-        let label_x = self.panel_rect.x0 + 20.0;
-        for (label, &section_y) in ["Currency", "Date", "Time"]
-            .iter()
-            .zip(&self.settings_section_y)
-        {
+        // Section labels, centred on the first chip row of their section (the
+        // row Y captured at layout time, so they stay put when a row wraps).
+        let label_x = self.panel_rect.x0 + pad;
+        let chip_h = m.chip_h();
+        for (label, &section_y) in SETTINGS_SECTIONS.iter().zip(&self.settings_section_y) {
+            let row = Rect::new(label_x, section_y, label_x, section_y + chip_h);
             tr.draw_text(
                 scene,
                 label,
-                sm,
+                m.sm,
                 colors.text_dim,
-                transform * Affine::translate((label_x, section_y + 4.0)),
+                transform * Affine::translate((label_x, ChromeMetrics::centred_top(row, m.lh_sm))),
                 None,
             );
         }
 
-        self.draw_setting_chips(scene, transform, tr, theme, sm);
+        self.draw_setting_chips(scene, transform, tr, theme, m.sm);
 
         // Footer: how the currently active cell renders under these settings.
         let footer = format!(
@@ -4708,9 +5178,10 @@ impl SheetsApp {
         tr.draw_text(
             scene,
             &footer,
-            theme.tokens.typography.scale.xs,
+            m.xs,
             colors.text_dim,
-            transform * Affine::translate((self.panel_rect.x0 + 20.0, self.panel_rect.y1 - 28.0)),
+            transform
+                * Affine::translate((self.panel_rect.x0 + pad, self.panel_rect.y1 - pad - m.lh_xs)),
             None,
         );
     }
@@ -4725,31 +5196,27 @@ impl SheetsApp {
         sm: f32,
     ) {
         let colors = &theme.tokens.colors;
+        let radius = f64::from(theme.tokens.radii.sm);
         for chip in &self.setting_chips {
             let (label, selected) = self.chip_label_and_state(chip.kind);
-            let shape = RoundedRect::from_rect(chip.rect, f64::from(theme.tokens.radii.sm));
-            let bg = if selected {
-                colors.accent[5].with_alpha_factor(0.85)
+            // Quiet chip: raised face with its derived edge; selected: the
+            // accent fill, no edge (HIG §9.5 "Chip quiet").
+            if selected {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.accent[5],
+                    None,
+                    &RoundedRect::from_rect(chip.rect, radius),
+                );
             } else {
-                colors.surfaces.raised
-            };
-            scene.fill(Fill::NonZero, transform, bg, None, &shape);
-            scene.stroke(
-                &Stroke::new(1.0),
-                transform,
-                if selected {
-                    colors.accent[5]
-                } else {
-                    colors.border_standard
-                },
-                None,
-                &shape,
-            );
+                ui::surface::card(scene, transform, chip.rect, radius, colors.surfaces.raised);
+            }
             let (tw, _) = tr.measure(&label, sm, None);
             let tx = chip.rect.center().x - f64::from(tw) / 2.0;
-            let ty = chip.rect.y0 + (chip.rect.height() - f64::from(sm)) / 2.0;
+            let ty = ChromeMetrics::centred_top(chip.rect, self.metrics.lh_sm);
             let color = if selected {
-                Color::WHITE
+                colors.on_accent(ui::tokens::colors::NON_TEXT_MIN_CONTRAST)
             } else {
                 colors.text_primary
             };
@@ -4804,51 +5271,23 @@ impl SheetsApp {
             return;
         }
         let colors = &theme.tokens.colors;
-        let shape = RoundedRect::from_rect(self.tab_menu_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            Fill::NonZero,
+        Self::paint_panel(
+            scene,
             transform,
-            Color::from_rgba8(0, 0, 0, 70),
-            None,
-            &RoundedRect::from_rect(
-                self.tab_menu_rect + vello::kurbo::Vec2::new(0.0, 3.0),
-                f64::from(theme.tokens.radii.md),
-            ),
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.raised,
-            None,
-            &shape,
-        );
-        scene.fill(
-            Fill::NonZero,
-            transform,
-            colors.surfaces.overlay,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(1.0),
-            transform,
-            colors.border_standard,
-            None,
-            &shape,
+            theme,
+            self.tab_menu_rect,
+            f64::from(theme.tokens.radii.md),
         );
 
-        let sm = theme.tokens.typography.scale.sm;
+        let sm = self.metrics.sm;
         for (rect, act) in &self.tab_menu_rows {
-            if rect.contains(self.last_mouse) {
-                let rs = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
-                scene.fill(
-                    Fill::NonZero,
-                    transform,
-                    colors.accent[5].with_alpha_factor(0.22),
-                    None,
-                    &rs,
-                );
-            }
+            Self::paint_row_state(
+                scene,
+                transform,
+                theme,
+                *rect,
+                ui::chrome::SelectionState::new(false, rect.contains(self.last_mouse), false),
+            );
             let color = if matches!(act, TabAction::Delete) {
                 colors.semantic.danger
             } else {
@@ -4861,8 +5300,8 @@ impl SheetsApp {
                 color,
                 transform
                     * Affine::translate((
-                        rect.x0 + 10.0,
-                        rect.y0 + (rect.height() - f64::from(sm)) / 2.0,
+                        rect.x0 + self.metrics.s2,
+                        ChromeMetrics::centred_top(*rect, self.metrics.lh_sm),
                     )),
                 None,
             );
@@ -4881,12 +5320,18 @@ impl SheetsApp {
     ) {
         let colors = &theme.tokens.colors;
         if let Some((first, _)) = self.tab_menu_swatches.first() {
+            // The caption's line box ends `s1` above the swatch row, matching
+            // the block `layout_tab_menu` reserved for it.
             tr.draw_text(
                 scene,
                 "Colour",
-                theme.tokens.typography.scale.xs,
+                self.metrics.xs,
                 colors.text_dim,
-                transform * Affine::translate((self.tab_menu_rect.x0 + 10.0, first.y0 - 16.0)),
+                transform
+                    * Affine::translate((
+                        self.tab_menu_rect.x0 + 2.0 * self.metrics.s2,
+                        first.y0 - self.metrics.s1 - self.metrics.lh_xs,
+                    )),
                 None,
             );
         }
@@ -4894,17 +5339,11 @@ impl SheetsApp {
             .tab_menu_target
             .and_then(|t| self.sheet_colors.get(t).copied().flatten());
         for (rect, color_opt) in &self.tab_menu_swatches {
-            let shape = RoundedRect::from_rect(*rect, f64::from(theme.tokens.radii.sm));
+            let radius = f64::from(theme.tokens.radii.sm);
+            let shape = RoundedRect::from_rect(*rect, radius);
             match color_opt {
                 None => {
-                    scene.fill(Fill::NonZero, transform, colors.surfaces.base, None, &shape);
-                    scene.stroke(
-                        &Stroke::new(1.0),
-                        transform,
-                        colors.border_standard,
-                        None,
-                        &shape,
-                    );
+                    ui::surface::card(scene, transform, *rect, radius, colors.surfaces.base);
                     scene.stroke(
                         &Stroke::new(1.0),
                         transform,
@@ -4928,11 +5367,14 @@ impl SheetsApp {
             }
             let selected = current == *color_opt && color_opt.is_some();
             if selected || rect.contains(self.last_mouse) {
+                // The chosen swatch's ring is the chrome ink, which contrasts
+                // the panel on both palettes (a literal white ring vanished
+                // on the light panel); hover keeps the accent.
                 scene.stroke(
                     &Stroke::new(2.0),
                     transform,
                     if selected {
-                        Color::WHITE
+                        colors.text_primary
                     } else {
                         colors.accent[5]
                     },
@@ -4954,8 +5396,9 @@ impl SheetsApp {
             return;
         };
         // Theme typography remains authoritative even though the edit began
-        // before the draw pass had a Theme reference.
-        rn.editor.set_font_size(theme.tokens.typography.scale.sm);
+        // before the draw pass had a Theme reference; the shared editor takes
+        // the renderer-input size so it lands at the tab label's final size.
+        rn.editor.set_font_size(self.metrics.sm);
         rn.editor.apply_layout_external(rn.rect);
         rn.editor
             .draw(scene, transform, tr, theme, &PresenceCtx::default());
@@ -5119,10 +5562,6 @@ fn time_label(t: TimeStyle) -> &'static str {
     }
 }
 
-fn tab_width(name: &str) -> f64 {
-    (name.chars().count() as f64 * 7.5 + 26.0).clamp(64.0, 180.0)
-}
-
 /// Flatten a cell's display text into a single TSV field: tabs and newlines
 /// would break the row/column structure, so they collapse to spaces.
 fn tsv_cell(display: &str) -> String {
@@ -5133,10 +5572,7 @@ fn tsv_cell(display: &str) -> String {
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
 fn workbook_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .or_else(dirs::data_dir)?;
+    let base = xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_dir)?;
     Some(base.join("tilo").join("sheets").join("workbook.automerge"))
 }
 
@@ -5475,6 +5911,7 @@ impl Widget for SheetsApp {
         // before the subsequent layout + hit-test pass.
         self.text_scale = f64::from(theme.text_scale);
         self.grid.set_text_scale(self.text_scale);
+
         // `new_leaf` on a freshly created tree never fails.
         #[allow(clippy::unwrap_used, reason = "new_leaf on a fresh tree cannot fail")]
         let node = taffy
@@ -5512,6 +5949,9 @@ impl Widget for SheetsApp {
         presence: &PresenceCtx,
     ) {
         self.annotation_clicks.clear();
+        // Measure first, so this frame's chrome (and the hit-rects it leaves
+        // behind) is laid out from the renderer that is about to paint it.
+        self.refresh_chrome_metrics(text_renderer, theme);
         self.draw_chrome(scene, transform, text_renderer, theme);
         self.grid.draw(scene, transform, text_renderer, theme);
         self.draw_charts(scene, transform, text_renderer, theme);
@@ -6995,16 +7435,26 @@ impl SheetsApp {
 
     /// Begin an inline rename of sheet tab `idx`, seeding the field with its
     /// current name.
-    fn begin_tab_rename(&mut self, idx: usize) {
-        let name = self.sheet_names.get(idx).cloned().unwrap_or_default();
+    /// Where the inline rename editor for tab `idx` sits: over the tab, with
+    /// at least `TAB_RENAME_MIN_W` (grown with the text) so a longer name fits
+    /// while typing, clamped to the window. Re-derived by `relayout` so the
+    /// editor follows its tab through any reflow.
+    fn tab_rename_rect(&self, idx: usize) -> Rect {
+        let m = &self.metrics;
         let tab = self
             .tab_rects
             .iter()
             .find(|(_, i)| *i == idx)
             .map_or(self.add_tab_rect, |(r, _)| *r);
-        // Give the editor a little more room than the tab so a longer name fits.
-        let right = (tab.x0 + 150.0).min(self.rect.x1 - 8.0).max(tab.x1);
-        let rect = Rect::new(tab.x0, tab.y0, right, tab.y1);
+        let right = (tab.x0 + TAB_RENAME_MIN_W * m.text_growth())
+            .min(self.rect.x1 - m.s2)
+            .max(tab.x1);
+        Rect::new(tab.x0, tab.y0, right, tab.y1)
+    }
+
+    fn begin_tab_rename(&mut self, idx: usize) {
+        let name = self.sheet_names.get(idx).cloned().unwrap_or_default();
+        let rect = self.tab_rename_rect(idx);
         let mut editor = EditableLabel::new(&name)
             .with_font_size(14.0)
             .with_id("sheet_tab_rename");
@@ -7382,12 +7832,13 @@ fn seed_sales_sheet(doc: &mut AutoCommit) {
 }
 
 #[cfg(test)]
+#[path = "app/r2_annotation_cards.rs"]
+mod r2_annotation_cards;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::grid::GridCmd;
-
-    /// Serializes the tests that mutate the process-global `XDG_DATA_HOME`.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Serializes tests that round-trip through the process-global system
     /// clipboard, so a parallel test's copy can't land between another's
@@ -7397,13 +7848,290 @@ mod tests {
 
     /// Build an app in the seeded (sample) mode and run the first `sync`, which
     /// is exactly what the live/offscreen paths do before drawing.
-    fn seeded_app() -> (SheetsApp, AutoCommit) {
+    pub(super) fn seeded_app() -> (SheetsApp, AutoCommit) {
         let mut app = SheetsApp::new();
         app.shots_mode(); // seed sample data, no disk persistence
         let mut doc = AutoCommit::new();
         let root = automerge::ROOT;
         app.sync(&mut doc, &root);
         (app, doc)
+    }
+
+    /// A seeded app laid out at `width × height` whose chrome metrics were
+    /// resolved against a renderer at `text_scale`, exactly as the first draw
+    /// of a frame does. Returns the renderer so a test can re-measure labels
+    /// with the same instance.
+    pub(super) fn measured_app(
+        width: f64,
+        height: f64,
+        text_scale: f32,
+    ) -> (SheetsApp, TextRenderer) {
+        let (mut app, _doc) = seeded_app();
+        app.rect = Rect::new(0.0, 0.0, width, height);
+        app.relayout();
+        let theme = Theme::dark().with_text_scale(text_scale);
+        let mut tr = TextRenderer::new();
+        tr.set_text_scale(theme.text_scale);
+        app.text_scale = f64::from(theme.text_scale);
+        app.grid.set_text_scale(app.text_scale);
+        app.refresh_chrome_metrics(&mut tr, &theme);
+        (app, tr)
+    }
+
+    /// Final-pixel width of `label` painted at the chrome's `sm` size.
+    fn sm_label_w(tr: &mut TextRenderer, app: &SheetsApp, label: &str) -> f64 {
+        f64::from(
+            tr.measure_weighted(label, app.metrics.sm, None, TextWeight::Semibold)
+                .0,
+        )
+    }
+
+    /// At 1× the measured chrome reproduces the classic band density
+    /// exactly: 44 px menu bar, 34 px formula bar, 34 px tab strip, 28 px
+    /// column header, 26 px default row, 56 px row header.
+    #[test]
+    fn chrome_metrics_keep_the_one_x_density() {
+        let (app, _tr) = measured_app(1280.0, 720.0, 1.0);
+        assert!((app.menubar_rect.height() - 44.0).abs() < 0.01, "menu bar");
+        assert!(
+            (app.formula_rect.height() - 40.0).abs() < 0.01,
+            "formula bar"
+        );
+        assert!((app.tabs_rect.height() - 38.0).abs() < 0.01, "tab strip");
+        let g = app.grid.metrics();
+        assert!((g.col_header_h() - 28.0).abs() < 0.01, "column header");
+        assert!((g.default_row_h() - 26.0).abs() < 0.01, "default row");
+        assert!((g.row_header_w() - 56.0).abs() < 0.01, "row header");
+    }
+
+    /// At 2× every chrome band, button and label slot follows the measured
+    /// text: nothing is painted from the 1× geometry, and the shared renderer
+    /// scale is applied exactly once (a token size fed to the renderer twice
+    /// would need roughly twice the room again).
+    #[test]
+    fn chrome_bands_and_labels_follow_measured_text_at_two_x() {
+        let (app, mut tr) = measured_app(1280.0, 720.0, 2.0);
+        let m = app.metrics.clone();
+        // Sizes handed to the renderer are the theme tokens divided back by
+        // the renderer scale, so the final glyphs land at the token size.
+        assert!((m.sm - 12.0).abs() < 0.01, "sm renderer input {}", m.sm);
+        assert!(
+            (m.base - 14.0).abs() < 0.01,
+            "base renderer input {}",
+            m.base
+        );
+        assert!(m.lh_sm > 28.0 && m.lh_sm < 32.0, "sm line box {}", m.lh_sm);
+
+        // Bands grew to their text.
+        assert!(app.menubar_rect.height() > 44.0);
+        assert!(app.formula_rect.height() >= m.lh_base + 2.0 * m.s1);
+        assert!(app.tabs_rect.height() >= m.lh_sm + m.s1);
+        assert!(app.grid.metrics().col_header_h() >= m.lh_sm);
+        assert!(app.grid.metrics().default_row_h() >= m.lh_base);
+
+        // Menu buttons: one centre line, `s2` apart, each wide enough for the
+        // label it paints (measured with the painting style).
+        let centre = app.menu_buttons[0].rect.center().y;
+        for pair in app.menu_buttons.windows(2) {
+            assert!(
+                (pair[0].rect.center().y - centre).abs() < 0.01,
+                "one centre line"
+            );
+            assert!(
+                (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
+                "menu buttons are s2 apart"
+            );
+        }
+        for b in &app.menu_buttons {
+            let label = SheetsApp::menu_button_label(&b.label, b.opens.is_some());
+            let w = sm_label_w(&mut tr, &app, &label);
+            assert!(
+                b.rect.width() >= w + 2.0 * m.s3 - 0.01,
+                "'{label}' needs {w:.1} + padding, button is {:.1}",
+                b.rect.width()
+            );
+            assert!(
+                b.rect.height() >= m.lh_sm,
+                "button taller than its line box"
+            );
+        }
+
+        // Formula bar: the fx glyph fits its own hit slot, which is exactly
+        // where it is painted; field and name box share one centre line.
+        assert!(app.fx_rect.width() >= m.fx_w + 2.0 * m.s2 - 0.01);
+        assert!((app.fx_rect.center().y - app.name_box_rect.center().y).abs() < 0.01);
+        assert!((app.formula_field_rect.center().y - app.name_box_rect.center().y).abs() < 0.01);
+        assert!(app.name_box_rect.width() >= sm_label_w(&mut tr, &app, NAME_BOX_REFERENCE));
+
+        // Sheet tabs fit their names and share the strip's centre line.
+        for (rect, idx) in &app.tab_rects {
+            let name = &app.sheet_names[*idx];
+            let w = sm_label_w(&mut tr, &app, name);
+            assert!(rect.width() >= w + 2.0 * m.s3 - 0.01, "tab '{name}' fits");
+            assert!(rect.height() >= m.lh_sm);
+            assert!((rect.center().y - app.add_tab_rect.center().y).abs() < 0.01);
+        }
+        assert!(
+            (app.add_tab_rect.width() - app.add_tab_rect.height()).abs() < 0.01,
+            "+ is square"
+        );
+    }
+
+    /// The floating status pill anchors above the grid's horizontal scrollbar
+    /// rail (with an `s2` gap), never inside it and never on the tab strip.
+    #[test]
+    fn status_bubble_floats_above_the_scrollbar_rail() {
+        for scale in [1.0_f32, 2.0] {
+            let (app, mut tr) = measured_app(1200.0, 800.0, scale);
+            let rail_top = app.grid_rect.y1 - Grid::scrollbar_thickness();
+            let bottom = app.status_bubble_bottom();
+            assert!(
+                bottom <= rail_top - app.metrics.s2 + 0.01,
+                "at {scale}x the pill bottom {bottom} sits on the scrollbar rail (top {rail_top})"
+            );
+            assert!(bottom < app.tabs_rect.y0);
+            // The pill is at least as tall as its measured text plus `s2`
+            // above and below, so a 2× label never spills out of it.
+            let (w, h) = app.status_pill_size(&mut tr, "Currency (USD)");
+            let (tw, th) =
+                tr.measure_weighted("Currency (USD)", app.metrics.sm, None, TextWeight::Medium);
+            assert!(
+                h >= f64::from(th) + 2.0 * app.metrics.s2 - 0.01,
+                "pill height {h} at {scale}x"
+            );
+            assert!(w >= f64::from(tw), "pill width {w} at {scale}x");
+        }
+    }
+
+    /// Sheet tabs stay between the (text-grown) touch-target floor and the
+    /// long-name ceiling, so one long name never pushes the "+" button off the
+    /// strip, and the painter elides rather than overruns.
+    #[test]
+    fn sheet_tabs_keep_their_floor_and_ceiling_at_every_scale() {
+        for scale in [1.0_f32, 2.0] {
+            let (mut app, mut tr) = measured_app(1000.0, 700.0, scale);
+            let long = "Quarterly consolidated regional operating expenses by cost centre";
+            app.sheet_names = vec![long.to_owned(), "Q".to_owned()];
+            app.relayout();
+            let g = app.metrics.text_growth();
+            let (wide, _) = app.tab_rects[0];
+            let (narrow, _) = app.tab_rects[1];
+            assert!(
+                wide.width() <= TAB_MAX_W * g + 0.01,
+                "long name is capped at {scale}x"
+            );
+            assert!(
+                narrow.width() >= TAB_MIN_W * g - 0.01,
+                "short name keeps the floor at {scale}x"
+            );
+            assert!(app.add_tab_rect.x1 <= app.rect.x1, "'+' stays on the strip");
+            // The painter's elision fits the capped tab with `s3` each side.
+            let elided = tr.elide_to_width_weighted(
+                long,
+                app.metrics.sm,
+                (wide.width() - 2.0 * app.metrics.s3) as f32,
+                TextWeight::Semibold,
+            );
+            let (ew, _) = tr.measure_weighted(&elided, app.metrics.sm, None, TextWeight::Semibold);
+            assert!(f64::from(ew) <= wide.width() - 2.0 * app.metrics.s3 + 0.5);
+            assert!(elided.ends_with('…') && elided.chars().count() < long.chars().count());
+        }
+    }
+
+    /// Settings panel: each section label is centred on its first chip row,
+    /// chips in a row share one centre line with `s2` gaps, every chip fits
+    /// its label, and the panel wraps its own content.
+    #[test]
+    fn settings_panel_labels_align_with_their_chip_rows() {
+        for scale in [1.0_f32, 2.0] {
+            let (mut app, mut tr) = measured_app(1200.0, 800.0, scale);
+            app.shots_open_doc_settings();
+            app.relayout();
+            let m = app.metrics.clone();
+            let firsts = [
+                SettingKind::Currency(None),
+                SettingKind::Date(None),
+                SettingKind::Time(None),
+            ];
+            for (section_y, first) in app.settings_section_y.iter().zip(firsts) {
+                let chip = app
+                    .setting_chips
+                    .iter()
+                    .find(|c| c.kind == first)
+                    .expect("section's Default chip");
+                assert!(
+                    (chip.rect.y0 - section_y).abs() < 0.01,
+                    "at {scale}x the section label row starts with its first chip"
+                );
+            }
+            for pair in app.setting_chips.windows(2) {
+                if (pair[0].rect.y0 - pair[1].rect.y0).abs() < 0.01 {
+                    assert!(
+                        (pair[1].rect.x0 - pair[0].rect.x1 - m.s2).abs() < 0.01,
+                        "chips in a row are s2 apart"
+                    );
+                } else {
+                    assert!(
+                        pair[1].rect.y0 >= pair[0].rect.y1 + m.s2 - 0.01,
+                        "rows do not overlap"
+                    );
+                }
+            }
+            for chip in &app.setting_chips {
+                let (label, _) = app.chip_label_and_state(chip.kind);
+                let w = sm_label_w(&mut tr, &app, &label);
+                assert!(
+                    chip.rect.width() >= w + 2.0 * m.s3 - 0.01,
+                    "chip '{label}' fits"
+                );
+                assert!(chip.rect.height() >= m.lh_sm);
+                assert!(app.panel_rect.contains(chip.rect.center()));
+                assert!(chip.rect.x1 <= app.panel_rect.x1 - m.s6 + 0.01);
+            }
+            let last = app
+                .setting_chips
+                .iter()
+                .map(|c| c.rect.y1)
+                .fold(0.0_f64, f64::max);
+            assert!(
+                app.panel_rect.y1 >= last + m.s6 + m.lh_xs,
+                "panel leaves room for its footer under the last chip row"
+            );
+        }
+    }
+
+    /// Sheet-tab menu: rows are measured, the "Colour" caption block and the
+    /// swatch strip both fit inside the panel at 2×.
+    #[test]
+    fn tab_menu_reserves_room_for_its_caption_and_swatches_at_two_x() {
+        let (mut app, mut tr) = measured_app(1200.0, 800.0, 2.0);
+        app.shots_open_tab_menu();
+        app.relayout();
+        let m = app.metrics.clone();
+        let panel = app.tab_menu_rect;
+        for (rect, act) in &app.tab_menu_rows {
+            assert!(
+                rect.height() >= m.lh_sm - MENU_ROW_SEAM,
+                "row fits its line box"
+            );
+            let w = sm_label_w(&mut tr, &app, tab_action_label(*act));
+            assert!(
+                rect.width() >= w + 2.0 * m.s2 - 0.01,
+                "row fits '{}'",
+                tab_action_label(*act)
+            );
+        }
+        let first = app.tab_menu_swatches[0].0;
+        let caption_top = first.y0 - m.s1 - m.lh_xs;
+        let last_row = app.tab_menu_rows.last().expect("rows").0;
+        assert!(
+            caption_top >= last_row.y1,
+            "caption sits under the last row"
+        );
+        for (swatch, _) in &app.tab_menu_swatches {
+            assert!(panel.contains(swatch.center()));
+            assert!(swatch.x1 <= panel.x1 - m.s2 + 0.01 && swatch.y1 <= panel.y1 - m.s2 + 0.01);
+        }
     }
 
     /// Background persistence deliberately never blocks a frame. Tests that
@@ -8089,9 +8817,7 @@ mod tests {
     /// fine-pointer contract, and prove the same surfaces expand at 2× type.
     #[test]
     fn chrome_targets_meet_the_pointer_minimum_and_scale_with_type() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.relayout();
+        let (app, _tr) = measured_app(560.0, 720.0, 1.0);
         let minimum = f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target());
         assert!(
             app.menu_buttons
@@ -8106,9 +8832,7 @@ mod tests {
                 .all(|(rect, _)| rect.height() >= minimum)
         );
 
-        app.text_scale = 2.0;
-        app.grid.set_text_scale(2.0);
-        app.relayout();
+        let (app, _tr) = measured_app(560.0, 720.0, 2.0);
         assert!(
             app.menu_buttons
                 .iter()
@@ -8208,12 +8932,12 @@ mod tests {
 
     #[test]
     fn blank_launch_opens_a_single_empty_sheet() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         // A real launch (persist on, but pointed at an empty temp data dir)
         // must NOT fabricate the sample workbook.
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-blank-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
 
         let mut app = SheetsApp::new(); // RunMode::Live: blank, persisted
         let mut doc = AutoCommit::new();
@@ -8271,10 +8995,10 @@ mod tests {
 
     #[test]
     fn workbook_persists_and_reloads() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-persist-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
 
         // Session one: blank launch, edit a cell, persist.
         let mut app = SheetsApp::new();
@@ -8340,13 +9064,13 @@ mod tests {
 
     #[test]
     fn persistence_coalesces_edits_that_arrive_during_a_save() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp = std::env::temp_dir().join(format!(
             "tilo-sheets-persist-coalesce-{}",
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
         let mut app = SheetsApp::new();
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
@@ -8384,11 +9108,11 @@ mod tests {
 
     #[test]
     fn incoming_change_during_load_is_saved_after_the_disk_workbook_merges() {
-        let _guard = ENV_LOCK.lock().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
         let tmp =
             std::env::temp_dir().join(format!("tilo-sheets-load-race-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        unsafe { std::env::set_var("XDG_DATA_HOME", &tmp) };
+        env.set("XDG_DATA_HOME", &tmp);
         let mut on_disk = AutoCommit::new();
         SheetsDoc::add_sheet(&mut on_disk, "Disk");
         SheetsDoc::set_cell_raw(&mut on_disk, 0, (0, 0), "saved");
@@ -8810,7 +9534,8 @@ mod tests {
 
     /// The portal drain path: a Save outcome writes the active sheet, and an
     /// Open outcome imports it back — driving the exact per-frame `drain_io`
-    /// the host file chooser feeds, via an injected outcome (no D-Bus dialog).
+    /// the host file chooser feeds, answered by a recording host (no D-Bus
+    /// dialog).
     #[test]
     fn portal_drain_exports_then_imports_through_the_picked_path() {
         let tmp = std::env::temp_dir().join(format!("tilo-sheets-portal-{}", std::process::id()));
@@ -8820,11 +9545,11 @@ mod tests {
 
         let (mut app, mut doc) = seeded_app();
 
-        // Inject a Save outcome as though the user picked `path`, then drain.
-        app.io = Some((
-            PendingIo::Export(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path.clone())),
-        ));
+        // Answer the Save dialog as though the user picked `path`, then drain.
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Opened(path.clone()));
+        ui::host::scoped(&services, || app.begin_export(Interchange::Csv));
+        assert!(recorder.pick_requests()[0].suggested_name().is_some());
         app.drain_io(&mut doc);
         // The file codec runs on the bounded worker. Drive the same frame pump
         // as a live app and wait by elapsed time, not an arbitrary count of
@@ -8842,12 +9567,11 @@ mod tests {
             app.status
         );
 
-        // Inject an Open outcome for the same path and drain: it imports a sheet.
+        // Answer an Open dialog with the same path and drain: it imports a sheet.
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Csv),
-            ui::portal::inject_for_test(PortalOutcome::Opened(path)),
-        ));
+        recorder.respond_to_pick(PortalOutcome::Opened(path));
+        ui::host::scoped(&services, || app.begin_import(Interchange::Csv));
+        assert_eq!(recorder.pick_requests().len(), 2);
         app.drain_io(&mut doc);
         sync_until(&mut app, &mut doc, |app| app.interchange_rx.is_none());
         assert_eq!(
@@ -8869,10 +9593,10 @@ mod tests {
     fn portal_cancel_is_silent() {
         let (mut app, mut doc) = seeded_app();
         let before = SheetsDoc::sheet_count(&mut doc);
-        app.io = Some((
-            PendingIo::Import(Interchange::Xlsx),
-            ui::portal::inject_for_test(PortalOutcome::Cancelled),
-        ));
+        let (services, recorder) = ui::host::HostServices::recording();
+        recorder.respond_to_pick(PortalOutcome::Cancelled);
+        ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
+        assert!(app.io.is_some(), "import asked the host chooser");
         app.drain_io(&mut doc);
         assert!(app.io.is_none());
         assert_eq!(
@@ -9306,11 +10030,7 @@ mod tests {
 
     #[test]
     fn narrow_large_text_collapses_secondary_toolbar_actions_without_clipping() {
-        let (mut app, _doc) = seeded_app();
-        app.rect = Rect::new(0.0, 0.0, 560.0, 720.0);
-        app.text_scale = 2.0;
-        app.grid.set_text_scale(2.0);
-        app.relayout();
+        let (mut app, _tr) = measured_app(560.0, 720.0, 2.0);
         let labels: Vec<&str> = app
             .menu_buttons
             .iter()

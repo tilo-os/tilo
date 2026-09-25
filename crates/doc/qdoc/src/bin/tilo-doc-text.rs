@@ -242,12 +242,6 @@ mod tests {
         "/tests/data/word-processor-typed.automerge"
     ));
 
-    /// The same app's document before anything was typed into it.
-    const BEFORE_TYPING: &[u8] = include_bytes!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/tests/data/word-processor-untouched.automerge"
-    ));
-
     #[test]
     fn the_reply_from_a_running_app_cannot_be_searched_as_bytes() {
         assert!(
@@ -268,7 +262,7 @@ mod tests {
     /// The control: without it the test above would also pass against a document that never had the text.
     #[test]
     fn the_same_app_before_typing_holds_no_such_text() {
-        let found = strings(BEFORE_TYPING);
+        let found = strings(&saved_document(""));
         assert!(
             !found.iter().any(|(_, t)| t.contains(TYPED)),
             "the untouched document must not report the phrase",
@@ -276,8 +270,7 @@ mod tests {
         assert!(
             found
                 .iter()
-                // This captured pre-rename document deliberately retains its persisted schema ID.
-                .any(|(p, t)| p == "schema" && t == "qos.richtext"),
+                .any(|(p, t)| p == "schema" && t == "tilo.richtext"),
             "and it is a word-processor document all the same, so the negative \
              above is an answer and not an empty walk",
         );

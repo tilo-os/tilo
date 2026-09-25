@@ -70,6 +70,10 @@ const BOUNDARY_HIT: f64 = 11.0;
 const RESIZE_HIT: f64 = 4.0;
 const PILL_R: f64 = 8.0;
 const DELETE_SIDE: f64 = 15.0;
+/// Cell type, a deliberate off-scale value between `base` (14) and `lg` (16):
+/// the authored default of this grid, kept exact at 1×. `TextInput` takes a
+/// *base* size and applies the renderer's text scale itself, so the cells
+/// still follow the accessibility text scale.
 const CELL_FONT: f32 = 15.0;
 
 // ---------------------------------------------------------------------------
@@ -411,6 +415,7 @@ pub struct Table {
     dirty: bool,
     structure_dirty: bool,
     pending_commit: bool,
+    projection_exit: Option<bool>,
 }
 
 impl Table {
@@ -432,6 +437,7 @@ impl Table {
             dirty: true,
             structure_dirty: false,
             pending_commit: false,
+            projection_exit: None,
         }
     }
 
@@ -460,12 +466,323 @@ impl Table {
         self.n_rows() == 0 || self.n_cols() == 0
     }
 
+    fn projected_index(&self, row: usize, column: usize) -> Option<usize> {
+        row.checked_mul(self.n_cols())?
+            .checked_add(column)
+            .filter(|index| *index < self.cells.len())
+    }
+
+    fn projected_position(&self, index: usize) -> Option<(usize, usize)> {
+        let columns = self.n_cols();
+        Some((index.checked_div(columns)?, index.checked_rem(columns)?))
+    }
+
     fn make_cell(rid: &str, cid: &str) -> TextInput {
         TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
             .with_on_change_path(&cell_key(rid, cid))
             .with_plain_chrome()
             .with_font_size(CELL_FONT)
+    }
+
+    /// Local projection for hosts whose canonical table is already represented
+    /// by another resource (for example a Markdown block). No shadow CRDT is
+    /// created: edits are returned to the host's normal action bridge.
+    pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
+        let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+        let saved_focus = self.projected_focus().and_then(|(row, column)| {
+            let state = self
+                .cells
+                .get(self.projected_index(row, column)?)?
+                .get_state();
+            Some((row, column, state))
+        });
+        let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
+        if shape_changed {
+            self.row_ids = (0..rows.len()).map(|row| row.to_string()).collect();
+            self.col_ids = (0..columns).map(|column| column.to_string()).collect();
+            self.cells = (0..rows.len().saturating_mul(columns))
+                .map(|_| {
+                    let mut input = TextInput::local().with_plain_chrome().with_font_size(14.0);
+                    input.set_multiline(true);
+                    input
+                })
+                .collect();
+        }
+        for (index, input) in self.cells.iter_mut().enumerate() {
+            let value = index
+                .checked_div(columns)
+                .zip(index.checked_rem(columns))
+                .and_then(|(row, column)| rows.get(row).and_then(|row| row.get(column)))
+                .map_or("", String::as_str);
+            // set_text is a no-op for an unchanged model echo, retaining caret
+            // and selection through normal redraws and canonical commits.
+            input.set_text(value);
+        }
+        if shape_changed
+            && let Some((row, column, caret)) = saved_focus
+            && !rows.is_empty()
+            && columns > 0
+        {
+            let row = row.min(rows.len().saturating_sub(1));
+            let column = column.min(columns.saturating_sub(1));
+            self.focus_projected_cell(row, column);
+            if let Some(caret) = caret {
+                self.restore_projected_caret(&caret);
+            }
+        }
+    }
+
+    pub(super) fn project_geometry(
+        &mut self,
+        rects: &[Rect],
+        tr: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        for (input, rect) in self.cells.iter_mut().zip(rects) {
+            input.apply_layout_external(*rect);
+            input.prepare_wrapped_layout(tr, theme);
+        }
+    }
+
+    pub(super) fn projected_focus(&self) -> Option<(usize, usize)> {
+        self.cells
+            .iter()
+            .position(Widget::is_focused)
+            .and_then(|index| self.projected_position(index))
+    }
+
+    pub(super) fn projected_caret(&self) -> Option<String> {
+        let (row, column) = self.projected_focus()?;
+        self.cells
+            .get(self.projected_index(row, column)?)?
+            .get_state()
+    }
+
+    pub(super) fn restore_projected_caret(&mut self, state: &str) {
+        let Some((row, column)) = self.projected_focus() else {
+            return;
+        };
+        let Some(index) = self.projected_index(row, column) else {
+            return;
+        };
+        let Some(input) = self.cells.get_mut(index) else {
+            return;
+        };
+        input.set_state(state);
+        let caret = input.caret_position();
+        let selection = input.selection_range_public();
+        input.set_caret_position(caret);
+        if let Some((start, end)) = selection {
+            let anchor = if caret.byte == start { end } else { start };
+            let clamped_caret = input.caret_position();
+            input.set_cursor_pos(anchor);
+            let clamped_anchor = input.cursor_pos();
+            input.set_selection_at(clamped_anchor, clamped_caret);
+        }
+    }
+
+    pub(super) fn focus_projected_cell(&mut self, row: usize, column: usize) -> bool {
+        if row >= self.n_rows() || column >= self.n_cols() {
+            return false;
+        }
+        let Some(target) = self.projected_index(row, column) else {
+            return false;
+        };
+        for (index, input) in self.cells.iter_mut().enumerate() {
+            input.set_focus(index == target);
+        }
+        true
+    }
+
+    pub(super) fn blur_projection(&mut self) {
+        for input in &mut self.cells {
+            input.set_focus(false);
+        }
+    }
+
+    pub(super) fn projected_rect(&self, row: usize, column: usize) -> Option<Rect> {
+        self.cells
+            .get(row.checked_mul(self.n_cols())?.checked_add(column)?)
+            .map(Widget::get_rect)
+    }
+
+    pub(super) fn take_projection_exit(&mut self) -> Option<bool> {
+        self.projection_exit.take()
+    }
+
+    pub(super) fn projected_ime_rect(&self) -> Option<Rect> {
+        self.cells
+            .iter()
+            .find(|input| input.is_focused())
+            .and_then(Widget::ime_cursor_rect)
+    }
+
+    #[allow(
+        clippy::option_option,
+        reason = "outer Option distinguishes an unsupported command; inner Option distinguishes a handled command with no cell edit"
+    )]
+    pub(super) fn projected_clipboard(
+        &mut self,
+        command: &str,
+    ) -> Option<Option<(usize, usize, String)>> {
+        let (row, column) = self.projected_focus()?;
+        let index = self.projected_index(row, column)?;
+        let input = self.cells.get_mut(index)?;
+        let before = input.value().to_owned();
+        match command {
+            "select-all" => input.set_selection(0, input.value().len()),
+            "copy" | "cut" => {
+                if let Some((start, end)) = input.selection_range_public()
+                    && let Some(selected) = input.value().get(start..end)
+                {
+                    crate::text_selection::clipboard_copy(selected);
+                    if command == "cut" {
+                        input.delete_local_selection();
+                    }
+                }
+            }
+            "paste" => {
+                if let Some(value) = crate::text_selection::clipboard_paste() {
+                    input.insert_at_cursor(&value);
+                }
+            }
+            _ => return None,
+        }
+        let changed = (input.value() != before).then(|| (row, column, input.value().to_owned()));
+        let _ = input.take_dirty();
+        Some(changed)
+    }
+
+    pub(super) fn draw_projected_focus(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        suppress_caret: bool,
+    ) {
+        for input in self.cells.iter_mut().filter(|input| input.is_focused()) {
+            let rect = input.get_rect();
+            scene.fill(
+                Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.raised,
+                None,
+                &rect,
+            );
+            scene.stroke(
+                &Stroke::new(1.0),
+                transform,
+                theme.tokens.colors.border_focus,
+                None,
+                &rect,
+            );
+            input.suppress_caret_paint(suppress_caret);
+            input.draw(scene, transform, tr, theme, presence);
+            input.suppress_caret_paint(false);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments, reason = "shared TextInput event context")]
+    #[allow(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "the Widget event interface supplies modifiers by reference"
+    )]
+    pub(super) fn handle_projected_event(
+        &mut self,
+        event: &WindowEvent,
+        scale_factor: f64,
+        modifiers: &winit::event::Modifiers,
+        state: &mut AutoCommit,
+        path: &ObjId,
+        handled: &mut bool,
+        focus_target: &mut Option<NodeId>,
+        node: NodeId,
+        taffy: &TaffyTree<()>,
+    ) -> Option<(usize, usize, String)> {
+        if let WindowEvent::CursorMoved { position, .. } = event {
+            self.last_cursor = Some(Point::new(
+                position.x / scale_factor,
+                position.y / scale_factor,
+            ));
+        }
+        if matches!(
+            event,
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            }
+        ) {
+            if let Some(index) = self.last_cursor.and_then(|point| {
+                self.cells
+                    .iter()
+                    .position(|input| input.get_rect().contains(point))
+            }) {
+                if let Some((row, column)) = self.projected_position(index) {
+                    self.focus_projected_cell(row, column);
+                }
+                *focus_target = Some(node);
+            } else {
+                self.blur_projection();
+            }
+        }
+        let (row, column) = self.projected_focus()?;
+        let focused = self.projected_index(row, column)?;
+        if let WindowEvent::KeyboardInput { event, .. } = event
+            && event.state == ElementState::Pressed
+        {
+            let backwards = modifiers.state().shift_key();
+            let step = match event.logical_key {
+                Key::Named(NamedKey::Tab) => Some(1),
+                Key::Named(NamedKey::Enter)
+                    if !modifiers.state().control_key() && !modifiers.state().super_key() =>
+                {
+                    Some(self.n_cols())
+                }
+                _ => None,
+            };
+            if let Some(step) = step {
+                let target = if backwards {
+                    focused.checked_sub(step)
+                } else {
+                    focused
+                        .checked_add(step)
+                        .filter(|target| *target < self.cells.len())
+                };
+                if let Some(target) = target {
+                    if let Some((row, column)) = self.projected_position(target) {
+                        self.focus_projected_cell(row, column);
+                    }
+                } else {
+                    self.blur_projection();
+                    self.projection_exit = Some(!backwards);
+                }
+                *handled = true;
+                return None;
+            }
+            if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                self.blur_projection();
+                self.projection_exit = Some(true);
+                *handled = true;
+                return None;
+            }
+        }
+        let input = self.cells.get_mut(focused)?;
+        input.handle_event(
+            event,
+            scale_factor,
+            modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+            node,
+            taffy,
+        );
+        input.take_dirty().map(|text| (row, column, text))
     }
 
     /// Analytic grid geometry from the widget rect + stored widths — matches
@@ -620,7 +937,7 @@ impl Table {
             if hovered {
                 theme.accent_primary
             } else {
-                theme.border_standard
+                crate::surface::edge_on(box_color)
             },
             None,
             &rr,
@@ -671,8 +988,16 @@ impl Table {
     ) {
         let tk = &theme.tokens;
         let line = Stroke::new(1.0);
-        let line_color = tk.colors.border_white_10;
+        // Rules derive from the body surface they cross (HIG §9.5): a white
+        // veneer vanishes on a light table, a declared border on a dark one.
+        let line_color = crate::surface::edge_on(tk.colors.surfaces.raised);
+        // A 1 px rule centred on an integer edge smears over two half-alpha
+        // columns; the edges are whole pixels (see `draw`), so centre each
+        // rule on the pixel just inside the body.
+        let snap_x = |x: f64| if x >= gr { x - 0.5 } else { x + 0.5 };
+        let snap_y = |y: f64| if y >= gb { y - 0.5 } else { y + 0.5 };
         for &x in xs {
+            let x = snap_x(x);
             scene.stroke(
                 &line,
                 transform,
@@ -682,6 +1007,7 @@ impl Table {
             );
         }
         for &y in ys {
+            let y = snap_y(y);
             scene.stroke(
                 &line,
                 transform,
@@ -690,17 +1016,20 @@ impl Table {
                 &Line::new((gl, y), (gr, y)),
             );
         }
-        // Heavier separator under the header.
+        // Heavier separator under the header: the same crisp 1 px rule at
+        // the active-glow strength, so it reads darker/brighter rather than
+        // as a blurred one-and-a-half pixel band.
         if self.header
             && self.n_rows() >= 1
             && let Some(&y1) = ys.get(1)
         {
+            let y = snap_y(y1);
             scene.stroke(
-                &Stroke::new(1.5),
+                &line,
                 transform,
-                theme.border_standard,
+                crate::surface::edge_on_with(tk.colors.surfaces.raised, crate::chrome::GLOW_ALPHA),
                 None,
-                &Line::new((gl, y1), (gr, y1)),
+                &Line::new((gl, y), (gr, y)),
             );
         }
 
@@ -1165,12 +1494,18 @@ impl Widget for Table {
         }
 
         let (xs, ys) = self.grid_edges();
+        // Painted geometry snaps to whole pixels so a 1 px rule is exactly
+        // one row or column: a column width is a doc value and fractional
+        // after a drag. Hit-testing keeps the exact edges; the difference is
+        // under half a pixel.
+        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
+        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
         // Reached only past `is_empty()`, so both edge lists have >= 2
         // entries; the fallbacks below never actually apply.
         let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
-        let gr = self.grid_right();
+        let gr = self.grid_right().round();
         let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
-        let gb = self.grid_bottom();
+        let gb = self.grid_bottom().round();
         let body = Rect::new(gl, gt, gr, gb);
 
         // Grid body surface + header band + zebra rows.
@@ -1185,10 +1520,19 @@ impl Widget for Table {
             let [y0, y1] = *w else { continue };
             let row_rect = Rect::new(gl, y0, gr, y1);
             let is_header = self.header && r == 0;
+            // Header band and zebra stripe are derived tiers on the body
+            // surface (HIG §9.5), so they flip polarity on a light palette
+            // instead of laying a white veneer over a white table.
             let fill = if is_header {
-                tk.colors.surface_white_10
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::chrome::HAIRLINE_ALPHA,
+                )
             } else if r % 2 == 1 {
-                tk.colors.surface_white_5
+                crate::widget::data_table::tier_on(
+                    tk.colors.surfaces.raised,
+                    crate::widget::data_table::ZEBRA_ALPHA,
+                )
             } else {
                 continue;
             };

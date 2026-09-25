@@ -31,11 +31,11 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::sync::Arc;
+use ui::doc::read_str_or_text;
 
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tracing::warn;
-use ui::ColorCompat;
 use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
@@ -324,7 +324,7 @@ impl Widget for TimeZoneMap {
         if self.action.is_some() {
             return;
         }
-        if let Some(value) = read_text_setting(state, root, TIMEZONE_KEY) {
+        if let Some(value) = read_str_or_text(state, root, TIMEZONE_KEY) {
             self.selected = value;
             if self.cursor.is_none() {
                 self.cursor = self.selected_index();
@@ -388,33 +388,28 @@ impl Widget for TimeZoneMap {
         theme: &Theme,
         _presence: &ui::presence::PresenceCtx,
     ) {
-        let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.md));
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            theme.tokens.colors.surfaces.base,
-            None,
-            &shape,
-        );
-        scene.stroke(
-            &Stroke::new(if self.focused { 2.0 } else { 1.0 }),
-            transform,
-            if self.focused {
-                theme.border_focus
-            } else {
-                theme.border_standard
-            },
-            None,
-            &shape,
-        );
+        // The map is a base-surface well inside its raised card: the fill is
+        // the contrast step, and the rest edge derives from that fill
+        // (`ui::surface::card`, HIG §9.5) so it registers on the dark preset
+        // where a declared `border_standard` stroke did not. Focus replaces
+        // the hairline with the 2 px focus ring.
+        let radius = f64::from(theme.tokens.radii.md);
+        let well = theme.tokens.colors.surfaces.base;
+        ui::surface::card(scene, transform, self.rect, radius, well);
+        if self.focused {
+            scene.stroke(
+                &Stroke::new(2.0),
+                transform,
+                theme.border_focus,
+                None,
+                &RoundedRect::from_rect(self.rect, radius),
+            );
+        }
 
         let plot = self.plot_rect();
-        let grid_color = vello::peniko::Color::from_rgba8(
-            theme.border_standard.r(),
-            theme.border_standard.g(),
-            theme.border_standard.b(),
-            100,
-        );
+        // Graticule lines are the same derived hairline as the well's edge,
+        // so they read as one surface's ruling rather than a second border.
+        let grid_color = ui::surface::edge_on(well);
         for longitude in [-120.0, -60.0, 0.0, 60.0, 120.0] {
             let x = plot.x0 + ((longitude + 180.0) / 360.0) * plot.width();
             scene.stroke(
@@ -461,12 +456,7 @@ impl Widget for TimeZoneMap {
                 if is_selected {
                     theme.accent_primary
                 } else {
-                    vello::peniko::Color::from_rgba8(
-                        theme.text_dim.r(),
-                        theme.text_dim.g(),
-                        theme.text_dim.b(),
-                        170,
-                    )
+                    theme.text_dim.multiply_alpha(170.0 / 255.0)
                 },
                 None,
                 &Circle::new(centre, radius),
@@ -698,20 +688,6 @@ fn timezone() -> String {
         }
     }
     "Europe/Amsterdam".to_string()
-}
-
-/// Dropdowns use Automerge text objects while map clicks use a scalar string;
-/// accepting both keeps the two views over one setting instead of coupling
-/// the pane to either widget's storage representation.
-fn read_text_setting(state: &AutoCommit, root: &ObjId, key: &str) -> Option<String> {
-    match state.get(root, key).ok().flatten() {
-        Some((Value::Scalar(value), _)) => match value.as_ref() {
-            automerge::ScalarValue::Str(value) => Some(value.to_string()),
-            _ => None,
-        },
-        Some((Value::Object(ObjType::Text), object)) => state.text(&object).ok(),
-        _ => None,
-    }
 }
 
 /// Time & Date pane. Stateful so it can drive `set-ntp` on toggle and
@@ -1083,6 +1059,7 @@ impl Widget for TimeDatePane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ObjType;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use taffy::prelude::TaffyMaxContent;
@@ -1191,7 +1168,7 @@ mod tests {
             &root,
         ));
         assert_eq!(
-            read_text_setting(&doc, &root, &draft_key(TIMEZONE_KEY)).as_deref(),
+            read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
             Some("Europe/Berlin")
         );
         assert!(map.needs_commit(), "a real timezone choice is durable");

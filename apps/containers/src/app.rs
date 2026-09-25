@@ -334,7 +334,7 @@ impl ContainersApp {
             pull: None,
             search_field: SearchField::new()
                 .opens_palette()
-                .with_placeholder("Search containers…"),
+                .with_placeholder(crate::panels::LAUNCHER_PLACEHOLDER),
             palette: CommandPalette::commands(),
             palette_open: false,
             pending_resource_selection: None,

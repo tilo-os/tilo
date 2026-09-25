@@ -35,7 +35,7 @@ use zbus::interface;
 #[cfg(target_os = "linux")]
 use zbus::names::OwnedUniqueName;
 #[cfg(target_os = "linux")]
-use zbus::object_server::SignalContext;
+use zbus::object_server::SignalEmitter;
 
 #[cfg(any(test, target_os = "linux"))]
 use std::path::Path;
@@ -45,7 +45,8 @@ use std::sync::{Arc, Mutex};
 #[cfg(any(test, target_os = "linux"))]
 use zbus::zvariant::OwnedValue;
 
-use rand_core::{OsRng, RngCore};
+use getrandom::{SysRng, rand_core::UnwrapErr};
+use rand_core::Rng;
 use serde::{Deserialize, Serialize};
 
 #[cfg(target_os = "linux")]
@@ -722,7 +723,7 @@ impl NotificationBridge {
 fn random_nonzero_token() -> [u8; 16] {
     let mut token = [0; 16];
     while token == [0; 16] {
-        OsRng.fill_bytes(&mut token);
+        UnwrapErr(SysRng).fill_bytes(&mut token);
     }
     token
 }
@@ -865,6 +866,7 @@ fn parse_contact_endpoint(hints: &HashMap<String, OwnedValue>) -> Option<String>
     (value.len() <= 320 && !value.chars().any(char::is_control)).then_some(value)
 }
 
+#[cfg(any(test, target_os = "linux"))]
 fn parse_notification_sharing(hints: &HashMap<String, OwnedValue>) -> NotificationSharing {
     let Some(value) = hints.get("x-tilo-device-sharing") else {
         return NotificationSharing::Full;
@@ -1025,7 +1027,6 @@ fn read_bounded(path: &Path, max_bytes: u64) -> Option<String> {
     (metadata.len() <= max_bytes).then(|| std::fs::read_to_string(path).ok())?
 }
 
-#[cfg(any(test, target_os = "linux"))]
 fn valid_notification_app_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 160
@@ -1103,7 +1104,10 @@ impl NotificationService {
     ///
     /// Args (freedesktop spec): `app_name s`, `replaces_id u`, `app_icon s`,
     /// `summary s`, `body s`, `actions as`, `hints a{sv}`, `expire_timeout i`. Returns the assigned id `u`.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "The D-Bus Notify method preserves the freedesktop argument signature and receives the message header to authenticate its sender."
+    )]
     async fn notify(
         &self,
         #[zbus(header)] hdr: zbus::message::Header<'_>,
@@ -1163,7 +1167,7 @@ impl NotificationService {
     ) -> zbus::fdo::Result<u32> {
         let sender = hdr.sender().cloned().map(OwnedUniqueName::from);
         let caller = self.resolve_caller(sender.as_ref()).await;
-        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("dev.tilo.contacts") {
+        if caller.as_ref().map(|caller| caller.app_id.as_str()) != Some("so.tilo.contacts") {
             return Err(zbus::fdo::Error::AccessDenied(
                 "only the verified Contacts provider may replace priority contacts".into(),
             ));
@@ -1219,7 +1223,7 @@ impl NotificationService {
     /// `NotificationClosed(id, reason)` — emitted when a toast goes away.
     #[zbus(signal)]
     async fn notification_closed(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         id: u32,
         reason: u32,
     ) -> zbus::Result<()>;
@@ -1227,7 +1231,7 @@ impl NotificationService {
     /// `ActionInvoked(id, action_key)` — emitted when the user activates an action on a toast.
     #[zbus(signal)]
     async fn action_invoked(
-        ctxt: &SignalContext<'_>,
+        ctxt: &SignalEmitter<'_>,
         id: u32,
         action_key: String,
     ) -> zbus::Result<()>;
@@ -1277,7 +1281,7 @@ pub fn spawn_signal_emitter(
     bridge: NotificationBridge,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let ctxt = match SignalContext::new(&connection, OBJECT_PATH) {
+        let ctxt = match SignalEmitter::new(&connection, OBJECT_PATH) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("notifications: signal context build failed: {e}");
@@ -1347,7 +1351,7 @@ mod tests {
     fn continuity_draft(sharing: NotificationSharing) -> ContinuityNotificationDraft {
         ContinuityNotificationDraft {
             dbus_id: 7,
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: "Private subject".into(),
             body: "Private body".into(),
@@ -1450,7 +1454,7 @@ mod tests {
                 epoch: [1; 16],
                 token: [token; 16],
             },
-            app_id: "dev.tilo.mail".into(),
+            app_id: "so.tilo.mail".into(),
             app_name: "Mail".into(),
             title: title.into(),
             body: "Message".into(),

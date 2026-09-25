@@ -5,8 +5,8 @@
 //! as stopping one collaborator reverting another's work. Matching on a value
 //! two people share does not stop anything.
 //!
-//! These tests mutate the environment in one process, so they are serialised
-//! behind a mutex rather than left to race each other.
+//! These tests set the environment through `tilo_test_env`, which serialises
+//! them against every other test in the process that does.
 
 #![allow(
     clippy::unwrap_used,
@@ -18,60 +18,26 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
 use tilo_ui::collaboration::{local_app_id, local_user_id};
 
-fn env_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-/// Restores whatever was there, so one test's environment is not the next
-/// test's premise.
-struct EnvGuard(Vec<(&'static str, Option<String>)>);
-
-impl EnvGuard {
-    fn set(vars: &[(&'static str, Option<&str>)]) -> Self {
-        let saved = vars
-            .iter()
-            .map(|(k, _)| (*k, std::env::var(k).ok()))
-            .collect();
-        for (k, v) in vars {
-            // SAFETY: every test that touches the environment holds `env_lock`
-            // for its whole body, so no other thread is reading it here.
-            unsafe {
-                match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
-        Self(saved)
+/// Set and remove `vars` until the returned scope drops, which restores each
+/// prior value, so one test's environment is not the next test's premise.
+fn scoped_env(vars: &[(&str, Option<&str>)]) -> tilo_test_env::ScopedEnv {
+    let mut env = tilo_test_env::ScopedEnv::new();
+    for (key, value) in vars {
+        match value {
+            Some(value) => env.set(key, value),
+            None => env.remove(key),
+        };
     }
-}
-
-impl Drop for EnvGuard {
-    fn drop(&mut self) {
-        for (k, v) in &self.0 {
-            // SAFETY: as above — the test's `env_lock` guard outlives this.
-            unsafe {
-                match v {
-                    Some(v) => std::env::set_var(k, v),
-                    None => std::env::remove_var(k),
-                }
-            }
-        }
-    }
+    env
 }
 
 #[test]
 fn a_person_is_not_the_application_they_are_running() {
-    let _lock = env_lock();
-    let _env = EnvGuard::set(&[
-        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+    let _lock = tilo_test_env::lock();
+    let _env = scoped_env(&[
+        ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
         ("TILO_USER_ID", None),
         ("TILO_PRESENCE_HANDLE", None),
         ("TILO_USER_IDENTITY", None),
@@ -89,11 +55,11 @@ fn a_person_is_not_the_application_they_are_running() {
 /// apart — and one person's Ctrl+Z reverts the other's work.
 #[test]
 fn two_people_running_one_app_are_two_people() {
-    let _lock = env_lock();
+    let _lock = tilo_test_env::lock();
 
     let alice = {
-        let _env = EnvGuard::set(&[
-            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        let _env = scoped_env(&[
+            ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", Some("alice")),
             ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
@@ -101,8 +67,8 @@ fn two_people_running_one_app_are_two_people() {
         local_user_id()
     };
     let bob = {
-        let _env = EnvGuard::set(&[
-            ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+        let _env = scoped_env(&[
+            ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
             ("TILO_USER_ID", Some("bob")),
             ("TILO_PRESENCE_HANDLE", None),
             ("TILO_USER_IDENTITY", None),
@@ -120,9 +86,9 @@ fn two_people_running_one_app_are_two_people() {
 /// first one on the undo stack, unreachable by the person who performed it.
 #[test]
 fn the_same_person_is_the_same_id_every_time() {
-    let _lock = env_lock();
-    let _env = EnvGuard::set(&[
-        ("TILO_PACKAGE_ID", Some("dev.tilo.word-processor")),
+    let _lock = tilo_test_env::lock();
+    let _env = scoped_env(&[
+        ("TILO_PACKAGE_ID", Some("so.tilo.word-processor")),
         ("TILO_USER_ID", None),
         ("TILO_PRESENCE_HANDLE", None),
         ("TILO_USER_IDENTITY", None),

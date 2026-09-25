@@ -2,10 +2,14 @@
 # Spawn the tilo compositor headlessly + wait for the control socket.
 #
 # Usage:
-#   ./scripts/headless-examples/spawn-headless.sh [/tmp/tilo.sock]
+#   ./scripts/headless-examples/spawn-headless.sh [SOCKET]
+#
+# SOCKET defaults to $XDG_RUNTIME_DIR/tilo-session/test-control.sock, the
+# path tilo-control uses when nothing else is named. Never /tmp: another
+# account could bind a shared name first and receive every command.
 #
 # Behaviour:
-#   - Removes any stale socket at the chosen path.
+#   - Removes any stale socket at the chosen path (only a socket).
 #   - Sets TILO_TEST_CONTROL to the socket path.
 #   - Unsets DISPLAY + WAYLAND_DISPLAY so the binary boots truly headless.
 #   - Runs ./target/debug/shell --backend headless.
@@ -24,7 +28,7 @@
 
 set -euo pipefail
 
-SOCKET="${1:-/tmp/tilo.sock}"
+SOCKET="${1:-${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR is unset; pass a socket path in a private directory}/tilo-session/test-control.sock}"
 BINARY="$(dirname "$0")/../../target/debug/shell"
 
 if [ ! -x "$BINARY" ]; then
@@ -33,7 +37,9 @@ if [ ! -x "$BINARY" ]; then
     exit 1
 fi
 
-rm -f "$SOCKET"
+if [ -S "$SOCKET" ]; then
+    rm -f -- "$SOCKET"
+fi
 
 export TILO_TEST_CONTROL="$SOCKET"
 exec env -u DISPLAY -u WAYLAND_DISPLAY \

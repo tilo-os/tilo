@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Tilo app registry protocol — signed registry index (app-id → versions), iroh-blobs content transport, target selection, and the fail-closed resolve/verify/fetch path the app-host and pkg-cli share."
+description = "Tilo app registry protocol — signed registry index (app-id → versions), iroh-blobs content transport, target selection, and the fail-closed resolve/verify/fetch path the app-host and tilo-app-package-cli share."
 
 [lib]
 name = "app_registry"
@@ -13,10 +13,10 @@ path = "src/lib.rs"
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
-pkg = { path = "../pkg" }
+tilo-app-package = { path = "../tilo-app-package" }
 
 # Content-addressed blob transport — the SAME stack the FUSE filesystem
-# uses, so a qpkg blob is downloaded once and deduped across every app.
+# uses, so a tapp blob is downloaded once and deduped across every app.
 iroh.workspace = true
 iroh-base.workspace = true
 iroh-blobs.workspace = true
@@ -25,7 +25,7 @@ iroh-blobs.workspace = true
 # blob is fetched over iroh. Both async.
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
-reqwest = { workspace = true, features = ["rustls-tls"] }
+tilo-net = { path = "../../system/tilo-net", features = ["http"] }
 
 serde.workspace = true
 serde_json.workspace = true

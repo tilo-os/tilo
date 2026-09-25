@@ -37,8 +37,9 @@
 //!   [`OskWidget::with_swipe_model`] with no other change.
 
 use std::collections::{HashMap, VecDeque};
+use ui::doc::{read_bool, read_str};
 
-use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -963,20 +964,6 @@ impl OskWidget {
     }
 }
 
-fn read_config_text(state: &AutoCommit, path: &ObjId, key: &str) -> Option<String> {
-    match state.get(path, key) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_str().map(ToOwned::to_owned),
-        _ => None,
-    }
-}
-
-fn read_config_bool(state: &AutoCommit, path: &ObjId, key: &str) -> Option<bool> {
-    match state.get(path, key) {
-        Ok(Some((Value::Scalar(value), _))) => value.to_bool(),
-        _ => None,
-    }
-}
-
 /// Interaction/visual flags for one drawn cell, bundled so [`draw_cell`]
 /// doesn't take four separate `bool` parameters.
 #[derive(Clone, Copy, Default)]
@@ -998,7 +985,10 @@ struct CellState {
 }
 
 /// Draw a rounded "button" cell (used for both keys and toolbar items).
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keyboard cells combine render context with bounds, optional icon, label, interaction state, and key-specific font scaling."
+)]
 fn draw_cell(
     scene: &mut Scene,
     transform: Affine,
@@ -1076,9 +1066,13 @@ fn draw_cell(
         return;
     }
     let font = (cell.height() * font_scale).clamp(11.0, 30.0) as f32;
-    let (tw, _th) = text_renderer.measure(label, font, None);
+    // Centre on the line the renderer paints (accessibility scale included),
+    // not on the nominal font size: at 2× the glyphs are twice as tall and a
+    // size-based offset sat them below the key centre and across the cell
+    // boundary.
+    let (tw, th) = text_renderer.measure(label, font, None);
     let tx = cell.center().x - f64::from(tw) / 2.0;
-    let ty = cell.y0 + (cell.height() - f64::from(font)) / 2.0;
+    let ty = cell.y0 + (cell.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         label,
@@ -1092,7 +1086,10 @@ fn draw_cell(
 /// Draw one suggestion chip: a pill with the word, themed by state. The `top`
 /// (best / auto-inserted) chip is accented; the rest are neutral. All colours
 /// come from theme tokens.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Suggestion chips combine render context with bounds and word plus independent hover, press, and best-suggestion states."
+)]
 fn draw_suggestion_chip(
     scene: &mut Scene,
     transform: Affine,
@@ -1144,9 +1141,10 @@ fn draw_suggestion_chip(
         return;
     }
     let font = (chip.height() * 0.5).clamp(12.0, 22.0) as f32;
-    let (tw, _th) = text_renderer.measure(word, font, None);
+    // Measured line height, so the word stays inside the pill at every scale.
+    let (tw, th) = text_renderer.measure(word, font, None);
     let tx = chip.center().x - f64::from(tw) / 2.0;
-    let ty = chip.y0 + (chip.height() - f64::from(font)) / 2.0;
+    let ty = chip.y0 + (chip.height() - f64::from(th)) / 2.0;
     text_renderer.draw_text(
         scene,
         word,
@@ -1274,9 +1272,9 @@ impl Widget for OskWidget {
             self.configuration_dirty = false;
             return;
         }
-        let layout = read_config_text(state, path, CONFIG_LAYOUT_KEY);
-        let suggestions = read_config_bool(state, path, CONFIG_SUGGESTIONS_KEY);
-        let personalization = read_config_bool(state, path, CONFIG_PERSONALIZATION_KEY);
+        let layout = read_str(state, path, CONFIG_LAYOUT_KEY);
+        let suggestions = read_bool(state, path, CONFIG_SUGGESTIONS_KEY);
+        let personalization = read_bool(state, path, CONFIG_PERSONALIZATION_KEY);
         if let Some(layout) = layout {
             // Remote/persisted config cannot introduce an arbitrary layout: it
             // must still be one registered in this OSK process.
@@ -1475,10 +1473,13 @@ impl Widget for OskWidget {
                     "Suggestions are off"
                 };
                 let font = (self.suggestion_area.height() * 0.38).clamp(12.0, 18.0) as f32;
-                let (width, _) = text_renderer.measure(hint, font, None);
+                // Centre on the measured line, as the key labels and chips
+                // do: the nominal size under-reads the line at 1× and by
+                // half a line at 2×, sinking the hint below the bar's centre.
+                let (width, height) = text_renderer.measure(hint, font, None);
                 let x = self.suggestion_area.center().x - f64::from(width) * 0.5;
                 let y = self.suggestion_area.y0
-                    + (self.suggestion_area.height() - f64::from(font)) * 0.5;
+                    + (self.suggestion_area.height() - f64::from(height)) * 0.5;
                 text_renderer.draw_text(
                     scene,
                     hint,
@@ -2542,7 +2543,7 @@ mod tests {
         // The compositor recognises the keyboard by this exact app-id to keep
         // it out of the tile layout and own its visibility. If this drifts, the
         // keyboard would be treated as an ordinary window — so pin the value.
-        assert_eq!(crate::KEYBOARD_APP_ID, "dev.tilo.osk");
+        assert_eq!(crate::KEYBOARD_APP_ID, "so.tilo.osk");
     }
 
     #[test]
@@ -2676,7 +2677,7 @@ mod tests {
         );
         osk.sync(&mut doc, &automerge::ROOT);
         assert_eq!(
-            read_config_text(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
+            read_str(&doc, &automerge::ROOT, CONFIG_LAYOUT_KEY).as_deref(),
             Some("azerty")
         );
 

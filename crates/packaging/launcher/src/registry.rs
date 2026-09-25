@@ -97,7 +97,7 @@ struct Registry {
     entry: Vec<InstalledPackage>,
 }
 
-/// `dev.tilo.text-editor` → `Text Editor`.
+/// `so.tilo.text-editor` → `Text Editor`.
 ///
 /// The fallback display name for a package with none — the trailing id
 /// component is the only signal there is. Separators become spaces and
@@ -154,14 +154,21 @@ pub const SYSTEM_DATA_DIR: &str = "/usr/share/tilo-apps";
 /// directory is the whole of it". A production desktop sets neither
 /// and gets `false`.
 pub fn store_is_scoped_to_this_session() -> bool {
-    std::env::var_os("TILO_APPS_SYSTEM_DIR").is_none()
-        && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
+    system_dir_override().is_none() && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
+}
+
+/// `TILO_APPS_SYSTEM_DIR`, when this build honours developer overrides.
+/// A release build ignores it: the image's store is not something the
+/// session environment gets to replace.
+fn system_dir_override() -> Option<std::ffi::OsString> {
+    crate::dev_env::dev_override(crate::dev_env::APPS_SYSTEM_DIR_ENV)
 }
 
 /// Root of the system store, or `None` when there is no system store
 /// to read.
 ///
-/// `TILO_APPS_SYSTEM_DIR` names it explicitly; otherwise it's
+/// `TILO_APPS_SYSTEM_DIR` names it explicitly (developer builds only —
+/// see [`crate::dev_env`]); otherwise it's
 /// [`SYSTEM_DATA_DIR`] — *unless* `TILO_APPS_DATA_DIR` is set, which
 /// suppresses it entirely. That's what makes the override usable for
 /// tests: `TILO_APPS_DATA_DIR` means "the store is here", and a test
@@ -169,10 +176,22 @@ pub fn store_is_scoped_to_this_session() -> bool {
 /// the same test would pass on a dev box and fail inside a Tilo image
 /// with real preinstalled packages counted alongside fixtures.
 pub fn system_data_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("TILO_APPS_SYSTEM_DIR") {
+    system_data_dir_from(
+        system_dir_override(),
+        std::env::var_os("TILO_APPS_DATA_DIR").is_some(),
+    )
+}
+
+/// [`system_data_dir`] as a function of the system-store override the
+/// build's gate let through and whether the user store was overridden.
+fn system_data_dir_from(
+    allowed_system_override: Option<std::ffi::OsString>,
+    user_store_overridden: bool,
+) -> Option<PathBuf> {
+    if let Some(dir) = allowed_system_override {
         return Some(PathBuf::from(dir));
     }
-    if store_is_scoped_to_this_session() {
+    if user_store_overridden {
         return None;
     }
     Some(PathBuf::from(SYSTEM_DATA_DIR))
@@ -221,10 +240,10 @@ pub enum RegistryError {
 mod tests {
     use super::*;
 
-    // Every test here sets `TILO_APPS_DATA_DIR` (process-wide), so they run
-    // in the `process_env` serial group, and pin `TILO_APPS_SYSTEM_DIR` at
-    // an empty dir so the reader doesn't fall back to the real
-    // `/usr/share/tilo-apps` and see the whole preinstalled fleet.
+    // The store roots are named by the environment, which is the contract
+    // under test here. Tests that read a store pin `TILO_APPS_SYSTEM_DIR` at
+    // an empty dir, or leave it unset beside `TILO_APPS_DATA_DIR`, so the
+    // reader never falls back to the real `/usr/share/tilo-apps`.
 
     /// Write a `registry.toml` naming `ids`, with a payload dir and
     /// manifest on disk for each, and return the directory.
@@ -250,32 +269,33 @@ mod tests {
 
     /// Run `f` with both store roots pointed at the given directories.
     fn with_stores<T>(system: &Path, user: &Path, f: impl FnOnce() -> T) -> T {
-        // SAFETY: callers are all in the `process_env` serial group.
-        unsafe {
-            std::env::set_var("TILO_APPS_SYSTEM_DIR", system);
-            std::env::set_var("TILO_APPS_DATA_DIR", user);
-        }
-        let out = f();
-        unsafe {
-            std::env::remove_var("TILO_APPS_SYSTEM_DIR");
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-        }
-        out
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_APPS_SYSTEM_DIR", system)
+            .set("TILO_APPS_DATA_DIR", user);
+        f()
+    }
+
+    /// Run `f` with only `TILO_APPS_DATA_DIR` set, which scopes the store to
+    /// exactly that directory.
+    fn data_dir_only<T>(user: &Path, f: impl FnOnce() -> T) -> T {
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_APPS_SYSTEM_DIR")
+            .set("TILO_APPS_DATA_DIR", user);
+        f()
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn system_store_entries_are_listed_without_any_user_install() {
         // The preinstalled case: an image ships a system registry and the user
         // never ran `tilo-install`. The palette must still have something to list.
-        let system = store_with(&["dev.tilo.notes", "dev.tilo.calculator"]);
+        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
         let user = tempfile::tempdir().expect("tempdir");
         let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["dev.tilo.notes", "dev.tilo.calculator"]);
+        assert_eq!(ids, vec!["so.tilo.notes", "so.tilo.calculator"]);
         // And a lookup by id resolves to the system payload.
         let found = with_stores(system.path(), user.path(), || {
-            find_installed("dev.tilo.notes")
+            find_installed("so.tilo.notes")
         })
         .expect("read")
         .expect("preinstalled notes is installed");
@@ -283,48 +303,47 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn both_stores_merge_and_a_user_install_shadows_the_system_one() {
-        let system = store_with(&["dev.tilo.notes", "dev.tilo.calculator"]);
-        let user = store_with(&["dev.tilo.notes", "dev.tilo.mine"]);
+        let system = store_with(&["so.tilo.notes", "so.tilo.calculator"]);
+        let user = store_with(&["so.tilo.notes", "so.tilo.mine"]);
         let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["dev.tilo.notes", "dev.tilo.calculator", "dev.tilo.mine"],
+            vec!["so.tilo.notes", "so.tilo.calculator", "so.tilo.mine"],
             "one row per id: the shadowed system entry must not appear twice",
         );
-        let notes = all.iter().find(|e| e.id == "dev.tilo.notes").unwrap();
+        let notes = all.iter().find(|e| e.id == "so.tilo.notes").unwrap();
         assert!(
             notes.payload_root.starts_with(user.path()),
             "a user install of a preinstalled id is the one that runs, got {:?}",
             notes.payload_root,
         );
         // The system-only entry is untouched by the shadowing.
-        let calc = all.iter().find(|e| e.id == "dev.tilo.calculator").unwrap();
+        let calc = all.iter().find(|e| e.id == "so.tilo.calculator").unwrap();
         assert!(calc.payload_root.starts_with(system.path()));
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn tilo_apps_data_dir_alone_suppresses_the_system_store() {
         // The isolation rule the shell's fixture tests depend on: setting only
         // TILO_APPS_DATA_DIR means "the store is exactly here" — otherwise a
         // test asserting a package count would pass on a dev box and fail
         // inside a Tilo image where /usr/share/tilo-apps is populated.
-        let user = store_with(&["dev.tilo.mine"]);
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", user.path()) };
+        let user = store_with(&["so.tilo.mine"]);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_APPS_SYSTEM_DIR")
+            .set("TILO_APPS_DATA_DIR", user.path());
         let resolved = system_data_dir();
         let all = list_installed().expect("read");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        env.remove("TILO_APPS_DATA_DIR");
         assert!(
             resolved.is_none(),
             "TILO_APPS_DATA_DIR without TILO_APPS_SYSTEM_DIR must suppress the \
              system store, got {resolved:?}",
         );
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["dev.tilo.mine"]);
+        assert_eq!(ids, vec!["so.tilo.mine"]);
 
         // With neither set, the real system path is what gets read.
         assert_eq!(
@@ -337,64 +356,74 @@ mod tests {
     /// The same rule asked as a question, for callers that want to know
     /// whether this session's applications are settled.
     #[test]
-    #[serial_test::serial(process_env)]
     fn a_store_is_scoped_only_when_it_is_the_whole_answer() {
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_APPS_SYSTEM_DIR");
-        }
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.remove("TILO_APPS_DATA_DIR")
+            .remove("TILO_APPS_SYSTEM_DIR");
         assert!(
             !store_is_scoped_to_this_session(),
             "a production desktop sets neither and reads both stores",
         );
 
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture") };
+        env.set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
         assert!(
             store_is_scoped_to_this_session(),
             "TILO_APPS_DATA_DIR alone is what `the store is exactly here` is \
              spelled as",
         );
 
-        unsafe { std::env::set_var("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system") };
+        env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
         assert!(
             !store_is_scoped_to_this_session(),
             "naming the system store too asks for both, which is a machine-wide \
              reading and not a scoped session",
         );
-
-        unsafe {
-            std::env::remove_var("TILO_APPS_DATA_DIR");
-            std::env::remove_var("TILO_APPS_SYSTEM_DIR");
-        }
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
+    fn a_release_build_ignores_the_system_store_override() {
+        use crate::dev_env::{APPS_SYSTEM_DIR_ENV, dev_override_from};
+        let gated = dev_override_from(
+            false,
+            APPS_SYSTEM_DIR_ENV,
+            Some("/tmp/attacker-store".into()),
+        );
+        assert_eq!(
+            system_data_dir_from(gated, false),
+            Some(PathBuf::from(SYSTEM_DATA_DIR)),
+            "a release build reads the image's store whatever the environment says",
+        );
+        let honoured = dev_override_from(true, APPS_SYSTEM_DIR_ENV, Some("/dev/store".into()));
+        assert_eq!(
+            system_data_dir_from(honoured, false),
+            Some(PathBuf::from("/dev/store"))
+        );
+    }
+
+    #[test]
     fn a_missing_system_store_is_not_an_error() {
         // A plain dev machine has no /usr/share/tilo-apps — that reads as
         // "nothing preinstalled", not a failure hiding the user's own installs.
         let system = tempfile::tempdir().expect("tempdir");
-        let user = store_with(&["dev.tilo.mine"]);
+        let user = store_with(&["so.tilo.mine"]);
         let all = with_stores(system.path(), user.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["dev.tilo.mine"]);
+        assert_eq!(ids, vec!["so.tilo.mine"]);
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_installed_reads_registry_via_override_env() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        let payload = tmp.path().join("payloads/dev.tilo.notes-cli");
+        let payload = tmp.path().join("payloads/so.tilo.notes-cli");
         std::fs::create_dir_all(&payload).unwrap();
         let manifest = payload.join("manifest.toml");
         std::fs::write(
             &manifest,
-            "package_id = 'dev.tilo.notes-cli'\nversion='0.1.0'\n[entrypoint]\nbin='bin/notes'\n",
+            "package_id = 'so.tilo.notes-cli'\nversion='0.1.0'\n[entrypoint]\nbin='bin/notes'\n",
         )
         .unwrap();
         let registry_toml = format!(
-            "[[entry]]\nid = 'dev.tilo.notes-cli'\npayload_root = {:?}\nmanifest_path = {:?}\n",
+            "[[entry]]\nid = 'so.tilo.notes-cli'\npayload_root = {:?}\nmanifest_path = {:?}\n",
             payload.display().to_string(),
             manifest.display().to_string()
         );
@@ -402,21 +431,20 @@ mod tests {
 
         let empty_system = tempfile::tempdir().expect("tempdir");
         let found = with_stores(empty_system.path(), tmp.path(), || {
-            find_installed("dev.tilo.notes-cli")
+            find_installed("so.tilo.notes-cli")
         })
         .expect("read");
-        let entry = found.expect("dev.tilo.notes-cli present in registry");
-        assert_eq!(entry.id, "dev.tilo.notes-cli");
+        let entry = found.expect("so.tilo.notes-cli present in registry");
+        assert_eq!(entry.id, "so.tilo.notes-cli");
         assert_eq!(entry.payload_root, payload);
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn list_installed_returns_every_entry_in_file_order() {
         use std::fmt::Write as _;
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut toml_src = String::new();
-        for id in ["dev.tilo.alpha", "dev.tilo.beta"] {
+        for id in ["so.tilo.alpha", "so.tilo.beta"] {
             let payload = tmp.path().join("payloads").join(id);
             std::fs::create_dir_all(&payload).unwrap();
             let manifest = payload.join("manifest.toml");
@@ -430,32 +458,23 @@ mod tests {
         }
         std::fs::write(tmp.path().join("registry.toml"), toml_src).unwrap();
 
-        // SAFETY: this test is in the `process_env` serial group.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let all = list_installed().expect("read");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        let all = data_dir_only(tmp.path(), list_installed).expect("read");
         let ids: Vec<&str> = all.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, vec!["dev.tilo.alpha", "dev.tilo.beta"]);
+        assert_eq!(ids, vec!["so.tilo.alpha", "so.tilo.beta"]);
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn list_installed_is_empty_when_registry_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let all = list_installed().expect("read");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        let all = data_dir_only(tmp.path(), list_installed).expect("read");
         assert!(all.is_empty());
     }
 
     #[test]
-    #[serial_test::serial(process_env)]
     fn find_installed_returns_none_when_registry_missing() {
         let tmp = tempfile::tempdir().expect("tempdir");
         // No registry.toml written.
-        unsafe { std::env::set_var("TILO_APPS_DATA_DIR", tmp.path()) };
-        let found = find_installed("nothing").expect("read");
-        unsafe { std::env::remove_var("TILO_APPS_DATA_DIR") };
+        let found = data_dir_only(tmp.path(), || find_installed("nothing")).expect("read");
         assert!(found.is_none());
     }
 }

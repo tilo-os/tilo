@@ -16,6 +16,7 @@
 use std::collections::VecDeque;
 #[cfg(not(feature = "hdr-decode"))]
 use std::fs::File;
+#[cfg(not(feature = "hdr-decode"))]
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -2003,50 +2004,17 @@ fn write_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), St
         std::fs::create_dir_all(parent)
             .map_err(|error| format!("create screenshot folder {}: {error}", parent.display()))?;
     }
-    let file = std::fs::File::create(path)
-        .map_err(|error| format!("create screenshot {}: {error}", path.display()))?;
-    let mut writer = std::io::BufWriter::new(file);
-    let mut encoder = png::Encoder::new(&mut writer, width, height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut png = encoder
-        .write_header()
-        .map_err(|error| format!("write screenshot header {}: {error}", path.display()))?;
-    png.write_image_data(rgba)
-        .map_err(|error| format!("write screenshot pixels {}: {error}", path.display()))?;
-    drop(png);
-    writer
-        .flush()
-        .map_err(|error| format!("flush screenshot {}: {error}", path.display()))
+    ui::png::write_rgba8(path, width, height, rgba)
+        .map_err(|error| format!("write screenshot {}: {error}", path.display()))
 }
 
 /// Read back one of our RGBA8 screenshot artifacts for receipt actions. This
 /// preserves the exact captured pixels while keeping large, off-screen app and
 /// strip captures out of the shell's steady-state memory footprint.
 fn read_png_rgba(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
-    let file = std::fs::File::open(path)
-        .map_err(|error| format!("open screenshot {}: {error}", path.display()))?;
-    let decoder = png::Decoder::new(std::io::BufReader::new(file));
-    let mut reader = decoder
-        .read_info()
-        .map_err(|error| format!("read screenshot header {}: {error}", path.display()))?;
-    let size = reader
-        .output_buffer_size()
-        .ok_or_else(|| format!("screenshot is too large to decode: {}", path.display()))?;
-    let mut rgba = vec![0; size];
-    let info = reader
-        .next_frame(&mut rgba)
-        .map_err(|error| format!("read screenshot pixels {}: {error}", path.display()))?;
-    if info.color_type != png::ColorType::Rgba || info.bit_depth != png::BitDepth::Eight {
-        return Err(format!(
-            "saved screenshot has unsupported format {:?}/{:?}: {}",
-            info.color_type,
-            info.bit_depth,
-            path.display()
-        ));
-    }
-    rgba.truncate(info.buffer_size());
-    Ok((info.width, info.height, rgba))
+    let decoded = ui::png::read_rgba8(path)
+        .map_err(|error| format!("read screenshot {}: {error}", path.display()))?;
+    Ok((decoded.width, decoded.height, decoded.rgba))
 }
 
 #[cfg(test)]
@@ -2263,6 +2231,7 @@ mod tests {
         let mut tree = WorkspaceTree::bootstrap_demo();
         let (strip_id, target_group, target_tab) = {
             let workspace = tree
+                .desktop
                 .active_workspace_mut()
                 .expect("bootstrap has an active workspace");
             let strip = workspace.strips.first_mut().expect("bootstrap has a strip");
@@ -2295,7 +2264,7 @@ mod tests {
             }
             (strip.id, target_group, target_tab)
         };
-        tree.set_active_group(strip_id, 70_002);
+        tree.desktop.set_active_group(strip_id, 70_002);
 
         let mut frame_builder = FrameBuilder::with_tree(tree, (800, 600));
         let _ = frame_builder.paint();
@@ -2307,16 +2276,38 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let store = frame_builder.chrome().records().clone();
+        let checkout = crate::shell::tab_documents::scratch_tab_record(target_tab);
+        if !store.open_record(&checkout) {
+            store
+                .create_record(&checkout)
+                .expect("capture fixture creates its Notes record");
+        }
         frame_builder
             .host_mut()
             .group_at_for_tests(strip_id, 0)
-            .and_then(|group| group.active_host_mut())
-            .expect("target Notes host")
-            .replace_content(ui::widget::TileContent::App(Box::new(
-                crate::shell::notes_app::NotesApp::with_seed(long_note),
-            )));
+            .expect("target Notes group")
+            .bind_tab_records(&store, crate::shell::tab_documents::scratch_tab_record);
+        store
+            .with(&checkout.id, |doc| {
+                let mut body =
+                    crate::shell::crdt_text::CrdtTextBody::new(crate::shell::notes_app::BODY_KEY);
+                body.sync(doc, &automerge::ROOT);
+                let end = body.clamp(usize::MAX);
+                body.splice(doc, &automerge::ROOT, 0..end, &long_note);
+            })
+            .expect("capture fixture writes the canonical Notes record");
+        let mut shell_document = automerge::AutoCommit::new();
+        frame_builder.pump_apps(&mut shell_document, &automerge::ROOT);
         frame_builder.relayout();
         let _ = frame_builder.paint();
+        assert!(
+            frame_builder
+                .host_mut()
+                .group_at_for_tests(strip_id, 0)
+                .is_some_and(|group| group.complete_capture_rect().is_some()),
+            "long Notes document did not publish complete capture geometry"
+        );
         assert!(
             frame_builder
                 .host_mut()
@@ -2359,7 +2350,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: format!("group:{target_group}:tab:{target_tab}"),
                 title: "Notes".into(),
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 // Deliberately stale: the live draw must win over picker-time
                 // geometry after strip motion.
@@ -2415,7 +2406,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "group:999999:tab:999999".into(),
                 title: "Gone".into(),
-                app_id: "dev.tilo.gone".into(),
+                app_id: "so.tilo.gone".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect: Rect::new(1_000.0, 100.0, 1_800.0, 700.0),
                 complete_rect: None,
@@ -2459,7 +2450,7 @@ mod tests {
             targets: vec![ui::widget::CaptureTarget {
                 id: "notes".into(),
                 title: "Notes".into(),
-                app_id: "dev.tilo.notes".into(),
+                app_id: "so.tilo.notes".into(),
                 visible_rect: Rect::ZERO,
                 virtual_rect,
                 complete_rect: Some(Rect::new(-1_300.0, 120.0, 10.0, 1_308.0)),
@@ -2475,17 +2466,17 @@ mod tests {
     fn semantic_region_update_preserves_element_identity() {
         let updated = updated_local_tracking_source(
             Some(FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(10.0, 20.0, 410.0, 245.0),
             }),
-            "dev.tilo.browser".into(),
+            "so.tilo.browser".into(),
             Rect::new(24.0, 36.0, 624.0, 374.0),
         );
         assert_eq!(
             updated,
             FloatingSource::AppElement {
-                app_id: "dev.tilo.browser".into(),
+                app_id: "so.tilo.browser".into(),
                 element_id: "media:7".into(),
                 region: Rect::new(24.0, 36.0, 624.0, 374.0),
             }

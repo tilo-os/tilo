@@ -7,12 +7,6 @@ const DEFAULT_FS_AUTHORITY_CACHE_DIR: &str = "/var/cache/quick-fs";
 const DEFAULT_FS_AUTHORITY_PUBLISHER: &str = "/usr/bin/fs";
 const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
 
-pub(super) fn permission_profile_document_key(name: &str) -> String {
-    blake3::hash(name.trim().to_lowercase().as_bytes())
-        .to_hex()
-        .to_string()
-}
-
 #[derive(Clone, Debug)]
 struct FsAuthorityPublication {
     acl: PathBuf,

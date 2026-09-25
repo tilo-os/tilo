@@ -55,96 +55,200 @@ pub struct AccountMutationJournal {
     vault_ciphertext: Option<Vec<u8>>,
 }
 
-fn mutation_journal_path() -> Result<PathBuf, String> {
-    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
-    Ok(accounts::accounts_dir_in(&root).join("mutation-journal.json"))
+/// Where the account stores, the credential vault and the mutation journal
+/// live. The live root follows the signed-in user's config directory and the
+/// session's credential custody; an explicit root pins every store under one
+/// directory with a private local vault key, so an embedded or test instance
+/// never reads, replays or deletes another instance's accounts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AccountRoot {
+    explicit: Option<PathBuf>,
 }
 
-/// # Errors
-///
-/// Returns an error when the recovery check or durable journal write fails.
-pub fn begin_account_mutation(
-    previous_store: &accounts::AccountStore,
-    previous_statuses: &accounts::AccountSyncStatusStore,
-) -> Result<(), String> {
-    recover_account_mutation()?;
-    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
-    let vault_ciphertext = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
-    let journal = AccountMutationJournal {
-        store: previous_store.clone(),
-        statuses: previous_statuses.clone(),
-        vault_ciphertext,
-    };
-    let bytes = serde_json::to_vec(&journal)
-        .map_err(|error| format!("could not serialize account transaction: {error}"))?;
-    atomic_file::write_creating_parent_with_mode(&mutation_journal_path()?, &bytes, 0o600)
-        .map_err(|error| format!("could not persist account transaction intent: {error}"))
-}
+impl AccountRoot {
+    /// The user's config root, resolved when each store is opened.
+    pub fn live() -> Self {
+        Self::default()
+    }
 
-/// # Errors
-///
-/// Returns an error when the completed mutation journal cannot be removed.
-pub fn finish_account_mutation() -> Result<(), String> {
-    let path = mutation_journal_path()?;
-    match std::fs::remove_file(&path) {
-        Ok(()) => {
-            if let Some(parent) = path.parent()
-                && let Ok(directory) = std::fs::File::open(parent)
-            {
-                let _ = directory.sync_all();
+    /// Every account store under `config_root` (the directory holding
+    /// `accounts/`, `files/`, `nextcloud/` …).
+    pub fn at(config_root: impl Into<PathBuf>) -> Self {
+        Self {
+            explicit: Some(config_root.into()),
+        }
+    }
+
+    /// The config root, `None` when the live root has no usable home.
+    pub fn path(&self) -> Option<PathBuf> {
+        self.explicit.clone().or_else(accounts::config_root)
+    }
+
+    fn require(&self) -> Result<PathBuf, String> {
+        self.path().ok_or_else(|| "no config dir".to_string())
+    }
+
+    fn require_io(&self) -> std::io::Result<PathBuf> {
+        self.path()
+            .ok_or_else(|| std::io::Error::other("no config dir"))
+    }
+
+    /// The canonical account metadata store.
+    pub fn store(&self) -> accounts::AccountStore {
+        self.path()
+            .map(|root| accounts::AccountStore::load_in(&root))
+            .unwrap_or_default()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when no config root resolves or the store cannot be
+    /// written.
+    pub fn save_store(&self, store: &accounts::AccountStore) -> std::io::Result<()> {
+        store.save_in(&self.require_io()?)
+    }
+
+    /// Operational sync health per account.
+    pub fn statuses(&self) -> accounts::AccountSyncStatusStore {
+        self.path()
+            .map(|root| accounts::AccountSyncStatusStore::load_in(&root))
+            .unwrap_or_default()
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when no config root resolves or the status store
+    /// cannot be written.
+    pub fn save_statuses(
+        &self,
+        statuses: &accounts::AccountSyncStatusStore,
+    ) -> std::io::Result<()> {
+        statuses.save_in(&self.require_io()?)
+    }
+
+    /// The encrypted credential vault.
+    pub fn vault(&self) -> accounts::SecretVault {
+        match &self.explicit {
+            Some(root) => accounts::SecretVault::open_in(root),
+            None => accounts::SecretVault::open(),
+        }
+    }
+
+    /// The per-account sync health writer.
+    pub fn sync_reporter(&self, id: accounts::AccountId) -> accounts::AccountSyncReporter {
+        match &self.explicit {
+            Some(root) => accounts::AccountSyncReporter::in_root(id, root.clone()),
+            None => accounts::AccountSyncReporter::new(id),
+        }
+    }
+
+    /// A legacy per-app store file (`files/accounts.json`, …).
+    fn legacy_path(&self, relative: &str) -> Option<PathBuf> {
+        match &self.explicit {
+            Some(root) => Some(root.join(relative)),
+            None => settings_store::config_path(std::path::Path::new(relative)),
+        }
+    }
+
+    fn mutation_journal_path(&self) -> Result<PathBuf, String> {
+        Ok(accounts::accounts_dir_in(&self.require()?).join("mutation-journal.json"))
+    }
+
+    /// Journal the pre-mutation stores and vault ciphertext so an
+    /// interrupted metadata/vault/status mutation can be rolled back.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the recovery check or durable journal write fails.
+    pub fn begin_mutation(
+        &self,
+        previous_store: &accounts::AccountStore,
+        previous_statuses: &accounts::AccountSyncStatusStore,
+    ) -> Result<(), String> {
+        self.recover_mutation()?;
+        let root = self.require()?;
+        let vault_ciphertext = std::fs::read(accounts::vault_dir_in(&root).join("vault.enc")).ok();
+        let journal = AccountMutationJournal {
+            store: previous_store.clone(),
+            statuses: previous_statuses.clone(),
+            vault_ciphertext,
+        };
+        let bytes = serde_json::to_vec(&journal)
+            .map_err(|error| format!("could not serialize account transaction: {error}"))?;
+        atomic_file::write_creating_parent_with_mode(&self.mutation_journal_path()?, &bytes, 0o600)
+            .map_err(|error| format!("could not persist account transaction intent: {error}"))
+    }
+
+    /// # Errors
+    ///
+    /// Returns an error when the completed mutation journal cannot be removed.
+    pub fn finish_mutation(&self) -> Result<(), String> {
+        let path = self.mutation_journal_path()?;
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                if let Some(parent) = path.parent()
+                    && let Ok(directory) = std::fs::File::open(parent)
+                {
+                    let _ = directory.sync_all();
+                }
+                Ok(())
             }
-            Ok(())
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!(
+                "could not clear account transaction intent: {error}"
+            )),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!(
-            "could not clear account transaction intent: {error}"
-        )),
     }
-}
 
-/// Roll back an interrupted metadata/vault/status mutation before presenting
-/// the account inventory. The journal contains ciphertext, never a plaintext
-/// password or token.
-///
-/// # Errors
-///
-/// Returns an error when the journal or the recovered stores cannot be read
-/// or durably restored.
-pub fn recover_account_mutation() -> Result<(), String> {
-    let path = mutation_journal_path()?;
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(format!(
-                "could not read account transaction intent: {error}"
-            ));
+    /// Roll back an interrupted metadata/vault/status mutation before
+    /// presenting the account inventory. The journal contains ciphertext,
+    /// never a plaintext password or token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal or the recovered stores cannot be read
+    /// or durably restored.
+    pub fn recover_mutation(&self) -> Result<(), String> {
+        let path = self.mutation_journal_path()?;
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(format!(
+                    "could not read account transaction intent: {error}"
+                ));
+            }
+        };
+        let journal: AccountMutationJournal = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("account transaction intent is invalid: {error}"))?;
+        self.save_store(&journal.store)
+            .map_err(|error| format!("could not recover account metadata: {error}"))?;
+        self.save_statuses(&journal.statuses)
+            .map_err(|error| format!("could not recover account sync status: {error}"))?;
+        let vault_path = accounts::vault_dir_in(&self.require()?).join("vault.enc");
+        match journal.vault_ciphertext {
+            Some(ciphertext) => {
+                atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
+                    .map_err(|error| format!("could not recover credential vault: {error}"))?;
+            }
+            None => match std::fs::remove_file(&vault_path) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(format!("could not recover credential vault: {error}")),
+            },
         }
-    };
-    let journal: AccountMutationJournal = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("account transaction intent is invalid: {error}"))?;
-    journal
-        .store
-        .save()
-        .map_err(|error| format!("could not recover account metadata: {error}"))?;
-    journal
-        .statuses
-        .save()
-        .map_err(|error| format!("could not recover account sync status: {error}"))?;
-    let root = accounts::config_root().ok_or_else(|| "no config dir".to_string())?;
-    let vault_path = accounts::vault_dir_in(&root).join("vault.enc");
-    match journal.vault_ciphertext {
-        Some(ciphertext) => {
-            atomic_file::write_creating_parent_with_mode(&vault_path, &ciphertext, 0o600)
-                .map_err(|error| format!("could not recover credential vault: {error}"))?;
-        }
-        None => match std::fs::remove_file(&vault_path) {
-            Ok(()) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(format!("could not recover credential vault: {error}")),
-        },
+        self.finish_mutation()
     }
-    finish_account_mutation()
+
+    /// Recover an interrupted mutation, logging rather than failing: the
+    /// inventory is still worth presenting.
+    pub(crate) fn recover_mutation_or_warn(&self) {
+        if self.path().is_some()
+            && let Err(error) = self.recover_mutation()
+        {
+            tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -274,7 +378,7 @@ impl MailStore {
     pub const REL_PATH: &'static str = "mail/accounts.json";
 
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("mail").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("mail/accounts.json"))
     }
 
     pub fn to_json(&self) -> String {
@@ -366,13 +470,16 @@ pub struct DavStore {
 impl DavStore {
     /// The `CalDAV` (calendar) store path.
     pub fn calendar_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("calendar").join("accounts.json"))
+        settings_store::config_path(std::path::Path::new("calendar/accounts.json"))
     }
 
     /// The `WebDAV` (files) store path.
     pub fn files_path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("files").join("accounts.json"))
+        AccountRoot::live().legacy_path(Self::FILES_REL_PATH)
     }
+
+    /// The `WebDAV` store path relative to the config root.
+    pub const FILES_REL_PATH: &'static str = "files/accounts.json";
 
     pub fn to_json(&self) -> String {
         serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".into())
@@ -467,7 +574,16 @@ pub struct NextcloudStore {
 
 impl NextcloudStore {
     pub fn path() -> Option<PathBuf> {
-        config_root().map(|r| r.join("nextcloud").join("accounts.json"))
+        AccountRoot::live().legacy_path(Self::REL_PATH)
+    }
+
+    /// The legacy Nextcloud store path relative to the config root.
+    pub const REL_PATH: &'static str = "nextcloud/accounts.json";
+
+    fn load_from(path: Option<PathBuf>) -> Self {
+        path.and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| Self::from_json(&s))
+            .unwrap_or_default()
     }
 
     pub fn to_json(&self) -> String {
@@ -479,10 +595,7 @@ impl NextcloudStore {
     }
 
     pub fn load() -> Self {
-        Self::path()
-            .and_then(|p| std::fs::read_to_string(p).ok())
-            .and_then(|s| Self::from_json(&s))
-            .unwrap_or_default()
+        Self::load_from(Self::path())
     }
 
     /// # Errors
@@ -571,22 +684,23 @@ impl AccountDirectory {
     /// Calendar read, so the shapes can no longer drift apart. Legacy `WebDAV`
     /// and Nextcloud JSON is imported idempotently before projecting the view.
     pub fn load() -> Self {
-        if accounts::config_root().is_some()
-            && let Err(error) = recover_account_mutation()
-        {
-            tracing::warn!(target: "tilo::settings", %error, "could not recover interrupted account mutation");
-        }
-        let mut shared = accounts::AccountStore::load();
-        if let Some(root) = accounts::config_root() {
-            let marker = accounts::accounts_dir_in(&root).join("legacy-settings-import-v1");
+        Self::load_in(&AccountRoot::live())
+    }
+
+    /// [`Self::load`] from the stores under `root`.
+    pub fn load_in(root: &AccountRoot) -> Self {
+        root.recover_mutation_or_warn();
+        let mut shared = root.store();
+        if let Some(config_root) = root.path() {
+            let marker = accounts::accounts_dir_in(&config_root).join("legacy-settings-import-v1");
             if !marker.exists() {
                 let changed = import_legacy_accounts(
                     &mut shared,
-                    &DavStore::load_from(DavStore::files_path()),
-                    &NextcloudStore::load(),
+                    &DavStore::load_from(root.legacy_path(DavStore::FILES_REL_PATH)),
+                    &NextcloudStore::load_from(root.legacy_path(NextcloudStore::REL_PATH)),
                 );
                 let persisted = if changed {
-                    match shared.save() {
+                    match root.save_store(&shared) {
                         Ok(()) => true,
                         Err(error) => {
                             tracing::warn!(target: "tilo::settings", %error, "could not persist imported legacy accounts");
@@ -1084,23 +1198,24 @@ mod tests {
 
     #[test]
     fn completed_legacy_import_does_not_resurrect_a_removed_account() {
-        let _cfg = crate::prefs::test_env::ConfigGuard::new("legacy_account_no_resurrection");
+        let dir = tempfile::tempdir().expect("scratch config root");
+        let root = AccountRoot::at(dir.path().join("tilo"));
         let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
         DavStore {
             version: 1,
             accounts: vec![legacy.clone()],
         }
-        .save_to(DavStore::files_path())
+        .save_to(root.legacy_path(DavStore::FILES_REL_PATH))
         .expect("seed legacy store");
 
-        assert_eq!(AccountDirectory::load().files.accounts.len(), 1);
+        assert_eq!(AccountDirectory::load_in(&root).files.accounts.len(), 1);
         let id = accounts::AccountId::from(legacy.id);
-        let mut canonical = accounts::AccountStore::load();
+        let mut canonical = root.store();
         assert!(canonical.remove(&id));
-        canonical.save().expect("persist removal");
+        root.save_store(&canonical).expect("persist removal");
 
         assert!(
-            AccountDirectory::load().files.accounts.is_empty(),
+            AccountDirectory::load_in(&root).files.accounts.is_empty(),
             "the durable one-time marker prevents legacy metadata from resurrecting a removal"
         );
     }
@@ -1108,9 +1223,8 @@ mod tests {
     #[test]
     fn journal_recovers_each_interrupted_removal_phase() {
         for phase in 1..=3 {
-            let _cfg = crate::prefs::test_env::ConfigGuard::new(&format!(
-                "account_mutation_recovery_phase_{phase}"
-            ));
+            let dir = tempfile::tempdir().expect("scratch config root");
+            let root = AccountRoot::at(dir.path().join("tilo"));
             let id = accounts::AccountId::from(format!("recover-{phase}"));
             let mut original_store = accounts::AccountStore::new();
             let mut account = accounts::Account::new(id.clone(), NEXTCLOUD_TYPE);
@@ -1120,43 +1234,43 @@ mod tests {
                 "username": "ada", "use_files": true, "use_calendar": true, "use_mail": true
             });
             original_store.upsert(account);
-            original_store.save().expect("seed metadata");
-            let mut vault = accounts::SecretVault::open();
+            root.save_store(&original_store).expect("seed metadata");
+            let mut vault = root.vault();
             vault.put(&id, &accounts::Secret::password("sealed-secret"));
             vault.try_save().expect("seed vault");
-            let reporter = accounts::AccountSyncReporter::new(id.clone());
-            reporter.succeeded().expect("seed status");
-            let original_statuses = accounts::AccountSyncStatusStore::load();
+            root.sync_reporter(id.clone())
+                .succeeded()
+                .expect("seed status");
+            let original_statuses = root.statuses();
 
-            begin_account_mutation(&original_store, &original_statuses).expect("journal intent");
-            let mut vault = accounts::SecretVault::open();
+            root.begin_mutation(&original_store, &original_statuses)
+                .expect("journal intent");
+            let mut vault = root.vault();
             vault.remove(&id);
             vault.try_save().expect("phase one");
             if phase >= 2 {
-                let mut store = accounts::AccountStore::load();
+                let mut store = root.store();
                 store.remove(&id);
-                store.save().expect("phase two");
+                root.save_store(&store).expect("phase two");
             }
             if phase >= 3 {
-                let mut statuses = accounts::AccountSyncStatusStore::load();
+                let mut statuses = root.statuses();
                 statuses.remove(&id);
-                statuses.save().expect("phase three");
+                root.save_statuses(&statuses).expect("phase three");
             }
 
-            let recovered = AccountDirectory::load();
+            let recovered = AccountDirectory::load_in(&root);
             assert_eq!(recovered.nextcloud.accounts.len(), 1, "phase {phase}");
             assert_eq!(
-                accounts::SecretVault::open()
-                    .get(&id)
-                    .map(|secret| secret.password),
+                root.vault().get(&id).map(|secret| secret.password),
                 Some("sealed-secret".into()),
                 "phase {phase} restores encrypted credential"
             );
             assert!(
-                accounts::AccountSyncStatusStore::load().get(&id).is_some(),
+                root.statuses().get(&id).is_some(),
                 "phase {phase} restores sync status"
             );
-            assert!(!mutation_journal_path().expect("journal path").exists());
+            assert!(!root.mutation_journal_path().expect("journal path").exists());
         }
     }
 }

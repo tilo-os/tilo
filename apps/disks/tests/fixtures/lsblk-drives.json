@@ -1,0 +1,92 @@
+[
+  {
+    "name": "nvme0n1",
+    "model": "CT2000P310SSD8",
+    "serial": "SERIAL73D2FB",
+    "size": 2000398934016,
+    "kind": "Nvme",
+    "tran": "nvme",
+    "removable": false,
+    "partitions": [
+      {
+        "name": "nvme0n1p1",
+        "size": 629145600,
+        "fstype": "vfat",
+        "label": null,
+        "mountpoint": "/boot/efi",
+        "used": 13754368,
+        "uuid": "83BB-9B39"
+      },
+      {
+        "name": "nvme0n1p2",
+        "size": 1073741824,
+        "fstype": "ext4",
+        "label": null,
+        "mountpoint": "/boot",
+        "used": 263368704,
+        "uuid": "46527feb-110f-9884-19ab-28479ff0c3b6"
+      },
+      {
+        "name": "nvme0n1p3",
+        "size": 1998694907904,
+        "fstype": "btrfs",
+        "label": "fedora",
+        "mountpoint": "/run/media/system/fedora",
+        "used": null,
+        "uuid": "a036f77a-15e0-adc8-91fb-ab48702e1cdf"
+      }
+    ],
+    "smart": null
+  },
+  {
+    "name": "nvme1n1",
+    "model": "WD PC SN560 SDDPNQE-1T00-1002",
+    "serial": "SERIAL278596",
+    "size": 1024209543168,
+    "kind": "Nvme",
+    "tran": "nvme",
+    "removable": false,
+    "partitions": [
+      {
+        "name": "nvme1n1p1",
+        "size": 31999393792,
+        "fstype": "swap",
+        "label": "Swap 2",
+        "mountpoint": "[SWAP]",
+        "used": null,
+        "uuid": "32784620-6228-3561-3f8a-9757ced319e4"
+      },
+      {
+        "name": "nvme1n1p2",
+        "size": 992208748544,
+        "fstype": "btrfs",
+        "label": "fedora",
+        "mountpoint": null,
+        "used": null,
+        "uuid": "a036f77a-15e0-adc8-91fb-ab48702e1cdf"
+      }
+    ],
+    "smart": null
+  },
+  {
+    "name": "zram0",
+    "model": "zram0",
+    "serial": null,
+    "size": 42949672960,
+    "kind": "Zram",
+    "tran": null,
+    "removable": false,
+    "partitions": [
+      {
+        "name": "zram0",
+        "size": 42949672960,
+        "fstype": "swap",
+        "label": "zram0",
+        "mountpoint": "[SWAP]",
+        "used": null,
+        "uuid": "1beb5738-bce5-b4e1-765f-3c5471d570a3"
+      }
+    ],
+    "smart": null
+  }
+]

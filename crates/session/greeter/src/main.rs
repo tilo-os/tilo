@@ -35,7 +35,6 @@ use std::sync::{Arc, OnceLock};
 use greeter::GreeterApp;
 use greeter::greeter_app::AuthScenario;
 use ui::app::UserEvent;
-use ui::theme::Theme;
 use ui::widget::Widget;
 use winit::event_loop::EventLoopProxy;
 
@@ -76,7 +75,10 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Slot the event loop populates once it starts; the greeter reads it to
     // spawn the background auth worker.
     let proxy_slot: Arc<OnceLock<EventLoopProxy<UserEvent>>> = Arc::new(OnceLock::new());
-    let widget = GreeterApp::new().with_proxy_slot(proxy_slot.clone());
+    let console = console_control::ConsoleServer::new();
+    let widget = GreeterApp::new()
+        .with_proxy_slot(proxy_slot.clone())
+        .with_console(console.clone());
     let state = ui::State::new();
     let mut app = ui::App::from_scoped_parts(wake_scope, state, Box::new(widget))
         .without_native_document_chrome();
@@ -94,9 +96,32 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     // focusable at all.
     app.autofocus_on_structure_change = true;
     app.run_with_setup(move |proxy| {
+        serve_console(&console, proxy.clone());
         let _ = proxy_slot.set(proxy);
     });
     Ok(())
+}
+
+/// Start the console endpoints that exist here: the greeter user's private
+/// runtime socket, and the virtio port only a hypervisor can attach.
+fn serve_console(console: &console_control::ConsoleServer, proxy: EventLoopProxy<UserEvent>) {
+    let proxy = std::sync::Mutex::new(proxy);
+    let waker: console_control::server::Waker = Arc::new(move || {
+        if let Ok(proxy) = proxy.lock() {
+            let _ = proxy.send_event(UserEvent::External(
+                greeter::greeter_app::CONSOLE_WAKE.to_owned(),
+            ));
+        }
+    });
+    let endpoints = console_control::Endpoint::discover(greeter::greeter_app::CONSOLE_PROVIDER);
+    let failed = console.serve_all(&endpoints, &waker);
+    for endpoint in &endpoints {
+        if let Some((_, error)) = failed.iter().find(|(candidate, _)| candidate == endpoint) {
+            tracing::warn!(?endpoint, %error, "greeter console endpoint unavailable");
+        } else {
+            tracing::info!(?endpoint, "greeter console listening");
+        }
+    }
 }
 
 /// Returns the optional logical-pixel viewport supplied to the headless
@@ -208,11 +233,21 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
     match scenario {
         // The first frame anyone ever sees: both fields empty.
         AuthScenario::Form | AuthScenario::Personal | AuthScenario::PersonalNoFingerprint => None,
-        // The whole point of the hint state is the *missing* password.
+        // Hint/error states deliberately show the missing passcode. Busy
+        // states do too, for a more important reason: the live submit path
+        // moves the passcode into a zeroizing worker value before entering
+        // either busy phase, while fingerprint submission scrubs any typed
+        // passcode outright. Keep visual evidence honest; it must never imply
+        // that a secret remains in the disabled field after submission.
         AuthScenario::Hint
         | AuthScenario::Error
         | AuthScenario::PersonalHint
-        | AuthScenario::PersonalError => Some(("quinten", "")),
+        | AuthScenario::PersonalError
+        | AuthScenario::Authenticating
+        | AuthScenario::Fingerprint
+        | AuthScenario::Starting
+        | AuthScenario::PersonalAuthenticating
+        | AuthScenario::PersonalStarting => Some(("quinten", "")),
         // Long enough to overrun the field, so the snapshot proves how it
         // degrades rather than leaving it to chance.
         AuthScenario::LongName => Some(("bartholomew.featherstonehaugh-worthington", "hunter2")),
@@ -221,15 +256,13 @@ fn shot_credentials(scenario: AuthScenario) -> Option<(&'static str, &'static st
 }
 
 /// Run one offscreen frame against `widget` at `viewport` and write the
-/// resulting RGBA to `out` as a PNG. Mirrors `ui::App`'s
-/// `sync → build_layout → compute_layout → apply_layout → draw` cycle.
+/// resulting RGBA to `out` as a PNG.
 ///
 /// `username` pre-populates the non-secret username CRDT object. The caller
 /// seeds representative passcode text through `GreeterApp`'s process-local
-/// buffer, never the document. Because the composed
-/// children are only created *inside* `build_layout`, we sync a second time
-/// afterwards so those children (the `TextInputs`) pull their values from the
-/// document — the live App achieves the same via its per-frame sync.
+/// buffer, never the document. The headless harness runs the live App's
+/// per-frame sync, so children composed inside `build_layout` (the
+/// `TextInputs`) pull their values from the document before they paint.
 fn render_shot_to_png(
     widget: Box<dyn Widget>,
     viewport: (u32, u32),
@@ -239,16 +272,7 @@ fn render_shot_to_png(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use automerge::{ObjType, transaction::Transactable};
 
-    let base_theme = match std::env::var("TILO_SHOTS_THEME").as_deref() {
-        Ok("light") => Theme::light(),
-        Ok("high-contrast") => Theme::high_contrast(),
-        _ => Theme::dark(),
-    };
-    let theme = if let Some(scale) = text_scale {
-        base_theme.with_text_scale(scale)
-    } else {
-        base_theme
-    };
+    let theme = ui::launch::capture_theme(text_scale);
     let mut state = ui::State::new();
     if let Some(username) = username {
         let uobj = state
@@ -342,6 +366,23 @@ mod tests {
             assert_eq!(
                 parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
                 Some(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn busy_shots_do_not_retain_representative_passcodes() {
+        for scenario in [
+            AuthScenario::Authenticating,
+            AuthScenario::Fingerprint,
+            AuthScenario::Starting,
+            AuthScenario::PersonalAuthenticating,
+            AuthScenario::PersonalStarting,
+        ] {
+            assert_eq!(
+                shot_credentials(scenario).map(|(_, passcode)| passcode),
+                Some(""),
+                "{scenario:?} must mirror the live path after secret handoff"
             );
         }
     }

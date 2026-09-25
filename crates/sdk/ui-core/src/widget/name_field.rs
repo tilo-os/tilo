@@ -9,7 +9,7 @@
 //!
 //! It is **not** a general-purpose text input: no selection, no clipboard, no
 //! caret movement. Those belong to the shared CRDT-backed editor core
-//! (`ui::widget::block_editor` and friends), which is far too much machinery for
+//! (`tilo_ui::widget::block_editor` and friends), which is far too much machinery for
 //! a label a user types once. What this does have is the behaviour a name field
 //! must not get wrong:
 //!
@@ -23,7 +23,6 @@
 
 use std::cell::RefCell;
 
-use unicode_segmentation::UnicodeSegmentation;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
@@ -195,10 +194,9 @@ impl NameField {
             Key::Named(NamedKey::Enter) => NameFieldOutcome::Commit(self.buffer.trim().to_string()),
             Key::Named(NamedKey::Escape) => NameFieldOutcome::Cancel,
             Key::Named(NamedKey::Backspace) => {
-                if let Some(grapheme) = self.buffer.graphemes(true).next_back() {
-                    self.buffer
-                        .truncate(self.buffer.len().saturating_sub(grapheme.len()));
-                }
+                let end = self.buffer.len();
+                self.buffer
+                    .truncate(crate::text_selection::prev_char_boundary(&self.buffer, end));
                 NameFieldOutcome::Edited
             }
             Key::Named(NamedKey::Space) => {

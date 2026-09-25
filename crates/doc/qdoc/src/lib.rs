@@ -35,9 +35,9 @@ pub mod snapshot;
 
 pub use codecs::safety::ZipLimits;
 pub use codecs::{
-    DocxCodec, HtmlCodec, MarkdownCodec, OdsCodec, OdtCodec, RtfCodec, SheetProvider, XlsxCodec,
-    builtin_registry, is_supported_ext, is_supported_sheet_ext, sheet_provider_for_ext,
-    supported_extensions,
+    DocxCodec, HtmlCodec, MarkdownCodec, OdsCodec, OdtCodec, ParsedSheet, ParsedWorkbook, RtfCodec,
+    SheetProvider, XlsxCodec, builtin_registry, is_supported_ext, is_supported_sheet_ext,
+    sheet_provider_for_ext, supported_extensions,
 };
 pub use diff::{
     AttrChange, BlockDiff, BlockOp, CellChange, CellOp, DiffSummary, DocDiff, PropChange, RunOp,

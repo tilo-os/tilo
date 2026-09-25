@@ -14,7 +14,7 @@ use tilo_ui::view::ViewContribution;
 use tilo_ui::wake::WakeHandle;
 use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
-pub const APP: &str = "dev.tilo.application-probe";
+pub const APP: &str = "so.tilo.application-probe";
 pub const DEVICE: &str = "D";
 pub const ROOM: &str = "A";
 thread_local! {
@@ -349,7 +349,7 @@ pub fn body(records: &RecordStore, checkout: &RecordCheckout) -> String {
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned()
         })
@@ -423,7 +423,7 @@ fn build_probe(
                 .unwrap()
                 .unwrap()
                 .0
-                .to_str()
+                .as_str()
                 .unwrap()
                 .to_owned()
         })

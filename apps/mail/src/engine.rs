@@ -713,7 +713,7 @@ pub mod live {
         }
     }
 
-    /// Build the shared rustls client config with the bundled Mozilla roots.
+    /// Build the shared rustls client config against the system trust bundle.
     ///
     /// # Panics
     /// Never in practice: the ring provider always advertises the default
@@ -724,16 +724,7 @@ pub mod live {
         reason = "the bundled ring provider always supports the default protocol versions; a TLS config with no usable version is not something the mail engine can degrade to"
     )]
     fn build_tls_config() -> Arc<rustls::ClientConfig> {
-        let mut roots = rustls::RootCertStore::empty();
-        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let cfg = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("rustls default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        Arc::new(cfg)
+        Arc::new(tilo_net::client_config().expect("rustls default protocol versions"))
     }
 
     /// The login user for an account (the explicit username, or the email).
@@ -1077,7 +1068,7 @@ pub mod live {
 
     /// The submission path, with the TLS parameters injectable. Production passes
     /// `None`, which resolves to the same implicit-TLS (465) / STARTTLS (else)
-    /// setup `lettre`'s `relay`/`starttls_relay` build with the bundled Mozilla
+    /// setup `lettre`'s `relay`/`starttls_relay` build with the Tilo system
     /// roots. A caller may pass explicit parameters (e.g. a test pinned to a
     /// local server's certificate) so the real submission code is exercised over
     /// a socket without reaching a public server.
@@ -1255,7 +1246,7 @@ pub mod live {
             .unwrap();
             let cert_der = cert.cert.der().clone();
             let key_der =
-                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.key_pair.serialize_der());
+                rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
             let cfg = rustls::ServerConfig::builder_with_provider(Arc::new(
                 rustls::crypto::ring::default_provider(),
             ))
@@ -1484,7 +1475,7 @@ pub mod live {
         #[test]
         fn imap_fetch_over_a_real_socket_parses_a_message() {
             let eml = b"From: Ada Lovelace <ada@analytical.example>\r\n\
-To: you@tilo.example\r\n\
+To: you@example.test\r\n\
 Subject: Live inbox works\r\n\
 Date: Fri, 01 Jan 2021 09:30:00 +0000\r\n\
 Message-ID: <live-1@analytical.example>\r\n\
@@ -1621,7 +1612,7 @@ mod tests {
         let (tx, rx) = spawn_with(Box::new(StubEngine));
         let account = AccountConfig {
             display_name: "Me".into(),
-            email: "me@tilo.example".into(),
+            email: "me@example.test".into(),
             ..Default::default()
         };
         let draft = Draft {

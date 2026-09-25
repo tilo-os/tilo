@@ -17,8 +17,8 @@
 use collab_types::{canonical_bytes, verify_event};
 use threshold_identity::{ThresholdIdentity, signing::verify_threshold_signature};
 
-use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
+use rand_core::SeedableRng;
 
 fn fixed_rng() -> ChaCha20Rng {
     ChaCha20Rng::from_seed([7u8; 32])

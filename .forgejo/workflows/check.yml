@@ -90,6 +90,7 @@ jobs:
         password: ${{ secrets.REGISTRY_TOKEN }}
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
+      clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
@@ -222,7 +223,11 @@ jobs:
         run: |
           python3 os/tests/test_openh264_source_order.py -v
 
-  affected:
+  # Each shard runs its tests, its all-target check and its Clippy diff as
+  # three parallel jobs rather than one after another on one runner. They share
+  # compiler outputs through sccache; each keeps its own target tree. The
+  # `checks` aggregate below requires all three.
+  test:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
     runs-on: ${{ matrix.runner }}
@@ -238,7 +243,204 @@ jobs:
       # Forgejo removes an empty matrix job entirely, leaving its aggregate
       # blocked. Keep one inert row when Rust is inapplicable; the job-level
       # condition skips it without consuming a runner.
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare headless runtime
+        run: |
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+          driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
+          test -r "$driver"
+          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
+          mkdir -p /tmp/tilo-xdg-runtime
+          chmod 700 /tmp/tilo-xdg-runtime
+
+      # Older/explicitly selected builders may predate the audio fixture.
+      # The helper replaces only the conflicting audio daemon; other installed
+      # packages retain their pinned versions.
+      - name: Ensure isolated audio test dependency
+        run: bash tools/ensure-headless-audio.sh
+
+      # Pinned/older builders may predate native PDF capture coverage. Stage
+      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
+      - name: Ensure native PDF capture dependency
+        if: contains(matrix.test_packages, '-p pdf-viewer')
+        run: |
+          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
+          ./os/dev/cache-github-assets.sh "$asset"
+          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
+          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
+
+      # Imager deliberately rejects cache/source directories on the container
+      # overlay that also backs the operating-system root. The checked-out
+      # workspace is a host-backed qualified filesystem, so keep its native
+      # syscall fixtures there while retaining the container's ordinary /tmp
+      # behavior for every other package.
+      - name: Prepare qualified imager test filesystem
+        if: contains(matrix.test_packages, '-p imager')
+        run: |
+          root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
+          mkdir -p "$root"
+          chmod 700 "$root"
+          case "$(stat -f -c %T "$root")" in
+            ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
+            *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
+          esac
+          # Do not redirect HOME/TMPDIR/XDG_CACHE_HOME for the whole mixed
+          # package shard: those process-wide variables alter unrelated apps'
+          # persistence and git fixtures. Only the imager's native syscall
+          # tests consume this dedicated location.
+          printf 'QOS_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+
+      # app-cli's registry integration tests execute the installer;
+      # it is deliberately not a Rust dependency, so an affected-only Cargo
+      # invocation does not otherwise produce that binary.
+      - name: Build installer used by app-cli integration tests
+        if: contains(matrix.test_packages, '-p app-cli')
+        run: >-
+          bash tools/ci/measure.sh "build tilo-install test fixture" --
+          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
+          cargo build --locked -p install
+
+      - name: Generate native NTFS fixtures
+        if: contains(matrix.test_packages, '-p qos-ntfs-helper')
+        run: |
+          fixtures=$(mktemp -d /tmp/qos-ntfs-fixtures.XXXXXX)
+          rmdir "$fixtures"
+          python3 crates/session/qos-ntfs-helper/tests/build_native_fixtures.py --output "$fixtures"
+          printf 'QOS_NTFS_FIXTURES=%s\n' "$fixtures" >> "$GITHUB_ENV"
+
+      - name: Test shard ${{ matrix.shard }}
+        if: matrix.test_packages != ''
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+        run: >-
+          bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
+          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
+          -E "not ($GOLDEN_FILTER)"
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache test shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # Type-checks every target of the shard's complete reverse-dependency
+  # closure. It links nothing, so it uses the architecture's ordinary runner
+  # even when the shard's test links need the large one.
+  check:
+    if: needs.select.outputs.rust_required == 'true'
+    needs: [builder, select]
+    runs-on: ${{ matrix.check_runner }}
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '4' }}
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Prepare Rust build caches
+        id: rust-build
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Prepare build runtime
+        run: |
+          ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
+          mkdir -p /tmp/tilo-xdg-runtime
+          chmod 700 /tmp/tilo-xdg-runtime
+
+      - name: Check all targets in shard ${{ matrix.shard }}
+        env:
+          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
+        run: >-
+          bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
+          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
+          check --locked --all-targets ${{ matrix.packages }}
+
+      # Without its default `native` feature, tilo-ui is the portable toolkit
+      # that another host embeds with its own services. Keep that build
+      # compiling whenever the toolkit is affected.
+      - name: Check the portable toolkit build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-ui ')
+        run: >-
+          bash tools/ci/measure.sh "check portable tilo-ui" --
+          bash scripts/ci-run.sh "cargo check (tilo-ui without native)" --
+          cargo check --locked -p tilo-ui --no-default-features --lib
+
+      - name: Save observed compiler inputs
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
+          path: target/ci/compiler-inputs.json
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache check shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # One writer avoids shards and jobs racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+
+  # Clippy's Rust-level analysis is authoritative once per selected package
+  # set on x86_64; ARM still runs the complete native test and all-target
+  # check jobs above, without compiling two more isolated lint graphs. The
+  # selector's clippy_matrix therefore holds only the x86_64 rows.
+  clippy:
+    if: needs.select.outputs.rust_required == 'true'
+    needs: [builder, select]
+    runs-on: ${{ matrix.check_runner }}
+    timeout-minutes: 120
+    env:
+      CARGO_BUILD_JOBS: '4'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
       credentials:
@@ -270,80 +472,40 @@ jobs:
           test "$(git rev-parse "$CLIPPY_BASE^{commit}")" = "$CLIPPY_BASE"
 
       - name: Prepare Rust build caches
-        id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
 
-      - name: Prepare headless runtime
+      - name: Prepare build runtime
         run: |
           ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-          driver="/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json"
-          test -r "$driver"
-          echo "VK_DRIVER_FILES=$driver" >> "$GITHUB_ENV"
           mkdir -p /tmp/tilo-xdg-runtime
           chmod 700 /tmp/tilo-xdg-runtime
 
-      # Older/explicitly selected builders may predate the audio fixture.
-      # The helper replaces only the conflicting audio daemon; other installed
-      # packages retain their pinned versions.
-      - name: Ensure isolated audio test dependency
-        run: bash tools/ensure-headless-audio.sh
-
-      # Pinned/older builders may predate native PDF capture coverage. Stage
-      # only the verified runtime; leave Mesa, fonts and OS packages unchanged.
-      - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer')
-        run: |
-          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
-          ./os/dev/cache-github-assets.sh "$asset"
-          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
-          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
-
-      # Build and run tests first. The resulting rlibs/rmeta are then reusable
-      # by the all-target check; doing this in the opposite order makes rustc
-      # perform metadata-only work before doing codegen for the same crates.
-      # app-catalogue's registry integration tests execute the installer;
-      # it is deliberately not a Rust dependency, so an affected-only Cargo
-      # invocation does not otherwise produce that binary.
-      - name: Build installer used by app-catalogue integration tests
-        if: contains(matrix.test_packages, '-p app-catalogue')
-        run: >-
-          bash tools/ci/measure.sh "build tilo-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
-          cargo build --locked -p install
-
-      - name: Test shard ${{ matrix.shard }}
-        if: matrix.test_packages != ''
-        env:
-          # Large test compilations need the existing 7 GiB-per-rustc budget.
-          # Run 14014 reached the x86 runner's 9 GiB cgroup limit and recorded
-          # an OOM kill with four build jobs. Limit compilation, not nextest's
-          # test concurrency; later check and Clippy steps keep their defaults.
-          CARGO_BUILD_JOBS: '1'
-          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
-        run: >-
-          bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/with-headless-audio.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
-          -E "not ($GOLDEN_FILTER)"
-
-      - name: Check all targets in shard ${{ matrix.shard }}
-        env:
-          XDG_RUNTIME_DIR: /tmp/tilo-xdg-runtime
-        run: >-
-          bash tools/ci/measure.sh "check shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo check (affected shard ${{ matrix.shard }})" --
-          python3 tools/ci/compiler_inputs.py --output target/ci/compiler-inputs.json --
-          check --locked --all-targets ${{ matrix.packages }}
-
-      - name: Save observed compiler inputs
-        if: always()
+      # Pull requests usually compare with a main commit whose workspace-wide
+      # Clippy diagnostics the clippy-base job below already recorded. Bind the
+      # record to that exact commit, the builder image, the toolchain and the
+      # compiler flags; any miss makes clippy-diff.sh lint a fresh base checkout.
+      - name: Resolve the recorded Clippy base key
+        id: clippy-base-key
+        if: matrix.arch == 'x86_64'
         continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        env:
+          CLIPPY_BASE: ${{ needs.select.outputs.base }}
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$CLIPPY_BASE" --image "$BUILDER_IMAGE")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          printf 'CLIPPY_BASE_CACHE=%s\nCLIPPY_BASE_CACHE_KEY=%s\n' \
+            "$PWD/target/ci/clippy-base.json" "$key" >> "$GITHUB_ENV"
+
+      - name: Restore the recorded Clippy base diagnostics
+        if: matrix.arch == 'x86_64' && steps.clippy-base-key.outputs.key != ''
+        continue-on-error: true
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          name: compiler-inputs-${{ matrix.arch }}-${{ matrix.shard }}
-          path: target/ci/compiler-inputs.json
-          retention-days: 7
-          if-no-files-found: warn
+          path: target/ci/clippy-base.json
+          key: ${{ steps.clippy-base-key.outputs.key }}
 
       # Lint the exact same reverse-dependency closure at the selected base and
       # at HEAD. Historical diagnostics in an otherwise untouched dependant do
@@ -352,9 +514,6 @@ jobs:
       # release-app workflow separately compiles the shipped thin-app feature;
       # `--all-features` is deliberately invalid here because it also selects
       # ui/webview-wpe, whose native SDK exists only in the OS image builder.
-      # Clippy's Rust-level analysis is authoritative once per selected package
-      # set on x86_64; ARM still runs the complete native test and all-target
-      # check paths above, without compiling two more isolated lint graphs.
       #
       # Compilation deliberately stays here rather than in the pre-commit
       # hook: local hooks are bypassable and must remain fast enough to keep
@@ -382,26 +541,64 @@ jobs:
       - name: Report remote compiler-cache effectiveness
         if: always()
         run: |
-          echo "### sccache shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### sccache clippy shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY"
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # One writer avoids two shards racing to create the same immutable key.
-      - name: Save Cargo downloads
-        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
+  clippy-base:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [builder]
+    runs-on: runner
+    timeout-minutes: 60
+    container:
+      image: ${{ needs.builder.outputs.image }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.REGISTRY_TOKEN }}
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      - name: Record workspace Clippy diagnostics
+        id: record
+        continue-on-error: true
+        env:
+          BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key=$(python3 tools/ci/clippy_diagnostics.py cache-key --base "$GITHUB_SHA" --image "$BUILDER_IMAGE")
+          echo "key=$key" >> "$GITHUB_OUTPUT"
+          bash tools/ci/measure.sh "clippy workspace record" -- \
+            bash scripts/ci-run.sh "Clippy workspace diagnostics record" -- \
+            tools/ci/clippy-diff.sh --export-base target/ci/clippy-base.json "$key"
+
+      - name: Save workspace Clippy diagnostics
+        if: steps.record.outcome == 'success'
         continue-on-error: true
         uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+          path: target/ci/clippy-base.json
+          key: ${{ steps.record.outputs.key }}
+
+      - name: Report remote compiler-cache effectiveness
+        if: always()
+        run: |
+          echo "### sccache clippy-base" >> "$GITHUB_STEP_SUMMARY"
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   checks:
     if: always()
-    needs: [builder, select, security, affected, native-dependencies]
+    needs: [builder, select, security, test, check, clippy, native-dependencies]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -416,7 +613,9 @@ jobs:
           BUILDER_RESULT: ${{ needs.builder.result }}
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
-          AFFECTED_RESULT: ${{ needs.affected.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
           NATIVE_DEPENDENCIES_RESULT: ${{ needs.native-dependencies.result }}
           NATIVE_DEPENDENCIES_REQUIRED: ${{ needs.select.outputs.native_dependencies_required }}
           EVENT_NAME: ${{ github.event_name }}
@@ -426,6 +625,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The shard's test, check and Clippy jobs pass together or are
+          # skipped together; any other combination is a failure.
+          case "$TEST_RESULT:$CHECK_RESULT:$CLIPPY_RESULT" in
+            success:success:success) AFFECTED_RESULT=success ;;
+            skipped:skipped:skipped) AFFECTED_RESULT=skipped ;;
+            *) AFFECTED_RESULT=failure ;;
+          esac
           test "$BUILDER_RESULT" = success
           test "$SELECT_RESULT" = success
           case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in

@@ -21,6 +21,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
+use ui::doc::{read_bool, read_str};
 
 use crate::model::{ConnId, ConnKind, ConnStatus, Connection, Vault};
 
@@ -121,7 +122,7 @@ impl VpnDoc {
                 else {
                     continue;
                 };
-                let s = |k: &str| get_str(doc, &obj, k);
+                let s = |k: &str| read_str(doc, &obj, k).unwrap_or_default();
                 connections.push(Connection {
                     id,
                     name: s("name"),
@@ -129,7 +130,7 @@ impl VpnDoc {
                     status: ConnStatus::Disconnected,
                     last_handshake_secs: None,
                     last_used: "Never on this device".into(),
-                    tor: get_bool(doc, &obj, "tor"),
+                    tor: read_bool(doc, &obj, "tor").unwrap_or(false),
                 });
             }
         }
@@ -139,29 +140,12 @@ impl VpnDoc {
                 .cmp(&a.is_connected())
                 .then_with(|| a.name.cmp(&b.name))
         });
-        let tor_global = get_bool(doc, &ROOT, "tor_global");
+        let tor_global = read_bool(doc, &ROOT, "tor_global").unwrap_or(false);
         Vault {
             connections,
             selected: None,
             tor_global,
         }
-    }
-}
-
-fn get_str(doc: &AutoCommit, obj: &ObjId, key: &str) -> String {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => match v.as_ref() {
-            ScalarValue::Str(s) => s.to_string(),
-            _ => String::new(),
-        },
-        _ => String::new(),
-    }
-}
-
-fn get_bool(doc: &AutoCommit, obj: &ObjId, key: &str) -> bool {
-    match doc.get(obj, key) {
-        Ok(Some((Value::Scalar(v), _))) => matches!(v.as_ref(), ScalarValue::Boolean(true)),
-        _ => false,
     }
 }
 

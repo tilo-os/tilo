@@ -49,6 +49,7 @@ mod lint;
 /// entry points the app uses, rather than a copy of them.
 pub mod lsp;
 pub mod model;
+pub mod native_fixture;
 mod sample_project;
 mod search;
 pub mod search_provider;

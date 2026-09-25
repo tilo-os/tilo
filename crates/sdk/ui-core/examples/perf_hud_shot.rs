@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::time::Instant;
 
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use vello::Scene;
@@ -62,13 +61,13 @@ pub fn run(_args: &[String]) {
     // one full frame: the same sync → build_layout → apply_layout → draw the
     // live app runs, timed into the profiler exactly as `App` times it.
     for _ in 0..frames {
-        let t = Instant::now();
+        let t = tilo_ui::time::now();
         root.sync(&mut state.doc, &state.root);
         prof.record(Pass::Sync, t.elapsed());
 
         // build_layout = widget-tree build + the taffy solve (one pass, as in
         // `App`'s RedrawRequested handler).
-        let t = Instant::now();
+        let t = tilo_ui::time::now();
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
         let node = root.build_layout(&mut taffy, &theme, &mut node_map);
@@ -92,11 +91,11 @@ pub fn run(_args: &[String]) {
         }
         prof.record(Pass::BuildLayout, t.elapsed());
 
-        let t = Instant::now();
+        let t = tilo_ui::time::now();
         root.apply_layout(&taffy, node, Point::ZERO);
         prof.record(Pass::ApplyLayout, t.elapsed());
 
-        let t = Instant::now();
+        let t = tilo_ui::time::now();
         scene.reset();
         root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         prof.record(Pass::Draw, t.elapsed());

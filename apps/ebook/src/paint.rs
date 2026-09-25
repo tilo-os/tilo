@@ -14,30 +14,10 @@
     reason = "shared geometry vocabulary (t/w/x/y/s/r/p) across this file's glyph helpers"
 )]
 
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, RoundedRect, Stroke};
+use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Line, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
-
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
-}
-
-pub fn fill_round(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-pub fn stroke_round(
-    scene: &mut Scene,
-    t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    width: f64,
-) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
-}
 
 pub fn line(scene: &mut Scene, t: Affine, a: Point, b: Point, color: Color, width: f64) {
     scene.stroke(&rstroke(width), t, color, None, &Line::new(a, b));

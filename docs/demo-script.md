@@ -203,9 +203,9 @@ text.
 
 The cause is a broker fan-out. It computes an addressed channel key and
 then routes room-wide anyway — visible as `room_wide=true` beside
-`addressed=<room>#app:dev.tilo.word-processor` in any session log — so a
+`addressed=<room>#app:so.tilo.word-processor` in any session log — so a
 handshake addressed to the word processor is answered by whatever else
-is in the room. `[app dev.tilo.file-explorer] recv Arrived; replying full
+is in the room. `[app so.tilo.file-explorer] recv Arrived; replying full
 state 4904B` is the file manager answering for a document it does not
 own. The reader therefore gets the text from an app that is not the one
 drawn, and the claim passes without Xaver's word processor holding
@@ -348,7 +348,7 @@ the run fails if any frame came from its session.
 cargo build --profile demo -p shell --bin shell --bin tilo-control
 cargo build -p launcher --bin tilo-launcher
 cargo build -p agent --bin tilo-agent                # beat 9
-cargo build -p app-catalogue --bins --examples      # beat 5's registry
+cargo build -p app-cli --bins --examples      # beat 5's registry
 cargo build -p tilo-install --bin tilo-install
 scripts/demo/apps-live.sh                           # the payload it serves
 

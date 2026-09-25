@@ -23,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -353,20 +354,24 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let shape = RoundedRect::from_rect(rect, 6.0);
+        // Panel role (HIG §9.1): panel ground + the derived panel edge as
+        // a crisp 1 px inset stroke; the declared `border_standard` vanished
+        // against `raised` on the dark preset.
+        let radius = 6.0;
+        let shape = RoundedRect::from_rect(rect, radius);
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
-            tokens.colors.surfaces.raised,
+            crate::chrome::panel_ground(theme),
             None,
             &shape,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            tokens.colors.border_standard,
+            crate::chrome::panel_border(theme),
             None,
-            &shape,
+            &crate::surface::edge_outline(rect, radius),
         );
 
         let filter_rect = Rect::new(
@@ -383,13 +388,23 @@ impl LinkPopover {
             None,
             &filter_shape,
         );
+        // A field reads as a field on every preset: its rest edge derives
+        // from its own fill (HIG §9.5), painted as a crisp 1 px inset stroke;
+        // on the light preset `base` and the panel ground are a shade apart.
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            crate::surface::edge_on(tokens.colors.surfaces.base),
+            None,
+            &crate::surface::edge_outline(filter_rect, 4.0),
+        );
         self.filter_composition.draw(
             scene,
             transform,
             text_renderer,
             &self.filter,
             &self.filter_selection,
-            "Find a page…",
+            "Find a note…",
             Rect::new(
                 filter_rect.x0 + 6.0,
                 filter_rect.y0,
@@ -399,8 +414,8 @@ impl LinkPopover {
             &TextStyle::new(tokens.typography.scale.sm),
             tokens.colors.text_primary,
             tokens.colors.text_dim,
-            tokens.colors.accent[5].with_alpha_factor(0.3),
-            tokens.colors.accent[5],
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
+            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
             true,
         );
     }
@@ -416,9 +431,10 @@ impl LinkPopover {
         rect: Rect,
     ) {
         let tokens = &theme.tokens;
-        let font_size = tokens.typography.scale.sm;
+        let font_size = renderer_type_size(text_renderer, tokens.typography.scale.sm);
         if self.visible.is_empty() {
-            let y = self.rows_top() + (ROW_HEIGHT - f64::from(font_size)) / 2.0;
+            let (_, hint_h) = text_renderer.measure("No matches", font_size, None);
+            let y = self.rows_top() + (ROW_HEIGHT - f64::from(hint_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 "No matches",
@@ -443,22 +459,33 @@ impl LinkPopover {
             };
             let y0 = self.rows_top() + count_f64(i) * ROW_HEIGHT;
             let row_rect = Rect::new(rect.x0 + 4.0, y0, rect.x1 - 4.0, y0 + ROW_HEIGHT);
-            if visible_index == self.cursor {
-                let hl = RoundedRect::from_rect(row_rect, 4.0);
+            let armed = visible_index == self.cursor;
+            if armed {
+                let hl = RoundedRect::from_rect(row_rect, f64::from(tokens.radii.sm));
                 scene.fill(
                     vello::peniko::Fill::NonZero,
                     transform,
-                    tokens.colors.accent[5],
+                    tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
                     None,
                     &hl,
                 );
             }
-            let text_y = row_rect.y0 + (row_rect.height() - f64::from(font_size)) / 2.0;
+            // Ink resolved against the accent fill (as `Popover` / `Dropdown`
+            // do), and centred on the measured line rather than the font size.
+            let ink = if armed {
+                tokens
+                    .colors
+                    .on_accent(crate::tokens::colors::ON_FILL_MIN_CONTRAST)
+            } else {
+                tokens.colors.text_primary
+            };
+            let (_, title_h) = text_renderer.measure(&row.title, font_size, None);
+            let text_y = row_rect.y0 + (row_rect.height() - f64::from(title_h)) / 2.0;
             text_renderer.draw_text(
                 scene,
                 &row.title,
                 font_size,
-                tokens.colors.text_primary,
+                ink,
                 transform.pre_translate(Vec2::new(row_rect.x0 + PADDING_X, text_y)),
                 None,
             );
@@ -539,7 +566,7 @@ impl Widget for LinkPopover {
         if !self.visible_flag {
             return Some(
                 AccessNode::new(Role::Menu)
-                    .with_name("Link pages")
+                    .with_name("Link notes")
                     .with_state(AccessState {
                         expanded: Some(false),
                         hidden: true,
@@ -566,7 +593,7 @@ impl Widget for LinkPopover {
             .collect();
         Some(
             AccessNode::new(Role::Menu)
-                .with_name("Link pages")
+                .with_name("Link notes")
                 .with_optional_value((!self.filter.is_empty()).then(|| self.filter.clone()))
                 .with_state(AccessState {
                     expanded: Some(true),
@@ -755,7 +782,7 @@ mod tests {
         assert_eq!(p.visible_len(), 1);
         assert_eq!(p.highlighted().unwrap().title, "東京");
         let access = Widget::accessibility(&p).unwrap();
-        assert_eq!(access.name.as_deref(), Some("Link pages"));
+        assert_eq!(access.name.as_deref(), Some("Link notes"));
         assert_eq!(access.value.as_deref(), Some("東京"));
         assert_eq!(access.children.len(), 1);
     }

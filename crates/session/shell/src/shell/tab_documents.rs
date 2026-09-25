@@ -27,6 +27,31 @@ pub fn scratch_tab_record(tab_id: u64) -> RecordCheckout {
     RecordCheckout::new(RecordId::for_tab(tab_id), RecordKind::new(TAB_RECORD_KIND))
 }
 
+/// Called only by the action that minted this new tab identity, before its
+/// first widget-tree rebuild. Never infer creation from an absent record.
+///
+/// # Errors
+/// Returns transient loan contention or a definite creation/storage refusal.
+pub fn create_scratch_tab_record(
+    store: &RecordStore,
+    tab_id: u64,
+) -> Result<(), ui::record::RecordOpenError> {
+    store.create_record(&scratch_tab_record(tab_id))
+}
+
+/// Failures belong to the exact fresh creation ticket, never to the saved
+/// resource globally. Apply before syncing the newly constructed group.
+pub(crate) fn apply_creation_failures(
+    group: &mut UiGroup,
+    failures: &std::collections::BTreeMap<u64, String>,
+) {
+    for (tab, reason) in failures {
+        if let Some(host) = group.host_for_tab_mut(*tab) {
+            host.refuse_record_binding(reason.clone());
+        }
+    }
+}
+
 /// Give every tab in `group` its own document. Called once per group as
 /// the shell (re)builds the widget tree. The binding travels with the
 /// tile, so a tab dragged into another group keeps its document.
@@ -50,6 +75,7 @@ mod tests {
     use crate::shell::notes_app::{BODY_KEY, NotesApp};
     use crate::shell::search::providers::notes::NotesProvider;
     use crate::shell::search::{ResourceKind, SearchContext, SearchProvider};
+    use crate::shell::state::FreshId as _;
     use crate::shell::state::{
         AppKind, GroupId, Strip, StripId, Tab, TileContent as StateTile, WindowGroup as StateGroup,
         WindowWidth as StateWidth, Workspace, WorkspaceId, WorkspaceTree, WorkspaceTreeHandle,
@@ -67,6 +93,46 @@ mod tests {
     const TAB_A: u64 = 11;
     const TAB_B: u64 = 22;
 
+    #[test]
+    fn history_rebuilt_group_waits_for_missing_record_then_accepts_hydration() {
+        let store = RecordStore::in_memory();
+        let mut group = UiGroup::new(
+            1,
+            vec![(
+                ui::widget::TabDescriptor {
+                    id: TAB_A,
+                    title: "Saved note".into(),
+                    app_kind: None,
+                },
+                UiTile::App(Box::new(NotesApp::new())),
+            )],
+            TAB_A,
+            ui::widget::WindowWidth::Normal,
+        );
+        let mut parent = AutoCommit::new();
+        bind_group_records(&mut group, &store);
+        group.sync(&mut parent, &automerge::ROOT);
+        bind_group_records(&mut group, &store);
+        group.sync(&mut parent, &automerge::ROOT);
+        assert!(
+            store.open_records().is_empty(),
+            "rebuilds cannot create a missing saved record"
+        );
+        assert!(group.active_host().unwrap().history_owner().is_none());
+        // Simulate the existing record arriving from its storage/replication owner.
+        store.open_record(&scratch_tab_record(TAB_A));
+        store.with(&RecordId::for_tab(TAB_A), |doc| {
+            NotesApp::with_seed("hydrated content").sync(doc, &automerge::ROOT);
+        });
+        group.sync(&mut parent, &automerge::ROOT);
+        assert_eq!(
+            tab_body(&store, TAB_A, BODY_KEY).as_deref(),
+            Some("hydrated content")
+        );
+        assert!(group.active_host().unwrap().history_owner().is_some());
+        assert!(crate::shell::crdt_text::read_body(&parent, &automerge::ROOT, BODY_KEY).is_none());
+    }
+
     /// One hosted tile, laid out on its own taffy tree so keystrokes
     /// reach the app through `TileHost::handle_event` — the production
     /// dispatch, not a direct poke at the widget.
@@ -78,6 +144,7 @@ mod tests {
 
     impl Tile {
         fn notes(tab_id: u64, store: &RecordStore) -> Self {
+            store.open_record(&scratch_tab_record(tab_id));
             let mut host = TileHost::new(UiTile::App(Box::new(NotesApp::new())));
             host.bind_record(store.clone(), scratch_tab_record(tab_id));
             let mut taffy = TaffyTree::new();
@@ -173,10 +240,13 @@ mod tests {
         let mut active_group = StdMap::new();
         active_group.insert(strip_id, group_id);
         Arc::new(RwLock::new(WorkspaceTree {
-            workspaces: vec![ws],
-            active: ws_id,
-            active_strip,
-            active_group,
+            desktop: crate::shell::state::DesktopTree {
+                workspaces: vec![ws],
+                active: ws_id,
+                active_strip,
+                active_group,
+                ..Default::default()
+            },
             ..WorkspaceTree::default()
         }))
     }
@@ -206,7 +276,7 @@ mod tests {
         let ids: Vec<String> = hits.iter().map(|r| r.id.clone()).collect();
         assert_eq!(
             ids,
-            vec![TAB_B.to_string()],
+            vec![ui::record::RecordId::for_tab(TAB_B).to_string()],
             "a word typed into one Notes tab must not be found in the other; \
              both tabs matching means both are showing one body",
         );
@@ -306,21 +376,26 @@ mod tests {
     /// A scratch tab has no file to be found by, so this is the whole of
     /// whether its content survives a restart — and why the tab id,
     /// persisted with the window tree, is what names the record.
+    /// A store persisting below `data_home` rather than `$XDG_DATA_HOME`,
+    /// in the non-routable nil room a launcher-less process gets.
+    fn store_at(data_home: &std::path::Path, package: &str) -> RecordStore {
+        RecordStore::new(ui::record::RecordSet::open_in(
+            std::rc::Rc::new(app_state::FsStore::new(data_home)),
+            package,
+            uuid::Uuid::nil().to_string(),
+        ))
+    }
+
     #[test]
-    #[serial_test::serial(record_state_dir)]
     fn both_tabs_come_back_with_their_own_content_after_a_restart() {
-        const PACKAGE: &str = "dev.tilo.test-tab-documents";
+        const PACKAGE: &str = crate::shell::SHELL_RECORDS_PACKAGE;
 
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: serialised on `record_state_dir`; no other thread reads
-        // these between the writes here and the reads below.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
         {
-            let store = RecordStore::open(PACKAGE);
+            let store = store_at(tmp.path(), PACKAGE);
+            store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+            store.create_record(&scratch_tab_record(TAB_B)).unwrap();
             let mut shared = AutoCommit::new();
             let mut a = Tile::notes(TAB_A, &store);
             let mut b = Tile::notes(TAB_B, &store);
@@ -331,7 +406,7 @@ mod tests {
 
         // A fresh session: same tab ids out of the persisted window tree,
         // nothing else carried over.
-        let store = RecordStore::open(PACKAGE);
+        let store = store_at(tmp.path(), PACKAGE);
         let mut shared = AutoCommit::new();
         let mut a = Tile::notes(TAB_A, &store);
         let mut b = Tile::notes(TAB_B, &store);
@@ -348,8 +423,6 @@ mod tests {
             Some("second tab"),
             "and the second with its own, not the first's",
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     /// The store's writers are debounced and off-thread, so something has
@@ -357,18 +430,14 @@ mod tests {
     /// *different* store, so it's the file on disk being checked, not the
     /// live copy.
     #[test]
-    #[serial_test::serial(record_state_dir)]
     fn a_frame_offers_every_open_tab_to_its_writer() {
-        const PACKAGE: &str = "dev.tilo.test-frame-writeback";
+        const PACKAGE: &str = "so.tilo.test-frame-writeback";
 
         let tmp = tempfile::tempdir().expect("temp dir");
-        // SAFETY: serialised on `record_state_dir`.
-        unsafe {
-            std::env::set_var("XDG_DATA_HOME", tmp.path());
-            std::env::remove_var("TILO_PACKAGE_ID");
-        }
 
-        let store = RecordStore::open(PACKAGE);
+        let store = store_at(tmp.path(), PACKAGE);
+        store.create_record(&scratch_tab_record(TAB_A)).unwrap();
+        store.create_record(&scratch_tab_record(TAB_B)).unwrap();
         let (mut host, _chrome) = crate::shell::build_tilo_overlay_host_with_records(
             tree_with_two_note_tabs(),
             false,
@@ -382,19 +451,33 @@ mod tests {
 
         let mut shell_doc = AutoCommit::new();
         host.update(&mut shell_doc, &automerge::ROOT);
-        // The writer debounces (`app_state::DEFAULT_DEBOUNCE`, 400 ms) and
-        // waits on its own thread; give it longer than that to land.
-        std::thread::sleep(std::time::Duration::from_millis(900));
+        // Nothing but the frame offers the edit to the debounced writer, so
+        // the record reaches `Saved` only if the frame did. The deadline is
+        // a hang guard, far past the writer's debounce.
+        let tab_a = RecordId::for_tab(TAB_A);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            match store.save_status(&tab_a) {
+                Ok(ui::record::RecordSaveStatus::Saved) => break,
+                Ok(ui::record::RecordSaveStatus::Failed(error)) => {
+                    panic!("the tab's writer failed: {error}")
+                }
+                _ => {}
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a frame must offer each open tab's document to its writer"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
-        let reader = RecordStore::open(PACKAGE);
+        let reader = store_at(tmp.path(), PACKAGE);
         reader.open_record(&scratch_tab_record(TAB_A));
         assert_eq!(
             tab_body(&reader, TAB_A, BODY_KEY).as_deref(),
             Some("written by a frame"),
             "a frame must offer each open tab's document to its writer",
         );
-
-        unsafe { std::env::remove_var("XDG_DATA_HOME") };
     }
 
     /// A peer's caret is a position in *a* document; the wrong key paints

@@ -27,8 +27,9 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 accounts = { path = "../../crates/system/accounts" }
-reqwest = { workspace = true, features = ["blocking", "rustls-tls"] }
-roxmltree = "0.20"
+reqwest = { workspace = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+roxmltree.workspace = true
 zeroize.workspace = true
 # Source of truth for which extensions are editable documents (so the file
 # manager and the codecs agree on what opens in the word processor).
@@ -39,12 +40,12 @@ ed25519-dalek.workspace = true
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
 tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 uuid.workspace = true
+hex.workspace = true
 sha2.workspace = true
 # Shared thumbnail generator and cache. PDF previews use dynamically loaded
 # pdfium and fall back to a badge; video remains a badge in this crate.
 thumbnail = { path = "../../crates/media/thumbnail", features = ["pdf"] }
 trash = "5.2.6"
-open.workspace = true
 mime_guess = "2.0.5"
 chrono = { workspace = true, default-features = true }
 # CLDR-backed date/time and decimal formatting. Keep these scoped to Files:
@@ -64,11 +65,11 @@ flate2.workspace = true
 # `dirs-next` is deprecated; `dirs` 6 is the maintained drop-in. The
 # `home_dir`/`config_dir`/`cache_dir` API is identical.
 dirs.workspace = true
+xdg-paths = { path = "../../crates/system/xdg-paths" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-fluent.workspace = true
 unic-langid.workspace = true
 # Needed by `FileExplorerWidget`'s `Widget` impl — matches the crate set
 # terminal pulls in for the same reason.
@@ -80,7 +81,11 @@ winit.workspace = true
 taffy.workspace = true
 
 [dev-dependencies]
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 tempfile.workspace = true
+# The catalog tests parse each bundled locale exactly as Fluent will.
+fluent.workspace = true
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [target.'cfg(unix)'.dependencies]
 xattr = "1.6.1"

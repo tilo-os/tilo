@@ -5,7 +5,11 @@
 //! pointer input.  The root calendar only receives semantic edits to apply to
 //! its model; it does not need to coordinate picker focus or backing scrims.
 
+use crate::input_context::InputContext;
 use chrono::{NaiveDate, Timelike};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -15,8 +19,7 @@ use ui::presence::PresenceCtx;
 use ui::widget::{DatePicker, TimePicker};
 
 use crate::app::{CalTarget, draw_check};
-use crate::draw_util::{PaintContext, fill_round, stroke_round};
-use crate::input_context::InputContext;
+use crate::draw_util::{panel as paint_panel, selected_row};
 use crate::model::Event;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,17 +43,11 @@ pub(crate) enum PopoverEdit {
 pub(crate) struct PopoverAnchors {
     pub start_date: Rect,
     pub end_date: Rect,
+    /// The time fields: a time spinner opens under the field it edits, not
+    /// under the date beside it.
+    pub start_time: Rect,
+    pub end_time: Rect,
     pub calendar: Rect,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct PopoverRenderModel<'a> {
-    pub(crate) presence: &'a PresenceCtx,
-    pub(crate) panel: Rect,
-    pub(crate) anchors: PopoverAnchors,
-    pub(crate) pointer: Point,
-    pub(crate) calendar_options: &'a [(CalTarget, String)],
-    pub(crate) current_calendar: Option<&'a str>,
 }
 
 #[derive(Clone, Debug)]
@@ -278,19 +275,23 @@ impl EventPopovers {
         *handled = true;
     }
 
-    pub fn draw(&mut self, paint: &mut PaintContext<'_>, model: &PopoverRenderModel<'_>) {
-        let scene = &mut *paint.scene;
-        let transform = paint.transform;
-        let text = &mut *paint.text;
-        let theme = paint.theme;
-        let PopoverRenderModel {
-            presence,
-            panel,
-            anchors,
-            pointer,
-            calendar_options,
-            current_calendar,
-        } = *model;
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "popover painting combines the shared render context with panel anchors, pointer state and calendar choices"
+    )]
+    pub fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        panel: Rect,
+        anchors: PopoverAnchors,
+        pointer: Point,
+        calendar_options: &[(CalTarget, String)],
+        current_calendar: Option<&str>,
+    ) {
         self.hits.clear();
         let kind = self.active;
         if kind == PopoverKind::None {
@@ -299,11 +300,14 @@ impl EventPopovers {
         self.hits.push((panel, Hit::Dismiss));
         let anchor = match kind {
             PopoverKind::None => return,
-            PopoverKind::StartDate | PopoverKind::StartTime => anchors.start_date,
-            PopoverKind::EndDate | PopoverKind::EndTime => anchors.end_date,
+            PopoverKind::StartDate => anchors.start_date,
+            PopoverKind::EndDate => anchors.end_date,
+            PopoverKind::StartTime => anchors.start_time,
+            PopoverKind::EndTime => anchors.end_time,
             PopoverKind::Calendar => anchors.calendar,
         };
         let colors = &theme.tokens.colors;
+        let panel_radius = f64::from(theme.tokens.radii.lg);
 
         match kind {
             PopoverKind::None => {}
@@ -313,8 +317,7 @@ impl EventPopovers {
                 let y = (anchor.y1 + 6.0).min(panel.y1 - height - 8.0);
                 let rect = Rect::new(x, y, x + width, y + height);
                 let backing = rect.inflate(6.0, 6.0);
-                fill_round(scene, transform, colors.surfaces.raised, backing, 10.0);
-                stroke_round(scene, transform, colors.border_standard, backing, 10.0, 1.0);
+                paint_panel(scene, transform, theme, backing, panel_radius);
                 self.date_picker.apply_layout_external(rect);
                 self.date_picker
                     .draw(scene, transform, text, theme, presence);
@@ -327,12 +330,12 @@ impl EventPopovers {
                     &mut self.end_time_picker
                 };
                 let (width, height) = picker.intrinsic_size();
-                let x = anchor.x0.max(panel.x0 + 8.0);
+                // Under its own field, kept inside the panel's padding.
+                let x = anchor.x0.min(panel.x1 - width - 8.0).max(panel.x0 + 8.0);
                 let y = (anchor.y1 + 6.0).min(panel.y1 - height - 8.0);
                 let rect = Rect::new(x, y, x + width, y + height);
                 let backing = rect.inflate(8.0, 8.0);
-                fill_round(scene, transform, colors.surfaces.raised, backing, 10.0);
-                stroke_round(scene, transform, colors.border_standard, backing, 10.0, 1.0);
+                paint_panel(scene, transform, theme, backing, panel_radius);
                 picker.apply_layout_external(rect);
                 picker.draw(scene, transform, text, theme, presence);
                 self.hits.push((rect.inflate(8.0, 8.0), Hit::Guard));
@@ -342,19 +345,34 @@ impl EventPopovers {
                 let height = row_h * calendar_options.len() as f64 + 8.0;
                 let y = (anchor.y1 + 6.0).min(panel.y1 - height - 8.0);
                 let rect = Rect::new(anchor.x0, y, anchor.x1, y + height);
-                fill_round(scene, transform, colors.surfaces.raised, rect, 10.0);
-                stroke_round(scene, transform, colors.border_standard, rect, 10.0, 1.0);
+                paint_panel(scene, transform, theme, rect, panel_radius);
                 self.hits.push((rect, Hit::Guard));
+                // Rows keep the `s1` inset from the panel edge; the painted
+                // pill is inset half of that top and bottom so two neighbours
+                // (a hovered row beside the chosen one) keep an `s1` gap.
+                let row_inset = f64::from(theme.tokens.spacing.s1);
                 for (index, (target, label)) in calendar_options.iter().enumerate() {
-                    let row_y = rect.y0 + 4.0 + index as f64 * row_h;
-                    let row = Rect::new(rect.x0 + 4.0, row_y, rect.x1 - 4.0, row_y + row_h);
+                    let row_y = rect.y0 + row_inset + index as f64 * row_h;
+                    let row = Rect::new(
+                        rect.x0 + row_inset,
+                        row_y,
+                        rect.x1 - row_inset,
+                        row_y + row_h,
+                    );
                     let selected = match target {
                         CalTarget::Local => current_calendar.is_none(),
                         CalTarget::Remote(id) => current_calendar == Some(id.as_str()),
                     };
-                    if row.contains(pointer) || selected {
-                        fill_round(scene, transform, colors.lift(0.72), row, 6.0);
-                    }
+                    selected_row(
+                        scene,
+                        transform,
+                        theme,
+                        ui::chrome::panel_ground(theme),
+                        row.inflate(0.0, -row_inset / 2.0),
+                        f64::from(theme.tokens.radii.md),
+                        selected,
+                        row.contains(pointer),
+                    );
                     text.draw_text(
                         scene,
                         label,

@@ -345,9 +345,17 @@ impl FanoutState {
             .unwrap_or_default()
     }
 
-    /// Mint the next typed connection id.
+    /// Mint the next typed connection id, reserving zero for the broker root
+    /// and `u64::MAX` for the current-connection sentinel. The counter itself
+    /// remains the number of accepted connections, including before the first.
     pub(crate) fn next_peer_id(&self) -> u64 {
-        self.peer_id_counter.fetch_add(1, Ordering::Relaxed)
+        let previous = self
+            .peer_id_counter
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                count.checked_add(1).filter(|next| *next < u64::MAX)
+            })
+            .expect("application peer id space exhausted");
+        previous + 1
     }
 
     /// How many typed connections this broker has ever accepted. Read as a
@@ -448,6 +456,10 @@ pub struct AppActionBroker {
 }
 
 impl AppActionBroker {
+    pub(crate) fn from_state(state: Arc<CapnpBrokerState>) -> Self {
+        Self { state }
+    }
+
     /// Construct the shell-facing facade around a real broker state for
     /// `LocalSet` integration tests. Production construction remains owned by
     /// the shell bootstrap, so tests cannot accidentally bypass it in a
@@ -473,17 +485,6 @@ impl AppActionBroker {
         self.state.replace_published_surfaces_for_test(surfaces);
     }
 
-    /// Bounded, nonblocking bridge from shell chrome into the broker's
-    /// LocalSet-owned application directory capabilities. Palette code must
-    /// poll the returned oneshot in its cache owner; it must never block a
-    /// compositor frame on a Cap'n Proto RPC.
-    #[must_use]
-    pub fn action_directory_request_queue(
-        &self,
-    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRequestQueue {
-        self.state.action_directory_request_queue()
-    }
-
     pub fn surfaces(&self) -> Vec<crate::shell::collab_broker_capnp::PublishedSurface> {
         self.state.published_surfaces()
     }
@@ -496,64 +497,18 @@ impl AppActionBroker {
         self.state.published_surfaces_generation()
     }
 
-    /// Small inert routes for currently connected `ActionDirectory` sources.
-    /// Shell search uses these to fan out bounded pull queries; capabilities
-    /// themselves remain owned by the broker `LocalSet`.
-    pub fn action_directory_roots(
-        &self,
-    ) -> Vec<crate::shell::collab_broker_capnp::ActionDirectoryRoot> {
-        self.state.action_directory_roots()
+    /// The broker state behind this facade, for the action host.
+    pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
+        &self.state
     }
 
-    /// Fetch one deterministic, bounded page of inert directory routes.
-    /// Callers that expose root navigation retain `next_after_peer`; routine
-    /// palette queries use the first page without rebuilding the registry.
-    #[must_use]
-    pub fn action_directory_root_page(
-        &self,
-        after_peer: Option<u64>,
-        max_results: usize,
-    ) -> crate::shell::collab_broker_capnp::ActionDirectoryRootPage {
-        self.state
-            .action_directory_root_page(after_peer, max_results)
-    }
-
-    /// Invoke one published application action.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the surface or action is unavailable or dispatch
-    /// to its application connection fails.
-    pub fn invoke(
+    #[cfg(test)]
+    pub(crate) fn capture_invocations_for_test(
         &self,
         peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<
-        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
-        String,
-    > {
-        self.state
-            .invoke(peer_id, resource, action, argument, actor)
-    }
-
-    /// Start a published action and return its lifecycle job.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action is unavailable or cannot be dispatched.
-    pub fn start(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-        self.state
-            .start_invocation(peer_id, resource, action, argument, actor)
+    ) -> tokio::sync::mpsc::UnboundedReceiver<crate::shell::collab_broker_capnp::InvocationEnvelope>
+    {
+        self.state.capture_invocations_for_test(peer_id)
     }
 
     pub fn status(&self, id: u64) -> Option<tilo_actions::InvocationUpdate> {
@@ -591,50 +546,6 @@ impl AppActionBroker {
     /// task.
     pub fn dispatch_task(&self, room: &str, task_id: &str) -> Result<u64, String> {
         self.state.dispatch_workspace_task(room, task_id)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Prepare a one-use confirmation token for the exact invocation inputs.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action disappeared or confirmation evidence is invalid.
-    pub fn prepare_confirmation(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        phrase: Option<&str>,
-    ) -> Result<String, String> {
-        self.state
-            .prepare_confirmation(peer_id, resource, action, argument, actor, phrase)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    /// Start a published action using a previously prepared confirmation token.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the action or token is unavailable or invalid.
-    pub fn start_confirmed(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-        token: &str,
-    ) -> Result<crate::shell::collab_broker_capnp::InvocationJob, String> {
-        self.state.start_invocation_confirmed(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            Some(token),
-        )
     }
 }
 
@@ -749,30 +660,6 @@ impl BrokerHandle {
             .map_or_else(Vec::new, |state| state.published_surfaces())
     }
 
-    /// Direct one invocation to the exact application connection that
-    /// published the addressed operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the action broker, surface, or action is
-    /// unavailable or dispatch to its application connection fails.
-    pub fn invoke_published_action(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &str,
-    ) -> Result<
-        std::sync::mpsc::Receiver<crate::shell::collab_broker_capnp::InvocationCompletion>,
-        String,
-    > {
-        self.fanout
-            .capnp_state()
-            .ok_or_else(|| "the application action broker is unavailable".to_string())?
-            .invoke(peer_id, resource, action, argument, actor)
-    }
-
     /// Install a populated [`ChannelState`] for one artifact id.
     pub fn register_channel_state(&self, artifact: ArtifactId, state: ChannelState) {
         if let Ok(mut ch) = self.channels.lock() {
@@ -870,6 +757,11 @@ struct DrainQueues {
     documents: Arc<Mutex<Vec<InboundDocument>>>,
     sb_req_inbound: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
     sb_resp_inbound: Arc<Mutex<Vec<InboundScrollbackResponse>>>,
+    remote_actions: Arc<Mutex<Vec<crate::shell::remote_action_link::InboundRemoteAction>>>,
+    /// The action host remote requests are answered by, built once the
+    /// application broker is up; its invocation ledger lives as long as
+    /// the drainer so retries stay idempotent.
+    action_host: std::sync::OnceLock<crate::shell::remote_actions::BrokerActionHost>,
     table: Arc<FanoutState>,
     channels: Arc<Mutex<BrokerChannels>>,
     net: Arc<ShellNetwork>,
@@ -893,6 +785,29 @@ impl DrainQueues {
             && self.drain_documents(labels, announced)
             && self.drain_scrollback_requests()
             && self.drain_scrollback_responses()
+            && self.drain_remote_actions()
+    }
+
+    /// Answer remote-action requests through the same broker local callers
+    /// use, as the caller the transport authenticated.
+    fn drain_remote_actions(&self) -> bool {
+        let drained: Vec<_> = {
+            let Ok(mut buf) = self.remote_actions.lock() else {
+                return false;
+            };
+            std::mem::take(&mut *buf)
+        };
+        if drained.is_empty() {
+            return true;
+        }
+        let host = self.action_host.get().or_else(|| {
+            let state = self.table.capnp_state()?;
+            Some(self.action_host.get_or_init(|| {
+                crate::shell::remote_actions::BrokerActionHost::new(AppActionBroker { state })
+            }))
+        });
+        answer_remote_actions(&self.net, host, drained);
+        true
     }
 
     /// Drain inbound presence, attributed to its sender. Cluster scope,
@@ -1224,6 +1139,8 @@ fn spawn_inner(
             documents: net.inbound_documents_handle(),
             sb_req_inbound: net.inbound_scrollback_request_handle(),
             sb_resp_inbound: net.inbound_scrollback_response_handle(),
+            remote_actions: net.inbound_remote_actions_handle(),
+            action_host: std::sync::OnceLock::new(),
             table: Arc::clone(&table),
             channels: Arc::clone(&channels),
             net: Arc::clone(net),
@@ -1275,6 +1192,37 @@ fn spawn_inner(
         mls_authority,
         peer_departures: peer_sync.map(|net| net.peer_departure_history()),
     })
+}
+
+/// Answer each request through `host` and send the answer back to the
+/// device that asked, on the topic it asked on.
+pub(crate) fn answer_remote_actions(
+    net: &Arc<ShellNetwork>,
+    host: Option<&crate::shell::remote_actions::BrokerActionHost>,
+    requests: Vec<crate::shell::remote_action_link::InboundRemoteAction>,
+) {
+    for request in requests {
+        let answer = match host {
+            Some(host) => tilo_actions::remote::serve(host, &request.caller, request.message),
+            None => tilo_actions::remote::refuse(
+                &request.message,
+                tilo_actions::remote::ActionHostError::Unavailable {
+                    reason: "the application broker is not running".into(),
+                },
+            )
+            .map(tilo_actions::remote::Pending::ready),
+        };
+        // Answered whenever the host has the answer — an application that
+        // re-resolves a directory row never holds up this drainer.
+        if let Some(answer) = answer {
+            let net = Arc::clone(net);
+            answer.then(move |reply| {
+                if let Some(reply) = reply {
+                    net.send_remote_action(request.workspace_topic, request.from, reply);
+                }
+            });
+        }
+    }
 }
 
 /// The id a remote peer's traffic is attributed under, announcing the
@@ -1366,23 +1314,45 @@ fn roster_announcement(said: Option<&str>, known: Option<&str>, id: &str) -> Opt
 mod tests {
     use super::*;
 
+    #[test]
+    fn allocated_application_peers_skip_reserved_ids_and_preserve_connection_counts() {
+        let table = FanoutState::new();
+        assert_eq!(table.connections_seen(), 0);
+        assert_eq!(table.next_peer_id(), 1);
+        assert_eq!(table.connections_seen(), 1);
+        assert_eq!(table.next_peer_id(), 2);
+        assert_eq!(table.connections_seen(), 2);
+    }
+
+    #[test]
+    fn exhausted_application_peer_ids_do_not_wrap_or_issue_the_current_connection_sentinel() {
+        let table = FanoutState::new();
+        table.peer_id_counter.store(u64::MAX - 2, Ordering::Relaxed);
+        assert_eq!(table.next_peer_id(), u64::MAX - 1);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| table.next_peer_id()))
+                .is_err()
+        );
+        assert_eq!(table.connections_seen(), u64::MAX - 1);
+    }
+
     /// A digest-shaped peer id, as presence frames carry it.
     const PEER: &str = "peer@5537458103208628978";
 
     #[test]
     fn document_routes_stay_with_their_app_and_record() {
-        let document = CrdtRoute::record("dev.tilo.notes", "room-1", "note-1");
+        let document = CrdtRoute::record("so.tilo.notes", "room-1", "note-1");
 
         assert!(document.delivers_to(&document));
         assert!(document.delivers_to(&CrdtRoute::cluster("room-1")));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.files", "room-1", "note-1",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-1", "note-2",)));
-        assert!(!document.delivers_to(&CrdtRoute::record("dev.tilo.notes", "room-2", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.files", "room-1", "note-1",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-1", "note-2",)));
+        assert!(!document.delivers_to(&CrdtRoute::record("so.tilo.notes", "room-2", "note-1",)));
     }
 
     #[test]
     fn remote_document_route_preserves_signed_kind_and_rejects_relabeling() {
-        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
         let (signing, author) = collab_types::generate_keypair();
         let mut envelope = collab_types::SignedOp::new_unsigned(
             DocumentMutation::Snapshot(b"whole document".to_vec())
@@ -1404,7 +1374,7 @@ mod tests {
         ));
         assert_eq!(
             validate_document_route(
-                &CrdtRoute::record("dev.tilo.notes", "room-1", "record-2"),
+                &CrdtRoute::record("so.tilo.notes", "room-1", "record-2"),
                 &envelope,
             ),
             Err(ValidationError::DocumentRouteMismatch),
@@ -1419,7 +1389,7 @@ mod tests {
 
     #[test]
     fn remote_document_broker_routes_opaque_mls_only_for_bound_channel() {
-        let route = CrdtRoute::record("dev.tilo.notes", "room-1", "record-1");
+        let route = CrdtRoute::record("so.tilo.notes", "room-1", "record-1");
         let expected_channel =
             collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record_id);
         let (_, author) = collab_types::generate_keypair();

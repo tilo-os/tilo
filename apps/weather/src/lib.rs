@@ -32,11 +32,10 @@
 //! therefore seeded with fully-populated [`sample`] snapshots and never
 //! touches the network, so a screenshot is honest and offline.
 //!
-//! The live binary uses [`WeatherApp::live`]: it keeps the default saved
-//! places (real coordinates) but drops the synthesized snapshots and fetches
-//! each place's **real** Open-Meteo forecast on the very first frame — with
-//! no user interaction — showing a brief loading state until the data lands.
-//! It never displays invented readings.
+//! The live binary uses [`WeatherApp::live`]: it adopts the user's saved places
+//! and fetches their real Open-Meteo observations. A blank record stays empty.
+//! History shows recorded saved places through the shared domain painter;
+//! provider observations and device units are not recorded versions.
 
 // An app runs as its own sandboxed process, so an integer that wraps here
 // costs one app rather than the desktop, and proving every layout sum cannot
@@ -72,11 +71,15 @@ pub mod app;
 pub mod chart;
 pub mod core;
 pub mod doc;
+pub mod framework_history;
+#[cfg(test)]
+mod framework_history_tests;
 pub mod icon;
 pub mod interaction;
 pub mod model;
 pub mod net;
 pub mod panes;
+mod presentation;
 pub mod region;
 pub mod sample;
 pub mod search_provider;

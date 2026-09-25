@@ -6,38 +6,31 @@
 //! here hard-codes a palette.
 
 use ui::ColorCompat;
+pub use ui::paint::{fill_rect, fill_round, stroke_round};
 use ui::text_render::{TextRenderer, TextWeight};
 use vello::Scene;
-use vello::kurbo::{
-    Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, RoundedRect, Stroke, Vec2,
-};
+use vello::kurbo::{Affine, Arc, BezPath, Cap, Circle, Line, Point, Rect, Stroke, Vec2};
 use vello::peniko::{Color, Fill};
 
-pub fn fill_rect(scene: &mut Scene, t: Affine, rect: Rect, color: Color) {
-    scene.fill(Fill::NonZero, t, color, None, &rect);
+/// Filled rounded rect with its derived 1px rest edge — the canonical
+/// "card" treatment, routed through `ui::surface::card` so the edge comes
+/// from the fill it sits on (HIG §9.5) rather than a declared colour.
+pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color) {
+    ui::surface::card(scene, t, rect, radius, fill);
 }
 
-pub fn fill_rrect(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, color: Color) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.fill(Fill::NonZero, t, color, None, &shape);
-}
-
-pub fn stroke_rrect(
+/// A 1px rule between rows inside `surface`, derived against it and inset
+/// `inset` from both ends (`ui::surface::separator`).
+pub fn separator(
     scene: &mut Scene,
     t: Affine,
-    rect: Rect,
-    radius: f64,
-    color: Color,
-    width: f64,
+    x0: f64,
+    x1: f64,
+    y: f64,
+    inset: f64,
+    surface: Color,
 ) {
-    let shape = RoundedRect::from_rect(rect, radius);
-    scene.stroke(&Stroke::new(width), t, color, None, &shape);
-}
-
-/// Filled rounded rect with a 1px border — the canonical "card" treatment.
-pub fn card(scene: &mut Scene, t: Affine, rect: Rect, radius: f64, fill: Color, border: Color) {
-    fill_rrect(scene, t, rect, radius, fill);
-    stroke_rrect(scene, t, rect, radius, border, 1.0);
+    ui::surface::separator(scene, t, x0, x1, y, inset, surface);
 }
 
 pub fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color, width: f64) {
@@ -170,17 +163,23 @@ pub fn text_vc(
     y0: f64,
     h: f64,
 ) {
-    let ty = y0 + (h - f64::from(size)) / 2.0;
+    let (_, th) = tr.measure(s, size, None);
+    let ty = y0 + (h - f64::from(th)) / 2.0;
     tr.draw_text(scene, s, size, color, t * Affine::translate((x, ty)), None);
 }
 
+/// Vertical padding a pill adds around its measured label. Both pill styles
+/// share it so a type pill and a retention tag on one row have one height.
+const PILL_PAD_Y: f64 = 3.0;
+
 /// Draw a pill (rounded chip) with a centred label. Returns the pill width so
 /// callers can lay out chips left-to-right. The pill is vertically centred on
-/// `cy` with a fixed height derived from `size`.
+/// `cy`; its height comes from the label the renderer will paint, so it grows
+/// with the accessibility text scale instead of clipping the glyphs.
 #[allow(
     clippy::too_many_arguments,
-    reason = "leaf graphics adapter exposes independent label, anchor, and palette values"
-)]
+    reason = "The pill painter takes its scene, text renderer, transform, position, label size, and foreground/background colors independently."
+)] // one arg per independent knob; see `text` above.
 pub fn pill(
     scene: &mut Scene,
     tr: &mut TextRenderer,
@@ -192,13 +191,14 @@ pub fn pill(
     fg: Color,
     bg: Color,
 ) -> f64 {
-    let (tw, _) = tr.measure(label, size, None);
+    let (tw, th) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = f64::from(size) + 8.0;
+    let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-    fill_rrect(scene, t, rect, h / 2.0, bg);
-    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
+    // A tinted capsule: the tint is its contrast step against the row.
+    ui::surface::pill(scene, t, rect, bg, None, None);
+    let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,
         label,
@@ -226,14 +226,20 @@ pub fn tag_pill(
     size: f32,
     accent: Color,
 ) -> f64 {
-    let (tw, _) = tr.measure(label, size, None);
+    let (tw, th) = tr.measure(label, size, None);
     let pad = 8.0;
-    let h = f64::from(size) + 7.0;
+    let h = f64::from(th) + PILL_PAD_Y * 2.0;
     let w = f64::from(tw) + pad * 2.0;
     let rect = Rect::new(x, cy - h / 2.0, x + w, cy + h / 2.0);
-    fill_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.18));
-    stroke_rrect(scene, t, rect, h / 2.0, accent.with_alpha_factor(0.55), 1.0);
-    let ty = rect.y0 + (h - f64::from(size)) / 2.0;
+    ui::surface::pill(
+        scene,
+        t,
+        rect,
+        accent.with_alpha_factor(0.18),
+        Some(accent.with_alpha_factor(0.55)),
+        None,
+    );
+    let ty = rect.y0 + PILL_PAD_Y;
     tr.draw_text(
         scene,
         label,
@@ -248,12 +254,12 @@ pub fn tag_pill(
 /// Horizontal capacity bar: a rounded track with a proportional fill.
 pub fn bar(scene: &mut Scene, t: Affine, rect: Rect, frac: f64, fill: Color, track: Color) {
     let r = rect.height() / 2.0;
-    fill_rrect(scene, t, rect, r, track);
+    fill_round(scene, t, rect, r, track);
     let frac = frac.clamp(0.0, 1.0);
     if frac > 0.001 {
         let w = (rect.width() * frac).max(rect.height());
         let fr = Rect::new(rect.x0, rect.y0, rect.x0 + w, rect.y1);
-        fill_rrect(scene, t, fr, r, fill);
+        fill_round(scene, t, fr, r, fill);
     }
 }
 
