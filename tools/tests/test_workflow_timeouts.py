@@ -36,6 +36,32 @@ class WorkflowTimeoutTests(unittest.TestCase):
             ],
         )
 
+    def test_local_reusable_workflow_call_is_bounded_by_its_callee(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workflows = Path(directory)
+            (workflows / "callee.yml").write_text(
+                "jobs:\n  build:\n    runs-on: runner\n", encoding="utf-8"
+            )
+            (workflows / "caller.yml").write_text(
+                """jobs:
+  present:
+    uses: ./.forgejo/workflows/callee.yml
+  missing:
+    uses: ./.forgejo/workflows/absent.yml
+""",
+                encoding="utf-8",
+            )
+
+            violations = audit(workflows)
+
+        self.assertEqual(
+            [str(item) for item in violations],
+            [
+                "callee.yml: job 'build' has no positive timeout-minutes",
+                "caller.yml: job 'missing' has no positive timeout-minutes",
+            ],
+        )
+
     def test_default_audit_covers_yml_and_yaml_workflows(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             workflows = Path(directory)

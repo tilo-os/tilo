@@ -53,6 +53,15 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
   && ok 'release compares uncached base and final sealed OS rebuilds' \
   || bad 'reproducibility is claimed without a release-blocking comparison'
 
+# Integration images skip the second uncached build, but every publication
+# (tag, nightly or protected manual main release) must still run it.
+grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true'" \
+  && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
+  && ok 'every publication, and only a publication, pays for the uncached rebuild' \
+  || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
+
 grep -Fq -- '--type https://tilo.sh/security/release-freshness/v1' "$workflow" \
   && grep -Fq 'release freshness attestation is absent, expired, or does not bind this release' "$workflow" \
   && grep -Fq '604800' "$freshness" \
@@ -132,8 +141,8 @@ grep -Fq 'verify_signed_generation "$current"' "$repo/os/dev/next-generation.sh"
 if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'runner":"imager-linux-aarch64"' "$workflow" \
    && grep -Fq 'if [[ $GITHUB_REF == refs/tags/v* ]]; then' "$workflow" \
-   && grep -Fq 'runner":"runner-disk-100g"' "$workflow" \
-   && grep -Fq 'runner":"runner-disk-100g-arm64"' "$workflow" \
+   && grep -Fq 'runner":"runner-large"' "$workflow" \
+   && grep -Fq 'runner":"runner-large-arm64"' "$workflow" \
    && grep -Fq "if: needs.plan.outputs.publish == 'true'" "$workflow" \
    && grep -Fq 'for candidate in /dev/dri/renderD*; do' "$workflow" \
    && grep -Fq 'installed-desktop gate will use the bounded QEMU TCG fallback' "$workflow" \
@@ -233,6 +242,30 @@ if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=42 SOURCE_DATE_EPOCH=1 \
   bad 'provenance accepted an unpinned build dependency'
 else
   ok 'provenance refuses unpinned build dependencies'
+fi
+
+firmware="code.podesta.ai/qos/lenovo-firmware@sha256:$hex"
+if RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+   BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+   KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+   TILO_HARDWARE_PROFILE=lenovo-83ed TILO_RELEASE_ARCHITECTURE=aarch64 \
+   TILO_FIRMWARE_CANDIDATE="$firmware" \
+   TILO_FIRMWARE_MANIFEST_SHA256="$hex" \
+   "$provenance" "$tmp/lenovo-provenance.json" \
+   && jq -e --arg firmware "$firmware" --arg manifest "$hex" '
+     .buildDefinition.externalParameters.hardwareProfile == "lenovo-83ed"
+     and .buildDefinition.externalParameters.architecture == "aarch64"
+     and .buildDefinition.externalParameters.firmwareManifestSha256 == $manifest
+     and any(.buildDefinition.resolvedDependencies[]; .uri == $firmware)
+   ' "$tmp/lenovo-provenance.json" >/dev/null \
+   && ! (RELEASE_DIGEST="sha256:$hex" TILO_GENERATION=1 SOURCE_DATE_EPOCH=1 \
+         BASE_REF="base@sha256:$hex" RPMS_REF="rpms@sha256:$hex" \
+         KERNEL_RPMS_REF="kernel@sha256:$hex" GITHUB_SHA="$hex" \
+         TILO_HARDWARE_PROFILE=generic TILO_FIRMWARE_CANDIDATE="$firmware" \
+         "$provenance" "$tmp/bad-generic-firmware.json" >/dev/null 2>&1); then
+  ok 'Lenovo release provenance binds reviewed firmware and generic releases reject it'
+else
+  bad 'Lenovo firmware input is absent from release provenance or can enter a generic release'
 fi
 
 exit "$fail"

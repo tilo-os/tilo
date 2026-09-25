@@ -264,7 +264,15 @@ mod tests {
 
     #[test]
     fn a_missing_socket_is_unreachable_and_a_refusal_keeps_its_code() {
+        #[cfg(not(windows))]
         let mut console = SocketConsole::new(Path::new("/nonexistent/console.sock"));
+        #[cfg(windows)]
+        let mut console = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            drop(listener);
+            SocketConsole::new(&PathBuf::from(format!("tcp://{address}")))
+        };
         assert!(matches!(console.state(), Err(ConsoleError::Unreachable(_))));
         let refusal = refusal_or_protocol(
             &json!({"err": {"code": "action_unavailable", "message": "other_step: …"}}),

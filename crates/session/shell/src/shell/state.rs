@@ -3,9 +3,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 mod fs_authority;
+mod local_app_records;
 use fs_authority::schedule_fs_authority_publication;
 #[cfg(test)]
 use fs_authority::wait_for_fs_authority_publication_idle;
+pub use local_app_records::LocalAppRecord;
 
 fn now_unix_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -852,6 +854,10 @@ pub struct WorkspaceTree {
     /// room projection deliberately has no corresponding field.
     #[serde(default)]
     pub native_document_tabs: HashMap<TabId, NativeDocumentReference>,
+    /// Local launcher-issued CRDT record identity for each adopted app tab.
+    /// Kept only in the device snapshot, never in a room document or peer offer.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub local_app_records: HashMap<TabId, LocalAppRecord>,
     /// Where to write this tree when a capability changes. `None`
     /// disables it (tests, offscreen renderer). Set at boot by the
     /// compositor — what makes an `Always` grant survive a restart.
@@ -880,6 +886,7 @@ impl Default for WorkspaceTree {
             continuation_closed_tabs: HashMap::new(),
             continuation_file_references: HashMap::new(),
             native_document_tabs: HashMap::new(),
+            local_app_records: HashMap::new(),
             persist_path: None,
             fs_acl_path: None,
         }
@@ -1029,6 +1036,9 @@ impl WorkspaceTree {
                     }
                 }
             }
+        }
+        for record in self.local_app_records.values() {
+            consider(record.record_instance);
         }
         // Advance the counter past `max_counter`. `fetch_max` keeps the
         // higher of the two so a parallel allocator that already

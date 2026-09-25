@@ -710,6 +710,21 @@ impl Widget for Card {
             .iter_mut()
             .map(|c| c.build_layout(taffy, theme, node_map))
             .collect();
+        // Card is a vertical flex container. Let its height grow with its
+        // controls instead of allowing Taffy to collapse form fields and the
+        // recovery acknowledgement when Review is taller than the viewport.
+        // ActionButton's zero flex basis and growth are for horizontal nav
+        // rows; as direct children of this column they must use intrinsic
+        // height. The surrounding Scrollable handles vertical overflow.
+        for &child_node in &child_nodes {
+            if let Ok(style) = taffy.style(child_node) {
+                let mut style = style.clone();
+                style.flex_basis = Dimension::auto();
+                style.flex_grow = 0.0;
+                style.flex_shrink = 0.0;
+                let _ = taffy.set_style(child_node, style);
+            }
+        }
         // `new_with_children` only errors for a child `NodeId` from a
         // different tree, which never happens here since every id in
         // `child_nodes` was just built in this same tree by the calls above.
@@ -768,6 +783,17 @@ impl Widget for Card {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
                 child.apply_layout(taffy, child_node, card_origin);
             }
+        }
+        // Taffy can cap an auto-height flex card at its available viewport
+        // height while still placing nonshrinking controls beyond that cap.
+        // Paint and expose the full measured content, including bottom inset.
+        if let Some(bottom) = self
+            .children
+            .iter()
+            .map(|child| child.get_rect().y1)
+            .reduce(f64::max)
+        {
+            self.rect.y1 = self.rect.y1.max(bottom + f64::from(CARD_PADDING));
         }
     }
 
@@ -949,6 +975,15 @@ impl Widget for ViewportStage {
                     },
                     size: Size {
                         width: percent(1.0_f32),
+                        // The scrollable measures this node for its scroll
+                        // extent. A fixed viewport height hid the overflowing
+                        // Review controls from the scrollbar.
+                        height: Dimension::auto(),
+                    },
+                    min_size: Size {
+                        width: Dimension::auto(),
+                        // Short steps still fill the viewport so the two
+                        // flexible spacers can centre the card.
                         height: percent(1.0_f32),
                     },
                     flex_shrink: 0.0,
@@ -974,6 +1009,14 @@ impl Widget for ViewportStage {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
                 child.apply_layout(taffy, child_node, own_origin);
             }
+        }
+        if let Some(card) = self.children.get(1) {
+            // The trailing centring spacer may itself end at the viewport
+            // edge. Only the card's overflow should enlarge scroll extent.
+            self.rect.y1 = self
+                .rect
+                .y1
+                .max(card.get_rect().y1 + f64::from(VIEWPORT_PADDING));
         }
     }
 
@@ -3561,9 +3604,16 @@ impl InstallerApp {
         if let Some(confirmation) = read_text(state, root, ERASE_CONFIRM_PATH)
             && self.erase_confirmation != confirmation
         {
+            let was_ready = self.destructive_confirmation_ready();
+            let had_status = !self.status.is_empty();
             self.erase_confirmation = confirmation;
             self.status.clear();
-            self.dirty_structure = true;
+            // TextInput already owns the edited text. Rebuilding its widget
+            // on every keystroke discards the live caret/focus state; only
+            // rebuild when the Begin button's enabled state or the status
+            // line actually changes.
+            self.dirty_structure |=
+                had_status || was_ready != self.destructive_confirmation_ready();
         }
     }
 
@@ -4940,6 +4990,36 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_keeps_live_input_until_begin_gate_changes() {
+        let mut app = InstallerApp::with_disks(sample());
+        app.selected_disk = Some(0);
+        app.step = Step::Review;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        app.sync(&mut doc, &root);
+        let _ = build(&mut app);
+        assert!(!app.take_structure_dirty());
+        let object = match doc.get(&root, ERASE_CONFIRM_PATH).unwrap() {
+            Some((Value::Object(ObjType::Text), object)) => object,
+            other => panic!("expected confirmation text object, got {other:?}"),
+        };
+        for (index, character) in "/dev/sd".chars().enumerate() {
+            let _ = doc.splice_text(&object, index, 0, &character.to_string());
+            app.sync(&mut doc, &root);
+            assert!(
+                !app.take_structure_dirty(),
+                "partial input rebuilt at {index}"
+            );
+        }
+        let _ = doc.splice_text(&object, 7, 0, "a");
+        app.sync(&mut doc, &root);
+        assert!(
+            app.take_structure_dirty(),
+            "exact confirmation must enable Begin"
+        );
+    }
+
+    #[test]
     fn alongside_install_requires_exact_typed_root_confirmation() {
         let mut app = InstallerApp::with_disks(sample());
         app.selected_disk = Some(0);
@@ -5780,11 +5860,56 @@ mod tests {
             card.get_rect().height() > 480.0,
             "representative Review must exercise vertical overflow"
         );
+        let stage = find_named(&app, "InstallerViewportStage").expect("review viewport stage");
+        assert!(
+            stage.get_rect().y1 >= card.get_rect().y1,
+            "scroll extent stops before the Review card ends"
+        );
 
         let scroll = find_named(&app, "Scrollable").expect("installer scroll viewport");
         assert!(
             scroll.is_focusable(),
             "overflowing installer must expose Page Up/Down, Home/End and arrow scrolling"
+        );
+    }
+
+    #[test]
+    fn compact_review_keeps_confirmation_controls_at_full_height() {
+        let mut app = InstallerApp::for_shot(Step::Review);
+        layout_at(&mut app, 1280.0, 768.0);
+        let card = find_named(&app, "InstallerCard").expect("review card");
+        let input = find_named(&app, "TextInput").expect("destructive confirmation input");
+        let controls = card.children();
+        let ack = controls
+            .iter()
+            .find(|child| child.test_id() == Some("recovery_ack"))
+            .expect("recovery-key acknowledgement");
+        let nav = controls.last().expect("review navigation");
+        assert!(
+            input.get_rect().height() >= 38.0,
+            "confirmation input collapsed: {:?}",
+            input.get_rect()
+        );
+        assert!(
+            card.get_rect().y1 >= input.get_rect().y1,
+            "confirmation input escaped the review card"
+        );
+        assert!(
+            ack.get_rect().height() >= 40.0,
+            "acknowledgement collapsed: {:?}",
+            ack.get_rect()
+        );
+        assert!(
+            ack.get_rect().y0 >= input.get_rect().y1,
+            "acknowledgement overlaps confirmation input"
+        );
+        assert!(
+            nav.get_rect().y0 >= ack.get_rect().y1,
+            "navigation overlaps acknowledgement"
+        );
+        assert!(
+            card.get_rect().y1 >= nav.get_rect().y1,
+            "navigation escaped review card"
         );
     }
 
