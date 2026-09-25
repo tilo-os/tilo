@@ -263,25 +263,19 @@ impl MediaTransport for SimulatedTransport {
 /// lazily and only when it can actually run.
 pub struct MediaEngine {
     transport: Box<dyn MediaTransport + Send>,
+    // Binding iroh may perform address discovery. Keep that work out of the
+    // application's first-frame path and do it only for an explicit call.
+    live_start_pending: bool,
 }
 
 impl MediaEngine {
-    /// Build the best transport for this build + environment: the live iroh
-    /// engine when `live-media` is enabled and the runtime probe passes,
-    /// otherwise the simulator.
+    /// Build a non-blocking engine for application startup. When this build
+    /// and environment support live media, [`Self::activate_for_call`] upgrades
+    /// it at the first explicit call action.
     pub fn new() -> Self {
-        #[cfg(feature = "live-media")]
-        {
-            if live::environment_supports_media()
-                && let Some(t) = live::IrohTransport::try_new()
-            {
-                return Self {
-                    transport: Box::new(t),
-                };
-            }
-        }
         Self {
             transport: Box::new(SimulatedTransport::default()),
+            live_start_pending: environment_supports_media(),
         }
     }
 
@@ -290,6 +284,20 @@ impl MediaEngine {
     pub fn simulated() -> Self {
         Self {
             transport: Box::new(SimulatedTransport::default()),
+            live_start_pending: false,
+        }
+    }
+
+    /// Upgrade to the live transport at the call boundary. A failed probe is
+    /// final for this engine, avoiding retries on the frame/event thread.
+    pub fn activate_for_call(&mut self) {
+        if !self.live_start_pending {
+            return;
+        }
+        self.live_start_pending = false;
+        #[cfg(feature = "live-media")]
+        if let Some(transport) = live::IrohTransport::try_new() {
+            self.transport = Box::new(transport);
         }
     }
 
@@ -316,6 +324,17 @@ impl MediaEngine {
         } else {
             "simulated (local)"
         }
+    }
+}
+
+fn environment_supports_media() -> bool {
+    #[cfg(feature = "live-media")]
+    {
+        live::environment_supports_media()
+    }
+    #[cfg(not(feature = "live-media"))]
+    {
+        false
     }
 }
 
@@ -688,6 +707,16 @@ mod tests {
             assert!(!e.is_live());
             assert_eq!(e.description(), "simulated (local)");
         }
+    }
+
+    #[test]
+    fn engine_construction_never_binds_live_transport() {
+        // The app constructor runs before the window's first frame. Even when
+        // a desktop environment is advertised it must remain a pure local
+        // allocation; endpoint setup belongs to `activate_for_call`.
+        let e = MediaEngine::new();
+        assert!(!e.is_live());
+        assert_eq!(e.description(), "simulated (local)");
     }
 
     #[test]
