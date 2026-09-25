@@ -17,6 +17,9 @@ DERIVE = REPO / "os/dev/derive-rpm-package-set.py"
 FULL_OFFLINE_RESOLVE = ("dnf install -y --best --downloadonly --setopt=reposdir=/repo "
                         "--setopt=install_weak_deps=True ${PACKAGES}")
 # The image's erase of base-installed packages that later stages need again.
+# Only the newest build of each package is ever chosen; each must be closed.
+REPOCLOSURE = ('RUN --network=none dnf repoclosure --newest --arch="$(uname -m),noarch" '
+               '--setopt=reposdir=/repo --repo frozen')
 ERASE = re.compile(r"awk '/\^\(([^)]*)\)\$/'\s*\|\s*xargs -r rpm -e --nodeps")
 
 
@@ -82,6 +85,8 @@ def validate_boundaries(text):
     check = " ".join(stages["offline-check"])
     if any(word not in check for word in ("--network=none", "--best", "--downloadonly", "--setopt=reposdir=/repo", "--setopt=install_weak_deps=True")):
         raise ValueError("offline closure policy differs from resolution")
+    if REPOCLOSURE not in stages["repository"]:
+        raise ValueError("snapshot can publish a repository that is not dependency-closed")
     if not any("COPY --from=offline-check /repo /repo" in line for line in stages["final"]):
         raise ValueError("final artifact can prune offline closure check")
 
@@ -133,6 +138,11 @@ class BoundaryTests(unittest.TestCase):
     def test_masked_offline_check_is_rejected(self):
         recipe = RECIPE.read_text().replace("FROM ${BASE_REF} AS offline-check", "FROM metadata-tools AS offline-check")
         with self.assertRaisesRegex(ValueError, "original"):
+            validate_boundaries(recipe)
+
+    def test_unclosed_repository_is_rejected(self):
+        recipe = RECIPE.read_text().replace(REPOCLOSURE, "RUN true")
+        with self.assertRaisesRegex(ValueError, "dependency-closed"):
             validate_boundaries(recipe)
 
     def test_prunable_check_is_rejected(self):
