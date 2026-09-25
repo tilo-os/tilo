@@ -130,6 +130,22 @@ impl Link {
         Ok(())
     }
 
+    /// Wait until every document mutation sent so far has been handed to the
+    /// broker. [`Self::send`] only queues: dropping the link with a mutation
+    /// still queued discards it, so a session that is about to end calls this
+    /// first.
+    ///
+    /// # Errors
+    ///
+    /// When one of those mutations was not published, or the transport
+    /// stopped before answering.
+    pub fn flush_documents(&mut self) -> Result<()> {
+        self.manager
+            .begin_document_publication_barrier()?
+            .wait(None)?;
+        Ok(())
+    }
+
     /// Subscribe to another typed route. This is used for cluster-wide
     /// discovery; mutations still require [`Self::send_to_route`].
     pub fn join_route(&mut self, route: RouteSpec) {
