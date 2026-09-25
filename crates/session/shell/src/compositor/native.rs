@@ -13,7 +13,7 @@ pub use crate::shell::test_control::{
 };
 use std::collections::{HashMap, HashSet};
 use std::io::{BufReader, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
@@ -68,7 +68,7 @@ fn with_action_gate<R>(
     let gate = CapabilityVisibility::new(workspace, actor);
     Ok(f(&chrome, &gate))
 }
-use smithay::reexports::calloop::{self, EventLoop};
+use smithay::reexports::calloop::{self, EventLoop, Interest, Mode, PostAction, generic::Generic};
 use smithay::reexports::wayland_server::Display;
 use smithay::wayland::socket::ListeningSocketSource;
 use taffy::NodeId;
@@ -167,6 +167,10 @@ use crate::shell::overlay_host::PeerSyncRequest;
 struct NativeRedrawReasons {
     force: bool,
     backend_event: bool,
+    /// Input which changes compositor-owned pixels, most notably the cursor.
+    /// This is distinct from `session`: a focused client may consume pointer
+    /// motion while the shell must still repaint its own cursor.
+    visible_input: bool,
     session: bool,
     accessibility: bool,
     revision: bool,
@@ -184,6 +188,7 @@ impl NativeRedrawReasons {
     fn content_changed(self, session_locked: bool) -> bool {
         self.force
             || self.backend_event
+            || self.visible_input
             || self.session
             || self.accessibility
             || self.revision
@@ -200,10 +205,19 @@ impl NativeRedrawReasons {
 
 const LOCK_CLOCK_REFRESH: Duration = Duration::from_secs(60);
 const IDLE_BACKEND_POLL: Duration = Duration::from_millis(50);
+const WAYLAND_CLIENT_SERVICE_FALLBACK: Duration = Duration::from_millis(4);
 const SLOW_PREPAINT_PHASE: Duration = Duration::from_millis(50);
 
 fn slow_prepaint_phase(elapsed: Duration) -> bool {
     elapsed >= SLOW_PREPAINT_PHASE
+}
+
+fn wayland_client_service_deadline(wake_registered: bool, now: Instant) -> Option<Instant> {
+    if wake_registered {
+        None
+    } else {
+        now.checked_add(WAYLAND_CLIENT_SERVICE_FALLBACK)
+    }
 }
 
 /// Select how long calloop may sleep. Presentation cadence is a deadline only
@@ -211,6 +225,7 @@ fn slow_prepaint_phase(elapsed: Duration) -> bool {
 /// earliest real service/widget deadline and wakes early on registered fds.
 fn native_loop_park(
     now: Instant,
+    backend_has_event_wake: bool,
     cadence_needed: bool,
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
@@ -221,19 +236,36 @@ fn native_loop_park(
         .chain(cadence_needed.then_some(frame_deadline))
         .min();
 
-    // The DRM backend owns a nested calloop containing libinput, libseat and
-    // udev. It is drained by `Backend::poll_events` at the start of each outer
-    // iteration, so an otherwise-static session must still wake at this
-    // bounded interval. Returning `None` here would park the outer calloop
-    // indefinitely: the nested loop's keyboard/mouse fds cannot wake it, and
-    // even the dev test-control socket is accepted only by the next iteration.
-    Some(
-        semantic_deadline
-            .map_or(IDLE_BACKEND_POLL, |deadline| {
-                deadline.saturating_duration_since(now)
-            })
-            .min(IDLE_BACKEND_POLL),
-    )
+    semantic_deadline
+        .map(|deadline| deadline.saturating_duration_since(now))
+        .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+}
+
+/// A lock-state edge replaces every pixel on screen.  Keep that edge pending
+/// until a frame is actually accepted by the presenter; consuming it while
+/// the asynchronous render queue is full would leave the previous lock or
+/// desktop frame visible until unrelated input happens to trigger a repaint.
+fn retain_session_redraw(session_changed: bool, frame_submitted: bool) -> bool {
+    session_changed && !frame_submitted
+}
+
+/// Whether the next park must keep the frame deadline for a pending frame.
+/// While the bounded presenter is full, an already-due frame deadline would
+/// make every park a zero timeout and spin the loop until a frame retires;
+/// the presenter's retirement ping wakes calloop as soon as capacity returns.
+fn cadence_wait_needed(pipe_ready: bool, frame_pending: bool) -> bool {
+    pipe_ready && frame_pending
+}
+
+/// A widget deadline only matters while the presenter can accept the frame
+/// it would cause. Under back-pressure an overdue animation deadline would
+/// turn every park into an immediate return while the paint gate keeps
+/// declining the frame; retirement pings the loop once capacity is restored.
+fn widget_deadline_for_presenter(
+    pipe_ready: bool,
+    widget_deadline: Option<Instant>,
+) -> Option<Instant> {
+    widget_deadline.filter(|_| pipe_ready)
 }
 
 // A due animation remains dirty until it paints, but is no longer a wake
@@ -1037,6 +1069,7 @@ const TEST_STATE_DUMP_ENV: &str = "TILO_TEST_STATE_DUMP";
 /// locked — so it is a **developer-build** surface, gated on
 /// [`crate::compositor::dev_env::DEV_ENV_OVERRIDES`].
 const TEST_CONTROL_ENV: &str = crate::shell::test_control_socket::TEST_CONTROL_ENV;
+const TEST_CONTROL_WAKE_ENV: &str = "TILO_TEST_CONTROL_WAKE_FD";
 
 /// RAII guard that unlinks a unix-socket file when dropped. [`run`] also
 /// drops these explicitly in shutdown order so endpoints disappear before
@@ -1314,6 +1347,10 @@ struct FrameBuilderControlState<'a> {
     /// The compositor's actual stream/input authority. Layout-only tests have
     /// no compositor and therefore leave this absent.
     shares: Option<&'a crate::network::streaming::ShareRegistry>,
+    /// Read-only lock authentication status. Layout-only fixtures omit this;
+    /// the native transport supplies it so an acceptance client can wait for
+    /// an asynchronous verifier before entering a retry.
+    lock: Option<&'a LockController>,
 }
 
 impl ControlState for FrameBuilderControlState<'_> {
@@ -1748,6 +1785,16 @@ impl ControlState for FrameBuilderControlState<'_> {
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
             "session_locked": chrome.session_locked(),
+            // Exact compositor-owned lock UI state. A harness must wait for
+            // an asynchronous PAM result before typing a retry; without this,
+            // the controller correctly swallows the second password while the
+            // first worker is still in flight and the failure looks like lost
+            // keyboard input.
+            "lock_auth": {
+                "verifying": self.lock.is_some_and(LockController::is_verifying),
+                "password_len": self.lock.map_or(0, LockController::buffer_len),
+                "error": self.lock.and_then(LockController::error),
+            },
             // Who this session is, and whether they may administer the room they're
             // in — read straight off the production helpers, not guessed from `owner`.
             "local_user_id": chrome.active_local_user(),
@@ -1803,6 +1850,15 @@ impl ControlState for FrameBuilderControlState<'_> {
                     "max_scroll_x": max_scroll_x,
                 }))
                 .collect::<Vec<_>>(),
+            // Debug-session acceptance drives the same live pointer targets
+            // a person sees. Zero-area means the hover-revealed maximize or
+            // maximized restore control is not currently painted.
+            "active_window_controls": self.fb.host()
+                .active_window_control_rects()
+                .map(|(maximize, restore)| serde_json::json!({
+                    "maximize": { "x": maximize.x0, "y": maximize.y0, "w": maximize.width(), "h": maximize.height() },
+                    "restore": { "x": restore.x0, "y": restore.y0, "w": restore.width(), "h": restore.height() },
+                })),
         })
     }
 }
@@ -1982,26 +2038,27 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
     for request in requests {
         tracing::info!(
             target: "shell::compositor::host_launch",
-            desktop_id = %request.desktop_id,
-            display_name = %request.display_name,
+            desktop_id = %request.app.desktop_id,
+            display_name = %request.app.name,
             placement = ?request.placement,
             x11 = ?crate::shell::host_apps::x11_availability(),
+            request_to_dispatch_us = request.requested_at.elapsed().as_micros(),
             "dispatching user-requested host application launch"
         );
         let token = state.issue_host_launch_activation(
-            request.desktop_id.clone(),
-            request.display_name.clone(),
+            request.app.desktop_id.clone(),
+            request.app.name.clone(),
             request.placement,
         );
-        if let Err(error) = crate::shell::host_apps::launch_with_document_and_activation(
-            &request.desktop_id,
+        if let Err(error) = crate::shell::host_apps::launch_resolved_with_activation(
+            request.app.clone(),
             None,
             request.portal_workspace_id,
             Some(&token),
         ) {
             tracing::error!(
                 target: "shell::compositor::host_launch",
-                desktop_id = %request.desktop_id,
+                desktop_id = %request.app.desktop_id,
                 %error,
                 "host application launch was refused before spawn"
             );
@@ -2011,7 +2068,7 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             frame_builder.with_chrome(|chrome| {
                 chrome.push_notification_full(
                     crate::shell::notification::Notification::new(
-                        crate::shell::launcher::launch_failure_title(&request.display_name),
+                        crate::shell::launcher::launch_failure_title(&request.app.name),
                         error.notification_message(),
                     )
                     .with_severity(crate::shell::notification::NotificationSeverity::Error)
@@ -2636,7 +2693,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
-            Ok(written) => conn.output_offset += written,
+            Ok(written) => conn.output_offset = conn.output_offset.saturating_add(written),
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 return PendingConnectionProgress::OutputPending;
             }
@@ -2768,6 +2825,7 @@ fn pump_test_control_conn(
                                     fb: frame_builder,
                                     doc: Some((&ctx.doc, &ctx.root_obj)),
                                     shares: Some(&state.share_registry),
+                                    lock: Some(lock),
                                 };
                                 test_control::dispatch_command(&cmd, &state)
                             }
@@ -3583,6 +3641,13 @@ fn load_session_tree(
     // Carried out to `run`, which has the chrome to show it — silently handing
     // someone a bootstrapped demo tree is indistinguishable from losing their work.
     let (mut tree, state_notice) = persist::load_or_default(&path);
+    // Recover cards written by builds that mistook a host window's toolkit
+    // identity for an uninstalled package. The host catalogue is available
+    // before the frame loop starts, so this one-shot migration can distinguish
+    // a now-resolvable local app from a genuinely missing one without making
+    // the latter retry forever.
+    let recovered_host_apps =
+        crate::shell::peer_windows::retry_resolvable_host_app_errors(&mut tree);
     // Past every id already in the tree, so a restart won't re-mint one in use. No-op on a first boot.
     tree.seed_next_id_from_self();
 
@@ -3594,6 +3659,13 @@ fn load_session_tree(
         None
     };
     tree.fs_acl_path = Some(persist::fs_capability_export_path());
+    if recovered_host_apps {
+        tracing::info!(
+            target: "tilo::session_restore",
+            "retrying legacy host-app cards that now resolve to installed desktop entries"
+        );
+        tree.flush_to_disk();
+    }
 
     let roomless = tree.adopt_roomless_workspaces();
     if !roomless.is_empty() {
@@ -4814,6 +4886,32 @@ fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
     registration < dispatch && dispatch < start
 }
 
+#[cfg(test)]
+fn xwayland_starting_precedes_frame_pump(source: &str) -> bool {
+    let Some(starting) = source.find("crate::shell::host_apps::set_x11_starting();") else {
+        return false;
+    };
+    let Some(pump) = source.find("frame_builder.pump_apps") else {
+        return false;
+    };
+    starting < pump
+}
+
+#[cfg(test)]
+fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
+    let Some(start) = source.rfind("let backend_event_wake = if let Some(fd) = backend.event_fd()")
+    else {
+        return false;
+    };
+    let tail = &source[start..];
+    let Some(end) = tail.find("let (capture_ping, capture_ping_source)") else {
+        return false;
+    };
+    let registration = &tail[..end];
+    registration.contains("Generic::new(fd, Interest::READ, Mode::Edge)")
+        && !registration.contains("Generic::new(fd, Interest::READ, Mode::Level)")
+}
+
 /// Entry point for the smithay-on-Wayland compositor. Fatal setup errors are
 /// logged and end the process immediately, but an ordinary logout returns so
 /// backend/libseat/KMS resources unwind through RAII before the display manager
@@ -4851,8 +4949,14 @@ pub fn run() {
         }
     };
 
-    // The `Display` owns the wayland-server protocol state, held locally so
-    // `dispatch_clients`/`flush_clients` run per tick — mirrors smithay 0.7's examples.
+    // The `Display` owns the wayland-server protocol state. Its poll fd is an
+    // epoll instance containing the individual client sockets. Register a
+    // duplicate as an edge-triggered *wake token* below, while retaining
+    // ownership and doing all actual protocol dispatch here. The edge is safe
+    // because `dispatch_clients` drains the inner epoll fully; level-triggered
+    // epoll nesting can consume outer readiness without draining the inner
+    // client event and then strand a request. If registration is unavailable,
+    // retain the bounded 4 ms service fallback rather than breaking clients.
     let mut display: Display<State> = match Display::new() {
         Ok(d) => d,
         Err(e) => {
@@ -4862,11 +4966,86 @@ pub fn run() {
     };
     let display_handle = display.handle();
 
+    let wayland_client_wake = {
+        let duplicate =
+            unsafe { libc::fcntl(display.as_fd().as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            tracing::warn!(
+                error = %std::io::Error::last_os_error(),
+                "could not duplicate Wayland display wake fd; using bounded polling fallback"
+            );
+            false
+        } else {
+            // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+            let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+            match event_loop
+                .handle()
+                .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
+                    Ok(PostAction::Continue)
+                }) {
+                Ok(_) => true,
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        "could not register Wayland display wake fd; using bounded polling fallback"
+                    );
+                    false
+                }
+            }
+        }
+    };
+
     spawn_auto_brightness_worker();
 
     // `--backend drm|winit` selects the native backend implementation.
     let backend_kind = parse_backend_from_args();
     let mut backend: Box<dyn Backend> = build_backend(backend_kind);
+    // DRM owns a nested calloop for libinput/libseat/udev. Register its poll
+    // fd in the compositor loop so hardware input wakes us immediately rather
+    // than waiting for a periodic backend poll (which made the cursor visibly
+    // lag by roughly the old 50 ms interval).
+    let backend_event_wake = if let Some(fd) = backend.event_fd() {
+        match event_loop
+            .handle()
+            // `event_fd` is the poll fd of the DRM backend's nested calloop.
+            // Treat it as a wake *edge*, then let `Backend::poll_events`
+            // drain that inner loop at the start of the next iteration.  A
+            // level-triggered registration can remain readable after the
+            // inner dispatch consumed its source, making the outer calloop
+            // return immediately forever.  The resulting idle storm was
+            // measured at ~12,000 iterations per two seconds while no frame
+            // was dirty and the presenter counters did not move.
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Edge), |_, _, _| {
+                Ok(PostAction::Continue)
+            }) {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::error!(%error, "could not register backend event wake fd");
+                false
+            }
+        }
+    } else {
+        false
+    };
+    let (capture_ping, capture_ping_source) = match calloop::ping::make_ping() {
+        Ok(pair) => pair,
+        Err(error) => {
+            tracing::error!(%error, "could not create foreign capture completion wake source");
+            std::process::exit(1);
+        }
+    };
+    if let Err(error) = event_loop
+        .handle()
+        .insert_source(capture_ping_source, |(), (), _| {})
+    {
+        tracing::error!(%error, "could not register foreign capture completion wake source");
+        std::process::exit(1);
+    }
+    crate::compositor::foreign::install_completion_ping(&capture_ping);
+
+    // Accept readiness is also part of the outer loop. Accepted streams get
+    // their own source below; this source prevents the first request from
+    // waiting for an unrelated compositor deadline.
 
     // Per-frame scene production, shared with offscreen tooling via
     // `FrameBuilder` — chrome in the host window is byte-identical to `cargo run --bin shots`.
@@ -5218,6 +5397,14 @@ pub fn run() {
     // healthy satellite/Xwayland pair on every host login.
     let xwayland_enabled =
         super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args());
+    // Persisted host windows are examined by the first widget pump, before
+    // the event loop's initial socket-dispatch pass below. Publish the
+    // compatibility lifecycle now so those restores defer instead of being
+    // launched without DISPLAY/XAUTHORITY. The actual satellite process still
+    // starts only after calloop has accepted one dispatch cycle.
+    if xwayland_enabled {
+        crate::shell::host_apps::set_x11_starting();
+    }
     // Do not launch satellite until calloop has had one chance to dispatch the
     // public socket. Satellite is itself a Wayland client, and merely
     // registering the listener does not accept its connection; the remaining
@@ -5315,6 +5502,101 @@ pub fn run() {
         None => (None, None),
     };
     let mut test_control_conns: Vec<TestControlConn> = Vec::new();
+    // A test-control client is itself an event source.  Register a duplicate
+    // of the listener as a wake token so a driver which connects to an idle
+    // compositor is serviced immediately.  Accepting and executing requests
+    // stays below on the compositor thread; this source only prevents the
+    // outer calloop from sleeping through the listener's readability.
+    //
+    // The inherited eventfd below remains useful for older harnesses which
+    // write to an already-connected stream, but a plain Unix-socket client
+    // must never depend on that private side channel.
+    let _test_control_listener_wake = test_control_listener.as_ref().and_then(|listener| {
+        let duplicate = unsafe { libc::fcntl(listener.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
+        if duplicate < 0 {
+            eprintln!(
+                "tilo compositor: test_control listener duplicate: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+        let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+        match event_loop
+            .handle()
+            .insert_source(Generic::new(fd, Interest::READ, Mode::Level), |_, _, _| {
+                Ok(PostAction::Continue)
+            }) {
+            Ok(token) => Some(token),
+            Err(error) => {
+                eprintln!("tilo compositor: test_control listener wake source: {error}");
+                None
+            }
+        }
+    });
+    // Test drivers pass an inherited eventfd and increment it after writing a
+    // command. That gives this manually-pumped protocol a proper outer-loop
+    // wake without registering a persistent Unix stream as permanently
+    // readable. The release build ignores test-control environment overrides.
+    let _test_control_wake = if crate::compositor::dev_env::DEV_ENV_OVERRIDES {
+        std::env::var(TEST_CONTROL_WAKE_ENV)
+            .ok()
+            .and_then(|raw| raw.parse::<std::os::fd::RawFd>().ok())
+            .filter(|raw| *raw >= 0)
+            .and_then(|raw| {
+                // Duplicate rather than adopting the inherited number: the
+                // pre-existing Rust/Python process machinery may also own an
+                // object at that numeric fd. The duplicate gives calloop
+                // unambiguous lifetime ownership while preserving the same
+                // eventfd counter shared with the driver.
+                let duplicate = unsafe { libc::fcntl(raw, libc::F_DUPFD_CLOEXEC, 3) };
+                if duplicate < 0 {
+                    eprintln!(
+                        "tilo compositor: test_control duplicate wake fd {raw}: {}",
+                        std::io::Error::last_os_error()
+                    );
+                    return None;
+                }
+                // SAFETY: F_DUPFD_CLOEXEC returned a new owned descriptor.
+                let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(duplicate) };
+                match event_loop.handle().insert_source(
+                    Generic::new(fd, Interest::READ, Mode::Level),
+                    |_, fd, _| {
+                        let mut value = 0u64;
+                        // SAFETY: eventfd's read ABI is exactly one native
+                        // u64. Drain through EAGAIN to clear level readiness.
+                        let result = unsafe {
+                            libc::read(
+                                fd.as_raw_fd(),
+                                (&raw mut value).cast::<libc::c_void>(),
+                                std::mem::size_of::<u64>(),
+                            )
+                        };
+                        if result < 0
+                            && std::io::Error::last_os_error().kind()
+                                != std::io::ErrorKind::WouldBlock
+                        {
+                            eprintln!(
+                                "tilo compositor: test_control wake read: {}",
+                                std::io::Error::last_os_error()
+                            );
+                        }
+                        Ok(PostAction::Continue)
+                    },
+                ) {
+                    Ok(token) => {
+                        eprintln!("tilo compositor: test_control wake fd {raw} registered");
+                        Some(token)
+                    }
+                    Err(error) => {
+                        eprintln!("tilo compositor: test_control wake source: {error}");
+                        None
+                    }
+                }
+            })
+    } else {
+        None
+    };
     // Per-process input context shared by the physical-seat and optional
     // test-control paths. Keeping one focus cursor makes injected and real
     // keyboard traversal exercise the exact same widgets.
@@ -5394,6 +5676,9 @@ pub fn run() {
     // Mailbox the async power service uses to reach this loop (lock, battery
     // toast, idle-reset on resume) and this loop uses to reach it (request suspend).
     let power_bridge = tilo_power_mgmt::PowerBridge::new();
+    frame_builder
+        .host_mut()
+        .set_power_bridge(power_bridge.clone());
 
     // The `org.freedesktop.Notifications` D-Bus service — the compositor owns
     // it so sandboxed apps' toasts render as OS-drawn chrome. The bridge is the
@@ -5653,9 +5938,16 @@ pub fn run() {
     let (mut frames_total, mut frames_painted) = (0u32, 0u32);
     let (mut cause_events, mut cause_revision, mut cause_anim) = (0u32, 0u32, 0u32);
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
+    let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
+    // Test-control commands are intentionally serviced after this tick's
+    // paint gate. Preserve their redraw edge for the following iteration;
+    // dropping it here records input latency forever without ever producing
+    // the reflecting frame.
+    let mut injected_redraw_pending = false;
     let mut frame_clock_retired_serial = 0u64;
     while !close_requested {
         let iter_t0 = Instant::now();
+        let injected_redraw = std::mem::take(&mut injected_redraw_pending);
         metrics.begin_tick(iter_t0);
         if let Some((serial, retired_at)) = present_pipe
             .as_ref()
@@ -5686,12 +5978,14 @@ pub fn run() {
         // to paint; doing this after painting strands the newly committed
         // frame until an unrelated event, and a continuously committing client
         // can deadlock behind its first transaction barrier.
-        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
+        let foreign_capture_changed =
+            state.pump_foreign_capture_barriers(&display_handle_for_outputs);
         // Logout is requested from an off-thread power-menu action. Exit the
         // compositor through this normal cleanup path; its package wrapper
         // then stops Tilo's graphical targets and clears the shared user-manager
         // environment before GDM admits the next desktop.
         if os_actions::take_logout_request() {
+            tracing::info!(target: "tilo::session", "logout request observed by compositor loop");
             close_requested = true;
             continue;
         }
@@ -5730,10 +6024,10 @@ pub fn run() {
                 frame_builder.host_mut().open_portable_identity_backup()
             });
         }
-        backend.poll_events(&mut |event| pending_events.push(event));
         let had_backend_events = !pending_events.is_empty();
         let mut session_changed = false;
         let mut accessibility_changed = false;
+        let mut visible_input_changed = false;
         for request in native_accessibility.drain() {
             match request {
                 AccessibilityRequest::InitialTree => accessibility_changed = true,
@@ -5844,6 +6138,12 @@ pub fn run() {
                         .translate(&wev, Instant::now())
                         .map(|(action, pressed)| switch_action_event(action, pressed));
                     let wev = translated_switch.as_ref().unwrap_or(&wev);
+                    // Pointer motion changes the compositor-owned cursor even
+                    // when the focused Wayland client consumes the event.  It
+                    // therefore needs a frame independently of whether chrome
+                    // state changed.  Buttons/keys do not alter shell pixels
+                    // unless their downstream handler reports a change.
+                    visible_input_changed |= matches!(wev, WindowEvent::CursorMoved { .. });
                     // Instrumentation: the clock starts when the loop takes the event off the
                     // backend; the first painted frame after closes the input-to-present measurement.
                     metrics.note_input(Instant::now());
@@ -6252,6 +6552,16 @@ pub fn run() {
         }
         let t_input_done = iter_t0.elapsed();
         metrics.mark_input(t_input_done);
+        let input_dispatch = t_input_done.saturating_sub(t_backend_poll_done);
+        if slow_prepaint_phase(input_dispatch) {
+            tracing::warn!(
+                target: "tilo::latency",
+                elapsed_ms = input_dispatch.as_secs_f64() * 1_000.0,
+                backend_poll_ms = t_backend_poll_done.as_secs_f64() * 1_000.0,
+                had_backend_events,
+                "pre-paint input and service dispatch stalled compositor input"
+            );
+        }
         if loop_timing {
             pump_checkpoint = Instant::now();
             pump_slowest = ("pump-start", Duration::ZERO);
@@ -6514,7 +6824,12 @@ pub fn run() {
             // adoption/destruction is immediately visible to chrome and persistence.
             // The input router's queues remain bookkeeping and are drained each
             // tick so they cannot grow across a long session.
-            if state.client_input.clear_pending() {
+            let had_pending = state.client_input.clear_pending();
+            let placements_changed = {
+                let tree = state.workspace_tree.read();
+                state.client_input.refresh_placements_from_tree(&tree)
+            };
+            if had_pending || placements_changed {
                 frame_builder.with_chrome(super::super::shell::chrome_state::ChromeState::bump);
             }
         }
@@ -6990,14 +7305,16 @@ pub fn run() {
         pump_checkpoint!("peer-presence");
         let pump_presence_done = Instant::now();
         let pump_apps_started = pump_presence_done;
-        let mut apps_changed =
-            frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        let mut apps_changed = foreign_capture_changed
+            | frame_builder.pump_apps(&mut test_control_ctx.doc, &test_control_ctx.root_obj);
+        crate::shell::launcher::record_presented_launches(|surface| {
+            crate::compositor::foreign::store().frame_seq(surface)
+        });
         if desktop_continuation
             .as_mut()
             .is_some_and(|continuation| continuation.pump(frame_builder.host().onboarding_active()))
-            && let Err(error) = crate::shell::host_apps::queue_launch(
-                crate::shell::desktop_continuation::launch_request(),
-            )
+            && let Err(error) = crate::shell::desktop_continuation::launch_request()
+                .and_then(crate::shell::host_apps::queue_launch)
         {
             tracing::warn!(%error, "Could not queue Desktop folder continuation; reopen Add folders to qOS");
         }
@@ -7050,7 +7367,8 @@ pub fn run() {
         let pump_finalize_started = Instant::now();
         let revision = frame_builder.chrome_revision();
         let revision_changed = revision != last_revision;
-        let animating = frame_builder.needs_animation_frame();
+        let animation_demand = frame_builder.animation_demand();
+        let animating = animation_demand.any();
         let widget_deadline_due = frame_builder
             .next_wake_deadline()
             .is_some_and(|deadline| deadline <= iter_t0);
@@ -7108,7 +7426,8 @@ pub fn run() {
         let content_changed = NativeRedrawReasons {
             force: force_first_paint,
             backend_event: had_backend_events,
-            session: session_changed,
+            visible_input: visible_input_changed,
+            session: session_changed || injected_redraw,
             accessibility: accessibility_changed,
             revision: revision_changed,
             hidden_desktop_animation: animating,
@@ -7148,13 +7467,17 @@ pub fn run() {
             && let Some(p) = present_pipe.as_mut()
         {
             p.note_backpressure();
+            metrics.mark_backpressured();
         }
         let should_paint = content_changed && cadence_due && pipe_ready;
         // If content became dirty off-cadence, keep cadence in the next park;
         // otherwise the event edge has already been consumed and a long idle
-        // deadline could strand that frame.
-        let cadence_needed =
-            (content_changed && !cadence_due) || (!session.is_locked() && animating);
+        // deadline could strand that frame. A full presenter is itself the
+        // gate: its retirement ping wakes the loop when capacity returns.
+        let cadence_needed = cadence_wait_needed(
+            pipe_ready,
+            (content_changed && !cadence_due) || (!session.is_locked() && animating),
+        );
 
         // Diagnostic: `TILO_PAINT_STATS=1` logs every ~2s how many frames painted
         // vs idled and why, confirming the loop actually idles without guessing.
@@ -7173,6 +7496,10 @@ pub fn run() {
                 }
                 if animating {
                     cause_anim = cause_anim.saturating_add(1);
+                    animation_sources_seen.host |= animation_demand.host;
+                    animation_sources_seen.floating |= animation_demand.floating;
+                    animation_sources_seen.transient |= animation_demand.transient;
+                    animation_sources_seen.osk |= animation_demand.osk;
                 }
                 if keepalive_due
                     && !(had_backend_events || session_changed || revision_changed || animating)
@@ -7181,11 +7508,21 @@ pub fn run() {
                 }
             }
             if stats_since.elapsed() >= Duration::from_secs(2) {
+                let animation_host_labels =
+                    crate::shell::animation_diagnostics::host_labels(animation_sources_seen.host)
+                        .collect::<Vec<_>>()
+                        .join(",");
                 eprintln!(
                     "paint-stats: {frames_painted}/{frames_total} painted | \
                      events={cause_events} revision={cause_revision} anim={cause_anim} \
                      session={cause_session} keepalive={cause_keepalive} | \
+                     anim_sources host=0x{:04x} host_labels={:?} floating={} transient={} osk={} | \
                      {:.3} Hz target | present={} backpressure={}",
+                    animation_sources_seen.host,
+                    animation_host_labels,
+                    animation_sources_seen.floating,
+                    animation_sources_seen.transient,
+                    animation_sources_seen.osk,
                     1.0 / frame_clock.interval().as_secs_f64(),
                     present_pipe
                         .as_ref()
@@ -7201,6 +7538,7 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
+                animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 stats_since = Instant::now();
             }
         }
@@ -7612,6 +7950,13 @@ pub fn run() {
                 output_presentation_repaint_pending = false;
             }
             let submit_done = Instant::now();
+            // Capture lateness against the deadline that admitted this frame.
+            // `note_presented` advances the clock immediately below, so doing
+            // this afterwards would compare against the *next* interval and
+            // hide an overrun by roughly one refresh period.
+            metrics.mark_deadline_lateness(
+                submit_done.saturating_duration_since(frame_clock.next_deadline()),
+            );
             metrics.mark_submit(
                 submit_done.saturating_duration_since(t_submit_start),
                 async_present,
@@ -7658,6 +8003,9 @@ pub fn run() {
                 &output_globals,
             );
         }
+        if retain_session_redraw(session_changed, should_paint) {
+            injected_redraw_pending = true;
+        }
         let t_paint_done = iter_t0.elapsed();
 
         // Confirm an `ext_session_lock_v1` client's lock only after the overlay is
@@ -7668,8 +8016,13 @@ pub fn run() {
             locker.lock();
         }
 
-        // Accept new test-control connections, drain pending bytes from each open
-        // one (parses commands, writes JSON responses); closed ones are collected below. Non-blocking so the frame-pacing loop never stalls.
+        // Accept new test-control connections and drain them in this same
+        // iteration. Previously new connections were appended here but only
+        // pumped after the following calloop sleep. With no inherited wake fd
+        // that made a freshly connected test driver wait until an unrelated
+        // desktop event; with the wake fd it created a fragile two-phase
+        // handshake. Keeping accept+drain together makes the control protocol
+        // deterministic and leaves production builds unaffected.
         if let Some(listener) = &test_control_listener {
             loop {
                 match listener.accept() {
@@ -7685,45 +8038,75 @@ pub fn run() {
                     }
                 }
             }
-            for conn in &mut test_control_conns {
-                let injected = pump_test_control_conn(
-                    conn,
-                    &mut frame_builder,
-                    &mut test_control_ctx,
-                    &session,
-                    &mut lock,
-                    &mut state,
-                );
-                if injected {
-                    // Socket-driven input starts the same latency clock hardware input does.
-                    // Serviced after this tick's paint gate, so the reflecting frame is the next one — exactly the latency a caller experiences.
-                    metrics.note_input(Instant::now());
-                }
-            }
-            test_control_conns.retain(|c| !c.closed);
         }
+        for conn in &mut test_control_conns {
+            let injected = pump_test_control_conn(
+                conn,
+                &mut frame_builder,
+                &mut test_control_ctx,
+                &session,
+                &mut lock,
+                &mut state,
+            );
+            if injected {
+                metrics.note_input(Instant::now());
+                injected_redraw_pending = true;
+            }
+        }
+        test_control_conns.retain(|conn| !conn.closed);
         let t_testctl_done = iter_t0.elapsed();
         metrics.mark_testctl(t_testctl_done.checked_sub(t_paint_done).unwrap_or_default());
 
-        // Off-thread foreign-buffer reads release Smithay commit barriers;
-        // transaction application must return to the compositor-owning thread.
-        state.pump_foreign_capture_barriers(&display_handle_for_outputs);
-
-        // Drain wayland client traffic and push updates back out: `dispatch_clients`
-        // advances each client's request queue through the `*Handler` impls, `flush_clients` pumps server events back. Mirrors smithay 0.7's minimal example.
-        if let Err(err) = display.dispatch_clients(&mut state) {
-            eprintln!("tilo compositor: dispatch_clients error: {err}");
-            break;
-        }
         // Selection bookkeeping after dispatch, not in the protocol handler:
         // smithay raises `new_selection` before installing the new source, so an inline pull would read the previous owner.
         if let Some(portal) = portal_backend.as_ref() {
             portal.pump_remote_input(&mut state, session.is_locked());
         }
         state.pump_selection();
+        let dispatch_started = Instant::now();
+        match display.dispatch_clients(&mut state) {
+            Ok(dispatched) => {
+                let elapsed = dispatch_started.elapsed();
+                if dispatched > 0 || elapsed > Duration::from_millis(10) {
+                    tracing::debug!(
+                        target: "tilo::wayland_dispatch",
+                        dispatched,
+                        elapsed_ms = elapsed.as_secs_f64() * 1000.0,
+                        "Wayland client requests dispatched"
+                    );
+                }
+            }
+            Err(err) => {
+                eprintln!("tilo compositor: dispatch_clients error: {err}");
+                break;
+            }
+        }
+        // A client commit can enqueue a GPU readback while this dispatch is
+        // running, and the worker may complete before we return. Re-apply
+        // released transactions here as well as at tick start; otherwise a
+        // continuously chatty client can keep its first buffer stranded until
+        // the next outer-loop iteration even though capture already finished.
+        if state.pump_foreign_capture_barriers(&display_handle_for_outputs) {
+            injected_redraw_pending = true;
+        }
         if let Err(err) = display.flush_clients() {
             eprintln!("tilo compositor: flush_clients error: {err}");
             break;
+        }
+        // A newly dispatched xdg_toplevel request can arrive after this
+        // tick's paint decision. Its tab may already have a placement from
+        // the retained chrome tree, but waiting for a *future painted frame*
+        // to send the opening configure deadlocks ordinary clients: the
+        // client cannot commit pixels until configured, and no pixels means
+        // no new content edge to paint. Flush the configure handshake after
+        // dispatch as well; it is idempotent for unchanged sizes.
+        let configured_after_dispatch = foreign::flush_configures(&mut state);
+        if configured_after_dispatch > 0 {
+            if let Err(err) = display.flush_clients() {
+                eprintln!("tilo compositor: opening configure flush error: {err}");
+                break;
+            }
+            injected_redraw_pending = true;
         }
         let t_work_done = iter_t0.elapsed();
         metrics.mark_clients(t_work_done.checked_sub(t_testctl_done).unwrap_or_default());
@@ -7754,10 +8137,11 @@ pub fn run() {
             .flatten();
         let park = native_loop_park(
             park_now,
+            backend_event_wake,
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                frame_builder.next_wake_deadline(),
+                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
                 lock_animation_park_deadline(
                     park_now,
                     lock_screen::animation_deadline(
@@ -7769,6 +8153,8 @@ pub fn run() {
                 ),
                 lock_clock_deadline,
                 run_deadline,
+                backend.next_service_deadline(),
+                wayland_client_service_deadline(wayland_client_wake, park_now),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -7948,14 +8334,26 @@ mod tests {
     }
 
     #[test]
+    fn client_routed_pointer_motion_still_redraws_the_compositor_cursor() {
+        assert!(
+            NativeRedrawReasons {
+                visible_input: true,
+                ..NativeRedrawReasons::default()
+            }
+            .content_changed(false),
+            "the cursor belongs to the compositor, so a client consuming its motion must not suppress the reflecting frame"
+        );
+    }
+
+    #[test]
     fn idle_park_ignores_display_cadence() {
         let now = Instant::now();
         let frame = now + Duration::from_millis(8);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(keepalive)]),
-            Some(IDLE_BACKEND_POLL),
-            "a static desktop polls its nested DRM sources at a bounded idle rate"
+            native_loop_park(now, true, false, frame, [Some(keepalive)]),
+            Some(Duration::from_secs(1)),
+            "a registered backend wake fd lets a static desktop sleep until semantic work"
         );
     }
 
@@ -7963,9 +8361,65 @@ mod tests {
     fn idle_park_without_any_semantic_deadline_still_services_nested_backend() {
         let now = Instant::now();
         assert_eq!(
-            native_loop_park(now, false, now + Duration::from_millis(8), []),
+            native_loop_park(now, true, false, now + Duration::from_millis(8), []),
+            None,
+            "a static DRM session can block indefinitely because libinput wakes the outer loop"
+        );
+    }
+
+    #[test]
+    fn failed_backend_wake_registration_keeps_the_bounded_idle_poll() {
+        let now = Instant::now();
+        assert_eq!(
+            native_loop_park(now, false, false, now + Duration::from_millis(8), []),
             Some(IDLE_BACKEND_POLL),
-            "a static DRM session must keep draining nested libinput and control sockets"
+            "a backend whose wake fd could not be registered must still be serviced"
+        );
+    }
+
+    #[test]
+    fn backend_owned_repeat_deadline_wakes_an_otherwise_idle_loop() {
+        let now = Instant::now();
+        let repeat = now + Duration::from_millis(275);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                now + Duration::from_millis(8),
+                [Some(repeat)],
+            ),
+            Some(Duration::from_millis(275)),
+            "registered backend fds do not replace timers synthesized inside the backend"
+        );
+    }
+
+    #[test]
+    fn registered_wayland_wake_removes_periodic_idle_poll() {
+        let now = Instant::now();
+
+        assert_eq!(wayland_client_service_deadline(true, now), None);
+        assert_eq!(
+            native_loop_park(
+                now,
+                true,
+                false,
+                now + Duration::from_millis(8),
+                [wayland_client_service_deadline(true, now)],
+            ),
+            None,
+            "a static desktop must block on registered fds instead of waking every 4 ms"
+        );
+    }
+
+    #[test]
+    fn failed_wayland_wake_registration_keeps_bounded_service_fallback() {
+        let now = Instant::now();
+
+        assert_eq!(
+            wayland_client_service_deadline(false, now),
+            Some(now + WAYLAND_CLIENT_SERVICE_FALLBACK),
+            "an unsupported edge-triggered wake must not strand Wayland client requests"
         );
     }
 
@@ -8008,8 +8462,68 @@ mod tests {
         let frame = now + Duration::from_millis(8);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, true, frame, [Some(keepalive)]),
+            native_loop_park(now, true, true, frame, [Some(keepalive)]),
             Some(Duration::from_millis(8))
+        );
+    }
+
+    #[test]
+    fn prepaint_stall_threshold_reports_fifty_milliseconds_and_above() {
+        assert!(!slow_prepaint_phase(Duration::from_millis(49)));
+        assert!(slow_prepaint_phase(Duration::from_millis(50)));
+        assert!(slow_prepaint_phase(Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn full_presenter_parks_instead_of_spinning_on_overdue_deadlines() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        // Animation stays dirty and both the frame and widget deadlines are
+        // already due, but the presenter has no capacity.
+        let cadence_needed = cadence_wait_needed(false, true);
+        assert_eq!(
+            native_loop_park(
+                now,
+                false,
+                cadence_needed,
+                stale,
+                [widget_deadline_for_presenter(false, Some(stale))],
+            ),
+            Some(IDLE_BACKEND_POLL),
+            "a saturated presenter must wait for its retirement wake, not poll with a zero timeout"
+        );
+    }
+
+    #[test]
+    fn lock_state_edge_survives_presenter_backpressure_until_submitted() {
+        assert!(retain_session_redraw(true, false));
+        assert!(
+            !retain_session_redraw(true, true),
+            "a submitted replacement frame consumes the lock-state edge"
+        );
+        assert!(
+            !retain_session_redraw(false, false),
+            "ordinary idle ticks must not manufacture redraw work"
+        );
+    }
+
+    #[test]
+    fn available_presenter_keeps_overdue_work_immediate() {
+        let now = Instant::now();
+        let stale = now
+            .checked_sub(Duration::from_millis(1))
+            .expect("monotonic clock is past its origin");
+        assert_eq!(
+            widget_deadline_for_presenter(true, Some(stale)),
+            Some(stale)
+        );
+        let frame = now + Duration::from_millis(7);
+        assert_eq!(
+            native_loop_park(now, false, cadence_wait_needed(true, true), frame, []),
+            Some(Duration::from_millis(7)),
+            "the back-pressure guard must not weaken normal animation pacing"
         );
     }
 
@@ -8020,11 +8534,17 @@ mod tests {
         let widget = now + Duration::from_millis(300);
         let keepalive = now + Duration::from_secs(1);
         assert_eq!(
-            native_loop_park(now, false, frame, [Some(keepalive), Some(widget)]),
-            Some(IDLE_BACKEND_POLL)
+            native_loop_park(now, true, false, frame, [Some(keepalive), Some(widget)],),
+            Some(Duration::from_millis(300))
         );
         assert_eq!(
-            native_loop_park(now + Duration::from_millis(1), false, frame, [Some(now)]),
+            native_loop_park(
+                now + Duration::from_millis(1),
+                true,
+                false,
+                frame,
+                [Some(now)]
+            ),
             Some(Duration::ZERO)
         );
     }
@@ -8097,17 +8617,30 @@ mod tests {
         let due = Some(due_at);
         let frame = now + Duration::from_millis(8);
         assert_eq!(
-            native_loop_park(now, true, frame, [lock_animation_park_deadline(now, due)]),
+            native_loop_park(
+                now,
+                false,
+                true,
+                frame,
+                [lock_animation_park_deadline(now, due)]
+            ),
             Some(Duration::from_millis(8))
         );
         assert_eq!(
-            native_loop_park(now, false, frame, [lock_animation_park_deadline(now, due)]),
+            native_loop_park(
+                now,
+                false,
+                false,
+                frame,
+                [lock_animation_park_deadline(now, due)]
+            ),
             Some(IDLE_BACKEND_POLL)
         );
         let future = Some(now + Duration::from_millis(42));
         assert_eq!(
             native_loop_park(
                 now,
+                false,
                 false,
                 frame,
                 [lock_animation_park_deadline(now, future)]
@@ -9468,6 +10001,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let chrome = state.chrome_state_json();
         let overlays = chrome
@@ -9487,6 +10021,36 @@ mod tests {
     }
 
     #[test]
+    fn state_dump_exposes_retry_ready_lock_auth_without_password_contents() {
+        let fb = FrameBuilder::new((1600, 900));
+        let mut lock = LockController::new(
+            std::sync::Arc::new(crate::compositor::lock_auth::FixedVerifier::new("correct")),
+            "alice",
+        );
+        lock.push_str("secret-value");
+        let state = FrameBuilderControlState {
+            fb: &fb,
+            doc: None,
+            shares: None,
+            lock: Some(&lock),
+        };
+        let chrome = state.chrome_state_json();
+        let auth = chrome
+            .get("lock_auth")
+            .expect("native state dump must expose lock authentication status");
+        assert_eq!(auth.get("verifying"), Some(&serde_json::Value::Bool(false)));
+        assert_eq!(
+            auth.get("password_len").and_then(serde_json::Value::as_u64),
+            Some(12)
+        );
+        assert_eq!(auth.get("error"), Some(&serde_json::Value::Null));
+        assert!(
+            !chrome.to_string().contains("secret-value"),
+            "state dump must never disclose the password buffer"
+        );
+    }
+
+    #[test]
     fn state_dump_identifies_the_exact_nested_search_resource() {
         let fb = FrameBuilder::new((1600, 900));
         fb.chrome_handle().borrow_mut().search_resource_scope =
@@ -9501,6 +10065,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
 
         let scope = &state.chrome_state_json()["search_resource_scope"];
@@ -9518,6 +10083,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
 
         let presence = &state.chrome_state_json()["presence"];
@@ -9601,6 +10167,7 @@ mod tests {
             fb: &fb,
             doc: Some((&doc, &automerge::ROOT)),
             shares: None,
+            lock: None,
         };
         let answer = state.enumerate_actions("").expect("enumerated actions");
         let row = answer["actions"]
@@ -9629,6 +10196,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let tree = state.workspace_tree_json();
         let workspaces = tree
@@ -9670,6 +10238,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let tree = state.workspace_tree_json();
         let found = tree
@@ -9754,6 +10323,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: Some(&shares),
+            lock: None,
         };
         let rows = state
             .sharing_json()
@@ -9779,6 +10349,7 @@ mod tests {
             fb: &fb,
             doc: None,
             shares: None,
+            lock: None,
         };
         let (resp, actions) =
             test_control::dispatch_command(&test_control::Command::StateDump, &state);
@@ -10273,7 +10844,8 @@ mod vt_chord_tests {
 #[cfg(test)]
 mod gesture_wireup_tests {
     use super::{
-        apply_shell_gesture, refresh_mhz_of, xwayland_start_follows_public_socket_registration,
+        apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of,
+        xwayland_start_follows_public_socket_registration, xwayland_starting_precedes_frame_pump,
     };
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
@@ -10356,6 +10928,24 @@ mod gesture_wireup_tests {
         assert!(
             xwayland_start_follows_public_socket_registration(source),
             "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
+        );
+    }
+
+    #[test]
+    fn xwayland_lifecycle_is_starting_before_restored_apps_are_examined() {
+        let source = include_str!("native.rs");
+        assert!(
+            xwayland_starting_precedes_frame_pump(source),
+            "the first frame pump must see Xwayland Starting and defer persisted host apps until DISPLAY is published"
+        );
+    }
+
+    #[test]
+    fn drm_nested_loop_readiness_is_coalesced_to_one_outer_wake() {
+        let source = include_str!("native.rs");
+        assert!(
+            backend_nested_loop_uses_edge_wake(source),
+            "the nested DRM calloop fd is only a wake token; level readiness can spin the outer loop thousands of times after the inner source was drained"
         );
     }
 

@@ -10,7 +10,8 @@
 # login screen", not a way to run Tilo day to day.
 #
 #   sudo dist/rpm/usroverlay-install.sh             # runtime package only
-#   sudo dist/rpm/usroverlay-install.sh --devel     # runtime + developer entry
+#   sudo dist/rpm/usroverlay-install.sh --arm-devel # runtime + developer entry
+#   sudo dist/rpm/usroverlay-install.sh --disarm-devel
 #
 # Everything this writes lives under /usr (transient) except the PAM stack in
 # /etc, which is writable on an ostree host and so
@@ -39,7 +40,16 @@ devel_files=(
 
 files=("${runtime_files[@]}" "${devel_files[@]}")
 
-if [[ ${1:-} == --devel ]]; then
+if [[ ${1:-} == --disarm-devel ]]; then
+    [[ $(id -u) -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
+    for f in "${devel_files[@]}"; do
+        [[ -e $f ]] && rm -f -- "$f" && echo "removed $f"
+    done
+    echo "The developer session is disarmed; the packaged Tilo entry is unchanged."
+    exit 0
+fi
+
+if [[ ${1:-} == --arm-devel ]]; then
     include_devel=1
     shift
 else
@@ -58,7 +68,7 @@ fi
 [[ $(id -u) -eq 0 ]] || { echo "run me with sudo" >&2; exit 1; }
 
 # A normal host trial must not silently install the optional developer session.
-# The devel package is included only in the explicit --devel mode; the runtime
+# The devel package is included only in the explicit --arm-devel mode; the runtime
 # pattern also prevents an older devel package from being unpacked by accident.
 if (( include_devel )); then
     mapfile -t rpms < <(find "$rpms_dir" -maxdepth 1 -type f \

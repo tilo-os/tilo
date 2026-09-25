@@ -10,16 +10,29 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 
+/// Registry identity of the Desktop folder continuation, as produced by the
+/// XDG scan; the installed file itself retains its `.desktop` suffix.
+pub(crate) const LAUNCH_DESKTOP_ID: &str = "tilo-import-folders";
+
 /// The ordinary host-app request queued after trusted onboarding completes.
-/// The desktop id must use the registry identity produced by the XDG scan,
-/// while the installed file itself retains its `.desktop` suffix.
-pub(crate) fn launch_request() -> crate::shell::host_apps::QueuedLaunch {
-    crate::shell::host_apps::QueuedLaunch {
-        desktop_id: "tilo-import-folders".into(),
-        display_name: "Add folders to Tilo".into(),
+///
+/// # Errors
+///
+/// [`crate::shell::launcher::LaunchError::HostAppNotFound`] when the entry is
+/// not installed on this host.
+pub(crate) fn launch_request()
+-> Result<crate::shell::host_apps::QueuedLaunch, crate::shell::launcher::LaunchError> {
+    let app = crate::shell::host_apps::find(LAUNCH_DESKTOP_ID).ok_or_else(|| {
+        crate::shell::launcher::LaunchError::HostAppNotFound {
+            desktop_id: LAUNCH_DESKTOP_ID.to_string(),
+        }
+    })?;
+    Ok(crate::shell::host_apps::QueuedLaunch {
+        app,
         placement: crate::shell::tab_binding::Placement::NewGroup,
         portal_workspace_id: None,
-    }
+        requested_at: std::time::Instant::now(),
+    })
 }
 
 #[derive(Default)]
@@ -203,13 +216,13 @@ mod tests {
             &[temp.path().to_path_buf()],
             &[desktop_entry::scan::CURRENT_DESKTOP.to_string()],
         );
-        let request = launch_request();
+        let request_id = LAUNCH_DESKTOP_ID;
 
         assert_eq!(scan.stats.files_seen, 1);
         assert!(
-            scan.find(&request.desktop_id).is_some(),
+            scan.find(request_id).is_some(),
             "continuation launch id {:?} must resolve against registry ids {:?}",
-            request.desktop_id,
+            request_id,
             scan.entries
                 .iter()
                 .map(|entry| entry.id.as_str())

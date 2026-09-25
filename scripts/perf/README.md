@@ -5,6 +5,14 @@ executable stand-alone; the higher-level flow is described below.
 
 ## Measure
 
+- `frame-loop-bench.py` — run the real compositor loop with cadence and
+  input-to-present instrumentation. Its `--gate` mode is the quick desktop
+  acceptance test: use `--refresh-hz 144 --input-hz 30 --launch-app
+  dev.tilo.chat` to reject low frame throughput, laggy input, missing samples,
+  or a native Chat launch that never presents a first frame. It consumes
+  already-built binaries and an existing app store, so it does not build an
+  RPM or image.
+
 - `binary-sizes.sh [target-dir]` — walk `target/release/` (or the
   given dir) for shell + terminal + file-explorer + tilo-relay + fs +
   tilo-install, emit a `{name: bytes}` JSON blob on stdout.
