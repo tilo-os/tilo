@@ -1060,3 +1060,44 @@ fn outgoing_kinds(
 ) -> Vec<qos_peer_state::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
+
+/// The native owner keeps the issuer's command id through validation and
+/// commit: its receipt binds exactly that (device, invocation), and a
+/// refusal commits nothing and maps to a stable reason.
+#[test]
+fn native_owner_receipt_binds_the_command_id() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+    let open = request(
+        &owner,
+        DesktopCommand::OpenApp {
+            app: "so.tilo.notes".into(),
+        },
+    );
+    let id = DesktopCommandId::of(&open).unwrap();
+    assert_eq!(id.device, owner.peer().authority().device_public_key);
+    let receipt = owner.commit_desktop_command(&open).unwrap();
+    receipt.validate_for(&open).unwrap();
+    assert_eq!(
+        receipt.binding.target,
+        CommitTarget::DesktopCommand {
+            invocation: id.invocation
+        }
+    );
+    assert_eq!(id.to_string().parse::<DesktopCommandId>().unwrap(), id);
+    let status = owner.status();
+    let unknown = request(
+        &owner,
+        DesktopCommand::OpenApp {
+            app: "dev.qos.not-installed".into(),
+        },
+    );
+    let Err(DesktopCommandError::Rejected(message)) = owner.commit_desktop_command(&unknown) else {
+        panic!("an unknown application is refused")
+    };
+    assert_eq!(
+        DesktopRefusal::classify(&message),
+        DesktopRefusal::UnknownApp
+    );
+    assert_eq!(owner.status(), status, "a refusal commits nothing");
+}

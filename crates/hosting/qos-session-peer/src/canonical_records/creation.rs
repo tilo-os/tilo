@@ -380,6 +380,7 @@ impl CreationRowV1 {
                 }
                 match &command.command {
                     qos_peer_state::desktop_command::DesktopCommand::OpenTab { app, .. }
+                    | qos_peer_state::desktop_command::DesktopCommand::OpenApp { app }
                         if app == &intent.app =>
                     {
                         ()

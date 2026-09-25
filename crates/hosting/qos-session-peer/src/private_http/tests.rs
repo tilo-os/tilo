@@ -170,14 +170,10 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
     let (mailbox, _commits) = OwnerCommitMailbox::bounded(8);
     let (signing, _signatures) = HostSigning::new(mailbox);
     let (sender, _network) = tokio::sync::mpsc::channel(32);
-    let mut actions = ActionHost::start(&owner, authority.clone(), signing, sender).unwrap();
-    // The native owner submits with its registered policy time, as production
-    // does (see `native.rs`); an unqualified submission is refused.
-    // Sample it outside `with_admitted`, which holds the committed view.
-    let registered = qos_action_broker::peer_actions::CertificateAuthority::policy_time(&authority)
-        .unwrap()
-        .unwrap();
-    let time = || registered.clone();
+    let mut actions = ActionHost::start(&owner, authority, signing, sender).unwrap();
+    // ActionHost registers its owner policy time, so the real broker refuses
+    // legacy untimed work; submit as production (native.rs) does.
+    let time = actions.registered_policy_time().clone();
     let mut service = PrivateService::install(&actions).unwrap();
     for op in [
         PrivateOperation::Catalogue,
@@ -203,7 +199,7 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
                 proof,
                 peer,
                 Instant::now() + std::time::Duration::from_secs(5),
-                time(),
+                time.clone(),
             )
         })
         .unwrap();
@@ -291,10 +287,11 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
                 &action,
                 PrivateOperation::Status,
                 |proof, peer| {
-                    service.submit(
+                    service.submit_with_policy_time(
                         proof,
                         peer,
                         Instant::now() + std::time::Duration::from_secs(5),
+                        time.clone(),
                     )
                 },
             )
@@ -307,10 +304,11 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             &current,
             &action,
             PrivateOperation::Status,
-            |proof, peer| service.submit(
+            |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
                 Instant::now() + std::time::Duration::from_secs(5),
+                time.clone(),
             )
         ),
         Err(PrivateError::Broker(CarrierError::Capacity))
@@ -327,10 +325,11 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             &current,
             &action,
             PrivateOperation::Status,
-            |proof, peer| service.submit(
+            |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
                 Instant::now() + std::time::Duration::from_secs(5),
+                time.clone(),
             )
         ),
         Err(PrivateError::Broker(CarrierError::Capacity))
@@ -371,10 +370,11 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
             &current,
             &action,
             PrivateOperation::Status,
-            |proof, peer| service.submit(
+            |proof, peer| service.submit_with_policy_time(
                 proof,
                 peer,
                 Instant::now() + std::time::Duration::from_secs(5),
+                time.clone(),
             )
         ),
         Err(PrivateError::Broker(CarrierError::Capacity))
@@ -387,10 +387,11 @@ async fn private_http_real_broker_catalogue_and_unknown_status_preserve_correlat
         &action,
         PrivateOperation::Status,
         |proof, peer| {
-            service.submit(
+            service.submit_with_policy_time(
                 proof,
                 peer,
                 Instant::now() + std::time::Duration::from_secs(5),
+                time.clone(),
             )
         },
     )
@@ -578,12 +579,12 @@ fn private_event_slots_preserve_original_scope_transition_and_custody() {
         let reply =
             private_wire::decode_response(PrivateOperation::Status, &action, &body).unwrap();
         assert_eq!(reply.request_id, action.request_id);
-        // Even after its event drained, a fresh Status observes the invocation
-        // but never replaces the original watch's clock origin or disclosure
-        // fence, and never mints a second watch for the same invocation.
+        // An idle old watch is refreshed, never replaced: a fresh Status
+        // cannot rebind its original clock origin or disclosure fence.
         assert_eq!(
             service.observe_reply(&fresh, &fresh_reply).unwrap(),
-            WatchUpdate::Unchanged
+            WatchUpdate::Unchanged,
+            "a later same-ID response cannot replace the original watch fence"
         );
         assert_eq!(
             service.live_watch_ids().collect::<Vec<_>>(),

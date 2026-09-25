@@ -5,7 +5,7 @@ pub(crate) use policy::DesktopPolicyFence;
 use qos_action_broker::peer_actions::PolicyTime;
 use qos_desktop::{projection::RoomProjection, session_commands::*, *};
 use qos_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use ui::automerge::{AutoCommit, ChangeHash, ROOT, ReadDoc, Value, transaction::Transactable};
+use ui::automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 
 pub(crate) fn checked_application(
     app: &str,
@@ -13,47 +13,8 @@ pub(crate) fn checked_application(
     crate::canonical_records::resolve(app).map(|entry| entry.definition())
 }
 
-/// Room heads also advance for receipts, enrollment and document durability.
-/// Those changes must not invalidate a gesture against an unchanged desktop.
-/// Compare the original admitted desktop with the current one, without
-/// rebinding the command or weakening the current caller/target checks.
 fn desktop_source_matches(doc: &AutoCommit, heads: &[[u8; 32]]) -> Result<bool, String> {
-    let heads = heads.iter().copied().map(ChangeHash).collect::<Vec<_>>();
-    if heads.is_empty()
-        || heads
-            .iter()
-            .any(|head| doc.get_change_by_hash(head).is_none())
-    {
-        return Ok(false);
-    }
-    for key in [
-        "room",
-        "owner",
-        "name",
-        "contents",
-        "contents_owners_v1",
-        // Also prevents an old launch from being reused after its tab closes.
-        "desktop_counter_v1",
-    ] {
-        let previous = doc
-            .get_all_at(ROOT, key, &heads)
-            .map_err(|e| e.to_string())?;
-        let current = doc.get_all(ROOT, key).map_err(|e| e.to_string())?;
-        if previous != current {
-            return Ok(false);
-        }
-        for (value, object) in current {
-            if matches!(value, Value::Object(_))
-                && doc
-                    .hydrate(&object, Some(&heads))
-                    .map_err(|e| e.to_string())?
-                    != doc.hydrate(&object, None).map_err(|e| e.to_string())?
-            {
-                return Ok(false);
-            }
-        }
-    }
-    Ok(true)
+    qos_desktop::session_commands::desktop_source_matches(doc, heads)
 }
 
 impl SessionOwner {
@@ -97,7 +58,11 @@ impl SessionOwner {
         let mut expected = command.source.heads.clone();
         current.sort_unstable();
         expected.sort_unstable();
+        // OpenApp is placement-independent: the owner places it against the
+        // current topology below, so an older source revision cannot misplace it.
+        let placement_independent = matches!(command.command, DesktopCommand::OpenApp { .. });
         if current != expected
+            && !placement_independent
             && !desktop_source_matches(&doc, &command.source.heads).map_err(rejected)?
         {
             return Err(rejected("desktop source revision is stale".into()));
@@ -168,7 +133,21 @@ impl SessionOwner {
             own(l.group)?;
             own(l.tab)
         };
-        match &command.command {
+        // Resolve OpenApp to the OpenTab a person would make, inside this
+        // owner's own topology namespace; everything below checks and applies
+        // that exact command.
+        let resolved = match &command.command {
+            DesktopCommand::OpenApp { app } => DesktopCommand::OpenTab {
+                app: app.clone(),
+                placement: qos_desktop::session_commands::open_app_placement(workspace, |id| {
+                    salts.contains(&qos_desktop::identity::peer_salt_of(id))
+                })
+                .map_err(rejected)?,
+            },
+            other => other.clone(),
+        };
+        match &resolved {
+            DesktopCommand::OpenApp { .. } => unreachable!("resolved to OpenTab above"),
             DesktopCommand::OpenTab { placement: p, .. } => placement(p)?,
             DesktopCommand::CloseTab { location: l }
             | DesktopCommand::DuplicateTab { location: l } => location(l)?,
@@ -234,7 +213,7 @@ impl SessionOwner {
         let mut routes = RoomProjection::record_routes(&doc);
         qos_desktop::session_commands::apply_command(
             workspace,
-            &command.command,
+            &resolved,
             &mut || qos_desktop::identity::mint_in_namespace(salt, &mut counter),
             &mut |app, id| {
                 let application = crate::canonical_records::resolve(app).ok_or_else(|| {

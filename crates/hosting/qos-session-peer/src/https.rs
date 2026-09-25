@@ -442,6 +442,15 @@ pub(crate) fn snapshot_chunk_target(path: &str) -> Option<([u8; 16], u32)> {
     Some((hex::decode(pin).ok()?.try_into().ok()?, index))
 }
 
+/// Accepted HTTPS sockets carry small request/response exchanges: disable
+/// Nagle so a response body is not held back behind the peer's delayed ACK
+/// (about 40 ms per response otherwise).
+fn prepare_accepted(socket: &tokio::net::TcpStream) {
+    if let Err(error) = socket.set_nodelay(true) {
+        tracing::debug!(%error, "https socket TCP_NODELAY unavailable");
+    }
+}
+
 /// A bounded untrusted request. Only the real actor may authenticate its contents.
 /// Dropping it rejects the request; response construction grants no durability.
 pub struct BufferedRequest {
@@ -818,6 +827,7 @@ impl HttpsAdapter {
                 _ = tasks.join_next(), if !tasks.is_empty() => {},
                 accepted = self.listener.accept() => {
                     let (socket, _) = accepted?;
+                    prepare_accepted(&socket);
                     let Ok(connection) = connections.clone().try_acquire_owned() else { tracing::debug!("https connection dropped: connection limit"); continue };
                     let Ok(handshake) = handshakes.clone().try_acquire_owned() else { tracing::debug!("https connection dropped: handshake limit"); continue };
                     let Some(connection_bytes) = self.ingress.bytes.try_acquire_bulk(CONNECTION_BYTES) else { tracing::debug!(available = self.ingress.bytes.available_bytes(), "https connection dropped: ingress bytes"); continue };

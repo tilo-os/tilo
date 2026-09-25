@@ -535,3 +535,43 @@ async fn fallback_to_fallback_presence_is_under_ten_milliseconds() {
     let median = samples[samples.len() / 2];
     assert!(median < Duration::from_millis(10), "median {median:?}");
 }
+
+/// Host presence injected into a host-fed namespace (an agent) reaches an
+/// HTTPS fallback subscriber: the member is announced, then its presence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn injected_host_presence_reaches_the_fallback_stream() {
+    let f = fixture();
+    let (_id, mut stream) = open(&f, b"grant-b", 4).await;
+    let mut seq = 1;
+    assert!(
+        f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(seq, b"agent"))
+    );
+    let member = stream.until(FRAME_MEMBER).await;
+    assert_eq!((&member[..32], member[32]), (&bytes32(C)[..], 1));
+    let received = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            seq += 1;
+            assert!(
+                f.live
+                    .relay
+                    .inject_presence(ROOM, C, &presence(seq, b"agent"))
+            );
+            let next =
+                tokio::time::timeout(Duration::from_millis(50), stream.until(FRAME_PRESENCE)).await;
+            if let Ok(payload) = next {
+                return payload;
+            }
+        }
+    })
+    .await
+    .expect("injected presence reaches the fallback stream");
+    assert_eq!(&received[..32], &bytes32(C)[..]);
+    assert!(received[32..].ends_with(b"agent"));
+    assert!(
+        !f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(1, b"stale"))
+    );
+}

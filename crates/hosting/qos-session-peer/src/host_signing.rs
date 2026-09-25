@@ -138,6 +138,16 @@ impl HostSigning {
                 self.owner
                     .desktop_command_with_delivery(request, direct_delivery)
             }
+            fn openable_applications(&self) -> Vec<(String, String)> {
+                crate::canonical_records::installed()
+                    .map(|entry| {
+                        (
+                            entry.app_id().to_owned(),
+                            entry.definition().title.to_owned(),
+                        )
+                    })
+                    .collect()
+            }
         }
         Arc::new(Commands {
             room,

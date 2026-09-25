@@ -905,3 +905,117 @@ async fn final_withdrawal_is_announced_inactive_and_not_reannounced() {
     viewer.session.abort(moq_net::Error::Cancel);
     drop(a);
 }
+
+/// Host presence injection into a host-fed namespace (an agent the host speaks
+/// for): reaches a MoQ subscriber, keeps latest-value sequence order, and is
+/// refused while a client session owns the namespace.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_presence_injection_reaches_subscribers_and_never_speaks_for_a_client() {
+    let f = fixture();
+    let before = f.live.relay.counters();
+    // Invalid frames never create a namespace.
+    assert!(!f.live.relay.inject_presence(ROOM, C, b"short"));
+    assert!(!f.live.relay.inject_presence("room", C, &presence(1, b"x")));
+    assert!(
+        !f.live
+            .relay
+            .inject_presence(ROOM, C, &vec![0; MAX_DATAGRAM_FRAME_BYTES + 1])
+    );
+    let b = connect(&f, b"grant-b", B).await;
+    // The first valid injection announces the host-fed namespace.
+    let mut seq = 1;
+    assert!(
+        f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(seq, b"agent"))
+    );
+    let mut from_c = presence_subscriber(&b, C).await;
+    let first = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            seq += 1;
+            assert!(
+                f.live
+                    .relay
+                    .inject_presence(ROOM, C, &presence(seq, b"agent"))
+            );
+            if let Ok(Ok(Some(datagram))) =
+                tokio::time::timeout(Duration::from_millis(50), from_c.recv_datagram()).await
+            {
+                return datagram.payload.to_vec();
+            }
+        }
+    })
+    .await
+    .expect("injected presence delivered");
+    assert!(first.ends_with(b"agent"));
+    // Stale and equal sequences are dropped; a newer one passes.
+    assert!(
+        !f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(seq, b"equal"))
+    );
+    assert!(
+        !f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(1, b"stale"))
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        f.live
+            .relay
+            .inject_presence(ROOM, C, &presence(seq + 1, b"fresh"))
+    );
+    let next = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let datagram = from_c.recv_datagram().await.unwrap().unwrap();
+            if !datagram.payload.ends_with(b"agent") {
+                return datagram.payload.to_vec();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(next, presence(seq + 1, b"fresh"), "stale injection relayed");
+
+    // A client owns A's namespace: the host may not inject presence there.
+    let mut a = connect(&f, b"grant-a", A).await;
+    let mut from_a = presence_subscriber(&b, A).await;
+    let mut client_seq = 10;
+    first_presence(&mut a, &mut from_a, &mut client_seq).await;
+    assert!(
+        !f.live
+            .relay
+            .inject_presence(ROOM, A, &presence(u64::MAX - 1, b"host"))
+    );
+    // The refused injection did not raise the namespace's sequence floor.
+    client_seq += 1;
+    a.presence
+        .append_datagram(
+            moq_net::Timestamp::ZERO,
+            presence(client_seq, b"client-next"),
+        )
+        .unwrap();
+    let after = tokio::time::timeout(TIMEOUT, async {
+        loop {
+            let datagram = from_a.recv_datagram().await.unwrap().unwrap();
+            assert!(
+                !datagram.payload.ends_with(b"host"),
+                "host spoke for a client"
+            );
+            if datagram.payload.ends_with(b"client-next") {
+                return datagram.payload.to_vec();
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(after, presence(client_seq, b"client-next"));
+    let counters = f.live.relay.counters();
+    assert!(counters.injected > before.injected, "{counters:?}");
+    assert!(
+        counters.injected_dropped >= before.injected_dropped + 6,
+        "{counters:?}"
+    );
+    a.session.abort(moq_net::Error::Cancel);
+    b.session.abort(moq_net::Error::Cancel);
+}
