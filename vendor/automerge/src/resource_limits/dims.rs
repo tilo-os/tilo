@@ -182,7 +182,7 @@ fn vec_growth(len: usize, cap: usize, added: usize, elem: usize) -> Result<usize
 /// nodes are `parent ptr + parent_idx u16 + len u16 + 11 keys`, internal
 /// nodes add 12 edge pointers; every non-root node holds at least 5 keys,
 /// so there are at most `n/5 + 1` leaves and `n/25 + 1` internal nodes.
-fn btree_bytes(n: usize, key: usize) -> Result<usize> {
+pub(crate) fn btree_bytes(n: usize, key: usize) -> Result<usize> {
     if n == 0 {
         return Ok(0);
     }
@@ -203,120 +203,70 @@ pub(crate) fn actor_heap_bytes(len: usize) -> usize {
     }
 }
 
+/// Heap bytes of a `SmolStr`: inline up to 23 bytes, otherwise an
+/// `Arc<str>` (two counts + the bytes).
+pub(crate) fn smol_heap(s: &smol_str::SmolStr) -> usize {
+    if s.len() > 23 {
+        s.len().saturating_add(2 * PTR)
+    } else {
+        0
+    }
+}
+
+/// Heap bytes owned by a public `ScalarValue` (bytes/unknown buffers, long
+/// strings); counters and numbers are inline.
+pub(crate) fn native_scalar_heap(v: &crate::ScalarValue) -> usize {
+    match v {
+        crate::ScalarValue::Bytes(b) => b.capacity(),
+        crate::ScalarValue::Str(s) => smol_heap(s),
+        crate::ScalarValue::Unknown { bytes, .. } => bytes.capacity(),
+        _ => 0,
+    }
+}
+
+/// Heap bytes of an exported object id (`ExId::Id` holds an `ActorId`).
+pub(crate) fn exid_heap(id: &crate::ObjId) -> usize {
+    match id {
+        crate::ObjId::Root => 0,
+        crate::ObjId::Id(_, actor, _) => actor_heap_bytes(actor.to_bytes().len()),
+    }
+}
+
+/// Heap bytes of a `Prop` (map keys own a `String`).
+pub(crate) fn prop_heap(p: &crate::Prop) -> usize {
+    match p {
+        crate::Prop::Map(k) => k.capacity(),
+        crate::Prop::Seq(_) => 0,
+    }
+}
+
+/// Heap bytes of a `SequenceTree<T>` of `len` elements (B = 16): every
+/// non-root node holds at least B-1 = 15 elements, so there are at most
+/// `len/15 + 1` nodes; each node's `elements` Vec has capacity ≤ 32 (grown
+/// by push to at most 2B-1 = 31) and an internal node's `children` Vec
+/// ≤ 32 nodes of 56 bytes; at most one node in 16 is internal.
+pub(crate) fn sequence_tree_heap(len: usize, elem: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let nodes = len / 15 + 1;
+    nodes
+        .saturating_mul(32usize.saturating_mul(elem))
+        .saturating_add((nodes / 16 + 1).saturating_mul(32 * 56))
+}
+
 // ── hexane columns ──────────────────────────────────────────────────────────
 
 /// hexane `DEFAULT_MAX_SEG`: RLE/bool/delta slabs never hold more than this
 /// many segments after a splice (`splice_slab` asserts it on entry; load
 /// cuts slabs at half of it).
 const HEX_MAX_SEGS: usize = 64;
-/// Upper bound on the non-data heap per slab of a hexane column:
-/// `Vec<Slab<Tail>>` element (data Vec 24 + len 8 + segments 8 + tail ≤ 16,
-/// ×2 for `slabs` doubling) plus the `SlabBTree` leaf aggregate (≤ 48 bytes,
-/// ×2 doubling), its share of internal `ChildSlot`s and `nodes` entries,
-/// plus the 8-byte minimum capacity of a non-empty `Vec<u8>`.
-const HEX_SLAB_META: usize = 384;
-/// Per-column fixed heap: `SlabBTree::new` reserves 8 `Option<Node>` (≤ 40
-/// bytes each) plus a first leaf aggregate Vec and the `free` list.
-const HEX_COLUMN_BASE: usize = 512;
-
-/// Segment byte ceiling for each value class (LEB128 value + run header
-/// ≤ 10 + literal-group header ≤ 2).
-pub(crate) const SEG_U32: usize = 5 + 12; // ActorIdx, u32, Option<u32>, Option<ActorIdx>
-pub(crate) const SEG_U64: usize = 10 + 12; // u64/i64/delta, Action, ValueMeta, Option<i64>
-pub(crate) const SEG_BOOL: usize = 10; // bool runs: one ULEB count per segment
-pub(crate) const SEG_MARK: usize = 1 + 10 + 10 + 12; // Option<MarkIdx>: tag + actor + ctr
-pub(crate) const SEG_STR: usize = 10 + 12; // String framing; content counted separately
-
-/// Slab counts of a group of hexane columns, by segment class.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) struct Slabs {
-    pub(crate) columns: usize,
-    pub(crate) u32s: usize,
-    pub(crate) u64s: usize,
-    pub(crate) bools: usize,
-    pub(crate) marks: usize,
-    pub(crate) strs: usize,
-    /// UTF-8 bytes of the string columns' distinct runs (plus a 10-byte
-    /// length prefix per run); slab data holds at most this plus framing.
-    pub(crate) str_bytes: usize,
-}
-impl Slabs {
-    fn total(&self) -> usize {
-        self.u32s
-            .saturating_add(self.u64s)
-            .saturating_add(self.bools)
-            .saturating_add(self.marks)
-            .saturating_add(self.strs)
-    }
-    /// Bound on the columns' heap. A slab's data `Vec` only grows by
-    /// `resize` (amortized doubling) and shrinks by `truncate` without
-    /// releasing capacity, so its capacity is at most twice the largest
-    /// encoded length it ever held, which is at most `HEX_MAX_SEGS`
-    /// segments. String segments carry unbounded content: their content
-    /// is charged at 4× (2× doubling, 2× for capacity left behind in the
-    /// original slab by an overflow split). See the module note on string
-    /// column capacity; this is the one calibrated rather than proven term.
-    fn bound(&self) -> Result<usize> {
-        let mut s = Sum::new();
-        s.mul(self.columns, HEX_COLUMN_BASE)
-            .mul(self.total(), HEX_SLAB_META)
-            .mul3(self.u32s, 2 * HEX_MAX_SEGS, SEG_U32)
-            .mul3(self.u64s, 2 * HEX_MAX_SEGS, SEG_U64)
-            .mul3(self.bools, 2 * HEX_MAX_SEGS, SEG_BOOL)
-            .mul3(self.marks, 2 * HEX_MAX_SEGS, SEG_MARK)
-            .mul3(self.strs, 2 * HEX_MAX_SEGS, SEG_STR)
-            .mul(self.str_bytes, 4);
-        s.get()
-    }
-    /// Growth bound of this column group when `items` rows are inserted
-    /// into every column and `str_bytes` of string content arrives. Each
-    /// inserted row adds at most 3 segments (it can split a run in two); a
-    /// slab splits only above `HEX_MAX_SEGS` into halves of at least
-    /// `HEX_MAX_SEGS/2 - 2` segments, so there is at most one new slab per 10
-    /// inserted rows per column, plus two per column for splice
-    /// boundaries. Every new slab costs the full per-slab bound, and every
-    /// existing slab a row lands in (≤ min(slabs, items)) may grow its
-    /// buffer up to the per-slab bound. The current buffers stay covered by
-    /// the document's retained credit.
-    fn growth(&self, class_cols: [usize; 5], items: usize, str_bytes: usize) -> Result<usize> {
-        if items == 0 && str_bytes == 0 {
-            return Ok(0);
-        }
-        let new = items / 10 + 2;
-        let per =
-            |cols: usize, slabs: usize| cols.saturating_mul(new).saturating_add(slabs.min(items));
-        Slabs {
-            columns: 0,
-            u32s: per(class_cols[0], self.u32s),
-            u64s: per(class_cols[1], self.u64s),
-            bools: per(class_cols[2], self.bools),
-            marks: per(class_cols[3], self.marks),
-            strs: per(class_cols[4], self.strs),
-            str_bytes,
-        }
-        .bound()
-    }
-}
-
-/// Op columns per segment class (u32, u64, bool, mark, str), as grouped in
-/// `OpSet::native_dims` (the raw value column is bounded separately).
-const OP_CLASS_COLS: [usize; 5] = [7, 6, 4, 1, 2];
-/// Change-graph columns per segment class (num_ops, timestamps,
-/// extra_bytes_meta; messages).
-const GRAPH_CLASS_COLS: [usize; 5] = [0, 3, 0, 0, 1];
-
-/// hexane `RawColumn` (op values): one slab per ≤ 4096-byte run of whole
-/// values; a slab never splits a value, so there are at most
-/// `min(values, bytes)` slabs. Data capacity is charged at 4× content (see
-/// `Slabs::bound`); each slab carries a `RawSlab` (24 bytes) and a BIT
-/// entry (8 bytes), both ×2 for doubling.
-fn raw_column_bound(bytes: usize, values: usize) -> Result<usize> {
-    let mut s = Sum::new();
-    s.add(HEX_COLUMN_BASE)
-        .mul(bytes, 4)
-        .mul(values.min(bytes).saturating_add(1), 64);
-    s.get()
-}
+/// Non-data heap per slab of a hexane column: the `Slab<Tail>` element
+/// (data Vec 24 + len 8 + segments 8 + tail ≤ 8 = 48, ×2 for `slabs`
+/// doubling), its `SlabBTree` leaf aggregate (≤ 32 bytes, ×2 doubling),
+/// the node/`ChildSlot` share (B = 64: ≤ 1 node per 32 slabs) and the
+/// 8-byte minimum capacity of a non-empty `Vec<u8>`.
+const HEX_SLAB_META: usize = 192;
 
 // ── dimensions ──────────────────────────────────────────────────────────────
 
@@ -347,8 +297,9 @@ pub(crate) struct DocDims {
     // ── additions (L1) ──
     /// Successor entries (`succ_actor` rows).
     pub(crate) succ: usize,
-    pub(crate) op_slabs: Slabs,
-    pub(crate) graph_slabs: Slabs,
+    /// UTF-8 bytes of the op string columns' runs (`key_str`,
+    /// `mark_name`), plus 10 per run.
+    pub(crate) op_str_bytes: usize,
     /// Exactly measured requested bytes of every std container reachable
     /// from the document (capacities of Vecs, hash tables, clocks,
     /// fragments, actor ids, mark cache values, queued changes).
@@ -365,6 +316,15 @@ pub(crate) struct DocDims {
     pub(crate) fragment_deps: usize,
     /// Queued changes whose hash has `fragment_level() >= 1`.
     pub(crate) queue_fragments: usize,
+    /// Ops, dependency hashes and (bound on) op predecessor references of
+    /// the queued changes.
+    pub(crate) queue_ops: usize,
+    pub(crate) queue_edges: usize,
+    pub(crate) queue_preds: usize,
+    /// Queued changes with `seq == 1` (may add their actor on integration).
+    pub(crate) queue_new_actors: usize,
+    /// Largest op counter in the graph (`ChangeGraph::max_op`).
+    pub(crate) max_op: u64,
     /// Largest SeqClock capacity (entries) among cached clocks.
     pub(crate) clock_width: usize,
     /// Capacities for growth prediction (see `apply_peak_bound`).
@@ -458,11 +418,19 @@ pub(crate) struct IncomingDims {
     pub(crate) parsed_bytes: usize,
     /// Longest actor id among the incoming changes, in bytes.
     pub(crate) max_actor_len: usize,
+    /// Changes with `seq == 1` (the only way an actor becomes new); from a
+    /// shape, every actor entry.
+    pub(crate) new_actors: usize,
     /// Total raw bytes of the changes (sum of chunk lengths).
     pub(crate) raw_bytes: usize,
     /// Declared dense collector op slots (`NativeShape::dense_operations`);
     /// 0 for parsed changes.
     pub(crate) dense_operations: usize,
+    /// The leading document chunk (first chunk, if it is a document chunk):
+    /// its ops, changes and normalized bytes; 0 otherwise.
+    pub(crate) leading_ops: usize,
+    pub(crate) leading_changes: usize,
+    pub(crate) leading_bytes: usize,
 }
 impl IncomingDims {
     pub(crate) fn from_shape(shape: &NativeShape) -> Self {
@@ -477,14 +445,33 @@ impl IncomingDims {
             normalized_bytes: shape.normalized_bytes,
             fragments: shape.changes,
             parsed_bytes: 0,
-            // Actor ids are stored verbatim in the normalized bytes.
-            max_actor_len: shape.normalized_bytes,
+            // Longest single actor id in any chunk prefix (inspection).
+            max_actor_len: shape.max_actor_bytes,
             raw_bytes: shape.normalized_bytes,
             dense_operations: shape.dense_operations,
+            new_actors: shape.actors,
+            leading_ops: shape.leading_document_operations,
+            leading_changes: shape.leading_document_changes,
+            leading_bytes: shape.leading_document_bytes,
         };
         dims.parsed_bytes = shape_parsed_bound(&dims).unwrap_or(usize::MAX);
         dims
     }
+    /// Parsed changes together with the inspected shape of the storage they
+    /// came from: the larger of the exact parsed figures and the inspected
+    /// ones (for document or bundle chunks the reconstructed changes can
+    /// differ from the stored representation).
+    pub(crate) fn from_parsed(changes: &[Change], shape: &NativeShape) -> Result<Self> {
+        let mut d = Self::from_changes(changes)?;
+        d.edges = d.edges.max(shape.edges);
+        d.ops = d.ops.max(shape.operations);
+        d.actors = d.actors.max(shape.actors);
+        d.value_bytes = d.value_bytes.max(shape.value_bytes);
+        d.max_op_counter = d.max_op_counter.max(shape.maximum_operation_counter);
+        Ok(d)
+    }
+    /// Exact figures of parsed changes (`edges` = dependencies + op
+    /// predecessor references, from the pred-count column).
     pub(crate) fn from_changes(changes: &[Change]) -> Result<Self> {
         let mut d = Self {
             changes: changes.len(),
@@ -500,12 +487,16 @@ impl IncomingDims {
         for c in changes {
             parsed.add(change_heap_bound(c));
             ops.add(c.len());
-            edges.add(c.deps().len());
+            // Change dependencies plus op predecessor references.
+            edges.add(c.deps().len()).add(c.native_pred_count());
             raw.add(c.raw_bytes().len());
             actors.add(1 + c.other_actor_ids().len());
             d.max_op_counter = d.max_op_counter.max(c.max_op());
             if c.hash().fragment_level() >= 1 {
                 d.fragments += 1;
+            }
+            if c.seq() == 1 {
+                d.new_actors += 1;
             }
             let len = c.actor_id().to_bytes().len();
             d.max_actor_len = d.max_actor_len.max(len);
@@ -526,18 +517,51 @@ impl IncomingDims {
     }
 }
 
-/// `Vec<Change>` heap bound from inspection only: per change the `Change`
-/// value (×2 Vec slack) and the `change_heap_bound` terms summed over the
-/// whole input: raw bytes ≤ normalized (×3), deps ≤ heads (×64), other
-/// actors ≤ actors (`ActorId` ×2), spilled actor ids and messages ≤
-/// normalized (×2 each).
+/// `Vec<Change>` heap bound from inspection only, covering both ways the
+/// changes come into existence:
+///
+/// 1. change chunks parsed verbatim: per change the `Change` value (×2 Vec
+///    slack) and the `change_heap_bound` terms summed over the input — raw
+///    bytes ≤ normalized (×3: bytes, compressed cache), dependency hashes ≤
+///    heads (×2), other actors ≤ actor entries (`ActorId` ×2) plus spilled
+///    ids, and messages ≤ normalized (×2 each);
+/// 2. changes *reconstructed* from document chunks and bundles
+///    (`ChangeCollector::collect`, which the load path's verification keeps
+///    alive until `finalize`): each rebuilt change repeats its author id
+///    and the full id of every other actor its ops reference (≤ 3 per op:
+///    id, object, key/pred) — so `(changes + 3·ops) × max_actor_bytes` —
+///    plus a ≤ 160-byte header, 34 bytes per dependency, ≤ 48 bytes of op
+///    columns per op, all values, and messages/extra bytes (≤ normalized);
+///    the parsed form holds those bytes ×2 plus the Vec/`other_actors`
+///    buffers.
 fn shape_parsed_bound(d: &IncomingDims) -> Result<usize> {
+    let actor = d.max_actor_len;
+    let refs = d.ops.saturating_mul(3).saturating_add(d.changes);
+    let mut rebuilt = Sum::new();
+    rebuilt
+        .mul(d.changes, 160)
+        .mul(refs, actor.saturating_add(2))
+        .mul(d.edges, 34)
+        .mul(d.ops, 48)
+        .add(d.value_bytes)
+        .add(d.normalized_bytes);
+    let rebuilt = rebuilt.get()?;
     let mut s = Sum::new();
     s.mul3(d.changes, size_of::<Change>(), 2)
         .mul(d.changes, 64)
         .mul(d.raw_bytes, 3 + 2 + 2)
         .mul(d.heads, 2 * size_of::<ChangeHash>())
-        .mul(d.actors, 2 * size_of::<crate::ActorId>());
+        .mul(
+            d.actors,
+            2 * size_of::<crate::ActorId>() + actor_heap_bytes(actor),
+        )
+        // reconstructed changes
+        .mul(rebuilt, 2)
+        .mul(
+            refs,
+            2 * size_of::<crate::ActorId>() + actor_heap_bytes(actor),
+        )
+        .mul(d.edges, 2 * size_of::<ChangeHash>());
     s.get()
 }
 
@@ -571,9 +595,11 @@ fn growth_bound(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
     let c = &doc.cap;
     // Every queued change may become ready and integrate too.
     let dc = cadd(inc.changes, doc.queue_changes)?;
-    let dops = cadd(inc.ops, doc.queue_bytes)?; // ≤ 1 op per queued raw byte
-    let dedges = cadd(inc.edges, doc.queue_bytes / size_of::<ChangeHash>())?;
-    let dactors = inc.actors.min(cadd(doc.actors, inc.actors)?);
+    let dops = cadd(inc.ops, doc.queue_ops)?;
+    // Successor rows and graph edges: op predecessor references plus
+    // change dependencies (`inc.edges` from the shape covers both).
+    let dedges = cadd(inc.edges, doc.queue_preds.saturating_add(doc.queue_edges))?;
+    let dactors = new_actors(doc, inc)?;
 
     let mut s = Sum::new();
     // ChangeGraph change-indexed Vecs.
@@ -598,19 +624,8 @@ fn growth_bound(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
     s.add_sum(vec_growth(doc.actors, c.seq_index, dactors, 24));
     // ChangeGraph::extra_bytes_raw: ≤ incoming raw bytes.
     s.add_sum(vec_growth(c.extra_raw.0, c.extra_raw.1, inc.raw_bytes, 1));
-    // Change-graph hexane columns (num_ops, timestamps, messages,
-    // extra_bytes_meta): one row per change.
-    s.add_sum(doc.graph_slabs.growth(GRAPH_CLASS_COLS, dc, inc.raw_bytes));
-    // Op columns: every incoming op inserts one row in each column (plus
-    // succ rows for its preds); values/keys/mark names ≤ raw bytes.
-    s.add_sum(
-        doc.op_slabs
-            .growth(OP_CLASS_COLS, dops.saturating_add(dedges), inc.raw_bytes),
-    )
-    .add_sum(raw_column_bound(
-        inc.value_bytes.min(inc.raw_bytes.max(inc.value_bytes)),
-        dops,
-    ));
+    // Change-graph hexane columns and op columns (see `columns_growth`).
+    s.add_sum(columns_growth(doc, inc, dc, dops, dedges));
     // OpSet::actors Vec<ActorId> and spilled ids.
     s.add_sum(vec_growth(
         doc.actors,
@@ -639,6 +654,104 @@ fn growth_bound(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
     s.mul(dactors, 2 * 24)
         .mul(dactors.saturating_add(dc), 2 * 16)
         .mul(inc.raw_bytes, 2);
+    s.get()
+}
+
+/// Actors the batch can add to the document. An actor is new only through
+/// its first change (`seq == 1`): a later change needs that actor's earlier
+/// changes, and ops can only reference actors of ops in their causal past.
+/// `BatchApply::insert_new_actors` inserts exactly the `seq == 1` authors.
+fn new_actors(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
+    cadd(inc.new_actors, doc.queue_new_actors)
+}
+
+/// ULEB128 length of `x`.
+fn leb(x: u64) -> usize {
+    (64 - (x | 1).leading_zeros() as usize).div_ceil(7)
+}
+
+/// Retained growth and splice transients of the hexane columns when `dops`
+/// op rows, `dedges` successor rows and `dc` change rows are inserted.
+///
+/// Per column, with `V` the LEB128 width of the values that column can
+/// receive (from the incoming counters, actors and value sizes) and `n` the
+/// row count after the batch, one segment is at most
+/// `seg = V + leb(n) + 2` bytes (value, run-length header, literal-group
+/// header). One inserted row adds at most three segments (it can split a
+/// run in two), so at most `3·seg` new bytes, ×2 because slab buffers grow
+/// by amortized doubling. A slab splits only above `HEX_MAX_SEGS` into
+/// halves of at least 30 segments, so at most one split per 10 rows; each
+/// split allocates the moved half (≤ `HEX_MAX_SEGS·seg`) and one slab's
+/// metadata. Existing slabs a row lands in may reallocate to twice their
+/// buffer: ≤ min(2 × measured column heap, rows × 2·`HEX_MAX_SEGS`·seg).
+/// String content (keys, mark names, messages) and values arrive ≤ once
+/// per raw byte and are charged ×4 (doubling, split copy).
+/// Transient: one splice buffer and one realloc in flight per column,
+/// ≤ 4 × `HEX_MAX_SEGS`·seg + the inserted run.
+fn columns_growth(
+    doc: &DocDims,
+    inc: &IncomingDims,
+    dc: usize,
+    dops: usize,
+    dedges: usize,
+) -> Result<usize> {
+    let rows = cadd(dops, dedges)?;
+    let n = cadd(doc.ops.saturating_add(doc.succ), rows)? as u64;
+    let actors = cadd(doc.actors, new_actors(doc, inc)?)? as u64;
+    let counter = inc.max_op_counter.max(doc.max_op);
+    let value_bytes = inc.value_bytes.max(inc.raw_bytes) as u64;
+    let ln = leb(n);
+    let la = leb(actors);
+    let lcu = leb(counter);
+    let lcs = leb(counter.saturating_mul(2).saturating_add(1));
+    let lmeta = leb(value_bytes.saturating_mul(16).saturating_add(15));
+    // (columns, value width) for the op columns (`Columns` + `Indexes`).
+    let op_cols: [(usize, usize); 12] = [
+        (4, la),                                 // id_actor, obj_actor, key_actor, succ_actor
+        (1, lcu),                                // obj_ctr
+        (3, lcs),                                // id_ctr, key_ctr, succ_ctr (delta)
+        (1, leb(rows as u64 + doc.succ as u64)), // succ_count
+        (1, 1),                                  // action
+        (1, lmeta),                              // value_meta
+        (1, 10),                                 // index.inc (i64 counter sums)
+        (1, leb(value_bytes)),                   // index.text widths
+        (4, 0),                                  // insert, expand, index.top, index.visible
+        (1, 1 + la + lcu),                       // index.mark (tag, actor, counter)
+        (2, 0),                                  // key_str, mark_name (content below)
+        (0, 0),
+    ];
+    // Change-graph columns: num_ops, timestamps (delta i64),
+    // extra_bytes_meta; messages (content below).
+    let graph_cols: [(usize, usize); 3] = [(1, leb(inc.ops as u64)), (1, 10), (2, lmeta)];
+    let mut s = Sum::new();
+    let per_col = |cols: &[(usize, usize)], rows: usize, ln: usize, s: &mut Sum| {
+        for &(k, v) in cols {
+            if k == 0 {
+                continue;
+            }
+            let seg = v + ln + 2;
+            s.mul3(k, rows, 2 * 3 * seg) // new bytes, doubled
+                .mul3(k, rows / 10 + 1, HEX_MAX_SEGS * seg + HEX_SLAB_META) // splits
+                .mul3(k, 4, HEX_MAX_SEGS * seg); // splice buffer + realloc in flight
+        }
+    };
+    per_col(&op_cols, rows, ln, &mut s);
+    let gln = leb(doc.changes.saturating_add(dc) as u64);
+    per_col(&graph_cols, dc, gln, &mut s);
+    // Touched existing slabs reallocating to twice their buffers.
+    let mut realloc = 0usize;
+    for &(k, v) in &op_cols {
+        realloc = realloc.saturating_add(k.saturating_mul(2 * HEX_MAX_SEGS * (v + ln + 2)));
+    }
+    s.add(
+        doc.op_col_bytes
+            .saturating_mul(2)
+            .min(rows.saturating_mul(realloc)),
+    );
+    // String content and values (raw value column: whole values per slab,
+    // ≤ one slab per value) ×4, plus RawColumn slab/BIT entries.
+    s.mul(inc.raw_bytes.max(inc.value_bytes), 4 * 3)
+        .mul(dops, 2 * 32);
     s.get()
 }
 
@@ -728,7 +841,7 @@ fn clock_cache_growth(doc: &DocDims, dc: usize, dactors: usize) -> Result<usize>
 ///   live together with the old buffers) plus the pushed entries.
 pub(crate) fn superlinear_apply_bound(doc: &DocDims, incoming: &IncomingDims) -> Result<usize> {
     let dc = cadd(incoming.changes, doc.queue_changes)?;
-    let dactors = incoming.actors;
+    let dactors = new_actors(doc, incoming)?;
     let actors_after = cadd(doc.actors, dactors)?;
     let changes_after = cadd(doc.changes, dc)?;
     let f_in = cadd(incoming.fragments, doc.queue_fragments)?;
@@ -749,7 +862,7 @@ pub(crate) fn superlinear_apply_bound(doc: &DocDims, incoming: &IncomingDims) ->
 /// in the queue plus the batch, excluding the op application itself.
 fn queue_scratch(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
     let q = cadd(doc.queue_changes, inc.changes)?;
-    let e = cadd(inc.edges, doc.queue_bytes / size_of::<ChangeHash>())?;
+    let e = cadd(inc.edges, doc.queue_edges)?;
     let change = size_of::<Change>();
     let actor_seq = size_of::<(crate::ActorId, u64)>();
     let actor_clone = actor_heap_bytes(inc.max_actor_len.max(doc.max_actor_len));
@@ -803,22 +916,46 @@ fn queue_scratch(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
     s.get()
 }
 
-/// Transient of `BatchApply` over `ops` ops from `changes` changes
-/// (provisional: per-op `ChangeOp` with builder, preds and succ Vecs, the
-/// sorted op Vec and per-object spans; per-change graph insertion).
+/// Transient of `BatchApply::apply` (op_set2/change/batch.rs) over the
+/// incoming plus queued changes, beyond column growth (`columns_growth`):
+/// - `import_ops`: per change a `Vec<ChangeOp>` (exact) extended into
+///   `self.ops` (doubling: ≤ 3 × ops live), each op's decoded storage op
+///   (pred Vec + value) mapped into an `OpBuilder` (a second pred Vec and
+///   an owned value/mark name ≤ raw bytes), per change an actor map;
+/// - `succ` pushes into `ChangeOp::succ` (≤ one per pred, 24 bytes, ×2);
+/// - `obj_info.clone()` of the whole `ObjIndex` plus its growth;
+/// - `sort_by` (stable merge sort: a buffer of ops/2);
+/// - `PredCache` (≤ one entry per pred, each a Vec of `(OpId, inc)`);
+/// - `obj_spans`, `succ: Vec<SuccInsert>`, `conflicts: Vec<Adjust>`
+///   (doubling ×3);
+/// - one Map/List walker at a time (entry/gosub/update maps and stacks
+///   ≤ ops entries: ≤ 128 bytes per op);
+/// - `Columns::splice` value iterators per inserted run (≤ 32 bytes per op
+///   per column, 21 columns).
 fn batch_apply_scratch(doc: &DocDims, inc: &IncomingDims) -> Result<usize> {
+    use crate::op_set2::{ChangeOp, SuccInsert};
     let changes = cadd(inc.changes, doc.queue_changes)?;
-    let ops = cadd(inc.ops, doc.queue_bytes)?;
-    let edges = cadd(inc.edges, doc.queue_bytes)?;
+    let ops = cadd(inc.ops, doc.queue_ops)?;
+    let preds = cadd(inc.edges, doc.queue_preds)?;
+    let op = size_of::<ChangeOp>();
     let mut s = Sum::new();
-    s.mul(ops, 1024)
-        .mul(edges, 64)
-        .mul(changes, 1024)
-        .mul(inc.raw_bytes, 4)
-        // clock computations over the graph: SeqClocks and BTreeSets of
-        // visited nodes bounded by the graph size.
-        .mul(cadd(doc.changes, changes)?, 64)
-        .mul3(cadd(doc.actors, inc.actors)?, 4, 8)
+    s.mul3(ops, 3, op)
+        .mul(ops, op) // per-change collected Vec before extend
+        .mul(preds, 2 * 8 * 2) // storage pred Vec + OpBuilder pred Vec
+        .mul(inc.raw_bytes.max(inc.value_bytes), 3)
+        .mul(changes, 64)
+        .mul3(inc.actors, 4, 2)
+        .mul(preds, 2 * 24)
+        .add(hash_table_bytes(doc.cap.obj_index, 32))
+        .add_sum(hash_table_growth(doc.objects, doc.cap.obj_index, ops, 32))
+        .mul(ops / 2 + 1, op)
+        .add_sum(hash_table_peak_for(preds, 8 + 24))
+        .mul(preds, 2 * 24)
+        .mul3(ops, 3, 24)
+        .mul3(preds, 3, size_of::<SuccInsert>())
+        .mul3(ops, 3, 16)
+        .mul(ops, 128)
+        .mul3(ops, 21, 32)
         .add(64 * 1024);
     s.get()
 }
@@ -833,105 +970,281 @@ pub(crate) fn apply_peak_bound(doc: &DocDims, incoming: &IncomingDims) -> Result
     s.get()
 }
 
+/// Retained bound of the document `Document::reconstruct` builds from a
+/// leading document chunk of `bytes` normalized bytes holding `ops` ops and
+/// `changes` changes, `actors` actors wide (`storage/document.rs`):
+/// - `OpSet::load` copies each column's encoded bytes into slabs cut at
+///   `HEX_MAX_SEGS/2` segments: data ≤ 2 × (input + one re-encoded boundary
+///   segment ≤ 22 bytes per slab), with ≤ input/32 + 1 slabs per column of
+///   `HEX_SLAB_META` each: ≤ 10 × input bytes plus 256 per column (23
+///   op + graph columns);
+/// - the index columns built from the ops (text widths, top, visible, inc,
+///   mark): worst one segment per op per column (≤ 8 + 4 + 4 + 13 + 30
+///   bytes) ×2, plus their slabs: ≤ 150 bytes per op;
+/// - `ObjIndex` (≤ one object per op, 32-byte entries) and the mark cache
+///   (≤ one mark per op, 88-byte entries, owned names/values ≤ input ×2);
+/// - the change graph (`ChangeGraphCols::load` + `finalize`): per change
+///   hashes/actors/parents/seq/max_ops (48 bytes), 8 per edge,
+///   `nodes_by_hash`, `seq_index` (4 per change, ×2), the load-sized
+///   `actor_to_author` (16 per change, ×2), and the clock cache
+///   (`clock_cache_growth` of an empty graph); fragments are added by the
+///   loader once counted;
+/// - the actor table (`ActorId` + spilled id per actor).
+fn leading_document_bound(
+    bytes: usize,
+    ops: usize,
+    changes: usize,
+    edges: usize,
+    actors: usize,
+    max_actor_len: usize,
+) -> Result<usize> {
+    let empty = DocDims::default();
+    let mut s = Sum::new();
+    s.mul(bytes, 10)
+        .mul(23, 256)
+        .mul(ops, 150)
+        .add_sum(hash_table_peak_for(ops, 32))
+        .add_sum(hash_table_peak_for(ops, 88))
+        .mul(bytes, 2)
+        .mul(changes, 48 + 2 * 4 + 2 * 16)
+        .mul(edges, 8)
+        .add_sum(hash_table_peak_for(changes, 36))
+        .add_sum(clock_cache_growth(&empty, changes, actors))
+        .mul(
+            actors,
+            size_of::<crate::ActorId>() + actor_heap_bytes(max_actor_len) + 24,
+        );
+    s.get()
+}
+
 /// Peak of loading normalized storage of this shape (includes the result),
 /// EXCLUDING the fragment term: change hashes are unknown until the load
 /// path has reconstructed and verified the changes, so the loader counts
 /// fragment-level hashes then and reserves `fragment_growth_bound` before
 /// the graph caches fragments.
 ///
-/// Modelled as integrating every change into an empty document (the load
-/// path builds the same graph, columns, clock cache and indexes), plus the
-/// load collectors: every change reconstructed and verified
-/// (`parsed_bytes`), the change collector's declared encoder slots
-/// (`ChangeCollector::try_from_change_meta` sizes one `ChangeBuilder` per
-/// declared change before visiting ops: a dense `Vec<Option<OpBuilder>>`
-/// of the declared op count, or one `ProgressiveEncoder` plus its pointer),
-/// plus a full copy of the normalized input held while decoding.
+/// `load_strict` takes two paths:
+/// 1. a leading document chunk is reconstructed directly: its retained
+///    bound (`leading_document_bound`) plus the reconstruct transients —
+///    the change collector's declared encoder slots
+///    (`ChangeCollector::try_from_change_meta` sizes one `ChangeBuilder` per
+///    declared change before visiting ops: a dense `Vec<Option<OpBuilder>>`
+///    of the declared op count, or one `ProgressiveEncoder` plus pointer),
+///    its `preds` map (≤ 64 bytes per edge), the index builder (≤ 160 bytes
+///    per op), and every change rebuilt for verification (held until
+///    `finalize`; `shape_parsed_bound` of that chunk);
+/// 2. every other chunk (change and bundle chunks, later document chunks)
+///    is parsed or reconstructed into a `Vec<Change>` (`shape_parsed_bound`
+///    of the rest) and batch-applied to the loaded document: the apply
+///    model (`growth_bound`, `queue_scratch`, `batch_apply_scratch`) with
+///    the leading document as the base.
 pub(crate) fn load_peak_bound(incoming: &IncomingDims) -> Result<usize> {
     use crate::op_set2::change::collector::ProgressiveEncoder;
     use crate::op_set2::OpBuilder;
-    let empty = DocDims::default();
-    let without_fragments = IncomingDims {
+    let l_ops = incoming.leading_ops.min(incoming.ops);
+    let l_changes = incoming.leading_changes.min(incoming.changes);
+    let l_bytes = incoming.leading_bytes.min(incoming.normalized_bytes);
+    let rest = IncomingDims {
+        changes: incoming.changes - l_changes,
+        ops: incoming.ops - l_ops,
+        normalized_bytes: incoming.normalized_bytes - l_bytes,
+        raw_bytes: incoming.raw_bytes.saturating_sub(l_bytes),
         fragments: 0,
+        leading_ops: 0,
+        leading_changes: 0,
+        leading_bytes: 0,
         ..*incoming
     };
     let mut s = Sum::new();
-    s.add_sum(growth_bound(&empty, &without_fragments))
-        .add_sum(batch_apply_scratch(&empty, &without_fragments))
-        .add(incoming.parsed_bytes)
-        .mul(incoming.normalized_bytes, 2)
-        .mul(
-            incoming.dense_operations,
-            size_of::<Option<OpBuilder<'static>>>(),
-        )
-        .mul(
-            incoming.changes,
-            size_of::<ProgressiveEncoder<'static>>() + size_of::<usize>(),
-        );
+    // The empty document every load starts from (`Automerge::new`: 21 op
+    // and 4 graph columns with their initial B-tree nodes, the actor id):
+    // 9 KiB observed, 16 KiB charged.
+    s.add(16 * 1024);
+    // Declared collector slots (the inspector sums them over every
+    // reconstructed chunk; only one chunk is collected at a time, so the sum
+    // covers the largest).
+    s.mul(
+        incoming.dense_operations,
+        size_of::<Option<OpBuilder<'static>>>(),
+    )
+    .mul(
+        incoming.changes,
+        size_of::<ProgressiveEncoder<'static>>() + size_of::<usize>(),
+    );
+    let mut base = DocDims::default();
+    if l_changes != 0 || l_ops != 0 || l_bytes != 0 {
+        let leading = IncomingDims {
+            changes: l_changes,
+            ops: l_ops,
+            normalized_bytes: l_bytes,
+            raw_bytes: l_bytes,
+            ..IncomingDims::default()
+        };
+        let retained = leading_document_bound(
+            l_bytes,
+            l_ops,
+            l_changes,
+            incoming.edges,
+            incoming.actors,
+            incoming.max_actor_len,
+        )?;
+        s.add(retained)
+            .mul(incoming.edges, 64)
+            .mul(l_ops, 160)
+            .add_sum(shape_parsed_bound(&IncomingDims {
+                edges: incoming.edges,
+                heads: incoming.heads,
+                actors: incoming.actors,
+                value_bytes: incoming.value_bytes,
+                max_actor_len: incoming.max_actor_len,
+                ..leading
+            }));
+        base = DocDims {
+            ops: l_ops,
+            changes: l_changes,
+            actors: incoming.actors,
+            edges: incoming.edges,
+            op_col_bytes: retained,
+            exact_bytes: retained,
+            max_op: incoming.max_op_counter,
+            max_actor_len: incoming.max_actor_len,
+            ..DocDims::default()
+        };
+    }
+    if rest.changes != 0 || rest.ops != 0 {
+        s.add_sum(shape_parsed_bound(&rest))
+            .add_sum(growth_bound(&base, &rest))
+            .add_sum(queue_scratch(&base, &rest))
+            .add_sum(batch_apply_scratch(&base, &rest));
+    }
     s.get()
 }
 
-/// Upper bound on `save_with_options` output length: the columnar document
-/// chunk re-encodes each op column (≤ its slab bytes), the change columns
-/// (≤ graph bound + 32 per hash + 8 per edge), actor ids, and headers; a
-/// DEFLATE pass never expands by more than 5 bytes per 16 KiB block + 64.
-pub(crate) fn save_output_bound(doc: &DocDims) -> Result<usize> {
+/// Upper bound on the uncompressed document chunk data `Document::new`
+/// assembles (`storage/document.rs`):
+/// - `op_set.export()`: the op columns re-encoded; a canonical re-encoding
+///   is never longer than the slab encodings it reads (slab boundaries only
+///   break runs), so ≤ the measured op-column heap (`op_col_bytes`, which
+///   also covers the unexported index columns);
+/// - `change_graph.encode()`: per change actor/seq/max_op/time/deps-count
+///   (≤ 5 + 5 + 5 + 10 + 5 LEB bytes, 32 per change), 6 per dependency
+///   edge, the message/extra-bytes/num-ops/timestamp columns (≤ their
+///   measured hexane heap `graph_col_bytes`) and the raw extra bytes;
+/// - prefix/suffix: actor table (≤ 10 + id bytes each), heads (32 + 10 for
+///   the head index each), column metadata (≤ 64 columns × 16 bytes) and
+///   the chunk header (≤ 64).
+fn document_data_bound(doc: &DocDims) -> Result<usize> {
     let mut s = Sum::new();
     s.add(doc.op_col_bytes)
+        .mul(doc.changes, 32)
+        .mul(doc.edges, 6)
         .add(doc.graph_col_bytes)
-        .mul(doc.changes, size_of::<ChangeHash>() + 16)
-        .mul(doc.edges, 10)
-        .mul(doc.heads, size_of::<ChangeHash>())
-        .mul(doc.actors, 16)
-        .add(doc.exact_bytes / 4)
-        .add(4096);
-    let raw = s.get()?;
+        .add(doc.cap.extra_raw.0)
+        .mul(doc.actors, 10 + doc.max_actor_len.max(16))
+        .mul(doc.heads, size_of::<ChangeHash>() + 10)
+        .add(64 * 16 + 64);
+    s.get()
+}
+
+/// DEFLATE encoder state that `flate2` (zlib-rs backend, default
+/// windowBits 15 / memLevel 8) allocates per compressed column while
+/// saving: sliding window 2 × 2^15, `prev` 2^15 × u16, `head` 2^16 × u16
+/// (zlib-rs uses 16 hash bits), pending/symbol buffer 4 × 2^14, plus the
+/// state struct and 64-byte alignment padding: 64 + 64 + 128 + 64 KiB +
+/// ≤ 64 KiB = 384 KiB (observed 371 KiB). One encoder is live at a time.
+pub(crate) const DEFLATE_ENCODER_STATE: usize = 384 * 1024;
+/// Matching INFLATE state (window 2^15 + state + tables) for paths that
+/// decompress: 64 KiB. Normalized storage is already inflated
+/// (`normalize` counts inflation with fixed scratch), so the checked load
+/// and apply paths never inflate; kept for callers that do.
+#[allow(dead_code)]
+pub(crate) const INFLATE_DECODER_STATE: usize = 64 * 1024;
+
+/// Upper bound on `save_with_options` output length: the document chunk
+/// (`document_data_bound`), DEFLATE expansion of compressed columns (stored
+/// blocks: 5 bytes per 16 KiB + a 64-byte stream overhead per column), and
+/// every queued change appended verbatim (`retain_orphans`).
+pub(crate) fn save_output_bound(doc: &DocDims) -> Result<usize> {
+    let data = document_data_bound(doc)?;
     let mut t = Sum::new();
-    t.add(raw).add(raw / 3000).add(64);
+    t.add(data)
+        .add(data / 3000)
+        .mul(64, 64)
+        .add(doc.queue_bytes);
     t.get()
 }
 
-/// Transient peak of `save_with_options`, including its output: column
-/// encoders write each column into a scratch Vec (≤ 2× by doubling), the
-/// uncompressed chunk (≤ output bound, ×2 doubling) and the compressed
-/// copy, plus the change-graph export (hashes, clocks) proportional to
-/// the graph.
+/// Transient peak of `save_with_options`, including its output. With `D`
+/// the document data bound: the op export and change export Vecs (grown
+/// by push, ≤ 2D together), `data` (reserved for the exports, then grown
+/// by the prefix: a realloc to ≤ 2D while the old buffer lives, 3D), the
+/// header+data copy `bytes` (D), the compressed copy (≤ 2D by doubling)
+/// with per-column scratch (≤ 2D) and one live DEFLATE encoder, the cloned
+/// actor table, head Vecs, and the final `extend` of queued changes
+/// (realloc of the output to ≤ 2 (D + Q) while the old one lives).
 pub(crate) fn save_peak_bound(doc: &DocDims) -> Result<usize> {
     let out = save_output_bound(doc)?;
     let mut s = Sum::new();
-    s.mul(out, 5)
-        .mul(doc.changes, 128)
-        .mul3(doc.actors, doc.actors.min(doc.changes).max(1), 4)
+    s.mul(out, 12)
+        .mul(doc.queue_bytes, 2)
+        .mul(
+            doc.actors,
+            size_of::<crate::ActorId>() + doc.max_actor_len.max(16),
+        )
+        .mul(doc.heads, 2 * (size_of::<ChangeHash>() + 8))
+        .add(DEFLATE_ENCODER_STATE)
         .add(64 * 1024);
     s.get()
 }
 
 /// Peak of exporting up to `changes` canonical changes (`get_changes`),
-/// including the returned `Vec<Change>`: each change is rebuilt from the
-/// columns (its ops ≤ all ops, bytes ≤ the save output), so the total of
-/// the returned changes is bounded by the document's encoded size plus
-/// per-change headers, ×2 for build scratch.
+/// including the returned `Vec<Change>`.
+///
+/// `ChangeCollector::exclude_hashes` builds the change metadata (a Vec
+/// cloned once), one `ChangeBuilder` per change with a boxed
+/// `ProgressiveEncoder` (its `actors: Vec<bool>` is actor-wide, and each of
+/// its ~16 column encoders owns a doubling buffer), the `preds` map (one
+/// entry per successor edge), an out-of-order `queue` (≤ every op as an
+/// `OpBuilder`), then encodes each change: op data (≤ 48 bytes of column
+/// encoding per op plus values and key strings) passes through the encoder
+/// buffers (×2 doubling), the assembled chunk and its parse (×2), so ×6 in
+/// all; every rebuilt change repeats the full id of each actor it
+/// references (≤ 3 per op + its author). With `debug_assertions` the same
+/// changes are rebuilt a second time through `Bundle::for_hashes` while the
+/// first result is alive, so the whole collector term counts twice.
 pub(crate) fn history_peak_bound(doc: &DocDims, changes: usize) -> Result<usize> {
+    use crate::op_set2::change::collector::ProgressiveEncoder;
+    use crate::op_set2::change::BuildChangeMetadata;
+    use crate::op_set2::OpBuilder;
     let n = changes.min(doc.changes);
-    let out = save_output_bound(doc)?;
-    // Actor references across rebuilt changes: each op names at most three
-    // actors (id, obj, key/pred) and each change its own author actor.
-    let actor_refs = cadd(doc.ops.saturating_mul(3).saturating_add(doc.succ), n)?;
+    let actor = doc.max_actor_len.max(16);
+    let refs = cadd(doc.ops.saturating_mul(3), n)?;
+    let mut per_change = Sum::new();
+    per_change
+        .add(size_of::<ProgressiveEncoder<'static>>())
+        .add(16 * 64)
+        .mul(3, size_of::<BuildChangeMetadata<'static>>())
+        .mul(2, size_of::<Change>())
+        .add(512)
+        .add(doc.actors);
+    let per_change = per_change.get()?;
+    let mut op_data = Sum::new();
+    op_data
+        .mul(doc.ops, 48)
+        .add(doc.value_bytes)
+        .add(doc.op_str_bytes);
+    let op_data = op_data.get()?;
+    let mut p = Sum::new();
+    p.mul(n, per_change)
+        .mul(op_data, 6)
+        .mul(refs, 4 * actor + 2 * size_of::<crate::ActorId>())
+        .mul(doc.edges, 4 * 34)
+        .mul(doc.succ, 64)
+        .mul(doc.ops, 2 * size_of::<OpBuilder<'static>>())
+        .mul(doc.changes, 64);
+    let collector = p.get()?;
     let mut s = Sum::new();
-    // Rebuilt raw bytes: the op data is at most the encoded columns; actor
-    // ids are repeated per change; 128 bytes of header/hash per change.
-    // ×2 for build scratch (encoders write into doubling Vecs).
-    s.mul(out, 4)
-        .mul3(actor_refs, doc.max_actor_len.max(16), 2)
-        .mul3(n, 128, 2)
-        // the returned Vec<Change> (×2 doubling) and each parsed Change's
-        // other_actors Vec / dependency list.
-        .mul3(n, size_of::<Change>(), 2)
-        .mul3(actor_refs, size_of::<crate::ActorId>(), 2)
-        .mul3(doc.edges, size_of::<ChangeHash>(), 2)
-        // graph traversal (visited sets, clocks) over all changes.
-        .mul(doc.changes, 64)
-        .add(64 * 1024);
+    s.mul(collector, 2).add(64 * 1024);
     s.get()
 }
 

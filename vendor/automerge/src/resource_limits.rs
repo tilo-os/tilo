@@ -317,12 +317,19 @@ pub struct NativeShape {
     /// Largest actor table of any single chunk (a change chunk's author
     /// plus its other actors).
     max_chunk_actors: usize,
+    /// Normalized length, operations and changes of the first chunk when it
+    /// is a document chunk (all 0 otherwise).
+    leading_document_bytes: usize,
+    leading_document_operations: usize,
+    leading_document_changes: usize,
 }
 impl NativeShape {
     fn empty() -> Self {
         Self { operations: 0, normalized_bytes: 0, changes: 0, edges: 0,
             actors: 0, heads: 0, value_bytes: 0, dense_operations: 0,
-            maximum_operation_counter: 0, max_actor_bytes: 0, max_chunk_actors: 0 }
+            maximum_operation_counter: 0, max_actor_bytes: 0, max_chunk_actors: 0,
+            leading_document_bytes: 0, leading_document_operations: 0,
+            leading_document_changes: 0 }
     }
     /// Total logical operations represented by the inspected chunks.
     pub fn operations(&self) -> usize {

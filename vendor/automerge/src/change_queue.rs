@@ -202,6 +202,12 @@ impl ChangeQueue {
         let mut raw = 0usize;
         for c in &self.changes {
             raw = raw.saturating_add(c.raw_bytes().len());
+            d.queue_ops = d.queue_ops.saturating_add(c.len());
+            if c.seq() == 1 {
+                d.queue_new_actors += 1;
+            }
+            d.queue_edges = d.queue_edges.saturating_add(c.deps().len());
+            d.queue_preds = d.queue_preds.saturating_add(c.native_pred_count());
             if c.hash().fragment_level() >= 1 {
                 d.queue_fragments += 1;
             }

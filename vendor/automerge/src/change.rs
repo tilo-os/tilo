@@ -426,3 +426,14 @@ mod tests {
         }
     }
 }
+
+/// qOS bounded admission (lane L1).
+impl Change {
+    /// Op predecessor references in this change, without decoding ops or
+    /// allocating.
+    pub(crate) fn native_pred_count(&self) -> usize {
+        self.stored
+            .ops_meta
+            .native_pred_count(self.stored.ops_data())
+    }
+}

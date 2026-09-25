@@ -10,8 +10,6 @@ use crate::transaction::Transactable;
 use std::sync::Arc;
 
 mod probe;
-#[doc(hidden)]
-pub use probe::NativeBoundProbe;
 
 pub(crate) type Result<T = ()> = std::result::Result<T, NativeResourceError>;
 
