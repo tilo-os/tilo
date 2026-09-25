@@ -19,9 +19,13 @@ jobs:
           for device in fuse loop-control; do
             if [[ -e /sys/class/misc/$device/dev && ! -e /dev/$device ]]; then
               IFS=: read -r major minor < "/sys/class/misc/$device/dev"
-              sudo -n mknod -m 0600 "/dev/$device" c "$major" "$minor"
+              sudo -n mknod -m 0666 "/dev/$device" c "$major" "$minor"
             fi
           done
           ls -l /dev/fuse /dev/loop-control 2>&1 || true
-          if [[ -c /dev/fuse ]]; then sudo -n python3 -c 'open("/dev/fuse", "rb").close()'; fi
+          if [[ -c /dev/fuse ]]; then python3 -c 'open("/dev/fuse", "rb").close()'; fi
           if [[ -c /dev/loop-control ]]; then sudo -n losetup --find; fi
+          mkdir -p "$RUNNER_TEMP/devtmpfs-probe"
+          sudo -n mount -t devtmpfs devtmpfs "$RUNNER_TEMP/devtmpfs-probe"
+          ls -l "$RUNNER_TEMP/devtmpfs-probe/fuse" "$RUNNER_TEMP/devtmpfs-probe/loop-control" "$RUNNER_TEMP/devtmpfs-probe/loop0"
+          sudo -n umount "$RUNNER_TEMP/devtmpfs-probe"
