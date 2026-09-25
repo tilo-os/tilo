@@ -73,7 +73,9 @@ pub use trust::{
     default_trusted_attestors_path,
 };
 pub use unpack::{UnpackError, unpack, validate_materialized_payload};
-pub use validate::{ManifestError, validate_manifest, validate_manifest_with_payload};
+pub use validate::{
+    FORMAT_PROVIDER_MODULE, ManifestError, validate_manifest, validate_manifest_with_payload,
+};
 pub use verify::{Verification, verify, verify_with_trust};
 
 /// Maximum wire size of an application `.tapp`. Large shared dependencies

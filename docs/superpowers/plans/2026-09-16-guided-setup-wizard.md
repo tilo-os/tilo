@@ -6,7 +6,7 @@
 
 **Architecture:** A process-local controller owns choices and navigates experience, folders, and review. A retained widget composes existing accessible controls. Background folder scanning supplies real file counts and bytes; future installation adapters consume reviewed plans without inheriting authority from UI state.
 
-**Tech Stack:** Rust, Imager, qos-app retained widgets, native Windows folder dialog and Linux directory portal, existing screenshot renderer.
+**Tech Stack:** Rust, Imager, tilo-app retained widgets, native Windows folder dialog and Linux directory portal, existing screenshot renderer.
 
 **Spec:** `docs/superpowers/specs/2026-09-16-guided-migration-design.md`
 
