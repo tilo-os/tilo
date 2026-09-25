@@ -85,6 +85,12 @@ impl ChangeGraph {
                 msg = msg.saturating_add(m.len()).saturating_add(10);
             }
         }
+        d.graph_col_bytes = self
+            .num_ops
+            .heap_bytes()
+            .saturating_add(self.timestamps.heap_bytes())
+            .saturating_add(self.messages.heap_bytes())
+            .saturating_add(self.extra_bytes_meta.heap_bytes());
         d.graph_slabs = Slabs {
             columns: 4,
             u64s: self
