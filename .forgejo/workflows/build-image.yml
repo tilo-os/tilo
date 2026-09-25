@@ -1474,6 +1474,16 @@ jobs:
           # first pass and could never prove the published image bootable.
           mkdir -p "$TILO_OUTPUT" "$TILO_RUN"
           rm -f "$TILO_RESEALED_DIGEST_FILE"
+          # The release image has no SSH server, yet every gate below drives
+          # the installed system over `vm.sh ssh`. Give this run's disk copy,
+          # and only it, validation access: a signed sshd extension on a
+          # second disk, and in the copy's /etc the unit that merges it and
+          # the one-run certificate it trusts. The edits are listed here.
+          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+            ./os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"
+            export TILO_VALIDATION_ETC="$TILO_RUN/validation/etc"
+            export TILO_VM_VALIDATION_SYSEXT="$TILO_RUN/validation/tilo-validation.raw"
+          fi
           ./os/dev/build-image.sh
 
           # build-image may add a deterministic /boot-only UKI reseal layer.
