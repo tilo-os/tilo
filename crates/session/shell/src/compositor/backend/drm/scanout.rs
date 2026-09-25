@@ -7,8 +7,9 @@
 
 use std::collections::BTreeMap;
 use std::io::Read as _;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use smithay::backend::session::Session;
 use smithay::reexports::drm as drm_re;
@@ -18,9 +19,10 @@ use drm_re::Device as BasicDevice;
 use drm_re::buffer::{Buffer as _, DrmFourcc};
 use drm_re::control::dumbbuffer::DumbBuffer;
 use drm_re::control::{
-    ClipRect, Device as ControlDevice, Event, Mode, ModeTypeFlags, PageFlipFlags, connector, crtc,
-    framebuffer,
+    ClipRect, Device as ControlDevice, Event, FbCmd2Flags, Mode, ModeTypeFlags, PageFlipFlags,
+    connector, crtc, framebuffer,
 };
+use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
@@ -76,6 +78,297 @@ impl Card {
     }
 }
 
+/// Two compositor-owned GPU allocations that can be both rendered into and
+/// scanned out.  This is constructed as a capability probe before the Vulkan
+/// aliases exist; ordinary presentation continues using dumb buffers until
+/// the complete direct path is ready.
+struct GbmScanoutBuffers {
+    device: GbmDevice<Card>,
+    buffers: [gbm::BufferObject<()>; 2],
+    dma_fds: [OwnedFd; 2],
+    fbs: [framebuffer::Handle; 2],
+}
+
+/// Immutable description borrowed by the Vulkan importer.  Ownership stays in
+/// [`GbmScanoutBuffers`], which outlives every alias and KMS flip.
+pub struct GbmScanoutSlot<'a> {
+    pub fd: BorrowedFd<'a>,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub offset: u32,
+    pub modifier: u64,
+    pub framebuffer: framebuffer::Handle,
+}
+
+impl GbmScanoutBuffers {
+    fn new(card: Card, width: u32, height: u32) -> Result<Self, String> {
+        let device = GbmDevice::new(card).map_err(|error| format!("gbm_create_device: {error}"))?;
+        let flags = GbmBufferFlags::SCANOUT | GbmBufferFlags::RENDERING | GbmBufferFlags::LINEAR;
+        if !device.is_format_supported(gbm::Format::Xrgb8888, flags) {
+            return Err("GBM does not support linear XRGB8888 scanout+rendering".to_owned());
+        }
+        let allocate = |index: usize| {
+            device
+                .create_buffer_object_with_modifiers2::<()>(
+                    width,
+                    height,
+                    gbm::Format::Xrgb8888,
+                    std::iter::once(gbm::Modifier::Linear),
+                    flags,
+                )
+                .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))
+        };
+        let buffers = [allocate(0)?, allocate(1)?];
+        for (index, buffer) in buffers.iter().enumerate() {
+            validate_gbm_scanout_buffer(buffer, width, height)
+                .map_err(|error| format!("GBM scanout buffer[{index}]: {error}"))?;
+        }
+        let dma_fds = [
+            buffers[0]
+                .fd_for_plane(0)
+                .map_err(|error| format!("export GBM scanout buffer[0]: {error}"))?,
+            buffers[1]
+                .fd_for_plane(0)
+                .map_err(|error| format!("export GBM scanout buffer[1]: {error}"))?,
+        ];
+        let fb0 = device
+            .add_planar_framebuffer(&buffers[0], FbCmd2Flags::MODIFIERS)
+            .map_err(|error| format!("add GBM framebuffer[0]: {error}"))?;
+        let fb1 = match device.add_planar_framebuffer(&buffers[1], FbCmd2Flags::MODIFIERS) {
+            Ok(fb) => fb,
+            Err(error) => {
+                let _ = device.destroy_framebuffer(fb0);
+                return Err(format!("add GBM framebuffer[1]: {error}"));
+            }
+        };
+        let fbs = [fb0, fb1];
+        Ok(Self {
+            device,
+            buffers,
+            dma_fds,
+            fbs,
+        })
+    }
+
+    fn slot(&self, index: usize) -> Option<GbmScanoutSlot<'_>> {
+        let buffer = self.buffers.get(index)?;
+        let fd = self.dma_fds.get(index)?.as_fd();
+        let framebuffer = *self.fbs.get(index)?;
+        Some(GbmScanoutSlot {
+            fd,
+            width: buffer.width(),
+            height: buffer.height(),
+            stride: buffer.stride_for_plane(0),
+            offset: buffer.offset(0),
+            modifier: u64::from(buffer.modifier()),
+            framebuffer,
+        })
+    }
+}
+
+impl Drop for GbmScanoutBuffers {
+    fn drop(&mut self) {
+        for fb in self.fbs {
+            if let Err(error) = self.device.destroy_framebuffer(fb) {
+                tracing::debug!(?fb, %error, "failed to destroy GBM framebuffer during teardown");
+            }
+        }
+    }
+}
+
+/// Ownership of two renderer/KMS-shared scanout images.  `front` is the image
+/// the CRTC is known to be reading; `pending` is owned by KMS until its page
+/// flip event arrives.  Consequently there is no renderable image while a
+/// flip is pending on a two-slot swapchain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct DirectScanoutState {
+    front: usize,
+    pending: Option<usize>,
+}
+
+/// Imported Vulkan aliases must drop before their GBM allocation and KMS
+/// framebuffer IDs.  Field order makes that teardown relationship explicit.
+pub struct DirectScanoutTargets {
+    imported: [ui::dmabuf_import::ImportedRenderTarget; 2],
+    buffers: GbmScanoutBuffers,
+    state: DirectScanoutState,
+    /// Complete scene revision last copied into each independent scanout
+    /// image. Sparse Vello rendering retains its own source texture, but a
+    /// partial blit is valid only when the selected GBM destination contains
+    /// the immediately preceding revision too.
+    revisions: [Option<u64>; 2],
+}
+
+/// Result of handing a completed imported target to KMS.
+#[derive(Debug)]
+pub enum DirectSubmit {
+    Queued,
+    Busy,
+    Failed(String),
+}
+
+/// A successfully queued direct flip is not retired when the ioctl returns:
+/// KMS still owns both double-buffered targets until its page-flip event.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirectRetirement {
+    Complete,
+    TimedOut,
+}
+
+fn retirement_after_poll(
+    awaited: crtc::Handle,
+    completed: &[crtc::Handle],
+    deadline_reached: bool,
+) -> Option<DirectRetirement> {
+    if completed.contains(&awaited) {
+        Some(DirectRetirement::Complete)
+    } else if deadline_reached {
+        Some(DirectRetirement::TimedOut)
+    } else {
+        None
+    }
+}
+
+impl DirectScanoutTargets {
+    /// Build both targets transactionally. No CRTC state changes here.
+    ///
+    /// # Errors
+    ///
+    /// Fails when GBM cannot allocate the scanout buffers or the renderer
+    /// cannot import either of them.
+    pub fn new(scanout: &DrmScanout, bridge: &VelloDrmBridge) -> Result<Self, String> {
+        let buffers = scanout.allocate_gbm_scanout_buffers()?;
+        let import = |index: usize| -> Result<ui::dmabuf_import::ImportedRenderTarget, String> {
+            let slot = buffers
+                .slot(index)
+                .ok_or_else(|| format!("GBM scanout slot[{index}] is unavailable"))?;
+            let plane = ui::dmabuf_import::PlaneRef {
+                fd: slot.fd,
+                offset: slot.offset,
+                stride: slot.stride,
+            };
+            bridge
+                .import_bgra8_target(&ui::dmabuf_import::DmabufRef {
+                    planes: &[plane],
+                    fourcc: media::dmabuf::DRM_FORMAT_XRGB8888,
+                    modifier: slot.modifier,
+                    width: slot.width,
+                    height: slot.height,
+                    colorimetry: media::dmabuf::Colorimetry::RGB,
+                })
+                .map_err(|error| format!("import GBM scanout slot[{index}]: {error}"))
+        };
+        let imported = [import(0)?, import(1)?];
+        Ok(Self {
+            imported,
+            buffers,
+            // The dumb-buffer front remains visible until the first complete
+            // imported target is submitted, so index zero is merely the
+            // initial ownership anchor; the first render uses index one.
+            state: DirectScanoutState::new(0),
+            revisions: [None, None],
+        })
+    }
+
+    pub fn render_slot(&self) -> Option<(usize, &ui::dmabuf_import::ImportedRenderTarget)> {
+        let index = self.state.render_slot()?;
+        self.imported.get(index).map(|target| (index, target))
+    }
+
+    fn framebuffer(&self, index: usize) -> Option<framebuffer::Handle> {
+        self.buffers.slot(index).map(|slot| slot.framebuffer)
+    }
+
+    pub fn previous_revision_for(&self, index: usize) -> Option<u64> {
+        self.revisions.get(index).copied().flatten()
+    }
+
+    pub fn mark_rendered(&mut self, index: usize, revision: u64) {
+        if let Some(slot) = self.revisions.get_mut(index) {
+            *slot = Some(revision);
+        }
+    }
+}
+
+impl DirectScanoutState {
+    const fn new(front: usize) -> Self {
+        Self {
+            front,
+            pending: None,
+        }
+    }
+
+    /// Reserve the only slot which is not currently owned by scanout.  The
+    /// caller must render successfully before handing it to [`Self::submit`].
+    fn render_slot(self) -> Option<usize> {
+        self.pending
+            .is_none()
+            .then_some(1usize.saturating_sub(self.front))
+    }
+
+    /// Transfer a successfully rendered slot to KMS.  This records ownership
+    /// only after `page_flip` itself succeeds; a rejected flip remains safely
+    /// renderable on the next attempt.
+    fn submit(&mut self, slot: usize) -> bool {
+        if self.render_slot() != Some(slot) {
+            return false;
+        }
+        self.pending = Some(slot);
+        true
+    }
+
+    /// Retire the queued flip.  Only now is the old front released back to the
+    /// renderer and the queued target promoted to the visible front.
+    fn complete(&mut self) -> bool {
+        let Some(front) = self.pending.take() else {
+            return false;
+        };
+        self.front = front;
+        true
+    }
+}
+
+fn validate_gbm_scanout_buffer(
+    buffer: &gbm::BufferObject<()>,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    if buffer.width() != width || buffer.height() != height {
+        return Err(format!(
+            "extent {}x{} does not match requested {width}x{height}",
+            buffer.width(),
+            buffer.height()
+        ));
+    }
+    if buffer.format() != gbm::Format::Xrgb8888 {
+        return Err(format!("format {:?} is not XRGB8888", buffer.format()));
+    }
+    if buffer.plane_count() != 1 || buffer.offset(0) != 0 {
+        return Err(format!(
+            "expected one plane at offset zero, got {} plane(s), offset {}",
+            buffer.plane_count(),
+            buffer.offset(0)
+        ));
+    }
+    let minimum_stride = width
+        .checked_mul(4)
+        .ok_or_else(|| "row size overflows u32".to_owned())?;
+    if buffer.stride_for_plane(0) < minimum_stride {
+        return Err(format!(
+            "stride {} is shorter than {minimum_stride}",
+            buffer.stride_for_plane(0)
+        ));
+    }
+    if buffer.modifier() != gbm::Modifier::Linear {
+        return Err(format!(
+            "modifier {:?} is not explicit linear layout",
+            buffer.modifier()
+        ));
+    }
+    Ok(())
+}
+
 /// Convert the kernel's `dev_t` into the identifier used by the DRM output
 /// registry and card map. Smithay's `UdevEvent::{Added, Removed}` carries this
 /// exact `dev_t`, while `fstat(card_fd).st_rdev` supplies the value for an
@@ -105,8 +398,82 @@ pub(crate) fn physical_card_identity(card_path: &Path) -> Option<String> {
     valid_config_identity(&identity).then_some(identity)
 }
 
+/// Exact PCI identity for a DRM card node, derived from the canonical sysfs device path when
+/// `drmGetBusid` is unavailable (notably amdgpu through some seat/session fd stacks). The final
+/// component must itself be a complete PCI BDF; platform/USB identities never become an unsafe
+/// same-GPU claim.
+fn sysfs_pci_bus_id_at(
+    sys_dev_char: &Path,
+    device: smithay::reexports::rustix::fs::Dev,
+) -> Option<String> {
+    let major = smithay::reexports::rustix::fs::major(device);
+    let minor = smithay::reexports::rustix::fs::minor(device);
+    let canonical =
+        std::fs::canonicalize(sys_dev_char.join(format!("{major}:{minor}")).join("device")).ok()?;
+    let component = canonical.file_name()?.to_str()?;
+    parse_pci_bdf(component).map(|_| format!("pci:{component}"))
+}
+
+fn sysfs_pci_bus_id_for_dev(device: smithay::reexports::rustix::fs::Dev) -> Option<String> {
+    sysfs_pci_bus_id_at(Path::new("/sys/dev/char"), device)
+}
+
+fn card_pci_bus_id(card: &Card) -> Option<String> {
+    card.get_bus_id()
+        .ok()
+        .and_then(|identity| identity.into_string().ok())
+        .filter(|identity| parse_pci_bdf(identity).is_some())
+        .or_else(|| {
+            smithay::reexports::rustix::fs::fstat(&card.0)
+                .ok()
+                .and_then(|stat| sysfs_pci_bus_id_for_dev(stat.st_rdev))
+        })
+}
+
 fn same_physical_card_identity(existing: Option<&str>, candidate: Option<&str>) -> bool {
     matches!((existing, candidate), (Some(existing), Some(candidate)) if existing == candidate)
+}
+
+/// Canonical PCI address shared by Vulkan's `VK_EXT_pci_bus_info` identity
+/// and DRM's `pci:dddd:bb:ss.f` bus id. Direct DMA-BUF scanout must fail
+/// closed when either side cannot prove this identity: importing memory from
+/// an unrelated GPU may succeed initially but is not a valid scanout path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PciBdf {
+    domain: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+}
+
+fn parse_pci_bdf(identity: &str) -> Option<PciBdf> {
+    let value = identity.strip_prefix("pci:").unwrap_or(identity);
+    let (domain, remainder) = value.split_once(':')?;
+    let (bus, slot_function) = remainder.split_once(':')?;
+    let (device, function) = slot_function.split_once('.')?;
+    if domain.len() != 4
+        || bus.len() != 2
+        || device.len() != 2
+        || function.len() != 1
+        || function.as_bytes().first().is_some_and(|byte| *byte > b'7')
+    {
+        return None;
+    }
+    Some(PciBdf {
+        domain: u16::from_str_radix(domain, 16).ok()?,
+        bus: u8::from_str_radix(bus, 16).ok()?,
+        device: u8::from_str_radix(device, 16).ok()?,
+        function: u8::from_str_radix(function, 16).ok()?,
+    })
+}
+
+/// True only when the renderer and KMS card positively identify the same PCI
+/// function. Kept pure so the safety boundary is testable without a GPU.
+pub(crate) fn renderer_matches_drm_card(renderer_pci_bus_id: &str, drm_bus_id: &str) -> bool {
+    matches!(
+        (parse_pci_bdf(renderer_pci_bus_id), parse_pci_bdf(drm_bus_id)),
+        (Some(renderer), Some(drm)) if renderer == drm
+    )
 }
 
 /// `dev_t` is the final fallback only: it identifies one active attachment,
@@ -138,6 +505,7 @@ pub struct CardHandle {
     /// future `cardN` path can be recognised as this physical GPU before a
     /// second libseat open is attempted.
     physical_identity: Option<String>,
+    pci_bus_id: Option<String>,
 }
 
 /// One connected connector as the hotplug path sees it: enough to decide whether it is new, gone, or re-moded, and to modeset it if new.
@@ -231,6 +599,7 @@ impl CardHandle {
             .and_then(|id| id.into_string().ok())
             .filter(|id| valid_config_identity(id));
         let physical_identity = physical_card_identity(card_path);
+        let pci_bus_id = card_pci_bus_id(&card);
         let config_identity = config_identity(drm_bus_id, physical_identity.clone(), device_id);
         Ok(Self {
             card,
@@ -238,6 +607,7 @@ impl CardHandle {
             card_path: card_path.to_path_buf(),
             config_identity,
             physical_identity,
+            pci_bus_id,
         })
     }
 
@@ -281,6 +651,13 @@ impl CardHandle {
 
     pub fn physical_identity(&self) -> Option<&str> {
         self.physical_identity.as_deref()
+    }
+
+    /// PCI bus identity reported by DRM for the exact card fd.  Direct
+    /// dma-buf scanout uses this as a positive same-device proof; a missing or
+    /// non-PCI identity deliberately leaves the established CPU path active.
+    pub fn drm_bus_id(&self) -> Option<String> {
+        self.pci_bus_id.clone()
     }
 
     /// Give up DRM master. Called before a VT switch completes: the incoming session cannot modeset until we have.
@@ -477,7 +854,13 @@ impl CardHandle {
                 return None;
             }
         };
-        match DrmScanout::from_card(card_dup, snapshot.handle, crtc, snapshot.mode) {
+        match DrmScanout::from_card(
+            card_dup,
+            snapshot.handle,
+            crtc,
+            snapshot.mode,
+            self.pci_bus_id.clone(),
+        ) {
             Ok(scanout) => Some(ScanoutBuild {
                 device_id: self.device_id,
                 connector_id: snapshot.connector_id,
@@ -817,6 +1200,8 @@ fn output_index_at(rects: &[(i32, i32, u32, u32)], xi: i32, yi: i32) -> Option<u
 )]
 pub struct DrmScanout {
     card: Card,
+    /// Positive PCI identity captured from the exact session-opened device before this fd is cloned.
+    pci_bus_id: Option<String>,
     crtc: crtc::Handle,
     connector: connector::Handle,
     mode: Mode,
@@ -826,6 +1211,10 @@ pub struct DrmScanout {
     front: usize,
     /// True between requesting a page flip and draining its completion; guards against queuing a second flip before the first retires (kernel rejects with `EBUSY`).
     flip_pending: bool,
+    /// Monotonic instant at which the currently pending page flip was queued.
+    /// Diagnostic only: completion clears it and logs only anomalously slow
+    /// retirements, keeping the normal 144 Hz path silent.
+    flip_queued_at: Option<std::time::Instant>,
     /// Whether the page-flip path is in use; latched `false` if a flip fails with a "not supported" errno, falling back to `dirty_framebuffer/set_crtc`.
     use_pageflip: bool,
     width: u32,
@@ -935,7 +1324,8 @@ impl DrmScanout {
             .or_else(|| res.crtcs().first().copied())
             .ok_or("no crtc available for connector")?;
 
-        Self::from_card(card, connector, crtc, mode)
+        let pci_bus_id = card_pci_bus_id(&card);
+        Self::from_card(card, connector, crtc, mode, pci_bus_id)
     }
 
     /// Allocate framebuffers, modeset `connector` on `crtc` at `mode`, and set up the hardware
@@ -947,6 +1337,7 @@ impl DrmScanout {
         connector: connector::Handle,
         crtc: crtc::Handle,
         mode: Mode,
+        pci_bus_id: Option<String>,
     ) -> Result<Self, String> {
         let (mw, mh) = mode.size();
         let (width, height) = (u32::from(mw), u32::from(mh));
@@ -1009,6 +1400,7 @@ impl DrmScanout {
 
         Ok(Self {
             card,
+            pci_bus_id,
             crtc,
             connector,
             mode,
@@ -1016,6 +1408,7 @@ impl DrmScanout {
             fbs: [fb0, fb1],
             front: 0,
             flip_pending: false,
+            flip_queued_at: None,
             use_pageflip: true,
             width,
             height,
@@ -1090,6 +1483,32 @@ impl DrmScanout {
         (self.width, self.height)
     }
 
+    /// PCI bus identity of the KMS device which owns this output.
+    pub fn drm_bus_id(&self) -> Option<String> {
+        self.pci_bus_id.clone()
+    }
+
+    /// Direct presentation currently relies on the hardware cursor plane;
+    /// otherwise cursor motion would require modifying the compositor image.
+    pub fn hardware_cursor_active(&self) -> bool {
+        self.hw_cursor_active
+    }
+
+    /// Whether event-driven flips are still available. Direct scanout does
+    /// not activate on the legacy `dirtyfb`/`set_crtc` fallback because a second
+    /// renderer-owned buffer could otherwise be reused without a retirement
+    /// event.
+    pub fn event_pageflips_available(&self) -> bool {
+        self.use_pageflip
+    }
+
+    /// Allocate the two off-screen GBM targets used by the direct presenter.
+    /// The current dumb-buffer CRTC remains untouched until a completed frame
+    /// is explicitly submitted.
+    fn allocate_gbm_scanout_buffers(&self) -> Result<GbmScanoutBuffers, String> {
+        GbmScanoutBuffers::new(self.card.try_clone()?, self.width, self.height)
+    }
+
     /// The crtc this scanout drives, so hotplug can pick one still free.
     pub fn crtc(&self) -> crtc::Handle {
         self.crtc
@@ -1101,6 +1520,7 @@ impl DrmScanout {
         self.invalidate_xrgb_history();
         // The in-flight flip died with the master lock; clearing this first lets the next frame present at all.
         self.flip_pending = false;
+        self.flip_queued_at = None;
         // Re-binding the mode is what the kernel needs to scan out again.
         if let Some(fb) = self.fb_at(self.front) {
             if let Err(e) = self.card.set_crtc(
@@ -1164,6 +1584,10 @@ impl DrmScanout {
 
     /// Present one frame, draining this scanout's own page-flip completions first — the single-output
     /// entry point. `fill` writes the back buffer in XRGB8888 given the mapped slice and row pitch; `cursor` is consulted only when the hardware cursor is unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error `fill` reports; the frame is then not presented.
     pub fn present_into<F, E>(&mut self, cursor: Option<(f64, f64)>, fill: F) -> Result<bool, E>
     where
         F: FnOnce(&mut [u8], usize) -> Result<(), E>,
@@ -1446,7 +1870,13 @@ impl DrmScanout {
         {
             Ok(()) => {
                 self.flip_pending = true;
+                self.flip_queued_at = Some(std::time::Instant::now());
                 self.front = idx;
+                tracing::trace!(
+                    crtc = ?self.crtc,
+                    buffer = idx,
+                    "FRAME-LIFECYCLE event=drm-flip-queued"
+                );
                 true
             }
             Err(e) => {
@@ -1503,6 +1933,7 @@ impl DrmScanout {
         if let Ok(events) = self.card.receive_events() {
             for ev in events {
                 if let Event::PageFlip(_) = ev {
+                    self.log_flip_completion();
                     self.flip_pending = false;
                 }
             }
@@ -1523,10 +1954,128 @@ impl DrmScanout {
         done
     }
 
+    /// Wait for the page-flip event for this CRTC without spinning.
+    ///
+    /// The card fd is nonblocking for ordinary drains; `poll(2)` supplies the
+    /// blocking boundary here. Events for sibling CRTCs are returned as well
+    /// because every dup of a card shares one DRM event stream.
+    pub fn wait_flip_completions(
+        &mut self,
+        timeout: Duration,
+    ) -> (DirectRetirement, Vec<crtc::Handle>) {
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .unwrap_or_else(Instant::now);
+        loop {
+            let completed = self.poll_flip_completions();
+            let now = Instant::now();
+            if let Some(retirement) = retirement_after_poll(self.crtc, &completed, now >= deadline)
+            {
+                return (retirement, completed);
+            }
+            let remaining = deadline.saturating_duration_since(now);
+            let timeout_ms = i32::try_from(remaining.as_millis())
+                .unwrap_or(i32::MAX)
+                .max(1);
+            let mut fd = libc::pollfd {
+                fd: self.card.as_fd().as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `fd` points to one valid pollfd for the duration of the
+            // call and the borrowed card descriptor outlives it.
+            let ready = unsafe { libc::poll(&raw mut fd, 1, timeout_ms) };
+            if ready == 0 {
+                return (DirectRetirement::TimedOut, completed);
+            }
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                tracing::warn!(%error, "DRM page-flip retirement poll failed");
+                return (DirectRetirement::TimedOut, completed);
+            }
+        }
+    }
+
     /// Clear `flip_pending` iff `crtc` is this scanout's crtc.
     pub fn mark_flip_complete(&mut self, crtc: crtc::Handle) {
         if crtc == self.crtc {
+            self.log_flip_completion();
             self.flip_pending = false;
+        }
+    }
+
+    fn log_flip_completion(&mut self) {
+        let Some(queued_at) = self.flip_queued_at.take() else {
+            return;
+        };
+        let elapsed = queued_at.elapsed();
+        if elapsed >= std::time::Duration::from_millis(100) {
+            eprintln!(
+                "FRAME-LIFECYCLE event=drm-flip-completed crtc={:?} elapsed_us={}",
+                self.crtc,
+                elapsed.as_micros(),
+            );
+        }
+    }
+
+    /// Queue one already-completed imported target. The direct state advances
+    /// only after the kernel accepted the flip.
+    pub fn submit_direct_target(
+        &mut self,
+        targets: &mut DirectScanoutTargets,
+        index: usize,
+    ) -> DirectSubmit {
+        if !self.use_pageflip || self.flip_pending || targets.state.render_slot() != Some(index) {
+            return DirectSubmit::Busy;
+        }
+        let Some(framebuffer) = targets.framebuffer(index) else {
+            return DirectSubmit::Failed(format!(
+                "direct scanout slot {index} has no KMS framebuffer"
+            ));
+        };
+        match self
+            .card
+            .page_flip(self.crtc, framebuffer, PageFlipFlags::EVENT, None)
+        {
+            Ok(()) => {
+                self.flip_pending = true;
+                if targets.state.submit(index) {
+                    DirectSubmit::Queued
+                } else {
+                    self.flip_pending = false;
+                    DirectSubmit::Failed(format!(
+                        "direct scanout slot {index} lost ownership before submit"
+                    ))
+                }
+            }
+            Err(error) => {
+                let errno = error.raw_os_error().unwrap_or_default();
+                if errno == libc::EBUSY || errno == libc::EAGAIN {
+                    tracing::trace!("DRM direct scanout page_flip busy; dropping frame");
+                    DirectSubmit::Busy
+                } else {
+                    tracing::warn!(%error, errno, "DRM direct scanout page_flip failed; retaining CPU fallback");
+                    DirectSubmit::Failed(format!(
+                        "DRM direct scanout page flip failed (errno {errno}): {error}"
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Retire the imported target for this output after its page-flip event.
+    pub fn mark_direct_flip_complete(
+        &mut self,
+        targets: &mut DirectScanoutTargets,
+        crtc: crtc::Handle,
+    ) {
+        if crtc == self.crtc {
+            self.log_flip_completion();
+            self.flip_pending = false;
+            let _ = targets.state.complete();
         }
     }
 
@@ -1542,6 +2091,15 @@ impl DrmScanout {
             &[self.connector],
             Some(self.mode),
         );
+    }
+
+    /// Rebind the established dumb-buffer front before imported GBM framebuffer objects are
+    /// released. KMS retains its own framebuffer reference after a successful flip, so dropping
+    /// userspace BO/FB owners first can leave the CRTC scanning an object we just destroyed.
+    pub fn restore_legacy_front(&mut self) {
+        self.flip_pending = false;
+        self.force_flush_via_set_crtc();
+        self.invalidate_xrgb_history();
     }
 
     /// Power the display for idle/lock blanking, via the legacy DPMS property (`0 = On`, `3 = Off`
@@ -1599,6 +2157,20 @@ impl DrmScanout {
                 }
                 Ok(_) => {}
                 Err(e) => tracing::debug!("DRM scanout: get_property failed: {e}"),
+            }
+        }
+    }
+}
+
+impl Drop for DrmScanout {
+    fn drop(&mut self) {
+        // Framebuffer IDs are kernel objects independent of the dumb-buffer
+        // handles.  Explicit teardown matters for hotplug and rapid developer
+        // compositor replacement; otherwise each cycle leaks two IDs until
+        // the DRM fd finally closes.
+        for fb in self.fbs {
+            if let Err(error) = self.card.destroy_framebuffer(fb) {
+                tracing::debug!(?fb, %error, "failed to destroy DRM framebuffer during teardown");
             }
         }
     }
@@ -1946,6 +2518,168 @@ mod tests {
         // one used by both paths before looking in `DrmDispatchState::cards`.
         let dev_t: libc::dev_t = 0x10203;
         assert_eq!(device_id_from_dev_t(dev_t), 0x10203);
+    }
+
+    #[test]
+    fn pci_bdf_parser_accepts_vulkan_and_drm_forms() {
+        let expected = PciBdf {
+            domain: 0,
+            bus: 3,
+            device: 0,
+            function: 1,
+        };
+        assert_eq!(parse_pci_bdf("0000:03:00.1"), Some(expected));
+        assert_eq!(parse_pci_bdf("pci:0000:03:00.1"), Some(expected));
+        assert_eq!(parse_pci_bdf("PCI:0000:03:00.1"), None);
+    }
+
+    #[test]
+    fn direct_scanout_requires_the_same_pci_function() {
+        assert!(renderer_matches_drm_card(
+            "0000:03:00.0",
+            "pci:0000:03:00.0"
+        ));
+        assert!(!renderer_matches_drm_card(
+            "0000:03:00.0",
+            "pci:0000:04:00.0"
+        ));
+        assert!(!renderer_matches_drm_card(
+            "0000:03:00.0",
+            "pci:0000:03:00.1"
+        ));
+    }
+
+    #[test]
+    fn direct_scanout_fails_closed_for_missing_or_malformed_identity() {
+        for identity in [
+            "",
+            "03:00.0",
+            "0000:03:00",
+            "0000:03:00.8",
+            "sysfs-platform-gpu",
+        ] {
+            assert!(!renderer_matches_drm_card(identity, "pci:0000:03:00.0"));
+            assert!(!renderer_matches_drm_card("0000:03:00.0", identity));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sysfs_pci_identity_is_bound_to_the_exact_device_number() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp sysfs");
+        let sys_dev_char = root.path().join("dev/char");
+        let pci_device = root.path().join("devices/0000:66:00.0");
+        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
+        std::fs::create_dir_all(&pci_device).expect("pci device");
+
+        let dev = smithay::reexports::rustix::fs::makedev(226, 1);
+        let node = sys_dev_char.join("226:1");
+        std::fs::create_dir(&node).expect("char node");
+        symlink(&pci_device, node.join("device")).expect("device link");
+
+        assert_eq!(
+            sysfs_pci_bus_id_at(&sys_dev_char, dev).as_deref(),
+            Some("pci:0000:66:00.0")
+        );
+        assert_eq!(
+            sysfs_pci_bus_id_at(
+                &sys_dev_char,
+                smithay::reexports::rustix::fs::makedev(226, 0)
+            ),
+            None,
+            "another card's dev_t must not inherit this identity"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sysfs_pci_identity_rejects_non_pci_and_malformed_devices() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().expect("temp sysfs");
+        let sys_dev_char = root.path().join("dev/char");
+        std::fs::create_dir_all(&sys_dev_char).expect("dev char root");
+
+        for (minor, component) in [(1, "platform-gpu"), (2, "0000:66:00.8")] {
+            let target = root.path().join("devices").join(component);
+            let node = sys_dev_char.join(format!("226:{minor}"));
+            std::fs::create_dir_all(&target).expect("device target");
+            std::fs::create_dir(&node).expect("char node");
+            symlink(&target, node.join("device")).expect("device link");
+            assert_eq!(
+                sysfs_pci_bus_id_at(
+                    &sys_dev_char,
+                    smithay::reexports::rustix::fs::makedev(226, minor)
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn direct_scanout_never_renders_front_or_flip_pending_slots() {
+        let mut state = DirectScanoutState::new(0);
+        assert_eq!(state.render_slot(), Some(1));
+        assert!(state.submit(1));
+        assert_eq!(state.render_slot(), None, "both slots are owned by KMS");
+        assert!(
+            !state.submit(0),
+            "front cannot be submitted as fresh output"
+        );
+        assert!(!state.submit(1), "pending slot cannot be submitted twice");
+
+        assert!(state.complete());
+        assert_eq!(state.render_slot(), Some(0));
+        assert_eq!(state.front, 1);
+    }
+
+    #[test]
+    fn direct_scanout_renderer_or_pageflip_failure_keeps_back_slot_available() {
+        let state = DirectScanoutState::new(0);
+        let slot = state.render_slot().expect("initial back slot");
+
+        // Renderer failure performs no transition and therefore cannot expose
+        // the unfinished target. A failed page_flip likewise never calls
+        // `submit`, so the same slot remains available for a later frame.
+        assert_eq!(state.render_slot(), Some(slot));
+        assert_eq!(state.pending, None);
+        assert_eq!(state.front, 0);
+
+        // A page-flip failure does not call `submit`, so it is exactly the
+        // same no-transition state as a renderer failure.
+        assert_eq!(state.render_slot(), Some(slot));
+        assert_eq!(state.front, 0);
+    }
+
+    #[test]
+    fn direct_scanout_completion_alternates_two_slots() {
+        let mut state = DirectScanoutState::new(0);
+        for expected in [1, 0, 1, 0] {
+            assert_eq!(state.render_slot(), Some(expected));
+            assert!(state.submit(expected));
+            assert!(state.complete());
+            assert_eq!(state.front, expected);
+        }
+        assert!(!state.complete(), "duplicate completion is ignored");
+    }
+
+    #[test]
+    fn direct_retirement_waits_for_the_exact_crtc() {
+        let awaited = crtc::Handle::from(std::num::NonZeroU32::new(7).unwrap());
+        let sibling = crtc::Handle::from(std::num::NonZeroU32::new(9).unwrap());
+
+        assert_eq!(retirement_after_poll(awaited, &[], false), None);
+        assert_eq!(retirement_after_poll(awaited, &[sibling], false), None);
+        assert_eq!(
+            retirement_after_poll(awaited, &[sibling, awaited], false),
+            Some(DirectRetirement::Complete)
+        );
+        assert_eq!(
+            retirement_after_poll(awaited, &[sibling], true),
+            Some(DirectRetirement::TimedOut)
+        );
     }
 
     #[test]

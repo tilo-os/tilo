@@ -19,6 +19,13 @@
 # (pam_unix for auth/account/password, and pam_systemd/limits/keyinit for
 # the session), which keeps the always-present, VM-testable password login
 # working and registers the started session with logind.
+#
+# Tilo stores an existing identity's private signing share in the user's
+# freedesktop Secret Service.  Capture the successful password and start /
+# unlock gnome-keyring in the PAM session exactly as GDM does.  Without these
+# two hooks a direct greetd login authenticates successfully but the desktop's
+# first identity lookup receives ENOKEY and falsely presents recovery chrome.
+# The Tilo image installs gnome-keyring-pam and checks that contract below.
 # systemd-homed: per-user encrypted home (LUKS-backed), unlocked at login and
 # locked at logout/suspend. For a homed user pam_systemd_home authenticates +
 # activates the home (sufficient = short-circuit success); for a traditional
@@ -26,6 +33,7 @@
 # no-op for the default account. The leading "-" tolerates the module's absence.
 -auth      sufficient   pam_fprintd.so
 -auth      sufficient   pam_systemd_home.so
+auth       optional     pam_gnome_keyring.so
 auth       substack     password-auth
 
 -account   sufficient   pam_systemd_home.so
@@ -36,3 +44,4 @@ password   substack     password-auth
 
 -session   optional     pam_systemd_home.so
 session    include      password-auth
+session    optional     pam_gnome_keyring.so auto_start
