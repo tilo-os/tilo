@@ -36,7 +36,52 @@ Files outside `src/resource_limits*` changed by this patch (keep exact):
   single change chunks by loading them and expect `MissingDeps`; at `error`
   this emitted about 68,000 log lines per two-minute native host session.
   The error is still returned unchanged.
-- Lane additions are listed below as they land.
+
+### Semantic parity with the qOS 0.8 patch
+
+- Populated Tables: `src/op_set2/types.rs` maps `Action::MakeTable` to
+  `ObjType::Table`; `src/transaction/inner.rs` admits map-key scalar and
+  object writes to Table parents; `src/op_set2/change/batch.rs` imports
+  Table-parent operations through the map walker; `src/automerge.rs` and
+  `src/iter/doc.rs` treat Table as a map in whole-document iteration and the
+  string-to-text conversion. Without these, 0.12 loaded 0.8 populated Tables
+  as empty and panicked applying their changes.
+- Wrapping (non-panicking) counter arithmetic: `src/value.rs`
+  (`Counter::increment`), `src/op_set2/op.rs`, `src/op_set2/op_set.rs`,
+  `src/op_set2/op_set/visible.rs`, `src/iter/{list_range,map_range}.rs`,
+  `src/transaction/inner.rs`, and the two patch-log counter deltas in
+  `src/op_set2/change/batch.rs` (`wrapping_sub`).
+- `src/iter/list_range.rs`: `ListRangeItem::is_mark()`.
+- `src/value.rs`: `ScalarValue` Debug goes through a crate-private
+  `ScalarDebug`, byte-identical to the derived output, so
+  `NativeScalar::write_legacy_debug` streams it without allocating.
+- `src/exid.rs`: crate-private `BorrowedExId`; `ExId::to_bytes` uses it
+  (bytes unchanged).
+
+### Checked apply (`src/op_set2/change/batch.rs`, `batch/native_validation.rs`)
+
+- `native_validation.rs` (new): the non-mutating pre-validator used by
+  `apply_checked_bounded`, `apply_incoming_checked` and `reconstruct`.
+- `batch.rs`: `mod native_validation`; internal consistency panics
+  (missing object index, unconsumed insertion anchor, leftover conflict
+  marker, unpositioned op, `import_ops` actor lookup, op-order debug
+  assertion) return `AutomergeError::Fail`; a pre-mutation `admissible`
+  check refuses non-contiguous per-actor sequences, unknown actors not
+  introduced at seq 1, and authors after seq 1, restoring the queue; the
+  text patch path no longer panics ("exposed value must record the value it
+  replaces") on two concurrent puts to one text element followed by a
+  delete of only the lower one (valid history).
+
+### Allocation-free dimension hooks (lane L1, read-only)
+
+`src/automerge.rs`, `src/autocommit.rs` (a trailing `impl` block),
+`src/change.rs` (`native_pred_count`),
+`src/storage/change/change_op_columns.rs`, `src/change_graph.rs` and
+`src/change_graph/native_dims.rs`, `src/change_queue.rs` (`has_hash`),
+`src/marks.rs`, `src/op_set2/op_set/{native_dims,mark_index}.rs`,
+`src/op_set2/types.rs`, `src/transaction/inner.rs` (`mod native_heap`) and
+`src/transaction/inner/native_heap.rs`: crate-private accessors that read
+capacities and lengths for `resource_limits::dims`. No behaviour change.
 
 ### Load-path panic hardening (lane L6)
 
