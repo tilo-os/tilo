@@ -1437,7 +1437,7 @@ jobs:
               qemu_packages='qemu-efi-aarch64 qemu-system-arm'
             fi
             sudo -n apt-get install -y --no-install-recommends \
-              binutils btrfs-progs dosfstools fuse-overlayfs openssh-client podman \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs openssh-client podman \
               jq qemu-system-gui qemu-utils skopeo slirp4netns socat sshpass sudo systemd \
               uidmap util-linux $qemu_packages
           elif command -v dnf >/dev/null; then
@@ -1446,7 +1446,7 @@ jobs:
             else
               qemu_packages='edk2-aarch64 qemu-device-display-virtio-gpu-pci-gl qemu-system-aarch64-core'
             fi
-            sudo -n dnf install -y binutils btrfs-progs dosfstools fuse-overlayfs \
+            sudo -n dnf install -y binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs \
               jq openssh-clients podman qemu-img qemu-ui-egl-headless qemu-ui-opengl skopeo slirp4netns socat sshpass \
               sudo systemd util-linux $qemu_packages
           else
@@ -1455,6 +1455,15 @@ jobs:
           fi
           qemu_binary="qemu-system-${{ matrix.arch }}"
           command -v jq podman qemu-img "$qemu_binary" skopeo sshpass socat systemd-repart >/dev/null
+
+          # Kata runners' nested default store commits every Podman layer
+          # through fuse-overlayfs, about ten minutes per dev image RUN FROM
+          # this image. Their loop devices were proven above, so give Podman a
+          # native overlay store for the import, the dev image and the install.
+          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
+            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
+            export CONTAINERS_STORAGE_CONF
+          fi
 
           # Select the Buildx digest's named descriptor and pass its bare OCI
           # reference to Skopeo, including for the independent rebuild.
