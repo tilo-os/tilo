@@ -9497,6 +9497,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-test-env",
  "tracing",
  "vello",
  "wayland-client",
