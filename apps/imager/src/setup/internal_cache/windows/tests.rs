@@ -54,6 +54,7 @@ fn cache_suffix_must_still_fit_the_verifier_path_boundary() {
 #[cfg(windows)]
 mod native {
     use super::super::{native::fixture_acquire, *};
+    use crate::setup::internal_cache::layout;
     use crate::{
         release::InternalRelease,
         setup::{
@@ -188,9 +189,9 @@ mod native {
                 });
                 let mut bytes = fs::read(&old).unwrap();
                 if case == 1 {
-                    bytes[147..155].copy_from_slice(&3u64.to_le_bytes());
+                    bytes[layout::GENERATION..layout::EPOCH].copy_from_slice(&3u64.to_le_bytes());
                 } else {
-                    bytes[179] ^= 1;
+                    bytes[layout::DIGEST] ^= 1;
                 }
                 let checksum = Sha256::digest(&bytes[..bytes.len() - 32]);
                 let end = bytes.len();
