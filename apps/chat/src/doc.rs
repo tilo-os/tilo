@@ -398,12 +398,12 @@ impl ChatDoc {
         use tilo_reference::{
             RecordAttachment, Redactions, ResourceRef, SessionLayer, SessionSummary,
         };
-        if Self::channel_exists(doc, "c_feedback") {
+        if Self::channel_exists(doc, tilo_reference::FEEDBACK_CHANNEL) {
             return;
         }
         Self::put_channel(
             doc,
-            "c_feedback",
+            tilo_reference::FEEDBACK_CHANNEL,
             "ws_tilo",
             "cat_tilo_eng",
             "feedback",
@@ -411,7 +411,7 @@ impl ChatDoc {
             ChannelKind::Text,
             2,
         );
-        Self::set_channel_feedback(doc, "c_feedback", true);
+        Self::set_channel_feedback(doc, tilo_reference::FEEDBACK_CHANNEL, true);
         let m = |off_min: i64| NOW - off_min * 60;
         let votes = |users: &[&str]| {
             (
@@ -506,11 +506,11 @@ impl ChatDoc {
             ),
         ];
         for (id, message, status) in reports {
-            Self::push_message_with_id(doc, "c_feedback", id, message);
+            Self::push_message_with_id(doc, tilo_reference::FEEDBACK_CHANNEL, id, message);
             if let Some(status) = status {
                 Self::set_report_status(
                     doc,
-                    "c_feedback",
+                    tilo_reference::FEEDBACK_CHANNEL,
                     id,
                     &ReportState {
                         status,
@@ -522,7 +522,7 @@ impl ChatDoc {
         }
         Self::push_message_with_id(
             doc,
-            "c_feedback",
+            tilo_reference::FEEDBACK_CHANNEL,
             "m_fb_keys_r1",
             NewMessage {
                 author: "u_iris".into(),

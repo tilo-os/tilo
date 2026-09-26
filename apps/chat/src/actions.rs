@@ -1797,6 +1797,10 @@ fn build_channel_resource(
         },
     ));
 
+    // A remark composed elsewhere — something said about a resource, with the
+    // recording of what happened — posted as an ordinary message here.
+    channel = channel.with_action(remark_spec(&ch.id, &ctx.me));
+
     // Rename — a prompted action carrying the new name.
     channel = channel.with_action(ActionSpec::prompted(
         "rename",
@@ -2283,6 +2287,97 @@ fn build_reference_resource(
             parent: parent.cloned(),
         },
     ))
+}
+
+/// Post a remark another app composed: its text, the address of what it is
+/// about, and optionally a record attached by reference. The fields a
+/// [`tilo_reference::Remark`] carries, as typed arguments, so the shell's
+/// composer, an agent and tilo-control post one the same way.
+fn remark_spec(channel: &str, me: &str) -> ActionSpec {
+    let channel = channel.to_string();
+    let me = me.to_string();
+    ActionSpec::typed(
+        "remark",
+        "Post a remark",
+        "the times contradict the prose",
+        ExecutionLocus::ClientLocal,
+        vec![
+            ActionParam::required("text", ParamType::Text, "What is being said"),
+            ActionParam::required(
+                "reference",
+                ParamType::Object,
+                "What it is about: a tilo-reference ResourceRef {kind, id, label, span}",
+            ),
+            ActionParam::optional(
+                "attachment",
+                ParamType::Object,
+                "A record shown with it: a tilo-reference RecordAttachment",
+            ),
+            ActionParam::optional(
+                "mentions",
+                ParamType::Array,
+                "Who the text pings: tilo-reference MentionRefs",
+            ),
+        ],
+        move |args| match remark_from_args(args) {
+            Ok((text, reference, attachment, mentions)) => encode(&ChatAction::SendMessage {
+                channel: channel.clone(),
+                id: format!("m_{}", uuid::Uuid::new_v4().simple()),
+                author: me.clone(),
+                ts: unix_now_i64(),
+                text,
+                parent: None,
+                attachment: attachment.map(|record| Attachment::Record(Box::new(record))),
+                mentions,
+                reference: Some(reference),
+            }),
+            Err(reason) => EncodedAction {
+                type_id: tilo_actions::resource::INVALID_ARGUMENTS_TYPE.into(),
+                payload: reason.into_bytes(),
+            },
+        },
+    )
+    .requiring(PermissionRequirement::Comment)
+}
+
+type RemarkParts = (
+    String,
+    tilo_reference::ResourceRef,
+    Option<tilo_reference::RecordAttachment>,
+    Vec<crate::mention::Mention>,
+);
+
+fn remark_from_args(args: &tilo_actions::ActionArgs) -> Result<RemarkParts, String> {
+    let json = args.to_json();
+    let text = args.text("text").unwrap_or_default().to_string();
+    let reference: tilo_reference::ResourceRef = json
+        .get("reference")
+        .cloned()
+        .ok_or("a remark says what it is about")
+        .and_then(|value| {
+            serde_json::from_value(value).map_err(|_| "the reference is not a ResourceRef")
+        })?;
+    let attachment = match json.get("attachment") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(value) => Some(
+            serde_json::from_value::<tilo_reference::RecordAttachment>(value.clone())
+                .map_err(|_| "the attachment is not a RecordAttachment".to_string())?,
+        ),
+    };
+    let mentions = match json.get("mentions") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(value) => serde_json::from_value::<Vec<tilo_reference::MentionRef>>(value.clone())
+            .map_err(|_| "the mentions are not MentionRefs".to_string())?
+            .into_iter()
+            .map(|m| crate::mention::Mention {
+                user: m.user,
+                start: m.start,
+                len: m.len,
+                is_agent: m.is_agent,
+            })
+            .collect(),
+    };
+    Ok((text, reference, attachment, mentions))
 }
 
 /// The status keys `set-status` accepts, in menu order.
@@ -3607,6 +3702,46 @@ mod feedback_tests {
         bad.record = "not-a-record".into();
         post_record(&mut doc, "m_bad", bad);
         assert!(ChatDoc::list_messages(&doc, "c_fb").is_empty());
+    }
+
+    /// The composer's typed path: the same fields a Remark carries.
+    #[test]
+    fn a_remark_posted_through_the_channel_action_keeps_its_address_and_record() {
+        let mut doc = feedback_doc();
+        let channel = resolved(&doc, model::ME, "chat.channel:c_fb");
+        let spec = action(&channel, "remark").expect("a channel takes remarks");
+        assert_eq!(spec.contract.permission, PermissionRequirement::Comment);
+        let mut args = serde_json::Map::new();
+        args.insert("text".into(), "Send does nothing".into());
+        args.insert(
+            "reference".into(),
+            serde_json::to_value(ResourceRef::whole("mail.draft", "mail.draft:d_42", "Draft"))
+                .unwrap(),
+        );
+        args.insert(
+            "attachment".into(),
+            serde_json::to_value(recording()).unwrap(),
+        );
+        dispatch_encoded(&mut doc, built(spec, &args));
+        let m = ChatDoc::list_messages(&doc, "c_fb").remove(0);
+        assert_eq!(m.author, model::ME);
+        assert_eq!(m.reference.unwrap().id, "mail.draft:d_42");
+        assert_eq!(
+            m.attachment,
+            Some(Attachment::Record(Box::new(recording())))
+        );
+
+        args.insert("reference".into(), "not an address".into());
+        assert!(spec.build_json(&args).is_err(), "a reference is an object");
+        args.insert(
+            "reference".into(),
+            serde_json::json!({ "label": "no address" }),
+        );
+        let refused = built(spec, &args);
+        assert_eq!(
+            refused.type_id,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
     }
 
     #[test]

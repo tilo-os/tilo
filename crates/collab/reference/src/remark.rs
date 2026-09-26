@@ -40,6 +40,13 @@ pub const CHAT_ACTION_TYPE: &str = "chat.action";
 /// the fix, resolving the conversation from the room, needs somewhere to ask.
 pub const ROOM_CONVERSATION: &str = "c_general";
 
+/// The feedback channel of a room that has one — the Tilo Community room's
+/// `#feedback`, where public reports go. Chat's channel ids are chat's own, so
+/// like [`ROOM_CONVERSATION`] this is an agreement a writer outside chat can
+/// address before chat runs in that room: a room that offers public feedback
+/// creates its feedback channel under this id, marked as a feedback channel.
+pub const FEEDBACK_CHANNEL: &str = "c_feedback";
+
 /// The payload key carrying the resource address; writer and reader must agree
 /// on it, and a chat build adopts it when it grows a chip of its own.
 const REFERENCE_KEY: &str = "reference";

@@ -1362,7 +1362,7 @@ impl ChatApp {
                 self.shot_feedback = true;
                 self.active_ws = "ws_tilo".into();
                 self.context_ws = "ws_tilo".into();
-                self.active_channel = "c_feedback".into();
+                self.active_channel = tilo_reference::FEEDBACK_CHANNEL.into();
                 self.thread_open = None;
                 self.right_flap.snap(false);
                 self.call = CallState::default();
