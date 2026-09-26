@@ -83,9 +83,11 @@ fn import(codec: &dyn FormatProvider, bytes: &[u8], path: Path) -> Replica {
     let mut r = Replica::new(path);
     let writes = change_writes();
     match path {
-        Path::OpByOp => op_by_op(|| codec.import(bytes, &mut r.dm())),
+        Path::OpByOp => {
+            op_by_op(|| codec.import(bytes, &mut r.dm(), &mut tilo_content::ContentInputs::new()))
+        }
         Path::BulkLocalMarks | Path::BulkChangeMarks | Path::BulkFreshHost => {
-            codec.import(bytes, &mut r.dm())
+            codec.import(bytes, &mut r.dm(), &mut tilo_content::ContentInputs::new())
         }
     }
     .unwrap();
@@ -211,13 +213,21 @@ fn exported_formats_import_alike() {
         doc: &source.doc,
         c: &source.c,
     };
-    assert_paths_agree("docx", &DocxCodec, &DocxCodec.export(doc).unwrap());
+    assert_paths_agree(
+        "docx",
+        &DocxCodec,
+        &DocxCodec.export(doc, &tilo_content::NoContent).unwrap(),
+    );
     let doc = DocRef {
         doc: &source.doc,
         c: &source.c,
     };
-    assert_paths_agree("odt", &OdtCodec, &OdtCodec.export(doc).unwrap());
-    let html = render_html(&snap, HtmlOptions::default());
+    assert_paths_agree(
+        "odt",
+        &OdtCodec,
+        &OdtCodec.export(doc, &tilo_content::NoContent).unwrap(),
+    );
+    let html = render_html(&snap, HtmlOptions::default(), &tilo_content::NoContent);
     assert_paths_agree("html", &HtmlCodec, html.as_bytes());
     assert_paths_agree("rtf", &RtfCodec, render_rtf(&snap).as_bytes());
 }
@@ -229,12 +239,20 @@ fn office_features_import_alike() {
         doc: &source.doc,
         c: &source.c,
     };
-    assert_paths_agree("rich docx", &DocxCodec, &DocxCodec.export(doc).unwrap());
+    assert_paths_agree(
+        "rich docx",
+        &DocxCodec,
+        &DocxCodec.export(doc, &tilo_content::NoContent).unwrap(),
+    );
     let doc = DocRef {
         doc: &source.doc,
         c: &source.c,
     };
-    assert_paths_agree("rich odt", &OdtCodec, &OdtCodec.export(doc).unwrap());
+    assert_paths_agree(
+        "rich odt",
+        &OdtCodec,
+        &OdtCodec.export(doc, &tilo_content::NoContent).unwrap(),
+    );
 }
 
 #[test]

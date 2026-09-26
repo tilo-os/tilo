@@ -1,16 +1,17 @@
 name: CI / fast quality
 
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
-# Pull requests and main run this path once per revision.
+# This path runs on every change.
 on:
-  push:
-    branches: ["main"]
+  # Run on every branch before it opens or updates a PR.
+  push: {}
   pull_request:
     branches: ["main"]
   workflow_dispatch:
 
 concurrency:
-  # Keep main and pull-request evidence separate for the same commit.
+  # Push and pull-request checks are distinct required evidence. Include both
+  # event and commit so neither can replace another result.
   group: lint-${{ github.event_name }}-${{ github.sha }}
   cancel-in-progress: false
 

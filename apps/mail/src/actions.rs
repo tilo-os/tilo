@@ -189,7 +189,7 @@ pub struct DraftData {
     pub html_body: Option<String>,
     #[serde(default)]
     pub calendar_ics: Option<String>,
-    /// Portable qdoc attachment references. This is structured metadata, not
+    /// Portable content-addressed attachment references. This is structured metadata, not
     /// a machine-local path, so collaborators can materialize the same bytes.
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,

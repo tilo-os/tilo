@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_content::ContentStore;
 use ui::app::UserEvent;
 use ui::collaboration::PresencePayload;
 use ui::icons::{Icon, draw_icon};
@@ -747,9 +748,11 @@ pub struct TerminalWidget {
     /// every printed cell adopts it so a multi-cell link shares one id.
     /// Survives across `feed` calls so a link spanning PTY reads stays whole.
     current_link_id: u16,
-    /// Content-addressed graphics descriptors. Bytes live in qdoc's shared
-    /// blob substrate; only immutable hashes and cell placement ride Automerge.
+    /// Content-addressed graphics descriptors. Bytes live in `content`; only
+    /// immutable hashes and cell placement ride Automerge.
     images_id: Option<ObjId>,
+    /// Where graphics bytes are stored and read back (verified) by hash.
+    content: ContentStore,
     image_placements: Vec<TerminalImagePlacement>,
     /// Decoded images are deliberately local GPU-side state. The CRDT contains
     /// only immutable content addresses; each peer validates and decodes bytes
@@ -798,6 +801,7 @@ impl TerminalWidget {
         writer: Arc<Mutex<Box<dyn Write + Send>>>,
         master: Arc<Mutex<Box<dyn MasterPty + Send>>>,
         output_rx: Receiver<Vec<u8>>,
+        content: ContentStore,
     ) -> Self {
         let width = 80;
         let height = 24;
@@ -897,6 +901,7 @@ impl TerminalWidget {
             images_id: None,
             image_placements: Vec::new(),
             image_cache: HashMap::new(),
+            content,
             graphics_scanner: GraphicsScanner::default(),
             pane_id: uuid::Uuid::new_v4().to_string(),
             local_session_id: None,
@@ -1734,6 +1739,12 @@ impl TerminalWidget {
         &self.image_placements
     }
 
+    /// The store graphics bytes are kept in.
+    #[cfg(test)]
+    pub(crate) fn content_store(&self) -> &ContentStore {
+        &self.content
+    }
+
     /// Number of grid rows currently visible, from the paint geometry.
     fn current_visible_rows(&self) -> usize {
         (self.grid_rect.height() / self.char_h.max(1.0))
@@ -1947,6 +1958,7 @@ impl TerminalWidget {
             cursor_id,
             links_id,
             images_id,
+            content: &self.content,
             main_line_ids: &mut self.line_ids,
             alt_line_ids: &mut self.alt_line_ids,
             alt_active: &mut self.alt_active,
@@ -4282,7 +4294,7 @@ impl TerminalWidget {
                 if self.image_cache.len() >= MAX_DECODE_CACHE_ENTRIES {
                     self.image_cache.clear();
                 }
-                if let Some(bytes) = qdoc::blobstore::get(&placement.hash)
+                if let Some(bytes) = self.content.read(&placement.hash)
                     && placement.byte_len == u64::try_from(bytes.len()).unwrap_or(u64::MAX)
                     && let Some(image) = decode_for_rendering(&placement, &bytes)
                 {
@@ -5437,6 +5449,8 @@ pub struct TerminalPerformer<'a> {
     /// resolve on every peer, not just the host that parsed the sequence.
     pub links_id: ObjId,
     pub images_id: ObjId,
+    /// Where Kitty graphics payloads are stored; the CRDT keeps only the hash.
+    pub content: &'a ContentStore,
     pub main_line_ids: &'a mut Vec<ObjId>,
     pub alt_line_ids: &'a mut Vec<ObjId>,
     pub alt_active: &'a mut bool,
@@ -5777,11 +5791,15 @@ impl TerminalPerformer<'_> {
         let Some(image) = parse_kitty(payload) else {
             return;
         };
-        if image.mime == "image/png" && qdoc::blobstore::sniff(&image.bytes).mime != "image/png" {
+        if image.mime == "image/png" && tilo_content::sniff(&image.bytes).mime != "image/png" {
             return;
         }
-        let Some(hash) = qdoc::blobstore::put(&image.bytes) else {
-            return;
+        let hash = match self.content.put(&image.bytes) {
+            Ok(hash) => hash,
+            Err(error) => {
+                tracing::warn!(%error, "terminal: couldn't store graphics payload");
+                return;
+            }
         };
         let index = self.state.length(&self.images_id);
         let Ok(placement) = self
@@ -7349,7 +7367,8 @@ impl TerminalWidget {
         let master = std::sync::Arc::new(std::sync::Mutex::new(backend.master));
         let (output_tx, output_rx) = sync_channel(PTY_QUEUE_CHUNKS);
 
-        let mut widget = TerminalWidget::new(writer, master, output_rx).with_local_session();
+        let mut widget = TerminalWidget::new(writer, master, output_rx, ContentStore::for_app())
+            .with_local_session();
         #[cfg(unix)]
         {
             widget.service_lifetime = backend.service_lifetime;
@@ -7558,6 +7577,7 @@ impl TerminalWidget {
             std::sync::Arc::new(std::sync::Mutex::new(writer)),
             std::sync::Arc::new(std::sync::Mutex::new(Box::new(NullMaster))),
             output_rx,
+            ContentStore::memory(),
         ))
     }
 }

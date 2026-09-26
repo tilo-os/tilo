@@ -1414,8 +1414,13 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
             c: &containers,
             ids: &mut ids,
         };
+        // Pasted Markdown references no content this document keeps.
         qdoc_codecs::MarkdownCodec
-            .import(markdown.as_bytes(), &mut dm)
+            .import(
+                markdown.as_bytes(),
+                &mut dm,
+                &mut tilo_content::ContentInputs::new(),
+            )
             .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     }
     let snapshot = qdoc::model::materialize(&scratch, &containers);

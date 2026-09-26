@@ -50,6 +50,7 @@ use ui::doc::{read_bool, read_i64_coerced, read_str, read_text};
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
+use tilo_content::ContentStore;
 use uuid::Uuid;
 
 use crate::model::{
@@ -57,9 +58,9 @@ use crate::model::{
     VoiceMember, Workspace,
 };
 
-/// A qdoc namespace nested in the chat CRDT. It holds portable
-/// content-addressed attachment descriptors; bytes are kept in qdoc's shared
-/// blob store so a message never names a sender-local filesystem path.
+/// Attachments in the chat CRDT are portable content-addressed descriptors;
+/// bytes are kept in the app's content store so a message never names a
+/// sender-local filesystem path.
 /// One sync migration visits at most this many message rows. The app invokes
 /// it once per loaded document, so hostile legacy history cannot tax every
 /// frame forever.
@@ -70,8 +71,8 @@ const LEGACY_MIGRATION_WRITE_BUDGET: usize = 32;
 /// hostile old document contains megabyte-scale path fields.
 const LEGACY_MIGRATION_PATH_BYTES: usize = 256;
 
-/// A deliberately small import ceiling. Media is transferred by qdoc's blob
-/// transport, but accepting an arbitrary local file on the UI event path would
+/// A deliberately small import ceiling. Media bytes live in the content store,
+/// but accepting an arbitrary local file on the UI event path would
 /// still let one click exhaust memory and room bandwidth.
 pub const MAX_ATTACHMENT_BYTES: u64 = 32 * 1024 * 1024;
 
@@ -357,23 +358,18 @@ fn monogram(name: &str) -> String {
 // ---------------------------------------------------------------------------
 
 impl ChatDoc {
-    /// Store and verify bytes in qdoc's shared blobstore. This is deliberately
+    /// Store and verify bytes in `content`. This is deliberately
     /// document-free: callers do it on a bounded worker before `sync` authors
     /// the small hash-only `SendMessage` action.
-    pub fn store_attachment_blob(bytes: &[u8]) -> Option<String> {
+    pub fn store_attachment_blob(content: &ContentStore, bytes: &[u8]) -> Option<String> {
         if u64::try_from(bytes.len()).ok()? > MAX_ATTACHMENT_BYTES {
             return None;
         }
-        let hash = qdoc::blobstore::put(bytes)?;
-        (qdoc::blobstore::get(&hash).as_deref() == Some(bytes)).then_some(hash)
-    }
-
-    /// Resolve attachment bytes by their qdoc content hash. The blob store
-    /// performs a non-blocking shared-transport request on a miss, so callers
-    /// can render a stable loading/unavailable state without filesystem I/O on
-    /// the UI thread.
-    pub fn attachment_blob(hash: &str) -> Option<Vec<u8>> {
-        qdoc::blobstore::get(hash)
+        let hash = content
+            .put(bytes)
+            .inspect_err(|error| eprintln!("chat: couldn't store attachment bytes: {error}"))
+            .ok()?;
+        (content.read(&hash).as_deref() == Some(bytes)).then_some(hash)
     }
 
     /// Upgrade only legacy demo rows, whose content is deterministic and has
@@ -1317,7 +1313,7 @@ impl ChatDoc {
 
     /// Whether a new wire action is safe to add to the durable conversation.
     /// This is intentionally separate from `push_message_with_id`: migration
-    /// code must be able to faithfully retain pre-qdoc legacy descriptors,
+    /// code must be able to faithfully retain path-based legacy descriptors,
     /// while an incoming modern action must not create an ambiguous resource,
     /// hidden channel, dangling thread edge, or unbounded display metadata.
     pub fn accepts_message_action(
@@ -3444,7 +3440,7 @@ mod tests {
 
     #[test]
     fn video_attachment_round_trips_through_the_crdt() {
-        // A video share references a portable qdoc hash (no bytes in the
+        // A video share references a portable content hash (no bytes in the
         // CRDT) and reads back with its resolution + size intact.
         let mut doc = seeded();
         ChatDoc::push_message(
@@ -3484,16 +3480,17 @@ mod tests {
     #[test]
     fn attachment_blobs_are_portable_hashes_not_paths() {
         let bytes = b"shared attachment bytes";
-        let hash = ChatDoc::store_attachment_blob(bytes).expect("small blob accepted");
+        let content = ContentStore::memory();
+        let hash = ChatDoc::store_attachment_blob(&content, bytes).expect("small blob accepted");
         assert_eq!(hash.len(), 64);
         assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
-        assert_eq!(ChatDoc::attachment_blob(&hash), Some(bytes.to_vec()));
+        assert_eq!(content.read(&hash), Some(bytes.to_vec()));
     }
 
     #[test]
     fn attachment_blob_import_fails_closed_at_the_size_limit() {
         let too_large = vec![0; MAX_ATTACHMENT_BYTES as usize + 1];
-        assert!(ChatDoc::store_attachment_blob(&too_large).is_none());
+        assert!(ChatDoc::store_attachment_blob(&ContentStore::memory(), &too_large).is_none());
     }
 
     #[test]

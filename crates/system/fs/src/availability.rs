@@ -324,6 +324,9 @@ pub enum AvailabilityError {
 pub struct AvailabilityRegistry {
     path: PathBuf,
     records: BTreeMap<FileRecordId, RecordAvailability>,
+    /// Inside [`Self::batch`]: mutations are validated and persisted once,
+    /// when the batch ends.
+    deferred: bool,
 }
 
 impl AvailabilityRegistry {
@@ -340,6 +343,7 @@ impl AvailabilityRegistry {
             return Ok(Self {
                 path,
                 records: BTreeMap::new(),
+                deferred: false,
             });
         }
 
@@ -360,7 +364,11 @@ impl AvailabilityRegistry {
             }
         }
         validate_records(&records)?;
-        Ok(Self { path, records })
+        Ok(Self {
+            path,
+            records,
+            deferred: false,
+        })
     }
 
     pub fn get(&self, record_id: FileRecordId) -> Option<&RecordAvailability> {
@@ -482,6 +490,28 @@ impl AvailabilityRegistry {
         Ok(true)
     }
 
+    /// Runs `apply`'s mutations and commits them with one validation and one
+    /// durable write of the registry, instead of one of each per mutation:
+    /// receipts for a thousand records cost one write, not a thousand
+    /// rewrites of the whole registry. When validation or persistence of the
+    /// batch fails, memory and disk are left exactly as before it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resulting registry is invalid or cannot be
+    /// persisted.
+    pub fn batch<T>(&mut self, apply: impl FnOnce(&mut Self) -> T) -> Result<T, AvailabilityError> {
+        let before = self.records.clone();
+        self.deferred = true;
+        let value = apply(self);
+        self.deferred = false;
+        if let Err(error) = validate_records(&self.records).and_then(|()| self.persist()) {
+            self.records = before;
+            return Err(error);
+        }
+        Ok(value)
+    }
+
     /// Insert or replace a record and durably commit the complete registry.
     /// Invalid ancestry leaves both memory and disk unchanged.
     ///
@@ -492,6 +522,9 @@ impl AvailabilityRegistry {
     pub fn put(&mut self, record: RecordAvailability) -> Result<(), AvailabilityError> {
         let id = record.record_id;
         let previous = self.records.insert(id, record);
+        if self.deferred {
+            return Ok(());
+        }
         if let Err(error) = validate_records(&self.records) {
             if let Some(previous) = previous {
                 self.records.insert(id, previous);

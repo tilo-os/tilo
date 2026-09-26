@@ -14,12 +14,16 @@
 //!
 //! # Where state lives
 //!
-//! The CRDT holds the file's path and the edits in force ([`doc`]); it never
-//! holds the pixels. The decode and the render live in the app instance. That
-//! division is the same one `crates/doc/qdoc/src/blobstore.rs` enforces for a
-//! document's images, and for the same reason — an automerge change big enough
-//! to carry a photograph is dropped by the sync transport and freezes every
-//! peer's replica permanently.
+//! A photograph is its original plus what was done to it. Importing puts the
+//! original's bytes in the app's content store (`tilo-content`, a handle the
+//! app is given at startup) and records an `ImportPhoto` action naming them by
+//! hash; every edit after that is a `SetEdits` action replayed onto that
+//! original. The CRDT holds the hash, small metadata and the edits in force
+//! ([`doc`]); it never holds the pixels, and a rendered edit (Copy, Save, the
+//! export operation) is an output that never replaces the original. The decode
+//! and the render live in the app instance, because an automerge change big
+//! enough to carry a photograph is dropped by the sync transport and freezes
+//! every peer's replica permanently.
 //!
 //! # The shape of the surface
 //!
@@ -85,15 +89,20 @@ pub use app::PhotosApp;
 pub use model::{Edits, LocationProvenance, OpenImage, PhotoLocation, Rect01};
 
 /// Import a Camera portable-media reference into Photos without ever trusting
-/// a machine-local path.  The content hash is verified in qdoc first; missing
-/// bytes are an actionable refusal rather than a phantom library entry.
+/// a machine-local path.  The content is read, verified against its hash, from
+/// `store` first; missing bytes are an actionable refusal rather than a
+/// phantom library entry.
 ///
 /// # Errors
 ///
 /// Returns an error when the Camera identity is malformed, the verified bytes
 /// have not arrived on this device, exceed the import budget, fail integrity
 /// validation, or are not a safely decodable still image.
-pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryPhoto, String> {
+pub fn camera_import_photo(
+    media_id: &str,
+    name: &str,
+    store: &tilo_content::ContentStore,
+) -> Result<model::LibraryPhoto, String> {
     let hash = media_id
         .strip_prefix("media:blake3:")
         .filter(|hash| {
@@ -103,11 +112,12 @@ pub fn camera_import_photo(media_id: &str, name: &str) -> Result<model::LibraryP
                     .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
         .ok_or_else(|| "invalid Camera media identity".to_owned())?;
-    let bytes = qdoc::blobstore::get(hash).ok_or_else(|| {
+    // The store verifies what it reads against the hash; content that fails
+    // that check reads as absent.
+    let bytes = store.read(hash).ok_or_else(|| {
         "Camera media bytes are not available on this device; retry after they sync".to_owned()
     })?;
-    if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 || !qdoc::blobstore::verify(hash, &bytes)
-    {
+    if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
         return Err("Camera media bytes failed integrity validation".to_owned());
     }
     let image = pixels::decode(&bytes).ok_or_else(|| {
@@ -137,8 +147,9 @@ pub fn import_camera_media(
     doc: &mut automerge::AutoCommit,
     media_id: &str,
     name: &str,
+    store: &tilo_content::ContentStore,
 ) -> Result<String, String> {
-    let photo = camera_import_photo(media_id, name)?;
+    let photo = camera_import_photo(media_id, name, store)?;
     let id = photo.id.clone();
     let mut library = doc::PhotosDoc::library(doc);
     library.add_photo(photo);
@@ -155,7 +166,9 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     strings::install();
-    Box::new(PhotosApp::new_persistent())
+    Box::new(PhotosApp::new_persistent(
+        tilo_content::ContentStore::for_app(),
+    ))
 }
 
 /// The ordered `--shots` scenarios, named so the offscreen renderer can walk
@@ -564,6 +577,7 @@ mod framework_history_tests;
 #[cfg(test)]
 mod camera_import_tests {
     use automerge::AutoCommit;
+    use tilo_content::ContentStore;
 
     use super::{camera_import_photo, import_camera_media, pixels, shots_pattern_variant};
     use crate::doc::PhotosDoc;
@@ -572,14 +586,15 @@ mod camera_import_tests {
     fn camera_import_verifies_bytes_and_selects_one_content_addressed_photo() {
         let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
         let bytes = pixels::encode_png(&rgba).expect("fixture png");
-        let hash = qdoc::blobstore::put(&bytes).expect("fixture blob");
+        let store = ContentStore::memory();
+        let hash = store.put(&bytes).expect("fixture content");
         let media_id = format!("media:blake3:{hash}");
         let mut doc = AutoCommit::new();
 
-        let id =
-            import_camera_media(&mut doc, &media_id, "Camera photo.png").expect("verified import");
-        let again =
-            import_camera_media(&mut doc, &media_id, "renamed.png").expect("idempotent import");
+        let id = import_camera_media(&mut doc, &media_id, "Camera photo.png", &store)
+            .expect("verified import");
+        let again = import_camera_media(&mut doc, &media_id, "renamed.png", &store)
+            .expect("idempotent import");
 
         assert_eq!(id, again);
         let library = PhotosDoc::library(&doc);
@@ -592,9 +607,10 @@ mod camera_import_tests {
 
     #[test]
     fn camera_import_refuses_missing_or_invalid_portable_bytes() {
-        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png").is_err());
+        let store = ContentStore::memory();
+        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
         let missing = format!("media:blake3:{}", "0".repeat(64));
-        assert!(camera_import_photo(&missing, "x.png").is_err());
+        assert!(camera_import_photo(&missing, "x.png", &store).is_err());
     }
 
     #[test]

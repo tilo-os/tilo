@@ -1,9 +1,11 @@
+use crate::resolved::Resolved;
 use crate::xml_escape::{escape_html_attr, escape_text};
 use base64::Engine as _;
 use qdoc::export::{BlockKind, ExportBlock, TablePlan, detect_image_media};
 use qdoc::snapshot::AttrVal;
 use qdoc::{BlockView, DocSnapshot, InlinePlan, MarkSpan};
 use std::fmt::Write as _;
+use tilo_content::ContentSource;
 
 /// Options controlling the shape of the emitted HTML.
 #[derive(Debug, Clone)]
@@ -29,16 +31,25 @@ impl Default for HtmlOptions {
     }
 }
 
-/// Render a materialized qdoc snapshot to an HTML string. Always
-/// succeeds: unknown block kinds degrade to a `<p>`, and image blocks
-/// with a missing blob render an empty `<img>` with an `alt` note.
+/// Render a materialized qdoc snapshot to an HTML string, embedding the images it references (read
+/// from `content`) as `data:` URIs. Always succeeds: unknown block kinds degrade to a `<p>`, and
+/// image blocks whose content is missing render an empty `<img>` with an `alt` note.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "HtmlOptions is a small public options struct passed by value at every call site \
               across other crates (the Tilo-wide builder-options idiom); switching to a reference \
               would only move the & to each of those callers for no behavioural gain"
 )]
-pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
+pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions, content: &dyn ContentSource) -> String {
+    render_resolved(&Resolved::new(snap, content), opts)
+}
+
+/// [`render_html`] over a snapshot whose images are already resolved.
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "mirrors render_html, which takes HtmlOptions by value"
+)]
+pub(crate) fn render_resolved(snap: &Resolved<'_>, opts: HtmlOptions) -> String {
     let mut body = String::new();
     render_blocks(&mut body, snap, &snap.blocks, &opts, 0);
 
@@ -67,7 +78,7 @@ pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions) -> String {
 
 /// Emit the document's named styles as a `<style>` block of CSS
 /// classes. Empty string when there are no styles.
-fn render_styles(snap: &DocSnapshot) -> String {
+fn render_styles(snap: &Resolved<'_>) -> String {
     if snap.styles.is_empty() {
         return String::new();
     }
@@ -139,7 +150,7 @@ fn indent_for(opts: &HtmlOptions, depth: usize) -> String {
 /// nested `<ul>`/`<ol>` by `level`; other kinds dispatch individually.
 fn render_blocks(
     out: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     blocks: &[BlockView],
     opts: &HtmlOptions,
     depth: usize,
@@ -170,7 +181,7 @@ fn render_blocks(
 
 fn render_block(
     out: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     block: &BlockView,
     opts: &HtmlOptions,
     depth: usize,
@@ -210,7 +221,7 @@ fn render_paragraph(out: &mut String, block: &BlockView, opts: &HtmlOptions, dep
 
 fn render_quote(
     out: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     block: &BlockView,
     opts: &HtmlOptions,
     depth: usize,
@@ -360,7 +371,7 @@ fn close_list(out: &mut String, level: i64, ordered: bool, opts: &HtmlOptions, d
 
 fn render_table(
     out: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     block: &BlockView,
     opts: &HtmlOptions,
     depth: usize,
@@ -397,7 +408,7 @@ fn render_table(
 
 fn render_image(
     out: &mut String,
-    snap: &DocSnapshot,
+    snap: &Resolved<'_>,
     block: &BlockView,
     opts: &HtmlOptions,
     depth: usize,
@@ -417,7 +428,7 @@ fn render_image(
         Some(AttrVal::Str(s)) => Some(s.clone()),
         _ => None,
     };
-    match hash.as_ref().and_then(|h| snap.blobs.get(h)) {
+    match hash.as_ref().and_then(|h| snap.image(h)) {
         Some(bytes) => {
             let mime = detect_image_media(bytes).map_or("image/png", |media| media.mime);
             let data = base64::engine::general_purpose::STANDARD.encode(bytes);

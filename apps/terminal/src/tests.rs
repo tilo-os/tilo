@@ -83,6 +83,7 @@ fn build_test_widget() -> (TerminalWidget, std::sync::mpsc::Receiver<Vec<u8>>) {
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
         pty_out_rx,
+        tilo_content::ContentStore::memory(),
     );
     (widget, write_rx)
 }
@@ -113,6 +114,7 @@ pub(crate) fn build_test_widget_io() -> (
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMasterShared))),
         pty_out_rx,
+        tilo_content::ContentStore::memory(),
     );
     (widget, write_rx, pty_out_tx)
 }
@@ -459,6 +461,7 @@ fn test_terminal_grid_init() {
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMaster))),
         output_rx,
+        tilo_content::ContentStore::memory(),
     );
 
     widget.init_crdt(&mut doc, &ROOT);
@@ -558,6 +561,7 @@ fn test_terminal_performer_print() {
     let mut next_link_id = 0u16;
     let mut title_out = None;
     let mut responses: Vec<u8> = Vec::new();
+    let content = tilo_content::ContentStore::memory();
 
     {
         let mut performer = TerminalPerformer {
@@ -567,6 +571,7 @@ fn test_terminal_performer_print() {
             cursor_id,
             links_id,
             images_id,
+            content: &content,
             main_line_ids: &mut line_ids,
             alt_line_ids: &mut alt_line_ids,
             alt_active: &mut alt_active,
@@ -829,6 +834,7 @@ fn terminal_widget_remembers_palette_after_inspection_hooks() {
         Arc::new(Mutex::new(writer)),
         Arc::new(Mutex::new(Box::new(MockMaster))),
         output_rx,
+        tilo_content::ContentStore::memory(),
     );
 
     // Before any draw, accessors return the sentinel transparent value.
@@ -3703,7 +3709,7 @@ fn kitty_image_becomes_a_shared_content_addressed_renderable_placement() {
         (3, 2, 1, 1, Some(42))
     );
     assert_eq!(
-        qdoc::blobstore::get(&placement.hash).as_deref(),
+        host.content_store().read(&placement.hash).as_deref(),
         Some(png.as_slice())
     );
 

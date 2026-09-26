@@ -38,6 +38,8 @@ run 'Application resource/action contract' \
 run 'AT-SPI endpoint contract' python3 tools/policy/check_atspi_endpoint_contract.py
 run 'OS component manifest' python3 tools/policy/check_component_manifest.py
 run 'Dev image stays out of production' python3 tools/policy/check_dev_image_contract.py
+run 'Image builders copy what they compile, and only that' \
+  python3 tools/policy/check_image_builder_inputs.py
 run 'Dev kernel build follows the release build' python3 tools/policy/check_kernel_dev_build.py
 run 'Dev-override features stay out of production images' \
   python3 tools/policy/check_dev_overrides_contract.py
@@ -46,6 +48,8 @@ run 'UI clock contract' python3 tools/policy/check_ui_clock_contract.py
 run 'Raw cryptography stays behind tilo-seal' \
   python3 tools/policy/check_crypto_dependencies.py
 run 'Automerge apply contract' python3 tools/policy/check_automerge_apply_contract.py
+run 'Document content stays behind the document layer' \
+  python3 tools/policy/check_document_engine_boundary.py
 run 'Desktop model dependency boundary' \
   python3 tools/policy/check_desktop_model_dependencies.py
 run 'GStreamer is the only media stack' python3 tools/policy/check_media_stack.py

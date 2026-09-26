@@ -38,7 +38,7 @@ fn author_odt(path: &Path, text: &str) {
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, text);
     }
-    save_document(&state, path, WpFormat::Odt).unwrap();
+    save_document(&state, path, WpFormat::Odt, &tilo_content::NoContent).unwrap();
 }
 
 #[test]
@@ -47,7 +47,8 @@ fn open_edit_save_reload_odt() {
     author_odt(&path, "alpha");
 
     // Open it in the word processor.
-    let (mut state, mut wp, fmt) = open_document(&path).unwrap();
+    let (mut state, mut wp, fmt) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     assert_eq!(fmt, WpFormat::Odt);
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(
@@ -62,10 +63,11 @@ fn open_edit_save_reload_odt() {
     wp.model_mut().insert_str(&mut state.doc, "gamma");
 
     // Save back to the same .odt.
-    save_document(&state, &path, fmt).unwrap();
+    save_document(&state, &path, fmt, &tilo_content::NoContent).unwrap();
 
     // Reopen and verify the edits round-tripped through the file.
-    let (mut state2, mut wp2, _) = open_document(&path).unwrap();
+    let (mut state2, mut wp2, _) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     wp2.sync(&mut state2.doc, &state2.root);
     assert_eq!(
         wp2.model().block_texts(&state2.doc),
@@ -148,9 +150,9 @@ fn table_created_in_editor_survives_odt_save_reload() {
     wp.model_mut().insert_table(&mut state.doc, 2, 2); // caret lands in first cell
     wp.model_mut().insert_str(&mut state.doc, "X");
 
-    save_document(&state, &path, WpFormat::Odt).unwrap();
+    save_document(&state, &path, WpFormat::Odt, &tilo_content::NoContent).unwrap();
 
-    let (mut s2, mut wp2, _) = open_document(&path).unwrap();
+    let (mut s2, mut wp2, _) = open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     wp2.sync(&mut s2.doc, &s2.root);
     // Title paragraph + a 2x2 table whose first cell kept "X".
     assert_eq!(
@@ -198,10 +200,10 @@ fn custom_named_style_survives_odt_save_reload() {
     wp.model_mut().set_stylesheet(&mut state.doc, &sheet);
     wp.model_mut().set_block_style(&mut state.doc, "callout");
 
-    save_document(&state, &path, WpFormat::Odt).unwrap();
+    save_document(&state, &path, WpFormat::Odt, &tilo_content::NoContent).unwrap();
 
     // Reopen: the style is back in the stylesheet, still applied to the block.
-    let (mut s2, mut wp2, _) = open_document(&path).unwrap();
+    let (mut s2, mut wp2, _) = open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     wp2.sync(&mut s2.doc, &s2.root);
     assert_eq!(
         wp2.model().block_texts(&s2.doc),
@@ -245,7 +247,8 @@ fn open_edit_save_reload_markdown() {
     let path = temp_path("doc.md");
     std::fs::write(&path, b"# Title\n\nbody\n").unwrap();
 
-    let (mut state, mut wp, fmt) = open_document(&path).unwrap();
+    let (mut state, mut wp, fmt) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     assert_eq!(fmt, WpFormat::Markdown);
     wp.sync(&mut state.doc, &state.root);
     // heading + paragraph
@@ -258,9 +261,10 @@ fn open_edit_save_reload_markdown() {
     wp.model_mut().move_to_block(&state.doc, 1);
     wp.model_mut().move_end(&state.doc);
     wp.model_mut().insert_str(&mut state.doc, " text");
-    save_document(&state, &path, fmt).unwrap();
+    save_document(&state, &path, fmt, &tilo_content::NoContent).unwrap();
 
-    let (mut state2, mut wp2, _) = open_document(&path).unwrap();
+    let (mut state2, mut wp2, _) =
+        open_document(&path, tilo_content::ContentStore::memory()).unwrap();
     wp2.sync(&mut state2.doc, &state2.root);
     assert_eq!(
         wp2.model().block_texts(&state2.doc),

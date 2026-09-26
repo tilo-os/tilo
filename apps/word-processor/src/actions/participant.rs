@@ -250,6 +250,9 @@ impl ParticipantView {
                 .take(MAX_RESOURCE_SEARCH_HITS)
                 .cloned()
                 .collect(),
+            // The view owns no content; a host publishing these resources
+            // replaces this with its document's store.
+            content: tilo_content::ContentStore::memory(),
         })
     }
 }

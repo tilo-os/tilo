@@ -277,7 +277,11 @@ mod tests {
         let mut doc = qdoc::Document::new();
         reg.provider_for_ext("docx")
             .unwrap()
-            .import(&docx, &mut doc.as_mut())
+            .import(
+                &docx,
+                &mut doc.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
 
         let store = ContentStore::memory();
@@ -361,7 +365,11 @@ mod tests {
         let mut doc = qdoc::Document::new();
         reg.provider_for_ext("docx")
             .unwrap()
-            .import(&docx, &mut doc.as_mut())
+            .import(
+                &docx,
+                &mut doc.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
 
         let store = ContentStore::memory();
@@ -381,12 +389,16 @@ mod tests {
         let out = reg
             .provider_for_ext("docx")
             .unwrap()
-            .export(back.as_ref())
+            .export(back.as_ref(), &tilo_content::NoContent)
             .unwrap();
         let mut reopened = qdoc::Document::new();
         reg.provider_for_ext("docx")
             .unwrap()
-            .import(&out, &mut reopened.as_mut())
+            .import(
+                &out,
+                &mut reopened.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
         assert!(
             reopened
@@ -479,7 +491,11 @@ mod tests {
         let mut base = qdoc::Document::new();
         reg.provider_for_ext("docx")
             .unwrap()
-            .import(&docx, &mut base.as_mut())
+            .import(
+                &docx,
+                &mut base.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
 
         let store = ContentStore::memory();

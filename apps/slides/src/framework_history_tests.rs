@@ -264,9 +264,11 @@ fn historical_image_change_uses_exact_frozen_pixels_missing_and_corrupt_stay_una
     use std::{collections::BTreeMap, sync::Arc};
     let old = png([255, 0, 0, 255]);
     let new = png([0, 0, 255, 255]);
-    // qdoc's hermetic in-memory blobstore also backs the production resolver.
-    let old_id = crate::assets::store_asset(&old).unwrap();
-    let new_id = crate::assets::store_asset(&new).unwrap();
+    // The frozen preview reads only the assets it is handed; the live asset
+    // source below reads this store.
+    let content = tilo_content::ContentStore::memory();
+    let old_id = crate::assets::store_asset(&content, &old).unwrap();
+    let new_id = crate::assets::store_asset(&content, &new).unwrap();
     let mut deck = crate::model::seed_deck();
     deck.slides.truncate(1);
     deck.slides[0].elements = vec![crate::model::Element::image(&old_id, 10., 10., 300., 200.)];
@@ -305,8 +307,34 @@ fn historical_image_change_uses_exact_frozen_pixels_missing_and_corrupt_stay_una
                 .contains("Recorded image unavailable")
         );
     }
-    // Actual shared registration installs the source factory: no manual asset hook.
-    let mut driver = managed_driver(doc, selected);
+    // The shared registration resolves recorded images through the app's asset
+    // source, reading the content store the app imported them into.
+    let registration = HistoryRegistration::new(
+        &crate::framework_history::HISTORY,
+        vec![HistorySourceRegistration::HostDocument {
+            scope: "deck",
+            resource: HistoryResource::new(
+                "temporary",
+                "fixture",
+                "so.tilo.slides",
+                ui::RecordId::for_tab(55),
+            ),
+        }],
+    )
+    .unwrap()
+    .with_asset_source(
+        "deck",
+        std::rc::Rc::new(crate::framework_history::DeckAssets::new(content)),
+    )
+    .unwrap();
+    let mut driver = ui::headless::Driver::from_managed_root(
+        ui::State::from_doc(doc),
+        ManagedRoot::new(test_root(), registration),
+        (1000, 750),
+    )
+    .unwrap();
+    driver.click_named("history-open").unwrap();
+    select_version(&mut driver, selected);
     driver.key("Shift");
     let names = format!("{:?}", driver.a11y_nodes());
     assert!(names.contains("Recorded image"));
@@ -589,55 +617,47 @@ fn successive_admitted_resource_actions_stay_usable_and_deleted_target_is_refuse
 }
 
 #[test]
-fn frozen_renderer_never_fetches_live_blobs_or_uses_current_store() {
+fn frozen_renderer_never_touches_the_live_content_store() {
     use std::{
         collections::BTreeMap,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicUsize, Ordering},
         },
     };
-    /// A live content store that counts every request that could leave the
-    /// process: a fetch or a put.
-    struct Spy(Arc<AtomicUsize>, Arc<std::sync::Mutex<Vec<String>>>);
-    impl qdoc::blobstore::BlobStore for Spy {
-        fn put(&self, _: &[u8], _: &str) -> Result<String, qdoc::blobstore::BlobStoreError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Err(qdoc::blobstore::BlobStoreError::Unavailable("spy".into()))
+    use tilo_content::{
+        ContentBackend, ContentError, ContentReader, ContentStore, MemoryBackend, Stored,
+    };
+    /// Every access to the live store: writes (announcing content) and reads
+    /// (requesting it by address).
+    #[derive(Default)]
+    struct Probe {
+        puts: AtomicUsize,
+        opens: Mutex<Vec<String>>,
+        local: MemoryBackend,
+    }
+    struct ProbeBackend(Arc<Probe>);
+    impl ContentBackend for ProbeBackend {
+        fn put(&self, reader: &mut dyn std::io::Read, mime: &str) -> Result<Stored, ContentError> {
+            self.0.puts.fetch_add(1, Ordering::SeqCst);
+            self.0.local.put(reader, mime)
         }
-        fn cached(&self, _: &str) -> Option<Vec<u8>> {
-            None
+        fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+            self.0.opens.lock().unwrap().push(hash.into());
+            self.0.local.open(hash)
         }
-        fn fetch(&self, hash: &str) -> qdoc::blobstore::Fetch {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            self.1.lock().unwrap().push(hash.into());
-            qdoc::blobstore::Fetch::Pending
-        }
-        fn shared(&self) -> bool {
-            true
+        fn has(&self, hash: &str) -> bool {
+            self.0.local.has(hash)
         }
     }
-    if std::env::var_os("QOS_SLIDES_STORE_PROBE").is_none() {
-        let result = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "framework_history_tests::frozen_renderer_never_fetches_live_blobs_or_uses_current_store", "--nocapture"])
-            .env("QOS_SLIDES_STORE_PROBE", "1").output().unwrap();
-        assert!(
-            result.status.success(),
-            "{} {}",
-            String::from_utf8_lossy(&result.stdout),
-            String::from_utf8_lossy(&result.stderr)
-        );
-        return;
-    }
-    let calls = Arc::new(AtomicUsize::new(0));
-    let wants = Arc::new(std::sync::Mutex::new(Vec::new()));
-    qdoc::blobstore::set_store(Arc::new(Spy(calls.clone(), wants.clone())));
+    let probe = Arc::new(Probe::default());
+    let content = ContentStore::new(ProbeBackend(probe.clone()));
     let mut doc = AutoCommit::new();
     let mut deck = crate::model::seed_deck();
     deck.slides.truncate(1);
     let bytes = png([255, 127, 0, 255]);
-    let id = format!("asset:blake3:{}", qdoc::blobstore::hash_bytes(&bytes));
-    // Bytes exist only in the immutable preview input, never the live blobstore.
+    let id = format!("asset:blake3:{}", tilo_content::hash_bytes(&bytes));
+    // Bytes exist only in the immutable preview input, never the live store.
     deck.slides[0].elements = vec![crate::model::Element::image(&id, 0., 0., 100., 100.)];
     crate::doc::SlidesDoc::seed(&mut doc, &deck);
     let selected = doc.get_heads()[0];
@@ -664,40 +684,33 @@ fn frozen_renderer_never_fetches_live_blobs_or_uses_current_store() {
             available
         );
     }
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        0,
-        "presentation-only renderer cannot reach the live content store"
-    );
     assert!(
-        qdoc::blobstore::store()
-            .cached(id.strip_prefix(crate::assets::ASSET_PREFIX).unwrap())
-            .is_none()
+        probe.opens.lock().unwrap().is_empty() && probe.puts.load(Ordering::SeqCst) == 0,
+        "presentation-only renderer cannot touch the live content store"
     );
-    request_selected_provider(doc, deck, selected);
+    assert!(!content.has(id.strip_prefix(crate::assets::ASSET_PREFIX).unwrap()));
+    request_selected_provider(doc, deck, selected, content);
     assert_eq!(
-        wants.lock().unwrap().as_slice(),
+        probe.opens.lock().unwrap().as_slice(),
         &[id.strip_prefix(crate::assets::ASSET_PREFIX)
             .unwrap()
-            .to_owned()]
+            .to_owned()],
+        "one selected read request"
     );
-    assert_eq!(
-        calls.load(Ordering::SeqCst),
-        1,
-        "one selected read request, no puts"
-    );
+    assert_eq!(probe.puts.load(Ordering::SeqCst), 0, "nothing is stored");
 }
 
 fn request_selected_provider(
     mut doc: AutoCommit,
     mut deck: crate::model::Deck,
     selected: automerge::ChangeHash,
+    content: tilo_content::ContentStore,
 ) {
     // The trusted provider may request exactly the selected immutable hash.
     // It must not announce content, ask for the current replacement, or edit the document.
     deck.slides[0].elements[0].src = format!(
         "asset:blake3:{}",
-        qdoc::blobstore::hash_bytes(b"current replacement")
+        tilo_content::hash_bytes(b"current replacement")
     );
     crate::doc::SlidesDoc::seed(&mut doc, &deck);
     let live_heads = doc.get_heads();
@@ -712,6 +725,11 @@ fn request_selected_provider(
                 ui::RecordId::for_tab(55),
             ),
         }],
+    )
+    .unwrap()
+    .with_asset_source(
+        "deck",
+        std::rc::Rc::new(crate::framework_history::DeckAssets::new(content)),
     )
     .unwrap();
     let mut driver = ui::headless::Driver::from_managed_root(

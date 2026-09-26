@@ -191,7 +191,7 @@ pub struct Attachment {
     pub hydrated: bool,
     /// Portable draft-content identity when this attachment is a Drafts
     /// projection. Incoming mail leaves this absent; drafts use it to reopen
-    /// with the same qdoc-backed bytes on any collaborator.
+    /// with the same content-addressed bytes on any collaborator.
     #[serde(default)]
     pub content_id: Option<String>,
     /// The decoded bytes, when hydrated. Never serialised into the shared
@@ -601,8 +601,8 @@ pub struct Draft {
     /// Stored inline so a collaborative draft never grants a host-path read.
     #[serde(default)]
     pub calendar_ics: Option<String>,
-    /// Verified portable attachment metadata.  `content_id` names qdoc blob
-    /// bytes; no participant's filesystem path is persisted or replicated.
+    /// Verified portable attachment metadata.  `content_id` names bytes in
+    /// the content store; no participant's filesystem path is persisted or replicated.
     #[serde(default)]
     pub attachments: Vec<DraftAttachment>,
     /// If this draft is a reply, the message it answers.
@@ -610,7 +610,7 @@ pub struct Draft {
 }
 
 /// Metadata for one staged draft attachment. The content is addressed by a
-/// verified qdoc blob identity and materialized only at the send boundary.
+/// verified content-store identity and materialized only at the send boundary.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DraftAttachment {
     pub content_id: String,

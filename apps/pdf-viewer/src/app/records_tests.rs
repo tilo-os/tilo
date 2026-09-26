@@ -425,7 +425,7 @@ fn export_is_deterministic_and_reloads_with_the_records() {
     // The record pins the bytes it annotates.
     let (pinned, len, _) = PdfDoc::source(&state.doc).expect("source pinned");
     let bytes = std::fs::read(&path).unwrap();
-    assert_eq!(pinned, qdoc::blobstore::hash_bytes(&bytes));
+    assert_eq!(pinned, tilo_content::hash_bytes(&bytes));
     assert_eq!(len, bytes.len() as u64);
     assert!(
         ui::record::blob_references(&state.doc)

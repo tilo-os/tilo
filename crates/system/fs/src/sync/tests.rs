@@ -1822,6 +1822,79 @@ async fn blob_authority_is_scoped_to_live_readable_paths() {
     );
 }
 
+#[tokio::test]
+async fn a_long_lived_blob_index_follows_every_namespace_change() {
+    let peer = identity_of(iroh::SecretKey::generate().public());
+    let mut acl = WorkspaceAcl::new();
+    acl.grant_read(peer, "/shared");
+    let handle = AclHandle::new(acl);
+    let policy = Some(handle.clone());
+    let store = ContentStore::memory();
+    let chunk_of = |manifest: bytes::Bytes| {
+        iroh_blobs::Hash::from(crate::content::Manifest::decode(&manifest).unwrap().chunks[0].hash)
+    };
+    let first = store.write_content(b"first").await.unwrap().unwrap();
+    let first_chunk = chunk_of(store.local(first).await.unwrap());
+    let second = store.write_content(b"second").await.unwrap().unwrap();
+    let second_chunk = chunk_of(store.local(second).await.unwrap());
+    let private = store.write_content(b"private").await.unwrap().unwrap();
+    let private_chunk = chunk_of(store.local(private).await.unwrap());
+
+    let mut ns = Namespace::new("host").unwrap();
+    let shared = ns.create_dir(ROOT_INO, "shared", 1).unwrap();
+    let hidden = ns.create_dir(ROOT_INO, "hidden", 1).unwrap();
+    let first_ino = ns.create_file(shared, "first", Some(&first), 5, 1).unwrap();
+    ns.create_file(hidden, "private", Some(&private), 7, 1)
+        .unwrap();
+    let ns = Arc::new(Mutex::new(ns));
+    let index = BlobAccessIndex::new(Arc::clone(&ns));
+    let may = |wanted: Vec<iroh_blobs::Hash>, context: Vec<iroh_blobs::Hash>| {
+        let (policy, index, store) = (&policy, &index, &store);
+        async move {
+            authorize_blob_request(policy, index, store, None, (peer, None), &wanted, &context)
+                .await
+        }
+    };
+
+    assert!(may(vec![first], vec![]).await);
+    assert!(
+        may(vec![first_chunk], vec![first]).await,
+        "a chunk rides on its readable manifest named in the same request"
+    );
+    assert!(
+        may(vec![first_chunk], vec![]).await,
+        "without context the readable manifests are searched"
+    );
+    assert!(
+        !may(vec![private_chunk], vec![first]).await,
+        "a readable manifest in the request does not authorise another file's chunk"
+    );
+    assert!(!may(vec![private_chunk], vec![private]).await);
+    assert!(
+        !may(vec![first_chunk, private_chunk], vec![first]).await,
+        "one unreadable blob refuses the whole batch"
+    );
+
+    // Deleting the only reference revokes it on the very next request, even
+    // though the index was built before.
+    assert!(ns.lock().unwrap().remove(first_ino));
+    assert!(!may(vec![first], vec![]).await);
+    assert!(!may(vec![first_chunk], vec![first]).await);
+
+    // New content is readable at once.
+    ns.lock()
+        .unwrap()
+        .create_file(shared, "second", Some(&second), 6, 2)
+        .unwrap();
+    assert!(may(vec![second, second_chunk], vec![]).await);
+
+    handle.replace(WorkspaceAcl::new());
+    assert!(
+        !may(vec![second], vec![]).await,
+        "the live ACL decides even when the namespace is unchanged"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::too_many_lines,
@@ -2506,6 +2579,194 @@ async fn fresh_record_join_finishes_initial_projection_before_returning() {
         ),
         Some(1),
         "join must not return before the bootstrap peer's signed projection is local"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one session run covers reconciliation, batched pull, inline content and the settled second pass"
+)]
+async fn a_session_pulls_many_records_with_small_content_inline_and_then_settles() {
+    let server_temp = tempfile::tempdir().unwrap();
+    let client_temp = tempfile::tempdir().unwrap();
+    let (server_ep, server_lookup, server_identity, server_root, server_device) =
+        bind_certified_test_endpoint_with_root().await;
+    let (client_ep, _client_lookup, client_identity, _client_root, _client_device) =
+        bind_certified_test_endpoint_with_root().await;
+    let workspace_id = Ticket::workspace_id_for_topic(*server_ep.id().as_bytes());
+    let server_actor = FileActor {
+        person: Ed25519PublicKey(server_root.verifying_key().to_bytes()),
+        device: Ed25519PublicKey(server_identity.device_public_key()),
+    };
+    let server_services = record_services(server_temp.path());
+    let server_store = Arc::new(ContentStore::memory());
+    let mut published = Vec::new();
+    for n in 0..40_u8 {
+        let record_id = FileRecordId::new();
+        let bytes = vec![n; 1000 + usize::from(n)];
+        let revision = publish_durable_test_revision(
+            Arc::clone(&server_services.repository),
+            &server_store,
+            workspace_id,
+            record_id,
+            FileVersionId::new(),
+            server_actor,
+            server_device.clone(),
+            &bytes,
+            n,
+        )
+        .await;
+        published.push((record_id, revision, bytes));
+    }
+    // One file above the inline limit travels by content fetch, not inline.
+    let large_record = FileRecordId::new();
+    let large = vec![7_u8; 64 * 1024];
+    let large_revision = publish_durable_test_revision(
+        Arc::clone(&server_services.repository),
+        &server_store,
+        workspace_id,
+        large_record,
+        FileVersionId::new(),
+        server_actor,
+        server_device,
+        &large,
+        99,
+    )
+    .await;
+    let server_hydrator = Arc::new(Hydrator::new(server_ep.clone(), Arc::clone(&server_store)));
+    let (_server_workspace, ticket) = Workspace::host_with_records(
+        server_ep.clone(),
+        server_lookup,
+        server_store,
+        server_hydrator,
+        Arc::new(Mutex::new(Namespace::new("session-server").unwrap())),
+        server_identity.clone(),
+        Some(policy_granting(&[client_identity.user_public_key()])),
+        server_services,
+    )
+    .await
+    .unwrap();
+
+    let client_services = record_services(client_temp.path());
+    let client_store = Arc::new(ContentStore::memory());
+    // No peers: whatever content arrives came inline with the records.
+    let client_hydrator = Hydrator::new(client_ep.clone(), Arc::clone(&client_store));
+    let client_policy = Some(policy_read_write(&[server_identity.user_public_key()], &[]));
+    let record_plane = build_record_plane(
+        &client_ep,
+        &client_identity,
+        &client_policy,
+        Arc::clone(&client_store),
+        workspace_id,
+        Some(client_services),
+    )
+    .unwrap()
+    .unwrap();
+    let sessions = SessionPool::new(client_ep.clone(), client_identity.clone(), workspace_id);
+    let session = sessions
+        .get(&ticket.node)
+        .await
+        .unwrap()
+        .expect("the host speaks the session protocol");
+
+    assert!(
+        session::pull_records(
+            &sessions,
+            &session,
+            &client_identity,
+            &client_policy,
+            &record_plane,
+            &client_hydrator,
+            false,
+        )
+        .await
+        .unwrap(),
+        "the first pull applies the host's records"
+    );
+    for (record_id, revision, bytes) in &published {
+        let key = RecordRepositoryKey {
+            workspace_id,
+            record_id: *record_id,
+        };
+        assert_pulled(&record_plane, key, &server_actor);
+        let manifest = iroh_blobs::Hash::from(revision.content_hash.unwrap().0);
+        assert_eq!(
+            client_hydrator
+                .read_local(manifest, 0, u64::MAX)
+                .await
+                .as_deref(),
+            Some(bytes.as_slice()),
+            "a small file's bytes arrive with its record"
+        );
+    }
+    assert!(
+        record_plane
+            .repository
+            .highest_sequence(
+                RecordRepositoryKey {
+                    workspace_id,
+                    record_id: large_record,
+                },
+                &server_actor
+            )
+            .is_some()
+    );
+    assert!(
+        !client_store
+            .has(iroh_blobs::Hash::from(
+                large_revision.content_hash.unwrap().0
+            ))
+            .await,
+        "a file above the inline limit is not sent inline"
+    );
+    assert!(
+        !session::pull_records(
+            &sessions,
+            &session,
+            &client_identity,
+            &client_policy,
+            &record_plane,
+            &client_hydrator,
+            false,
+        )
+        .await
+        .unwrap(),
+        "once reconciled, a pass pulls nothing"
+    );
+}
+
+fn assert_pulled(records: &RecordPlane, key: RecordRepositoryKey, actor: &FileActor) {
+    assert!(
+        records
+            .repository
+            .highest_sequence(key, actor)
+            .is_some_and(|sequence| sequence > 0),
+        "record {key:?} was pulled"
+    );
+}
+
+#[tokio::test]
+async fn a_peer_without_the_session_protocol_is_reached_per_request() {
+    let (server_ep, _server_lookup, _server_identity) = bind_certified_test_endpoint().await;
+    let (client_ep, _client_lookup, client_identity) = bind_certified_test_endpoint().await;
+    // An older peer: it serves content, but no session protocol.
+    let store = ContentStore::memory();
+    let _router = Router::builder(server_ep.clone())
+        .accept(iroh_blobs::ALPN, store.blobs_protocol(None))
+        .spawn();
+    let sessions = SessionPool::new(
+        client_ep,
+        client_identity,
+        Ticket::workspace_id_for_topic(*server_ep.id().as_bytes()),
+    );
+    assert!(
+        sessions.get(&server_ep.addr()).await.unwrap().is_none(),
+        "a peer that does not offer the protocol is reported as per-request only"
+    );
+    assert!(
+        sessions.get(&server_ep.addr()).await.unwrap().is_none(),
+        "and remembered as such"
     );
 }
 

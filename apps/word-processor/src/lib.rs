@@ -144,42 +144,52 @@ impl WpFormat {
         }
     }
 
+    /// Project `bytes` into `dm`; embedded images land in `inputs`, which the caller keeps in its
+    /// content store.
     pub(crate) fn import(
         self,
         bytes: &[u8],
         dm: &mut qdoc::DocMut,
+        inputs: &mut tilo_content::ContentInputs,
     ) -> Result<(), qdoc_codecs::CodecError> {
         use qdoc_codecs::FormatProvider;
         match self {
-            WpFormat::Odt => qdoc_codecs::OdtCodec.import(bytes, dm),
-            WpFormat::Docx => qdoc_codecs::DocxCodec.import(bytes, dm),
-            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.import(bytes, dm),
+            WpFormat::Odt => qdoc_codecs::OdtCodec.import(bytes, dm, inputs),
+            WpFormat::Docx => qdoc_codecs::DocxCodec.import(bytes, dm, inputs),
+            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.import(bytes, dm, inputs),
             WpFormat::Pdf => Err(qdoc_codecs::CodecError::Unsupported(
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
             // HTML import is handled by the `qdoc_codecs::HtmlCodec` codec (export still
             // routes through `qdoc_codecs::export_html` below).
-            WpFormat::Html => qdoc_codecs::HtmlCodec.import(bytes, dm),
+            WpFormat::Html => qdoc_codecs::HtmlCodec.import(bytes, dm, inputs),
             // RTF import is handled by the `qdoc_codecs::RtfCodec` codec (export still
             // routes through `qdoc_codecs::export_rtf` below).
-            WpFormat::Rtf => qdoc_codecs::RtfCodec.import(bytes, dm),
+            WpFormat::Rtf => qdoc_codecs::RtfCodec.import(bytes, dm, inputs),
             WpFormat::Epub => Err(qdoc_codecs::CodecError::Unsupported(
                 "opening EPUB documents is not supported (EPUB is export-only)".to_string(),
             )),
         }
     }
 
-    pub(crate) fn export(self, dr: qdoc::DocRef) -> Result<Vec<u8>, qdoc_codecs::CodecError> {
+    /// Project `dr` into this format, embedding the images it references from `content`.
+    pub(crate) fn export(
+        self,
+        dr: qdoc::DocRef,
+        content: &dyn tilo_content::ContentSource,
+    ) -> Result<Vec<u8>, qdoc_codecs::CodecError> {
         use qdoc_codecs::FormatProvider;
+        // Content an older document still carries inline answers when the store lacks it.
+        let content = &(content, qdoc::model::inline_contents(dr.doc, dr.c));
         match self {
-            WpFormat::Odt => qdoc_codecs::OdtCodec.export(dr),
-            WpFormat::Docx => qdoc_codecs::DocxCodec.export(dr),
-            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.export(dr),
+            WpFormat::Odt => qdoc_codecs::OdtCodec.export(dr, content),
+            WpFormat::Docx => qdoc_codecs::DocxCodec.export(dr, content),
+            WpFormat::Markdown => qdoc_codecs::MarkdownCodec.export(dr, content),
             // PDF isn't a `FormatProvider` codec — it renders from the materialized
             // snapshot via `qdoc-pdf`. Map its error into the shared `CodecError`.
             WpFormat::Pdf => {
                 let snap = dr.materialize();
-                qdoc_pdf::render_pdf(&snap)
+                qdoc_pdf::render_pdf(&snap, content)
                     .map_err(|e| qdoc_codecs::CodecError::Export(e.to_string()))
             }
             // HTML/RTF aren't `FormatProvider` codecs either — they render from
@@ -190,6 +200,7 @@ impl WpFormat {
                 let rendered = qdoc_codecs::export_html::render_html(
                     &snap,
                     qdoc_codecs::export_html::HtmlOptions::default(),
+                    content,
                 );
                 Ok(rendered.into_bytes())
             }
@@ -203,7 +214,7 @@ impl WpFormat {
             // Map its error into the shared `CodecError`.
             WpFormat::Epub => {
                 let snap = dr.materialize();
-                let rendered = qdoc_codecs::export_epub::render_epub(&snap);
+                let rendered = qdoc_codecs::export_epub::render_epub(&snap, content);
                 rendered.map_err(|e| qdoc_codecs::CodecError::Export(e.to_string()))
             }
         }
@@ -234,9 +245,12 @@ fn invalid_data<E: std::fmt::Display>(e: E) -> std::io::Error {
 ///
 /// Fails if `path` cannot be read, or if the codec for its format rejects the
 /// bytes (a corrupt archive, or an export-only format such as PDF or EPUB).
-pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
+pub fn open_document(
+    path: &Path,
+    content: tilo_content::ContentStore,
+) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
     let records = ui::RecordSet::for_local_files("so.tilo.word-processor").map_err(invalid_data)?;
-    open_document_with_records(path, &records)
+    open_document_with_records(path, &records, content)
 }
 
 /// Open through the launch owner's retained file scope. Required history is
@@ -250,6 +264,7 @@ pub fn open_document(path: &Path) -> std::io::Result<(ui::State, WordProcessorWi
 pub fn open_document_with_records(
     path: &Path,
     records: &ui::RecordSet,
+    content: tilo_content::ContentStore,
 ) -> std::io::Result<(ui::State, WordProcessorWidget, WpFormat)> {
     let reader = records.file_history_reader().map_err(invalid_data)?;
     let want = ui::RecordCheckout::new(
@@ -262,6 +277,7 @@ pub fn open_document_with_records(
     let mut state = ui::State::new();
     let mut widget = WordProcessorWidget::new();
     widget.retain_file_history(reader);
+    widget.model_mut().set_content_store(content.clone());
     if let Some(history) = history {
         history.install_into(&mut state.doc).map_err(invalid_data)?;
         widget
@@ -270,16 +286,19 @@ pub fn open_document_with_records(
     } else {
         let containers = qdoc::model::init(&mut state.doc, &state.root);
         let mut ids = qdoc::IdGen::new(state.doc.get_actor().to_hex_string());
-        format
-            .import(
-                &bytes,
-                &mut qdoc::DocMut {
-                    doc: &mut state.doc,
-                    c: &containers,
-                    ids: &mut ids,
-                },
-            )
-            .map_err(invalid_data)?;
+        let mut inputs = tilo_content::ContentInputs::new();
+        {
+            let mut dm = qdoc::DocMut {
+                doc: &mut state.doc,
+                c: &containers,
+                ids: &mut ids,
+            };
+            format
+                .import(&bytes, &mut dm, &mut inputs)
+                .map_err(invalid_data)?;
+        }
+        // The document only names the file's images; they are kept before it is.
+        content.put_inputs(&inputs).map_err(invalid_data)?;
         // The opened file is where undo begins: the import is not an edit.
         start_history_here(&mut state);
         widget.set_file(path.to_path_buf(), format);
@@ -380,7 +399,9 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
         // in practice; if a malformed one ever shipped, say so on stderr and
         // hand back the empty document rather than killing the process — the
         // release profile sets `panic = "abort"`.
-        if let Err(e) = format.import(t.content().as_bytes(), &mut dm) {
+        // Templates are Markdown and embed no binary content.
+        let mut inputs = tilo_content::ContentInputs::new();
+        if let Err(e) = format.import(t.content().as_bytes(), &mut dm, &mut inputs) {
             eprintln!("word-processor: bundled template {t:?} failed to import: {e}");
         }
     }
@@ -398,14 +419,19 @@ pub fn new_from_template(t: Template) -> (ui::State, WordProcessorWidget, WpForm
 ///
 /// Fails if `state` does not hold a well-formed document, if the codec cannot
 /// render it (an import-only format), or if `path` cannot be written.
-pub fn save_document(state: &ui::State, path: &Path, format: WpFormat) -> std::io::Result<()> {
+pub fn save_document(
+    state: &ui::State,
+    path: &Path,
+    format: WpFormat,
+    content: &dyn tilo_content::ContentSource,
+) -> std::io::Result<()> {
     let containers = qdoc::model::open(&state.doc, &state.root).map_err(invalid_data)?;
     let dr = qdoc::DocRef {
         doc: &state.doc,
         c: &containers,
     };
     let bytes = format
-        .export(dr)
+        .export(dr, content)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
     atomic_file::write_preserving_target(path, &bytes)
 }
@@ -599,7 +625,9 @@ pub mod recovery {
             doc: &state.doc,
             c: &containers,
         };
-        crate::WpFormat::Markdown.export(dr).ok()
+        crate::WpFormat::Markdown
+            .export(dr, &tilo_content::NoContent)
+            .ok()
     }
 }
 
@@ -623,7 +651,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Title\n\nHello\n", &mut dm)
+                .import(
+                    b"# Title\n\nHello\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
         s.commit_action(None, None);
@@ -685,7 +717,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Title\n\nHello world\n", &mut dm)
+                .import(
+                    b"# Title\n\nHello world\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
 
@@ -697,7 +733,7 @@ mod tests {
             ".pdf extension picks the Pdf format"
         );
 
-        save_document(&s, &path, WpFormat::Pdf).expect("save to pdf");
+        save_document(&s, &path, WpFormat::Pdf, &tilo_content::NoContent).expect("save to pdf");
         let bytes = std::fs::read(&path).expect("read back the pdf");
         let _ = std::fs::remove_file(&path);
         assert!(
@@ -718,7 +754,13 @@ mod tests {
             c: &containers,
             ids: &mut ids,
         };
-        let err = WpFormat::Pdf.import(b"%PDF-1.7", &mut dm).unwrap_err();
+        let err = WpFormat::Pdf
+            .import(
+                b"%PDF-1.7",
+                &mut dm,
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap_err();
         assert!(
             matches!(err, qdoc_codecs::CodecError::Unsupported(_)),
             "got {err:?}"
@@ -734,7 +776,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Title\n\nHello world\n", &mut dm)
+                .import(
+                    b"# Title\n\nHello world\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
 
@@ -746,7 +792,7 @@ mod tests {
             ".html extension picks the Html format"
         );
 
-        save_document(&s, &path, WpFormat::Html).expect("save to html");
+        save_document(&s, &path, WpFormat::Html, &tilo_content::NoContent).expect("save to html");
         let bytes = std::fs::read(&path).expect("read back the html");
         let _ = std::fs::remove_file(&path);
         let text = String::from_utf8(bytes).expect("html output is valid UTF-8");
@@ -767,7 +813,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Title\n\nHello world\n", &mut dm)
+                .import(
+                    b"# Title\n\nHello world\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
 
@@ -779,7 +829,7 @@ mod tests {
             ".rtf extension picks the Rtf format"
         );
 
-        save_document(&s, &path, WpFormat::Rtf).expect("save to rtf");
+        save_document(&s, &path, WpFormat::Rtf, &tilo_content::NoContent).expect("save to rtf");
         let bytes = std::fs::read(&path).expect("read back the rtf");
         let _ = std::fs::remove_file(&path);
         assert!(
@@ -799,7 +849,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Title\n\nHello world\n", &mut dm)
+                .import(
+                    b"# Title\n\nHello world\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
 
@@ -811,7 +865,7 @@ mod tests {
             ".epub extension picks the Epub format"
         );
 
-        save_document(&s, &path, WpFormat::Epub).expect("save to epub");
+        save_document(&s, &path, WpFormat::Epub, &tilo_content::NoContent).expect("save to epub");
         let bytes = std::fs::read(&path).expect("read back the epub");
         let _ = std::fs::remove_file(&path);
 
@@ -846,7 +900,13 @@ mod tests {
             c: &containers,
             ids: &mut ids,
         };
-        let err = WpFormat::Epub.import(b"PK\x03\x04", &mut dm).unwrap_err();
+        let err = WpFormat::Epub
+            .import(
+                b"PK\x03\x04",
+                &mut dm,
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap_err();
         assert!(
             matches!(err, qdoc_codecs::CodecError::Unsupported(_)),
             "got {err:?}"
@@ -892,7 +952,11 @@ mod tests {
                 ids: &mut ids,
             };
             WpFormat::Html
-                .import(b"<h1>Opened from HTML</h1><p>body</p>", &mut dm)
+                .import(
+                    b"<h1>Opened from HTML</h1><p>body</p>",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .expect("html import succeeds");
         }
         let snap = qdoc::model::materialize(&s.doc, &containers);
@@ -924,6 +988,7 @@ mod tests {
                 .import(
                     b"{\\rtf1\\ansi\\deff0\n{\\pard\\fs22 Opened from RTF\\par}}",
                     &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
                 )
                 .expect("rtf import succeeds");
         }
@@ -949,7 +1014,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"Hello **world** today\n", &mut dm)
+                .import(
+                    b"Hello **world** today\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
 
@@ -959,7 +1028,9 @@ mod tests {
             doc: &s.doc,
             c: &containers,
         };
-        let rtf = WpFormat::Rtf.export(dr).expect("rtf export");
+        let rtf = WpFormat::Rtf
+            .export(dr, &tilo_content::NoContent)
+            .expect("rtf export");
 
         // Re-import those bytes into a fresh document via the import path.
         let mut s2 = ui::State::new();
@@ -971,7 +1042,9 @@ mod tests {
                 c: &containers2,
                 ids: &mut ids2,
             };
-            WpFormat::Rtf.import(&rtf, &mut dm).expect("rtf import");
+            WpFormat::Rtf
+                .import(&rtf, &mut dm, &mut tilo_content::ContentInputs::new())
+                .expect("rtf import");
         }
         let snap = qdoc::model::materialize(&s2.doc, &containers2);
         let p = snap
@@ -1106,7 +1179,11 @@ mod tests {
                     ids: &mut ids,
                 };
                 WpFormat::Markdown
-                    .import(t.content().as_bytes(), &mut dm)
+                    .import(
+                        t.content().as_bytes(),
+                        &mut dm,
+                        &mut tilo_content::ContentInputs::new(),
+                    )
                     .unwrap_or_else(|e| panic!("{t:?} imports cleanly: {e:?}"));
             }
             let snap = qdoc::model::materialize(&s.doc, &containers);
@@ -1229,7 +1306,11 @@ mod tests {
         {
             let mut dm = ed.edit(&mut s.doc);
             MarkdownCodec
-                .import(b"# Draft Title\n\nUnsaved paragraph\n", &mut dm)
+                .import(
+                    b"# Draft Title\n\nUnsaved paragraph\n",
+                    &mut dm,
+                    &mut tilo_content::ContentInputs::new(),
+                )
                 .unwrap();
         }
         let md = recovery::markdown_bytes(&s).expect("render recovery markdown");
@@ -1244,7 +1325,7 @@ mod tests {
                 ids: &mut ids,
             };
             MarkdownCodec
-                .import(&md, &mut dm)
+                .import(&md, &mut dm, &mut tilo_content::ContentInputs::new())
                 .expect("re-import recovery markdown");
         }
         let snap = qdoc::model::materialize(&s2.doc, &containers);

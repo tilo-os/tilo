@@ -32,7 +32,7 @@
 //! - `cursor` — the cursor's `x` / `y`;
 //! - `terminal_links` — OSC 8 hyperlink targets the program emitted;
 //! - `terminal_images` — content hashes and cell placements for terminal
-//!   graphics; immutable bytes ride the shared qdoc blob transport;
+//!   graphics; immutable bytes live in the app's content store;
 //! - `terminal_title` — the OSC 0/2 window title the program set;
 //! - `terminal_pane_id` — a shared id that scopes collaboration *presence* (whose
 //!   caret is whose), not user data.
@@ -147,6 +147,7 @@ mod tests {
             Arc::new(Mutex::new(writer)),
             Arc::new(Mutex::new(Box::new(MockMaster))),
             pty_out_rx,
+            tilo_content::ContentStore::memory(),
         );
         (widget, write_rx)
     }
@@ -583,8 +584,12 @@ mod tests {
         let writer: Arc<Mutex<Box<dyn Write + Send>>> =
             Arc::new(Mutex::new(Box::new(FailingWriter)));
         let (_out_tx, out_rx) = std::sync::mpsc::channel();
-        let mut widget =
-            TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
+        let mut widget = TerminalWidget::new(
+            writer,
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            out_rx,
+            tilo_content::ContentStore::memory(),
+        );
         let doc = AutoCommit::new();
         let payload = serde_json::to_vec("printf should-not-run").expect("serialize command");
         assert!(
@@ -628,8 +633,12 @@ mod tests {
             panic!("inject poisoned PTY writer");
         }));
         let (_out_tx, out_rx) = std::sync::mpsc::channel();
-        let mut widget =
-            TerminalWidget::new(writer, Arc::new(Mutex::new(Box::new(MockMaster))), out_rx);
+        let mut widget = TerminalWidget::new(
+            writer,
+            Arc::new(Mutex::new(Box::new(MockMaster))),
+            out_rx,
+            tilo_content::ContentStore::memory(),
+        );
         let doc = AutoCommit::new();
         let payload = serde_json::to_vec("interrupt").expect("serialize control");
         assert!(

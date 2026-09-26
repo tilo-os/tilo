@@ -47,7 +47,13 @@ fn part(bytes: &[u8], name: &str) -> String {
 
 fn import(codec: &dyn FormatProvider, bytes: &[u8]) -> Document {
     let mut d = Document::new();
-    codec.import(bytes, &mut d.as_mut()).unwrap();
+    codec
+        .import(
+            bytes,
+            &mut d.as_mut(),
+            &mut tilo_content::ContentInputs::new(),
+        )
+        .unwrap();
     d
 }
 
@@ -217,7 +223,9 @@ fn docx_keeps_entity_and_character_references_in_text() {
         Some(TEXT)
     );
 
-    let exported = DocxCodec.export(d.as_ref()).unwrap();
+    let exported = DocxCodec
+        .export(d.as_ref(), &tilo_content::NoContent)
+        .unwrap();
     assert!(
         part(&exported, "docProps/core.xml").contains(&format!(
             "<cp:lastModifiedBy>{RAW_UNMODELED}</cp:lastModifiedBy>"
@@ -237,7 +245,9 @@ fn odt_keeps_entity_and_character_references_in_text() {
     assert_eq!(snap.changes.len(), 1, "one tracked change");
     assert_eq!(snap.changes[0].author, TEXT, "tracked-change author");
 
-    let exported = OdtCodec.export(d.as_ref()).unwrap();
+    let exported = OdtCodec
+        .export(d.as_ref(), &tilo_content::NoContent)
+        .unwrap();
     assert!(
         part(&exported, "meta.xml").contains(&format!(
             r#"<meta:user-defined meta:name="note">{RAW_UNMODELED}</meta:user-defined>"#

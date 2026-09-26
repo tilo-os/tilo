@@ -12,10 +12,6 @@
 
 #[path = "blob_reference.rs"]
 mod blob_reference;
-#[path = "blob_state.rs"]
-mod blob_state;
-#[path = "blobstore_fixture.rs"]
-mod blobstore_fixture;
 #[path = "concurrent_block_text.rs"]
 mod concurrent_block_text;
 #[path = "concurrent_regions.rs"]

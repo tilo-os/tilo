@@ -221,7 +221,7 @@ fn stage_launch_content(
     )?;
     if bytes.is_empty()
         || bytes.len() > MAX_LAUNCH_CONTENT_BYTES
-        || !qdoc::blobstore::verify(content_hash, &bytes)
+        || !tilo_content::verify(content_hash, &bytes)
     {
         return Err("launch content failed integrity validation".into());
     }
@@ -235,7 +235,7 @@ fn stage_launch_content(
         <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o700),
     )
     .map_err(|error| format!("protect launch staging: {error}"))?;
-    let extension = match qdoc::blobstore::sniff(&bytes).mime.as_str() {
+    let extension = match tilo_content::sniff(&bytes).mime.as_str() {
         "image/png" => "png",
         "image/jpeg" => "jpg",
         "image/webp" => "webp",
@@ -269,7 +269,7 @@ fn stage_launch_content(
             let existing = std::fs::read(&path)
                 .map_err(|error| format!("read existing launch content: {error}"))?;
             if existing.len() > MAX_LAUNCH_CONTENT_BYTES
-                || !qdoc::blobstore::verify(content_hash, &existing)
+                || !tilo_content::verify(content_hash, &existing)
             {
                 return Err("existing launch content failed integrity validation".into());
             }
@@ -975,7 +975,7 @@ mod tests {
         let mut env = tilo_test_env::ScopedEnv::new();
         env.set("XDG_RUNTIME_DIR", runtime.path());
         let bytes = b"a photograph".to_vec();
-        let hash = qdoc::blobstore::hash_bytes(&bytes);
+        let hash = tilo_content::hash_bytes(&bytes);
         let content = ScopedContent {
             room: ::launcher::appdir::room_slug(Some("room-1")),
             hash: hash.clone(),

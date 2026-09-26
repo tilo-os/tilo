@@ -64,7 +64,9 @@ fn main() {
                     c: &c,
                     ids: &mut ids,
                 };
-                RtfCodec.import(&bytes, &mut dm).unwrap();
+                RtfCodec
+                    .import(&bytes, &mut dm, &mut tilo_content::ContentInputs::new())
+                    .unwrap();
             }
             am.commit();
             let elapsed = t.elapsed();

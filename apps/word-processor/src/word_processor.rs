@@ -8,7 +8,7 @@
 use crate::num;
 use crate::styles::{StyleProps, StyleSheet};
 use automerge::transaction::Transactable;
-use automerge::{AutoCommit, ObjId, ReadDoc};
+use automerge::{AutoCommit, ObjId};
 use qdoc::model::Region;
 use qdoc::{Containers, DocMut, IdGen};
 use ui::text_edit::{Edit, EditCore};
@@ -59,25 +59,6 @@ pub struct TocEntry {
 /// keep TOC lines out of the heading outline.
 pub(crate) fn block_is_toc(b: &qdoc::snapshot::BlockView) -> bool {
     matches!(b.attrs.get("toc"), Some(qdoc::AttrVal::Bool(true)))
-}
-
-/// Resolve a region's block-container map object (`header`/`footer`) live from the
-/// document root. Used by the editor-level header/footer write primitives that
-/// qdoc does not yet expose a `*_in` op for (`remove_block`/`set_kind`/
-/// `remove_mark`). Returns `None` when the region has not been created yet.
-fn region_map_obj(doc: &AutoCommit, root: &ObjId, key: &str) -> Option<ObjId> {
-    match doc.get(root, key) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
-}
-
-/// Resolve a single block's map object by id within a region container.
-fn region_block_obj(doc: &AutoCommit, container: &ObjId, id: &str) -> Option<ObjId> {
-    match doc.get(container, id) {
-        Ok(Some((automerge::Value::Object(automerge::ObjType::Map), oid))) => Some(oid),
-        _ => None,
-    }
 }
 
 /// Parse the comma-separated `tab_stops` attr into px positions, sorted ascending
@@ -132,6 +113,9 @@ pub struct WordProcessor {
     /// Shared byte-safe horizontal edit core for the active block. The
     /// surrounding model still owns block splits/merges and qdoc structure.
     edit_core: EditCore,
+    /// Where the document's binary inputs (its images) live. The document only references them
+    /// by content address. In memory until the app hands over its store.
+    content: tilo_content::ContentStore,
 }
 
 impl Default for WordProcessor {
@@ -152,7 +136,18 @@ impl WordProcessor {
             header_caret: None,
             footer_caret: None,
             edit_core: EditCore::new(),
+            content: tilo_content::ContentStore::memory(),
         }
+    }
+
+    /// Keep the document's binary inputs in `content` (the app's store) from now on.
+    pub fn set_content_store(&mut self, content: tilo_content::ContentStore) {
+        self.content = content;
+    }
+
+    /// The store holding the document's binary inputs.
+    pub fn content_store(&self) -> &tilo_content::ContentStore {
+        &self.content
     }
 
     // ---- edit context (Body / Header / Footer) -----------------------------
@@ -459,7 +454,13 @@ impl WordProcessor {
         for id in &existing {
             dm.remove_block(id);
         }
-        if format.import(bytes, &mut dm).is_err() {
+        let mut inputs = tilo_content::ContentInputs::new();
+        if format.import(bytes, &mut dm, &mut inputs).is_err() {
+            return false;
+        }
+        // The document only names its images; keep them before adopting it.
+        if let Err(error) = self.content.put_inputs(&inputs) {
+            eprintln!("word-processor: could not keep the opened file's images: {error}");
             return false;
         }
         *state = staged;
@@ -1615,8 +1616,8 @@ impl WordProcessor {
         }
     }
 
-    /// Insert an image block carrying `bytes` at the caret; bytes go in the
-    /// content-addressed blob store, referenced via the block's `blob` attr
+    /// Insert an image block carrying `bytes` at the caret; the bytes go in the
+    /// app's content store and the block's `blob` attr references them
     /// (mirroring `qdoc_codecs::odt`). Mid-text, the block splits so the image
     /// lands between the text before/after the caret; else it inserts after the
     /// caret block. The caret lands in a fresh empty paragraph just after the image.
@@ -1628,17 +1629,22 @@ impl WordProcessor {
             return;
         };
         // Store before changing the selection/text.  A quota rejection must be
-        // a no-op, not a split paragraph with a dangling blob reference.
-        let Some(hash) = self.ids.as_mut().and_then(|ids| {
+        // a no-op, not a split paragraph with a dangling content reference.
+        let hash = match self.content.put(bytes) {
+            Ok(hash) => hash,
+            Err(error) => {
+                eprintln!("word-processor: image not kept, nothing inserted: {error}");
+                return;
+            }
+        };
+        if let Some(ids) = self.ids.as_mut() {
             let mut dm = DocMut {
                 doc: state,
                 c: &containers,
                 ids,
             };
-            dm.put_blob(bytes)
-        }) else {
-            return;
-        };
+            dm.reference_content(&hash, &tilo_content::sniff(bytes));
+        }
         self.delete_selection(state);
         // Decode intrinsic dimensions up front (no doc borrow held), so the image
         // block can carry width/height attrs like the ODF importer does.
@@ -2240,16 +2246,7 @@ impl WordProcessor {
         // Match ordered_keys membership exactly; a map key alone is not enough.
         if self.region == Region::Body
             && self.containers.as_ref().is_some_and(|c| {
-                let Ok(Some((automerge::Value::Object(automerge::ObjType::Map), block))) =
-                    state.get(&c.blocks, &self.caret.block)
-                else {
-                    return false;
-                };
-                matches!(
-                    state.get(&block, qdoc::schema::BLOCK_ORDER),
-                    Ok(Some((automerge::Value::Scalar(value), _)))
-                        if matches!(value.as_ref(), automerge::ScalarValue::Bytes(_))
-                )
+                qdoc::model::region_block_len(state, c, Region::Body, &self.caret.block).is_some()
             })
         {
             self.caret.offset = self
@@ -2347,20 +2344,7 @@ impl WordProcessor {
     }
 
     // ---- region-aware writes (dispatch body vs. header/footer) -------------
-    // `splice`/`insert_block`/`set_attr`/`add_mark` have region-aware `*_in` qdoc
-    // ops; `remove_block`/`set_kind`/`remove_mark` do not yet, so for header/footer
-    // those are implemented here over raw automerge against the live region
-    // container (resolved fresh each call, never a stale cached id).
-
-    /// Resolve the active region's live block container object.
-    fn region_container_obj(&self, doc: &AutoCommit) -> Option<ObjId> {
-        let c = self.containers.as_ref()?;
-        match self.region {
-            Region::Body => Some(c.blocks.clone()),
-            Region::Header => region_map_obj(doc, &c.root, qdoc::schema::KEY_HEADER),
-            Region::Footer => region_map_obj(doc, &c.root, qdoc::schema::KEY_FOOTER),
-        }
-    }
+    // Each goes through the region-aware qdoc op (`*_in`) for the active region.
 
     fn region_splice(
         &mut self,
@@ -2433,49 +2417,31 @@ impl WordProcessor {
 
     fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
         let region = self.region;
-        if region == Region::Body {
-            let Some(containers) = self.containers.clone() else {
-                return;
-            };
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                dm.set_kind(block, kind);
-            }
+        let Some(containers) = self.containers.clone() else {
             return;
-        }
-        // Header/Footer: no `set_kind_in` exists yet — write the block `kind`
-        // scalar directly on the region block object.
-        if let Some(container) = self.region_container_obj(state)
-            && let Some(obj) = region_block_obj(state, &container, block)
-        {
-            let _ = state.put(&obj, qdoc::schema::BLOCK_KIND, kind);
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.set_kind_in(region, block, kind);
         }
     }
 
     fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
         let region = self.region;
-        if region == Region::Body {
-            let Some(containers) = self.containers.clone() else {
-                return;
-            };
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                dm.remove_block(block);
-            }
+        let Some(containers) = self.containers.clone() else {
             return;
-        }
-        // Header/Footer: no `remove_block_in` exists yet — delete the block key
-        // from the region container directly.
-        if let Some(container) = self.region_container_obj(state) {
-            let _ = state.delete(&container, block);
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.remove_block_in(region, block);
         }
     }
 
@@ -2530,28 +2496,16 @@ impl WordProcessor {
         name: &str,
     ) {
         let region = self.region;
-        if region == Region::Body {
-            let Some(containers) = self.containers.clone() else {
-                return;
-            };
-            if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                dm.remove_mark(block, start, end, name);
-            }
+        let Some(containers) = self.containers.clone() else {
             return;
-        }
-        // Header/Footer: no `remove_mark_in` exists yet — clear the mark over the
-        // range directly on the region block's Text object (mirrors the body
-        // `DocMut::remove_mark`, which uses `unmark(.., ExpandMark::After)`).
-        if let Some(container) = self.region_container_obj(state)
-            && let Some(obj) = region_block_obj(state, &container, block)
-            && let Some(tid) = qdoc::model::ensure_block_text(state, &obj)
-        {
-            let _ = state.unmark(&tid, name, start, end, automerge::marks::ExpandMark::After);
+        };
+        if let Some(ids) = self.ids.as_mut() {
+            let mut dm = DocMut {
+                doc: state,
+                c: &containers,
+                ids,
+            };
+            dm.remove_mark_in(region, block, start, end, name);
         }
     }
 
@@ -3187,6 +3141,7 @@ impl WordProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::ReadDoc;
     use automerge::{AutoCommit, ROOT};
     use tilo_automerge::ApplyIncoming;
 
@@ -3244,10 +3199,13 @@ mod tests {
             let (mut source, mut source_state) = bound();
             source.insert_str(&mut source_state, "Imported document");
             let bytes = format
-                .export(qdoc::DocRef {
-                    doc: &source_state,
-                    c: source.containers.as_ref().unwrap(),
-                })
+                .export(
+                    qdoc::DocRef {
+                        doc: &source_state,
+                        c: source.containers.as_ref().unwrap(),
+                    },
+                    &tilo_content::NoContent,
+                )
                 .unwrap();
             let (mut wp, mut state) = bound();
             state.put(ROOT, "host-marker", "preserve me").unwrap();
@@ -3413,8 +3371,14 @@ mod tests {
             wp.bind(&mut state, &ROOT);
             assert_eq!(wp.region, region);
             assert_eq!(wp.caret.offset, 12);
-            let container = wp.region_container_obj(&state).unwrap();
-            state.delete(&container, &wp.caret.block).unwrap();
+            let caret_block = wp.caret.block.clone();
+            let mut ids = wp.ids.clone().unwrap();
+            qdoc::DocMut {
+                doc: &mut state,
+                c: wp.containers.as_ref().unwrap(),
+                ids: &mut ids,
+            }
+            .remove_block_in(region, &caret_block);
             wp.bind(&mut state, &ROOT);
             assert_eq!(wp.region, Region::Body);
             assert_eq!(
@@ -4123,9 +4087,9 @@ mod tests {
             other => panic!("image block missing blob attr: {other:?}"),
         };
         assert_eq!(
-            snap.blobs.get(&hash).map(std::vec::Vec::as_slice),
+            wp.content_store().read(&hash).as_deref(),
             Some(TINY_PNG),
-            "blob bytes round-trip"
+            "image bytes round-trip through the content store"
         );
 
         // Intrinsic pixel dimensions were recorded (mirrors the ODF import path).

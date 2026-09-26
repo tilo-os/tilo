@@ -45,12 +45,13 @@ fn legacy_and_blank_production_sync_preserves_exact_graph() {
 #[test]
 fn same_path_changed_content_refreshes_actual_pixels() {
     let mut doc = AutoCommit::new();
-    let mut app = crate::PhotosApp::new();
+    let store = tilo_content::ContentStore::memory();
+    let mut app = crate::PhotosApp::with_content(store.clone());
     let mut expected = Vec::new();
     for color in [[255, 0, 0, 255], [0, 255, 0, 255]] {
         let rgba = crate::pixels::Rgba::new(2, 1, color.repeat(2)).unwrap();
         let bytes = crate::pixels::encode_png(&rgba).unwrap();
-        let hash = qdoc::blobstore::put(&bytes).unwrap();
+        let hash = store.put(&bytes).unwrap();
         let open = OpenImage::from_path("same.png", 2, 1).with_content(hash);
         PhotosDoc::set_image(&mut doc, Some(&open));
         app.sync(&mut doc, &ROOT);
@@ -125,7 +126,7 @@ fn prepared(
 fn image_fixture() -> (OpenImage, crate::pixels::Rgba, Vec<u8>) {
     let rgba = crate::shots_pattern(6, 4);
     let bytes = crate::pixels::encode_png(&rgba).unwrap();
-    let hash = qdoc::blobstore::put(&bytes).unwrap();
+    let hash = tilo_content::hash_bytes(&bytes);
     (
         OpenImage::from_path("same.png", 6, 4).with_content(hash),
         rgba,
@@ -226,7 +227,7 @@ fn same_path_old_new_restore_undo_redo_uses_actual_historic_pixels_and_current_m
     let new_bytes = crate::pixels::encode_png(&new_rgba).unwrap();
     let new = old
         .clone()
-        .with_content(qdoc::blobstore::put(&new_bytes).unwrap());
+        .with_content(tilo_content::hash_bytes(&new_bytes));
     let mut doc = AutoCommit::new();
     PhotosDoc::set_image(&mut doc, Some(&old));
     let selected = doc.get_heads()[0];
@@ -249,7 +250,10 @@ fn same_path_old_new_restore_undo_redo_uses_actual_historic_pixels_and_current_m
     driver.click_named("history-restore").unwrap();
     driver.key("Enter");
     driver.click_named("history-back-live").unwrap();
-    let mut app = crate::PhotosApp::new();
+    let store = tilo_content::ContentStore::memory();
+    store.put(&old_bytes).unwrap();
+    store.put(&new_bytes).unwrap();
+    let mut app = crate::PhotosApp::with_content(store);
     app.sync(&mut driver.state_mut().doc, &ROOT);
     assert_eq!(app.edited_pixels(), Some(&old_rgba));
     assert!(driver.state_mut().undo(None, None).is_some());
@@ -474,7 +478,7 @@ fn late_old_selection_compare_side_and_closed_host_assets_never_replace_current_
     .unwrap();
     let new = old
         .clone()
-        .with_content(qdoc::blobstore::hash_bytes(&new_bytes));
+        .with_content(tilo_content::hash_bytes(&new_bytes));
     let mut doc = AutoCommit::new();
     PhotosDoc::set_image(&mut doc, Some(&old));
     let selected = doc.get_heads()[0];
@@ -588,57 +592,17 @@ fn late_old_selection_compare_side_and_closed_host_assets_never_replace_current_
     driver.resize((1000, 750)).unwrap();
     assert_eq!(format!("{:?}", driver.a11y_nodes()), visible);
 }
+/// The preview is built only from the frozen snapshot and the assets admitted
+/// for it: it is handed no content store, and its source reaches for none.
 #[test]
-#[allow(
-    clippy::items_after_statements,
-    reason = "local effect spy fixture follows child-process isolation"
-)]
 fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport_access() {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    if std::env::var_os("QOS_PHOTOS_EFFECT_PROBE").is_none() {
-        let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport_access","--nocapture"]).env("QOS_PHOTOS_EFFECT_PROBE","1").output().unwrap();
-        assert!(
-            out.status.success(),
-            "{} {}",
-            String::from_utf8_lossy(&out.stdout),
-            String::from_utf8_lossy(&out.stderr)
-        );
-        return;
-    }
-    struct Spy(Arc<AtomicUsize>);
-    impl qdoc::blobstore::BlobStore for Spy {
-        fn put(&self, _: &[u8], _: &str) -> Result<String, qdoc::blobstore::BlobStoreError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Err(qdoc::blobstore::BlobStoreError::Unavailable("spy".into()))
-        }
-        fn cached(&self, _: &str) -> Option<Vec<u8>> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            None
-        }
-        fn fetch(&self, _: &str) -> qdoc::blobstore::Fetch {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            qdoc::blobstore::Fetch::Unavailable
-        }
-        fn has(&self, _: &str) -> bool {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            false
-        }
-        fn shared(&self) -> bool {
-            true
-        }
-    }
-    let calls = Arc::new(AtomicUsize::new(0));
-    qdoc::blobstore::set_store(Arc::new(Spy(calls.clone())));
     let bytes = crate::pixels::encode_png(&crate::shots_pattern(6, 4)).unwrap();
     let open = OpenImage::from_path("not-readable.png", 6, 4)
-        .with_content(qdoc::blobstore::hash_bytes(&bytes));
+        .with_content(tilo_content::hash_bytes(&bytes));
     let mut doc = AutoCommit::new();
     PhotosDoc::set_image(&mut doc, Some(&open));
     let heads = doc.get_heads();
-    // Invoke the production factory directly, excluding provider-only immutable lookup.
+    // Invoke the production factory directly, excluding the asset provider's lookup.
     let factory = crate::framework_history::HISTORY.scopes[0]
         .presentation
         .preview_factory()
@@ -655,7 +619,6 @@ fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport
     painted(p.as_mut(), 1000., 1.);
     p.accessibility();
     drop(p);
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
     assert_eq!(doc.get_heads(), heads);
     assert_eq!(doc.pending_ops(), 0);
     let source = include_str!("presentation.rs")
@@ -666,8 +629,8 @@ fn frozen_preparation_layout_navigation_and_drop_have_no_live_store_or_transport
         "PhotosApp",
         "bytes_of(",
         "std::fs",
-        "blobstore::get",
-        "blobstore::put",
+        "ContentStore",
+        "ContentSource",
         "portal::",
         "clipboard",
         "ActionHost",
@@ -723,7 +686,9 @@ fn supported_conflict_branches_preview_without_flattening_but_restore_refuses_co
 
 #[test]
 fn explicit_normal_edit_materializes_legacy_once_and_undo_restores_legacy_representation() {
-    let (open, _, _) = image_fixture();
+    let (open, _, bytes) = image_fixture();
+    let store = tilo_content::ContentStore::memory();
+    store.put(&bytes).unwrap();
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "image", serde_json::to_string(&Some(&open)).unwrap())
         .unwrap();
@@ -745,8 +710,12 @@ fn explicit_normal_edit_materializes_legacy_once_and_undo_restores_legacy_repres
     .unwrap();
     let heads = doc.get_heads();
     let expected = project_content(&doc, &crate::framework_history::SCHEMA).unwrap();
-    let mut driver =
-        ui::headless::Driver::new(ui::State::from_doc(doc), crate::app_root(), (1000, 750));
+    crate::strings::install();
+    let mut driver = ui::headless::Driver::new(
+        ui::State::from_doc(doc),
+        Box::new(crate::PhotosApp::with_content(store)),
+        (1000, 750),
+    );
     driver
         .perform_semantic_named(
             "PhotosApp",

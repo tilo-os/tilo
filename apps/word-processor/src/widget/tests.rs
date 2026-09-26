@@ -1643,7 +1643,11 @@ fn draw_renders_headings_and_bold() {
             ids: &mut ids,
         };
         MarkdownCodec
-            .import(b"# Title\n\nHello **bold** world\n", &mut dm)
+            .import(
+                b"# Title\n\nHello **bold** world\n",
+                &mut dm,
+                &mut tilo_content::ContentInputs::new(),
+            )
             .unwrap();
     }
     let mut wp = WordProcessorWidget::new();
@@ -2884,7 +2888,8 @@ fn inserted_image_lays_out_and_draws() {
 fn explicit_image_size_is_honored() {
     let mut state = ui::State::new();
     with_doc(&mut state, |dm| {
-        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
+        let hash = tilo_content::hash_bytes(TEST_PNG);
+        dm.reference_content(&hash, &tilo_content::sniff(TEST_PNG));
         let p = dm.insert_block(None, "paragraph");
         dm.splice_text(&p, 0, 0, "caption");
         let img = dm.insert_block(Some(&p), "image");
@@ -2894,6 +2899,7 @@ fn explicit_image_size_is_honored() {
         dm.set_attr(&img, "height", 120_i64);
     });
     let mut wp = WordProcessorWidget::new();
+    wp.model().content_store().put(TEST_PNG).unwrap();
     pipeline_draw(&mut wp, &mut state, 1100, 900);
 
     let img = wp
@@ -2924,7 +2930,8 @@ fn right_floated_image_narrows_following_paragraph() {
         // column geometry from, then the floated image, then the wrapped text.
         let r = dm.insert_block(None, "paragraph");
         dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
+        let hash = tilo_content::hash_bytes(TEST_PNG);
+        dm.reference_content(&hash, &tilo_content::sniff(TEST_PNG));
         let img = dm.insert_block(Some(&r), "image");
         dm.set_attr(&img, "blob", hash.as_str());
         dm.set_attr(&img, "anchor", "paragraph");
@@ -2940,6 +2947,7 @@ fn right_floated_image_narrows_following_paragraph() {
         );
     });
     let mut wp = WordProcessorWidget::new();
+    wp.model().content_store().put(TEST_PNG).unwrap();
     pipeline_draw(&mut wp, &mut state, 1100, 900);
 
     let reference = wp
@@ -3002,7 +3010,8 @@ fn left_floated_image_offsets_following_paragraph_right() {
     with_doc(&mut state, |dm| {
         let r = dm.insert_block(None, "paragraph");
         dm.splice_text(&r, 0, 0, "reference paragraph at full content width");
-        let hash = dm.put_blob(TEST_PNG).expect("test image fits blob quota");
+        let hash = tilo_content::hash_bytes(TEST_PNG);
+        dm.reference_content(&hash, &tilo_content::sniff(TEST_PNG));
         let img = dm.insert_block(Some(&r), "image");
         dm.set_attr(&img, "blob", hash.as_str());
         dm.set_attr(&img, "anchor", "paragraph");
@@ -3018,6 +3027,7 @@ fn left_floated_image_offsets_following_paragraph_right() {
         );
     });
     let mut wp = WordProcessorWidget::new();
+    wp.model().content_store().put(TEST_PNG).unwrap();
     pipeline_draw(&mut wp, &mut state, 1100, 900);
 
     let reference = wp
@@ -5513,7 +5523,10 @@ fn recovery_reuses_fresh_complete_views_and_falls_back_for_stale_or_partial_view
         }
         let c = wp.inner.containers.as_ref().unwrap();
         let expected = WpFormat::Markdown
-            .export(qdoc::DocRef { doc: &state.doc, c })
+            .export(
+                qdoc::DocRef { doc: &state.doc, c },
+                &tilo_content::NoContent,
+            )
             .unwrap();
         let scans = qdoc::model::ordered_keys_scan_count();
         for _ in 0..AUTOSAVE_EDIT_THRESHOLD {
@@ -5559,7 +5572,10 @@ fn autosave_writes_recovery_then_save_clears_it() {
     assert_eq!(
         std::fs::read(&recovery_path).unwrap(),
         WpFormat::Markdown
-            .export(qdoc::DocRef { doc: &state.doc, c })
+            .export(
+                qdoc::DocRef { doc: &state.doc, c },
+                &tilo_content::NoContent
+            )
             .unwrap(),
         "the snapshot includes the edit that reached the threshold"
     );
@@ -6759,7 +6775,8 @@ fn save_as_writes_a_real_docx_that_round_trips() {
             let b = dm.insert_block(None, "paragraph");
             dm.splice_text(&b, 0, 0, "Hello docx");
         });
-        crate::save_document(&state, &src, WpFormat::Docx).expect("write source docx");
+        crate::save_document(&state, &src, WpFormat::Docx, &tilo_content::NoContent)
+            .expect("write source docx");
     }
     assert!(
         std::fs::read(&src).unwrap().starts_with(b"PK"),
@@ -6767,7 +6784,8 @@ fn save_as_writes_a_real_docx_that_round_trips() {
     );
 
     // Open it into a running editor and confirm the text came through.
-    let (mut state, mut wp, fmt) = crate::open_document(&src).expect("open source docx");
+    let (mut state, mut wp, fmt) =
+        crate::open_document(&src, tilo_content::ContentStore::memory()).expect("open source docx");
     assert_eq!(fmt, WpFormat::Docx);
     wp.sync(&mut state.doc, &state.root);
     assert!(
@@ -6808,7 +6826,9 @@ fn save_as_writes_a_real_docx_that_round_trips() {
         "Save As wrote a real docx zip, not a markdown fallback"
     );
     // ... and it round-trips back through the opener with both texts intact.
-    let (mut state2, mut wp2, fmt2) = crate::open_document(&dest).expect("reopen the saved docx");
+    let (mut state2, mut wp2, fmt2) =
+        crate::open_document(&dest, tilo_content::ContentStore::memory())
+            .expect("reopen the saved docx");
     assert_eq!(fmt2, WpFormat::Docx);
     wp2.sync(&mut state2.doc, &state2.root); // bind containers before reading
     let reopened = body_text(&wp2, &state2).join("\n");
@@ -7331,7 +7351,8 @@ fn undo_after_opening_a_file_takes_back_the_edit_and_never_the_file() {
         br"{\rtf1\ansi Plain {\b bold} and {\i italic} words\par A {\ul second} paragraph\par}",
     )
     .unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     // Opening leaves nothing pending: the file is the document's committed starting point.
     assert_eq!(state.doc.pending_ops(), 0);
     let opened = body_content(&state.doc);
@@ -7374,7 +7395,8 @@ fn failed_save_as_preserves_source_identity_and_recovery_for_picker_and_action()
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("source.md");
     std::fs::write(&source, b"original source").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "edited ");
@@ -7424,7 +7446,8 @@ fn export_only_save_as_preserves_editable_path_and_recovery() {
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("source.md");
     std::fs::write(&source, b"original source").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "edited ");
@@ -7498,7 +7521,8 @@ fn failed_open_preserves_document_bytes_caret_and_file_identity() {
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("source.md");
     std::fs::write(&source, b"original source").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "unsaved ");
@@ -7569,7 +7593,8 @@ fn readonly_destination_save_as_preserves_source_and_destination() {
     let destination = dir.join("protected.md");
     std::fs::write(&source, b"source bytes").unwrap();
     std::fs::write(&destination, b"protected bytes").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "edited ");
@@ -7604,7 +7629,8 @@ fn open_pick_replaces_the_document_in_place() {
             let b = dm.insert_block(None, "paragraph");
             dm.splice_text(&b, 0, 0, "Opened via portal");
         });
-        crate::save_document(&state, &src, WpFormat::Docx).expect("write source docx");
+        crate::save_document(&state, &src, WpFormat::Docx, &tilo_content::NoContent)
+            .expect("write source docx");
     }
 
     // Start from a blank, untitled editor.
@@ -8680,7 +8706,8 @@ fn canonical_save_preserves_symlink_target_and_private_permissions() {
     std::fs::write(&target, b"original source").unwrap();
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o600)).unwrap();
     symlink("private.md", &link).unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&link).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&link, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "edited ");
@@ -8718,7 +8745,7 @@ fn canonical_save_preserves_symlink_target_and_private_permissions() {
     assert_eq!(wp.path.as_deref(), Some(link.as_path()));
     assert_eq!(wp.save_status, DocumentSaveStatus::Clean);
     // The public export/save API has the same target and permission contract.
-    crate::save_document(&state, &link, WpFormat::Markdown).unwrap();
+    crate::save_document(&state, &link, WpFormat::Markdown, &tilo_content::NoContent).unwrap();
     assert!(
         std::fs::symlink_metadata(&link)
             .unwrap()
@@ -8746,7 +8773,8 @@ fn unsupported_link_save_as_keeps_source_identity_and_bytes() {
     std::fs::write(&target, b"target bytes").unwrap();
     std::fs::hard_link(&target, &linked).unwrap();
     symlink("missing.md", &dangling).unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     wp.model_mut().insert_str(&mut state.doc, "edited ");
@@ -8789,7 +8817,8 @@ fn close_requirement_survives_cancelled_save_as_and_failed_canonical_save() {
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("source.md");
     std::fs::write(&source, "original source").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     assert!(wp.unsaved_documents(&state.doc).is_empty());
@@ -8874,7 +8903,8 @@ fn close_requirement_detects_host_undo_after_successful_save_without_widget_dirt
     std::fs::create_dir_all(&dir).unwrap();
     let source = dir.join("source.md");
     std::fs::write(&source, "before editing").unwrap();
-    let (mut state, mut wp, _) = crate::open_document(&source).unwrap();
+    let (mut state, mut wp, _) =
+        crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
     wp.set_recovery_dir(dir.clone());
     wp.sync(&mut state.doc, &state.root);
     state.commit_action(None, None);

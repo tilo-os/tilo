@@ -23,7 +23,7 @@
 //!
 //! **External → never an action:** voice / screen-share *transport*, media
 //! upload, and the network send itself. When a file is shared, the message **row
-//! insert** is the action (it carries the attachment *by reference* — a qdoc
+//! insert** is the action (it carries the attachment *by reference* — a
 //! content hash, display name, and bounded metadata, never a local path or the
 //! bytes); the media bytes remain outside the CRDT and hydrate on demand.
 //!
@@ -111,7 +111,7 @@ pub enum ChatOperation {
         user: String,
     },
     /// Start one local, bounded attachment import. The path is never
-    /// replicated; a successful worker result becomes a qdoc-backed
+    /// replicated; a successful worker result becomes a hash-only
     /// `SendMessage` only during the owner's next sync.
     ImportAttachment {
         channel: String,
@@ -161,8 +161,8 @@ pub enum ChatAction {
     /// authoring time and carried here, so replay is byte-identical. A chat
     /// message is discrete (not a co-edited flowing document), so a whole-message
     /// `text` payload is the correct grain. `parent` is `Some` for a threaded
-    /// reply. `attachment` references portable shared qdoc bytes by content
-    /// key, so a peer never needs the sender's filesystem path.
+    /// reply. `attachment` references portable shared bytes by content
+    /// hash, so a peer never needs the sender's filesystem path.
     SendMessage {
         channel: String,
         id: String,
@@ -1879,7 +1879,7 @@ fn build_message_resource(
 }
 
 /// The portable attachment is an addressable child of its message. Opening it
-/// deliberately reveals the owning message: qdoc hydration/opening happens in
+/// deliberately reveals the owning message: fetching/opening the bytes happens in
 /// the content app that knows the file type, whereas Chat's truthful action is
 /// to navigate to the durable conversation record that shared it.
 fn build_attachment_resource(

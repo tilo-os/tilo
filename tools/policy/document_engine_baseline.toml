@@ -1,0 +1,17 @@
+# Production code outside the document layer that still reaches into the CRDT
+# engine for document content (see check_document_engine_boundary.py). Counts
+# may only go down; lower an entry when you remove uses, and do not add files.
+
+[ratchets.rich_text_engine]
+# Notes keeps its page text as Automerge rich text of its own rather than as a
+# qdoc document.
+"apps/notes/src/doc.rs" = 5
+
+[ratchets.document_schema]
+# Cloud stack sites that predate this ratchet: the semantic read walks the
+# document through a bounded source, participant presence reads a caret
+# block's text, and edit validation reads a region block's order key. Move
+# them onto the qdoc document API and lower these to zero.
+"apps/word-processor/src/actions.rs" = 1
+"apps/word-processor/src/semantic_read.rs" = 7
+"apps/word-processor/src/widget/participants.rs" = 1

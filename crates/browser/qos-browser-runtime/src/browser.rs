@@ -167,7 +167,6 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
         return Ok(p);
     }
     crate::clipboard::install();
-    qdoc::blobstore::set_store(Arc::new(qdoc::blobstore::MemoryBlobStore::default()));
     let event_loop = EventLoop::<u64>::with_user_event().build().map_err(error)?;
     let proxy = event_loop.create_proxy();
     LOOP.with_borrow_mut(|p| *p = Some(proxy.clone()));
@@ -1529,10 +1528,9 @@ pub fn complete_asset(
     bytes: Option<Vec<u8>>,
 ) -> Result<bool, JsValue> {
     if let (Some(hash), Some(bytes)) = (url.strip_prefix("qos-blob://"), bytes.as_ref()) {
-        if !qdoc::blobstore::verify(hash, bytes) {
+        if !tilo_content::verify(hash, bytes) {
             return Err(error("asset bytes do not match their content hash"));
         }
-        qdoc::blobstore::put(bytes).ok_or_else(|| error("the content store refused the asset"))?;
     }
     MOUNTS.with_borrow_mut(|m| {
         let m = m.get_mut(&id).ok_or_else(|| error("closed mount"))?;

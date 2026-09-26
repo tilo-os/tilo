@@ -43,6 +43,9 @@ tilo-actions = { path = "../../crates/collab/actions" }
 # summons is recorded in (`Message::work`, `ChatAction::SetAgentWork`).
 tilo-reference = { path = "../../crates/collab/reference" }
 qdoc = { path = "../../crates/doc/qdoc" }
+# Content addressing everywhere; the on-disk and device stores only natively
+# (the browser build keeps content in memory).
+tilo-content = { path = "../../crates/system/content", default-features = false }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -55,7 +58,7 @@ taffy.workspace = true
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 # Read image headers for workspace attachments and encode demo thumbnails for
 # the shared `ui::ImageStore`.
-# Attachment bytes hydrate through qdoc's content-addressed blob store; no
+# Attachment bytes live in the app's content store; no
 # sender-local path is stored in the chat document.
 image = { workspace = true, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
@@ -75,6 +78,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 media = { path = "../../crates/media/core", default-features = false }
 # The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical

@@ -3718,7 +3718,7 @@ impl NotesApp {
     /// syncs like any other; the bytes stay in the notebook until the store
     /// has them.
     fn offer_inline_asset_move(&mut self, state: &mut AutoCommit) {
-        if self.inline_assets_offered || !qdoc::blobstore::store().shared() {
+        if self.inline_assets_offered || !crate::notebook::content().shared() {
             return;
         }
         self.inline_assets_offered = true;

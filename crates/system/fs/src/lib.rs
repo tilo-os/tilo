@@ -19,6 +19,8 @@ pub mod authenticated_transport;
 #[cfg(feature = "filesystem")]
 pub mod availability;
 #[cfg(feature = "filesystem")]
+mod blob_access;
+#[cfg(feature = "filesystem")]
 pub mod caps_file;
 #[cfg(feature = "filesystem")]
 pub mod clock;
@@ -69,6 +71,8 @@ pub mod record_mesh;
 pub mod record_protocol;
 #[cfg(feature = "filesystem")]
 pub mod record_publisher;
+#[cfg(feature = "filesystem")]
+pub mod record_reconcile;
 #[cfg(feature = "filesystem")]
 pub mod record_replication;
 #[cfg(feature = "filesystem")]

@@ -17,6 +17,9 @@ web-time = { version = "1", features = ["serde"] }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
+# Binary inputs (images, binary package parts) are referenced by content address; the bytes live
+# in the caller's content store.
+tilo-content = { path = "../../system/content", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -24,7 +27,6 @@ tracing.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
-tempfile.workspace = true
 
 [[test]]
 name = "it"

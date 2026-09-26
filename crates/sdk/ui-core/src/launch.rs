@@ -1139,10 +1139,11 @@ fn run_with_args_with_attachment(
     attach: impl FnOnce(&str) -> std::io::Result<()>,
 ) -> Result<(), LaunchError> {
     let _detached = crate::wake::WakeScope::enter_detached();
-    // Document media goes to the content store the launcher connected, in
-    // every mode that was handed one (live, headless drives, captures).
+    // Take the content-store capability the launcher handed this process
+    // before anything else can, in every mode that was handed one (live,
+    // headless drives, captures); the app's store is that device store.
     #[cfg(all(unix, feature = "native"))]
-    crate::native::blobs::install_from_environment();
+    let _ = tilo_content::ContentStore::device();
     let args = parse_args_extended(
         raw_args,
         spec.allowed_flags,

@@ -90,7 +90,7 @@ pub fn load_thumb(path: &Path, w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 /// Decode a verified shared-media blob. Callers obtain these bytes only from
-/// qdoc after hash verification; this function still applies the same file
+/// the content store after hash verification; this function still applies the same file
 /// and decoded-pixel caps as the local-path route.
 pub fn load_thumb_bytes(bytes: &[u8], w: u32, h: u32) -> Option<(Vec<u8>, u32, u32)> {
     bounded_bytes_dimensions(bytes)?;
@@ -115,7 +115,7 @@ pub fn load_luma(path: &Path, max: u32) -> Option<(Vec<u8>, usize, usize)> {
 }
 
 /// Decode verified shared-media bytes into a bounded luma image. This is the
-/// portable counterpart to [`load_luma`], used only after qdoc hash checks.
+/// portable counterpart to [`load_luma`], used only after content-store hash checks.
 pub fn load_luma_bytes(bytes: &[u8], max: u32) -> Option<(Vec<u8>, usize, usize)> {
     bounded_bytes_dimensions(bytes)?;
     let img = image::load_from_memory(bytes).ok()?;
@@ -126,7 +126,7 @@ pub fn load_luma_bytes(bytes: &[u8], max: u32) -> Option<(Vec<u8>, usize, usize)
 
 /// Inspect a shared image header before decoding any pixels. `image` decoders
 /// can otherwise try to allocate from attacker-controlled dimensions even
-/// when qdoc has already verified the byte hash.
+/// when the content store has already verified the byte hash.
 fn bounded_bytes_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.is_empty() || bytes.len() > MAX_IMAGE_FILE_BYTES as usize {
         return None;

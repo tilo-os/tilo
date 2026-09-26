@@ -24,16 +24,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 image::Rgba([(x * 5) as u8, (y * 7) as u8, ((x * 13 + y * 17) % 256) as u8, 255])
             });
             image.save(out)?;
-            json!({"width":48,"height":32,"hash":qdoc::blobstore::hash_bytes(&std::fs::read(out)?)})
+            json!({"width":48,"height":32,"hash":tilo_content::hash_bytes(&std::fs::read(out)?)})
         }
         [_, cmd, profile, source_path, resource, output] if cmd == "image" => {
             let hash = tilo_actions::content_hash(resource).ok_or("not canonical content resource")?;
             if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
                 return Err("not a BLAKE3 address".into());
             }
-            let shard = hash.get(..2).ok_or("not a BLAKE3 address")?;
-            let bytes = std::fs::read(Path::new(profile).join("blobs").join(shard).join(hash))?;
-            if qdoc::blobstore::hash_bytes(&bytes) != hash { return Err("blob hash mismatch".into()); }
+            // `read` verifies the bytes against the address that named them.
+            let bytes = tilo_content::ContentStore::in_dir(Path::new(profile).join("blobs"))
+                .read(hash)
+                .ok_or("blob unavailable or hash mismatch")?;
             let source = image::open(source_path)?.to_rgba8();
             let edited = image::load_from_memory(&bytes)?.to_rgba8();
             if source.dimensions() != (48, 32) || edited.dimensions() != (32, 32) {

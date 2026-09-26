@@ -42,7 +42,7 @@ impl PickEntry {
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "gif", "bmp"];
 
 /// Video containers the picker offers. The selected local source is imported
-/// into qdoc's content-addressed blob store before the inline card is posted;
+/// into the app's content store before the inline card is posted;
 /// default builds do not decode video frames (see [`crate::model::Attachment::Video`]).
 const VIDEO_EXTS: &[&str] = &["mp4", "webm", "mov", "mkv", "m4v", "avi", "ogv"];
 

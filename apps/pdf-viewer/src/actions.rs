@@ -472,7 +472,7 @@ pub enum PdfViewerAction {
         imported: Option<ImportedPage>,
     },
     /// Content-addressed pages, inserted atomically after `after_id`. The
-    /// payload contains only immutable descriptors; qdoc transports the bytes.
+    /// payload carries content hashes, never bytes; the content store holds those.
     ImportPages {
         after_id: Option<String>,
         pages: Vec<PagePlanEntry>,
@@ -1968,56 +1968,84 @@ impl ResourceProvider for crate::app::PdfApp {
 mod tests {
     use super::*;
     use crate::app::PdfApp;
-    use qdoc::blobstore::{
-        self, BlobStore, BlobStoreError, BlobStoreLimits, CachedContentStore, ContentStoreClient,
-        Fetch, MemoryBlobStore,
-    };
-    use serial_test::serial;
-    use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
+    use std::collections::BTreeSet;
+    use std::io::Read;
+    use std::sync::Mutex;
     use tilo_actions::{ActionInput, ActionRegistry, LocalTransport};
+    use tilo_content::{
+        ContentBackend, ContentError, ContentReader, ContentState, ContentStore, MemoryBackend,
+        Stored,
+    };
     use ui::widget::Widget;
 
-    /// One device's content store. A read it cannot answer from its own
-    /// bytes starts a fetch from the collaborator's device and answers
-    /// `Pending`, as the filesystem daemon does; the bytes are its own once
-    /// the fetch lands. Two of these never share a process-global store.
-    #[derive(Default)]
-    struct DeviceStore {
-        own: Mutex<BTreeMap<String, Vec<u8>>>,
-        collaborator: Option<Arc<DeviceStore>>,
+    /// Peer B's content backend: its own local content, plus a peer (A) it
+    /// fetches from. A miss is not served synchronously; it asks the peer,
+    /// reports the fetch as pending, and installs the bytes (verified against
+    /// the hash that named them) for a later read. The two peers share nothing.
+    struct PeerFetchingBackend {
+        local: MemoryBackend,
+        peer: ContentStore,
+        requested: Mutex<BTreeSet<String>>,
     }
 
-    impl ContentStoreClient for DeviceStore {
-        fn put(&self, bytes: &[u8], _mime: &str) -> Result<String, BlobStoreError> {
-            let hash = blobstore::hash_bytes(bytes);
-            if let Ok(mut own) = self.own.lock() {
-                own.insert(hash.clone(), bytes.to_vec());
+    impl PeerFetchingBackend {
+        fn new(peer: ContentStore) -> Self {
+            Self {
+                local: MemoryBackend::default(),
+                peer,
+                requested: Mutex::new(BTreeSet::new()),
             }
-            Ok(hash)
         }
 
-        fn read(&self, hash: &str) -> Fetch {
-            if let Some(bytes) = self.own.lock().ok().and_then(|own| own.get(hash).cloned()) {
-                return Fetch::Ready(bytes);
+        /// Ask the peer for `hash`; the answer lands locally on the next
+        /// `state` query, like a transfer completing between frames.
+        fn want(&self, hash: &str) {
+            if let Ok(mut requested) = self.requested.lock() {
+                requested.insert(hash.to_string());
             }
-            let fetched = self
-                .collaborator
-                .as_ref()
-                .and_then(|peer| peer.own.lock().ok().and_then(|own| own.get(hash).cloned()));
-            match fetched {
-                Some(bytes) => {
-                    if let Ok(mut own) = self.own.lock() {
-                        own.insert(hash.to_string(), bytes);
-                    }
-                    Fetch::Pending
-                }
-                None => Fetch::Unavailable,
+        }
+
+        fn settle(&self, hash: &str) {
+            let wanted = self
+                .requested
+                .lock()
+                .is_ok_and(|mut requested| requested.remove(hash));
+            if wanted && let Some(mut reader) = self.peer.open(hash) {
+                let _ = self.local.put(&mut reader, "");
             }
+        }
+    }
+
+    impl ContentBackend for PeerFetchingBackend {
+        fn put(&self, reader: &mut dyn Read, mime: &str) -> Result<Stored, ContentError> {
+            self.local.put(reader, mime)
+        }
+
+        fn open(&self, hash: &str) -> Result<Option<ContentReader>, ContentError> {
+            let found = self.local.open(hash)?;
+            if found.is_none() {
+                self.want(hash);
+            }
+            Ok(found)
         }
 
         fn has(&self, hash: &str) -> bool {
-            self.own.lock().is_ok_and(|own| own.contains_key(hash))
+            self.local.has(hash)
+        }
+
+        fn state(&self, hash: &str) -> ContentState {
+            self.settle(hash);
+            if self.local.has(hash) {
+                ContentState::Resolved
+            } else if self
+                .requested
+                .lock()
+                .is_ok_and(|requested| requested.contains(hash))
+            {
+                ContentState::Pending
+            } else {
+                ContentState::Unavailable
+            }
         }
     }
 
@@ -2390,41 +2418,46 @@ mod tests {
     }
 
     #[test]
-    #[serial(pdf_blobstore)]
-    fn imported_bytes_reach_a_collaborator_through_the_content_store_not_the_action() {
-        let producer = Arc::new(DeviceStore::default());
-        blobstore::set_store(Arc::new(CachedContentStore::new(
-            producer.clone(),
-            BlobStoreLimits::default(),
-        )));
+    fn imported_bytes_cross_between_content_stores_without_entering_the_action() {
+        let producer = ContentStore::memory();
+        let consumer = ContentStore::new(PeerFetchingBackend::new(producer.clone()));
         let bytes = b"content that is deliberately not in Automerge";
-        let hash = blobstore::put(bytes).expect("test fixture fits blob quota");
+        let hash = producer
+            .put(bytes)
+            .expect("test fixture fits the content quota");
         assert!(producer.has(&hash));
-
-        let consumer = Arc::new(DeviceStore {
-            own: Mutex::default(),
-            collaborator: Some(producer),
-        });
-        let consumer_view = Arc::new(CachedContentStore::new(
-            consumer.clone(),
-            BlobStoreLimits::default(),
-        ));
-        blobstore::set_store(consumer_view.clone());
         assert!(!consumer.has(&hash));
-        // First read is intentionally non-blocking; the device fetches.
-        assert!(blobstore::get(&hash).is_none());
-        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Pending);
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        assert_eq!(blobstore::get(&hash).as_deref(), Some(bytes.as_slice()));
-        assert_eq!(blobstore::state(&hash), blobstore::BlobState::Resolved);
-        assert!(consumer.has(&hash));
-        assert_eq!(
-            consumer_view.cached(&hash).as_deref(),
-            Some(bytes.as_slice())
-        );
-        blobstore::set_store(Arc::new(MemoryBlobStore::default()));
+        assert_eq!(consumer.state(&hash), ContentState::Unavailable);
+
+        // The action names the content by hash only.
+        let pages = vec![PagePlanEntry {
+            id: "imported".into(),
+            source_page: 1,
+            imported: Some(ImportedPage {
+                hash: hash.clone(),
+                kind: "image".into(),
+                page: 1,
+                width_milli: 1_000,
+                height_milli: 1_000,
+            }),
+            rotation: 0,
+        }];
+        let action = import_pages_action(None, pages);
+        let encoded = format!("{action:?}");
+        assert!(encoded.contains(&hash));
+        assert!(!encoded.contains("deliberately not in Automerge"));
+
+        // First read is intentionally non-blocking; it asks the peer.
+        assert!(consumer.read(&hash).is_none());
+        assert_eq!(consumer.state(&hash), ContentState::Resolved);
+        assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
+        // Different bytes can never be stored under this address.
+        assert_ne!(consumer.put(b"tampered").ok().as_ref(), Some(&hash));
+        assert_eq!(consumer.read(&hash).as_deref(), Some(bytes.as_slice()));
     }
 
+    /// Single source of truth: a palette "Edit comment" spec and a directly built
+    /// edit action encode byte-identically, as do the immediate delete specs.
     #[test]
     fn large_document_snapshot_is_bounded_and_omitted_pages_resolve_lazily() {
         let page_count = CONTEXTUAL_CHILD_LIMIT + 9;

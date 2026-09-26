@@ -202,7 +202,7 @@ pub(crate) fn bind_file_choice(
         generation.to_be_bytes().to_vec(),
         path.as_os_str().as_encoded_bytes().to_vec(),
         vec![format_tag(format)],
-        qdoc::blobstore::hash_bytes(bytes).into_bytes(),
+        tilo_content::hash_bytes(bytes).into_bytes(),
     ];
     for spec in &mut resource.actions {
         *spec = pure(spec.clone(), "retained-file-choice.v1", parts.clone());
@@ -238,6 +238,7 @@ mod tests {
             }),
             region: RegionKind::Body,
             search_hits: vec![],
+            content: tilo_content::ContentStore::memory(),
         };
         (doc, ctx)
     }

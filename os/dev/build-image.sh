@@ -188,6 +188,9 @@ if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
     *) die "unsupported native sccache architecture" ;;
   esac
   _tilo_native_assets+=("sccache-v${_tilo_sccache_version}-${TILO_WINDOWS_ARCH}-unknown-linux-musl.tar.gz")
+  _tilo_mold_version=$(sed -nE 's/^ARG MOLD_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
+  [[ "$_tilo_mold_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned mold version"
+  _tilo_native_assets+=("mold-${_tilo_mold_version}-${TILO_WINDOWS_ARCH}-linux.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
 else
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
@@ -354,6 +357,30 @@ export TILO_GENERATION
 # Browser opt-out (see the header). Exported as a build-arg either way so the
 # value is explicit in the build log.
 : "${TILO_WITH_BROWSER:=1}"
+
+# Rust LTO for the in-image compile (os/Containerfile, builder stage): thin for a
+# publication, which is what TILO_REQUIRE_PCR_PREDICTION=1 marks here and in CI,
+# and off for everything else. Off relinks a one-crate change in seconds; thin
+# relinks every binary's whole dependency graph, uncacheably. The image records
+# the choice in its org.tilo.rust-lto label.
+if [ -z "${TILO_RUST_LTO:-}" ]; then
+  if [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" = 1 ]; then TILO_RUST_LTO=thin; else TILO_RUST_LTO=off; fi
+fi
+case "$TILO_RUST_LTO" in
+  thin|off) ;;
+  *) die "TILO_RUST_LTO must be thin or off, not '$TILO_RUST_LTO'" ;;
+esac
+[ "$TILO_RUST_LTO" = thin ] || [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] \
+  || die "a publication (TILO_REQUIRE_PCR_PREDICTION=1) is built with TILO_RUST_LTO=thin"
+# Link jobs: a thin-LTO link holds a binary's whole program in memory, so the
+# Containerfile's default stays conservative; without LTO a link is light, and
+# the compile may use the machine.
+if [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] && [ "$TILO_RUST_LTO" = off ]; then
+  TILO_CARGO_BUILD_JOBS="$(nproc 2>/dev/null || echo 4)"
+  [ "$TILO_CARGO_BUILD_JOBS" -le 8 ] || TILO_CARGO_BUILD_JOBS=8
+fi
+_tilo_jobs_args=()
+[ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
 # Retained development payloads have their own provenance, including an unknown
 # original compilation epoch. Never present them as a current producer build.
 if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
@@ -448,6 +475,8 @@ build_image() {
   fi
   podman "${_tilo_podman_args[@]}" build -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
+    --build-arg "TILO_RUST_LTO=$TILO_RUST_LTO" \
+    "${_tilo_jobs_args[@]}" \
     "${_tilo_build_args[@]}" \
     "${_tilo_wpe_args[@]}" \
     "${_tilo_native_builder_args[@]}" \
@@ -496,7 +525,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  code.podesta.ai/qos/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; generation=$TILO_GENERATION)"
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; generation=$TILO_GENERATION)"
   if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
       --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \
@@ -654,6 +683,11 @@ case "$require_prediction:$allow_local_prediction" in
   0:0|0:1|1:0|1:1) ;;
   *) die "TILO_REQUIRE_PCR_PREDICTION and TILO_ALLOW_LOCAL_PCR_SIGNING must be 0 or 1" ;;
 esac
+if [ "$require_prediction" = 1 ]; then
+  _tilo_image_lto="$(podman image inspect --format '{{index .Labels "org.tilo.rust-lto"}}' "$TILO_IMAGE" 2>/dev/null || true)"
+  [ "$_tilo_image_lto" = thin ] \
+    || die "$TILO_IMAGE is labelled org.tilo.rust-lto='$_tilo_image_lto'; a publication ships thin-LTO binaries (TILO_RUST_LTO=thin)"
+fi
 if [ "$require_prediction" = 1 ] || [ "$allow_local_prediction" = 1 ]; then
   [ -n "${TILO_PCR_PREDICTION_SIGNER:-}" ] \
     || die "PCR prediction signing was requested but no TILO_PCR_PREDICTION_SIGNER is configured"

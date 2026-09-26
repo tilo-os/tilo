@@ -4,15 +4,29 @@ use super::{
     WordProcessorWidget, WpFormat, t,
 };
 
+#[cfg(test)]
 pub(super) fn same_file_content(
     document: &AutoCommit,
     bytes: &[u8],
     format: WpFormat,
 ) -> Result<bool, String> {
+    same_file_content_with(document, bytes, format, &tilo_content::NoContent)
+}
+
+/// Whether `bytes` project to the same document as `document` in `format`,
+/// exporting the images `document` references from `content`.
+pub(super) fn same_file_content_with(
+    document: &AutoCommit,
+    bytes: &[u8],
+    format: WpFormat,
+    content: &dyn tilo_content::ContentSource,
+) -> Result<bool, String> {
     fn normalize(bytes: &[u8], format: WpFormat) -> Result<qdoc::snapshot::DocSnapshot, String> {
         let mut parsed = AutoCommit::new();
         let containers = qdoc::model::init(&mut parsed, &automerge::ROOT);
         let mut ids = qdoc::IdGen::new("selected-file-comparison".into());
+        // Embedded content is compared by the address the document names.
+        let mut inputs = tilo_content::ContentInputs::new();
         format
             .import(
                 bytes,
@@ -21,6 +35,7 @@ pub(super) fn same_file_content(
                     c: &containers,
                     ids: &mut ids,
                 },
+                &mut inputs,
             )
             .map_err(|error| error.to_string())?;
         Ok(qdoc::model::materialize(&parsed, &containers))
@@ -28,10 +43,13 @@ pub(super) fn same_file_content(
     let containers =
         qdoc::model::open(document, &automerge::ROOT).map_err(|error| error.to_string())?;
     let projected = format
-        .export(qdoc::DocRef {
-            doc: document,
-            c: &containers,
-        })
+        .export(
+            qdoc::DocRef {
+                doc: document,
+                c: &containers,
+            },
+            content,
+        )
         .map_err(|error| error.to_string())?;
     // Compare the selected format's complete projection, with deterministic
     // scratch IDs. Neither scratch graph is merged into the admitted document.
@@ -61,7 +79,7 @@ impl WordProcessorWidget {
         bytes: Vec<u8>,
         format: WpFormat,
     ) -> Result<(), String> {
-        let same = same_file_content(document, &bytes, format)?;
+        let same = same_file_content_with(document, &bytes, format, self.inner.content_store())?;
         self.set_file(path.clone(), format);
         if same {
             self.remember_open_document(document);
@@ -362,6 +380,7 @@ mod tests {
                     c: &containers,
                     ids: &mut ids,
                 },
+                &mut tilo_content::ContentInputs::new(),
             )
             .unwrap();
         document.commit();

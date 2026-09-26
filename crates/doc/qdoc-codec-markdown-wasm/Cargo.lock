@@ -343,6 +343,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "tilo-automerge",
+ "tilo-content",
  "tracing",
  "web-time",
 ]
@@ -354,6 +355,7 @@ dependencies = [
  "format-provider-abi",
  "qdoc",
  "qdoc-codecs",
+ "tilo-content",
 ]
 
 [[package]]
@@ -363,6 +365,7 @@ dependencies = [
  "pulldown-cmark",
  "qdoc",
  "thiserror",
+ "tilo-content",
 ]
 
 [[package]]
@@ -538,6 +541,15 @@ name = "tilo-automerge"
 version = "0.1.0"
 dependencies = [
  "automerge",
+]
+
+[[package]]
+name = "tilo-content"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]

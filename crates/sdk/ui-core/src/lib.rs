@@ -126,8 +126,6 @@ pub(crate) mod application_test_support;
 pub mod app;
 pub mod auth_backdrop;
 pub mod background;
-#[cfg(all(unix, feature = "native"))]
-pub use native::blobs;
 pub mod caps_lock;
 pub mod capture;
 pub mod chart_palette;

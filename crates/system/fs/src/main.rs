@@ -1374,8 +1374,13 @@ async fn replica_workspace(
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             };
+            // Unchanged heads before and after the save prove it persisted
+            // exactly the generation just verified.
+            let unchanged_before = replica_namespace_fingerprint(&namespace) == after;
             match persist_namespace_generation(&namespace, path) {
-                Ok(persisted) if persisted == after => {
+                Ok(persisted)
+                    if unchanged_before && replica_namespace_fingerprint(&namespace) == after =>
+                {
                     status.namespace_generation = Some(hex::encode(persisted));
                 }
                 Ok(_) => {
@@ -1399,12 +1404,13 @@ async fn replica_workspace(
     }
 }
 
-fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> [u8; 32] {
-    let bytes = namespace
+/// The namespace's generation for change detection: its Automerge heads
+/// (every change moves them), not a hash of a full save every heartbeat.
+fn replica_namespace_fingerprint(namespace: &Arc<Mutex<Namespace>>) -> Vec<automerge::ChangeHash> {
+    namespace
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .save();
-    *blake3::hash(&bytes).as_bytes()
+        .heads()
 }
 
 #[allow(
@@ -2974,10 +2980,34 @@ fn persist_namespace_generation(
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let bytes = namespace.save();
+    let digest = *blake3::hash(&bytes).as_bytes();
+    // Bytes this process produced with `save()` (now, or at its last write
+    // of this path) are a valid document by construction; parsing them
+    // again costs a full document load per save, under the namespace lock.
+    // Anything else found on disk is still fully validated.
+    let last = persisted_digests()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(path)
+        .copied();
     fs::durable_backup::write(path, &bytes, |candidate| {
-        Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
+        let candidate_digest = *blake3::hash(candidate).as_bytes();
+        candidate_digest == digest
+            || Some(candidate_digest) == last
+            || Namespace::from_bytes("namespace-backup-validator", candidate).is_ok()
     })?;
-    Ok(*blake3::hash(&bytes).as_bytes())
+    persisted_digests()
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(path.to_path_buf(), digest);
+    Ok(digest)
+}
+
+/// The digest of the namespace document this process last wrote per path.
+fn persisted_digests() -> &'static Mutex<std::collections::HashMap<PathBuf, [u8; 32]>> {
+    static DIGESTS: std::sync::OnceLock<Mutex<std::collections::HashMap<PathBuf, [u8; 32]>>> =
+        std::sync::OnceLock::new();
+    DIGESTS.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 fn load_namespace(path: &Path, author: String) -> Result<Namespace> {
@@ -3002,11 +3032,42 @@ fn report_namespace_recovery(path: &Path, recovery: Option<&fs::durable_backup::
 }
 
 /// Persist the namespace to disk every few seconds.
+/// Persists the namespace once it settles after a change. Signed records
+/// are durable the moment they are published; a namespace persisted only
+/// every few seconds could lose the placements of records a crash left
+/// published, which a restart then reads as deletions. A change is saved
+/// after 500 ms without further changes, or after 3 s of continuous ones,
+/// so a burst is one save and an intermediate state of it is rarely one.
+/// Checking the document's heads is cheap; an idle namespace costs nothing.
 fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task::JoinHandle<()> {
+    const QUIET: Duration = Duration::from_millis(500);
+    const MAX_DELAY: Duration = Duration::from_secs(3);
     tokio::spawn(async move {
+        let mut persisted = None;
+        let mut seen = None;
+        let mut seen_at = tokio::time::Instant::now();
+        let mut dirty_since: Option<tokio::time::Instant> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(3)).await;
-            persist_now(&namespace, &path);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            let heads = namespace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .heads();
+            let now = tokio::time::Instant::now();
+            if seen.as_ref() != Some(&heads) {
+                seen = Some(heads.clone());
+                seen_at = now;
+            }
+            if persisted.as_ref() == Some(&heads) {
+                dirty_since = None;
+                continue;
+            }
+            let since = *dirty_since.get_or_insert(now);
+            if now.duration_since(seen_at) >= QUIET || now.duration_since(since) >= MAX_DELAY {
+                persist_now(&namespace, &path);
+                persisted = Some(heads);
+                dirty_since = None;
+            }
         }
     })
 }
@@ -3107,8 +3168,10 @@ async fn run_mount(
     let storage_availability = availability.clone();
     let storage_eviction_queue = eviction_queue.clone();
     let storage_history = history.as_ref().map(|(history, _)| Arc::clone(history));
+    let durable_namespace = Arc::clone(&namespace);
     let fs = QuickFS::new(namespace, hydrator, heuristics)
-        .with_checked_history_workspace(checked_history_workspace);
+        .with_checked_history_workspace(checked_history_workspace)
+        .with_document_content(tilo_content::ContentStore::for_app());
     let fs = if allow_legacy_record_migration {
         fs
     } else {
@@ -3243,6 +3306,9 @@ async fn run_mount(
             read_only,
         )?
     {
+        if let Some(path) = namespace_path(predictive_cache_root.as_deref()) {
+            fs.set_durability_hook(Arc::new(move || persist_now(&durable_namespace, &path)));
+        }
         let outcome = run_native(fs, cfg, native_sync, rebind).await;
         if let Some(task) = predictive_policy_task {
             task.abort();
@@ -3470,6 +3536,7 @@ async fn seed_from_dir(
     root: &Path,
 ) -> Result<()> {
     let registry = qdoc_codecs::builtin_registry();
+    let document_content = tilo_content::ContentStore::for_app();
     let mut stack = vec![(ROOT_INO, root.to_path_buf())];
     while let Some((parent_ino, dir)) = stack.pop() {
         for entry in std::fs::read_dir(&dir)? {
@@ -3499,7 +3566,7 @@ async fn seed_from_dir(
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
                     if let Some(ino) = ns.create_document(parent_ino, &name, &c, unix_now_ms()) {
-                        ns.import_document(ino, &registry, &data, unix_now_ms());
+                        ns.import_document(ino, &registry, &data, unix_now_ms(), &document_content);
                     }
                 } else {
                     let size = data.len() as u64;

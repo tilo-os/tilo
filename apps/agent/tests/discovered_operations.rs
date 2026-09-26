@@ -23,6 +23,7 @@ use tilo_automerge::ApplyIncoming;
 use automerge::AutoCommit;
 use tilo_actions::{Resource, ResourceProvider};
 use tilo_agent::{Config, Session};
+use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 use uuid::Uuid;
 
@@ -83,7 +84,7 @@ fn blocks(doc: &AutoCommit) -> Vec<qdoc::BlockView> {
     qdoc::model::materialize(doc, &c).blocks
 }
 
-fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
+fn word_processor_resources(doc: &AutoCommit, content: &ContentStore) -> Vec<Resource> {
     let b = blocks(doc);
     let caret = b.last().map(|block| block.id.clone()).unwrap_or_default();
     word_processor::actions::provide_resources(
@@ -95,6 +96,7 @@ fn word_processor_resources(doc: &AutoCommit) -> Vec<Resource> {
             selection: None,
             region: word_processor::actions::RegionKind::Body,
             search_hits: Vec::new(),
+            content: content.clone(),
         },
         doc,
     )
@@ -134,6 +136,7 @@ fn run(
     }
 
     let room = typed_peer::room();
+    let content = ContentStore::memory();
     let mut peer = UnixStream::connect(&sock);
     send(
         &mut peer,
@@ -161,7 +164,11 @@ fn run(
         .recv_timeout(Duration::from_secs(5))
         .expect("agent never established its route subscriptions");
     std::thread::sleep(Duration::from_millis(250));
-    typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
+    typed_peer::publish_actions(
+        &mut peer,
+        APP,
+        &word_processor_resources(&replica, &content),
+    );
     send(&mut peer, &CollabRequest::document_snapshot(replica.save())).unwrap();
 
     peer.set_read_timeout(Some(Duration::from_millis(200)));
@@ -176,7 +183,11 @@ fn run(
         };
         match event {
             CollabEvent::DocumentSnapshotRequested { .. } => {
-                typed_peer::publish_actions(&mut peer, APP, &word_processor_resources(&replica));
+                typed_peer::publish_actions(
+                    &mut peer,
+                    APP,
+                    &word_processor_resources(&replica, &content),
+                );
                 let snap = CollabRequest::document_snapshot(replica.save());
                 send(&mut peer, &snap).unwrap();
             }
@@ -188,7 +199,7 @@ fn run(
                 actor,
                 ..
             } => {
-                let resources = word_processor_resources(&replica);
+                let resources = word_processor_resources(&replica, &content);
                 let update = typed_peer::service_document_invocation(
                     &mut peer,
                     &mut replica,
@@ -250,6 +261,7 @@ fn a_discovered_destructive_operation_requires_explicit_confirmation() {
             settle: Duration::ZERO,
             directory: None,
             permissions: granted("Scribe", "word-processor"),
+            content: ContentStore::memory(),
         },
         replica,
         |doc| {
@@ -332,6 +344,7 @@ fn a_discovered_operation_is_performed_once_under_the_agents_own_actor() {
             settle: Duration::ZERO,
             directory: None,
             permissions: granted("Scribe", "word-processor"),
+            content: ContentStore::memory(),
         },
         replica,
         |doc| {
@@ -408,7 +421,11 @@ fn connect_word_processor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Au
 /// Connect the photo-editor peer to `sock` under the same room, announce it,
 /// and seed its replica with one open image — a second application's
 /// document the agent was never told about.
-fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, AutoCommit) {
+fn connect_photo_editor(
+    sock: &std::path::Path,
+    room: Uuid,
+    content: &ContentStore,
+) -> (UnixStream, AutoCommit) {
     let mut photo_peer = UnixStream::connect(sock);
     send(
         &mut photo_peer,
@@ -425,10 +442,10 @@ fn connect_photo_editor(sock: &std::path::Path, room: Uuid) -> (UnixStream, Auto
     photos::doc::PhotosDoc::seed(&mut photo_replica);
     let png = photos::pixels::encode_png(&photos::shots_pattern(40, 24))
         .expect("the source photograph encodes");
-    let content = qdoc::blobstore::put(&png).expect("test fixture fits blob quota");
+    let original = content.put(&png).expect("the source photograph is stored");
     photos::doc::PhotosDoc::set_image(
         &mut photo_replica,
-        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&content)),
+        Some(&photos::OpenImage::from_path("photo.png", 40, 24).with_content(&original)),
     );
     photo_replica.commit();
     (photo_peer, photo_replica)
@@ -468,6 +485,7 @@ fn word_processor_and_photos_permissions() -> ui::permissions::PermissionContext
 fn drive_photo_peer(
     mut photo_peer: UnixStream,
     mut photo_replica: AutoCommit,
+    content: &ContentStore,
     photo_ready_tx: &std::sync::mpsc::SyncSender<()>,
 ) -> AutoCommit {
     photo_peer.set_read_timeout(Some(Duration::from_millis(200)));
@@ -533,6 +551,7 @@ fn drive_photo_peer(
                                     &source_content,
                                     edits,
                                     &photo_replica,
+                                    content,
                                 ),
                                 _ => Err("the export descriptor did not encode an export".into()),
                             });
@@ -594,6 +613,7 @@ fn drive_photo_peer(
 fn drive_word_processor_peer(
     mut wp_peer: UnixStream,
     mut wp_replica: AutoCommit,
+    content: &ContentStore,
     photo_ready_rx: &std::sync::mpsc::Receiver<()>,
 ) -> (AutoCommit, bool) {
     wp_peer.set_read_timeout(Some(Duration::from_millis(200)));
@@ -605,7 +625,11 @@ fn drive_word_processor_peer(
     // `send` queues the photo snapshot asynchronously. Let the broker deliver
     // it before revealing the instruction and its consuming action.
     std::thread::sleep(Duration::from_millis(250));
-    typed_peer::publish_actions(&mut wp_peer, APP, &word_processor_resources(&wp_replica));
+    typed_peer::publish_actions(
+        &mut wp_peer,
+        APP,
+        &word_processor_resources(&wp_replica, content),
+    );
     send(
         &mut wp_peer,
         &CollabRequest::document_snapshot(wp_replica.save()),
@@ -641,7 +665,7 @@ fn drive_word_processor_peer(
                 actor,
                 ..
             } => {
-                let resources = word_processor_resources(&wp_replica);
+                let resources = word_processor_resources(&wp_replica, content);
                 let update = typed_peer::service_document_invocation(
                     &mut wp_peer,
                     &mut wp_replica,
@@ -694,6 +718,9 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
 
     // The photo editor: a second application's document, in the same room,
     // that the agent was never told about.
+    // One content store stands in for the room's: the photo editor's export
+    // lands in it and the word processor places what it finds there.
+    let content = ContentStore::memory();
     let photo_socket = sock.clone();
     std::thread::sleep(Duration::from_millis(100));
 
@@ -714,6 +741,7 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
         settle: Duration::ZERO,
         directory: None,
         permissions,
+        content: content.clone(),
     };
     let (agent_ready_tx, agent_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
     let agent = std::thread::spawn(move || {
@@ -737,13 +765,15 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
     // processor to answer, which is what pins the order rather than hoping
     // for it.
     let (photo_ready_tx, photo_ready_rx) = std::sync::mpsc::sync_channel::<()>(1);
+    let photo_content = content.clone();
     let photo_thread = std::thread::spawn(move || {
         // The typed collaboration manager is local to its owning thread.
-        let (photo_peer, photo_replica) = connect_photo_editor(&photo_socket, room);
-        drive_photo_peer(photo_peer, photo_replica, &photo_ready_tx)
+        let (photo_peer, photo_replica) = connect_photo_editor(&photo_socket, room, &photo_content);
+        drive_photo_peer(photo_peer, photo_replica, &photo_content, &photo_ready_tx)
     });
 
-    let (wp_replica, done) = drive_word_processor_peer(wp_peer, wp_replica, &photo_ready_rx);
+    let (wp_replica, done) =
+        drive_word_processor_peer(wp_peer, wp_replica, &content, &photo_ready_rx);
 
     let acted = agent.join().unwrap();
     let photo_replica = photo_thread
@@ -781,7 +811,7 @@ fn one_action_result_is_carried_into_the_next_app_without_model_authored_content
         })
         .expect("the carried image has a content hash");
     assert!(
-        qdoc::blobstore::get(placed).is_some(),
+        content.has(placed),
         "the plan inserted an invented or unavailable content hash"
     );
 }
@@ -813,6 +843,7 @@ fn without_the_capability_a_discovered_operation_is_never_performed() {
             settle: Duration::ZERO,
             directory: None,
             permissions: nothing_granted("Scribe"),
+            content: ContentStore::memory(),
         },
         replica,
         |doc| {

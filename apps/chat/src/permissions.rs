@@ -54,7 +54,7 @@ impl ChatPermissions {
     }
 
     /// May this peer hydrate + render the bytes behind an attachment `blob`?
-    /// A valid qdoc/demo identity plus workspace Read. Attachments belong to
+    /// A valid content-hash/demo identity plus workspace Read. Attachments belong to
     /// the conversation, not a peer-local filesystem path, so a viewer who
     /// can read the room can hydrate the room's verified shared bytes.
     pub fn can_embed(&self, blob: &str) -> bool {

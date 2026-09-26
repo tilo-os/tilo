@@ -27,7 +27,9 @@ app-state = { path = "../../crates/system/app-state" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-actions = { path = "../../crates/collab/actions" }
 # Images live in the device content store; the notebook keeps references.
-qdoc = { path = "../../crates/doc/qdoc" }
+# Content addressing everywhere; the on-disk and device stores only natively
+# (the browser build keeps content in memory).
+tilo-content = { path = "../../crates/system/content", default-features = false }
 automerge.workspace = true
 tilo-automerge.workspace = true
 blake3.workspace = true
@@ -54,6 +56,7 @@ path = "tests/it.rs"
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["portal"] }
 
 # The browser runtime embeds this app in wasm32, where the toolkit is the

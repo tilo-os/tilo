@@ -731,6 +731,11 @@ impl RecordReplica {
         Ok(self.restored_snapshot())
     }
 
+    /// The selected content revision, without materialising a snapshot.
+    pub(crate) fn current_content_revision(&self) -> Option<ContentRevisionV1> {
+        self.content_revision.map(|(_, value)| value)
+    }
+
     /// Materialized view of state already authenticated and durably restored
     /// by the repository. This never crosses a request boundary; it exists for
     /// crash-recovery reconciliation only.

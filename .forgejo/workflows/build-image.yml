@@ -239,19 +239,7 @@ jobs:
         env:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
-        run: |
-          set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
-          . os/dev/configure-cosign-kms.sh
-          resolved="$RUNNER_TEMP/os-release-signing-authority.pub"
-          cosign public-key --key "$COSIGN_KEY_REF" > "$resolved"
-          cmp --silent keys/cosign.pub "$resolved" || {
-            echo '::error::OS KMS/HSM authority does not match keys/cosign.pub'
-            exit 1
-          }
+        run: os/dev/require-cosign-authority.sh
 
   build-and-push:
     needs: [plan, signing-preflight]
@@ -326,24 +314,10 @@ jobs:
             echo '::notice::installed-desktop gate will use the bounded QEMU TCG fallback'
           fi
 
-      - name: Restore checksum-verified GitHub build inputs
-        id: github-assets-cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      - name: Materialize checksum-verified external build inputs
+        uses: ./.forgejo/actions/cache-github-assets
         with:
-          path: os/external-assets/cache
-          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-          restore-keys: |
-            github-assets-all-v1-
-
-      - name: Materialize immutable GitHub build inputs
-        run: ./os/dev/cache-github-assets.sh
-
-      - name: Save checksum-verified GitHub build inputs immediately
-        if: steps.github-assets-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: os/external-assets/cache
-          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
+          key: github-assets-all-v1
 
       # Fail before the expensive image build if a crate is outside the workspace.
       - name: Workspace membership guard
@@ -572,6 +546,7 @@ jobs:
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
         run: |
           set -euo pipefail
+          python3 os/dev/require-private-oci-owner.py
           if ! command -v podman >/dev/null; then
             if command -v apt-get >/dev/null; then
               sudo -n apt-get -o Acquire::Retries=3 update
@@ -902,10 +877,15 @@ jobs:
               exit 1
             }
             echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> "$GITHUB_ENV"
+            # Published images keep thin LTO; every other build links without
+            # it (os/Containerfile, TILO_RUST_LTO), which is what makes a
+            # one-crate rebuild relink in seconds rather than fifteen minutes.
+            echo 'TILO_RUST_LTO=thin' >> "$GITHUB_ENV"
             echo "TILO_PCR_PREDICTION_SIGNER=$PROTECTED_PCR_PREDICTION_SIGNER" >> "$GITHUB_ENV"
             echo "TILO_EFI_SIGNING_CERT_SHA256=$PROTECTED_EFI_SIGNING_CERT_SHA256" >> "$GITHUB_ENV"
           else
             echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
+            echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
@@ -1104,7 +1084,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1163,7 +1144,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1232,7 +1214,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1303,7 +1286,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1396,7 +1380,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.podesta.ai/qos/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2' }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
@@ -1698,6 +1683,10 @@ jobs:
           fi
 
           if [[ '${{ steps.release-mode.outputs.publish }}' == true ]]; then
+            if [[ '${{ needs.plan.outputs.hardware-profile }}' == lenovo-83ed ]]; then
+              REGISTRY_TOKEN="$TILO_REGISTRY_TOKEN" \
+                python3 os/dev/require-private-oci-owner.py
+            fi
             # Upload through a non-channel candidate tag. latest, semver and
             # genN are promoted only after signature, SBOM and provenance
             # verification, so update clients cannot observe a half-published
@@ -1760,10 +1749,6 @@ jobs:
           COSIGN_KEY_REF: ${{ secrets.COSIGN_KEY_REF }}
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo "::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key"; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           cosign sign --yes --key "$COSIGN_KEY_REF" \
             "code.podesta.ai/qos/tilo@${{ steps.release.outputs.digest }}"
@@ -1936,18 +1921,11 @@ jobs:
       - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
         with:
           path: release-children
-      - name: Restore checksum-verified release tools
-        id: release-tools-cache
-        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+      # Promotion needs only Cosign, not the multi-gigabyte build-input cache.
+      - name: Install checksum-pinned Cosign
+        uses: ./.forgejo/actions/install-cosign
         with:
-          path: os/external-assets/cache
-          key: github-assets-all-v1-${{ hashFiles('os/external-assets/github-assets.tsv') }}
-          restore-keys: |
-            github-assets-all-v1-
-      - name: Materialize immutable release tools
-        run: |
-          ./os/dev/cache-github-assets.sh
-          ./os/dev/install-cached-cosign.sh
+          cache-architecture: ${{ runner.arch }}
       - name: Install OCI index tooling
         run: |
           set -euo pipefail
@@ -1974,10 +1952,6 @@ jobs:
           AWS_SIGNING_ROLE_ARN: ${{ secrets.AWS_SIGNING_ROLE_ARN }}
         run: |
           set -euo pipefail
-          case "$COSIGN_KEY_REF" in
-            gcpkms://*|awskms://*|azurekms://*|hashivault://*) ;;
-            *) echo '::error::COSIGN_KEY_REF must name a non-exportable KMS/HSM key'; exit 1 ;;
-          esac
           . os/dev/configure-cosign-kms.sh
           mapfile -t descriptors < <(find release-children -type f -name '*.json' -print | LC_ALL=C sort)
           [[ ${#descriptors[@]} -eq 2 ]] || {
@@ -2190,12 +2164,14 @@ jobs:
           password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Verify and publish immutable Lenovo ARM64 image
         env:
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
           FEX_PAYLOAD_CANDIDATE: ${{ github.event.inputs.fex_payload_candidate }}
           WINDOWS_GUEST_CANDIDATE: ${{ github.event.inputs.windows_guest_candidate }}
         run: |
           set -euo pipefail
+          python3 os/dev/require-private-oci-owner.py
           child=release-child/aarch64.json
           digest="$(jq -er --arg source "$GITHUB_SHA" '
             select(.architecture == "aarch64" and .sourceRevision == $source and .generation == 1)

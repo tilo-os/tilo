@@ -356,12 +356,19 @@ fn prepare_launch_inputs(
     let (room, room_autosave) = ui::persist::open_room("so.tilo.word-processor", &room_id);
     let records = ui::RecordSet::for_local_files("so.tilo.word-processor")?.with_home(room_id);
     let (mut state, widget): (State, Box<dyn Widget>) = if let Some(path) = file_arg(args) {
-        let (state, widget, _) = word_processor::open_document_with_records(path, &records)?;
+        let (state, widget, _) = word_processor::open_document_with_records(
+            path,
+            &records,
+            tilo_content::ContentStore::for_app(),
+        )?;
         (state, Box::new(widget))
     } else {
         let reader = records.file_history_reader()?;
         reader.require_local_creation()?;
         let mut widget = WordProcessorWidget::new();
+        widget
+            .model_mut()
+            .set_content_store(tilo_content::ContentStore::for_app());
         widget.retain_file_history(reader);
         (State::new(), Box::new(widget))
     };
@@ -482,26 +489,29 @@ fn seed_revisions(state: &mut State, wp: &mut WordProcessorWidget) -> Result<(),
     Ok(())
 }
 
-/// Like [`build`] but keeps the concrete widget type.
+/// Like [`build`] but keeps the concrete widget type, and keeps images in memory: headless
+/// frames leave nothing behind.
 fn build_concrete(file: Option<&Path>) -> Result<(State, WordProcessorWidget), Box<dyn Error>> {
     match file {
         Some(p) => {
-            let (state, widget, _fmt) = open_document(p)?;
+            let (state, widget, _fmt) = open_document(p, tilo_content::ContentStore::memory())?;
             Ok((state, widget))
         }
         None => Ok((State::new(), WordProcessorWidget::new())),
     }
 }
 
-/// Build the document state + widget: open `file` if given, else a blank doc.
+/// Build the document state + widget: open `file` if given, else a blank doc. The document's
+/// images live in the app's content store.
 fn build(file: Option<&Path>) -> Result<(State, Box<dyn Widget>), Box<dyn Error>> {
-    match file {
-        Some(p) => {
-            let (state, widget, _fmt) = open_document(p)?;
-            Ok((state, Box::new(widget)))
-        }
-        None => Ok((State::new(), Box::new(WordProcessorWidget::new()))),
+    let content = tilo_content::ContentStore::for_app();
+    if let Some(p) = file {
+        let (state, widget, _fmt) = open_document(p, content)?;
+        return Ok((state, Box::new(widget)));
     }
+    let mut widget = WordProcessorWidget::new();
+    widget.model_mut().set_content_store(content);
+    Ok((State::new(), Box::new(widget)))
 }
 
 /// Render a single headless frame to `out` (mirrors the other apps' `--shots`).
