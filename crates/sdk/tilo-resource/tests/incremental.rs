@@ -182,45 +182,48 @@ fn random_action(replica: &mut Replica<Notebook>, rng: &mut Lcg, step: usize) {
 }
 
 #[test]
-fn the_refreshed_state_equals_a_full_read_after_every_action() {
-    let mut rng = Lcg(7);
-    let mut replica = Replica::<Notebook>::new();
-    replica.live().unwrap();
-    for step in 0..400 {
-        random_action(&mut replica, &mut rng, step);
-        let full = replica.state().unwrap();
-        assert_eq!(replica.live().unwrap(), &full, "after step {step}");
-    }
-}
-
-#[test]
-fn the_refreshed_state_follows_merged_collaborators_and_raw_changes() {
-    let mut rng = Lcg(11);
-    let mut left = Replica::<Notebook>::new();
-    for step in 0..20 {
-        random_action(&mut left, &mut rng, step);
-    }
-    let mut right = left.fork();
-    left.live().unwrap();
-    for round in 0..30 {
-        for step in 0..3 {
-            random_action(&mut left, &mut rng, round * 10 + step);
-            random_action(&mut right, &mut rng, round * 10 + step + 5);
+fn the_refreshed_state_equals_a_full_read_after_actions_and_merges() {
+    // phase: the_refreshed_state_equals_a_full_read_after_every_action
+    {
+        let mut rng = Lcg(7);
+        let mut replica = Replica::<Notebook>::new();
+        replica.live().unwrap();
+        for step in 0..400 {
+            random_action(&mut replica, &mut rng, step);
+            let full = replica.state().unwrap();
+            assert_eq!(replica.live().unwrap(), &full, "after step {step}");
         }
-        left.sync_with(&mut right).unwrap();
-        let full = left.state().unwrap();
-        assert_eq!(left.live().unwrap(), &full, "after round {round}");
     }
-    // A change outside the resource's actions (a restore to an old version
-    // writes the old values back) is followed too.
-    let old = left.versions()[5].hash;
-    let past = left.state_at(&[old]).unwrap();
-    let mut doc = left.doc().clone();
-    tilo_resource::Fields::write_fields(&past, &mut doc, &tilo_resource::__private::ROOT).unwrap();
-    doc.commit();
-    left.doc_mut().merge_incoming(&mut doc).unwrap();
-    let full = left.state().unwrap();
-    assert_eq!(left.live().unwrap(), &full);
+    // phase: the_refreshed_state_follows_merged_collaborators_and_raw_changes
+    {
+        let mut rng = Lcg(11);
+        let mut left = Replica::<Notebook>::new();
+        for step in 0..20 {
+            random_action(&mut left, &mut rng, step);
+        }
+        let mut right = left.fork();
+        left.live().unwrap();
+        for round in 0..30 {
+            for step in 0..3 {
+                random_action(&mut left, &mut rng, round * 10 + step);
+                random_action(&mut right, &mut rng, round * 10 + step + 5);
+            }
+            left.sync_with(&mut right).unwrap();
+            let full = left.state().unwrap();
+            assert_eq!(left.live().unwrap(), &full, "after round {round}");
+        }
+        // A change outside the resource's actions (a restore to an old version
+        // writes the old values back) is followed too.
+        let old = left.versions()[5].hash;
+        let past = left.state_at(&[old]).unwrap();
+        let mut doc = left.doc().clone();
+        tilo_resource::Fields::write_fields(&past, &mut doc, &tilo_resource::__private::ROOT)
+            .unwrap();
+        doc.commit();
+        left.doc_mut().merge_incoming(&mut doc).unwrap();
+        let full = left.state().unwrap();
+        assert_eq!(left.live().unwrap(), &full);
+    }
 }
 
 #[test]

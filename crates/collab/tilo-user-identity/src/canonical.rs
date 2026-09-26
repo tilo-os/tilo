@@ -127,51 +127,56 @@ mod tests {
         b: String,
     }
 
+    /// Values round-trip via canonical bytes, trailing bytes are rejected, the domain tag changes
+    /// the digest, and the digest is deterministic.
     #[test]
-    fn round_trip_via_canonical_bytes() {
-        let f = Fixture {
-            a: 42,
-            b: "hi".into(),
-        };
-        let bytes = canonical_bytes(&f).unwrap();
-        let back: Fixture = from_canonical_bytes(&bytes).unwrap();
-        assert_eq!(f, back);
-    }
+    fn canonical_bytes_round_trip_exactly_and_digests_are_domain_separated() {
+        // Phase: round_trip_via_canonical_bytes.
+        {
+            let f = Fixture {
+                a: 42,
+                b: "hi".into(),
+            };
+            let bytes = canonical_bytes(&f).unwrap();
+            let back: Fixture = from_canonical_bytes(&bytes).unwrap();
+            assert_eq!(f, back);
+        }
 
-    #[test]
-    fn rejects_trailing_bytes() {
-        let f = Fixture {
-            a: 1,
-            b: "x".into(),
-        };
-        let mut bytes = canonical_bytes(&f).unwrap();
-        bytes.push(0xff);
-        assert!(from_canonical_bytes::<Fixture>(&bytes).is_err());
-    }
+        // Phase: rejects_trailing_bytes.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "x".into(),
+            };
+            let mut bytes = canonical_bytes(&f).unwrap();
+            bytes.push(0xff);
+            assert!(from_canonical_bytes::<Fixture>(&bytes).is_err());
+        }
 
-    /// Different domain tags produce different digests even for
-    /// the same body — pinning the domain-separation property.
-    #[test]
-    fn domain_tag_changes_digest() {
-        let f = Fixture {
-            a: 1,
-            b: "same".into(),
-        };
-        let d1 = signing_digest(b"tag-a\0", &f).unwrap();
-        let d2 = signing_digest(b"tag-b\0", &f).unwrap();
-        assert_ne!(d1, d2);
-    }
+        // Phase: domain_tag_changes_digest.
+        // Different domain tags produce different digests even for
+        // the same body — pinning the domain-separation property.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "same".into(),
+            };
+            let d1 = signing_digest(b"tag-a\0", &f).unwrap();
+            let d2 = signing_digest(b"tag-b\0", &f).unwrap();
+            assert_ne!(d1, d2);
+        }
 
-    /// Digest is deterministic across independent runs.
-    #[test]
-    fn digest_is_deterministic() {
-        let f = Fixture {
-            a: 1,
-            b: "same".into(),
-        };
-        assert_eq!(
-            signing_digest(b"tag-a\0", &f).unwrap(),
-            signing_digest(b"tag-a\0", &f).unwrap(),
-        );
+        // Phase: digest_is_deterministic.
+        // Digest is deterministic across independent runs.
+        {
+            let f = Fixture {
+                a: 1,
+                b: "same".into(),
+            };
+            assert_eq!(
+                signing_digest(b"tag-a\0", &f).unwrap(),
+                signing_digest(b"tag-a\0", &f).unwrap(),
+            );
+        }
     }
 }

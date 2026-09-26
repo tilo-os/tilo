@@ -283,46 +283,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn proxy_socket_path_uses_uid_and_pid() {
-        let p = proxy_socket_path(1000, 4242);
-        assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
-    }
-
-    #[test]
-    fn sandbox_bus_env_matches_sandbox_bus_path() {
-        assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
-        assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
+    fn proxy_paths_env_and_binary_lookup() {
+        // Phase `proxy_socket_path_uses_uid_and_pid`.
+        {
+            let p = proxy_socket_path(1000, 4242);
+            assert_eq!(p, PathBuf::from("/run/user/1000/tilo/dbus-proxy/4242.sock"));
+        }
+        // Phase `sandbox_bus_env_matches_sandbox_bus_path`.
+        {
+            assert_eq!(sandbox_bus_env(1000), "unix:path=/run/user/1000/bus");
+            assert_eq!(sandbox_bus_path(1000), PathBuf::from("/run/user/1000/bus"));
+        }
+        // Phase `find_proxy_binary_honours_env_override`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let bin = tmp.path().join("xdg-dbus-proxy-mock");
+            std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+            // Env var wins.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(PROXY_BIN_ENV, &bin);
+            let found = find_proxy_binary().expect("env override");
+            assert_eq!(found, bin);
+        }
+        // Phase `find_proxy_binary_returns_none_when_env_points_at_nonexistent`.
+        {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            // Empty PATH so the fallback can't find a real binary.
+            env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
+                .set("PATH", "");
+            let found = find_proxy_binary();
+            // Put `PATH` back before asserting.
+            drop(env);
+            assert!(
+                found.is_none(),
+                "expected None with bad env + empty PATH, got {found:?}"
+            );
+        }
     }
 
     // The proxy binary is located through `PROXY_BIN_ENV` and `PATH`, which
     // is the interface these two pin.
-
-    #[test]
-    fn find_proxy_binary_honours_env_override() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bin = tmp.path().join("xdg-dbus-proxy-mock");
-        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
-        // Env var wins.
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set(PROXY_BIN_ENV, &bin);
-        let found = find_proxy_binary().expect("env override");
-        assert_eq!(found, bin);
-    }
-
-    #[test]
-    fn find_proxy_binary_returns_none_when_env_points_at_nonexistent() {
-        let mut env = tilo_test_env::ScopedEnv::new();
-        // Empty PATH so the fallback can't find a real binary.
-        env.set(PROXY_BIN_ENV, "/nonexistent/xdg-dbus-proxy")
-            .set("PATH", "");
-        let found = find_proxy_binary();
-        // Put `PATH` back before asserting.
-        drop(env);
-        assert!(
-            found.is_none(),
-            "expected None with bad env + empty PATH, got {found:?}"
-        );
-    }
 
     /// Mock proxy fixture: writes a marker to `argv[2]` (the socket path)
     /// so callers waiting on socket existence see it, then becomes a
@@ -358,47 +358,49 @@ exit 1
     }
 
     #[test]
-    fn spawn_and_drop_reaps_the_child() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mock = write_mock_proxy(tmp.path());
-        let socket = tmp.path().join("dbus-proxy.sock");
-        let mut guard =
-            spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
-        let pid = guard.pid().expect("proxy pid");
-        assert!(socket.exists(), "socket marker should be present");
-        // /proc/<pid> is present as long as the process is running.
-        assert!(
-            PathBuf::from(format!("/proc/{pid}")).exists(),
-            "proxy pid {pid} should be running"
-        );
-        guard.terminate();
-        // After terminate the socket should be gone and the pid should have
-        // been reaped (no zombie).
-        assert!(!socket.exists(), "socket should be removed on terminate");
-    }
-
-    #[test]
-    fn drop_terminates_when_terminate_not_called() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mock = write_mock_proxy(tmp.path());
-        let socket = tmp.path().join("dbus-proxy.sock");
-        let pid = {
-            let guard =
+    fn proxy_child_is_reaped_on_drop() {
+        // Phase `spawn_and_drop_reaps_the_child`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let mock = write_mock_proxy(tmp.path());
+            let socket = tmp.path().join("dbus-proxy.sock");
+            let mut guard =
                 spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
-            guard.pid().expect("proxy pid")
-        };
-        // Give Drop's SIGTERM + wait a moment to propagate.
-        std::thread::sleep(Duration::from_millis(200));
-        assert!(!socket.exists(), "socket should be removed on drop");
-        // /proc/<pid> disappears once the kernel reaps the exited process; poll
-        // briefly to avoid a schedule race.
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while PathBuf::from(format!("/proc/{pid}")).exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+            let pid = guard.pid().expect("proxy pid");
+            assert!(socket.exists(), "socket marker should be present");
+            // /proc/<pid> is present as long as the process is running.
+            assert!(
+                PathBuf::from(format!("/proc/{pid}")).exists(),
+                "proxy pid {pid} should be running"
+            );
+            guard.terminate();
+            // After terminate the socket should be gone and the pid should have
+            // been reaped (no zombie).
+            assert!(!socket.exists(), "socket should be removed on terminate");
         }
-        assert!(
-            !PathBuf::from(format!("/proc/{pid}")).exists(),
-            "proxy pid {pid} should have been reaped after Drop"
-        );
+        // Phase `drop_terminates_when_terminate_not_called`.
+        {
+            let tmp = tempfile::tempdir().unwrap();
+            let mock = write_mock_proxy(tmp.path());
+            let socket = tmp.path().join("dbus-proxy.sock");
+            let pid = {
+                let guard =
+                    spawn_dbus_proxy(&mock, "unix:path=/dev/null/nope", &socket).expect("spawn");
+                guard.pid().expect("proxy pid")
+            };
+            // Give Drop's SIGTERM + wait a moment to propagate.
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(!socket.exists(), "socket should be removed on drop");
+            // /proc/<pid> disappears once the kernel reaps the exited process; poll
+            // briefly to avoid a schedule race.
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while PathBuf::from(format!("/proc/{pid}")).exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(
+                !PathBuf::from(format!("/proc/{pid}")).exists(),
+                "proxy pid {pid} should have been reaped after Drop"
+            );
+        }
     }
 }

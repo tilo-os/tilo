@@ -125,39 +125,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn focused_lane_is_centered_wide_and_fluid_compact() {
-        let lane = FocusedContentLane::new();
-        assert_eq!(
-            lane.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)),
-            Rect::new(160.0, 0.0, 1120.0, 800.0)
-        );
-        assert_eq!(
-            lane.layout(Rect::new(0.0, 0.0, 320.0, 640.0)),
-            Rect::new(12.0, 0.0, 308.0, 640.0)
-        );
-    }
+    fn content_lanes_and_control_bars_reflow_and_collapse_safely() {
+        // Case `focused_lane_is_centered_wide_and_fluid_compact`.
+        {
+            let lane = FocusedContentLane::new();
+            assert_eq!(
+                lane.layout(Rect::new(0.0, 0.0, 1280.0, 800.0)),
+                Rect::new(160.0, 0.0, 1120.0, 800.0)
+            );
+            assert_eq!(
+                lane.layout(Rect::new(0.0, 0.0, 320.0, 640.0)),
+                Rect::new(12.0, 0.0, 308.0, 640.0)
+            );
+        }
 
-    #[test]
-    fn invalid_custom_metrics_collapse_safely() {
-        let lane = FocusedContentLane::new().max_width(-1.0).gutter(-1.0);
-        assert_eq!(lane.layout(Rect::new(0.0, 0.0, 400.0, 600.0)).width(), 0.0);
-    }
+        // Case `invalid_custom_metrics_collapse_safely`.
+        {
+            let lane = FocusedContentLane::new().max_width(-1.0).gutter(-1.0);
+            assert_eq!(lane.layout(Rect::new(0.0, 0.0, 400.0, 600.0)).width(), 0.0);
+        }
 
-    #[test]
-    fn responsive_control_bar_reflows_and_uses_the_same_reserved_height() {
-        let policy = ResponsiveControlBar::new(880.0).wrapped_min_width(440.0);
-        assert_eq!(policy.height(1000.0), CONTROL_BAR_SINGLE_ROW_HEIGHT);
-        assert_eq!(policy.height(640.0), CONTROL_BAR_WRAPPED_HEIGHT);
-        assert_eq!(policy.height(360.0), CONTROL_BAR_STACKED_HEIGHT);
-        assert_eq!(policy.row_count(360.0), 3);
-        let narrow = Rect::new(0.0, 10.0, 640.0, 86.0);
-        assert_eq!(policy.row_center(narrow, 0), 31.0);
-        assert_eq!(policy.row_center(narrow, 1), 65.0);
-        let stacked = Rect::new(0.0, 10.0, 360.0, 120.0);
-        assert_eq!(policy.row_center(stacked, 2), 99.0);
-        assert_eq!(
-            policy.row_center(Rect::new(0.0, 10.0, 1000.0, 52.0), 1),
-            31.0
-        );
+        // Case `responsive_control_bar_reflows_and_uses_the_same_reserved_height`.
+        {
+            let policy = ResponsiveControlBar::new(880.0).wrapped_min_width(440.0);
+            assert_eq!(policy.height(1000.0), CONTROL_BAR_SINGLE_ROW_HEIGHT);
+            assert_eq!(policy.height(640.0), CONTROL_BAR_WRAPPED_HEIGHT);
+            assert_eq!(policy.height(360.0), CONTROL_BAR_STACKED_HEIGHT);
+            assert_eq!(policy.row_count(360.0), 3);
+            let narrow = Rect::new(0.0, 10.0, 640.0, 86.0);
+            assert_eq!(policy.row_center(narrow, 0), 31.0);
+            assert_eq!(policy.row_center(narrow, 1), 65.0);
+            let stacked = Rect::new(0.0, 10.0, 360.0, 120.0);
+            assert_eq!(policy.row_center(stacked, 2), 99.0);
+            assert_eq!(
+                policy.row_center(Rect::new(0.0, 10.0, 1000.0, 52.0), 1),
+                31.0
+            );
+        }
     }
 }

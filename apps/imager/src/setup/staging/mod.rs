@@ -122,22 +122,26 @@ pub fn same_guid(a: &str, b: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// GUID generation and comparison.
     #[test]
-    fn random_guids_are_canonical_v4_and_distinct() {
-        let a = super::random_guid();
-        let b = super::random_guid();
-        assert!(super::is_guid(&a), "{a}");
-        assert_ne!(a, b);
-        assert_eq!(&a[14..15], "4");
-        assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
-    }
+    fn guids_are_canonical_random_and_compared_by_identity() {
+        // Phase `random_guids_are_canonical_v4_and_distinct`.
+        {
+            let a = super::random_guid();
+            let b = super::random_guid();
+            assert!(super::is_guid(&a), "{a}");
+            assert_ne!(a, b);
+            assert_eq!(&a[14..15], "4");
+            assert!(matches!(&a[19..20], "8" | "9" | "a" | "b"));
+        }
 
-    #[test]
-    fn guid_identity_ignores_case_and_braces() {
-        assert!(super::same_guid(
-            "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}",
-            super::ESP_TYPE
-        ));
-        assert!(!super::same_guid(super::ESP_TYPE, super::STAGING_ROOT_TYPE));
+        // Phase `guid_identity_ignores_case_and_braces`.
+        {
+            assert!(super::same_guid(
+                "{C12A7328-F81F-11D2-BA4B-00A0C93EC93B}",
+                super::ESP_TYPE
+            ));
+            assert!(!super::same_guid(super::ESP_TYPE, super::STAGING_ROOT_TYPE));
+        }
     }
 }

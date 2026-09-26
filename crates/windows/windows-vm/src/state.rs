@@ -132,26 +132,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn missing_file_is_not_provisioned() {
-        let directory = TempDir::new().unwrap();
-        let store = ProvisioningStore::new(directory.path().join("state.json"));
-        assert_eq!(store.load().unwrap(), ApplianceState::default());
-        assert!(!store.load().unwrap().can_launch());
-    }
-
-    #[test]
-    fn state_round_trips_privately() {
-        let directory = TempDir::new().unwrap();
-        let store = ProvisioningStore::new(directory.path().join("state.json"));
-        let state = ApplianceState {
-            schema_version: 1,
-            phase: AppliancePhase::Ready,
-            license: LicenseState::DigitallyActivated,
-            catalog_generation: 19,
-            cached_catalog: None,
-        };
-        store.save(&state).unwrap();
-        assert_eq!(store.load().unwrap(), state);
-        assert_eq!(fs::metadata(store.path()).unwrap().mode() & 0o777, 0o600);
+    fn vm_state_round_trips_privately_and_defaults_to_unprovisioned() {
+        // Phase `missing_file_is_not_provisioned`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = ProvisioningStore::new(directory.path().join("state.json"));
+            assert_eq!(store.load().unwrap(), ApplianceState::default());
+            assert!(!store.load().unwrap().can_launch());
+        }
+        // Phase `state_round_trips_privately`.
+        {
+            let directory = TempDir::new().unwrap();
+            let store = ProvisioningStore::new(directory.path().join("state.json"));
+            let state = ApplianceState {
+                schema_version: 1,
+                phase: AppliancePhase::Ready,
+                license: LicenseState::DigitallyActivated,
+                catalog_generation: 19,
+                cached_catalog: None,
+            };
+            store.save(&state).unwrap();
+            assert_eq!(store.load().unwrap(), state);
+            assert_eq!(fs::metadata(store.path()).unwrap().mode() & 0o777, 0o600);
+        }
     }
 }

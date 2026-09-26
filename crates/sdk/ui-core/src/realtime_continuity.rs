@@ -213,128 +213,138 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semantic_intents_reject_transport_and_secret_shaped_values() {
-        let safe = RealtimeResumeIntent {
-            provider: "tilo.chat".into(),
-            room_id: "voice-42".into(),
-            semantic_position: Some("workspace-acme".into()),
-            media: RealtimeMediaFacets {
-                microphone: true,
-                ..RealtimeMediaFacets::default()
-            },
-            controls: RealtimeControlIntent::default(),
-        };
-        assert!(safe.valid());
-        for room in [
-            "https://join.invalid/x",
-            "voice?token=secret",
-            "/run/pipewire-0",
-        ] {
-            let mut unsafe_intent = safe.clone();
-            unsafe_intent.room_id = room.into();
-            assert!(!unsafe_intent.valid());
-        }
-    }
-
-    #[test]
-    fn share_audio_requires_a_screen_share() {
-        assert!(
-            !RealtimeMediaFacets {
-                microphone: true,
-                share_audio: true,
-                ..RealtimeMediaFacets::default()
-            }
-            .valid()
-        );
-    }
-
-    #[test]
-    fn command_reply_and_event_json_round_trip_without_extension_fields() {
-        let command = RealtimeCommand::Register {
-            intent: RealtimeResumeIntent {
+    fn realtime_intents_reject_unsafe_values_and_require_their_preconditions() {
+        // Case `semantic_intents_reject_transport_and_secret_shaped_values`.
+        {
+            let safe = RealtimeResumeIntent {
                 provider: "tilo.chat".into(),
                 room_id: "voice-42".into(),
                 semantic_position: Some("workspace-acme".into()),
                 media: RealtimeMediaFacets {
                     microphone: true,
-                    camera: true,
                     ..RealtimeMediaFacets::default()
                 },
-                controls: RealtimeControlIntent {
-                    microphone_muted: true,
-                    ..RealtimeControlIntent::default()
-                },
-            },
-        };
-        let bytes = serde_json::to_vec(&command).unwrap();
-        assert!(bytes.len() < MAX_REALTIME_WIRE_BYTES);
-        assert_eq!(
-            serde_json::from_slice::<RealtimeCommand>(&bytes).unwrap(),
-            command
-        );
+                controls: RealtimeControlIntent::default(),
+            };
+            assert!(safe.valid());
+            for room in [
+                "https://join.invalid/x",
+                "voice?token=secret",
+                "/run/pipewire-0",
+            ] {
+                let mut unsafe_intent = safe.clone();
+                unsafe_intent.room_id = room.into();
+                assert!(!unsafe_intent.valid());
+            }
+        }
 
-        let reply = RealtimeReply::Registered {
-            session: "restart-scoped-1".into(),
-        };
-        assert_eq!(
-            serde_json::from_slice::<RealtimeReply>(&serde_json::to_vec(&reply).unwrap()).unwrap(),
-            reply
-        );
-        let event = RealtimeEvent::StopSource {
-            session: "restart-scoped-1".into(),
-        };
-        assert_eq!(
-            serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap()).unwrap(),
-            event
-        );
-        let event = RealtimeEvent::CaptureAuthorized {
-            session: "restart-scoped-1".into(),
-            capture_authorizations: vec!["ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES)],
-        };
-        assert!(event.valid());
-        assert_eq!(
-            serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap()).unwrap(),
-            event
-        );
+        // Case `share_audio_requires_a_screen_share`.
+        {
+            assert!(
+                !RealtimeMediaFacets {
+                    microphone: true,
+                    share_audio: true,
+                    ..RealtimeMediaFacets::default()
+                }
+                .valid()
+            );
+        }
 
-        let malformed = br#"{"kind":"register","intent":{"provider":"tilo.chat","room_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
-        assert!(serde_json::from_slice::<RealtimeCommand>(malformed).is_err());
+        // Case `accept_requires_bounded_unique_target_local_authorizations`.
+        {
+            let authorization = "ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES);
+            let valid = RealtimeCommand::Accept {
+                session: "restart-scoped-1".into(),
+                capture_authorizations: vec![authorization.clone()],
+            };
+            assert!(valid.valid());
+            assert!(
+                !RealtimeCommand::Accept {
+                    session: "restart-scoped-1".into(),
+                    capture_authorizations: Vec::new(),
+                }
+                .valid()
+            );
+            assert!(
+                !RealtimeCommand::Accept {
+                    session: "restart-scoped-1".into(),
+                    capture_authorizations: vec![authorization.clone(), authorization],
+                }
+                .valid()
+            );
+            assert!(
+                !RealtimeCommand::Accept {
+                    session: "restart-scoped-1".into(),
+                    capture_authorizations: vec!["not-a-capability".into()],
+                }
+                .valid()
+            );
+            let legacy: RealtimeCommand =
+                serde_json::from_slice(br#"{"kind":"accept","session":"restart-scoped-1"}"#)
+                    .unwrap();
+            assert!(
+                !legacy.valid(),
+                "legacy boolean-era accept parses but must fail closed"
+            );
+        }
     }
 
     #[test]
-    fn accept_requires_bounded_unique_target_local_authorizations() {
-        let authorization = "ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES);
-        let valid = RealtimeCommand::Accept {
-            session: "restart-scoped-1".into(),
-            capture_authorizations: vec![authorization.clone()],
-        };
-        assert!(valid.valid());
-        assert!(
-            !RealtimeCommand::Accept {
+    fn realtime_wire_json_round_trips_without_extension_fields() {
+        // Case `command_reply_and_event_json_round_trip_without_extension_fields`.
+        {
+            let command = RealtimeCommand::Register {
+                intent: RealtimeResumeIntent {
+                    provider: "tilo.chat".into(),
+                    room_id: "voice-42".into(),
+                    semantic_position: Some("workspace-acme".into()),
+                    media: RealtimeMediaFacets {
+                        microphone: true,
+                        camera: true,
+                        ..RealtimeMediaFacets::default()
+                    },
+                    controls: RealtimeControlIntent {
+                        microphone_muted: true,
+                        ..RealtimeControlIntent::default()
+                    },
+                },
+            };
+            let bytes = serde_json::to_vec(&command).unwrap();
+            assert!(bytes.len() < MAX_REALTIME_WIRE_BYTES);
+            assert_eq!(
+                serde_json::from_slice::<RealtimeCommand>(&bytes).unwrap(),
+                command
+            );
+
+            let reply = RealtimeReply::Registered {
                 session: "restart-scoped-1".into(),
-                capture_authorizations: Vec::new(),
-            }
-            .valid()
-        );
-        assert!(
-            !RealtimeCommand::Accept {
+            };
+            assert_eq!(
+                serde_json::from_slice::<RealtimeReply>(&serde_json::to_vec(&reply).unwrap())
+                    .unwrap(),
+                reply
+            );
+            let event = RealtimeEvent::StopSource {
                 session: "restart-scoped-1".into(),
-                capture_authorizations: vec![authorization.clone(), authorization],
-            }
-            .valid()
-        );
-        assert!(
-            !RealtimeCommand::Accept {
+            };
+            assert_eq!(
+                serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap())
+                    .unwrap(),
+                event
+            );
+            let event = RealtimeEvent::CaptureAuthorized {
                 session: "restart-scoped-1".into(),
-                capture_authorizations: vec!["not-a-capability".into()],
-            }
-            .valid()
-        );
-        let legacy: RealtimeCommand =
-            serde_json::from_slice(br#"{"kind":"accept","session":"restart-scoped-1"}"#).unwrap();
-        assert!(
-            !legacy.valid(),
-            "legacy boolean-era accept parses but must fail closed"
-        );
+                capture_authorizations: vec!["ab".repeat(OPAQUE_CAPTURE_AUTHORIZATION_BYTES)],
+            };
+            assert!(event.valid());
+            assert_eq!(
+                serde_json::from_slice::<RealtimeEvent>(&serde_json::to_vec(&event).unwrap())
+                    .unwrap(),
+                event
+            );
+
+            let malformed = br#"{"kind":"register","intent":{"provider":"tilo.chat","room_id":"voice-42","semantic_position":null,"media":{"microphone":true,"camera":false,"screen_share":false,"share_audio":false},"controls":{"microphone_muted":false,"camera_muted":false,"screen_share_paused":false,"share_audio_muted":false},"credential":"secret"}}"#;
+            assert!(serde_json::from_slice::<RealtimeCommand>(malformed).is_err());
+        }
     }
 }

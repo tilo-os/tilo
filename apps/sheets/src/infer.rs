@@ -321,158 +321,170 @@ mod tests {
         infer_entry(s, Currency::USD)
     }
 
+    /// Percent and currency input inference.
     #[test]
-    fn percent_stores_fraction() {
-        let r = infer("90%");
-        assert_eq!(r.raw, "0.9");
-        assert_eq!(r.format, CellFormat::Percent);
-        // And it renders back as 90.00%.
-        assert_eq!(
-            crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
-            "90.00%"
-        );
+    fn percent_and_currency_inputs_infer_their_format() {
+        // Case `percent_stores_fraction`.
+        {
+            let r = infer("90%");
+            assert_eq!(r.raw, "0.9");
+            assert_eq!(r.format, CellFormat::Percent);
+            // And it renders back as 90.00%.
+            assert_eq!(
+                crate::model::format_value(&crate::model::CellValue::Number(0.9), r.format),
+                "90.00%"
+            );
+        }
+
+        // Case `percent_with_decimals`.
+        {
+            let r = infer("12.5%");
+            assert_eq!(r.raw, "0.125");
+            assert_eq!(r.format, CellFormat::Percent);
+        }
+
+        // Case `leading_dollar_is_usd_currency`.
+        {
+            let r = infer("$1,200");
+            assert_eq!(r.raw, "1200");
+            assert_eq!(r.format, CellFormat::Currency(Currency::USD));
+        }
+
+        // Case `trailing_euro_is_eur_currency`.
+        {
+            let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
+            // Euro grouping uses '.' for thousands and ',' for decimal, but our
+            // loose parser only strips commas; a euro-typed amount is uncommon as
+            // a literal. Here we accept the common Anglo style typed with €.
+            let r2 = infer("1200.50\u{20AC}");
+            assert_eq!(r2.format, CellFormat::Currency(Currency::EUR));
+            assert_eq!(r2.raw, "1200.5");
+            // The dotted-euro literal is treated as text (we don't guess euro
+            // decimal grouping on entry), which is acceptable and non-broken.
+            let _ = r;
+        }
+
+        // Case `currency_code_prefix`.
+        {
+            let r = infer("CHF 50");
+            assert_eq!(r.raw, "50");
+            assert_eq!(r.format, CellFormat::Currency(Currency::CHF));
+        }
+
+        // Case `dollar_respects_document_default_when_symbol_shared`.
+        {
+            // A CAD document typing "$5" keeps CAD (both use $).
+            let r = infer_entry("$5", Currency::CAD);
+            assert_eq!(r.format, CellFormat::Currency(Currency::CAD));
+        }
     }
 
+    /// ISO/US/EU dates and 24h/12h times.
     #[test]
-    fn percent_with_decimals() {
-        let r = infer("12.5%");
-        assert_eq!(r.raw, "0.125");
-        assert_eq!(r.format, CellFormat::Percent);
+    fn date_and_time_inputs_infer_their_format() {
+        // Case `iso_date`.
+        {
+            let r = infer("2023-03-15");
+            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+            // Round-trips back to the same ISO string.
+            let n: f64 = r.raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(n, DateStyle::Iso),
+                "2023-03-15"
+            );
+        }
+
+        // Case `us_slash_date`.
+        {
+            let r = infer("03/15/2023");
+            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+            let n: f64 = r.raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(n, DateStyle::Iso),
+                "2023-03-15"
+            );
+        }
+
+        // Case `eu_slash_date_when_unambiguous`.
+        {
+            // 25/03/2023 can only be D/M/Y.
+            let r = infer("25/03/2023");
+            assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
+            let n: f64 = r.raw.parse().unwrap();
+            assert_eq!(
+                crate::model::serial_to_date(n, DateStyle::Iso),
+                "2023-03-25"
+            );
+        }
+
+        // Case `time_24h`.
+        {
+            let r = infer("14:05");
+            assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
+            let n: f64 = r.raw.parse().unwrap();
+            assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
+        }
+
+        // Case `time_12h`.
+        {
+            let r = infer("2:05 PM");
+            assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
+            let n: f64 = r.raw.parse().unwrap();
+            assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
+        }
     }
 
+    /// Grouped, plain, negative numbers, booleans, text, forced text and formulas.
     #[test]
-    fn leading_dollar_is_usd_currency() {
-        let r = infer("$1,200");
-        assert_eq!(r.raw, "1200");
-        assert_eq!(r.format, CellFormat::Currency(Currency::USD));
-    }
+    fn numbers_booleans_text_and_formulas_infer_their_kind() {
+        // Case `grouped_number_becomes_number_format`.
+        {
+            let r = infer("1,234.5");
+            assert_eq!(r.raw, "1234.5");
+            assert_eq!(r.format, CellFormat::Number);
+        }
 
-    #[test]
-    fn trailing_euro_is_eur_currency() {
-        let r = infer_entry("1.200,50\u{20AC}", Currency::EUR);
-        // Euro grouping uses '.' for thousands and ',' for decimal, but our
-        // loose parser only strips commas; a euro-typed amount is uncommon as
-        // a literal. Here we accept the common Anglo style typed with €.
-        let r2 = infer("1200.50\u{20AC}");
-        assert_eq!(r2.format, CellFormat::Currency(Currency::EUR));
-        assert_eq!(r2.raw, "1200.5");
-        // The dotted-euro literal is treated as text (we don't guess euro
-        // decimal grouping on entry), which is acceptable and non-broken.
-        let _ = r;
-    }
+        // Case `plain_integer_stays_general`.
+        {
+            let r = infer("42");
+            assert_eq!(r.raw, "42");
+            assert_eq!(r.format, CellFormat::General);
+        }
 
-    #[test]
-    fn currency_code_prefix() {
-        let r = infer("CHF 50");
-        assert_eq!(r.raw, "50");
-        assert_eq!(r.format, CellFormat::Currency(Currency::CHF));
-    }
+        // Case `parenthesised_negative`.
+        {
+            let r = infer("(1,200)");
+            assert_eq!(r.raw, "-1200");
+            assert_eq!(r.format, CellFormat::Number);
+        }
 
-    #[test]
-    fn dollar_respects_document_default_when_symbol_shared() {
-        // A CAD document typing "$5" keeps CAD (both use $).
-        let r = infer_entry("$5", Currency::CAD);
-        assert_eq!(r.format, CellFormat::Currency(Currency::CAD));
-    }
+        // Case `booleans`.
+        {
+            assert_eq!(infer("true").format, CellFormat::Boolean);
+            assert_eq!(infer("FALSE").format, CellFormat::Boolean);
+            assert_eq!(infer("true").raw, "TRUE");
+        }
 
-    #[test]
-    fn iso_date() {
-        let r = infer("2023-03-15");
-        assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-        // Round-trips back to the same ISO string.
-        let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(n, DateStyle::Iso),
-            "2023-03-15"
-        );
-    }
+        // Case `plain_text`.
+        {
+            let r = infer("Hello");
+            assert_eq!(r.raw, "Hello");
+            assert_eq!(r.format, CellFormat::Text);
+        }
 
-    #[test]
-    fn us_slash_date() {
-        let r = infer("03/15/2023");
-        assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-        let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(n, DateStyle::Iso),
-            "2023-03-15"
-        );
-    }
+        // Case `leading_apostrophe_forces_text`.
+        {
+            // '0123 stays text, keeping the leading zero.
+            let r = infer("'0123");
+            assert_eq!(r.raw, "0123");
+            assert_eq!(r.format, CellFormat::Text);
+        }
 
-    #[test]
-    fn eu_slash_date_when_unambiguous() {
-        // 25/03/2023 can only be D/M/Y.
-        let r = infer("25/03/2023");
-        assert_eq!(r.format, CellFormat::Date(DateStyle::Iso));
-        let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(
-            crate::model::serial_to_date(n, DateStyle::Iso),
-            "2023-03-25"
-        );
-    }
-
-    #[test]
-    fn time_24h() {
-        let r = infer("14:05");
-        assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
-        let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
-    }
-
-    #[test]
-    fn time_12h() {
-        let r = infer("2:05 PM");
-        assert_eq!(r.format, CellFormat::Time(TimeStyle::H24));
-        let n: f64 = r.raw.parse().unwrap();
-        assert_eq!(crate::model::serial_to_time(n, TimeStyle::H24), "14:05");
-    }
-
-    #[test]
-    fn grouped_number_becomes_number_format() {
-        let r = infer("1,234.5");
-        assert_eq!(r.raw, "1234.5");
-        assert_eq!(r.format, CellFormat::Number);
-    }
-
-    #[test]
-    fn plain_integer_stays_general() {
-        let r = infer("42");
-        assert_eq!(r.raw, "42");
-        assert_eq!(r.format, CellFormat::General);
-    }
-
-    #[test]
-    fn parenthesised_negative() {
-        let r = infer("(1,200)");
-        assert_eq!(r.raw, "-1200");
-        assert_eq!(r.format, CellFormat::Number);
-    }
-
-    #[test]
-    fn booleans() {
-        assert_eq!(infer("true").format, CellFormat::Boolean);
-        assert_eq!(infer("FALSE").format, CellFormat::Boolean);
-        assert_eq!(infer("true").raw, "TRUE");
-    }
-
-    #[test]
-    fn plain_text() {
-        let r = infer("Hello");
-        assert_eq!(r.raw, "Hello");
-        assert_eq!(r.format, CellFormat::Text);
-    }
-
-    #[test]
-    fn leading_apostrophe_forces_text() {
-        // '0123 stays text, keeping the leading zero.
-        let r = infer("'0123");
-        assert_eq!(r.raw, "0123");
-        assert_eq!(r.format, CellFormat::Text);
-    }
-
-    #[test]
-    fn formula_is_passed_through() {
-        let r = infer("=SUM(A1:A3)");
-        assert_eq!(r.raw, "=SUM(A1:A3)");
-        assert_eq!(r.format, CellFormat::General);
+        // Case `formula_is_passed_through`.
+        {
+            let r = infer("=SUM(A1:A3)");
+            assert_eq!(r.raw, "=SUM(A1:A3)");
+            assert_eq!(r.format, CellFormat::General);
+        }
     }
 }

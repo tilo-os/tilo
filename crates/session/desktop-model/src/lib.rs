@@ -24,6 +24,7 @@ pub mod collaborator;
 pub mod desktop_doc;
 pub mod ids;
 pub mod layout;
+pub mod partition;
 pub mod projection;
 pub mod serde_ids;
 pub mod shared_surfaces;
@@ -41,6 +42,7 @@ pub use ids::{
     TabId, TabRef, WorkspaceId, compose_id, counter_of, peer_salt_of,
 };
 pub use layout::{Strip, Tab, TileContent, WindowGroup};
+pub use partition::{Display, OutputPartition};
 pub use shared_surfaces::SharedSurfaces;
 pub use task::{
     WorkspaceEffectReceipt, WorkspaceTask, WorkspaceTaskAuditEvent, WorkspaceTaskResource,

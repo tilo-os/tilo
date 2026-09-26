@@ -294,62 +294,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rotation_round_trips_points() {
-        let size = PageSize {
-            width: 600.0,
-            height: 800.0,
-        };
-        let p = Point::new(10.0, 20.0);
-        for r in [
-            Rotation::None,
-            Rotation::Cw90,
-            Rotation::Cw180,
-            Rotation::Cw270,
-        ] {
-            let q = r.apply_point(size, p);
-            let back = r.invert_point(size, q);
-            assert!(
-                (back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3,
-                "{r:?}"
-            );
-            let rotated = r.apply_size(size);
-            assert!(q.x >= 0.0 && q.x <= rotated.width && q.y >= 0.0 && q.y <= rotated.height);
-        }
-        assert_eq!(Rotation::Cw90.then(Rotation::Cw270), Rotation::None);
-        assert_eq!(Rotation::from_degrees(-90), Some(Rotation::Cw270));
-        assert_eq!(Rotation::from_degrees(45), None);
-    }
-
-    #[test]
-    fn page_geometry_maps_user_space_to_display_space() {
-        // A 600x800 crop box offset by (10, 20), rotated 90° clockwise.
-        let g = PageGeometry {
-            user_box: Rect {
-                x0: 10.0,
-                y0: 20.0,
-                x1: 610.0,
-                y1: 820.0,
-            },
-            rotation: Rotation::Cw90,
-        };
-        assert_eq!(
-            g.size(),
-            PageSize {
-                width: 800.0,
-                height: 600.0
+    fn page_geometry_rotates_and_maps_user_space_to_display_space() {
+        // Phase `rotation_round_trips_points`.
+        {
+            let size = PageSize {
+                width: 600.0,
+                height: 800.0,
+            };
+            let p = Point::new(10.0, 20.0);
+            for r in [
+                Rotation::None,
+                Rotation::Cw90,
+                Rotation::Cw180,
+                Rotation::Cw270,
+            ] {
+                let q = r.apply_point(size, p);
+                let back = r.invert_point(size, q);
+                assert!(
+                    (back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3,
+                    "{r:?}"
+                );
+                let rotated = r.apply_size(size);
+                assert!(q.x >= 0.0 && q.x <= rotated.width && q.y >= 0.0 && q.y <= rotated.height);
             }
-        );
-        // The user-space top-left corner lands top-right when rotated.
-        let tl = g.to_display(Point::new(10.0, 820.0));
-        assert!((tl.x - 800.0).abs() < 1e-3 && tl.y.abs() < 1e-3);
-        let p = Point::new(123.0, 456.0);
-        let back = g.to_user(g.to_display(p));
-        assert!((back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3);
-        let unrotated = PageGeometry {
-            rotation: Rotation::None,
-            ..g
-        };
-        let d = unrotated.to_display(Point::new(10.0, 820.0));
-        assert!(d.x.abs() < 1e-3 && d.y.abs() < 1e-3);
+            assert_eq!(Rotation::Cw90.then(Rotation::Cw270), Rotation::None);
+            assert_eq!(Rotation::from_degrees(-90), Some(Rotation::Cw270));
+            assert_eq!(Rotation::from_degrees(45), None);
+        }
+        // Phase `page_geometry_maps_user_space_to_display_space`.
+        {
+            // A 600x800 crop box offset by (10, 20), rotated 90° clockwise.
+            let g = PageGeometry {
+                user_box: Rect {
+                    x0: 10.0,
+                    y0: 20.0,
+                    x1: 610.0,
+                    y1: 820.0,
+                },
+                rotation: Rotation::Cw90,
+            };
+            assert_eq!(
+                g.size(),
+                PageSize {
+                    width: 800.0,
+                    height: 600.0
+                }
+            );
+            // The user-space top-left corner lands top-right when rotated.
+            let tl = g.to_display(Point::new(10.0, 820.0));
+            assert!((tl.x - 800.0).abs() < 1e-3 && tl.y.abs() < 1e-3);
+            let p = Point::new(123.0, 456.0);
+            let back = g.to_user(g.to_display(p));
+            assert!((back.x - p.x).abs() < 1e-3 && (back.y - p.y).abs() < 1e-3);
+            let unrotated = PageGeometry {
+                rotation: Rotation::None,
+                ..g
+            };
+            let d = unrotated.to_display(Point::new(10.0, 820.0));
+            assert!(d.x.abs() < 1e-3 && d.y.abs() < 1e-3);
+        }
     }
 }

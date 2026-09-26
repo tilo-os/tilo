@@ -230,112 +230,114 @@ mod tests {
     }
 
     #[test]
-    fn saved_location_addresses_are_stable_and_unique() {
-        let locations = crate::sample::sample_model().locations;
-        let first = locations[0].id;
-        let second = locations[1].id;
+    fn keyed_saved_locations_are_stable_and_converge() {
+        // Case `saved_location_addresses_are_stable_and_unique`.
+        {
+            let locations = crate::sample::sample_model().locations;
+            let first = locations[0].id;
+            let second = locations[1].id;
 
-        assert_eq!(open_location_address(first), open_location_address(first));
-        assert_ne!(open_location_address(first), open_location_address(second));
-        assert_eq!(
-            open_location_address(first),
-            ActionAddress::new(location_resource_id(first), "open")
-        );
-    }
-
-    #[test]
-    fn independently_added_keyed_locations_survive_document_merge() {
-        let mut base = seeded_doc();
-        let bytes = base.save();
-        let mut left = AutoCommit::load(&bytes).unwrap();
-        let mut right = AutoCommit::load(&bytes).unwrap();
-        let berlin = SavedLocation::new(
-            "Berlin",
-            "Berlin",
-            "Germany",
-            "DE",
-            52.52,
-            13.405,
-            "Europe/Berlin",
-        );
-        let tokyo = SavedLocation::new(
-            "Tokyo",
-            "Tokyo",
-            "Japan",
-            "JP",
-            35.6762,
-            139.6503,
-            "Asia/Tokyo",
-        );
-
-        WeatherAction::AddLocation {
-            location: berlin.clone(),
+            assert_eq!(open_location_address(first), open_location_address(first));
+            assert_ne!(open_location_address(first), open_location_address(second));
+            assert_eq!(
+                open_location_address(first),
+                ActionAddress::new(location_resource_id(first), "open")
+            );
         }
-        .apply(&mut left)
-        .unwrap();
-        WeatherAction::AddLocation {
-            location: tokyo.clone(),
+        // Case `independently_added_keyed_locations_survive_document_merge`.
+        {
+            let mut base = seeded_doc();
+            let bytes = base.save();
+            let mut left = AutoCommit::load(&bytes).unwrap();
+            let mut right = AutoCommit::load(&bytes).unwrap();
+            let berlin = SavedLocation::new(
+                "Berlin",
+                "Berlin",
+                "Germany",
+                "DE",
+                52.52,
+                13.405,
+                "Europe/Berlin",
+            );
+            let tokyo = SavedLocation::new(
+                "Tokyo",
+                "Tokyo",
+                "Japan",
+                "JP",
+                35.6762,
+                139.6503,
+                "Asia/Tokyo",
+            );
+
+            WeatherAction::AddLocation {
+                location: berlin.clone(),
+            }
+            .apply(&mut left)
+            .unwrap();
+            WeatherAction::AddLocation {
+                location: tokyo.clone(),
+            }
+            .apply(&mut right)
+            .unwrap();
+            left.commit();
+            right.commit();
+            let right_changes = right.get_changes(&base.get_heads());
+            left.apply_incoming(right_changes).unwrap();
+
+            let merged = WeatherDoc::read_model(&left);
+            assert!(
+                merged
+                    .locations
+                    .iter()
+                    .any(|location| location.id == berlin.id)
+            );
+            assert!(
+                merged
+                    .locations
+                    .iter()
+                    .any(|location| location.id == tokyo.id)
+            );
         }
-        .apply(&mut right)
-        .unwrap();
-        left.commit();
-        right.commit();
-        let right_changes = right.get_changes(&base.get_heads());
-        left.apply_incoming(right_changes).unwrap();
+        // Case `encoded_moves_of_different_locations_converge_across_divergent_replicas`.
+        {
+            let mut base = seeded_doc();
+            let bytes = base.save();
+            let mut left = AutoCommit::load(&bytes).unwrap();
+            let mut right = AutoCommit::load(&bytes).unwrap();
+            let locations = WeatherDoc::read_model(&base).locations;
+            let first = locations[0].id;
+            let last = locations[3].id;
+            let left_action = WeatherAction::SetLocationRank {
+                id: last.to_string(),
+                rank: -1024.0,
+            };
+            let right_action = WeatherAction::SetLocationRank {
+                id: first.to_string(),
+                rank: 8192.0,
+            };
 
-        let merged = WeatherDoc::read_model(&left);
-        assert!(
-            merged
+            let left_envelope =
+                tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
+            let right_envelope =
+                tilo_actions::apply_local(&mut right, &right_action, encode(&right_action))
+                    .unwrap();
+            tilo_actions::replay(&mut left, &right_envelope, &registry()).unwrap();
+            tilo_actions::replay(&mut right, &left_envelope, &registry()).unwrap();
+
+            assert_eq!(left.get_heads(), right.get_heads());
+            let left_ids: Vec<_> = WeatherDoc::read_model(&left)
                 .locations
-                .iter()
-                .any(|location| location.id == berlin.id)
-        );
-        assert!(
-            merged
+                .into_iter()
+                .map(|location| location.id)
+                .collect();
+            let right_ids: Vec<_> = WeatherDoc::read_model(&right)
                 .locations
-                .iter()
-                .any(|location| location.id == tokyo.id)
-        );
-    }
-
-    #[test]
-    fn encoded_moves_of_different_locations_converge_across_divergent_replicas() {
-        let mut base = seeded_doc();
-        let bytes = base.save();
-        let mut left = AutoCommit::load(&bytes).unwrap();
-        let mut right = AutoCommit::load(&bytes).unwrap();
-        let locations = WeatherDoc::read_model(&base).locations;
-        let first = locations[0].id;
-        let last = locations[3].id;
-        let left_action = WeatherAction::SetLocationRank {
-            id: last.to_string(),
-            rank: -1024.0,
-        };
-        let right_action = WeatherAction::SetLocationRank {
-            id: first.to_string(),
-            rank: 8192.0,
-        };
-
-        let left_envelope =
-            tilo_actions::apply_local(&mut left, &left_action, encode(&left_action)).unwrap();
-        let right_envelope =
-            tilo_actions::apply_local(&mut right, &right_action, encode(&right_action)).unwrap();
-        tilo_actions::replay(&mut left, &right_envelope, &registry()).unwrap();
-        tilo_actions::replay(&mut right, &left_envelope, &registry()).unwrap();
-
-        assert_eq!(left.get_heads(), right.get_heads());
-        let left_ids: Vec<_> = WeatherDoc::read_model(&left)
-            .locations
-            .into_iter()
-            .map(|location| location.id)
-            .collect();
-        let right_ids: Vec<_> = WeatherDoc::read_model(&right)
-            .locations
-            .into_iter()
-            .map(|location| location.id)
-            .collect();
-        assert_eq!(left_ids, right_ids);
-        assert_eq!(left_ids.first(), Some(&last));
-        assert_eq!(left_ids.last(), Some(&first));
+                .into_iter()
+                .map(|location| location.id)
+                .collect();
+            assert_eq!(left_ids, right_ids);
+            assert_eq!(left_ids.first(), Some(&last));
+            assert_eq!(left_ids.last(), Some(&first));
+        }
     }
 }

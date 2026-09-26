@@ -156,14 +156,16 @@ fn bounded_output(command: &mut std::process::Command) -> std::process::Output {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
+/// The `#[test]` each stage child re-runs, as the `it` harness names it (module path
+/// included). With `--exact`, a stale name selects nothing and the child "passes" without
+/// running its stage, so `child` also requires `CHILD_DONE` on the child's stdout.
+const CHILD_TEST: &str = "framework_history_launch::actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import";
+const CHILD_DONE: &str = "photos-launch-stage-done";
+
 fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind: &str) {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
-        .args([
-            "--exact",
-            "actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import",
-            "--nocapture",
-        ])
+        .args(["--exact", CHILD_TEST, "--nocapture"])
         .env("TILO_PHOTOS_LAUNCH_STAGE", stage)
         .env("TILO_PHOTOS_LAUNCH_KIND", kind)
         .env("TILO_PHOTOS_TEST_HOME", dir)
@@ -175,6 +177,12 @@ fn child(store: &content_store::Server, stage: &str, dir: &std::path::Path, kind
     assert!(
         out.status.success(),
         "{stage}/{kind}: {} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(&format!("{CHILD_DONE} {stage}")),
+        "{stage}/{kind}: the child never ran its stage (is {CHILD_TEST} still the test name?): {} {}",
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
@@ -363,6 +371,7 @@ fn actual_binary_saved_current_legacy_blank_history_restore_and_explicit_import(
             }
             _ => panic!("unexpected test stage"),
         }
+        println!("{CHILD_DONE} {stage}");
         return;
     }
     let store = content_store::Server::start();

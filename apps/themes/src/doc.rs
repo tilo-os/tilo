@@ -361,105 +361,112 @@ mod tests {
     use crate::model::seed_custom;
     use automerge::ROOT;
     use tilo_automerge::ApplyIncoming;
+    /// Theme documents merge fields and records, let deletes win, consolidate legacy records, and reject oversized ones.
     #[test]
-    fn fields_merge() {
-        let mut a = AutoCommit::new();
-        save_catalog(&mut a, &ROOT, &[seed_custom()]);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        assert!(set_name(&mut a, &ROOT, "sunset", "Dawn"));
-        assert!(set_token(
-            &mut b,
-            &ROOT,
-            "sunset",
-            TokenId::Accent,
-            [1, 2, 3]
-        ));
-        a.merge_incoming(&mut b).unwrap();
-        let s = load_catalog(&a, &ROOT)
-            .unwrap()
-            .into_iter()
-            .find(|x| x.id == "sunset")
-            .unwrap();
-        assert_eq!(s.name, "Dawn");
-        assert_eq!(s.accent, [1, 2, 3]);
-    }
-    #[test]
-    fn records_merge() {
-        let mut a = AutoCommit::new();
-        // The app creates the container during first-run seeding. Once this
-        // common parent exists, peer creation touches different stable keys.
-        save_catalog(&mut a, &ROOT, &[seed_custom()]);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut x = seed_custom();
-        x.id = "one".into();
-        let mut y = seed_custom();
-        y.id = "two".into();
-        assert!(create_custom_theme(&mut a, &ROOT, &x));
-        assert!(create_custom_theme(&mut b, &ROOT, &y));
-        a.merge_incoming(&mut b).unwrap();
-        let ids: Vec<_> = load_catalog(&a, &ROOT)
-            .unwrap()
-            .into_iter()
-            .map(|x| x.id)
-            .collect();
-        assert!(ids.contains(&"one".into()) && ids.contains(&"two".into()));
-    }
-    #[test]
-    fn delete_wins() {
-        let mut a = AutoCommit::new();
-        save_catalog(&mut a, &ROOT, &[seed_custom()]);
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        assert!(delete_custom_theme(&mut a, &ROOT, "sunset"));
-        assert!(set_name(&mut b, &ROOT, "sunset", "edit"));
-        a.merge_incoming(&mut b).unwrap();
-        assert!(
-            !load_catalog(&a, &ROOT)
+    fn theme_records_merge_delete_consolidate_and_reject_oversize() {
+        // Case `fields_merge`.
+        {
+            let mut a = AutoCommit::new();
+            save_catalog(&mut a, &ROOT, &[seed_custom()]);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            assert!(set_name(&mut a, &ROOT, "sunset", "Dawn"));
+            assert!(set_token(
+                &mut b,
+                &ROOT,
+                "sunset",
+                TokenId::Accent,
+                [1, 2, 3]
+            ));
+            a.merge_incoming(&mut b).unwrap();
+            let s = load_catalog(&a, &ROOT)
                 .unwrap()
-                .iter()
-                .any(|x| x.id == "sunset")
-        );
-    }
-    #[test]
-    fn legacy_and_native_consolidate_idempotently() {
-        let mut a = AutoCommit::new();
-        put_text(
-            &mut a,
-            &ROOT,
-            KEY_CATALOG,
-            &serde_json::to_string(&[seed_custom()]).unwrap(),
-        );
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let mut other = seed_custom();
-        other.id = "other".into();
-        assert!(create_custom_theme(&mut b, &ROOT, &other));
-        migrate_legacy_catalog(&mut b, &ROOT);
-        b.merge_incoming(&mut a).unwrap();
-        migrate_legacy_catalog(&mut b, &ROOT);
-        let n = b.save().len();
-        migrate_legacy_catalog(&mut b, &ROOT);
-        assert_eq!(b.save().len(), n);
-        let ids: Vec<_> = load_catalog(&b, &ROOT)
-            .unwrap()
-            .into_iter()
-            .map(|x| x.id)
-            .collect();
-        assert!(ids.contains(&"sunset".into()) && ids.contains(&"other".into()));
-    }
+                .into_iter()
+                .find(|x| x.id == "sunset")
+                .unwrap();
+            assert_eq!(s.name, "Dawn");
+            assert_eq!(s.accent, [1, 2, 3]);
+        }
 
-    #[test]
-    fn rejects_untrusted_oversized_records_without_growing_the_catalog() {
-        let mut doc = AutoCommit::new();
-        let mut bad = seed_custom();
-        bad.id = "x".repeat(MAX_ID_LEN + 1);
-        assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
-        bad.id = "safe".into();
-        bad.name = "x".repeat(MAX_NAME_LEN + 1);
-        assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
-        assert!(
-            !load_catalog(&doc, &ROOT)
+        // Case `records_merge`.
+        {
+            let mut a = AutoCommit::new();
+            // The app creates the container during first-run seeding. Once this
+            // common parent exists, peer creation touches different stable keys.
+            save_catalog(&mut a, &ROOT, &[seed_custom()]);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let mut x = seed_custom();
+            x.id = "one".into();
+            let mut y = seed_custom();
+            y.id = "two".into();
+            assert!(create_custom_theme(&mut a, &ROOT, &x));
+            assert!(create_custom_theme(&mut b, &ROOT, &y));
+            a.merge_incoming(&mut b).unwrap();
+            let ids: Vec<_> = load_catalog(&a, &ROOT)
                 .unwrap()
-                .iter()
-                .any(|theme| theme.id == "safe")
-        );
+                .into_iter()
+                .map(|x| x.id)
+                .collect();
+            assert!(ids.contains(&"one".into()) && ids.contains(&"two".into()));
+        }
+
+        // Case `delete_wins`.
+        {
+            let mut a = AutoCommit::new();
+            save_catalog(&mut a, &ROOT, &[seed_custom()]);
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            assert!(delete_custom_theme(&mut a, &ROOT, "sunset"));
+            assert!(set_name(&mut b, &ROOT, "sunset", "edit"));
+            a.merge_incoming(&mut b).unwrap();
+            assert!(
+                !load_catalog(&a, &ROOT)
+                    .unwrap()
+                    .iter()
+                    .any(|x| x.id == "sunset")
+            );
+        }
+
+        // Case `legacy_and_native_consolidate_idempotently`.
+        {
+            let mut a = AutoCommit::new();
+            put_text(
+                &mut a,
+                &ROOT,
+                KEY_CATALOG,
+                &serde_json::to_string(&[seed_custom()]).unwrap(),
+            );
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let mut other = seed_custom();
+            other.id = "other".into();
+            assert!(create_custom_theme(&mut b, &ROOT, &other));
+            migrate_legacy_catalog(&mut b, &ROOT);
+            b.merge_incoming(&mut a).unwrap();
+            migrate_legacy_catalog(&mut b, &ROOT);
+            let n = b.save().len();
+            migrate_legacy_catalog(&mut b, &ROOT);
+            assert_eq!(b.save().len(), n);
+            let ids: Vec<_> = load_catalog(&b, &ROOT)
+                .unwrap()
+                .into_iter()
+                .map(|x| x.id)
+                .collect();
+            assert!(ids.contains(&"sunset".into()) && ids.contains(&"other".into()));
+        }
+
+        // Case `rejects_untrusted_oversized_records_without_growing_the_catalog`.
+        {
+            let mut doc = AutoCommit::new();
+            let mut bad = seed_custom();
+            bad.id = "x".repeat(MAX_ID_LEN + 1);
+            assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
+            bad.id = "safe".into();
+            bad.name = "x".repeat(MAX_NAME_LEN + 1);
+            assert!(!create_custom_theme(&mut doc, &ROOT, &bad));
+            assert!(
+                !load_catalog(&doc, &ROOT)
+                    .unwrap()
+                    .iter()
+                    .any(|theme| theme.id == "safe")
+            );
+        }
     }
 }

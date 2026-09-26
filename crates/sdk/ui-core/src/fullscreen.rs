@@ -193,85 +193,88 @@ mod tests {
     }
 
     #[test]
-    fn largest_picks_biggest_area() {
-        let mons = vec![
+    fn output_selection_follows_the_target_and_never_reuses_the_presenter() {
+        let mixed = vec![
             mon(0, 1920, 1080, true),
             mon(1, 3840, 2160, false),
             mon(2, 1280, 720, false),
         ];
-        assert_eq!(
-            select_output(&mons, FullscreenTarget::Largest),
-            Some(1),
-            "Present targets the biggest monitor, not the primary laptop panel"
-        );
-    }
+        let flagged = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
+        let unflagged = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
+        let tied = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
+        let single = vec![mon(0, 1920, 1080, true)];
+        let cases: [(&str, &[MonitorInfo], FullscreenTarget, Option<u32>); 9] = [
+            // Present targets the biggest monitor, not the primary laptop panel.
+            (
+                "largest picks the biggest area",
+                &mixed,
+                FullscreenTarget::Largest,
+                Some(1),
+            ),
+            (
+                "an empty list defers (largest)",
+                &[],
+                FullscreenTarget::Largest,
+                None,
+            ),
+            (
+                "an empty list defers (primary)",
+                &[],
+                FullscreenTarget::Primary,
+                None,
+            ),
+            ("auto always defers", &single, FullscreenTarget::Auto, None),
+            (
+                "primary picks the flagged output",
+                &flagged,
+                FullscreenTarget::Primary,
+                Some(1),
+            ),
+            (
+                "primary falls back to the first",
+                &unflagged,
+                FullscreenTarget::Primary,
+                Some(0),
+            ),
+            (
+                "an output index selects",
+                &unflagged,
+                FullscreenTarget::Output(1),
+                Some(1),
+            ),
+            (
+                "an out-of-range index is none",
+                &unflagged,
+                FullscreenTarget::Output(9),
+                None,
+            ),
+            // Two identical-area monitors: the primary wins deterministically.
+            (
+                "largest ties break toward primary",
+                &tied,
+                FullscreenTarget::Largest,
+                Some(1),
+            ),
+        ];
+        for (case, monitors, target, want) in cases {
+            assert_eq!(select_output(monitors, target), want, "case {case}");
+        }
 
-    #[test]
-    fn empty_list_defers_to_compositor() {
-        assert_eq!(select_output(&[], FullscreenTarget::Largest), None);
-        assert_eq!(select_output(&[], FullscreenTarget::Primary), None);
-    }
-
-    #[test]
-    fn auto_always_defers() {
-        let mons = vec![mon(0, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Auto), None);
-    }
-
-    #[test]
-    fn primary_picks_flagged_else_first() {
-        let mons = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Primary), Some(1));
-        let none_primary = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        assert_eq!(
-            select_output(&none_primary, FullscreenTarget::Primary),
-            Some(0)
-        );
-    }
-
-    #[test]
-    fn output_index_selects_or_none_when_out_of_range() {
-        let mons = vec![mon(0, 1280, 720, false), mon(1, 1920, 1080, false)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Output(1)), Some(1));
-        assert_eq!(select_output(&mons, FullscreenTarget::Output(9)), None);
-    }
-
-    #[test]
-    fn largest_ties_break_toward_primary() {
-        // Two identical-area monitors: the primary wins the tie deterministically.
-        let mons = vec![mon(0, 1920, 1080, false), mon(1, 1920, 1080, true)];
-        assert_eq!(select_output(&mons, FullscreenTarget::Largest), Some(1));
-    }
-
-    #[test]
-    fn request_constructors_carry_view() {
         assert!(!FullscreenRequest::mirror(FullscreenTarget::Largest).is_distinct());
         assert!(FullscreenRequest::distinct(FullscreenTarget::Largest).is_distinct());
-    }
 
-    #[test]
-    fn audience_selection_never_reuses_the_presenter_output() {
-        let mons = vec![
-            mon(0, 1920, 1080, true),
-            mon(1, 3840, 2160, false),
-            mon(2, 1280, 720, false),
-        ];
         assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Largest, Some(1)),
+            select_audience_output(&mixed, FullscreenTarget::Largest, Some(1)),
             Some(0),
             "the largest display is already the local presenter output"
         );
         assert_eq!(
-            select_audience_output(&mons, FullscreenTarget::Output(1), Some(1)),
+            select_audience_output(&mixed, FullscreenTarget::Output(1), Some(1)),
             None,
             "an explicit self-target must not fake dual display mode"
         );
         assert_eq!(
-            select_audience_output(
-                &[mon(0, 1920, 1080, true)],
-                FullscreenTarget::Largest,
-                Some(0)
-            ),
+            select_audience_output(&single, FullscreenTarget::Largest, Some(0)),
             None
         );
     }

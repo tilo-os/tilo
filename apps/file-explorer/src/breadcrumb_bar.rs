@@ -631,132 +631,141 @@ mod tests {
         bar.relayout(&mut tr);
     }
 
+    /// The root icon, wide and narrow layouts, single-root state and the accessible keyboard-driven trail.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn root_icon_is_home_under_home_and_drive_under_root() {
-        let home = BreadcrumbBar::new(vec![("Home".into(), PathBuf::from("/home/u"))], new_sink());
-        assert_eq!(home.root_icon(), Icon::Home);
-        let root = BreadcrumbBar::new(vec![("/".into(), PathBuf::from("/"))], new_sink());
-        assert_eq!(root.root_icon(), Icon::HardDrive);
-    }
-
-    #[test]
-    fn wide_bar_lays_out_icon_plus_every_component() {
-        let mut bar = BreadcrumbBar::new(
-            vec![
-                ("Home".into(), PathBuf::from("/home/u")),
-                ("Documents".into(), PathBuf::from("/home/u/Documents")),
-                (
-                    "Projects".into(),
-                    PathBuf::from("/home/u/Documents/Projects"),
-                ),
-            ],
-            new_sink(),
-        );
-        lay(&mut bar, 900.0);
-        // Leading icon + root label + two components, none collapsed.
-        assert_eq!(bar.laid.len(), 4);
-        assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
-        assert!(
-            bar.laid[0].target.is_none(),
-            "the icon is a decorative anchor"
-        );
-        // The root *label* carries the click to home.
-        assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
-        assert_eq!(bar.laid[1].target.as_deref(), Some(Path::new("/home/u")));
-        // The deepest component is the current dir; nothing earlier is.
-        assert!(bar.laid[3].is_current);
-        assert!(!bar.laid[0].is_current && !bar.laid[1].is_current);
-    }
-
-    #[test]
-    fn narrow_bar_collapses_leading_components_but_keeps_the_tail() {
-        let mut bar = BreadcrumbBar::new(
-            vec![
-                ("Home".into(), PathBuf::from("/home/u")),
-                (
-                    "a-really-long-directory-name".into(),
-                    PathBuf::from("/home/u/a"),
-                ),
-                ("another-long-one".into(), PathBuf::from("/home/u/a/b")),
-                ("Projects".into(), PathBuf::from("/home/u/a/b/Projects")),
-            ],
-            new_sink(),
-        );
-        lay(&mut bar, 240.0);
-        // The root icon always survives; at least one ellipsis appears; the
-        // current (deepest) component is still shown.
-        assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
-        let has_ellipsis = bar
-            .laid
-            .iter()
-            .any(|ls| matches!(&ls.slot, Slot::Text(t) if t == ELLIPSIS));
-        assert!(
-            has_ellipsis,
-            "narrow trail must fold leading components into …"
-        );
-        let shows_current = bar.laid.iter().any(|ls| ls.is_current);
-        assert!(
-            shows_current,
-            "the current directory must always be visible"
-        );
-        // Every laid slot fits within the bar's right edge.
-        for ls in &bar.laid {
-            assert!(ls.rect.x1 <= bar.rect.x1 + 0.5, "slot overflowed the bar");
+    fn breadcrumb_bar_lays_out_collapses_and_is_accessible() {
+        // --- phase: root_icon_is_home_under_home_and_drive_under_root ---
+        {
+            let home =
+                BreadcrumbBar::new(vec![("Home".into(), PathBuf::from("/home/u"))], new_sink());
+            assert_eq!(home.root_icon(), Icon::Home);
+            let root = BreadcrumbBar::new(vec![("/".into(), PathBuf::from("/"))], new_sink());
+            assert_eq!(root.root_icon(), Icon::HardDrive);
         }
-    }
 
-    #[test]
-    fn single_root_shows_only_the_icon_marked_current() {
-        let mut bar =
-            BreadcrumbBar::new(vec![("Home".into(), PathBuf::from("/home/u"))], new_sink());
-        lay(&mut bar, 400.0);
-        // Decorative icon + the root label (which is the current dir).
-        assert_eq!(bar.laid.len(), 2);
-        assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
-        assert!(!bar.laid[0].is_current);
-        assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
-        assert!(
-            bar.laid[1].is_current,
-            "root label is the current dir when alone"
-        );
-    }
+        // --- phase: wide_bar_lays_out_icon_plus_every_component ---
+        {
+            let mut bar = BreadcrumbBar::new(
+                vec![
+                    ("Home".into(), PathBuf::from("/home/u")),
+                    ("Documents".into(), PathBuf::from("/home/u/Documents")),
+                    (
+                        "Projects".into(),
+                        PathBuf::from("/home/u/Documents/Projects"),
+                    ),
+                ],
+                new_sink(),
+            );
+            lay(&mut bar, 900.0);
+            // Leading icon + root label + two components, none collapsed.
+            assert_eq!(bar.laid.len(), 4);
+            assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
+            assert!(
+                bar.laid[0].target.is_none(),
+                "the icon is a decorative anchor"
+            );
+            // The root *label* carries the click to home.
+            assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
+            assert_eq!(bar.laid[1].target.as_deref(), Some(Path::new("/home/u")));
+            // The deepest component is the current dir; nothing earlier is.
+            assert!(bar.laid[3].is_current);
+            assert!(!bar.laid[0].is_current && !bar.laid[1].is_current);
+        }
 
-    #[test]
-    fn accessibility_exposes_trail_and_activation_uses_keyboard_cursor() {
-        use ui::a11y::{Action, Role};
+        // --- phase: narrow_bar_collapses_leading_components_but_keeps_the_tail ---
+        {
+            let mut bar = BreadcrumbBar::new(
+                vec![
+                    ("Home".into(), PathBuf::from("/home/u")),
+                    (
+                        "a-really-long-directory-name".into(),
+                        PathBuf::from("/home/u/a"),
+                    ),
+                    ("another-long-one".into(), PathBuf::from("/home/u/a/b")),
+                    ("Projects".into(), PathBuf::from("/home/u/a/b/Projects")),
+                ],
+                new_sink(),
+            );
+            lay(&mut bar, 240.0);
+            // The root icon always survives; at least one ellipsis appears; the
+            // current (deepest) component is still shown.
+            assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
+            let has_ellipsis = bar
+                .laid
+                .iter()
+                .any(|ls| matches!(&ls.slot, Slot::Text(t) if t == ELLIPSIS));
+            assert!(
+                has_ellipsis,
+                "narrow trail must fold leading components into …"
+            );
+            let shows_current = bar.laid.iter().any(|ls| ls.is_current);
+            assert!(
+                shows_current,
+                "the current directory must always be visible"
+            );
+            // Every laid slot fits within the bar's right edge.
+            for ls in &bar.laid {
+                assert!(ls.rect.x1 <= bar.rect.x1 + 0.5, "slot overflowed the bar");
+            }
+        }
 
-        let sink = new_sink();
-        let mut bar = BreadcrumbBar::new(
-            vec![
-                ("Home".into(), PathBuf::from("/home/u")),
-                ("Documents".into(), PathBuf::from("/home/u/Documents")),
-                ("Reports".into(), PathBuf::from("/home/u/Documents/Reports")),
-            ],
-            sink.clone(),
-        );
-        bar.set_focus(true);
-        bar.keyboard_index = Some(1);
-        let node = bar.accessibility().expect("breadcrumbs have semantics");
-        assert_eq!(node.role, Role::Group);
-        assert_eq!(node.name.as_deref(), Some("Breadcrumbs"));
-        assert_eq!(node.children.len(), 3);
-        assert_eq!(node.children[0].role, Role::Link);
-        assert_eq!(node.children[2].role, Role::StaticText);
-        assert!(node.children[1].state.focused);
-        assert!(node.children[2].state.selected);
+        // --- phase: single_root_shows_only_the_icon_marked_current ---
+        {
+            let mut bar =
+                BreadcrumbBar::new(vec![("Home".into(), PathBuf::from("/home/u"))], new_sink());
+            lay(&mut bar, 400.0);
+            // Decorative icon + the root label (which is the current dir).
+            assert_eq!(bar.laid.len(), 2);
+            assert!(matches!(bar.laid[0].slot, Slot::Icon(_)));
+            assert!(!bar.laid[0].is_current);
+            assert!(matches!(&bar.laid[1].slot, Slot::Text(t) if t == "Home"));
+            assert!(
+                bar.laid[1].is_current,
+                "root label is the current dir when alone"
+            );
+        }
 
-        let mut doc = automerge::AutoCommit::new();
-        assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
-        assert!(matches!(
-            sink.borrow().last(),
-            Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
-        ));
+        // --- phase: accessibility_exposes_trail_and_activation_uses_keyboard_cursor ---
+        {
+            use ui::a11y::{Action, Role};
 
-        bar.keyboard_index = Some(2);
-        assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
-        assert!(
-            bar.take_edit_requested(),
-            "current crumb enters path editing"
-        );
+            let sink = new_sink();
+            let mut bar = BreadcrumbBar::new(
+                vec![
+                    ("Home".into(), PathBuf::from("/home/u")),
+                    ("Documents".into(), PathBuf::from("/home/u/Documents")),
+                    ("Reports".into(), PathBuf::from("/home/u/Documents/Reports")),
+                ],
+                sink.clone(),
+            );
+            bar.set_focus(true);
+            bar.keyboard_index = Some(1);
+            let node = bar.accessibility().expect("breadcrumbs have semantics");
+            assert_eq!(node.role, Role::Group);
+            assert_eq!(node.name.as_deref(), Some("Breadcrumbs"));
+            assert_eq!(node.children.len(), 3);
+            assert_eq!(node.children[0].role, Role::Link);
+            assert_eq!(node.children[2].role, Role::StaticText);
+            assert!(node.children[1].state.focused);
+            assert!(node.children[2].state.selected);
+
+            let mut doc = automerge::AutoCommit::new();
+            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(matches!(
+                sink.borrow().last(),
+                Some(FileCommand::Navigate(path)) if path == Path::new("/home/u/Documents")
+            ));
+
+            bar.keyboard_index = Some(2);
+            assert!(bar.perform_action(&Action::Activate, &mut doc, &automerge::ROOT));
+            assert!(
+                bar.take_edit_requested(),
+                "current crumb enters path editing"
+            );
+        }
     }
 }

@@ -388,24 +388,28 @@ fn parse_text_scale(value: &str) -> Option<f32> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn shot_text_scale_rejects_unsafe_values() {
-        assert_eq!(parse_text_scale("1.3"), Some(1.3));
-        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
-            assert_eq!(parse_text_scale(value), None, "accepted {value}");
-        }
-    }
-
+    /// Shot text scale parsing and precedence.
     #[test]
     #[expect(
         clippy::float_cmp,
         reason = "the scales are parsed from exact decimal literals and passed through unchanged"
     )]
-    fn standalone_shot_scale_uses_environment_unless_cli_overrides_it() {
-        assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
-        assert_eq!(
-            standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
-            2.0
-        );
+    fn shot_text_scale_is_validated_and_cli_overrides_environment() {
+        // Phase `shot_text_scale_rejects_unsafe_values`.
+        {
+            assert_eq!(parse_text_scale("1.3"), Some(1.3));
+            for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+                assert_eq!(parse_text_scale(value), None, "accepted {value}");
+            }
+        }
+
+        // Phase `standalone_shot_scale_uses_environment_unless_cli_overrides_it`.
+        {
+            assert_eq!(standalone_shot_theme(None, Some("1.25")).text_scale, 1.25);
+            assert_eq!(
+                standalone_shot_theme(Some(2.0), Some("1.25")).text_scale,
+                2.0
+            );
+        }
     }
 }

@@ -1599,22 +1599,85 @@ mod tests {
     }
 
     #[test]
-    fn retained_failed_setup_can_continue_in_the_one_windows_appliance() {
-        assert!(can_escalate_install_to_vm(&retained_installation(
-            InstallationStatus::Failed
-        )));
-        assert!(can_escalate_install_to_vm(&retained_installation(
-            InstallationStatus::NeedsAttention
-        )));
-        assert!(!can_escalate_install_to_vm(&retained_installation(
-            InstallationStatus::Installing
-        )));
-        assert!(!can_escalate_install_to_vm(&retained_installation(
-            InstallationStatus::Uninstalling
-        )));
-        assert!(!can_escalate_install_to_vm(&retained_installation(
-            InstallationStatus::Uninstalled
-        )));
+    fn live_model_explains_vm_availability_and_setup_recovery() {
+        // Case `retained_failed_setup_can_continue_in_the_one_windows_appliance`.
+        {
+            assert!(can_escalate_install_to_vm(&retained_installation(
+                InstallationStatus::Failed
+            )));
+            assert!(can_escalate_install_to_vm(&retained_installation(
+                InstallationStatus::NeedsAttention
+            )));
+            assert!(!can_escalate_install_to_vm(&retained_installation(
+                InstallationStatus::Installing
+            )));
+            assert!(!can_escalate_install_to_vm(&retained_installation(
+                InstallationStatus::Uninstalling
+            )));
+            assert!(!can_escalate_install_to_vm(&retained_installation(
+                InstallationStatus::Uninstalled
+            )));
+        }
+        // Case `vm_and_audio_disabled_reasons_are_explicit_in_the_live_model`.
+        {
+            let app = app_from_managed(managed_vm(), None, None);
+            assert!(!app.launch_available);
+            assert_eq!(
+                app.launch_unavailable_reason.as_deref(),
+                Some("Guest bridge unavailable")
+            );
+            assert!(app.fallback_detail.contains("Guest bridge unavailable"));
+            assert!(
+                app.fallback_detail
+                    .contains("Playback-only proxy unavailable")
+            );
+            assert!(
+                app.grants
+                    .iter()
+                    .any(|grant| grant.label == "Audio output" && !grant.enabled)
+            );
+            assert_eq!(app.capsule, "Shared Windows appliance");
+            assert!(app.prefix.contains("no host capsule"));
+            assert_eq!(
+                app.catalogue_source,
+                "Authenticated Windows guest catalogue"
+            );
+            assert!(!app.portal_file_open_available);
+            assert!(
+                app.portal_file_open_unavailable_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("SPICE"))
+            );
+        }
+        // Case `native_rail_is_the_only_vm_presentation_that_enables_open_file`.
+        {
+            let mut application = managed_vm();
+            application.vm_launch_available = true;
+            application.presentation = Some(compat_service::VmPresentation::NativeRail);
+            application.portal_file_open_available = true;
+            application.portal_file_open_unavailable_reason = None;
+
+            let app = app_from_managed(application, None, None);
+
+            assert!(app.portal_file_open_available);
+            assert_eq!(app.portal_file_open_unavailable_reason, None);
+        }
+        // Case `ready_vm_is_reported_even_without_published_application_rows`.
+        {
+            let catalogue = catalogue_from_managed(
+                Vec::new(),
+                &[],
+                VmAvailability::ready("The managed Windows appliance is ready."),
+                None,
+                None,
+            );
+            assert!(catalogue.apps.is_empty());
+            assert!(catalogue.vm.ready);
+            assert_eq!(
+                catalogue.vm.detail,
+                "The managed Windows appliance is ready."
+            );
+        }
     }
 
     fn managed_vm() -> ManagedApplication {
@@ -1659,242 +1722,185 @@ mod tests {
     }
 
     #[test]
-    fn vm_and_audio_disabled_reasons_are_explicit_in_the_live_model() {
-        let app = app_from_managed(managed_vm(), None, None);
-        assert!(!app.launch_available);
-        assert_eq!(
-            app.launch_unavailable_reason.as_deref(),
-            Some("Guest bridge unavailable")
-        );
-        assert!(app.fallback_detail.contains("Guest bridge unavailable"));
-        assert!(
-            app.fallback_detail
-                .contains("Playback-only proxy unavailable")
-        );
-        assert!(
-            app.grants
-                .iter()
-                .any(|grant| grant.label == "Audio output" && !grant.enabled)
-        );
-        assert_eq!(app.capsule, "Shared Windows appliance");
-        assert!(app.prefix.contains("no host capsule"));
-        assert_eq!(
-            app.catalogue_source,
-            "Authenticated Windows guest catalogue"
-        );
-        assert!(!app.portal_file_open_available);
-        assert!(
-            app.portal_file_open_unavailable_reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("SPICE"))
-        );
-    }
-
-    #[test]
-    fn native_rail_is_the_only_vm_presentation_that_enables_open_file() {
-        let mut application = managed_vm();
-        application.vm_launch_available = true;
-        application.presentation = Some(compat_service::VmPresentation::NativeRail);
-        application.portal_file_open_available = true;
-        application.portal_file_open_unavailable_reason = None;
-
-        let app = app_from_managed(application, None, None);
-
-        assert!(app.portal_file_open_available);
-        assert_eq!(app.portal_file_open_unavailable_reason, None);
-    }
-
-    #[test]
-    fn ready_vm_is_reported_even_without_published_application_rows() {
-        let catalogue = catalogue_from_managed(
-            Vec::new(),
-            &[],
-            VmAvailability::ready("The managed Windows appliance is ready."),
-            None,
-            None,
-        );
-        assert!(catalogue.apps.is_empty());
-        assert!(catalogue.vm.ready);
-        assert_eq!(
-            catalogue.vm.detail,
-            "The managed Windows appliance is ready."
-        );
-    }
-
-    #[test]
-    fn shared_windows_session_access_names_the_effective_grants_and_apps() {
-        let mut availability = VmAvailability::ready("Ready");
-        availability.shared_session = compat_service::VmSharedSessionLeaseSummary {
-            active: true,
-            effective_grants: vec![
-                compat_service::VmSharedSessionGrantKind::Clipboard,
-                compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly,
-            ],
-            contributors: vec![compat_service::VmSharedSessionContributor {
-                published_application_id: "editor".into(),
-                display_name: "Editor".into(),
-            }],
-        };
-        let catalogue = catalogue_from_managed(Vec::new(), &[], availability, None, None);
-        assert!(catalogue.vm.shared_session_active);
-        assert_eq!(
-            catalogue.vm.shared_session_grants,
-            ["Clipboard", "Read-only files"]
-        );
-        assert_eq!(catalogue.vm.shared_session_contributors, ["Editor"]);
-        assert_eq!(catalogue.vm.running_apps, 1);
-    }
-
-    #[test]
-    fn active_vm_discoveries_are_publish_only_rows() {
-        let catalogue = catalogue_from_managed(
-            Vec::new(),
-            &[],
-            VmAvailability::ready("Ready"),
-            Some(VmInstallation {
-                detail: "Discovered application".into(),
-                phase: compat_service::VmInstallationPhase::Completed,
-                exit_code: Some(0),
-                candidates: vec![compat_service::VmInstallCandidate {
-                    entry_id: "windows-vm-candidate-server-owned".into(),
-                    display_name: "Example Editor".into(),
-                    publisher: Some("Example Corp".into()),
-                    version: Some("1.0".into()),
+    fn vm_publications_and_session_access_are_explicit() {
+        // Case `shared_windows_session_access_names_the_effective_grants_and_apps`.
+        {
+            let mut availability = VmAvailability::ready("Ready");
+            availability.shared_session = compat_service::VmSharedSessionLeaseSummary {
+                active: true,
+                effective_grants: vec![
+                    compat_service::VmSharedSessionGrantKind::Clipboard,
+                    compat_service::VmSharedSessionGrantKind::PortalFilesReadOnly,
+                ],
+                contributors: vec![compat_service::VmSharedSessionContributor {
+                    published_application_id: "editor".into(),
+                    display_name: "Editor".into(),
                 }],
-            }),
-            None,
-        );
-        let app = catalogue.app("windows-vm-candidate-server-owned").unwrap();
-        assert!(app.can_publish_vm_candidate);
-        assert!(!app.launch_available);
-        assert_eq!(app.capsule, "Shared Windows appliance");
+            };
+            let catalogue = catalogue_from_managed(Vec::new(), &[], availability, None, None);
+            assert!(catalogue.vm.shared_session_active);
+            assert_eq!(
+                catalogue.vm.shared_session_grants,
+                ["Clipboard", "Read-only files"]
+            );
+            assert_eq!(catalogue.vm.shared_session_contributors, ["Editor"]);
+            assert_eq!(catalogue.vm.running_apps, 1);
+        }
+        // Case `active_vm_discoveries_are_publish_only_rows`.
+        {
+            let catalogue = catalogue_from_managed(
+                Vec::new(),
+                &[],
+                VmAvailability::ready("Ready"),
+                Some(VmInstallation {
+                    detail: "Discovered application".into(),
+                    phase: compat_service::VmInstallationPhase::Completed,
+                    exit_code: Some(0),
+                    candidates: vec![compat_service::VmInstallCandidate {
+                        entry_id: "windows-vm-candidate-server-owned".into(),
+                        display_name: "Example Editor".into(),
+                        publisher: Some("Example Corp".into()),
+                        version: Some("1.0".into()),
+                    }],
+                }),
+                None,
+            );
+            let app = catalogue.app("windows-vm-candidate-server-owned").unwrap();
+            assert!(app.can_publish_vm_candidate);
+            assert!(!app.launch_available);
+            assert_eq!(app.capsule, "Shared Windows appliance");
+        }
+        // Case `private_capsules_do_not_offer_an_unmapped_vm_fallback`.
+        {
+            let mut application = managed_vm();
+            application.capsule_id = Some("private-capsule".into());
+            application.explanation.route = RouteKind::Wine;
+            application.vm_launch_available = false;
+            application.vm_unavailable_reason = Some(
+                "Open in Windows VM is available only for published Windows guest applications."
+                    .into(),
+            );
+
+            let app = app_from_managed(application, None, None);
+
+            assert!(!app.vm_fallback_available);
+            assert!(
+                app.vm_fallback_unavailable_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("published Windows guest"))
+            );
+        }
     }
 
     #[test]
-    fn private_capsules_do_not_offer_an_unmapped_vm_fallback() {
-        let mut application = managed_vm();
-        application.capsule_id = Some("private-capsule".into());
-        application.explanation.route = RouteKind::Wine;
-        application.vm_launch_available = false;
-        application.vm_unavailable_reason = Some(
-            "Open in Windows VM is available only for published Windows guest applications.".into(),
-        );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn vm_uninstall_refresh_and_disconnect_keep_the_cache_honest() {
+        // Case `running_vm_uninstall_keeps_the_launcher_visible_and_disables_actions`.
+        {
+            let mut application = managed_vm();
+            application.vm_launch_available = true;
+            application.vendor_uninstall_available = true;
+            let uninstallation = VmUninstallation {
+                entry_id: application.id.clone(),
+                detail: "Windows vendor uninstall is running.".into(),
+                phase: compat_service::VmInstallationPhase::Running,
+                exit_code: None,
+            };
 
-        let app = app_from_managed(application, None, None);
+            let app = app_from_managed(application, None, Some(&uninstallation));
 
-        assert!(!app.vm_fallback_available);
-        assert!(
-            app.vm_fallback_unavailable_reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("published Windows guest"))
-        );
-    }
+            assert_eq!(app.status, AppStatus::Uninstalling);
+            assert!(!app.launch_available);
+            assert!(!app.portal_file_open_available);
+            assert!(
+                app.portal_file_open_unavailable_reason
+                    .as_deref()
+                    .is_some_and(|reason| reason.contains("uninstall is running"))
+            );
+            assert!(!app.can_vendor_uninstall);
+            assert!(app.fallback_detail.contains("uninstall is running"));
+        }
+        // Case `failed_vm_uninstall_is_visible_and_can_be_retried`.
+        {
+            let mut application = managed_vm();
+            application.vendor_uninstall_available = true;
+            let uninstallation = VmUninstallation {
+                entry_id: application.id.clone(),
+                detail: "Windows vendor uninstall failed; retry is available.".into(),
+                phase: compat_service::VmInstallationPhase::Failed,
+                exit_code: Some(1),
+            };
 
-    #[test]
-    fn running_vm_uninstall_keeps_the_launcher_visible_and_disables_actions() {
-        let mut application = managed_vm();
-        application.vm_launch_available = true;
-        application.vendor_uninstall_available = true;
-        let uninstallation = VmUninstallation {
-            entry_id: application.id.clone(),
-            detail: "Windows vendor uninstall is running.".into(),
-            phase: compat_service::VmInstallationPhase::Running,
-            exit_code: None,
-        };
+            let app = app_from_managed(application, None, Some(&uninstallation));
 
-        let app = app_from_managed(application, None, Some(&uninstallation));
+            assert_eq!(app.status, AppStatus::Failed);
+            assert!(app.can_vendor_uninstall);
+            assert!(app.fallback_detail.contains("retry is available"));
+        }
+        // Case `invalid_or_disconnected_response_clears_the_live_cache`.
+        {
+            let (command_tx, _command_rx) = mpsc::channel();
+            let (event_tx, event_rx) = mpsc::channel();
+            let mut sample = SampleProvider::new();
+            let mut provider = LiveProvider {
+                cached: sample.catalogue(),
+                commands: command_tx,
+                events: event_rx,
+                refresh_pending: true,
+                next_refresh: Instant::now() + REFRESH_INTERVAL,
+                notice: None,
+                operation_result: None,
+                pending_vm_install: None,
+                pending_vm_install_confirmation: None,
+            };
+            event_tx
+                .send(WorkerEvent::Unavailable("invalid response".into()))
+                .unwrap();
+            let catalogue = provider.catalogue();
+            assert!(catalogue.apps.is_empty());
+            assert_eq!(catalogue.vm.detail, "invalid response");
+        }
+        // Case `vm_install_destination_confirmation_survives_a_catalogue_refresh`.
+        {
+            let (command_tx, _command_rx) = mpsc::channel();
+            let (event_tx, event_rx) = mpsc::channel();
+            let mut provider = LiveProvider {
+                cached: unavailable_catalogue("Connecting"),
+                commands: command_tx,
+                events: event_rx,
+                refresh_pending: true,
+                next_refresh: Instant::now() + REFRESH_INTERVAL,
+                notice: None,
+                operation_result: None,
+                pending_vm_install: None,
+                pending_vm_install_confirmation: Some(VmInstallConfirmation {
+                    display_name: "Example setup".into(),
+                    detail: "Choose a destination.".into(),
+                    recommended_route: Route::Vm,
+                }),
+            };
+            event_tx
+                .send(WorkerEvent::Listed {
+                    applications: Vec::new(),
+                    installations: Vec::new(),
+                    vm_availability: VmAvailability::ready("Ready"),
+                    vm_installation: None,
+                    vm_uninstallation: None,
+                })
+                .unwrap();
 
-        assert_eq!(app.status, AppStatus::Uninstalling);
-        assert!(!app.launch_available);
-        assert!(!app.portal_file_open_available);
-        assert!(
-            app.portal_file_open_unavailable_reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("uninstall is running"))
-        );
-        assert!(!app.can_vendor_uninstall);
-        assert!(app.fallback_detail.contains("uninstall is running"));
-    }
+            let catalogue = provider.catalogue();
 
-    #[test]
-    fn failed_vm_uninstall_is_visible_and_can_be_retried() {
-        let mut application = managed_vm();
-        application.vendor_uninstall_available = true;
-        let uninstallation = VmUninstallation {
-            entry_id: application.id.clone(),
-            detail: "Windows vendor uninstall failed; retry is available.".into(),
-            phase: compat_service::VmInstallationPhase::Failed,
-            exit_code: Some(1),
-        };
-
-        let app = app_from_managed(application, None, Some(&uninstallation));
-
-        assert_eq!(app.status, AppStatus::Failed);
-        assert!(app.can_vendor_uninstall);
-        assert!(app.fallback_detail.contains("retry is available"));
-    }
-
-    #[test]
-    fn invalid_or_disconnected_response_clears_the_live_cache() {
-        let (command_tx, _command_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut sample = SampleProvider::new();
-        let mut provider = LiveProvider {
-            cached: sample.catalogue(),
-            commands: command_tx,
-            events: event_rx,
-            refresh_pending: true,
-            next_refresh: Instant::now() + REFRESH_INTERVAL,
-            notice: None,
-            operation_result: None,
-            pending_vm_install: None,
-            pending_vm_install_confirmation: None,
-        };
-        event_tx
-            .send(WorkerEvent::Unavailable("invalid response".into()))
-            .unwrap();
-        let catalogue = provider.catalogue();
-        assert!(catalogue.apps.is_empty());
-        assert_eq!(catalogue.vm.detail, "invalid response");
-    }
-
-    #[test]
-    fn vm_install_destination_confirmation_survives_a_catalogue_refresh() {
-        let (command_tx, _command_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut provider = LiveProvider {
-            cached: unavailable_catalogue("Connecting"),
-            commands: command_tx,
-            events: event_rx,
-            refresh_pending: true,
-            next_refresh: Instant::now() + REFRESH_INTERVAL,
-            notice: None,
-            operation_result: None,
-            pending_vm_install: None,
-            pending_vm_install_confirmation: Some(VmInstallConfirmation {
-                display_name: "Example setup".into(),
-                detail: "Choose a destination.".into(),
-                recommended_route: Route::Vm,
-            }),
-        };
-        event_tx
-            .send(WorkerEvent::Listed {
-                applications: Vec::new(),
-                installations: Vec::new(),
-                vm_availability: VmAvailability::ready("Ready"),
-                vm_installation: None,
-                vm_uninstallation: None,
-            })
-            .unwrap();
-
-        let catalogue = provider.catalogue();
-
-        assert_eq!(
-            catalogue
-                .vm_install_confirmation
-                .as_ref()
-                .map(|confirmation| confirmation.display_name.as_str()),
-            Some("Example setup")
-        );
+            assert_eq!(
+                catalogue
+                    .vm_install_confirmation
+                    .as_ref()
+                    .map(|confirmation| confirmation.display_name.as_str()),
+                Some("Example setup")
+            );
+        }
     }
 }

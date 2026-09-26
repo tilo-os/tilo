@@ -21,8 +21,9 @@ Two genuinely different needs hide under the one word "screen sharing":
 Need 2 is already implemented and reuses the shared video stack
 (`crates/collab/tilo-callstream`, re-exported by the compositor and consumed by chat).
 **This document specifies need 1**, which is not built yet. An earlier "Follow host"
-toggle was stubbed and removed (`follow_host_control_no_longer_exists` in chat)
-precisely because it had no real model behind it — this is that model.
+toggle was stubbed and removed (the `follow_host_control_no_longer_exists` phase of
+`calls_start_join_leave_and_mute_through_shared_voice_membership` in chat) precisely
+because it had no real model behind it — this is that model.
 
 ## Model
 

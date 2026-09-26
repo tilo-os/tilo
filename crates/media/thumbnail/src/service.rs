@@ -822,115 +822,117 @@ mod tests {
     }
 
     #[test]
-    fn image_file_loads_then_ready_and_second_request_hits() {
-        let (_dir, svc) = service();
-        let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
-        std::fs::write(
-            src.path(),
-            crate::testutil::solid_png(300, 200, [40, 90, 200]),
-        )
-        .unwrap();
-        let key = ThumbKey::of_bytes(b"img-key", 128);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn thumbnail_requests_settle_off_thread_as_ready_or_badge() {
+        // Phase `image_file_loads_then_ready_and_second_request_hits`.
+        {
+            let (_dir, svc) = service();
+            let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
+            std::fs::write(
+                src.path(),
+                crate::testutil::solid_png(300, 200, [40, 90, 200]),
+            )
+            .unwrap();
+            let key = ThumbKey::of_bytes(b"img-key", 128);
 
-        assert!(
-            svc.request_file(key, FileCategory::Image, src.path().to_path_buf())
+            assert!(
+                svc.request_file(key, FileCategory::Image, src.path().to_path_buf())
+                    .is_loading()
+            );
+            svc.block_until_idle(SETTLE);
+            assert!(svc.is_idle(), "load settled");
+
+            let state = svc.request_file(key, FileCategory::Image, src.path().to_path_buf());
+            let img = state.ready().expect("ready after the async load");
+            assert!(img.is_valid());
+            assert_eq!(img.max_edge(), 128, "downscaled to the target edge");
+            assert!(svc.cache().contains(&key), "generation populated the cache");
+        }
+        // Phase `badge_category_settles_immediately_without_work`.
+        {
+            let (_dir, svc) = service();
+            let key = ThumbKey::of_bytes(b"archive", 128);
+            assert!(matches!(
+                svc.request_file(key, FileCategory::Archive, PathBuf::from("/x/a.zip")),
+                ThumbState::Badge(FileCategory::Archive)
+            ));
+            assert!(svc.is_idle(), "a badge schedules no background work");
+        }
+        // Phase `a_broken_image_settles_as_a_badge`.
+        {
+            let (_dir, svc) = service();
+            let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
+            std::fs::write(src.path(), b"not really a png").unwrap();
+            let key = ThumbKey::of_bytes(b"broken", 128);
+            svc.request_file(key, FileCategory::Image, src.path().to_path_buf());
+            svc.block_until_idle(SETTLE);
+            assert!(matches!(
+                svc.request_file(key, FileCategory::Image, src.path().to_path_buf()),
+                ThumbState::Badge(FileCategory::Image)
+            ));
+        }
+        // Phase `content_bytes_are_generated_on_a_worker_and_cached_by_key`.
+        {
+            let (_dir, svc) = service();
+            let bytes = png([200, 10, 10]);
+            let address = tilo_content::hash_bytes(&bytes);
+            let key = ThumbKey::of_address(&address, 32).unwrap();
+            svc.request(ThumbRequest::load(key, FileCategory::Image, move || {
+                Some(bytes)
+            }));
+            svc.block_until_idle(SETTLE);
+            let state = svc.peek(&key).expect("requested");
+            assert_eq!(state.ready().expect("ready").max_edge(), 32);
+            assert!(svc.cache().contains(&key));
+        }
+        // Phase `encoded_host_thumbnail_is_adopted_without_touching_source`.
+        {
+            let (_dir, svc) = service();
+            let png = crate::generate::encode_png(
+                &crate::generate::image_thumb(&png([10, 220, 60]), 128).unwrap(),
+            )
+            .unwrap();
+            let key = ThumbKey::of_hash([7u8; 32], 128);
+            svc.request_encoded(key, FileCategory::Image, move || Some(png));
+            svc.block_until_idle(SETTLE);
+            let state = svc.request_encoded(key, FileCategory::Image, || {
+                panic!("must not re-read a warm slot")
+            });
+            assert!(
+                state.ready().is_some(),
+                "host-provided thumbnail is adopted"
+            );
+        }
+        // Phase `encoded_thumbnail_loader_never_runs_on_the_requesting_thread`.
+        {
+            let (_dir, svc) = service();
+            let key = ThumbKey::of_hash([8u8; 32], 128);
+            let caller = std::thread::current().id();
+            let (tx, rx) = mpsc::channel();
+
+            assert!(
+                svc.request_encoded(key, FileCategory::Image, move || {
+                    tx.send(std::thread::current().id()).unwrap();
+                    None
+                })
                 .is_loading()
-        );
-        svc.block_until_idle(SETTLE);
-        assert!(svc.is_idle(), "load settled");
-
-        let state = svc.request_file(key, FileCategory::Image, src.path().to_path_buf());
-        let img = state.ready().expect("ready after the async load");
-        assert!(img.is_valid());
-        assert_eq!(img.max_edge(), 128, "downscaled to the target edge");
-        assert!(svc.cache().contains(&key), "generation populated the cache");
-    }
-
-    #[test]
-    fn badge_category_settles_immediately_without_work() {
-        let (_dir, svc) = service();
-        let key = ThumbKey::of_bytes(b"archive", 128);
-        assert!(matches!(
-            svc.request_file(key, FileCategory::Archive, PathBuf::from("/x/a.zip")),
-            ThumbState::Badge(FileCategory::Archive)
-        ));
-        assert!(svc.is_idle(), "a badge schedules no background work");
-    }
-
-    #[test]
-    fn a_broken_image_settles_as_a_badge() {
-        let (_dir, svc) = service();
-        let src = tempfile::NamedTempFile::with_suffix(".png").unwrap();
-        std::fs::write(src.path(), b"not really a png").unwrap();
-        let key = ThumbKey::of_bytes(b"broken", 128);
-        svc.request_file(key, FileCategory::Image, src.path().to_path_buf());
-        svc.block_until_idle(SETTLE);
-        assert!(matches!(
-            svc.request_file(key, FileCategory::Image, src.path().to_path_buf()),
-            ThumbState::Badge(FileCategory::Image)
-        ));
-    }
-
-    #[test]
-    fn content_bytes_are_generated_on_a_worker_and_cached_by_key() {
-        let (_dir, svc) = service();
-        let bytes = png([200, 10, 10]);
-        let address = tilo_content::hash_bytes(&bytes);
-        let key = ThumbKey::of_address(&address, 32).unwrap();
-        svc.request(ThumbRequest::load(key, FileCategory::Image, move || {
-            Some(bytes)
-        }));
-        svc.block_until_idle(SETTLE);
-        let state = svc.peek(&key).expect("requested");
-        assert_eq!(state.ready().expect("ready").max_edge(), 32);
-        assert!(svc.cache().contains(&key));
-    }
-
-    #[test]
-    fn encoded_host_thumbnail_is_adopted_without_touching_source() {
-        let (_dir, svc) = service();
-        let png = crate::generate::encode_png(
-            &crate::generate::image_thumb(&png([10, 220, 60]), 128).unwrap(),
-        )
-        .unwrap();
-        let key = ThumbKey::of_hash([7u8; 32], 128);
-        svc.request_encoded(key, FileCategory::Image, move || Some(png));
-        svc.block_until_idle(SETTLE);
-        let state = svc.request_encoded(key, FileCategory::Image, || {
-            panic!("must not re-read a warm slot")
-        });
-        assert!(
-            state.ready().is_some(),
-            "host-provided thumbnail is adopted"
-        );
-    }
-
-    #[test]
-    fn encoded_thumbnail_loader_never_runs_on_the_requesting_thread() {
-        let (_dir, svc) = service();
-        let key = ThumbKey::of_hash([8u8; 32], 128);
-        let caller = std::thread::current().id();
-        let (tx, rx) = mpsc::channel();
-
-        assert!(
-            svc.request_encoded(key, FileCategory::Image, move || {
-                tx.send(std::thread::current().id()).unwrap();
-                None
-            })
-            .is_loading()
-        );
-        let worker = rx.recv_timeout(SETTLE).unwrap();
-        assert_ne!(
-            caller, worker,
-            "a FUSE/xattr lookup from draw must be dispatched to a thumbnail worker"
-        );
-        svc.block_until_idle(SETTLE);
-        assert!(matches!(
-            svc.request_encoded(key, FileCategory::Image, || {
-                panic!("the settled badge must not reload the xattr")
-            }),
-            ThumbState::Badge(FileCategory::Image)
-        ));
+            );
+            let worker = rx.recv_timeout(SETTLE).unwrap();
+            assert_ne!(
+                caller, worker,
+                "a FUSE/xattr lookup from draw must be dispatched to a thumbnail worker"
+            );
+            svc.block_until_idle(SETTLE);
+            assert!(matches!(
+                svc.request_encoded(key, FileCategory::Image, || {
+                    panic!("the settled badge must not reload the xattr")
+                }),
+                ThumbState::Badge(FileCategory::Image)
+            ));
+        }
     }
 
     /// Visible work runs before prefetch before background, and within one

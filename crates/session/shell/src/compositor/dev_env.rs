@@ -157,7 +157,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn overrides_track_the_build_profile() {
+    fn dev_override_gate_tracks_the_build_profile_and_reports_ignored_vars() {
+        // Phase `overrides_track_the_build_profile`.
         // The test suite is a debug build, so the gate must be open here —
         // otherwise every harness that sets TILO_TEST_CONTROL or
         // TILO_LOCK_TEST_PASSWORD would silently stop working.
@@ -173,32 +174,28 @@ mod tests {
             DEV_OVERRIDES_RELEASE_BUILD,
             !cfg!(debug_assertions) && cfg!(feature = "dev-overrides")
         );
-    }
+        // Phase `ignored_vars_are_reported_only_when_the_gate_is_closed`.
+        {
+            let env = |name: &str| match name {
+                "TILO_TEST_CONTROL" => Some("/run/user/1000/ctl.sock".into()),
+                "TILO_LOCK_TEST_PASSWORD" => Some("hunter2".into()),
+                "TILO_UNLOCK_HELPER" => Some("".into()),
+                _ => None,
+            };
+            assert!(ignored_override_vars(true, env).is_empty());
+            let ignored = ignored_override_vars(false, env);
+            assert_eq!(ignored, ["TILO_TEST_CONTROL", "TILO_LOCK_TEST_PASSWORD"]);
 
-    #[test]
-    fn ignored_vars_are_reported_only_when_the_gate_is_closed() {
-        let env = |name: &str| match name {
-            "TILO_TEST_CONTROL" => Some("/run/user/1000/ctl.sock".into()),
-            "TILO_LOCK_TEST_PASSWORD" => Some("hunter2".into()),
-            "TILO_UNLOCK_HELPER" => Some("".into()),
-            _ => None,
-        };
-        assert!(ignored_override_vars(true, env).is_empty());
-        let ignored = ignored_override_vars(false, env);
-        assert_eq!(ignored, ["TILO_TEST_CONTROL", "TILO_LOCK_TEST_PASSWORD"]);
-
-        let message = ignored_override_message(&ignored).expect("a warning");
-        assert!(message.contains("TILO_TEST_CONTROL"));
-        assert!(message.contains("--features dev-overrides"));
-        assert!(message.contains("tilo-dev"));
-        // Names only: the password and the socket path never reach the log.
-        assert!(!message.contains("hunter2"));
-        assert!(!message.contains("ctl.sock"));
-        assert_eq!(ignored_override_message(&[]), None);
-    }
-
-    #[test]
-    fn the_marker_static_matches_the_string_the_packaging_greps_for() {
+            let message = ignored_override_message(&ignored).expect("a warning");
+            assert!(message.contains("TILO_TEST_CONTROL"));
+            assert!(message.contains("--features dev-overrides"));
+            assert!(message.contains("tilo-dev"));
+            // Names only: the password and the socket path never reach the log.
+            assert!(!message.contains("hunter2"));
+            assert!(!message.contains("ctl.sock"));
+            assert_eq!(ignored_override_message(&[]), None);
+        }
+        // Phase `the_marker_static_matches_the_string_the_packaging_greps_for`.
         // The dev session entry searches the binary for DEV_SESSION_MARKER.
         // If the static and the constant ever drift, the entry silently
         // refuses every build — so tie them together here.

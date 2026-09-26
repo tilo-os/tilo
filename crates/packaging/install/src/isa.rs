@@ -190,189 +190,116 @@ impl std::fmt::Display for InstallError {
 mod tests {
     use super::*;
 
-    // ---- x86_64 -----------------------------------------------------------
+    const X86_V2: &str = "sse3 ssse3 sse4_1 sse4_2 popcnt cx16";
+    const X86_V3_EXTRA: &str = "avx avx2 bmi1 bmi2 f16c fma abm movbe xsave";
+    const ARM_BASE: &str = "fp asimd aes sha1 sha2";
 
     #[test]
-    fn x86_baseline_when_no_extras() {
-        assert_eq!(detect_x86_64(""), X86_64Level::Baseline);
-    }
+    fn cpu_flags_detect_the_highest_complete_isa_level() {
+        use AArch64Level::{Armv8_2A, Armv8_4A, Armv8A, Armv9A};
+        use X86_64Level::{Baseline, V2, V3, V4};
+        let v3_without_bmi2 = format!("{X86_V2} avx avx2 bmi1 f16c fma abm movbe xsave");
+        for (name, flags, want) in [
+            ("x86 baseline when no extras", String::new(), Baseline),
+            ("x86 v2 only", X86_V2.to_string(), V2),
+            ("x86 v3 full set", format!("{X86_V2} {X86_V3_EXTRA}"), V3),
+            (
+                "x86 v4 full set",
+                format!("{X86_V2} {X86_V3_EXTRA} avx512f avx512bw avx512cd avx512dq avx512vl"),
+                V4,
+            ),
+            ("x86 v3 missing bmi2 falls back to v2", v3_without_bmi2, V2),
+        ] {
+            assert_eq!(detect_x86_64(&flags), want, "case {name}");
+        }
+        for (name, extra, want) in [
+            // Neither fp16 nor asimddp — plain v8-A.
+            ("arm v8 baseline", "", Armv8A),
+            ("arm v8.2 needs fphp and dp", " fphp asimddp", Armv8_2A),
+            (
+                "arm v8.4 needs i8mm and sha3",
+                " fphp asimddp i8mm sha3",
+                Armv8_4A,
+            ),
+            (
+                "arm v9 needs sve2",
+                " fphp asimddp i8mm sha3 sve sve2",
+                Armv9A,
+            ),
+            // fphp alone is not enough — v8.2-A requires dot-product too.
+            ("arm missing asimddp drops below v8.2", " fphp", Armv8A),
+        ] {
+            assert_eq!(
+                detect_aarch64(&format!("{ARM_BASE}{extra}")),
+                want,
+                "case {name}"
+            );
+        }
 
-    #[test]
-    fn x86_v2_only() {
-        assert_eq!(
-            detect_x86_64("sse3 ssse3 sse4_1 sse4_2 popcnt cx16"),
-            X86_64Level::V2
-        );
-    }
-
-    #[test]
-    fn x86_v3_full_set() {
-        let flags = "sse3 ssse3 sse4_1 sse4_2 popcnt cx16 \
-                     avx avx2 bmi1 bmi2 f16c fma abm movbe xsave";
-        assert_eq!(detect_x86_64(flags), X86_64Level::V3);
-    }
-
-    #[test]
-    fn x86_v4_full_set() {
-        let flags = "sse3 ssse3 sse4_1 sse4_2 popcnt cx16 \
-                     avx avx2 bmi1 bmi2 f16c fma abm movbe xsave \
-                     avx512f avx512bw avx512cd avx512dq avx512vl";
-        assert_eq!(detect_x86_64(flags), X86_64Level::V4);
-    }
-
-    #[test]
-    fn x86_v3_missing_bmi2_falls_back_to_v2() {
-        let flags = "sse3 ssse3 sse4_1 sse4_2 popcnt cx16 \
-                     avx avx2 bmi1 f16c fma abm movbe xsave";
-        assert_eq!(detect_x86_64(flags), X86_64Level::V2);
-    }
-
-    // ---- aarch64 ---------------------------------------------------------
-
-    #[test]
-    fn arm_v8_baseline() {
-        // Neither fp16 nor asimddp — plain v8-A.
-        assert_eq!(
-            detect_aarch64("fp asimd aes sha1 sha2"),
-            AArch64Level::Armv8A
-        );
-    }
-
-    #[test]
-    fn arm_v8_2_needs_fphp_and_dp() {
-        let flags = "fp asimd aes sha1 sha2 fphp asimddp";
-        assert_eq!(detect_aarch64(flags), AArch64Level::Armv8_2A);
-    }
-
-    #[test]
-    fn arm_v8_4_needs_i8mm_and_sha3() {
-        let flags = "fp asimd aes sha1 sha2 fphp asimddp i8mm sha3";
-        assert_eq!(detect_aarch64(flags), AArch64Level::Armv8_4A);
-    }
-
-    #[test]
-    fn arm_v9_needs_sve2() {
-        let flags = "fp asimd aes sha1 sha2 fphp asimddp i8mm sha3 sve sve2";
-        assert_eq!(detect_aarch64(flags), AArch64Level::Armv9A);
-    }
-
-    #[test]
-    fn arm_missing_asimddp_drops_below_v8_2() {
-        // fphp alone is not enough — v8.2-A requires dot-product too.
-        assert_eq!(
-            detect_aarch64("fp asimd aes sha1 sha2 fphp"),
-            AArch64Level::Armv8A
-        );
-    }
-
-    // ---- cpuinfo integration --------------------------------------------
-
-    #[test]
-    fn cpuinfo_x86_flags_line() {
+        // The flags line is found inside a whole /proc/cpuinfo.
         let c = "processor : 0\nvendor_id : GenuineIntel\n\
                  flags : fpu vme sse2 sse3 ssse3 sse4_1 sse4_2 popcnt cx16 \
                  avx avx2 bmi1 bmi2 f16c fma abm movbe xsave\n";
-        assert_eq!(
-            detect_from_cpuinfo(c, Arch::X86_64),
-            IsaLevel::X86_64(X86_64Level::V3)
-        );
-    }
-
-    #[test]
-    fn cpuinfo_aarch64_features_line() {
+        assert_eq!(detect_from_cpuinfo(c, Arch::X86_64), IsaLevel::X86_64(V3));
         let c = "processor : 0\n\
                  Features : fp asimd aes sha1 sha2 fphp asimddp i8mm sha3\n";
         assert_eq!(
             detect_from_cpuinfo(c, Arch::AArch64),
-            IsaLevel::AArch64(AArch64Level::Armv8_4A)
-        );
-    }
-
-    // ---- pick_variant ----------------------------------------------------
-
-    #[test]
-    fn pick_returns_highest_that_fits() {
-        let host = IsaLevel::X86_64(X86_64Level::V3);
-        let available = [
-            IsaLevel::X86_64(X86_64Level::Baseline),
-            IsaLevel::X86_64(X86_64Level::V2),
-            IsaLevel::X86_64(X86_64Level::V3),
-        ];
-        assert_eq!(
-            pick_variant(host, &available),
-            Some(IsaLevel::X86_64(X86_64Level::V3))
+            IsaLevel::AArch64(Armv8_4A)
         );
     }
 
     #[test]
-    fn pick_skips_variants_too_new() {
-        let host = IsaLevel::X86_64(X86_64Level::V3);
-        let available = [
-            IsaLevel::X86_64(X86_64Level::V3),
-            IsaLevel::X86_64(X86_64Level::V4),
-        ];
-        assert_eq!(
-            pick_variant(host, &available),
-            Some(IsaLevel::X86_64(X86_64Level::V3))
-        );
-    }
+    fn variant_choice_and_install_check_respect_the_host_level() {
+        use X86_64Level::{Baseline, V2, V3, V4};
+        let x86 = IsaLevel::X86_64;
+        for (name, host, available, want) in [
+            (
+                "pick returns highest that fits",
+                x86(V3),
+                vec![x86(Baseline), x86(V2), x86(V3)],
+                Some(x86(V3)),
+            ),
+            (
+                "pick skips variants too new",
+                x86(V3),
+                vec![x86(V3), x86(V4)],
+                Some(x86(V3)),
+            ),
+            // Publisher only shipped aarch64 builds; host is x86.
+            (
+                "pick returns none when arch mismatched",
+                x86(V3),
+                vec![IsaLevel::AArch64(AArch64Level::Armv8_2A)],
+                None,
+            ),
+            (
+                "pick returns none when all too new",
+                x86(Baseline),
+                vec![x86(V3), x86(V4)],
+                None,
+            ),
+        ] {
+            assert_eq!(pick_variant(host, &available), want, "case {name}");
+        }
 
-    #[test]
-    fn pick_returns_none_when_arch_mismatched() {
-        // Publisher only shipped aarch64 builds; host is x86.
-        let host = IsaLevel::X86_64(X86_64Level::V3);
-        let available = [IsaLevel::AArch64(AArch64Level::Armv8_2A)];
-        assert_eq!(pick_variant(host, &available), None);
-    }
-
-    #[test]
-    fn pick_returns_none_when_all_too_new() {
-        let host = IsaLevel::X86_64(X86_64Level::Baseline);
-        let available = [
-            IsaLevel::X86_64(X86_64Level::V3),
-            IsaLevel::X86_64(X86_64Level::V4),
-        ];
-        assert_eq!(pick_variant(host, &available), None);
-    }
-
-    // ---- install_check gate ---------------------------------------------
-
-    #[test]
-    fn install_check_ok_when_host_fits() {
+        // The publisher shipped x86_64 v3 only.
         let reqs = IsaRequirements {
-            x86_64: Some(X86_64Level::V3),
+            x86_64: Some(V3),
             aarch64: None,
         };
-        let host = IsaLevel::X86_64(X86_64Level::V3);
+        assert_eq!(install_check(&reqs, Arch::X86_64, x86(V3)), Ok(x86(V3)));
         assert_eq!(
-            install_check(&reqs, Arch::X86_64, host),
-            Ok(IsaLevel::X86_64(X86_64Level::V3))
-        );
-    }
-
-    #[test]
-    fn install_check_refuses_missing_arch() {
-        // Publisher shipped x86_64 only; host is aarch64.
-        let reqs = IsaRequirements {
-            x86_64: Some(X86_64Level::V3),
-            aarch64: None,
-        };
-        let host = IsaLevel::AArch64(AArch64Level::Armv8_2A);
-        assert_eq!(
-            install_check(&reqs, Arch::AArch64, host),
+            install_check(
+                &reqs,
+                Arch::AArch64,
+                IsaLevel::AArch64(AArch64Level::Armv8_2A)
+            ),
             Err(InstallError::NoBuildForArch(Arch::AArch64))
         );
-    }
-
-    #[test]
-    fn install_check_refuses_when_host_too_old() {
-        // Publisher demands v3; host is v2.
-        let reqs = IsaRequirements {
-            x86_64: Some(X86_64Level::V3),
-            aarch64: None,
-        };
-        let host = IsaLevel::X86_64(X86_64Level::V2);
-        let got = install_check(&reqs, Arch::X86_64, host);
-        assert!(matches!(got, Err(InstallError::HostTooOld { .. })));
+        assert!(matches!(
+            install_check(&reqs, Arch::X86_64, x86(V2)),
+            Err(InstallError::HostTooOld { .. })
+        ));
     }
 }

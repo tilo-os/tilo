@@ -32,6 +32,7 @@ pub struct Spacer {
     /// (`fixed(0.0)`, `token(SpacingStep::S0)`) is a legitimate rect.
     laid_out: bool,
     extent: Extent,
+    id: Option<String>,
     presence_path: Vec<PathSegment>,
     permission_scope: Option<PermissionScope>,
 }
@@ -49,9 +50,17 @@ impl Spacer {
             rect: Rect::ZERO,
             laid_out: false,
             extent: Extent::Flexible,
+            id: None,
             presence_path: Vec::new(),
             permission_scope: None,
         }
+    }
+
+    /// Address this spacer by a stable graph id.
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.id = Some(id.into());
+        self
     }
 
     /// A fixed gap of exactly `px` logical pixels on both axes, so it reads
@@ -168,6 +177,10 @@ impl Widget for Spacer {
         "Spacer"
     }
 
+    fn test_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
     /// `draw` is a no-op, so this is never dirty. With many Spacers in a
     /// tree (toolbars, padding rows), the default-true `needs_redraw`
     /// was pinning the whole tree to "always-dirty".
@@ -273,103 +286,106 @@ mod tests {
     }
 
     #[test]
-    fn flexible_spacer_still_pushes_trailing_siblings_to_the_far_edge() {
-        let mut row = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new("lead")))
-            .push(Box::new(Spacer::new()))
-            .push(Box::new(Text::new("trail")));
-        lay_out(&mut row, 600.0, 100.0);
-        let rects = child_rects(&row);
-        assert!(
-            rects[1].width() > 300.0,
-            "the spacer took the slack: {rects:?}"
-        );
-        assert!(
-            (rects[2].x1 - 600.0).abs() < 0.5,
-            "trailing text lands on the far edge: {rects:?}"
-        );
-    }
+    fn spacers_push_or_separate_by_their_resolved_extent() {
+        // Case `flexible_spacer_still_pushes_trailing_siblings_to_the_far_edge`.
+        {
+            let mut row = Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("lead")))
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(Text::new("trail")));
+            lay_out(&mut row, 600.0, 100.0);
+            let rects = child_rects(&row);
+            assert!(
+                rects[1].width() > 300.0,
+                "the spacer took the slack: {rects:?}"
+            );
+            assert!(
+                (rects[2].x1 - 600.0).abs() < 0.5,
+                "trailing text lands on the far edge: {rects:?}"
+            );
+        }
 
-    #[test]
-    fn fixed_spacer_is_exactly_its_pixels_in_a_row_and_does_not_grow() {
-        let mut row = Row::new()
-            .no_wrap()
-            .push(Box::new(Text::new("a")))
-            .push(Box::new(Spacer::fixed(16.0)))
-            .push(Box::new(Text::new("b")));
-        lay_out(&mut row, 600.0, 100.0);
-        let rects = child_rects(&row);
-        assert_eq!(rects[1].width(), 16.0, "{rects:?}");
-        assert_eq!(rects[1].height(), 16.0, "{rects:?}");
-        assert!(
-            rects[2].x1 < 300.0,
-            "siblings stay packed at the start; the fixed spacer took no slack: {rects:?}"
-        );
-    }
+        // Case `fixed_spacer_is_exactly_its_pixels_in_a_row_and_does_not_grow`.
+        {
+            let mut row = Row::new()
+                .no_wrap()
+                .push(Box::new(Text::new("a")))
+                .push(Box::new(Spacer::fixed(16.0)))
+                .push(Box::new(Text::new("b")));
+            lay_out(&mut row, 600.0, 100.0);
+            let rects = child_rects(&row);
+            assert_eq!(rects[1].width(), 16.0, "{rects:?}");
+            assert_eq!(rects[1].height(), 16.0, "{rects:?}");
+            assert!(
+                rects[2].x1 < 300.0,
+                "siblings stay packed at the start; the fixed spacer took no slack: {rects:?}"
+            );
+        }
 
-    #[test]
-    fn fixed_spacer_separates_column_children_by_its_pixels_plus_the_gap() {
-        let theme = Theme::dark();
-        let mut column = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .push(Box::new(Text::new("a")))
-            .push(Box::new(Spacer::fixed(16.0)))
-            .push(Box::new(Text::new("b")));
-        lay_out(&mut column, 400.0, 400.0);
-        let rects = child_rects(&column);
-        assert_eq!(rects[1].height(), 16.0, "{rects:?}");
-        let expected = rects[0].y1 + f64::from(theme.gap_standard) * 2.0 + 16.0;
-        assert!(
-            (rects[2].y0 - expected).abs() < 0.5,
-            "b starts after a, two gaps and the spacer: {rects:?}"
-        );
-    }
+        // Case `fixed_spacer_separates_column_children_by_its_pixels_plus_the_gap`.
+        {
+            let theme = Theme::dark();
+            let mut column = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .push(Box::new(Text::new("a")))
+                .push(Box::new(Spacer::fixed(16.0)))
+                .push(Box::new(Text::new("b")));
+            lay_out(&mut column, 400.0, 400.0);
+            let rects = child_rects(&column);
+            assert_eq!(rects[1].height(), 16.0, "{rects:?}");
+            let expected = rects[0].y1 + f64::from(theme.gap_standard) * 2.0 + 16.0;
+            assert!(
+                (rects[2].y0 - expected).abs() < 0.5,
+                "b starts after a, two gaps and the spacer: {rects:?}"
+            );
+        }
 
-    #[test]
-    fn token_spacer_resolves_the_theme_step_and_follows_ui_scale() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut nodes = std::collections::HashMap::new();
-        let mut spacer = Spacer::token(SpacingStep::S4);
-        let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        let size = taffy.style(node).unwrap().size;
-        assert_eq!(size.width, length(16.0_f32));
-        assert_eq!(size.height, length(16.0_f32));
+        // Case `token_spacer_resolves_the_theme_step_and_follows_ui_scale`.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let mut spacer = Spacer::token(SpacingStep::S4);
+            let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+            let size = taffy.style(node).unwrap().size;
+            assert_eq!(size.width, length(16.0_f32));
+            assert_eq!(size.height, length(16.0_f32));
 
-        let scaled = Theme::dark().with_ui_scale(1.5);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut spacer = Spacer::token(SpacingStep::S4);
-        let node = spacer.build_layout(&mut taffy, &scaled, &mut nodes);
-        assert_eq!(taffy.style(node).unwrap().size.height, length(24.0_f32));
-    }
+            let scaled = Theme::dark().with_ui_scale(1.5);
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut spacer = Spacer::token(SpacingStep::S4);
+            let node = spacer.build_layout(&mut taffy, &scaled, &mut nodes);
+            assert_eq!(taffy.style(node).unwrap().size.height, length(24.0_f32));
+        }
 
-    /// A zero-size spacer laid out at the origin must not read as
-    /// "never laid out", or the host relayouts on every event forever.
-    #[test]
-    fn zero_extent_spacer_at_the_origin_is_not_permanently_layout_dirty() {
-        let mut column = Column::new()
-            .with_intrinsic_height()
-            .with_no_padding()
-            .with_gap(0.0)
-            .push(Box::new(Spacer::token(SpacingStep::S0)))
-            .push(Box::new(Text::new("body")));
-        assert!(
-            column.children()[0].is_layout_dirty(),
-            "dirty before layout"
-        );
-        lay_out(&mut column, 400.0, 400.0);
-        let spacer = column.children()[0];
-        assert_eq!(spacer.get_rect(), Rect::ZERO, "zero size at the origin");
-        assert!(!spacer.is_layout_dirty(), "laid out once is laid out");
-    }
+        // Case `zero_extent_spacer_at_the_origin_is_not_permanently_layout_dirty`.
+        // A zero-size spacer laid out at the origin must not read as
+        // "never laid out", or the host relayouts on every event forever.
+        {
+            let mut column = Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_gap(0.0)
+                .push(Box::new(Spacer::token(SpacingStep::S0)))
+                .push(Box::new(Text::new("body")));
+            assert!(
+                column.children()[0].is_layout_dirty(),
+                "dirty before layout"
+            );
+            lay_out(&mut column, 400.0, 400.0);
+            let spacer = column.children()[0];
+            assert_eq!(spacer.get_rect(), Rect::ZERO, "zero size at the origin");
+            assert!(!spacer.is_layout_dirty(), "laid out once is laid out");
+        }
 
-    #[test]
-    fn negative_fixed_extent_is_clamped_to_zero() {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut nodes = std::collections::HashMap::new();
-        let mut spacer = Spacer::fixed(-8.0);
-        let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        assert_eq!(taffy.style(node).unwrap().size.width, length(0.0_f32));
+        // Case `negative_fixed_extent_is_clamped_to_zero`.
+        {
+            let mut taffy: TaffyTree<()> = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let mut spacer = Spacer::fixed(-8.0);
+            let node = spacer.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+            assert_eq!(taffy.style(node).unwrap().size.width, length(0.0_f32));
+        }
     }
 }

@@ -23,7 +23,11 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+    env:
+      # The policy suite's Cargo metadata and cargo deny resolve every locked
+      # crate; read them from the shared download cache, not crates.io.
+      CARGO_HOME: /cargo-home
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -31,6 +35,9 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
+
+      - name: Restore Cargo downloads
+        uses: ./.forgejo/actions/restore-cargo-downloads
 
       - name: Verify native fast-quality toolchain
         run: |

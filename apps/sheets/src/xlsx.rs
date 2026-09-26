@@ -450,141 +450,149 @@ mod tests {
     use super::*;
     use crate::model::Currency;
 
+    /// XLSX values/formats, colliding tab names, formulas and formula normalisation.
     #[test]
-    fn xlsx_round_trips_values_and_basic_formats() {
-        let dir = std::env::temp_dir();
-        let path = dir.join("sheets-xlsx-test.xlsx");
-        let table = SheetTable {
-            name: "Data".into(),
-            rows: vec![
-                vec![
-                    Some(ImportedCell::value("Item".into(), CellFormat::Text)),
-                    Some(ImportedCell::value("Price".into(), CellFormat::Text)),
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn xlsx_round_trips_values_formats_tabs_and_formulas() {
+        // Case `xlsx_round_trips_values_and_basic_formats`.
+        {
+            let dir = std::env::temp_dir();
+            let path = dir.join("sheets-xlsx-test.xlsx");
+            let table = SheetTable {
+                name: "Data".into(),
+                rows: vec![
+                    vec![
+                        Some(ImportedCell::value("Item".into(), CellFormat::Text)),
+                        Some(ImportedCell::value("Price".into(), CellFormat::Text)),
+                    ],
+                    vec![
+                        Some(ImportedCell::value("Widget".into(), CellFormat::Text)),
+                        Some(ImportedCell::value(
+                            "100".into(),
+                            CellFormat::Currency(Currency::USD),
+                        )),
+                    ],
+                    vec![
+                        None,
+                        Some(ImportedCell::value("0.9".into(), CellFormat::Percent)),
+                    ],
                 ],
-                vec![
-                    Some(ImportedCell::value("Widget".into(), CellFormat::Text)),
-                    Some(ImportedCell::value(
-                        "100".into(),
-                        CellFormat::Currency(Currency::USD),
-                    )),
-                ],
-                vec![
-                    None,
-                    Some(ImportedCell::value("0.9".into(), CellFormat::Percent)),
-                ],
-            ],
-        };
-        write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
-        let back = read_xlsx(&path).unwrap();
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0].name, "Data");
-        // Header text survived.
-        assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
-        // The currency number survived as 100.
-        let price = back[0].rows[1][1].as_ref().unwrap();
-        assert_eq!(price.raw.parse::<f64>().unwrap(), 100.0);
-        // The percent value survived as 0.9.
-        let pct = back[0].rows[2][1].as_ref().unwrap();
-        assert!((pct.raw.parse::<f64>().unwrap() - 0.9).abs() < 1e-9);
-        let _ = std::fs::remove_file(&path);
-    }
+            };
+            write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
+            let back = read_xlsx(&path).unwrap();
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0].name, "Data");
+            // Header text survived.
+            assert_eq!(back[0].rows[0][0].as_ref().unwrap().raw, "Item");
+            // The currency number survived as 100.
+            let price = back[0].rows[1][1].as_ref().unwrap();
+            assert_eq!(price.raw.parse::<f64>().unwrap(), 100.0);
+            // The percent value survived as 0.9.
+            let pct = back[0].rows[2][1].as_ref().unwrap();
+            assert!((pct.raw.parse::<f64>().unwrap() - 0.9).abs() < 1e-9);
+            let _ = std::fs::remove_file(&path);
+        }
 
-    #[test]
-    fn xlsx_export_preserves_tabs_whose_sanitized_names_collide() {
-        let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
-        let tables = vec![
-            SheetTable {
-                name: "Roadmap/2026".into(),
-                rows: vec![],
-            },
-            SheetTable {
-                name: "roadmap?2026".into(),
-                rows: vec![],
-            },
-            SheetTable {
-                name: "Roadmap_2026".into(),
-                rows: vec![],
-            },
-        ];
-        write_xlsx(&path, &tables).unwrap();
-        let back = read_xlsx(&path).unwrap();
-        let names: Vec<_> = back.into_iter().map(|table| table.name).collect();
-        assert_eq!(
-            names,
-            ["Roadmap_2026", "roadmap_2026 (2)", "Roadmap_2026 (3)"]
-        );
-        let _ = std::fs::remove_file(path);
-    }
+        // Case `xlsx_export_preserves_tabs_whose_sanitized_names_collide`.
+        {
+            let path = std::env::temp_dir().join("sheets-xlsx-colliding-tabs.xlsx");
+            let tables = vec![
+                SheetTable {
+                    name: "Roadmap/2026".into(),
+                    rows: vec![],
+                },
+                SheetTable {
+                    name: "roadmap?2026".into(),
+                    rows: vec![],
+                },
+                SheetTable {
+                    name: "Roadmap_2026".into(),
+                    rows: vec![],
+                },
+            ];
+            write_xlsx(&path, &tables).unwrap();
+            let back = read_xlsx(&path).unwrap();
+            let names: Vec<_> = back.into_iter().map(|table| table.name).collect();
+            assert_eq!(
+                names,
+                ["Roadmap_2026", "roadmap_2026 (2)", "Roadmap_2026 (3)"]
+            );
+            let _ = std::fs::remove_file(path);
+        }
 
-    /// A sheet built from live cell data — including `=SUM`/`=AVERAGE`/`=IF`
-    /// formulas — writes to `.xlsx` and reads back with the formula **text**
-    /// intact (the OOXML `<f>` element), and re-evaluating the imported raws
-    /// reproduces the original results. This is the real export → import path:
-    /// `from_cells` → `write_xlsx` → `read_xlsx` → the formula engine.
-    #[test]
-    fn xlsx_round_trips_formulas() {
-        use crate::model::Addr;
-        use std::collections::HashMap;
+        // Case `xlsx_round_trips_formulas`.
+        // A sheet built from live cell data — including `=SUM`/`=AVERAGE`/`=IF`
+        // formulas — writes to `.xlsx` and reads back with the formula **text**
+        // intact (the OOXML `<f>` element), and re-evaluating the imported raws
+        // reproduces the original results. This is the real export → import path:
+        // `from_cells` → `write_xlsx` → `read_xlsx` → the formula engine.
+        {
+            use crate::model::Addr;
+            use std::collections::HashMap;
 
-        // A1:A3 = 10/20/30, A4 = SUM, A5 = AVERAGE, A6 = an IF returning text.
-        // Anchored at A1 so the file's used range starts top-left (no shift).
-        let mut raw: HashMap<Addr, String> = HashMap::new();
-        raw.insert((0, 0), "10".into());
-        raw.insert((0, 1), "20".into());
-        raw.insert((0, 2), "30".into());
-        raw.insert((0, 3), "=SUM(A1:A3)".into());
-        raw.insert((0, 4), "=AVERAGE(A1:A3)".into());
-        raw.insert((0, 5), "=IF(A4>50,\"BIG\",\"SMALL\")".into());
-        let fmt: HashMap<Addr, CellFormat> = HashMap::new();
-        let values = crate::formula::recalculate(&raw);
-        // Sanity: the source really computed.
-        assert_eq!(values.get(&(0, 3)), Some(&CellValue::Number(60.0)));
+            // A1:A3 = 10/20/30, A4 = SUM, A5 = AVERAGE, A6 = an IF returning text.
+            // Anchored at A1 so the file's used range starts top-left (no shift).
+            let mut raw: HashMap<Addr, String> = HashMap::new();
+            raw.insert((0, 0), "10".into());
+            raw.insert((0, 1), "20".into());
+            raw.insert((0, 2), "30".into());
+            raw.insert((0, 3), "=SUM(A1:A3)".into());
+            raw.insert((0, 4), "=AVERAGE(A1:A3)".into());
+            raw.insert((0, 5), "=IF(A4>50,\"BIG\",\"SMALL\")".into());
+            let fmt: HashMap<Addr, CellFormat> = HashMap::new();
+            let values = crate::formula::recalculate(&raw);
+            // Sanity: the source really computed.
+            assert_eq!(values.get(&(0, 3)), Some(&CellValue::Number(60.0)));
 
-        let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
-        let path = std::env::temp_dir().join("sheets-xlsx-formula-rt.xlsx");
-        write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
-        let back = read_xlsx(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
+            let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
+            let path = std::env::temp_dir().join("sheets-xlsx-formula-rt.xlsx");
+            write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
+            let back = read_xlsx(&path).unwrap();
+            let _ = std::fs::remove_file(&path);
 
-        // The formula TEXT survived the file (not just its computed value).
-        let sum = back[0].rows[3][0].as_ref().unwrap();
-        assert_eq!(sum.formula.as_deref(), Some("=SUM(A1:A3)"));
-        let avg = back[0].rows[4][0].as_ref().unwrap();
-        assert_eq!(avg.formula.as_deref(), Some("=AVERAGE(A1:A3)"));
-        let iff = back[0].rows[5][0].as_ref().unwrap();
-        assert_eq!(iff.formula.as_deref(), Some("=IF(A4>50,\"BIG\",\"SMALL\")"));
+            // The formula TEXT survived the file (not just its computed value).
+            let sum = back[0].rows[3][0].as_ref().unwrap();
+            assert_eq!(sum.formula.as_deref(), Some("=SUM(A1:A3)"));
+            let avg = back[0].rows[4][0].as_ref().unwrap();
+            assert_eq!(avg.formula.as_deref(), Some("=AVERAGE(A1:A3)"));
+            let iff = back[0].rows[5][0].as_ref().unwrap();
+            assert_eq!(iff.formula.as_deref(), Some("=IF(A4>50,\"BIG\",\"SMALL\")"));
 
-        // Re-evaluating the imported raws (formula where present, else value)
-        // reproduces the original results.
-        let mut reimported: HashMap<Addr, String> = HashMap::new();
-        for (r, row) in back[0].rows.iter().enumerate() {
-            for (c, cell) in row.iter().enumerate() {
-                if let Some(cell) = cell {
-                    let raw = cell.formula.clone().unwrap_or_else(|| cell.raw.clone());
-                    if !raw.is_empty() {
-                        reimported.insert((c as u32, r as u32), raw);
+            // Re-evaluating the imported raws (formula where present, else value)
+            // reproduces the original results.
+            let mut reimported: HashMap<Addr, String> = HashMap::new();
+            for (r, row) in back[0].rows.iter().enumerate() {
+                for (c, cell) in row.iter().enumerate() {
+                    if let Some(cell) = cell {
+                        let raw = cell.formula.clone().unwrap_or_else(|| cell.raw.clone());
+                        if !raw.is_empty() {
+                            reimported.insert((c as u32, r as u32), raw);
+                        }
                     }
                 }
             }
+            let recomputed = crate::formula::recalculate(&reimported);
+            assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(60.0)));
+            assert_eq!(recomputed.get(&(0, 4)), Some(&CellValue::Number(20.0)));
+            // IF(A4>50,…) with A4 = 60 takes the true branch.
+            assert_eq!(
+                recomputed.get(&(0, 5)),
+                Some(&CellValue::Text("BIG".into()))
+            );
         }
-        let recomputed = crate::formula::recalculate(&reimported);
-        assert_eq!(recomputed.get(&(0, 3)), Some(&CellValue::Number(60.0)));
-        assert_eq!(recomputed.get(&(0, 4)), Some(&CellValue::Number(20.0)));
-        // IF(A4>50,…) with A4 = 60 takes the true branch.
-        assert_eq!(
-            recomputed.get(&(0, 5)),
-            Some(&CellValue::Text("BIG".into()))
-        );
-    }
 
-    #[test]
-    fn read_formula_normalization() {
-        // XLSX bodies have no leading '=' and plain A1 refs.
-        assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
-        // ODF formulas carry a namespace prefix and bracketed refs.
-        assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
-        assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
-        // A cross-table qualifier is dropped down to the bare cell.
-        assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
+        // Case `read_formula_normalization`.
+        {
+            // XLSX bodies have no leading '=' and plain A1 refs.
+            assert_eq!(normalize_read_formula("SUM(A1:A3)"), "=SUM(A1:A3)");
+            // ODF formulas carry a namespace prefix and bracketed refs.
+            assert_eq!(normalize_read_formula("of:=SUM([.A1:.A3])"), "=SUM(A1:A3)");
+            assert_eq!(normalize_read_formula("of:=[.B2]+[.C2]"), "=B2+C2");
+            // A cross-table qualifier is dropped down to the bare cell.
+            assert_eq!(normalize_read_formula("of:=[.$A$1]"), "=$A$1");
+        }
     }
 }

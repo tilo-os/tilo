@@ -118,7 +118,7 @@ mod tests {
     }
 
     #[test]
-    fn save_then_load_round_trips_document() {
+    fn save_then_load_round_trips_and_a_missing_file_is_none() {
         let dir = tmp_dir();
         let path = dir.join("calendar.automerge");
         let mut doc = AutoCommit::new();
@@ -131,17 +131,16 @@ mod tests {
             Ok(Some((automerge::Value::Object(ObjType::Map), _)))
         ));
         std::fs::remove_dir_all(&dir).ok();
-    }
 
-    #[test]
-    fn load_missing_file_is_none() {
+        // Missing file.
         let dir = tmp_dir();
         assert!(load(&dir.join("nope.automerge")).is_none());
         std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
-    fn newest_ics_picks_latest() {
+    fn newest_ics_picks_the_latest_calendar_file_and_ignores_directories() {
+        // Picks latest; ignores non-.ics files.
         let dir = tmp_dir();
         std::fs::write(dir.join("a.ics"), "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -150,10 +149,8 @@ mod tests {
         let picked = newest_ics(&dir).expect("an ics file");
         assert_eq!(picked.file_name().unwrap(), "b.ics");
         std::fs::remove_dir_all(&dir).ok();
-    }
 
-    #[test]
-    fn newest_ics_ignores_directories_named_like_calendar_files() {
+        // Ignores directories named like calendar files (fresh dir).
         let dir = tmp_dir();
         let file = dir.join("invite.ICS");
         std::fs::write(&file, "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n").unwrap();

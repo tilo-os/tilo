@@ -323,48 +323,55 @@ mod tests {
     use super::*;
     use crate::generate_keypair;
 
+    /// Owner authorisation plus exact recipient acceptance commits; another recipient, expiry and
+    /// tampering fail closed.
     #[test]
-    fn owner_authorization_and_exact_recipient_acceptance_commit() {
-        let (owner_key, owner) = generate_keypair();
-        let (recipient_key, recipient) = generate_keypair();
-        let proposal = OwnershipTransferProposalV1::new(
-            "workspace".into(),
-            [3; 32],
-            owner,
-            recipient,
-            20,
-            &owner_key,
-        )
-        .unwrap();
-        let acceptance = OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-        let audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
-        audit.verify().unwrap();
-    }
+    fn ownership_transfer_commits_only_for_the_exact_recipient() {
+        // Phase: owner_authorization_and_exact_recipient_acceptance_commit.
+        {
+            let (owner_key, owner) = generate_keypair();
+            let (recipient_key, recipient) = generate_keypair();
+            let proposal = OwnershipTransferProposalV1::new(
+                "workspace".into(),
+                [3; 32],
+                owner,
+                recipient,
+                20,
+                &owner_key,
+            )
+            .unwrap();
+            let acceptance =
+                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
+            let audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
+            audit.verify().unwrap();
+        }
 
-    #[test]
-    fn other_recipient_expiry_and_tamper_fail_closed() {
-        let (owner_key, owner) = generate_keypair();
-        let (recipient_key, recipient) = generate_keypair();
-        let (attacker_key, _) = generate_keypair();
-        let proposal = OwnershipTransferProposalV1::new(
-            "workspace".into(),
-            [4; 32],
-            owner,
-            recipient,
-            20,
-            &owner_key,
-        )
-        .unwrap();
-        assert!(proposal.verify(20).is_err());
-        let forged = OwnershipTransferAcceptanceV1::new(&proposal, 10, &attacker_key).unwrap();
-        assert!(forged.verify(&proposal, 11).is_err());
-        let mut accepted =
-            OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-        accepted.proposal_digest[0] ^= 1;
-        assert!(accepted.verify(&proposal, 11).is_err());
-        let acceptance = OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
-        let mut audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
-        audit.acceptance.signature = Signature::from_bytes([0; 64]);
-        assert!(audit.verify().is_err());
+        // Phase: other_recipient_expiry_and_tamper_fail_closed.
+        {
+            let (owner_key, owner) = generate_keypair();
+            let (recipient_key, recipient) = generate_keypair();
+            let (attacker_key, _) = generate_keypair();
+            let proposal = OwnershipTransferProposalV1::new(
+                "workspace".into(),
+                [4; 32],
+                owner,
+                recipient,
+                20,
+                &owner_key,
+            )
+            .unwrap();
+            assert!(proposal.verify(20).is_err());
+            let forged = OwnershipTransferAcceptanceV1::new(&proposal, 10, &attacker_key).unwrap();
+            assert!(forged.verify(&proposal, 11).is_err());
+            let mut accepted =
+                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
+            accepted.proposal_digest[0] ^= 1;
+            assert!(accepted.verify(&proposal, 11).is_err());
+            let acceptance =
+                OwnershipTransferAcceptanceV1::new(&proposal, 10, &recipient_key).unwrap();
+            let mut audit = OwnershipTransferAuditV1::new(proposal, acceptance, 11).unwrap();
+            audit.acceptance.signature = Signature::from_bytes([0; 64]);
+            assert!(audit.verify().is_err());
+        }
     }
 }

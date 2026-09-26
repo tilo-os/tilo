@@ -700,126 +700,134 @@ mod tests {
     use crate::model::{ElementKind, seed_deck};
     use std::io::Read;
 
-    /// The core requirement: a deck written to `.odp` and read back is
-    /// byte-for-byte the same model (geometry, text, colours, z-order, every
-    /// per-element flag, and the deck title + palette).
+    /// ODP round-trips the model, mimetype, multiline text and picked fills.
     #[test]
-    fn odp_round_trips_the_model_exactly() {
-        let content = ContentStore::memory();
-        let deck = seed_deck();
-        let bytes = write_odp(&deck, &content).expect("write");
-        let back = read_odp(&bytes, &content).expect("read");
-        assert_eq!(deck, back, "model → .odp → model must be identity");
-    }
+    fn odp_round_trips_model_text_and_fills() {
+        // Case `odp_round_trips_the_model_exactly`.
+        // The core requirement: a deck written to `.odp` and read back is
+        // byte-for-byte the same model (geometry, text, colours, z-order, every
+        // per-element flag, and the deck title + palette).
+        {
+            let content = ContentStore::memory();
+            let deck = seed_deck();
+            let bytes = write_odp(&deck, &content).expect("write");
+            let back = read_odp(&bytes, &content).expect("read");
+            assert_eq!(deck, back, "model → .odp → model must be identity");
+        }
 
-    #[test]
-    fn odp_starts_with_the_presentation_mimetype() {
-        let content = ContentStore::memory();
-        let deck = seed_deck();
-        let bytes = write_odp(&deck, &content).unwrap();
-        // The ODF package's first entry is an uncompressed `mimetype` whose
-        // bytes appear verbatim right after the local file header.
-        let head = String::from_utf8_lossy(&bytes[..120]);
-        assert!(head.contains(MIME), "package must declare the ODP mimetype");
-    }
+        // Case `odp_starts_with_the_presentation_mimetype`.
+        {
+            let content = ContentStore::memory();
+            let deck = seed_deck();
+            let bytes = write_odp(&deck, &content).unwrap();
+            // The ODF package's first entry is an uncompressed `mimetype` whose
+            // bytes appear verbatim right after the local file header.
+            let head = String::from_utf8_lossy(&bytes[..120]);
+            assert!(head.contains(MIME), "package must declare the ODP mimetype");
+        }
 
-    #[test]
-    fn odp_round_trips_multiline_text_and_alignment() {
-        let content = ContentStore::memory();
-        let mut deck = seed_deck();
-        // A body with blank lines + an explicit alignment is the tricky case:
-        // newlines can't ride in an attribute, so they must survive as text:p.
-        let s = deck.slides.get_mut(1).unwrap();
-        s.elements[0].text = "Line one\n\nLine three".into();
-        s.elements[0].align = TextAlign::Justify;
-        let bytes = write_odp(&deck, &content).unwrap();
-        let back = read_odp(&bytes, &content).unwrap();
-        let el = &back.slides[1].elements[0];
-        assert_eq!(el.text, "Line one\n\nLine three");
-        assert_eq!(el.align, TextAlign::Justify);
-    }
+        // Case `odp_round_trips_multiline_text_and_alignment`.
+        {
+            let content = ContentStore::memory();
+            let mut deck = seed_deck();
+            // A body with blank lines + an explicit alignment is the tricky case:
+            // newlines can't ride in an attribute, so they must survive as text:p.
+            let s = deck.slides.get_mut(1).unwrap();
+            s.elements[0].text = "Line one\n\nLine three".into();
+            s.elements[0].align = TextAlign::Justify;
+            let bytes = write_odp(&deck, &content).unwrap();
+            let back = read_odp(&bytes, &content).unwrap();
+            let el = &back.slides[1].elements[0];
+            assert_eq!(el.text, "Line one\n\nLine three");
+            assert_eq!(el.align, TextAlign::Justify);
+        }
 
-    #[test]
-    fn odp_round_trips_a_picked_hex_fill() {
-        let content = ContentStore::memory();
-        let mut deck = seed_deck();
-        deck.slides[0].elements[0].fill = "#1A2B3C".into();
-        let bytes = write_odp(&deck, &content).unwrap();
-        let back = read_odp(&bytes, &content).unwrap();
-        assert_eq!(back.slides[0].elements[0].fill, "#1A2B3C");
-    }
-
-    #[test]
-    fn foreign_odp_native_text_and_shapes_do_not_open_as_an_empty_slide() {
-        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
-<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/></draw:page></office:presentation></office:body></office:document-content>"#;
-        let deck = parse_content(xml).expect("foreign ODP content parses");
-        assert_eq!(deck.slides.len(), 1);
-        assert_eq!(deck.slides[0].elements.len(), 2);
-        let text = &deck.slides[0].elements[0];
-        assert_eq!(text.kind, ElementKind::Text);
-        assert_eq!(text.text, "Hello from LibreOffice\nSecond line");
-        assert!((text.x - 128.0).abs() < 0.1);
-        assert!((text.w - 1024.0).abs() < 0.1);
-        assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
-    }
-
-    #[test]
-    fn odp_preserves_every_element_kind() {
-        let content = ContentStore::memory();
-        let deck = seed_deck();
-        let bytes = write_odp(&deck, &content).unwrap();
-        let back = read_odp(&bytes, &content).unwrap();
-        for (a, b) in deck.slides.iter().zip(&back.slides) {
-            let ka: Vec<ElementKind> = a.elements.iter().map(|e| e.kind).collect();
-            let kb: Vec<ElementKind> = b.elements.iter().map(|e| e.kind).collect();
-            assert_eq!(ka, kb, "each slide keeps its element kinds + order");
+        // Case `odp_round_trips_a_picked_hex_fill`.
+        {
+            let content = ContentStore::memory();
+            let mut deck = seed_deck();
+            deck.slides[0].elements[0].fill = "#1A2B3C".into();
+            let bytes = write_odp(&deck, &content).unwrap();
+            let back = read_odp(&bytes, &content).unwrap();
+            assert_eq!(back.slides[0].elements[0].fill, "#1A2B3C");
         }
     }
 
+    /// Foreign ODP content opens, every element kind and bundled pictures survive.
     #[test]
-    fn odp_bundles_local_pictures_and_reopens_them_from_the_package() {
-        let content = ContentStore::memory();
-        let source =
-            std::env::temp_dir().join(format!("tilo-slides-picture-{}.png", std::process::id()));
-        // Packaging only needs the real image signature; rendering/decode is
-        // separately covered by ImageStore tests.
-        let picture = b"\x89PNG\r\n\x1a\nportable-picture";
-        std::fs::write(&source, picture).unwrap();
-        let asset = crate::assets::import_asset_file(&content, &source).unwrap();
-        let mut deck = seed_deck();
-        deck.slides[0]
-            .elements
-            .push(Element::image(&asset, 40.0, 60.0, 320.0, 180.0));
+    fn odp_preserves_foreign_content_kinds_and_pictures() {
+        // Case `foreign_odp_native_text_and_shapes_do_not_open_as_an_empty_slide`.
+        {
+            let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<office:document-content xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0"><office:body><office:presentation><draw:page draw:name="slide-1"><draw:frame draw:name="title" svg:x="2.54cm" svg:y="1.4288cm" svg:width="20.32cm" svg:height="2.8575cm"><draw:text-box><text:p>Hello from LibreOffice</text:p><text:p>Second line</text:p></draw:text-box></draw:frame><draw:rect draw:name="box" svg:x="5.08cm" svg:y="7.1438cm" svg:width="10.16cm" svg:height="4.2863cm"/></draw:page></office:presentation></office:body></office:document-content>"#;
+            let deck = parse_content(xml).expect("foreign ODP content parses");
+            assert_eq!(deck.slides.len(), 1);
+            assert_eq!(deck.slides[0].elements.len(), 2);
+            let text = &deck.slides[0].elements[0];
+            assert_eq!(text.kind, ElementKind::Text);
+            assert_eq!(text.text, "Hello from LibreOffice\nSecond line");
+            assert!((text.x - 128.0).abs() < 0.1);
+            assert!((text.w - 1024.0).abs() < 0.1);
+            assert_eq!(deck.slides[0].elements[1].kind, ElementKind::Rect);
+        }
 
-        let bytes = write_odp(&deck, &content).unwrap();
-        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
-        let mut bundled = Vec::new();
-        zip.by_name("Pictures/picture-1.png")
-            .unwrap()
-            .read_to_end(&mut bundled)
-            .unwrap();
-        assert_eq!(bundled, picture);
-        let mut manifest = String::new();
-        zip.by_name("META-INF/manifest.xml")
-            .unwrap()
-            .read_to_string(&mut manifest)
-            .unwrap();
-        assert!(manifest.contains("Pictures/picture-1.png"));
-        drop(zip);
+        // Case `odp_preserves_every_element_kind`.
+        {
+            let content = ContentStore::memory();
+            let deck = seed_deck();
+            let bytes = write_odp(&deck, &content).unwrap();
+            let back = read_odp(&bytes, &content).unwrap();
+            for (a, b) in deck.slides.iter().zip(&back.slides) {
+                let ka: Vec<ElementKind> = a.elements.iter().map(|e| e.kind).collect();
+                let kb: Vec<ElementKind> = b.elements.iter().map(|e| e.kind).collect();
+                assert_eq!(ka, kb, "each slide keeps its element kinds + order");
+            }
+        }
 
-        let reopened = read_odp(&bytes, &content).unwrap();
-        let image = reopened.slides[0]
-            .elements
-            .iter()
-            .find(|element| element.kind == ElementKind::Image)
-            .unwrap();
-        assert!(crate::assets::is_asset_id(&image.src));
-        assert_eq!(
-            crate::assets::read_asset(&content, &image.src).as_deref(),
-            Some(&picture[..])
-        );
+        // Case `odp_bundles_local_pictures_and_reopens_them_from_the_package`.
+        {
+            let content = ContentStore::memory();
+            let source = std::env::temp_dir()
+                .join(format!("tilo-slides-picture-{}.png", std::process::id()));
+            // Packaging only needs the real image signature; rendering/decode is
+            // separately covered by ImageStore tests.
+            let picture = b"\x89PNG\r\n\x1a\nportable-picture";
+            std::fs::write(&source, picture).unwrap();
+            let asset = crate::assets::import_asset_file(&content, &source).unwrap();
+            let mut deck = seed_deck();
+            deck.slides[0]
+                .elements
+                .push(Element::image(&asset, 40.0, 60.0, 320.0, 180.0));
 
-        let _ = std::fs::remove_file(source);
+            let bytes = write_odp(&deck, &content).unwrap();
+            let mut zip = zip::ZipArchive::new(Cursor::new(bytes.as_slice())).unwrap();
+            let mut bundled = Vec::new();
+            zip.by_name("Pictures/picture-1.png")
+                .unwrap()
+                .read_to_end(&mut bundled)
+                .unwrap();
+            assert_eq!(bundled, picture);
+            let mut manifest = String::new();
+            zip.by_name("META-INF/manifest.xml")
+                .unwrap()
+                .read_to_string(&mut manifest)
+                .unwrap();
+            assert!(manifest.contains("Pictures/picture-1.png"));
+            drop(zip);
+
+            let reopened = read_odp(&bytes, &content).unwrap();
+            let image = reopened.slides[0]
+                .elements
+                .iter()
+                .find(|element| element.kind == ElementKind::Image)
+                .unwrap();
+            assert!(crate::assets::is_asset_id(&image.src));
+            assert_eq!(
+                crate::assets::read_asset(&content, &image.src).as_deref(),
+                Some(&picture[..])
+            );
+
+            let _ = std::fs::remove_file(source);
+        }
     }
 }

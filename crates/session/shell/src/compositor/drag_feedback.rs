@@ -446,7 +446,8 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn mime_fallback_is_visual_before_payload_arrives() {
+    fn drag_preview_shows_real_bounded_content() {
+        // Phase `mime_fallback_is_visual_before_payload_arrives`.
         assert!(matches!(
             preview_for_mimes(&["image/png".into()]),
             DragPreview::Kind(DragKind::Image)
@@ -463,68 +464,66 @@ mod tests {
             preview_for_mimes(&["text/uri-list".into()]),
             DragPreview::Kind(DragKind::File)
         ));
-    }
-
-    #[test]
-    fn raster_payload_becomes_a_bounded_real_preview() {
-        let source = image::RgbaImage::from_pixel(32, 18, image::Rgba([12, 90, 220, 255]));
-        let mut encoded = Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(source)
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .expect("encode fixture");
-        let DragPreview::Image {
-            rgba,
-            width,
-            height,
-        } = image_preview(encoded.get_ref()).expect("decode preview")
-        else {
-            panic!("image bytes must produce image pixels")
-        };
-        assert_eq!((width, height), (32, 18));
-        assert_eq!(rgba.len(), 32 * 18 * 4);
-        let rect = preview_rect(
-            Point::new(20.0, 20.0),
-            &DragPreview::Image {
+        // Phase `raster_payload_becomes_a_bounded_real_preview`.
+        {
+            let source = image::RgbaImage::from_pixel(32, 18, image::Rgba([12, 90, 220, 255]));
+            let mut encoded = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(source)
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .expect("encode fixture");
+            let DragPreview::Image {
                 rgba,
                 width,
                 height,
-            },
-        );
-        assert!(rect.width() <= PREVIEW_MAX_W && rect.height() <= PREVIEW_MAX_H);
-        assert!((rect.width() / rect.height() - 32.0 / 18.0).abs() < 1e-10);
+            } = image_preview(encoded.get_ref()).expect("decode preview")
+            else {
+                panic!("image bytes must produce image pixels")
+            };
+            assert_eq!((width, height), (32, 18));
+            assert_eq!(rgba.len(), 32 * 18 * 4);
+            let rect = preview_rect(
+                Point::new(20.0, 20.0),
+                &DragPreview::Image {
+                    rgba,
+                    width,
+                    height,
+                },
+            );
+            assert!(rect.width() <= PREVIEW_MAX_W && rect.height() <= PREVIEW_MAX_H);
+            assert!((rect.width() / rect.height() - 32.0 / 18.0).abs() < 1e-10);
+        }
+        // Phase `raster_payload_is_downscaled_to_the_decode_bound`.
+        {
+            let source = image::RgbaImage::from_pixel(800, 500, image::Rgba([12, 90, 220, 255]));
+            let mut encoded = Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(source)
+                .write_to(&mut encoded, image::ImageFormat::Png)
+                .expect("encode fixture");
+            let DragPreview::Image { width, height, .. } =
+                image_preview(encoded.get_ref()).expect("decode preview")
+            else {
+                panic!("image bytes must produce image pixels")
+            };
+            assert!(width <= 560 && height <= 380);
+            assert_eq!((width, height), (560, 350));
+        }
+        // Phase `text_payload_keeps_content_not_only_a_type_label`.
+        {
+            let DragPreview::Text(text) = text_preview(b"A sentence selected in the editor")
+                .expect("text payload must produce a visual")
+            else {
+                panic!("text bytes must remain text")
+            };
+            assert!(text.contains("selected in the editor"));
+        }
     }
 
     #[test]
-    fn raster_payload_is_downscaled_to_the_decode_bound() {
-        let source = image::RgbaImage::from_pixel(800, 500, image::Rgba([12, 90, 220, 255]));
-        let mut encoded = Cursor::new(Vec::new());
-        image::DynamicImage::ImageRgba8(source)
-            .write_to(&mut encoded, image::ImageFormat::Png)
-            .expect("encode fixture");
-        let DragPreview::Image { width, height, .. } =
-            image_preview(encoded.get_ref()).expect("decode preview")
-        else {
-            panic!("image bytes must produce image pixels")
-        };
-        assert!(width <= 560 && height <= 380);
-        assert_eq!((width, height), (560, 350));
-    }
-
-    #[test]
-    fn text_payload_keeps_content_not_only_a_type_label() {
-        let DragPreview::Text(text) = text_preview(b"A sentence selected in the editor")
-            .expect("text payload must produce a visual")
-        else {
-            panic!("text bytes must remain text")
-        };
-        assert!(text.contains("selected in the editor"));
-    }
-
-    /// The chip has to say something for every drag, including one whose
-    /// offer says nothing recognisable — an empty chip is worse than a
-    /// vague one.
-    #[test]
-    fn every_offer_produces_a_label() {
+    fn drag_labels_name_every_offer_and_file() {
+        // Phase `every_offer_produces_a_label`.
+        // The chip has to say something for every drag, including one whose
+        // offer says nothing recognisable — an empty chip is worse than a
+        // vague one.
         assert_eq!(label_for_mimes(&["image/png".into()]), "Image");
         assert_eq!(
             label_for_mimes(&["text/uri-list".into(), "image/png".into()]),
@@ -535,13 +534,10 @@ mod tests {
         assert_eq!(label_for_mimes(&["text/uri-list".into()]), "Text");
         assert_eq!(label_for_mimes(&[]), "1 item");
         assert_eq!(label_for_mimes(&["x-special/gnome".into()]), "1 item");
-    }
-
-    /// The name a client's drag is carrying comes out of the URI list it
-    /// already offers — which is the whole reason the chip can say
-    /// `photo.png` rather than `Image`.
-    #[test]
-    fn a_uri_list_yields_the_file_name() {
+        // Phase `a_uri_list_yields_the_file_name`.
+        // The name a client's drag is carrying comes out of the URI list it
+        // already offers — which is the whole reason the chip can say
+        // `photo.png` rather than `Image`.
         assert_eq!(
             name_from_uri_list(b"file:///home/me/photo.png\r\n").as_deref(),
             Some("photo.png")
@@ -576,11 +572,8 @@ mod tests {
             "nothing usable leaves the chip alone"
         );
         assert_eq!(name_from_uri_list(b"# only a comment\r\n"), None);
-    }
-
-    /// A drag the compositor owns knows the file name, and should use it.
-    #[test]
-    fn paths_are_named_by_their_file_name() {
+        // Phase `paths_are_named_by_their_file_name`.
+        // A drag the compositor owns knows the file name, and should use it.
         assert_eq!(
             label_for_paths(&[PathBuf::from("/w/Demo/photo.png")]),
             "photo.png"

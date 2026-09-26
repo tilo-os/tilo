@@ -286,65 +286,70 @@ mod tests {
         .unwrap()
     }
 
+    /// Env beats the worktree file beats the default; the worktree file accepts TOML or a bare name and can
+    /// name the default slot, which vm use keeps; the registry round-trips and has defaults.
     #[test]
-    fn env_beats_worktree_beats_default() {
-        let reg = registry();
-        let path = Path::new("/cfg/vms.toml");
-        let wt = Some((Path::new("/wt/.tilo-vm"), "vm = \"mine\"\n"));
-        assert_eq!(
-            resolve(Some("env-vm"), wt, &reg, path).unwrap(),
-            ("env-vm".into(), Source::Env)
-        );
-        let (name, source) = resolve(None, wt, &reg, path).unwrap();
-        assert_eq!(name, "mine");
-        assert!(source.describe().contains("/wt/.tilo-vm"));
-        let (name, source) = resolve(Some("  "), None, &reg, path).unwrap();
-        assert_eq!(name, "shared");
-        assert_eq!(
-            source,
-            Source::RegistryDefault {
-                file: "/cfg/vms.toml".into()
-            }
-        );
-        assert!(resolve(None, None, &Registry::default(), path).is_none());
-    }
+    fn configuration_layers_env_worktree_file_and_registry() {
+        // Phase: env_beats_worktree_beats_default.
+        {
+            let reg = registry();
+            let path = Path::new("/cfg/vms.toml");
+            let wt = Some((Path::new("/wt/.tilo-vm"), "vm = \"mine\"\n"));
+            assert_eq!(
+                resolve(Some("env-vm"), wt, &reg, path).unwrap(),
+                ("env-vm".into(), Source::Env)
+            );
+            let (name, source) = resolve(None, wt, &reg, path).unwrap();
+            assert_eq!(name, "mine");
+            assert!(source.describe().contains("/wt/.tilo-vm"));
+            let (name, source) = resolve(Some("  "), None, &reg, path).unwrap();
+            assert_eq!(name, "shared");
+            assert_eq!(
+                source,
+                Source::RegistryDefault {
+                    file: "/cfg/vms.toml".into()
+                }
+            );
+            assert!(resolve(None, None, &Registry::default(), path).is_none());
+        }
 
-    #[test]
-    fn worktree_file_accepts_toml_or_a_bare_name() {
-        assert_eq!(parse_worktree_file("vm = \"dev\"").as_deref(), Some("dev"));
-        assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
-        assert_eq!(parse_worktree_file("").as_deref(), None);
-        assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
-    }
+        // Phase: worktree_file_accepts_toml_or_a_bare_name.
+        {
+            assert_eq!(parse_worktree_file("vm = \"dev\"").as_deref(), Some("dev"));
+            assert_eq!(parse_worktree_file("dev\n").as_deref(), Some("dev"));
+            assert_eq!(parse_worktree_file("").as_deref(), None);
+            assert_eq!(parse_worktree_file("other = 1").as_deref(), None);
+        }
 
-    #[test]
-    fn worktree_file_can_name_the_default_slot_and_vm_use_keeps_it() {
-        let text = "vm = \"dev\"\nslot = \"ux1\"\n";
-        assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
-        assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
-        assert_eq!(parse_worktree_slot("dev").as_deref(), None);
-        let rewritten = with_worktree_vm(text, "shared");
-        assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
-        assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
-        // A bare name is replaced by the table form.
-        let bare = with_worktree_vm("dev\n", "shared");
-        assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
-    }
+        // Phase: worktree_file_can_name_the_default_slot_and_vm_use_keeps_it.
+        {
+            let text = "vm = \"dev\"\nslot = \"ux1\"\n";
+            assert_eq!(parse_worktree_slot(text).as_deref(), Some("ux1"));
+            assert_eq!(parse_worktree_slot("vm = \"dev\"").as_deref(), None);
+            assert_eq!(parse_worktree_slot("dev").as_deref(), None);
+            let rewritten = with_worktree_vm(text, "shared");
+            assert_eq!(parse_worktree_file(&rewritten).as_deref(), Some("shared"));
+            assert_eq!(parse_worktree_slot(&rewritten).as_deref(), Some("ux1"));
+            // A bare name is replaced by the table form.
+            let bare = with_worktree_vm("dev\n", "shared");
+            assert_eq!(parse_worktree_file(&bare).as_deref(), Some("shared"));
+        }
 
-    #[test]
-    fn registry_round_trips_and_has_defaults() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sub/vms.toml");
-        assert_eq!(Registry::load(&path).unwrap(), Registry::default());
-        let reg = registry();
-        reg.save(&path).unwrap();
-        assert_eq!(Registry::load(&path).unwrap(), reg);
-        assert_eq!(reg.keep_generations(), DEFAULT_KEEP_GENERATIONS);
-        assert_eq!(reg.min_free_bytes(), 5 << 30);
-        std::fs::write(&path, "vms = 3").unwrap();
-        assert!(matches!(
-            Registry::load(&path),
-            Err(CliError::Config { .. })
-        ));
+        // Phase: registry_round_trips_and_has_defaults.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("sub/vms.toml");
+            assert_eq!(Registry::load(&path).unwrap(), Registry::default());
+            let reg = registry();
+            reg.save(&path).unwrap();
+            assert_eq!(Registry::load(&path).unwrap(), reg);
+            assert_eq!(reg.keep_generations(), DEFAULT_KEEP_GENERATIONS);
+            assert_eq!(reg.min_free_bytes(), 5 << 30);
+            std::fs::write(&path, "vms = 3").unwrap();
+            assert!(matches!(
+                Registry::load(&path),
+                Err(CliError::Config { .. })
+            ));
+        }
     }
 }

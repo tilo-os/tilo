@@ -266,151 +266,154 @@ mod tests {
     }
 
     #[test]
-    fn catch_up_uses_the_same_explicit_group_across_people() {
-        let entries = vec![entry(1, "Ada", 100), entry(2, "Maren", 110)];
-        let digest = ActivityDigest::from_entries(
-            &entries,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(digest.total_changes, 2);
-        assert_eq!(digest.people, 2);
-        assert_eq!(digest.briefs.len(), 1);
-        assert_eq!(digest.briefs[0].title, "Prepare launch brief");
-        assert_eq!(
-            digest.headline().as_deref(),
-            Some("Ada and Maren · Prepare launch brief")
-        );
-        assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
-        assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
-        assert_eq!(digest.briefs[0].actions.len(), 2);
-        assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
-    }
-
-    #[test]
-    fn catch_up_names_two_people_and_counts_the_rest() {
-        let entries = vec![
-            entry(1, "Xaver", 100),
-            entry(2, "Quinten", 101),
-            entry(3, "Sarah", 102),
-            entry(4, "Ada", 103),
-        ];
-        let digest = ActivityDigest::from_entries(
-            &entries,
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(
-            digest.headline().as_deref(),
-            Some("Xaver, Quinten + 2 · Prepare launch brief")
-        );
-    }
-
-    #[test]
-    fn unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts() {
-        let mut first = entry(1, "Ada", 100);
-        let mut second = entry(2, "Maren", 110);
-        // Automatic groups split on author identity; keep both changes in one
-        // unnamed group so this exercises the aggregate outcome title.
-        second.author = first.author.clone();
-        for item in [&mut first, &mut second] {
-            item.op_class = OpClass::Govern;
-            item.text_delta = None;
-            if let Some(context) = item.context.as_mut() {
-                context.group = None;
-            }
+    fn catch_up_names_people_groups_and_outcomes() {
+        // phase: catch_up_uses_the_same_explicit_group_across_people
+        {
+            let entries = vec![entry(1, "Ada", 100), entry(2, "Maren", 110)];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.total_changes, 2);
+            assert_eq!(digest.people, 2);
+            assert_eq!(digest.briefs.len(), 1);
+            assert_eq!(digest.briefs[0].title, "Prepare launch brief");
+            assert_eq!(
+                digest.headline().as_deref(),
+                Some("Ada and Maren · Prepare launch brief")
+            );
+            assert_eq!(digest.briefs[0].apps, vec!["Notes"]);
+            assert_eq!(digest.briefs[0].resources, vec!["Launch brief"]);
+            assert_eq!(digest.briefs[0].actions.len(), 2);
+            assert_eq!(digest.briefs[0].actions[1].author.name, "Maren");
         }
-        let digest = ActivityDigest::from_entries(
-            &[first, second],
-            SystemTime::UNIX_EPOCH + Duration::from_secs(90),
-            3,
-        );
-        assert_eq!(digest.briefs[0].title, "Updated workspace access");
-        assert_eq!(digest.briefs[0].changes, 2);
-        assert!(
-            digest.briefs[0].detail.contains("2 changes"),
-            "the precise count remains available beneath the outcome title"
-        );
-    }
-
-    #[test]
-    fn unseen_digest_does_not_lose_a_delayed_concurrent_change() {
-        let first = entry(1, "Ada", 100);
-        let mut frontier = HistorySeenFrontier::default();
-        frontier.mark_seen(std::slice::from_ref(&first));
-        let delayed = entry(2, "Maren", 50);
-        let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
-        assert_eq!(digest.total_changes, 1);
-        assert_eq!(digest.people, 1);
-        assert_eq!(digest.briefs[0].authors[0].name, "Maren");
-    }
-
-    #[test]
-    fn corrected_named_boundaries_redraw_catch_up_sessions_not_action_order() {
-        let mut entries = (1..=4)
-            .map(|id| entry(id, "Ada", u64::from(id) * 10))
-            .collect::<Vec<_>>();
-        for item in &mut entries {
-            if let Some(context) = item.context.as_mut() {
-                context.group = None;
-            }
+        // phase: catch_up_names_two_people_and_counts_the_rest
+        {
+            let entries = vec![
+                entry(1, "Xaver", 100),
+                entry(2, "Quinten", 101),
+                entry(3, "Sarah", 102),
+                entry(4, "Ada", 103),
+            ];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(
+                digest.headline().as_deref(),
+                Some("Xaver, Quinten + 2 · Prepare launch brief")
+            );
         }
-        let named = |id: &str, label: &str, start: usize, end: usize| NamedRange {
-            id: id.to_string(),
-            label: label.to_string(),
-            start: entries[start].id,
-            end: Some(entries[end].id),
-            named_by: None,
-            created: SystemTime::UNIX_EPOCH,
-        };
-        let initial = vec![
-            named("finance", "Write Q3 financial report", 0, 1),
-            named("onboarding", "Onboard Sarah", 2, 3),
-        ];
-        let corrected = vec![
-            named("finance-v2", "Write Q3 financial report", 0, 0),
-            named("onboarding-v2", "Onboard Sarah", 1, 3),
-        ];
+        // phase: unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts
+        {
+            let mut first = entry(1, "Ada", 100);
+            let mut second = entry(2, "Maren", 110);
+            // Automatic groups split on author identity; keep both changes in one
+            // unnamed group so this exercises the aggregate outcome title.
+            second.author = first.author.clone();
+            for item in [&mut first, &mut second] {
+                item.op_class = OpClass::Govern;
+                item.text_delta = None;
+                if let Some(context) = item.context.as_mut() {
+                    context.group = None;
+                }
+            }
+            let digest = ActivityDigest::from_entries(
+                &[first, second],
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.briefs[0].title, "Updated workspace access");
+            assert_eq!(digest.briefs[0].changes, 2);
+            assert!(
+                digest.briefs[0].detail.contains("2 changes"),
+                "the precise count remains available beneath the outcome title"
+            );
+        }
+    }
 
-        let before = ActivityDigest::from_entries_with_ranges(
-            &entries,
-            SystemTime::UNIX_EPOCH,
-            10,
-            &initial,
-        );
-        let after = ActivityDigest::from_entries_with_ranges(
-            &entries,
-            SystemTime::UNIX_EPOCH,
-            10,
-            &corrected,
-        );
-        let changes = |digest: &ActivityDigest, title: &str| {
-            digest
+    #[test]
+    fn catch_up_sessions_follow_named_boundaries_and_delayed_changes() {
+        // phase: unseen_digest_does_not_lose_a_delayed_concurrent_change
+        {
+            let first = entry(1, "Ada", 100);
+            let mut frontier = HistorySeenFrontier::default();
+            frontier.mark_seen(std::slice::from_ref(&first));
+            let delayed = entry(2, "Maren", 50);
+            let digest = ActivityDigest::from_unseen(&[delayed, first], &frontier, 3);
+            assert_eq!(digest.total_changes, 1);
+            assert_eq!(digest.people, 1);
+            assert_eq!(digest.briefs[0].authors[0].name, "Maren");
+        }
+        // phase: corrected_named_boundaries_redraw_catch_up_sessions_not_action_order
+        {
+            let mut entries = (1..=4)
+                .map(|id| entry(id, "Ada", u64::from(id) * 10))
+                .collect::<Vec<_>>();
+            for item in &mut entries {
+                if let Some(context) = item.context.as_mut() {
+                    context.group = None;
+                }
+            }
+            let named = |id: &str, label: &str, start: usize, end: usize| NamedRange {
+                id: id.to_string(),
+                label: label.to_string(),
+                start: entries[start].id,
+                end: Some(entries[end].id),
+                named_by: None,
+                created: SystemTime::UNIX_EPOCH,
+            };
+            let initial = vec![
+                named("finance", "Write Q3 financial report", 0, 1),
+                named("onboarding", "Onboard Sarah", 2, 3),
+            ];
+            let corrected = vec![
+                named("finance-v2", "Write Q3 financial report", 0, 0),
+                named("onboarding-v2", "Onboard Sarah", 1, 3),
+            ];
+
+            let before = ActivityDigest::from_entries_with_ranges(
+                &entries,
+                SystemTime::UNIX_EPOCH,
+                10,
+                &initial,
+            );
+            let after = ActivityDigest::from_entries_with_ranges(
+                &entries,
+                SystemTime::UNIX_EPOCH,
+                10,
+                &corrected,
+            );
+            let changes = |digest: &ActivityDigest, title: &str| {
+                digest
+                    .briefs
+                    .iter()
+                    .find(|brief| brief.title == title)
+                    .map(|brief| brief.changes)
+            };
+            assert_eq!(changes(&before, "Write Q3 financial report"), Some(2));
+            assert_eq!(changes(&before, "Onboard Sarah"), Some(2));
+            assert_eq!(changes(&after, "Write Q3 financial report"), Some(1));
+            assert_eq!(changes(&after, "Onboard Sarah"), Some(3));
+            let projected_ids = after
                 .briefs
                 .iter()
-                .find(|brief| brief.title == title)
-                .map(|brief| brief.changes)
-        };
-        assert_eq!(changes(&before, "Write Q3 financial report"), Some(2));
-        assert_eq!(changes(&before, "Onboard Sarah"), Some(2));
-        assert_eq!(changes(&after, "Write Q3 financial report"), Some(1));
-        assert_eq!(changes(&after, "Onboard Sarah"), Some(3));
-        let projected_ids = after
-            .briefs
-            .iter()
-            .flat_map(|brief| brief.entry_ids.iter().copied())
-            .collect::<std::collections::HashSet<_>>();
-        assert_eq!(projected_ids.len(), entries.len());
-        assert!(
-            entries
-                .iter()
-                .all(|entry| projected_ids.contains(&entry.id))
-        );
-        assert!(
-            after
-                .briefs
-                .iter()
-                .all(|brief| brief.work_session_id.is_some())
-        );
+                .flat_map(|brief| brief.entry_ids.iter().copied())
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(projected_ids.len(), entries.len());
+            assert!(
+                entries
+                    .iter()
+                    .all(|entry| projected_ids.contains(&entry.id))
+            );
+            assert!(
+                after
+                    .briefs
+                    .iter()
+                    .all(|brief| brief.work_session_id.is_some())
+            );
+        }
     }
 }

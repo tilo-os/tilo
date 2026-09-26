@@ -103,30 +103,29 @@ mod tests {
     }
 
     #[test]
-    fn permissive_admin_allows_everything() {
+    fn permissions_gate_writes_by_role_but_never_reading_or_leaving() {
+        // Permissive admin allows everything.
         let p = ChatPermissions::permissive();
-        assert!(p.can_embed(&"a".repeat(64)));
-        assert!(p.can_participate());
-        assert!(p.allows(CallAction::Join));
-        assert!(p.allows(CallAction::ShareScreen));
-    }
+        assert!(p.can_embed(&"a".repeat(64)), "admin: embed");
+        assert!(p.can_participate(), "admin: participate");
+        assert!(p.allows(CallAction::Join), "admin: join");
+        assert!(p.allows(CallAction::ShareScreen), "admin: share screen");
 
-    #[test]
-    fn restricted_member_reads_verified_embeds_but_cannot_write() {
+        // Restricted member reads verified embeds but cannot write.
         let p = restricted_member();
-        assert!(p.can_embed(&"a".repeat(64)));
-        assert!(!p.can_embed("/var/workspace/secret.png"));
+        assert!(p.can_embed(&"a".repeat(64)), "restricted: verified embed");
+        assert!(
+            !p.can_embed("/var/workspace/secret.png"),
+            "restricted: raw path embed"
+        );
         // No workspace-admin → can't post / react / start a call…
-        assert!(!p.can_participate());
-        assert!(!p.allows(CallAction::Join));
-        assert!(!p.allows(CallAction::Speak));
+        assert!(!p.can_participate(), "restricted: participate");
+        assert!(!p.allows(CallAction::Join), "restricted: join");
+        assert!(!p.allows(CallAction::Speak), "restricted: speak");
         // …but a View-only member can still read the room, and leaving a call
         // is never blocked.
-        assert!(p.allows(CallAction::Leave));
-    }
+        assert!(p.allows(CallAction::Leave), "restricted: leave");
 
-    #[test]
-    fn member_reads_workspace_but_cannot_write() {
         // A member without admin still passes the View check on a workspace
         // (they can read channels) — it's Edit that's gated.
         let p = restricted_member();
