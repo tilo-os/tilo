@@ -498,10 +498,8 @@ fn both_partials_are_prepared_before_first_payload_and_each_resumes_own_range() 
     // Both zero-prefix ownerships existed before first payload transfer. Seed the
     // second role via the existing real Session+prefix fixture on this thread.
     assert!(root.path().join("1/journal/record-1").exists());
-    let release = InternalRelease::transport_fixture(
-        &bytes,
-        "https://code.tilo.so/releases/manifest.json",
-    );
+    let release =
+        InternalRelease::transport_fixture(&bytes, "https://code.tilo.so/releases/manifest.json");
     let selected = SelectedManifest::from_bytes(&release, bytes.clone()).unwrap();
     ROOT.with(|r| *r.borrow_mut() = root.path().to_owned());
     let components = fixture::CacheRoot::acquire(&selected)

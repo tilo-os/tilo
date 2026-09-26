@@ -169,7 +169,10 @@ fn track_helper(
 /// # Errors
 /// Returns malformed invocation errors; transaction failures use the protocol.
 pub fn maybe_run_desktop_helper(args: &[String]) -> Result<Option<i32>, String> {
-    if !args.iter().any(|arg| arg == "--tilo-desktop-install-helper") {
+    if !args
+        .iter()
+        .any(|arg| arg == "--tilo-desktop-install-helper")
+    {
         return Ok(None);
     }
     let [_, flag, request, digest] = args else {
@@ -205,7 +208,8 @@ mod tests {
             release_id: "fedora".into(),
             package_input: "/tmp/package with spaces.rpm".into(),
         };
-        let command = elevation_command(std::path::Path::new("/opt/tilo/imager"), &request).unwrap();
+        let command =
+            elevation_command(std::path::Path::new("/opt/tilo/imager"), &request).unwrap();
         assert_eq!(command.get_program(), "/usr/bin/pkexec");
         let args: Vec<_> = command.get_args().collect();
         assert_eq!(args.len(), 4);
