@@ -1314,7 +1314,7 @@ mod tests {
                     "-option",
                     "",
                     "-option",
-                    "grp:alt_shift_toggle,compose:rwin",
+                    "compose:rwin",
                 ]
                 .map(OsString::from)
             );

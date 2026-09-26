@@ -743,6 +743,9 @@ pub struct RichInputConfig {
     #[serde(alias = "layouts")]
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
+    /// What Caps Lock does: `None` keeps it Caps Lock; `ctrl`, `escape` or
+    /// `backspace` turn it into that key.
+    pub caps_lock: Option<String>,
     pub touchpad_gestures: bool,
     pub touchpad_click_method: TouchpadClickMethod,
     pub touchpad_scroll_method: TouchpadScrollMethod,
@@ -774,6 +777,7 @@ impl Default for RichInputConfig {
             keyboard_layout: "us".into(),
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
+            caps_lock: None,
             touchpad_gestures: true,
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
@@ -984,6 +988,10 @@ impl RichInputConfig {
             .get(SCROLL_SPEED_KEY)
             .and_then(serde_json::Value::as_f64)
             .map_or(1.0, clamp_scroll_speed);
+        config.caps_lock = section
+            .get("caps_lock")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string);
         config.normalise_sources();
         config
     }
@@ -1050,6 +1058,21 @@ impl RichInputConfig {
             .collect()
     }
 
+    /// Make the source after the active one active, wrapping, and return
+    /// its index. `None` with fewer than two sources: there is nothing to
+    /// switch to.
+    pub fn select_next_source(&mut self) -> Option<usize> {
+        if self.keyboard_layouts.len() < 2 {
+            return None;
+        }
+        let next = self
+            .active_source_index()
+            .saturating_add(1)
+            .checked_rem(self.keyboard_layouts.len())?;
+        self.keyboard_layout = self.keyboard_layouts.get(next)?.clone();
+        Some(next)
+    }
+
     /// Position of the active source in the full source list.
     pub fn active_source_index(&self) -> usize {
         self.keyboard_layouts
@@ -1084,13 +1107,23 @@ impl RichInputConfig {
         }
     }
 
-    /// XKB option fragments owned by this preference section. Layout
-    /// switching is Alt+Shift because Super+Space is Tilo global search;
-    /// Compose remains independently configurable.
+    /// XKB option fragments owned by this preference section. No XKB group
+    /// toggle: switching sources is the compositor's rebindable
+    /// input-source shortcut, which persists the choice and shows it —
+    /// an XKB toggle would switch silently, forget it on reload, and
+    /// collide with Alt+Shift+Tab. A Caps Lock remap yields to Compose on
+    /// Caps Lock, the more specific choice.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
-        if self.sources().len() > 1 {
-            options.push("grp:alt_shift_toggle".into());
+        if self.compose_key.as_deref() != Some("caps")
+            && let Some(option) = match self.caps_lock.as_deref() {
+                Some("ctrl") => Some("ctrl:nocaps"),
+                Some("escape") => Some("caps:escape"),
+                Some("backspace") => Some("caps:backspace"),
+                _ => None,
+            }
+        {
+            options.push(option.into());
         }
         if let Some(option) = match self.compose_key.as_deref() {
             Some("ralt") => Some("compose:ralt"),
@@ -1157,6 +1190,8 @@ pub enum ShortcutAction {
     MagnifierZoomIn,
     MagnifierZoomOut,
     PowerMenu,
+    /// Switch to the next keyboard input source.
+    NextInputSource,
 }
 
 impl ShortcutAction {
@@ -1791,6 +1826,9 @@ impl Default for ShortcutConfig {
             // The session action sheet: the chord every PC user tries when
             // something has hung.
             (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
+            // Super+Space is global search; the Alt-modified chord is the
+            // nearest free spelling of the GNOME/Windows convention.
+            (ShortcutAction::NextInputSource, super_alt_chord("space")),
         ]
         .into_iter()
         .collect();
@@ -2435,7 +2473,7 @@ mod tests {
         // Phase `desktop_navigation_defaults_are_complete_and_conflict_free`.
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 42);
+            assert_eq!(cfg.bindings.len(), 43);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(
@@ -2562,7 +2600,15 @@ mod tests {
                 ..Default::default()
             };
             cfg.normalise_sources();
-            assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle", "compose:ralt"]);
+            assert_eq!(
+                cfg.xkb_options(),
+                ["compose:ralt"],
+                "no XKB group toggle: it collides with Alt+Shift+Tab and switches silently"
+            );
+            assert_eq!(
+                ShortcutConfig::default().bindings[&ShortcutAction::NextInputSource].display(),
+                "Super+Alt+Space"
+            );
         }
         // Phase `malformed_pointer_field_does_not_discard_keyboard_sources`.
         {
@@ -2662,7 +2708,62 @@ mod tests {
             0,
             "an engine types on the primary layout"
         );
-        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle"]);
+        assert!(cfg.xkb_options().is_empty());
+    }
+
+    #[test]
+    fn the_next_source_wraps_through_layouts_and_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "de".into(),
+            keyboard_layouts: vec!["us".into(), "de".into(), "fr".into()],
+            ..Default::default()
+        };
+        assert_eq!(cfg.select_next_source(), Some(2));
+        assert_eq!(cfg.keyboard_layout, "fr");
+        assert_eq!(cfg.select_next_source(), Some(0));
+        assert_eq!(cfg.keyboard_layout, "us");
+        let mut single = RichInputConfig::default();
+        assert_eq!(single.select_next_source(), None);
+        assert_eq!(single.keyboard_layout, "us");
+        let mut with_engine = RichInputConfig {
+            keyboard_layout: "us".into(),
+            keyboard_layouts: vec!["us".into(), "ime/pinyin".into()],
+            ..Default::default()
+        };
+        assert_eq!(with_engine.select_next_source(), Some(1));
+        assert_eq!(
+            with_engine.active_input_method(),
+            Some(InputMethodEngine::Pinyin)
+        );
+    }
+
+    #[test]
+    fn caps_lock_remaps_map_to_standard_xkb_options() {
+        for (choice, option) in [
+            ("ctrl", "ctrl:nocaps"),
+            ("escape", "caps:escape"),
+            ("backspace", "caps:backspace"),
+        ] {
+            let section = serde_json::json!({ "caps_lock": choice })
+                .as_object()
+                .unwrap()
+                .clone();
+            assert_eq!(
+                RichInputConfig::from_section(&section).xkb_options(),
+                [option]
+            );
+        }
+        let composing = RichInputConfig {
+            caps_lock: Some("escape".into()),
+            compose_key: Some("caps".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            composing.xkb_options(),
+            ["compose:caps"],
+            "Caps Lock cannot be both Compose and Escape"
+        );
+        assert!(RichInputConfig::default().xkb_options().is_empty());
     }
 
     #[test]

@@ -40,11 +40,18 @@ session. If compilation fails (for example, an XKB data package was removed),
 hot reload keeps the previous working keymap; failure never leaves a running
 session without keyboard input.
 
-Alt+Shift uses the standard `grp:alt_shift_toggle` option when more than one
-source is configured. Super+Space is deliberately not claimed because it is the
-Tilo global-search shortcut. Compose-key selections map to standard XKB options.
-The saved active source is the session-start preference; shortcut cycling is
-temporary and does not rewrite settings on every chord.
+Switching sources is the compositor's rebindable **Next keyboard layout**
+shortcut, Super+Alt+Space by default (Super+Space is global search). It writes
+the new active source to the settings document, switches the Wayland seat and
+the DRM keyboard at once — keeping held modifiers — and shows the layout's XKB
+name in the on-screen readout. A settings reload that changes only the active
+source switches groups rather than recompiling the keymap. No XKB group toggle
+option is compiled in: `grp:alt_shift_toggle` switched silently, was forgotten
+on reload and collided with Alt+Shift+Tab.
+
+Compose-key selections and the Caps Lock remaps (Control `ctrl:nocaps`, Escape
+`caps:escape`, Backspace `caps:backspace`) map to standard XKB options; Compose
+on Caps Lock wins over a Caps Lock remap.
 
 ## Input methods (Chinese, Japanese, Korean)
 
