@@ -299,6 +299,7 @@ dependencies = [
  "runtime-collab",
  "runtime-dylib",
  "runtime-identity",
+ "runtime-portal",
  "serde_json",
  "shell",
  "tempfile",
@@ -1105,6 +1106,7 @@ dependencies = [
  "atomic-file",
  "automerge",
  "hex",
+ "host-fs",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -1496,8 +1498,9 @@ dependencies = [
  "base64",
  "blake3",
  "bounded-zip",
- "libc",
+ "host-info",
  "pollster",
+ "private-fs",
  "reqwest 0.13.2",
  "runtime-dylib",
  "serde",
@@ -2181,6 +2184,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]
@@ -2216,8 +2220,8 @@ version = "0.1.0"
 dependencies = [
  "atomic-file",
  "automerge",
+ "bounded-command",
  "hex",
- "libc",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2489,7 +2493,6 @@ dependencies = [
  "vello",
  "winit",
  "xdg-paths",
- "zbus",
 ]
 
 [[package]]
@@ -3938,12 +3941,12 @@ dependencies = [
  "fs",
  "fuser",
  "hex",
+ "host-fs",
  "icu_datetime",
  "icu_decimal",
  "icu_locale",
  "image",
  "iroh",
- "libc",
  "mime_guess",
  "qdoc-codecs",
  "runtime-dylib",
@@ -3970,7 +3973,6 @@ dependencies = [
  "vello",
  "winit",
  "wire-frame",
- "xattr",
  "xdg-paths",
  "zip",
 ]
@@ -4783,6 +4785,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shlex",
+ "ssh-agent-client",
  "taffy",
  "tempfile",
  "tilo-actions",
@@ -5673,6 +5676,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "host-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "trash",
+ "xattr",
+ "xdg-paths",
+]
+
+[[package]]
+name = "host-info"
+version = "0.1.0"
+dependencies = [
+ "bounded-command",
+ "libc",
 ]
 
 [[package]]
@@ -8292,6 +8313,7 @@ name = "monitor"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "host-info",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8368,9 +8390,9 @@ dependencies = [
  "atomic-file",
  "automerge",
  "base64",
- "bounded-command",
  "gstreamer",
  "hex",
+ "host-info",
  "image",
  "media",
  "reqwest 0.13.2",
@@ -10672,6 +10694,7 @@ dependencies = [
  "hex",
  "image",
  "os-actions",
+ "private-fs",
  "qdoc-pdf",
  "runtime-dylib",
  "serde_json",
@@ -11834,6 +11857,7 @@ dependencies = [
  "automerge",
  "des",
  "iroh-base",
+ "private-fs",
  "runtime-collab",
  "runtime-dylib",
  "russh",
@@ -13884,6 +13908,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a0219bd7d979d58245a4f41f695e1ac9f8befdffadd7f61f1bae9e39abc6620"
 
 [[package]]
+name = "ssh-agent-client"
+version = "0.1.0"
+dependencies = [
+ "russh",
+]
+
+[[package]]
 name = "ssh-cipher"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -14729,6 +14760,8 @@ dependencies = [
  "image",
  "libc",
  "notify",
+ "proc-macro2",
+ "quote",
  "serde",
  "serde_json",
  "syn 2.0.117",
@@ -15935,6 +15968,7 @@ dependencies = [
  "uuid",
  "vello",
  "winit",
+ "xdg-paths",
  "zeroize",
 ]
 
@@ -16106,8 +16140,8 @@ dependencies = [
  "bounded-command",
  "flate2",
  "hex",
- "libc",
  "media",
+ "private-fs",
  "reqwest 0.13.2",
  "runtime-dylib",
  "runtime-identity",
@@ -18504,6 +18538,7 @@ dependencies = [
  "url",
  "vello",
  "winit",
+ "xdg-paths",
 ]
 
 [[package]]

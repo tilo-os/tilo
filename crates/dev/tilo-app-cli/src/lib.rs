@@ -23,6 +23,8 @@ use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 use serde::{Deserialize, Serialize};
 
+pub mod portability;
+
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
 const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
 const LIST_APP_TEMPLATE: &str = include_str!("../templates/list.rs");
@@ -4008,6 +4010,16 @@ impl DoctorReport {
         });
         output
     }
+}
+
+/// Run the `portability` lint on the app containing `start`.
+///
+/// # Errors
+///
+/// Returns an error when the app directory cannot be resolved or its
+/// manifests or reachable sources cannot be read or parsed.
+pub fn lint_portability(start: &Path) -> Result<portability::PortabilityReport> {
+    portability::lint_app(&resolve_app_dir(start)?)
 }
 
 /// Inspect an app's source and package wiring without compiling it.
