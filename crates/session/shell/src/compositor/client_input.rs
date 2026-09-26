@@ -927,6 +927,38 @@ pub fn consume_keyboard_while_captured(state: &mut State, event: &WindowEvent) {
     let _ = state.deliver_client_key(code, pressed, true);
 }
 
+/// Decide what the pointer shows this tick: the focused client's request
+/// while the pointer is over its surface, otherwise the cursor the chrome
+/// under the pointer names (the default arrow when it names none). The lock
+/// screen is not chrome and never shows a client's cursor.
+///
+/// Records the result on the frame builder, where captures and the state
+/// dump read it, and returns it only when it changed so the caller hands it
+/// to the backend once.
+pub fn sync_pointer_image(
+    state: &State,
+    fb: &mut FrameBuilder,
+    session_locked: bool,
+) -> Option<crate::compositor::cursor::PointerImage> {
+    use crate::compositor::cursor::{CursorShape, PointerImage};
+    let image = if session_locked {
+        PointerImage::default()
+    } else if state.client_input.pointer_focus().is_some() {
+        state.client_cursor.image()
+    } else {
+        fb.capture_pointer_position()
+            .and_then(|point| fb.chrome_cursor_at(point))
+            .map_or_else(PointerImage::default, |icon| {
+                PointerImage::Shape(CursorShape::from_icon(icon))
+            })
+    };
+    if *fb.pointer_image() == image {
+        return None;
+    }
+    fb.set_pointer_image(image.clone());
+    Some(image)
+}
+
 /// Tell the remote-input firewall what is on screen. Called every tick,
 /// immediately after [`sync_keyboard_focus`], so a remote event is judged against what the local user is looking at.
 ///

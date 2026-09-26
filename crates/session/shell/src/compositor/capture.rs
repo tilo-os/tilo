@@ -1622,8 +1622,9 @@ fn capture_source(
     };
     if intent.include_pointer
         && let Some(pointer) = frame_builder.capture_pointer_position()
+        && let Some(cursor) = frame_builder.pointer_image().bitmap(24)
     {
-        draw_pointer(&mut source, pointer);
+        crate::compositor::cursor::draw_scene(&mut source, &cursor, pointer);
     }
     (source, regions)
 }
@@ -1633,15 +1634,6 @@ fn capture_source(
 /// resilience path so a Vello bump-buffer growth is never encoded as black.
 fn render_capture_rgba(renderer: &mut OffscreenRenderer, scene: &Scene) -> Vec<u8> {
     renderer.render_rgba_resilient(scene)
-}
-
-fn draw_pointer(scene: &mut Scene, at: vello::kurbo::Point) {
-    crate::compositor::cursor::draw_scene(
-        scene,
-        crate::compositor::cursor::CursorShape::Default,
-        24,
-        at,
-    );
 }
 
 fn append_clipped(scene: &mut Scene, source: &Scene, region: Rect, transform: Affine) {

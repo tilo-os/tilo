@@ -943,6 +943,11 @@ fn apply_scanout_command(
                 entry.scanout.set_cursor_size(size);
             }
         }
+        ScanoutCommand::SetPointerImage(image) => {
+            for entry in scanouts.iter_mut() {
+                entry.scanout.set_pointer_image(image.clone());
+            }
+        }
     }
 }
 
@@ -1659,6 +1664,10 @@ impl Backend for DrmBackend {
 
     fn reload_input_settings(&mut self) {
         self.inner.reload_input_settings();
+    }
+
+    fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        self.inner.set_pointer_image(image);
     }
 
     fn cancel_touch(&mut self) {
