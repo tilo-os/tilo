@@ -92,7 +92,13 @@ impl Drop for MountedProcess {
     }
 }
 
-fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], owner: bool) {
+fn install_identity(
+    root: &Path,
+    root_seed: [u8; 32],
+    device_seed: [u8; 32],
+    owner: bool,
+    issued_at_ns: u64,
+) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
     let root_key = SigningKey::from_bytes(&root_seed);
@@ -101,7 +107,6 @@ fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], own
     if owner {
         write_signing_key(&paths.user_privkey, &root_key).unwrap();
     }
-    let issued_at_ns = tilo_clock::unix_now_ns().saturating_sub(1_000_000_000);
     let mut cert = DeviceCert {
         user_public_key: root_key.verifying_key().to_bytes(),
         device_public_key: device_key.verifying_key().to_bytes(),
@@ -389,6 +394,12 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     write_clock(&host_clock, clock_now);
     write_clock(&viewer_clock, clock_now);
     write_clock(&loss_clock, clock_now);
+    // The daemon's `--test-clock-file` is this millisecond value, lifted with
+    // `fs::clock::ns_at_unix_ms`. Mint the certificate from that instant, one
+    // millisecond earlier so the later one-millisecond rewind still leaves it
+    // valid. A wall-clock reading taken after the file is written can move
+    // ahead of the frozen clock and fail as "not yet valid".
+    let issued_at_ns = fs::clock::ns_at_unix_ms(clock_now.saturating_sub(1));
     for path in [
         &host_mount,
         &viewer_mount,
@@ -402,9 +413,27 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     // The real processes advertise their Iroh identities beyond this guest.
     // Keep concurrent CI runs distinct while binding assertions to these keys.
     let host_seed: [u8; 32] = rand::random();
-    install_identity(&host_identity, rand::random(), host_seed, true);
-    install_identity(&viewer_identity, rand::random(), rand::random(), false);
-    install_identity(&loss_identity, rand::random(), rand::random(), false);
+    install_identity(
+        &host_identity,
+        rand::random(),
+        host_seed,
+        true,
+        issued_at_ns,
+    );
+    install_identity(
+        &viewer_identity,
+        rand::random(),
+        rand::random(),
+        false,
+        issued_at_ns,
+    );
+    install_identity(
+        &loss_identity,
+        rand::random(),
+        rand::random(),
+        false,
+        issued_at_ns,
+    );
     let host_device = SigningKey::from_bytes(&host_seed)
         .verifying_key()
         .to_bytes();
