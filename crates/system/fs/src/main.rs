@@ -1020,6 +1020,10 @@ fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
 }
 
+/// The peers a mount of `ticket`'s workspace may take its namespace from:
+/// the ticket's node, then persisted content peers registered for this same
+/// workspace. A persisted peer of another workspace, or one registered
+/// without a ticket, still serves content by hash, but never the tree.
 fn bootstrap_peers(
     ticket: &Ticket,
     cache_dir: Option<&Path>,
@@ -1027,7 +1031,10 @@ fn bootstrap_peers(
     let mut peers = vec![ticket.node.clone()];
     if let Some(cache_dir) = cache_dir {
         for peer in load_persisted_content_peers(cache_dir)? {
-            if peers.iter().all(|known| known.id != peer.endpoint.id) {
+            let same_workspace = peer
+                .decoded_ticket()?
+                .is_some_and(|bound| bound.workspace_id() == ticket.workspace_id());
+            if same_workspace && peers.iter().all(|known| known.id != peer.endpoint.id) {
                 peers.push(peer.endpoint);
             }
         }
@@ -1248,6 +1255,7 @@ async fn replica_workspace(
             &endpoint,
             &bootstrap,
             &transport_identity,
+            (ticket.workspace_id(), &Some(acl.clone())),
         )
         .await?,
     ));
@@ -1509,6 +1517,10 @@ async fn serve(
                     &endpoint,
                     &bootstrap,
                     &transport_identity,
+                    (
+                        ticket.workspace_id(),
+                        &acl.as_ref().map(|(handle, _)| handle.clone()),
+                    ),
                 )
                 .await?,
                 !np.as_ref().is_some_and(|path| path.exists()),
@@ -1998,6 +2010,10 @@ async fn mount(
         &endpoint,
         &bootstrap,
         &transport_identity,
+        (
+            ticket.workspace_id(),
+            &acl.as_ref().map(|(handle, _)| handle.clone()),
+        ),
     )
     .await?;
     let namespace = Arc::new(Mutex::new(ns_value));
@@ -2582,7 +2598,14 @@ async fn fetch_shared_snapshot(
     credential: &SharedCredential,
 ) -> std::result::Result<RecordProtocolSnapshotV1, SharedFetchError> {
     match request_shared(client, credential, RecordProtocolOperationV1::Read).await? {
-        RecordProtocolResponseV1::Snapshot { snapshot, .. } => Ok(snapshot),
+        // The snapshot is of the invite's workspace and record, or refused.
+        RecordProtocolResponseV1::Snapshot { session, snapshot } => {
+            if session.is_for_invite(credential.invite()) {
+                Ok(snapshot)
+            } else {
+                Err(SharedFetchError::OtherSession)
+            }
+        }
         RecordProtocolResponseV1::Denied => Err(SharedFetchError::Denied),
         RecordProtocolResponseV1::NotFound => Err(SharedFetchError::NotFound),
         RecordProtocolResponseV1::InternalError => Err(SharedFetchError::Internal),
@@ -2619,6 +2642,8 @@ enum SharedFetchError {
     NotFound,
     #[error("shared-record host returned an invalid response")]
     InvalidResponse,
+    #[error("shared-record host answered for another workspace or record than the invite names")]
+    OtherSession,
     #[error("shared-record host failed internally")]
     Internal,
 }
@@ -2644,6 +2669,7 @@ impl SharedFetchError {
             ) => RecordSubscriptionFailureCode::Denied,
             Self::NotFound => RecordSubscriptionFailureCode::NotFound,
             Self::InvalidResponse
+            | Self::OtherSession
             | Self::Client(
                 RecordProtocolClientError::RequestTooLarge
                 | RecordProtocolClientError::InvalidRequest
@@ -3072,13 +3098,17 @@ fn spawn_persist(namespace: Arc<Mutex<Namespace>>, path: PathBuf) -> tokio::task
     })
 }
 
-/// Open a joiner's namespace: load any persisted copy, then merge the host's doc if reachable.
+/// Open a joiner's namespace: load any persisted copy, then merge the
+/// host's doc if reachable. Only a document bound to `workspace_id` by a
+/// peer `policy` lets read the whole workspace is merged
+/// ([`sync::fetch_remote_doc`]).
 async fn open_namespace_mount(
     author: String,
     np: Option<&Path>,
     endpoint: &iroh::endpoint::Endpoint,
     bootstrap: &[iroh_base::EndpointAddr],
     identity: &FsTransportIdentity,
+    (workspace_id, policy): (uuid::Uuid, &sync::PeerPolicy),
 ) -> Result<Namespace> {
     let persisted = match np.as_ref().filter(|p| p.exists()) {
         Some(path) => Some(load_namespace(path, author.clone())?),
@@ -3087,7 +3117,7 @@ async fn open_namespace_mount(
 
     let mut last_error = None;
     for host in bootstrap {
-        match sync::fetch_remote_doc(endpoint, host.clone(), identity).await {
+        match sync::fetch_remote_doc(endpoint, host.clone(), identity, workspace_id, policy).await {
             Ok(doc) => {
                 return match persisted {
                     Some(mut ns) => {
