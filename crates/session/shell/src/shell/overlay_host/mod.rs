@@ -32,6 +32,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 
 mod controller;
 mod device_fabric;
+mod displays;
 mod history;
 mod notification_center;
 mod now_playing;
@@ -673,6 +674,9 @@ pub struct ShellOverlayHost {
     /// focus-follow scroll is edge-triggered and doesn't fight a user who
     /// wheels away.
     last_scrolled_active_group: HashMap<StripId, GroupId>,
+    /// The focused `(strip, group)` last recorded in the display partition,
+    /// so a focus change is noted once.
+    last_noted_focus: Option<(StripId, GroupId)>,
     /// Hit rect for the "+ Add workspace" affordance at the tail of the
     /// overview's list. `Rect::ZERO` when not painted.
     add_workspace_rect: Rect,
@@ -2302,6 +2306,7 @@ impl ShellOverlayHost {
             content_built_empty: None,
             workspace_content_layout_dirty: false,
             last_scrolled_active_group: HashMap::new(),
+            last_noted_focus: None,
             add_workspace_rect: Rect::ZERO,
             sidebar_top_y: SIDEBAR_TOP_OFFSET_PX,
             permission_prompt: None,
@@ -3603,6 +3608,7 @@ impl ShellOverlayHost {
     pub fn set_output_geometry(&mut self, outputs: &[OutputGeometry]) {
         if self.outputs != outputs {
             self.outputs = outputs.to_vec();
+            self.reconcile_display_partition();
         }
     }
 
@@ -4205,6 +4211,7 @@ impl ShellOverlayHost {
             return false;
         };
         chrome.borrow_mut().retry_new_tab_records();
+        self.place_new_groups();
         let current_rev = chrome.borrow().revision;
         if current_rev == self.last_chrome_revision {
             return false;
@@ -4232,9 +4239,12 @@ impl ShellOverlayHost {
                     row.group_ids().into_iter().collect();
                 let tree_ids: std::collections::HashSet<u64> =
                     strip.window_groups.iter().map(|g| g.id).collect();
+                // The row lays groups out display by display; on one
+                // display that is the strip's own order.
+                let ordered = displays::display_ordered(&tree.desktop.outputs, strip);
                 // Splice in new groups without rebuilding the vector, so
                 // existing rows keep their host state.
-                for (idx, g) in strip.window_groups.iter().enumerate() {
+                for (idx, g) in ordered.iter().enumerate() {
                     if !live_ids.contains(&g.id) {
                         let mut fresh = crate::shell::to_ui_window_group(g, &records);
                         // Same spawn fade the row's own splice paths use,
@@ -4259,7 +4269,7 @@ impl ShellOverlayHost {
                 // revision from another device reorders two existing
                 // windows). Splicing alone misses that case and leaves the
                 // screen disagreeing with the durable layout until restart.
-                for (idx, group) in strip.window_groups.iter().enumerate() {
+                for (idx, group) in ordered.iter().enumerate() {
                     if row.reorder_group_by_id(group.id, idx) {
                         any_change = true;
                     }
@@ -4847,12 +4857,28 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
-        let mut changes: Vec<(StripId, u64, usize)> = Vec::new();
+        // (strip, group, row index, the group's display neighbours when the
+        // row is partitioned)
+        let mut changes: Vec<(StripId, u64, usize, displays::ReorderNeighbours)> = Vec::new();
         for (&strip_id, &ptr) in &self.group_row_ptrs {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &mut GroupRow = unsafe { &mut *ptr };
             if let Some((group_id, new_index)) = row.take_pending_group_reorder() {
-                changes.push((strip_id, group_id, new_index));
+                // A partitioned row orders groups display by display, so its
+                // index is not the strip's: record the neighbours instead.
+                let neighbours = row.is_partitioned().then(|| {
+                    let ids = row.group_ids();
+                    let at = ids.iter().position(|id| *id == group_id);
+                    let before = at
+                        .and_then(|i| i.checked_sub(1))
+                        .and_then(|i| ids.get(i).copied())
+                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
+                    let after = at
+                        .and_then(|i| ids.get(i.saturating_add(1)).copied())
+                        .filter(|id| row.lane_of_group(*id) == row.lane_of_group(group_id));
+                    (before, after)
+                });
+                changes.push((strip_id, group_id, new_index, neighbours));
             }
         }
         if changes.is_empty() {
@@ -4860,7 +4886,34 @@ impl ShellOverlayHost {
         }
         let st = chrome.borrow_mut();
         let mut tree = st.tree_mut();
-        for (strip_id, group_id, new_index) in changes {
+        for (strip_id, group_id, new_index, neighbours) in changes {
+            let new_index = match neighbours {
+                Some((before, after)) => {
+                    let order: Vec<u64> = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .flat_map(|w| &w.strips)
+                        .find(|s| s.id == strip_id)
+                        .map(|s| {
+                            s.window_groups
+                                .iter()
+                                .map(|g| g.id)
+                                .filter(|id| *id != group_id)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let slot = before
+                        .and_then(|b| order.iter().position(|id| *id == b))
+                        .map(|i| i.saturating_add(1))
+                        .or_else(|| after.and_then(|a| order.iter().position(|id| *id == a)));
+                    let Some(slot) = slot else {
+                        continue;
+                    };
+                    slot
+                }
+                None => new_index,
+            };
             tree.reorder_group_within_strip(strip_id, group_id, new_index);
         }
     }
@@ -5170,6 +5223,10 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return;
         };
+        let focused_display = self
+            .is_partitioned()
+            .then(|| chrome.borrow().tree().desktop.outputs.focused_display())
+            .flatten();
         // Same resolution the placement rule performs.
         let strip_id = {
             let st = chrome.borrow();
@@ -5188,11 +5245,15 @@ impl ShellOverlayHost {
             // SAFETY: see field doc on `group_row_ptrs`.
             let row: &GroupRow = unsafe { &*ptr };
             let (visible_x0, visible_x1) = row.visible_canvas_span();
+            // On a partitioned strip, the focused display's windows only:
+            // a new window opens where the person is looking.
+            let focused = focused_display.map(|d| row.group_ids_on(d));
             Some(crate::shell::placement::StripViewport {
                 strip: sid,
                 groups: row
                     .group_canvas_spans()
                     .into_iter()
+                    .filter(|(id, _, _)| focused.as_ref().is_none_or(|on| on.contains(id)))
                     .map(|(id, x0, x1)| crate::shell::placement::GroupSpan { id, x0, x1 })
                     .collect(),
                 visible_x0,
@@ -5946,6 +6007,9 @@ impl ShellOverlayHost {
         if steps == 0 {
             return false;
         }
+        if let Some(moved) = self.step_focus_across_displays(steps) {
+            return moved;
+        }
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -6131,10 +6195,26 @@ impl ShellOverlayHost {
                     return false;
                 };
                 let last = strip.window_groups.len().saturating_sub(1);
+                // On a partitioned strip the neighbour is the next group
+                // on the same display; groups in between belong elsewhere.
+                let partition = &tree.desktop.outputs;
+                let display = partition.display_of(group_id);
+                let same_display = |g: &crate::shell::state::WindowGroup| {
+                    partition.displays.len() < 2 || partition.display_of(g.id) == display
+                };
                 let destination = if direction < 0 {
-                    current.saturating_sub(1)
+                    strip
+                        .window_groups
+                        .get(..current)
+                        .and_then(|before| before.iter().rposition(same_display))
+                        .unwrap_or(current)
                 } else {
-                    current.saturating_add(1).min(last)
+                    strip
+                        .window_groups
+                        .get(current.saturating_add(1)..)
+                        .and_then(|rest| rest.iter().position(same_display))
+                        .map_or(current, |i| current.saturating_add(1).saturating_add(i))
+                        .min(last)
                 };
                 (
                     tree.reorder_group_within_strip(strip_id, group_id, destination),
@@ -10030,6 +10110,7 @@ impl ShellOverlayHost {
         if let WindowEvent::CursorMoved { position, .. } = event {
             let p = Point::new(position.x / scale_factor, position.y / scale_factor);
             self.last_cursor = Some(p);
+            self.focus_display_at(p);
             // Paint-only: a segment thickens under the pointer to say it's
             // clickable.
             let hover = if self.overlay_flags().overview {
@@ -10719,9 +10800,10 @@ impl ShellOverlayHost {
             (A::PreviousStrip, A::NextStrip),
             (A::PreviousWorkspace, A::NextWorkspace),
             (A::MoveGroupLeft, A::MoveGroupRight),
+            (A::MoveGroupToPreviousDisplay, A::MoveGroupToNextDisplay),
             (A::ResizeNarrower, A::ResizeWider),
         ];
-        let mut controls = Vec::with_capacity(19);
+        let mut controls = Vec::with_capacity(22);
         for (first, second) in rows {
             controls.push(ShortcutGuideFocus::Binding(first));
             controls.push(ShortcutGuideFocus::Binding(second));
@@ -11284,6 +11366,8 @@ impl ShellOverlayHost {
             ShortcutAction::ResizeWider,
             ShortcutAction::MoveGroupLeft,
             ShortcutAction::MoveGroupRight,
+            ShortcutAction::MoveGroupToPreviousDisplay,
+            ShortcutAction::MoveGroupToNextDisplay,
             ShortcutAction::FocusPreviousWindow,
             ShortcutAction::FocusNextWindow,
             ShortcutAction::PreviousStrip,
@@ -11343,6 +11427,16 @@ impl ShellOverlayHost {
                 }
                 ShortcutAction::MoveGroupRight => {
                     let _ = self.reorder_focused_group(1);
+                }
+                ShortcutAction::MoveGroupToPreviousDisplay => {
+                    if !repeat {
+                        let _ = self.move_focused_group_to_display(-1);
+                    }
+                }
+                ShortcutAction::MoveGroupToNextDisplay => {
+                    if !repeat {
+                        let _ = self.move_focused_group_to_display(1);
+                    }
                 }
                 ShortcutAction::FocusPreviousWindow => {
                     let _ = self.step_focus_along_strip(-1);
@@ -15619,6 +15713,7 @@ impl Widget for ShellOverlayHost {
         let presence_dirty = self.pump_presence_requests();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
+        self.follow_focus_across_displays();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
         self.scroll_active_group_into_view();
@@ -15752,6 +15847,7 @@ impl Widget for ShellOverlayHost {
             // → unaliased mutable access.
             unsafe { (&mut *ptr).set_output_spans(&spans) };
         }
+        self.push_display_layout();
         let content_node = self.content.build_layout(taffy, theme, node_map);
         let palette_node = self.palette.build_layout(taffy, theme, node_map);
         let capture_node = self.capture_studio.build_layout(taffy, theme, node_map);
@@ -15812,6 +15908,8 @@ impl Widget for ShellOverlayHost {
 
         // Override the sidebar's own leaf style with absolute positioning
         // so it hovers above the content pane instead of displacing it.
+        let primary = self.primary_output().filter(|_| self.is_partitioned());
+        let sidebar_width = self.sidebar_width();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -15820,16 +15918,24 @@ impl Widget for ShellOverlayHost {
             if let Ok(style) = taffy.style(node) {
                 let mut style = style.clone();
                 style.position = Position::Absolute;
+                // The wheel lives on the primary display: on a partitioned
+                // desktop that is its own left edge and height.
+                let (left, top, bottom) = match primary {
+                    Some(p) => (
+                        f64_to_f32_lossy(p.x - self.rect.x0),
+                        f64_to_f32_lossy(p.y - self.rect.y0) + self.sidebar_top_y,
+                        f64_to_f32_lossy((self.rect.y1 - (p.y + p.height)).max(0.0)),
+                    ),
+                    None => (0.0, self.sidebar_top_y, 0.0),
+                };
                 style.inset = TaffyRect {
-                    left: LengthPercentageAuto::length(0.0),
+                    left: LengthPercentageAuto::length(left),
                     right: LengthPercentageAuto::auto(),
-                    top: LengthPercentageAuto::length(self.sidebar_top_y),
-                    bottom: LengthPercentageAuto::length(0.0),
+                    top: LengthPercentageAuto::length(top),
+                    bottom: LengthPercentageAuto::length(bottom),
                 };
                 style.size = Size {
-                    width: Dimension::length(sidebar_width_for_viewport(f64_to_f32_lossy(
-                        self.rect.height(),
-                    ))),
+                    width: Dimension::length(sidebar_width),
                     height: Dimension::auto(),
                 };
                 style.flex_grow = 0.0;
@@ -15945,11 +16051,7 @@ impl Widget for ShellOverlayHost {
         // Wheel-disc slot width plus a gap, reserved so the strip leaves
         // room for the wheel and a wallpaper gutter beside it. No sidebar
         // means no gutter to reserve.
-        let wheel_w = if self.sidebar.is_some() {
-            workspace_rail_clearance_for_viewport(self.rect.height())
-        } else {
-            0.0
-        };
+        let wheel_w = self.wheel_clearance();
         // Re-derive strip widths now the host's rect is known: frame 1's
         // `build_layout` had no viewport yet. A no-op once the
         // compositor has pushed real output geometry.
@@ -18363,6 +18465,7 @@ impl ShellOverlayHost {
                 (&mut *parts.backdrop).draw(scene, transform, text_renderer, theme, presence);
                 (&mut *parts.workspace).draw(scene, transform, text_renderer, theme, presence);
                 (&mut *parts.topbar).draw(scene, transform, text_renderer, theme, presence);
+                (&mut *parts.display_bars).draw(scene, transform, text_renderer, theme, presence);
             }
         } else {
             self.content
@@ -18476,6 +18579,8 @@ impl ShellOverlayHost {
             let topbar = &mut *parts.topbar;
             let rect = topbar.get_rect();
             topbar.draw(topbar_scene, transform, text_renderer, theme, presence);
+            let display_bars = &mut *parts.display_bars;
+            display_bars.draw(topbar_scene, transform, text_renderer, theme, presence);
             (&mut *parts.workspace).draw(
                 workspace_scene,
                 transform,
@@ -18483,7 +18588,11 @@ impl ShellOverlayHost {
                 theme,
                 presence,
             );
-            Some(Rect::new(rect.x0, rect.y0, rect.x1, rect.y1 + 28.0))
+            let bounds = display_bars
+                .bar_rects()
+                .into_iter()
+                .fold(rect, |all, (_, bar)| all.union(bar));
+            Some(Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1 + 28.0))
         }
     }
 
