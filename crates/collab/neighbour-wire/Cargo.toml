@@ -27,6 +27,8 @@ blake3.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 serde_json.workspace = true
 uuid.workspace = true
+# Signs the governance fixtures the retention tests classify.
+ed25519-dalek.workspace = true
 
 [lints]
 workspace = true
