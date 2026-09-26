@@ -274,6 +274,13 @@ impl Projector {
         dirs.sort_by_key(|e| e.path.len());
         for e in dirs {
             let rel = rel_path(&e.path);
+            if !e.known {
+                // Placed before the changeset that made it arrived; it
+                // appears with that changeset.
+                out.waiting = true;
+                out.waiting_for.get_or_insert_with(|| rel.clone());
+                continue;
+            }
             if let Err(error) = self.project_dir(&rel, e, materialized, &mut out) {
                 out.errors.push(format!("{}: {error}", rel.display()));
             }

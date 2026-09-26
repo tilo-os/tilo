@@ -90,6 +90,23 @@ fn stores(scenario: &str) -> Option<(PathBuf, PathBuf)> {
     Some((PathBuf::from(a), PathBuf::from(b)))
 }
 
+/// When the benchmark process started; verbose daemon logs are stamped
+/// with the time since.
+fn bench_clock() -> Instant {
+    static START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *START.get_or_init(Instant::now)
+}
+
+/// A stamped marker among the verbose daemon logs.
+fn mark(what: &str) {
+    if std::env::var_os("TILO_FS_BENCH_VERBOSE").is_some() {
+        eprintln!(
+            "{:9.3} bench: {what}",
+            bench_clock().elapsed().as_secs_f64()
+        );
+    }
+}
+
 fn now_ns() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -266,7 +283,8 @@ impl Daemon {
                 for line in BufReader::new(stream).lines() {
                     let Ok(line) = line else { break };
                     if verbose {
-                        eprintln!("{name}: {line}");
+                        let at = bench_clock().elapsed().as_secs_f64();
+                        eprintln!("{at:9.3} {name}: {line}");
                     }
                     let mut logs = logs
                         .lock()
@@ -511,11 +529,13 @@ fn many_small_files() {
         std::fs::write(&p, &buf).unwrap();
     }
     let written = t0.elapsed();
+    mark("every small file is written on the host");
     let last = small_path(&m2, files - 1);
     wait_for(&mut pair, "the last small file on the peer", || {
         (std::fs::metadata(&last).ok()?.len() == bytes as u64).then_some(())
     });
     let visible = t0.elapsed();
+    mark("the last small file is on the peer");
     // Every file, with the author's bytes.
     wait_for(&mut pair, "every small file on the peer", || {
         (0..files)

@@ -1044,8 +1044,6 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
         &mut [&mut pair.host, &mut pair.peer],
         "files on the peer",
         || {
-            // A new file's record is published empty before its content, and
-            // a peer that pulls promptly can show that first version briefly.
             let big_len = std::fs::metadata(m2.join("big")).ok()?.len();
             (big_len == big.len() as u64 && m2.join("f49").exists()).then_some(())
         },
@@ -1103,6 +1101,184 @@ fn a_crashed_daemon_resumes_from_its_last_epoch_and_publishes_only_what_changed(
     );
     host.terminate();
     peer.terminate();
+}
+
+/// The index of the last log line containing `needle`.
+fn last_line(daemon: &Daemon, needle: &str) -> Option<usize> {
+    daemon
+        .logs
+        .lock()
+        .unwrap()
+        .iter()
+        .rposition(|l| l.contains(needle))
+}
+
+/// Whether a log line after index `after` contains `needle`.
+fn logged_after(daemon: &Daemon, after: usize, needle: &str) -> bool {
+    daemon
+        .logs
+        .lock()
+        .unwrap()
+        .iter()
+        .skip(after + 1)
+        .any(|l| l.contains(needle))
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one crash scenario: publish, kill, restart and check the peer at each step"
+)]
+fn a_daemon_killed_while_publishing_a_changeset_leaves_peers_all_of_it_or_none() {
+    const BURST: usize = 1500;
+    let Some((a, b)) = stores("native_changeset_crash") else {
+        return;
+    };
+    if Command::new("git").arg("--version").output().is_err() {
+        assert!(!required(), "git is not installed");
+        return;
+    }
+    let mut pair = start_pair(&a, &b, 0x71);
+    let m1 = pair.host.mount.clone();
+    let m2 = pair.peer.mount.clone();
+    let live = pair.host.live.clone().unwrap();
+    let dir = pair.dir.clone();
+    std::fs::write(m1.join("marker"), b"synced").unwrap();
+    wait_for(&mut [&mut pair.host, &mut pair.peer], "the marker", || {
+        m2.join("marker").exists().then_some(())
+    });
+
+    // One burst of files is one epoch; the host dies while that epoch's
+    // changeset is being written.
+    std::fs::create_dir_all(m1.join("burst")).unwrap();
+    for i in 0..BURST {
+        std::fs::write(
+            m1.join(format!("burst/f{i:04}")),
+            pattern((i % 251) as u8, 4096),
+        )
+        .unwrap();
+    }
+    let cut = pair
+        .host
+        .wait_line(&format!("upsert File burst/f{:04}", BURST - 1));
+    pair.host.kill();
+    let cut_at = last_line(&pair.host, &cut).unwrap();
+    assert!(
+        !logged_after(&pair.host, cut_at, "is durable"),
+        "the host was killed after its changeset was written, not during it"
+    );
+    // Nothing of an unwritten changeset reaches the peer.
+    let down = Instant::now();
+    while down.elapsed() < Duration::from_secs(2) {
+        pair.peer.alive();
+        let seen = std::fs::read_dir(m2.join("burst")).map_or(0, Iterator::count);
+        assert_eq!(
+            seen, 0,
+            "the peer shows part of a changeset that never became durable"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // The restarted host publishes the epoch again, as one changeset: the
+    // peer takes all of it in one projection.
+    let mut host = Daemon::spawn("host2", "host", &dir, &a, &["serve"], &m1);
+    host.wait_serving();
+    assert_eq!(host.live.as_ref(), Some(&live), "the same room is resumed");
+    let before = pair.peer.logs.lock().unwrap().len();
+    wait_for(
+        &mut [&mut host, &mut pair.peer],
+        "the burst on the peer",
+        || {
+            (0..BURST)
+                .all(|i| {
+                    std::fs::read(m2.join(format!("burst/f{i:04}")))
+                        .is_ok_and(|got| got == pattern((i % 251) as u8, 4096))
+                })
+                .then_some(())
+        },
+    );
+    // The files are in place before the projection reports them.
+    let peer_logs = Arc::clone(&pair.peer.logs);
+    let projections: Vec<String> = wait_for(
+        &mut [&mut host, &mut pair.peer],
+        "the projection's report",
+        || {
+            let applied: Vec<String> = peer_logs.lock().unwrap()[before..]
+                .iter()
+                .filter(|l| l.contains("applied remote changes:") && !l.contains(": 0 file(s)"))
+                .cloned()
+                .collect();
+            (!applied.is_empty()).then_some(applied)
+        },
+    );
+    assert!(
+        projections
+            .first()
+            .is_some_and(|l| l.contains(&format!(": {BURST} file(s)"))),
+        "the whole changeset arrives in one projection: {projections:?}"
+    );
+
+    // A git commit: the host dies once its ref update is captured. Whatever
+    // the peer shows, now or later, is a consistent repository.
+    let repo1 = m1.join("repo");
+    let repo2 = m2.join("repo");
+    std::fs::create_dir_all(repo1.join("src")).unwrap();
+    git(&repo1, &["init", "-q", "-b", "main"]).unwrap();
+    for i in 0..200 {
+        std::fs::write(
+            repo1.join(format!("src/m{i:03}.rs")),
+            format!("pub fn f{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    git(&repo1, &["add", "-A"]).unwrap();
+    git(&repo1, &["commit", "-q", "-m", "one"]).unwrap();
+    let head = git(&repo1, &["rev-parse", "HEAD"]).unwrap();
+    host.wait_line("upsert File repo/.git/refs/heads/main");
+    host.kill();
+    let consistent = |repo: &Path| {
+        // No HEAD commit yet, or one whose every object is present.
+        git(repo, &["rev-parse", "--verify", "-q", "HEAD"]).map_or(true, |_| {
+            git(repo, &["fsck", "--connectivity-only", "--no-dangling"]).is_ok()
+        })
+    };
+    let down = Instant::now();
+    while down.elapsed() < Duration::from_secs(2) {
+        pair.peer.alive();
+        if repo2.join(".git").exists() {
+            assert!(
+                consistent(&repo2),
+                "the peer shows a ref before its objects"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut host = Daemon::spawn("host3", "host", &dir, &a, &["serve"], &m1);
+    host.wait_serving();
+    wait_for(
+        &mut [&mut host, &mut pair.peer],
+        "the commit on the peer",
+        || {
+            std::thread::sleep(Duration::from_millis(100));
+            if repo2.join(".git").exists() {
+                assert!(
+                    consistent(&repo2),
+                    "the peer shows a ref before its objects"
+                );
+            }
+            (git(&repo2, &["rev-parse", "HEAD"]).ok()? == head).then_some(())
+        },
+    );
+    wait_for(&mut [&mut host, &mut pair.peer], "a clean peer", || {
+        std::thread::sleep(Duration::from_millis(250));
+        git(&repo2, &["status", "--porcelain"])
+            .ok()
+            .filter(String::is_empty)
+    });
+    git(&repo2, &["fsck", "--strict", "--no-dangling"]).unwrap();
+    assert_eq!(git(&repo1, &["status", "--porcelain"]).unwrap(), "");
+    git(&repo1, &["fsck", "--strict", "--no-dangling"]).unwrap();
+    host.terminate();
 }
 
 /// Writes into `path` every 300 ms until stopped: a writing session.
