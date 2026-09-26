@@ -15,23 +15,60 @@ pub(crate) fn load(bytes: &[u8]) -> Result<AutoCommit, Rejected> {
 
 /// Apply `incoming` to `doc` as the caller will.
 ///
-/// `load_incremental` keeps the chunks before a malformed one, so the input
-/// is first parsed on its own and refused unless every chunk loads. With
-/// [`Dependencies::RequireComplete`] the result is
+/// `load_incremental` keeps the chunks before a malformed one, so every
+/// chunk is first parsed on its own and the input refused unless all of them
+/// parse. With [`Dependencies::RequireComplete`] the result is
 /// [`Applied::MissingDependencies`] when any change is left waiting for a
 /// dependency; `doc` has then been changed and must be discarded.
+///
+/// Into a blank document this is one strict load, the pass Automerge itself
+/// makes there, rather than a parse followed by the same load.
 pub(crate) fn apply(
     doc: &mut AutoCommit,
     incoming: &[u8],
     dependencies: Dependencies,
 ) -> Result<Applied, Rejected> {
-    // On its own, a change whose dependencies are elsewhere loads as
-    // `MissingDeps`: every chunk parsed, which is all this asks.
-    match automerge::Automerge::load_with_options(incoming, strict()) {
-        Ok(_) | Err(automerge::AutomergeError::MissingDeps) => {}
-        Err(error) => return Err(Rejected::Invalid(error.to_string())),
+    if is_blank(doc) {
+        let loaded = AutoCommit::load_with_options(
+            incoming,
+            strict().text_encoding(doc.document().text_encoding()),
+        )
+        .map_err(|e| Rejected::Invalid(e.to_string()))?;
+        let actor = doc.get_actor().clone();
+        *doc = loaded.with_actor(actor);
+        if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
+            return Ok(Applied::MissingDependencies);
+        }
+        return Ok(Applied::Changed(!doc.get_heads().is_empty()));
+    }
+    for chunk in crate::precheck::chunks(incoming) {
+        parse_alone(chunk)?;
     }
     apply_trusted(doc, incoming, dependencies)
+}
+
+/// A document with no changes, applied or queued.
+pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
+    doc.get_heads().is_empty() && doc.get_missing_deps(&[]).is_empty()
+}
+
+/// Parse one chunk without applying it. A change costs only its own decode;
+/// a document or bundle is loaded on its own, as it has no cheaper parse.
+fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
+    let invalid = |e: automerge::AutomergeError| Rejected::Invalid(e.to_string());
+    match chunk.kind {
+        crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE => {
+            automerge::Change::from_bytes(chunk.bytes.to_vec())
+                .map(drop)
+                .map_err(|e| Rejected::Invalid(e.to_string()))
+        }
+        // On its own, a change whose dependencies are elsewhere loads as
+        // `MissingDeps`: every chunk parsed, which is all this asks.
+        _ => match automerge::Automerge::load_with_options(chunk.bytes, strict()) {
+            Ok(_) | Err(automerge::AutomergeError::MissingDeps) => Ok(()),
+            Err(error) => Err(invalid(error)),
+        },
+    }
 }
 
 /// [`apply`] without the standalone parse: for bytes already shown to be
@@ -78,6 +115,11 @@ impl Key {
         push_hashes(&mut bytes, &heads);
         push_hashes(&mut bytes, &missing);
         Self(bytes)
+    }
+
+    /// The state of a document with no changes, applied or queued.
+    pub(crate) fn is_blank(&self) -> bool {
+        self.complete_heads().is_some_and(|heads| heads.is_empty())
     }
 
     pub(crate) fn from_bytes(bytes: Vec<u8>) -> Self {

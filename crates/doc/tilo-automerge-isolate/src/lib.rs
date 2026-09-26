@@ -21,7 +21,12 @@
 //!
 //! Workers are long-lived and keep copies of the documents they have seen,
 //! keyed by state, so an incoming change costs the change, not a reload of
-//! the document. A worker that dies is replaced on the next request and
+//! the document. Each document state is routed to the worker that last saw
+//! it. A document a worker has never seen costs one rebuild from a full save
+//! there; [`Isolate::load`] leaves the loaded document in its worker, so a
+//! document admitted that way starts warm. What a worker keeps is bounded by
+//! bytes ([`Limits::cache_bytes`]), and an idle worker exits
+//! ([`Limits::idle`]). A worker that dies is replaced on the next request and
 //! rebuilds its copies from the caller's documents.
 //!
 //! # Hosting workers
@@ -75,13 +80,23 @@ pub struct Limits {
     pub max_chunks: usize,
     /// Heap ceiling of each worker process, including the documents it keeps.
     pub memory_bytes: u64,
-    /// Deadline for one request. Rebuilding a worker's copy from a full save
-    /// adds time proportional to its size.
+    /// Deadline for one request, before the time added for its size: see
+    /// [`Limits::timeout_per_mib`].
     pub timeout: Duration,
+    /// Time added to [`Limits::timeout`] per MiB of untrusted input. Decoding
+    /// grows with the input, and a long history must not be refused only for
+    /// being long.
+    pub timeout_per_mib: Duration,
     /// Worker processes, each serving one request at a time.
     pub workers: usize,
-    /// Documents each worker keeps between requests.
+    /// Most documents each worker keeps between requests.
     pub max_documents: usize,
+    /// Heap a worker may hold before it drops the documents it keeps, least
+    /// recently used first (the one it last worked on stays).
+    pub cache_bytes: u64,
+    /// A worker exits after this long without a request, returning its
+    /// memory; the next request starts a fresh one.
+    pub idle: Duration,
 }
 
 impl Default for Limits {
@@ -91,8 +106,11 @@ impl Default for Limits {
             max_chunks: 65_536,
             memory_bytes: 2 * 1024 * 1024 * 1024,
             timeout: Duration::from_secs(5),
+            timeout_per_mib: Duration::from_secs(2),
             workers: 2,
-            max_documents: 16,
+            max_documents: 256,
+            cache_bytes: 96 * 1024 * 1024,
+            idle: Duration::from_secs(60),
         }
     }
 }
@@ -288,8 +306,8 @@ mod in_page {
 #[must_use]
 pub fn dispatch_early() -> Option<u8> {
     #[cfg(target_os = "linux")]
-    if let Some(capacity) = worker::requested() {
-        return Some(u8::try_from(worker::serve(capacity)).unwrap_or(1));
+    if let Some(config) = worker::requested() {
+        return Some(u8::try_from(worker::serve(config)).unwrap_or(1));
     }
     None
 }

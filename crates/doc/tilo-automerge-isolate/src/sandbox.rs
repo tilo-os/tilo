@@ -8,8 +8,8 @@
 //!    right and TCP bind and connect, and grants none;
 //! 2. sets `no_new_privs` and installs a seccomp allow-list ([`rules`]):
 //!    reads from the request pipe, writes to the reply pipe and stdio,
-//!    anonymous non-executable memory, futexes, clocks, signals to itself and
-//!    exit. Any other syscall kills the worker with `SIGSYS`, which the
+//!    anonymous non-executable memory, futexes, clocks, its idle timer,
+//!    signals to itself and exit. Any other syscall kills the worker with `SIGSYS`, which the
 //!    caller sees as a dead worker and reports as [`crate::Rejected::Crashed`];
 //! 3. stacks a second filter (installed first) that answers [`REFUSED`] (`openat`) with `EPERM`
 //!    before the call reaches the kernel. glibc's allocator opens
@@ -101,6 +101,16 @@ pub(crate) fn rules(pid: u32) -> Result<BTreeMap<i64, Vec<SeccompRule>>, Backend
     rules.insert(
         libc::SYS_mprotect,
         vec![SeccompRule::new(vec![not_executable()?])?],
+    );
+    // The idle timer, which only this process's real-time clock drives.
+    rules.insert(
+        libc::SYS_setitimer,
+        vec![SeccompRule::new(vec![SeccompCondition::new(
+            0,
+            SeccompCmpArgLen::Dword,
+            SeccompCmpOp::Eq,
+            u64::from(libc::ITIMER_REAL.unsigned_abs()),
+        )?])?],
     );
     rules.insert(
         libc::SYS_tgkill,

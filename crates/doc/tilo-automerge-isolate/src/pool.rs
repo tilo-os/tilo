@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufReader};
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd, RawFd};
-use std::os::unix::process::CommandExt as _;
+use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, mpsc};
@@ -27,6 +27,9 @@ use crate::{Applied, Dependencies, Limits, Rejected};
 
 /// Extra time for a full document sent to rebuild a worker's copy.
 const REBUILD_PER_MIB: Duration = Duration::from_millis(250);
+/// Document states whose worker the pool remembers; the least recently used
+/// quarter is forgotten when full.
+const ROUTES: usize = 4096;
 /// How long a new worker may take to say it is ready.
 const STARTUP: Duration = Duration::from_secs(5);
 
@@ -34,8 +37,8 @@ pub(crate) struct Pool {
     limits: Limits,
     slots: Vec<Mutex<Option<Worker>>>,
     next: AtomicUsize,
-    /// Which worker last saw each document state.
-    routes: Mutex<HashMap<Key, usize>>,
+    /// Which worker last saw each document state, and when.
+    routes: Mutex<Routes>,
 }
 
 impl Pool {
@@ -45,7 +48,7 @@ impl Pool {
             limits,
             slots: (0..count).map(|_| Mutex::new(None)).collect(),
             next: AtomicUsize::new(0),
-            routes: Mutex::new(HashMap::new()),
+            routes: Mutex::new(Routes::default()),
         }
     }
 
@@ -81,7 +84,7 @@ impl Pool {
                 prepare,
                 incoming,
             };
-            match self.call(&mut worker, &request, trusted)? {
+            match self.call(&mut worker, &request, trusted, incoming.len())? {
                 Reply::Uncached(cached) => {
                     next = match next {
                         Base::Cached => catch_up(doc, &cached).map_or_else(
@@ -100,6 +103,9 @@ impl Pool {
                 }
                 Reply::Applied(Applied::Changed(_)) => {
                     drop(worker);
+                    // The worker may keep the state it started from, for
+                    // other documents at it.
+                    self.remember(key, slot);
                     let applied = engine::apply_trusted(doc, incoming, dependencies)?;
                     self.remember(Key::of(doc), slot);
                     return Ok(applied);
@@ -111,7 +117,12 @@ impl Pool {
     pub(crate) fn load(&self, bytes: &[u8]) -> Result<AutoCommit, Rejected> {
         let slot = self.any_slot();
         let mut worker = lock(self.slots.get(slot).ok_or(Rejected::Crashed)?);
-        match self.call(&mut worker, &Request::Load { incoming: bytes }, 0)? {
+        match self.call(
+            &mut worker,
+            &Request::Load { incoming: bytes },
+            0,
+            bytes.len(),
+        )? {
             Reply::Applied(_) => {
                 drop(worker);
                 let mut doc = engine::load(bytes)?;
@@ -124,7 +135,7 @@ impl Pool {
     }
 
     fn route(&self, key: &Key) -> usize {
-        let known = lock(&self.routes).get(key).copied();
+        let known = lock(&self.routes).get(key);
         known.unwrap_or_else(|| self.any_slot())
     }
 
@@ -137,44 +148,91 @@ impl Pool {
     }
 
     fn remember(&self, key: Key, slot: usize) {
-        let mut routes = lock(&self.routes);
-        // Each worker keeps at most `max_documents`; older routes only
-        // point at copies it has since dropped.
-        let bound = self
-            .limits
-            .max_documents
-            .saturating_mul(self.slots.len())
-            .saturating_mul(4);
-        if routes.len() >= bound {
-            routes.clear();
-        }
-        routes.insert(key, slot);
+        lock(&self.routes).insert(key, slot);
     }
 
+    /// Send `request` to the worker in `slot`, starting one if there is
+    /// none. A worker that had exited for being idle is replaced, and a
+    /// request it died waiting for is sent again to its replacement.
     fn call(
         &self,
         slot: &mut Option<Worker>,
         request: &Request<'_>,
         trusted_bytes: usize,
+        untrusted_bytes: usize,
     ) -> Result<Reply, Rejected> {
-        if slot.is_none() {
-            *slot = Some(Worker::spawn(&self.limits)?);
-        }
-        let worker = slot.as_mut().ok_or(Rejected::Crashed)?;
-        let mib = u32::try_from(trusted_bytes / (1024 * 1024)).unwrap_or(u32::MAX);
-        let deadline = self
-            .limits
-            .timeout
-            .saturating_add(REBUILD_PER_MIB.saturating_mul(mib));
-        match worker.call(request.encode(), deadline) {
-            Ok(reply) => Ok(reply),
-            Err(error) => {
-                if let Some(worker) = slot.take() {
-                    worker.kill();
+        let deadline = deadline(&self.limits, trusted_bytes, untrusted_bytes);
+        let mut frame = Some(request.encode());
+        let mut retried = false;
+        loop {
+            if slot.as_mut().is_some_and(Worker::exited) {
+                *slot = None;
+            }
+            if slot.is_none() {
+                *slot = Some(Worker::spawn(&self.limits)?);
+            }
+            let worker = slot.as_mut().ok_or(Rejected::Crashed)?;
+            let frame = frame.take().unwrap_or_else(|| request.encode());
+            match worker.call(frame, deadline) {
+                Ok(reply) => return Ok(reply),
+                Err(error) => {
+                    let idle = slot.take().is_some_and(Worker::kill_after_idle);
+                    if idle && !retried && error == Rejected::Crashed {
+                        retried = true;
+                        continue;
+                    }
+                    return Err(error);
                 }
-                Err(error)
             }
         }
+    }
+}
+
+/// How long a request may take: [`Limits::timeout`], plus time for a full
+/// save the worker rebuilds from and for the untrusted input it decodes.
+fn deadline(limits: &Limits, trusted_bytes: usize, untrusted_bytes: usize) -> Duration {
+    limits
+        .timeout
+        .saturating_add(REBUILD_PER_MIB.mul_f64(mib(trusted_bytes)))
+        .saturating_add(limits.timeout_per_mib.mul_f64(mib(untrusted_bytes)))
+}
+
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "a deadline needs no more precision than f64 gives"
+)]
+fn mib(bytes: usize) -> f64 {
+    bytes as f64 / (1024.0 * 1024.0)
+}
+
+/// Which worker last saw each document state, bounded by forgetting the
+/// least recently used states rather than all of them at once.
+#[derive(Default)]
+struct Routes {
+    slots: HashMap<Key, (usize, u64)>,
+    tick: u64,
+}
+
+impl Routes {
+    fn get(&mut self, key: &Key) -> Option<usize> {
+        self.tick = self.tick.saturating_add(1);
+        let tick = self.tick;
+        self.slots.get_mut(key).map(|(slot, used)| {
+            *used = tick;
+            *slot
+        })
+    }
+
+    fn insert(&mut self, key: Key, slot: usize) {
+        self.tick = self.tick.saturating_add(1);
+        if self.slots.len() >= ROUTES && !self.slots.contains_key(&key) {
+            let mut used: Vec<u64> = self.slots.values().map(|(_, used)| *used).collect();
+            let cut = used.len() / 4;
+            let (_, oldest, _) = used.select_nth_unstable(cut);
+            let oldest = *oldest;
+            self.slots.retain(|_, (_, used)| *used > oldest);
+        }
+        self.slots.insert(key, (slot, self.tick));
     }
 }
 
@@ -289,6 +347,20 @@ impl Worker {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+
+    /// Whether the process has exited, as an idle worker does.
+    fn exited(&mut self) -> bool {
+        !matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// Kill the worker if it still runs, and say whether it had instead
+    /// ended itself for being idle.
+    fn kill_after_idle(mut self) -> bool {
+        let _ = self.child.kill();
+        self.child
+            .wait()
+            .is_ok_and(|status| status.signal() == Some(libc::SIGALRM))
+    }
 }
 
 impl Drop for Worker {
@@ -309,7 +381,15 @@ fn command(limits: &Limits) -> Command {
     let mut command = Command::new("/proc/self/exe");
     command
         .args([worker::ARG, "--nocapture", "--test-threads=1", "--quiet"])
-        .env(worker::ENV, limits.max_documents.to_string())
+        .env(
+            worker::ENV,
+            worker::Config {
+                documents: limits.max_documents,
+                cache_bytes: limits.cache_bytes,
+                idle_seconds: limits.idle.as_secs().max(1),
+            }
+            .encode(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
@@ -436,8 +516,6 @@ fn spawner() -> &'static Spawner {
 
 #[cfg(test)]
 mod tests {
-    use std::os::unix::process::ExitStatusExt as _;
-
     use automerge::transaction::Transactable as _;
 
     use super::*;
@@ -507,6 +585,82 @@ mod tests {
         let pool = Pool::new(limits());
         let mut doc = AutoCommit::new();
         doc.put(automerge::ROOT, "after", 1).unwrap();
+        assert!(pool.load(&doc.save()).is_ok());
+    }
+
+    #[test]
+    fn the_deadline_grows_with_the_input() {
+        let limits = Limits::default();
+        let mib = 1024 * 1024;
+        assert_eq!(deadline(&limits, 0, 0), limits.timeout);
+        assert_eq!(
+            deadline(&limits, 0, 3 * mib),
+            limits.timeout + limits.timeout_per_mib * 3
+        );
+        assert_eq!(
+            deadline(&limits, 4 * mib, 0),
+            limits.timeout + REBUILD_PER_MIB * 4
+        );
+    }
+
+    #[test]
+    fn routes_forget_the_least_recently_used_states_not_all() {
+        let mut routes = Routes::default();
+        let key = |n: usize| Key::from_bytes(n.to_le_bytes().to_vec());
+        routes.insert(key(0), 1);
+        for n in 1..ROUTES {
+            routes.insert(key(n), 0);
+        }
+        // Touch the first state so it is the most recently used.
+        assert_eq!(routes.get(&key(0)), Some(1));
+        routes.insert(key(ROUTES), 0);
+        assert_eq!(routes.get(&key(0)), Some(1), "a live route was dropped");
+        assert_eq!(routes.get(&key(ROUTES)), Some(0));
+        assert!(routes.get(&key(1)).is_none(), "the oldest route was kept");
+        assert!(routes.slots.len() > ROUTES / 2);
+    }
+
+    #[test]
+    fn an_idle_worker_exits_and_the_next_request_starts_another() {
+        let pool = Pool::new(Limits {
+            idle: Duration::from_secs(1),
+            ..limits()
+        });
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "k", 1).unwrap();
+        doc.commit();
+        let mut first = pool.load(&doc.save()).unwrap();
+        let pid = lock(&pool.slots[0]).as_ref().unwrap().child.id();
+        std::thread::sleep(Duration::from_millis(1600));
+        assert!(
+            lock(&pool.slots[0]).as_mut().unwrap().exited(),
+            "worker {pid} did not exit"
+        );
+        let mut remote = first.fork();
+        remote.put(automerge::ROOT, "k", 2).unwrap();
+        remote.commit();
+        let change = remote.save_after(&doc.get_heads());
+        assert_eq!(
+            pool.apply(&mut doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+    }
+
+    #[test]
+    fn a_worker_that_died_idle_while_the_request_was_sent_is_replaced() {
+        let pool = Pool::new(limits());
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "k", 1).unwrap();
+        doc.commit();
+        pool.load(&doc.save()).unwrap();
+        let mut worker = lock(&pool.slots[0]).take().unwrap();
+        let pid = libc::pid_t::try_from(worker.child.id()).unwrap();
+        // SAFETY: signalling our own child.
+        unsafe { libc::kill(pid, libc::SIGALRM) };
+        while !worker.exited() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        *lock(&pool.slots[0]) = Some(worker);
         assert!(pool.load(&doc.save()).is_ok());
     }
 }

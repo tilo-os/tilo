@@ -14,6 +14,33 @@ use crate::{Limits, Rejected};
 const MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 /// Document, change, compressed change and bundle.
 const KNOWN_CHUNK_TYPES: std::ops::RangeInclusive<u8> = 0..=3;
+pub(crate) const CHANGE: u8 = 1;
+pub(crate) const COMPRESSED_CHANGE: u8 = 2;
+
+/// One framed chunk: its type and its bytes, header included.
+#[derive(Clone, Copy)]
+pub(crate) struct Chunk<'a> {
+    pub(crate) kind: u8,
+    pub(crate) bytes: &'a [u8],
+}
+
+/// The chunks of input that passed [`check`]. Stops at the first frame that
+/// does not parse.
+pub(crate) fn chunks(mut bytes: &[u8]) -> impl Iterator<Item = Chunk<'_>> {
+    std::iter::from_fn(move || {
+        let (_, after) = bytes.split_first_chunk::<8>()?;
+        let (kind, after) = after.split_first()?;
+        let (length, after) = uleb128(after).ok()?;
+        let body = usize::try_from(length).ok()?;
+        let header = bytes.len().checked_sub(after.len())?;
+        let (chunk, rest) = bytes.split_at_checked(header.checked_add(body)?)?;
+        bytes = rest;
+        Some(Chunk {
+            kind: *kind,
+            bytes: chunk,
+        })
+    })
+}
 
 /// Check the framing of `bytes` against `limits`.
 ///

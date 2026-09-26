@@ -310,6 +310,54 @@ fn a_large_document_is_admitted_by_a_confined_worker() {
     assert!(isolate.load(&doc.save()).is_ok());
 }
 
+/// A whole history of changes into a blank document, larger than the base
+/// deadline alone would allow on a slow machine, is admitted: the deadline
+/// grows with the input.
+#[test]
+fn a_long_history_into_a_blank_document_is_admitted() {
+    let mut source = AutoCommit::new().with_actor(ActorId::from(vec![0x33; 16]));
+    let text = source.put_object(ROOT, "content", ObjType::Text).unwrap();
+    source.commit();
+    for round in 0..400 {
+        let len = source.length(&text);
+        source
+            .splice_text(&text, len, 0, &format!("paragraph {round} ").repeat(12))
+            .unwrap();
+        source.commit();
+    }
+    let history: Vec<u8> = source
+        .get_changes(&[])
+        .iter()
+        .flat_map(|change| change.raw_bytes().to_vec())
+        .collect();
+    let isolate = Isolate::new(Limits::default());
+    let mut doc = AutoCommit::new().with_actor(ActorId::from(vec![0x44; 16]));
+    assert_eq!(
+        isolate.apply(&mut doc, &history, Dependencies::RequireComplete),
+        Ok(Applied::Changed(true))
+    );
+    assert_eq!(doc.get_heads(), source.get_heads());
+    // Applying into a blank document keeps the caller's actor.
+    assert_eq!(doc.get_actor(), &ActorId::from(vec![0x44; 16]));
+}
+
+/// Copies of one document each take a change; the worker serves them all.
+#[test]
+fn copies_of_one_document_are_each_admitted() {
+    let isolate = isolate();
+    let base = seeded_doc();
+    let mut copies: Vec<AutoCommit> = (0..6).map(|_| base.clone()).collect();
+    for (n, doc) in copies.iter_mut().enumerate() {
+        let change = remote_change(doc, &format!("copy{n}"));
+        assert_eq!(
+            isolate.apply(doc, &change, Dependencies::RequireComplete),
+            Ok(Applied::Changed(true))
+        );
+        assert!(doc.get(ROOT, format!("copy{n}")).unwrap().is_some());
+    }
+    still_admits(&isolate);
+}
+
 #[test]
 #[ignore = "timing, run by hand"]
 fn admission_latency() {
