@@ -21,6 +21,35 @@ pub enum DeliveryKind {
     Commit,
 }
 
+/// What a broker checks every document op of a channel against: whether
+/// plaintext is closed off, and the epoch of the latest membership change.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ChannelGate {
+    pub encryption_required: bool,
+    pub head_epoch: Option<u64>,
+}
+
+impl ChannelGate {
+    /// Refuse plaintext once encryption is required, ciphertext bound to
+    /// another channel, and content sealed under a content key older than
+    /// the latest membership change: a removed member still holds those
+    /// keys, so it must not inject content under them, and a lagging member
+    /// must catch up first (otherwise the removed member could read it).
+    pub fn accepts(
+        &self,
+        encryption: Option<&EncryptionMetadata>,
+        channel: collab_types::ChannelId,
+    ) -> bool {
+        if let Some(metadata) = encryption
+            && metadata.retention().is_some()
+            && self.head_epoch.is_some_and(|head| metadata.epoch < head)
+        {
+            return false;
+        }
+        !self.encryption_required || encryption.is_some_and(|metadata| metadata.channel == channel)
+    }
+}
+
 /// Outcome of [`GovernanceJournal::append_mirrored`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MirrorAppend {
@@ -146,14 +175,16 @@ impl GovernanceJournal {
         encryption: Option<&EncryptionMetadata>,
         channel: collab_types::ChannelId,
     ) -> bool {
-        if let Some(metadata) = encryption
-            && metadata.retention().is_some()
-            && self.head_epoch().is_some_and(|head| metadata.epoch < head)
-        {
-            return false;
+        self.gate().accepts(encryption, channel)
+    }
+
+    /// The journal's document ingress gate, as a value a broker can hold
+    /// without the journal.
+    pub fn gate(&self) -> ChannelGate {
+        ChannelGate {
+            encryption_required: self.state.encryption_required,
+            head_epoch: self.head_epoch(),
         }
-        !self.state.encryption_required
-            || encryption.is_some_and(|metadata| metadata.channel == channel)
     }
 
     /// Validate against the caller's live authoritative membership snapshot,
