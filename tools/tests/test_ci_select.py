@@ -129,6 +129,33 @@ class SelectorTests(unittest.TestCase):
         self.assertNotIn("base", ci_select.make_plan(
             self.metadata, self.root, ["leaf/src/main.rs"], 2)["tested"])
 
+    def test_scoped_readers_run_only_their_reading_tests(self):
+        manifest = ci_select.path_suites.parse(
+            '[[cargo]]\npackage = "base"\ninputs = ["leaf/*.rs", "os/usr/share/x.json"]\n'
+            'readers = ["base/tests/audit.rs"]\n'
+            'scope = { inputs = ["leaf/*.rs"], test = "it", filter = "test(/^audit::/)" }\n')
+        def plan(changes):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                       suite_manifest=manifest)
+        leaf = plan(["leaf/src/main.rs"])
+        # Still checked and linted, but not tested as a whole package.
+        self.assertIn("base", leaf["selected"])
+        self.assertNotIn("base", leaf["tested"])
+        self.assertEqual(leaf["scoped_tests"], {"base": "--test it -E 'test(/^audit::/)'"})
+        row = leaf["matrix"]["include"][0]
+        self.assertNotIn("base", row["test_packages"].split()[1::2])
+        self.assertEqual(json.loads(row["scoped_tests"]),
+                         [{"package": "base", "test": "it", "filter": "test(/^audit::/)"}])
+        # An unscoped input needs the whole suite, and then nothing is scoped.
+        whole = plan(["leaf/src/main.rs", "os/usr/share/x.json"])
+        self.assertIn("base", whole["tested"])
+        self.assertEqual(whole["scoped_tests"], {})
+        self.assertEqual(whole["matrix"]["include"][0]["scoped_tests"], "")
+        # A package tested anyway (here: changed itself) is not also scoped.
+        both = plan(["leaf/src/main.rs", "base/src/lib.rs"])
+        self.assertIn("base", both["tested"])
+        self.assertEqual(both["scoped_tests"], {})
+
     def test_a_read_input_is_never_treated_as_quality_only(self):
         (self.root / "DEVELOPMENT.md").write_text("")
         manifest = ci_select.path_suites.parse(
