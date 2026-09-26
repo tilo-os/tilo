@@ -863,6 +863,59 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
 }
 
 #[test]
+fn an_ai_step_never_reads_a_secret() {
+    let host = FakeHost::new();
+    let mut leak = shortcut(
+        "leak",
+        vec![Step::new(
+            "sum",
+            StepKind::Ai {
+                transform: AiTransform::Summarise,
+                input: Binding::Input("token".into()),
+            },
+        )],
+    );
+    leak.inputs = vec![ActionParam::required(
+        "token",
+        ParamType::Secret,
+        "An API token",
+    )];
+    leak.grant.push(PermissionProfileRule::grant(
+        Scope::App(AGENT_APP_ID.into()),
+        Verb::Write,
+    ));
+    let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            CheckErrorKind::Incompatible(reason) if reason.contains("secret")
+        )),
+        "{errors:?}"
+    );
+
+    // Refused at run time too, for a shortcut that was never checked.
+    let mut inputs = serde_json::Map::new();
+    inputs.insert("token".into(), json!("s3cret"));
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &leak,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs,
+        },
+    ));
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Binding { reason })) if reason.contains("secret")),
+        "{report:?}"
+    );
+    assert!(host.started().is_empty());
+}
+
+#[test]
 fn an_unattended_run_cannot_ask() {
     let host = FakeHost::new();
     let asking = shortcut(

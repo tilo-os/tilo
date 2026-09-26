@@ -62,6 +62,7 @@ pub mod providers;
 pub mod session;
 pub mod surface;
 pub mod tools;
+pub mod transform;
 pub mod wire;
 
 pub use session::{Config, Session};
