@@ -44,7 +44,7 @@ async fn started(
     let (outbound, mut network) = mpsc::channel(64);
     let (mut workers, mut documents) = AgentWorkers::start(directory, owner, outbound).unwrap();
     workers.set_transport_ready(true);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
@@ -94,7 +94,7 @@ fn drain(
         let (complete, outcome) = crate::agent_documents::apply_worker_document(
             &owner,
             pending,
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            std::time::Instant::now() + crate::agent_workers::tests::HARNESS_TURN,
         );
         outcome.unwrap();
         workers.committed().unwrap();
@@ -215,7 +215,7 @@ async fn enrolled_task_granted(
         .unwrap()
     };
     assert!(client.send(CollabRequest::SubscribeEnrolledTasks { request_id: 1 }));
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     while !broker.enrolled_recipient_ready(&channel) {
         workers.pump().unwrap();
         drain(workers, documents, network);
@@ -262,7 +262,7 @@ async fn enrolled_task_granted(
         EnrolledDispatchResult::Sent(_)
     ));
     let mut accepted = None;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         drain(workers, documents, network);
@@ -382,7 +382,7 @@ async fn drive(
             &owner,
         )
         .map_err(|e| format!("{e:?}"))?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         if let StepProgress::Settled { .. } = progress {
             return Ok(progress);
@@ -489,7 +489,7 @@ async fn handoff(crash_after_commit: bool, certified: bool) {
             argument: None,
         })
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     let reply = loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
@@ -620,7 +620,7 @@ async fn handoff(crash_after_commit: bool, certified: bool) {
                 message: "Done".into(),
             },
         }));
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
         'refused: loop {
             workers.pump().unwrap();
             drain(&mut workers, &mut documents, &mut network);
@@ -1180,7 +1180,7 @@ async fn writer_ops_stay_offered_after_content_and_restart() {
             argument: Some("The ocean is a vast, welcoming world.".into()),
         })
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     let reply = loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
@@ -1259,7 +1259,7 @@ async fn agent_participant_has_labelled_writer_presence() {
             argument: Some("The ocean is wide.".into()),
         })
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
@@ -1325,7 +1325,7 @@ async fn submit_step(
             argument: None,
         })
         .map_err(|e| format!("{e:?}"))?;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         drain(workers, documents, network);

@@ -62,12 +62,22 @@ fn splice(document: &mut ui::automerge::AutoCommit, text: &str) {
     document.commit();
 }
 
+/// Owner-turn budget of the harness's own document drains. Production keeps
+/// its fixed 5 s turn budget (a turn over it retires the signer, fail-closed,
+/// and has its own tests). These tests drive that turn themselves on a
+/// current-thread executor, often on a shared, fully loaded runner, where a
+/// full Store commit alone can exceed 5 s; they check behaviour, not latency.
+pub(crate) const HARNESS_TURN: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long a harness loop waits for workers, steps or replies to settle
+/// before failing, sized for the same loaded runners.
+pub(crate) const HARNESS_WAIT: std::time::Duration = std::time::Duration::from_secs(60);
+
 fn apply_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = crate::agent_documents::apply_worker_document(
         &owner,
         pending,
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
+        std::time::Instant::now() + HARNESS_TURN,
     );
     outcome.unwrap();
     // Opening Store here and in committed()/health() proves that the callback
@@ -93,7 +103,7 @@ async fn live_workers() -> (
         "transport has not registered"
     );
     workers.set_transport_ready(true);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -176,7 +186,7 @@ async fn certified_start(
         )
         .unwrap();
     let broker = workers.app_broker().unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     let mut replied = false;
     loop {
         // Admission is the broker thread's job. Leave worker pumping and any
@@ -268,7 +278,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
         .clone();
     let (broker, job) = start_table(&mut workers, &mut documents, &mut network).await;
     let invocation = broker.status(job.id).unwrap().invocation();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     let mut commits = 0;
     loop {
         workers.pump().unwrap();
@@ -529,7 +539,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
     let before = current_document(&workers.owner);
     let (broker, job) = start_table(&mut workers, &mut documents, &mut network).await;
     let invocation = broker.status(job.id).unwrap().invocation();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         if let Ok(pending) = documents.try_recv() {
@@ -812,7 +822,7 @@ async fn cloud_worker_publications_exclude_real_ordinary_surface_on_same_route()
             }],
         })
     );
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     let ordinary_peer = loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1046,7 +1056,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
         &chat_grant.action,
     )
     .await;
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     loop {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {
@@ -1304,7 +1314,7 @@ async fn registered_nonmutating_pump(
     network: &mut mpsc::Receiver<NeighbourMsg>,
     documents: &mut mpsc::Receiver<PendingHostDocument>,
 ) {
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     loop {
         workers
             .pump()
@@ -1587,7 +1597,7 @@ async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete(
         assert_eq!(workers.workers.len(), pass);
     }
     assert!(!workers.mounting());
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     while !workers.publications().unwrap().ready {
         workers.pump().unwrap();
         while let Ok(pending) = documents.try_recv() {

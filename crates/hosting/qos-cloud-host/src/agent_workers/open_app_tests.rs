@@ -32,7 +32,7 @@ async fn run_step(
             argument,
         })
         .unwrap();
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     let reply = loop {
         workers.pump().unwrap();
         drain(workers, documents, network);
@@ -216,7 +216,7 @@ async fn agent_opens_notes_then_creates_a_note_via_its_ops() {
 
     // The host mounts a Notes worker for the new record; its operations are
     // published like any app's.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     let (notes_peer, notebook) = loop {
         workers.pump().unwrap();
         drain(&mut workers, &mut documents, &mut network);
