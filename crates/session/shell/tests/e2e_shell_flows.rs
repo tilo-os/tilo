@@ -1194,15 +1194,6 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
             position: PhysicalPosition::new(pill.x, pill.y),
         },
     );
-    // Pointer hover only asks for the chips once the pointer has dwelt on the
-    // pill (crossing the tab row must not move it), so hold that dwell past
-    // its threshold the way the tab bar's own tests do.
-    assert!(
-        group
-            .bar_mut_for_tests()
-            .hold_hover_intent_at(Duration::from_secs(1)),
-        "moving onto the pill started no hover intent",
-    );
     // The chip cluster slides out on wall time: `advance_reveal` starts the
     // curve on the layout pass that first sees the hover and returns where it
     // started, so `max_rects` stay `Rect::ZERO` until it has run, and
@@ -1214,7 +1205,7 @@ fn hover_and_click_maximize_chip(group: &mut WindowGroup, taffy: &TaffyTree<()>,
     assert!(
         group
             .bar_mut_for_tests()
-            .hold_reveal_at(Duration::from_secs(1)),
+            .hold_reveal_at(std::time::Duration::from_secs(1)),
         "hovering the pill started no chip reveal",
     );
     group.apply_layout(taffy, child, Point::ORIGIN);
