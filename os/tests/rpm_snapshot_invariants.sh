@@ -65,15 +65,15 @@ for package in dbus-tools harfbuzz-icu libatomic wine wine-dxvk qemu-kvm libvirt
   libvirt-daemon-kvm libvirt-daemon-config-nwfilter swtpm swtpm-tools \
   edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
   genisoimage udftools; do
-  printf '%s\n' "$all_packages" | grep -Fxq "$package" \
+  grep -Fxq "$package" <<<"$all_packages" \
     && ok "$package is in the derived frozen package set" \
     || bad "$package is missing from the derived frozen package set"
 done
 
 arm_packages="$("$derive" --arch aarch64)"
-if printf '%s\n' "$arm_packages" | grep -Fxq edk2-aarch64 \
-  && ! printf '%s\n' "$arm_packages" | grep -Fxq edk2-ovmf \
-  && ! printf '%s\n' "$all_packages" | grep -Fxq edk2-aarch64; then
+if grep -Fxq edk2-aarch64 <<<"$arm_packages" \
+  && ! grep -Fxq edk2-ovmf <<<"$arm_packages" \
+  && ! grep -Fxq edk2-aarch64 <<<"$all_packages"; then
   ok 'each architecture selects its native Windows VM firmware'
 else
   bad 'Windows VM firmware package selection crosses architectures'

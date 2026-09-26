@@ -14971,6 +14971,7 @@ dependencies = [
  "libc",
  "serde",
  "serde_json",
+ "settings-store",
  "sha2 0.11.0",
  "tar",
  "tempfile",
