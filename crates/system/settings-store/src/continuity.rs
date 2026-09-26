@@ -63,6 +63,8 @@ policies! {
         "tilo.accessibility.visual_alerts",
         "tilo.accessibility.color_filter",
         "tilo.accessibility.magnifier_zoom",
+        "tilo.accessibility.magnifier_last_zoom",
+        "tilo.accessibility.magnifier_view",
         "tilo.accessibility.cursor_crosshair",
         "tilo.accessibility.thick_text_caret",
         "tilo.accessibility.switch_control",
