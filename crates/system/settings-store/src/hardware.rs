@@ -1002,6 +1002,41 @@ pub enum ShortcutAction {
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
     ReopenClosedTab,
+    /// Focus the Nth window group of the current strip (Super+1 … Super+9).
+    FocusGroup1,
+    FocusGroup2,
+    FocusGroup3,
+    FocusGroup4,
+    FocusGroup5,
+    FocusGroup6,
+    FocusGroup7,
+    FocusGroup8,
+    FocusGroup9,
+    OpenFiles,
+    OpenTerminal,
+    ClipboardHistory,
+    Notifications,
+    ToggleFullscreen,
+    ToggleMagnifier,
+    PowerMenu,
+}
+
+impl ShortcutAction {
+    /// The strip position a `FocusGroupN` action selects, counting from 0.
+    pub fn focus_group_index(self) -> Option<usize> {
+        Some(match self {
+            Self::FocusGroup1 => 0,
+            Self::FocusGroup2 => 1,
+            Self::FocusGroup3 => 2,
+            Self::FocusGroup4 => 3,
+            Self::FocusGroup5 => 4,
+            Self::FocusGroup6 => 5,
+            Self::FocusGroup7 => 6,
+            Self::FocusGroup8 => 7,
+            Self::FocusGroup9 => 8,
+            _ => return None,
+        })
+    }
 }
 
 /// Desktop-navigation preferences consumed directly by the shell.
@@ -1382,6 +1417,7 @@ impl KeyChord {
             "enter" => "Enter",
             "escape" => "Escape",
             "space" => "Space",
+            "delete" => "Delete",
             "f1" => "F1",
             other => other,
         };
@@ -1522,6 +1558,18 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn ctrl_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Ctrl".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn super_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
@@ -1555,6 +1603,28 @@ impl Default for ShortcutConfig {
             // Browsers' reopen-closed-tab chord, on the desktop's own
             // modifier; plain Super+T keeps adding a tab.
             (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            (ShortcutAction::FocusGroup1, super_chord("1")),
+            (ShortcutAction::FocusGroup2, super_chord("2")),
+            (ShortcutAction::FocusGroup3, super_chord("3")),
+            (ShortcutAction::FocusGroup4, super_chord("4")),
+            (ShortcutAction::FocusGroup5, super_chord("5")),
+            (ShortcutAction::FocusGroup6, super_chord("6")),
+            (ShortcutAction::FocusGroup7, super_chord("7")),
+            (ShortcutAction::FocusGroup8, super_chord("8")),
+            (ShortcutAction::FocusGroup9, super_chord("9")),
+            (ShortcutAction::OpenFiles, super_chord("e")),
+            (ShortcutAction::OpenTerminal, ctrl_alt_chord("t")),
+            (ShortcutAction::ClipboardHistory, super_chord("v")),
+            // Super+N already opens an app as an adjacent window, so the
+            // notification list takes Windows' other Action Center key.
+            (ShortcutAction::Notifications, super_chord("a")),
+            (ShortcutAction::ToggleFullscreen, super_chord("f")),
+            // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus)
+            // — the second is already the resize-wider default.
+            (ShortcutAction::ToggleMagnifier, super_alt_chord("8")),
+            // The session action sheet: the chord every PC user tries when
+            // something has hung.
+            (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
         ]
         .into_iter()
         .collect();
@@ -2056,6 +2126,39 @@ mod tests {
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
     }
+
+    #[test]
+    fn standard_desktop_chords_have_their_conventional_defaults() {
+        let cfg = ShortcutConfig::default();
+        let shown = |action| cfg.bindings[&action].display();
+        for (n, action) in [
+            ShortcutAction::FocusGroup1,
+            ShortcutAction::FocusGroup2,
+            ShortcutAction::FocusGroup3,
+            ShortcutAction::FocusGroup4,
+            ShortcutAction::FocusGroup5,
+            ShortcutAction::FocusGroup6,
+            ShortcutAction::FocusGroup7,
+            ShortcutAction::FocusGroup8,
+            ShortcutAction::FocusGroup9,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(shown(action), format!("Super+{}", n + 1));
+            assert_eq!(action.focus_group_index(), Some(n));
+        }
+        assert_eq!(shown(ShortcutAction::OpenFiles), "Super+e");
+        assert_eq!(shown(ShortcutAction::OpenTerminal), "Ctrl+Alt+t");
+        assert_eq!(shown(ShortcutAction::ClipboardHistory), "Super+v");
+        assert_eq!(shown(ShortcutAction::Notifications), "Super+a");
+        assert_eq!(shown(ShortcutAction::ToggleFullscreen), "Super+f");
+        assert_eq!(shown(ShortcutAction::ToggleMagnifier), "Super+Alt+8");
+        assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
+        assert!(cfg.validate().is_ok(), "no two defaults share a chord");
+    }
+
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
         let mut cfg = ShortcutConfig::default();
@@ -2206,7 +2309,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 22);
+        assert_eq!(cfg.bindings.len(), 38);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

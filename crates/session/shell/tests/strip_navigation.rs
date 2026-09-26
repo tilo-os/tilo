@@ -1021,3 +1021,100 @@ fn f1_toggles_the_desktop_guide() {
     h.key(Key::Named(NamedKey::F1), ModifiersState::empty());
     assert!(!h.chrome.borrow().overlays.shortcut_help);
 }
+
+/// Super+N focuses the Nth window group of the current strip, on the tab it
+/// last showed; a number past the end of the strip changes nothing.
+#[test]
+fn super_number_jumps_to_that_window_in_the_strip() {
+    let mut h = Harness::new();
+    h.key(Key::Character("3".into()), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(h.active_window(), (h.groups[2], h.tabs[2][0]));
+
+    h.key(Key::Character("1".into()), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(h.active_window(), (h.groups[0], h.tabs[0][0]));
+
+    h.key(Key::Character("9".into()), ModifiersState::SUPER);
+    h.tick();
+    assert_eq!(
+        h.active_window(),
+        (h.groups[0], h.tabs[0][0]),
+        "the strip has {GROUPS} windows; Super+9 must not move focus"
+    );
+}
+
+#[test]
+fn super_v_and_super_a_open_clipboard_history_and_notifications() {
+    let mut h = Harness::new();
+    h.key(Key::Character("v".into()), ModifiersState::SUPER);
+    {
+        let st = h.chrome.borrow();
+        assert!(st.overlays.quick_settings);
+        assert!(matches!(
+            st.quick_settings.current_level(),
+            shell::shell::quick_settings::QsLevel::Clipboard
+        ));
+    }
+    // Quick Settings is modal and owns every key while open.
+    h.chrome.borrow_mut().overlays.quick_settings = false;
+    h.key(Key::Character("a".into()), ModifiersState::SUPER);
+    let st = h.chrome.borrow();
+    assert!(st.overlays.quick_settings);
+    assert!(matches!(
+        st.quick_settings.current_level(),
+        shell::shell::quick_settings::QsLevel::Notifications
+    ));
+}
+
+#[test]
+fn super_f_asks_the_compositor_to_toggle_full_screen() {
+    let mut h = Harness::new();
+    assert!(!h.chrome.borrow_mut().take_fullscreen_toggle_request());
+    h.key(Key::Character("f".into()), ModifiersState::SUPER);
+    assert!(h.chrome.borrow_mut().take_fullscreen_toggle_request());
+    assert!(
+        !h.chrome.borrow_mut().take_fullscreen_toggle_request(),
+        "one press, one toggle"
+    );
+}
+
+#[test]
+fn ctrl_alt_delete_opens_the_power_menu() {
+    let mut h = Harness::new();
+    assert!(h.host.power_menu_semantic_rects().is_empty());
+    h.key(
+        Key::Named(NamedKey::Delete),
+        ModifiersState::CONTROL | ModifiersState::ALT,
+    );
+    assert!(
+        !h.host.power_menu_semantic_rects().is_empty(),
+        "the session action sheet is open"
+    );
+}
+
+#[test]
+fn ctrl_alt_t_opens_a_terminal() {
+    let mut h = Harness::new();
+    let terminals = |h: &Harness| -> usize {
+        h.chrome
+            .borrow()
+            .tree()
+            .desktop
+            .active_workspace()
+            .map_or(0, |ws| {
+                ws.strips
+                    .iter()
+                    .flat_map(|s| &s.window_groups)
+                    .flat_map(|g| &g.tabs)
+                    .filter(|t| t.title == "Terminal")
+                    .count()
+            })
+    };
+    assert_eq!(terminals(&h), 0);
+    h.key(
+        Key::Character("t".into()),
+        ModifiersState::CONTROL | ModifiersState::ALT,
+    );
+    assert_eq!(terminals(&h), 1, "one press opens one terminal");
+}
