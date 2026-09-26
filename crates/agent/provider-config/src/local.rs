@@ -250,11 +250,21 @@ fn accelerator_memory(hardware: &HardwareSnapshot, runtime: RuntimeKind) -> u64 
 /// Determine the best runtime without probing hardware from an unprivileged
 /// agent process. `CUDA` and `ROCm` are selected only when both the driver stack
 /// and sufficient VRAM are confirmed; CPU is used otherwise.
+/// Smallest accelerator class, in GiB, a GPU runtime is selected for.
+const MIN_ACCELERATOR_GIB: u64 = 8;
+
+/// The memory class a card is sold as. Drivers report total VRAM minus what
+/// the firmware reserves, so an 8 GiB card reads as e.g. 8188 MiB; a raw
+/// `>= 8192` comparison would turn every such card away.
+fn accelerator_class_gib(vram_mib: u64) -> u64 {
+    vram_mib.saturating_add(512) / 1024
+}
+
 pub fn select_runtime(hardware: &HardwareSnapshot) -> RuntimeDecision {
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if *vram_mib >= 8192 && !driver.trim().is_empty())) {
+    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Nvidia { vram_mib, driver } if accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB && !driver.trim().is_empty())) {
         return RuntimeDecision::Ready(RuntimeKind::NvidiaCuda);
     }
-    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Amd { vram_mib, rocm: Some(version) } if *vram_mib >= 8192 && !version.trim().is_empty())) {
+    if hardware.accelerators.iter().any(|accelerator| matches!(accelerator, Accelerator::Amd { vram_mib, rocm: Some(version) } if accelerator_class_gib(*vram_mib) >= MIN_ACCELERATOR_GIB && !version.trim().is_empty())) {
         return RuntimeDecision::Ready(RuntimeKind::AmdRocm);
     }
     if hardware.memory_mib >= 8192 && hardware.cpu_threads >= 4 {
@@ -619,6 +629,25 @@ mod tests {
         );
         assert_eq!(
             select_runtime(&cpu()),
+            RuntimeDecision::Ready(RuntimeKind::Cpu)
+        );
+    }
+
+    #[test]
+    fn an_eight_gib_card_reporting_firmware_reserved_memory_still_selects_cuda() {
+        let card = |vram_mib| HardwareSnapshot {
+            accelerators: vec![Accelerator::Nvidia {
+                vram_mib,
+                driver: "580".into(),
+            }],
+            ..cpu()
+        };
+        assert_eq!(
+            select_runtime(&card(8188)),
+            RuntimeDecision::Ready(RuntimeKind::NvidiaCuda)
+        );
+        assert_eq!(
+            select_runtime(&card(6144)),
             RuntimeDecision::Ready(RuntimeKind::Cpu)
         );
     }
