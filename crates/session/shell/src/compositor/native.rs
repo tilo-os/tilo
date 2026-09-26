@@ -11767,7 +11767,8 @@ fn apply_shell_gesture(
 }
 
 /// Resolve an xdg fullscreen request to one live backend output and paint it
-/// above the normal tiled scene.  The requested `wl_output` wins; if it was
+/// above the normal tiled scene.  A compositor pin (the presenter view beside
+/// an audience surface) wins, then the requested `wl_output`; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
 /// The full-screen chord: the focused Wayland client enters or leaves
@@ -11811,10 +11812,12 @@ fn reconcile_fullscreen_overlay(
         frame.set_fullscreen_surface(None);
         return;
     };
-    let requested_id = target
-        .requested_output
-        .as_ref()
-        .and_then(|output| globals.id_for_resource(output));
+    let requested_id = target.pinned_output.or_else(|| {
+        target
+            .requested_output
+            .as_ref()
+            .and_then(|output| globals.id_for_resource(output))
+    });
     let current_rect = frame.foreign_surface_rect(target.surface_id);
     let centre = current_rect.map(|rect| rect.center());
     let output = select_fullscreen_output(requested_id, centre, outputs);
@@ -11825,7 +11828,9 @@ fn reconcile_fullscreen_overlay(
     // Logical, like every other configure: a 2x output's fullscreen client
     // is asked for half its pixels and renders them at scale 2.
     let size = size_to_signed(output.logical_size());
-    if target.configured_size != Some(size) {
+    // A compositor-placed presenter view is sized through its pinned
+    // placement by the ordinary configure pass, never told it is fullscreen.
+    if target.pinned_output.is_none() && target.configured_size != Some(size) {
         target.surface.with_pending_state(|pending| {
             pending.states.set(
                 smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,

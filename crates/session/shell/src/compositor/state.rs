@@ -122,32 +122,33 @@ fn is_output_presentation_app_id(app_id: &str) -> bool {
 
 /// `.audience` is not a privilege a random client can claim. The matching
 /// presenter must already be a live, ordinary toplevel from the *same*
-/// Wayland connection, with the exact base app-id.
-fn output_presentation_owner_is_live(
+/// Wayland connection, with the exact base app-id. Returns that presenter.
+fn output_presentation_owner(
     tree: &WorkspaceTree,
     audience_surface: SurfaceId,
     audience_app_id: &str,
-) -> bool {
-    let Some(base) = audience_app_id.strip_suffix(OUTPUT_PRESENTATION_APP_ID_SUFFIX) else {
-        return false;
-    };
+) -> Option<SurfaceId> {
+    let base = audience_app_id.strip_suffix(OUTPUT_PRESENTATION_APP_ID_SUFFIX)?;
     let client = audience_surface >> 32;
-    tree.desktop.workspaces.iter().any(|workspace| {
-        workspace.strips.iter().any(|strip| {
-            strip.window_groups.iter().any(|group| {
-                group.tabs.iter().any(|tab| {
-                    matches!(
-                        &tab.tile,
-                        crate::shell::state::TileContent::Foreign { surface_id, app_id }
-                            if *surface_id != audience_surface
-                                && (*surface_id >> 32) == client
-                                && app_id == base
-                    )
-                })
-            })
+    tree.desktop
+        .workspaces
+        .iter()
+        .flat_map(|workspace| workspace.strips.iter())
+        .flat_map(|strip| strip.window_groups.iter())
+        .flat_map(|group| group.tabs.iter())
+        .find_map(|tab| match &tab.tile {
+            crate::shell::state::TileContent::Foreign { surface_id, app_id }
+                if *surface_id != audience_surface
+                    && (*surface_id >> 32) == client
+                    && app_id == base =>
+            {
+                Some(*surface_id)
+            }
+            _ => None,
         })
-    })
 }
+
+mod presenter_screen;
 
 /// A foreign surface painted directly into one physical output rather than
 /// through the workspace tree.  This is intentionally transient: removing a
@@ -248,6 +249,11 @@ pub(crate) struct FullscreenTarget {
     pub requested_output: Option<WlOutput>,
     pub surface: ToplevelSurface,
     pub configured_size: Option<(i32, i32)>,
+    /// Set when the compositor, not the client, put this surface on one
+    /// output: the presenter view beside an audience surface. It outranks
+    /// `requested_output`, and the client is sized to the output without
+    /// being told it is fullscreen, so its own fullscreen intent stays its own.
+    pub pinned_output: Option<crate::compositor::backend::OutputId>,
 }
 
 #[derive(Debug, Clone)]
@@ -570,6 +576,12 @@ pub struct State {
     /// asks a client for, in the same units as a tiled configure.
     output_sizes: HashMap<crate::compositor::backend::OutputId, (i32, i32)>,
     output_rects: HashMap<crate::compositor::backend::OutputId, Rect>,
+    /// The backend's output table as last mirrored, identities included —
+    /// what the presentation placement ranks screens by.
+    output_table: Vec<crate::compositor::backend::Output>,
+    /// The presenter view moved onto its own screen while an audience
+    /// surface holds another; see [`presenter_screen`].
+    presenter_pin: Option<presenter_screen::PresenterPin>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
     pub surface_scales: HashMap<u64, f64>,
     /// **Transient fullscreen surface** — the window group id of the
@@ -1018,6 +1030,8 @@ impl State {
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
             output_rects: HashMap::new(),
+            output_table: Vec::new(),
+            presenter_pin: None,
             surface_scales: HashMap::new(),
             fullscreen_group: None,
             fullscreen_output: None,
@@ -1255,6 +1269,7 @@ impl State {
     /// Called at startup and on every hotplug. Dropping the per-surface
     /// scale cache alongside it is deliberate: the layout the cached values were derived from is gone, so keeping them would hand clients the scale of a monitor that moved.
     pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
+        self.output_table = outputs.to_vec();
         // Logical, like every surface position it is looked up with.
         self.output_layout = outputs
             .iter()
@@ -1290,6 +1305,7 @@ impl State {
                 .map(|output| output.id);
         }
         self.rehome_output_presentation_surfaces(outputs);
+        self.reconcile_presenter_pin();
     }
 
     fn output_rect(
@@ -1332,14 +1348,14 @@ impl State {
         surface_id: SurfaceId,
         app_id: String,
     ) -> bool {
-        let owner_is_live = {
+        let owner = {
             let tree = self.workspace_tree.read();
-            output_presentation_owner_is_live(&tree, surface_id, &app_id)
+            output_presentation_owner(&tree, surface_id, &app_id)
         };
-        if !owner_is_live {
+        let Some(owner) = owner else {
             tracing::warn!(surface_id, %app_id, "rejected unpaired audience presentation surface");
             return false;
-        }
+        };
         if self
             .output_presentation_surfaces
             .iter()
@@ -1351,8 +1367,12 @@ impl State {
             .pending_presentation_outputs
             .remove(&surface_id)
             .flatten();
+        // A client that named no output (winit sets the app-id before it
+        // can request fullscreen) gets the screen the app would have picked;
+        // one screen is simply that screen.
         let output = requested
             .filter(|id| self.output_sizes.contains_key(id))
+            .or_else(|| self.audience_fallback_output(owner))
             .or_else(|| self.output_sizes.keys().min_by_key(|id| id.0).copied());
         let Some(output) = output else {
             // Keep the ordinary tab when there is no output yet;
@@ -1379,6 +1399,7 @@ impl State {
                 output,
                 rect,
             });
+        self.reconcile_presenter_pin();
         true
     }
 
@@ -1438,7 +1459,11 @@ impl State {
         if self.output_presentation_focus == Some(surface_id) {
             self.output_presentation_focus = None;
         }
-        before != self.output_presentation_surfaces.len()
+        let removed = before != self.output_presentation_surfaces.len();
+        if removed {
+            self.reconcile_presenter_pin();
+        }
+        removed
     }
 
     pub(crate) fn focused_output_presentation_surface(&self) -> Option<SurfaceId> {
@@ -4148,6 +4173,13 @@ impl XdgShellHandler for State {
             self.osk_surface = None;
         }
         let _ = self.remove_output_presentation_surface(surface_id);
+        if self
+            .presenter_pin
+            .as_ref()
+            .is_some_and(|pin| pin.presenter == surface_id)
+        {
+            self.release_presenter_pin();
+        }
         if let Some(index) = self
             .floating_toplevels
             .iter()
@@ -4419,7 +4451,15 @@ impl XdgShellHandler for State {
                     crate::compositor::foreign::store().note_placement(surface_id, rect);
                 }
             }
+            // The audience may just have named a different screen than the
+            // one it was given on promotion; the presenter view follows.
+            self.reconcile_presenter_pin();
         } else {
+            // A client's own fullscreen request takes the slot; the presenter
+            // placement it displaces is not restored over it.
+            if self.presenter_pin.is_some() {
+                self.release_presenter_pin();
+            }
             self.pending_presentation_outputs
                 .insert(surface_id, requested);
             self.fullscreen_group = {
@@ -4432,6 +4472,7 @@ impl XdgShellHandler for State {
                 requested_output: wl_output.clone(),
                 surface: surface.clone(),
                 configured_size: None,
+                pinned_output: None,
             });
         }
         let (w, h) = if presentation {
@@ -4462,6 +4503,19 @@ impl XdgShellHandler for State {
         let surface_id = crate::compositor::state::surface_id(surface.wl_surface());
         if self.is_output_presentation_surface(surface_id) {
             let _ = self.remove_output_presentation_surface(surface_id);
+        }
+        // An app that just opened its audience surface drops its own
+        // single-screen fullscreen next; the presenter view stays on the
+        // screen it was moved to, sized to that screen.
+        if let Some(size) = self.pinned_presenter_size(surface_id) {
+            surface.with_pending_state(|state| {
+                state.states.unset(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                );
+                state.size = Some(size.into());
+            });
+            surface.send_configure();
+            return;
         }
         // Only clear if THIS surface was the fullscreen one — a stale request from a background toplevel must not steal another's.
         let fullscreen_group_matches = {
@@ -5254,21 +5308,18 @@ mod tick_hook_tests {
                 (9_u64 << 32) | 1,
                 Some("so.tilo.slides".into()),
             );
-            assert!(output_presentation_owner_is_live(
-                &tree,
-                (9_u64 << 32) | 2,
-                "so.tilo.slides.audience"
-            ));
-            assert!(!output_presentation_owner_is_live(
-                &tree,
-                (10_u64 << 32) | 2,
-                "so.tilo.slides.audience"
-            ));
-            assert!(!output_presentation_owner_is_live(
-                &tree,
-                (9_u64 << 32) | 2,
-                "so.tilo.evil.audience"
-            ));
+            assert_eq!(
+                output_presentation_owner(&tree, (9_u64 << 32) | 2, "so.tilo.slides.audience"),
+                Some((9_u64 << 32) | 1)
+            );
+            assert!(
+                output_presentation_owner(&tree, (10_u64 << 32) | 2, "so.tilo.slides.audience")
+                    .is_none()
+            );
+            assert!(
+                output_presentation_owner(&tree, (9_u64 << 32) | 2, "so.tilo.evil.audience")
+                    .is_none()
+            );
         }
         // Phase `audience_surface_hides_when_its_distinct_output_is_unplugged`.
         {
