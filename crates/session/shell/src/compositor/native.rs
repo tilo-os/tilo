@@ -5795,6 +5795,9 @@ pub fn run() {
     );
     // Locked edge, so the controller resets exactly when the lock engages (no stale password/error carried over).
     let mut prev_locked = false;
+    // Other devices' focus changes arrive over the network at human pace;
+    // copying the feed into chrome a few times a second is plenty.
+    let mut continuity_feed_polled: Option<Instant> = None;
     // Set by PrepareForSleep and cleared only after the compositor's lock
     // frame has retired from the presenter (or DPMS is already off).
     let mut sleep_lock_frame_pending = false;
@@ -7037,6 +7040,14 @@ pub fn run() {
             );
             st.pump_dbus_notifications();
         });
+        if let Some(network) = peer_sync.as_ref()
+            && continuity_feed_polled
+                .is_none_or(|polled| polled.elapsed() >= Duration::from_millis(500))
+        {
+            continuity_feed_polled = Some(Instant::now());
+            let feed = network.continuity_feed();
+            frame_builder.with_chrome(|st| st.set_continuity_feed(feed));
+        }
 
         // Client fullscreen is a per-output overlay, never a combined-scene
         // layout collapse.  Keep the chrome state's legacy group promotion

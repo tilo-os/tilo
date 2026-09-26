@@ -18,7 +18,9 @@ pub mod tray_items;
 
 pub use actions::ActionsProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
-pub use continuity::{CallContinuityActionsProvider, DeviceContinuityActionsProvider};
+pub use continuity::{
+    CallContinuityActionsProvider, ContinueFromDeviceProvider, DeviceContinuityActionsProvider,
+};
 pub use desktop_windows::DesktopWindowsProvider;
 pub use editor::EditorProvider;
 pub use files::FilesProvider;
