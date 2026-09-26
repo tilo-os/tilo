@@ -62,7 +62,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.sandbox.example/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+      image: code.sandbox.example/qos/ci-control@sha256:904ecdefc18847410a4d449ce186ad5b62a0d864053ee2ff93769f8f591c8071
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -90,7 +90,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.sandbox.example/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -208,7 +208,7 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.sandbox.example/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -242,7 +242,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.sandbox.example/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -602,7 +602,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.sandbox.example/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.sandbox.example/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
