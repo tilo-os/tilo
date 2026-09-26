@@ -328,6 +328,9 @@ suites = [
 ]
 
 # Cargo packages whose code reads repository files outside their directory.
+# A change to an input tests the whole package, unless every changed input is
+# listed in the entry's optional `scope`: then only the scope's `filter`
+# (a nextest filterset) within its `test` target runs for that package.
 
 [[cargo]]
 package = "tilo-ui"
@@ -343,6 +346,14 @@ readers = [
   "crates/sdk/ui-core/tests/design_token_audit.rs",
   "crates/sdk/ui-core/tests/spacing_token_audit.rs",
 ]
+# App, shell and framework sources are read only by the two audits in the
+# `it` target. A change confined to them runs those audits, not the whole
+# toolkit suite; the vendored quit request is compiled into the library, so a
+# change there still runs everything.
+scope = { inputs = [
+  "apps/*.rs", "apps/*/tilo-app.toml", "crates/session/shell/src/*.rs",
+  "crates/sdk/tilo-app/src/framework/app.rs",
+], test = "it", filter = "test(/^design_token_audit::/) | test(/^spacing_token_audit::/)" }
 
 [[cargo]]
 package = "tilo-app-package"
