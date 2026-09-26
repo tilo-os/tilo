@@ -44,6 +44,11 @@ openmls_traits = "0.6"
 # the wire as TLS-serialised opaque blobs.
 
 thiserror.workspace = true
+# Device keys sign access requests and acknowledgements, and the steward's
+# device key signs governance frames.
+ed25519-dalek.workspace = true
+# Deterministic steward transaction ids.
+sha2.workspace = true
 serde.workspace = true
 postcard.workspace = true
 zeroize.workspace = true
