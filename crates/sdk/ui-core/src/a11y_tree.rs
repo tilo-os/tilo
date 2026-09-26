@@ -228,6 +228,8 @@ pub struct SemanticTree {
     prompted: PromptedMap,
     bound_actions: HashMap<(SemanticId, String), crate::bound_dispatch::BoundActionTarget>,
     duplicate_ids: Vec<SemanticId>,
+    /// Toolkit-owned overlays open this frame, each named by its owner's id.
+    overlays: Vec<crate::view::OpenOverlay>,
 }
 
 impl Default for SemanticTree {
@@ -263,6 +265,7 @@ impl SemanticTree {
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
+            overlays: Vec::new(),
         }
     }
 
@@ -348,6 +351,7 @@ impl SemanticTree {
             prompted: HashMap::new(),
             bound_actions: HashMap::new(),
             duplicate_ids: Vec::new(),
+            overlays: Vec::new(),
             ptr_to_taffy: &ptr_to_taffy,
             focused,
         };
@@ -395,6 +399,7 @@ impl SemanticTree {
         self.prompted = builder.prompted;
         self.bound_actions = builder.bound_actions;
         self.duplicate_ids = builder.duplicate_ids;
+        self.overlays = builder.overlays;
         delta
     }
 
@@ -420,6 +425,13 @@ impl SemanticTree {
 
     pub fn root(&self) -> &SemanticId {
         &self.root
+    }
+
+    /// The overlays open as of the last refresh, in reading order. An
+    /// overlay is named by the node of the widget that owns it; a
+    /// presentational widget (no node of its own) cannot own one.
+    pub fn open_overlays(&self) -> &[crate::view::OpenOverlay] {
+        &self.overlays
     }
 
     pub fn node(&self, id: &SemanticId) -> Option<&SemanticNode> {
@@ -731,6 +743,7 @@ struct Build<'a, const BOUND: bool> {
     ptr_to_taffy: &'a HashMap<*const (), TaffyNodeId>,
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
+    overlays: Vec<crate::view::OpenOverlay>,
 }
 
 impl<const BOUND: bool> Build<'_, BOUND> {
@@ -768,6 +781,12 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                     let parent = parent_children.last().unwrap_or(&root);
                     SemanticId::synthetic(parent, parent_children.len())
                 };
+                if let Some(state) = w.open_overlay() {
+                    self.overlays.push(crate::view::OpenOverlay {
+                        owner: id.as_str().to_string(),
+                        state,
+                    });
+                }
 
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();

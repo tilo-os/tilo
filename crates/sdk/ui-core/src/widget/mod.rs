@@ -1487,6 +1487,21 @@ pub trait Widget {
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
+    /// The toolkit-owned overlay this widget has open: a menu, popover,
+    /// dialog or toast stack it owns. The App collects it into
+    /// [`View::overlays`](crate::view::View::overlays) under this widget's
+    /// semantic id, so a thawed app, a follower and a replay can re-open it.
+    /// Unlike [`view_state`](Self::view_state) this is asked of every widget
+    /// in the tree; containers need not forward it.
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        None
+    }
+
+    /// Re-open this widget's overlay from a View (`Some`), or close it
+    /// (`None`). A state this widget cannot show (another kind, or a toast
+    /// whose text was not carried) is ignored.
+    fn restore_overlay(&mut self, _state: Option<&crate::view::OverlayState>) {}
+
     /// Theme/high-contrast/reduced-motion/scale, polled under
     /// [`crate::app::App::appearance_reconcile`] — how a settings pane
     /// re-themes the running app live without a back-channel.

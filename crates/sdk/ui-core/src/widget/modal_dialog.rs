@@ -489,6 +489,18 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + 'static> Widget for ModalDialog<C> {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        self.open.then_some(crate::view::OverlayState::Dialog)
+    }
+
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        match state {
+            None => self.set_open(false),
+            Some(crate::view::OverlayState::Dialog) => self.set_open(true),
+            Some(_) => {}
+        }
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.content.set_platform_conventions(conventions);

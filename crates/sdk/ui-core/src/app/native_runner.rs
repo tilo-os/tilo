@@ -1552,7 +1552,7 @@ impl AppHandler {
         // geometry. Reuse that exact focus/selection outline for semantic
         // action presence; this decorates the target without changing local
         // focus, selection, active tab, or scroll position.
-        let visible_interactions = app.presence_ctx.visible_interactions(interaction_now);
+        let visible_interactions = app.presence_ctx.rendered_interactions(interaction_now);
         if !visible_interactions.is_empty() {
             app.refresh_semantic_tree();
         }

@@ -2313,6 +2313,7 @@ mod own_identity_tests {
                 height: 10.0,
             },
             view_mode: None,
+            overlays: Vec::new(),
         };
         assert_eq!(
             ctx.apply_remote_presence(

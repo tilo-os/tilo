@@ -307,6 +307,7 @@ impl App {
         if !self.collaboration.manager.is_connected() && self.presence.broadcast_sink.is_none() {
             return;
         }
+        self.refresh_overlay_identity();
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let subset = crate::view::ViewSubset::from_view(&view);
         if self.presence.last_view.as_ref() == Some(&subset) {
@@ -352,6 +353,10 @@ impl App {
                 scroll: view.scroll.clone(),
                 view_mode: view.view_mode,
             });
+        // A follower sees what the followed participant sees, including the
+        // menu or dialog they have open; a replay is this same path. Toasts
+        // arrive without their text and so never replace the follower's own.
+        self.restore_overlays(&view.overlays);
         self.layout.layout_dirty = true;
         self.needs_sync = true;
     }
@@ -761,6 +766,20 @@ impl App {
     /// waiting for it. Answers nobody asked for are dropped.
     fn apply_remote_action_answer(&mut self, message: tilo_actions::remote::RemoteActionMessage) {
         use tilo_actions::remote::{ReceiptStatus, RemoteActionMessage};
+        match &message {
+            RemoteActionMessage::Receipt(receipt) => self.advance_human_interaction(
+                receipt.invocation,
+                tilo_actions::InteractionPhase::from_receipt(&receipt.status),
+            ),
+            RemoteActionMessage::Update {
+                invocation,
+                state: Some(state),
+            } => self.advance_human_interaction(
+                *invocation,
+                tilo_actions::InteractionPhase::from_update(&state.update),
+            ),
+            _ => {}
+        }
         let (reply, result) = match message {
             RemoteActionMessage::Receipt(receipt) => {
                 let invocation = receipt.invocation;

@@ -528,6 +528,66 @@ impl ContextMenu {
         self.open
     }
 
+    /// This menu as View overlay state: where it opened and which row is
+    /// highlighted. Owners that embed a menu rather than parenting it report
+    /// this from their own [`Widget::open_overlay`].
+    pub fn overlay_state(&self) -> crate::view::OverlayState {
+        let anchor = match (self.bounds, self.position) {
+            (Some((anchor, _)), _) => crate::view::OverlayAnchor::Rect {
+                x0: anchor.x0,
+                y0: anchor.y0,
+                x1: anchor.x1,
+                y1: anchor.y1,
+            },
+            (None, Some([x, y])) => crate::view::OverlayAnchor::Point {
+                x: f64::from(x),
+                y: f64::from(y),
+            },
+            (None, None) => crate::view::OverlayAnchor::Owner,
+        };
+        crate::view::OverlayState::Menu {
+            anchor,
+            highlighted: self.hovered,
+        }
+    }
+
+    /// Re-open at a captured [`overlay_state`](Self::overlay_state), or close.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "menu anchors are surface coordinates, well inside f32 range"
+    )]
+    pub fn restore_overlay_state(&mut self, state: Option<&crate::view::OverlayState>) {
+        let Some(crate::view::OverlayState::Menu {
+            anchor,
+            highlighted,
+        }) = state
+        else {
+            if state.is_none() {
+                self.close();
+            }
+            return;
+        };
+        match *anchor {
+            crate::view::OverlayAnchor::Point { x, y } => self.open_at([x as f32, y as f32]),
+            crate::view::OverlayAnchor::Rect { x0, y0, x1, y1 } => {
+                let anchor = Rect::new(x0, y0, x1, y1);
+                let viewport = self
+                    .viewport
+                    .or(self.bounds.map(|(_, viewport)| viewport))
+                    .unwrap_or_else(|| anchor.union(Rect::new(0.0, 0.0, 1.0e6, 1.0e6)));
+                self.open_anchored(anchor, viewport);
+            }
+            crate::view::OverlayAnchor::Owner => {
+                self.open_at(
+                    self.position
+                        .unwrap_or([self.rect.x0 as f32, self.rect.y0 as f32]),
+                );
+            }
+        }
+        self.hovered =
+            highlighted.filter(|&index| self.items.get(index).is_some_and(MenuItem::is_enabled));
+    }
+
     /// Preserved across `close()` so callers can re-open at the same spot.
     /// `None` before the menu has ever been opened.
     pub fn position(&self) -> Option<[f32; 2]> {
@@ -705,6 +765,14 @@ fn label_inset(theme: &Theme) -> f64 {
 }
 
 impl Widget for ContextMenu {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        self.open.then(|| self.overlay_state())
+    }
+
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        self.restore_overlay_state(state);
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(

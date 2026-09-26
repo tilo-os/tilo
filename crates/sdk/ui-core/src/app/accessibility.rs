@@ -457,10 +457,7 @@ impl App {
                     && let Some(text) = self.presence_ctx.interaction_announcement(&interaction)
                     && let Some(reader) = self.accessibility.screen_reader.as_mut()
                 {
-                    let assertive = matches!(
-                        interaction.phase,
-                        tilo_actions::InteractionPhase::Failed { .. }
-                    );
+                    let assertive = interaction.phase.is_unsuccessful();
                     reader.announce(
                         text,
                         if assertive {

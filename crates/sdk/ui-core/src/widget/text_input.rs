@@ -3870,6 +3870,34 @@ impl Drop for TextInput {
 }
 
 impl Widget for TextInput {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        self.context_menu
+            .is_open()
+            .then(|| self.context_menu.overlay_state())
+    }
+
+    /// The edit menu is rebuilt for the text under its anchor, exactly as a
+    /// right-click there builds it, then placed at the captured anchor.
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "menu anchors are surface coordinates, well inside f32 range"
+    )]
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        match state {
+            None => self.context_menu.close(),
+            Some(menu @ crate::view::OverlayState::Menu { anchor, .. }) => {
+                let at = match *anchor {
+                    crate::view::OverlayAnchor::Point { x, y } => [x as f32, y as f32],
+                    crate::view::OverlayAnchor::Rect { x0, y1, .. } => [x0 as f32, y1 as f32],
+                    crate::view::OverlayAnchor::Owner => [self.rect.x0 as f32, self.rect.y1 as f32],
+                };
+                self.open_context_menu(at);
+                self.context_menu.restore_overlay_state(Some(menu));
+            }
+            Some(_) => {}
+        }
+    }
+
     fn set_interaction_environment(
         &mut self,
         environment: crate::interaction::InteractionEnvironment,

@@ -2968,6 +2968,79 @@ mod action_palette_tests {
     }
 }
 
+impl App {
+    /// Bring overlay identity in the semantic tree up to date before a View
+    /// is captured for publication. The walk runs only while an overlay is
+    /// open, or was open at the last refresh (so its closing is seen).
+    pub(super) fn refresh_overlay_identity(&mut self) {
+        if crate::view::any_overlay_open_bound(self.root_widget.as_ref())
+            || !self.accessibility.semantic_tree.open_overlays().is_empty()
+        {
+            self.refresh_semantic_tree();
+        }
+    }
+
+    /// Make the open overlays exactly `overlays`: re-open each by its owner's
+    /// semantic id and close any other that is open. An owner this frame does
+    /// not have is skipped: its overlay cannot be shown here.
+    fn restore_overlays(&mut self, overlays: &[crate::view::OpenOverlay]) {
+        if overlays.is_empty() && !crate::view::any_overlay_open_bound(self.root_widget.as_ref()) {
+            return;
+        }
+        self.refresh_semantic_tree();
+        let stale = self
+            .accessibility
+            .semantic_tree
+            .open_overlays()
+            .iter()
+            .filter(|open| !overlays.iter().any(|wanted| wanted.owner == open.owner))
+            .map(|open| open.owner.clone())
+            .collect::<Vec<_>>();
+        for owner in stale {
+            self.restore_overlay_at(&owner, None);
+        }
+        for overlay in overlays {
+            self.restore_overlay_at(&overlay.owner, Some(&overlay.state));
+        }
+    }
+
+    /// The retained widget behind a semantic node of the last refresh,
+    /// resolved through the same exported aliases every semantic dispatch
+    /// uses; an alias that is no longer admitted resolves to nothing.
+    fn semantic_node_widget(&mut self, id: &crate::a11y_tree::SemanticId) -> Option<NodeId> {
+        let raw = self
+            .accessibility
+            .semantic_tree
+            .node(id)
+            .and_then(|node| node.widget_taffy_id)?;
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        let target = accesskit::NodeId(raw.saturating_add(1));
+        match self
+            .with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+            .ok()
+            .flatten()
+        {
+            Some(crate::accesskit_bridge::A11yTarget::Widget(node)) => Some(node),
+            _ => None,
+        }
+    }
+
+    fn restore_overlay_at(&mut self, owner: &str, state: Option<&crate::view::OverlayState>) {
+        let Some(node) =
+            self.semantic_node_widget(&crate::a11y_tree::SemanticId(owner.to_string()))
+        else {
+            return;
+        };
+        if self
+            .mutate_node(node, |widget| widget.restore_overlay(state))
+            .is_ok()
+        {
+            self.layout.layout_dirty = true;
+            self.needs_sync = true;
+        }
+    }
+}
+
 // See `crate::view` for the (de)serialize-as-a-whole design this implements.
 impl crate::view::FreezeThaw for App {
     /// `AutoCommit::save` takes `&mut self` to flush its open transaction;
@@ -2986,6 +3059,10 @@ impl crate::view::FreezeThaw for App {
         Ok(())
     }
 
+    /// Overlays are named by the retained semantic tree as of its last
+    /// refresh. The frame pump refreshes it before every capture it
+    /// publishes ([`App::refresh_overlay_identity`]); a caller capturing
+    /// outside the pump refreshes it first.
     fn capture_view(&self) -> crate::view::View {
         let _entry = self.enter_wake_scope();
         let ordinal = self
@@ -3008,7 +3085,12 @@ impl crate::view::FreezeThaw for App {
                 height: f64::from(s.height),
             })
             .unwrap_or_default();
-        crate::view::capture_widget_view_bound(&*self.root_widget, focus, viewport)
+        crate::view::capture_widget_view_bound(
+            &*self.root_widget,
+            focus,
+            viewport,
+            self.accessibility.semantic_tree.open_overlays().to_vec(),
+        )
     }
 
     /// `open_resource` is carried for presence/reboot to reopen the record;
@@ -3016,6 +3098,7 @@ impl crate::view::FreezeThaw for App {
     fn restore_view(&mut self, view: &crate::view::View) {
         let _entry = self.enter_wake_scope();
         crate::view::restore_widget_view_bound(&mut *self.root_widget, view);
+        self.restore_overlays(&view.overlays);
 
         if let Some(f) = &view.focus
             && let Some(&id) = self.focusable_order.get(f.ordinal)
@@ -3282,6 +3365,7 @@ mod view_presence_tests {
             open_resource: Some("file:/home/alice/private.txt".into()),
             viewport: crate::view::ViewRect::default(),
             view_mode: Some("grid".into()),
+            overlays: Vec::new(),
         });
         let bytes = postcard::to_stdvec(&portable).unwrap();
         assert!(!bytes.windows(5).any(|window| window == b"/home"));
@@ -3306,6 +3390,7 @@ mod view_presence_tests {
                 height: 720.0,
             },
             view_mode: Some("reader".into()),
+            overlays: Vec::new(),
         };
         let metadata = compose_structural_continuation_metadata(
             view,
@@ -3337,6 +3422,7 @@ mod view_presence_tests {
                 open_resource: None,
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("grid".into()),
+                overlays: Vec::new(),
             },
             Some(crate::collaboration::ContinuationMetadata {
                 schema_version: 1,
@@ -3364,6 +3450,7 @@ mod view_presence_tests {
                 open_resource: None,
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("list".into()),
+                overlays: Vec::new(),
             },
             Some(crate::collaboration::ContinuationMetadata {
                 schema_version: 1,
@@ -3385,6 +3472,7 @@ mod view_presence_tests {
                 open_resource: None,
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some("list".into()),
+                overlays: Vec::new(),
             },
             None,
         )
@@ -3485,6 +3573,7 @@ mod view_presence_tests {
                 open_resource: None,
                 viewport: crate::view::ViewRect::default(),
                 view_mode: Some(mode.into()),
+                overlays: Vec::new(),
             };
             app.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
                 user_id: peer.into(),
@@ -3552,6 +3641,101 @@ mod view_presence_tests {
             app.followed_peer(),
             Some("ghost"),
             "the follow intent is still latched"
+        );
+    }
+
+    /// The overlays a participant has open ride their View frame without the
+    /// toast's text, and a follower reflects them: the dialog and the menu
+    /// open and close with the followed participant, while the follower's own
+    /// notifications are never replaced by someone else's.
+    #[test]
+    fn open_overlays_ride_view_presence_and_a_follower_reflects_them() {
+        use crate::view::{OverlayState, ToastView};
+        fn overlays(app: &mut App) -> Vec<crate::view::OpenOverlay> {
+            app.refresh_semantic_tree();
+            <App as FreezeThaw>::capture_view(app).overlays
+        }
+        let mut sender = App::new(State::new(), crate::view::overlay_test_root(true, None));
+        sender.init_layout();
+        let captured: Arc<Mutex<Vec<(PresenceKey, PresencePayload)>>> =
+            Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&captured);
+        sender.set_presence_broadcast_sink(move |k, p| {
+            sink.lock().unwrap().push((k.clone(), p.clone()));
+        });
+        sender.broadcast_view_presence();
+        let (key, _) = captured
+            .lock()
+            .unwrap()
+            .last()
+            .cloned()
+            .expect("a View frame");
+        let sent = key.as_view().expect("the frame carries the View subset");
+        assert_eq!(sent.overlays.len(), 3, "{:?}", sent.overlays);
+        assert!(
+            sent.overlays.iter().all(|overlay| match &overlay.state {
+                OverlayState::Toasts { toasts } => toasts.iter().all(|toast| toast.text.is_none()),
+                _ => true,
+            }),
+            "toast text is content and never rides presence"
+        );
+
+        let mut follower = App::new(
+            State::new(),
+            crate::view::overlay_test_root(false, Some("Saved")),
+        );
+        follower.init_layout();
+        let own = overlays(&mut follower);
+        follower.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+            user_id: "alice".into(),
+            key: key.clone(),
+            payload: PresencePayload::Arrived,
+        });
+        assert_eq!(
+            follower
+                .presence_ctx()
+                .peer_view(&crate::permissions::UserId("alice".into()))
+                .map(|view| view.overlays.len()),
+            Some(3),
+            "every participant can see what alice has open"
+        );
+        assert_eq!(
+            overlays(&mut follower),
+            own,
+            "seeing a peer's overlays does not open them locally"
+        );
+
+        follower.follow("alice");
+        let mirrored = overlays(&mut follower);
+        assert_eq!(
+            mirrored[..2],
+            sent.overlays[..2],
+            "alice's menu and dialog are open"
+        );
+        assert_eq!(
+            mirrored[2].state,
+            OverlayState::Toasts {
+                toasts: vec![ToastView {
+                    severity: crate::view::ToastSeverity::Success,
+                    text: Some("Saved".into()),
+                }],
+            },
+            "the follower keeps its own notification"
+        );
+
+        let closed = crate::view::ViewSubset {
+            overlays: Vec::new(),
+            ..sent
+        };
+        follower.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
+            user_id: "alice".into(),
+            key: PresenceKey::view(&closed),
+            payload: PresencePayload::Arrived,
+        });
+        assert_eq!(
+            overlays(&mut follower),
+            own,
+            "alice closing her menu and dialog closes them for the follower"
         );
     }
 }
@@ -4181,6 +4365,117 @@ mod semantic_tree_app_tests {
             "the recursive lazy action should resolve: {result:?}"
         );
         assert_eq!(counter(&app), 1);
+    }
+
+    fn capture_interactions(
+        app: &mut App,
+    ) -> std::sync::Arc<std::sync::Mutex<Vec<(PresenceKey, tilo_actions::SemanticInteraction)>>>
+    {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink = std::sync::Arc::clone(&captured);
+        app.set_presence_broadcast_sink(move |key, payload| {
+            if let crate::collaboration::PresencePayload::Interaction(update) = payload {
+                sink.lock().unwrap().push((key.clone(), (**update).clone()));
+            }
+        });
+        captured
+    }
+
+    /// A person pressing a bound control publishes the same `Interaction`
+    /// lifecycle an agent's broker invocation does, under the resource key
+    /// that selects the app surface, as a `Person`.
+    #[test]
+    fn a_persons_control_activation_publishes_its_interaction_lifecycle() {
+        let mut app = app();
+        let sent = capture_interactions(&mut app);
+        activate_bound_button(&mut app);
+        assert_eq!(app.dispatch_control_invocations(), 1);
+        assert_eq!(counter(&app), 1);
+
+        let sent = sent.lock().unwrap().clone();
+        let phases = sent
+            .iter()
+            .map(|(_, update)| update.phase.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            phases,
+            [
+                tilo_actions::InteractionPhase::Applying,
+                tilo_actions::InteractionPhase::Committed
+            ]
+        );
+        let (key, first) = &sent[0];
+        assert!(
+            sent.iter()
+                .all(|(_, update)| update.invocation == first.invocation)
+        );
+        assert!(
+            sent.windows(2)
+                .all(|pair| pair[0].1.sequence < pair[1].1.sequence)
+        );
+        assert_eq!(first.actor.kind, tilo_actions::InteractionActorKind::Person);
+        assert_eq!(first.action.id, "bump");
+        assert_eq!(first.action.label, "Bump");
+        assert_eq!(first.resource.id, "test.counter");
+        assert!(matches!(
+            key,
+            PresenceKey::Resource { id, kind, .. }
+                if *id == first.resource.id && *kind == first.resource.kind
+        ));
+        for (_, update) in &sent {
+            update
+                .validate()
+                .expect("every published phase is a valid update");
+        }
+    }
+
+    /// A press on a disabled control runs nothing and leaves no document
+    /// trace; it is still published, as a refusal with its reason.
+    #[test]
+    fn a_press_on_a_disabled_control_publishes_its_refusal() {
+        let pressed = std::rc::Rc::new(std::cell::Cell::new(false));
+        let ran = std::rc::Rc::clone(&pressed);
+        let button = Button::new("send", "Send", None)
+            .on_effect(move || ran.set(true))
+            .with_enabled(false);
+        let mut app = App::new_with_controlled_inputs(
+            State::new(),
+            Box::new(crate::widget::Column::new().push(Box::new(button))),
+        );
+        app.init_layout();
+        app.layout.layout_dirty = true;
+        let root = app.layout.root_node.unwrap();
+        run_layout_pass(&mut app, root, 400, 300, 1.0, false, None).unwrap();
+        let sent = capture_interactions(&mut app);
+        app.refresh_semantic_tree();
+        let target = app
+            .semantic_tree()
+            .iter()
+            .find(|node| node.role == crate::a11y::Role::Button)
+            .and_then(|node| node.bounds)
+            .expect("the button is laid out")
+            .center();
+
+        app.dispatch_semantic_click(target.x, target.y);
+        app.dispatch_control_invocations();
+
+        assert!(!pressed.get(), "a disabled control never runs");
+        let sent = sent.lock().unwrap().clone();
+        assert_eq!(sent.len(), 1, "{sent:?}");
+        let (_, refused) = &sent[0];
+        assert_eq!(
+            refused.actor.kind,
+            tilo_actions::InteractionActorKind::Person
+        );
+        assert_eq!(refused.resource.id, "tilo.control:send");
+        assert!(matches!(
+            &refused.phase,
+            tilo_actions::InteractionPhase::Rejected {
+                reason: tilo_actions::InteractionRejection::Unavailable,
+                message: Some(_),
+            }
+        ));
+        refused.validate().expect("a refusal is a valid update");
     }
 
     #[test]

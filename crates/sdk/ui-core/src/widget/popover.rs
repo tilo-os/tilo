@@ -323,6 +323,41 @@ impl Popover {
 }
 
 impl Widget for Popover {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        self.open.then(|| crate::view::OverlayState::Menu {
+            anchor: crate::view::OverlayAnchor::Rect {
+                x0: self.anchor.x0,
+                y0: self.anchor.y0,
+                x1: self.anchor.x1,
+                y1: self.anchor.y1,
+            },
+            highlighted: Some(self.highlighted),
+        })
+    }
+
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        match state {
+            None => self.close(),
+            Some(crate::view::OverlayState::Menu {
+                anchor,
+                highlighted,
+            }) => {
+                let anchor = match *anchor {
+                    crate::view::OverlayAnchor::Rect { x0, y0, x1, y1 } => {
+                        Rect::new(x0, y0, x1, y1)
+                    }
+                    crate::view::OverlayAnchor::Point { x, y } => Rect::new(x, y, x, y),
+                    crate::view::OverlayAnchor::Owner => self.anchor,
+                };
+                self.open_at(anchor, self.selected);
+                if let Some(row) = highlighted.filter(|&row| row < self.items.len()) {
+                    self.highlighted = row;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(

@@ -2273,10 +2273,12 @@ impl App {
             serde_json::Value::Object(intent.arguments.clone())
         );
         let actor = self.collaboration.local_author.0.clone();
-        let result = self.invoke_bound_target(
-            target,
-            &ResourceInvocation::new(&target.address.address, &actor).argument(Some(&argument)),
-        );
+        let result = self.observe_human_activation(&target.address.address, |app| {
+            app.invoke_bound_target(
+                target,
+                &ResourceInvocation::new(&target.address.address, &actor).argument(Some(&argument)),
+            )
+        });
         if let Err(error) = crate::bound_dispatch::notify_control_invocation_result(
             self.root_widget.as_mut(),
             target,
@@ -2339,10 +2341,11 @@ impl App {
                     action = %intent.address.action,
                     "action-bound control is unavailable to the local actor"
                 );
-                self.root_widget.on_control_invocation_result(
-                    &intent.address,
-                    &Err(tilo_actions::DoorError::Unknown(intent.address.clone())),
-                );
+                let refused = self.observe_human_activation(&intent.address, |_| {
+                    Err(tilo_actions::DoorError::Unknown(intent.address.clone()))
+                });
+                self.root_widget
+                    .on_control_invocation_result(&intent.address, &refused);
                 continue;
             };
             if !matches!(
@@ -2372,9 +2375,11 @@ impl App {
                 serde_json::Value::Object(intent.arguments.clone())
             );
             let actor = self.collaboration.local_author.0.clone();
-            let result = self.invoke_resource_action(
-                ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
-            );
+            let result = self.observe_human_activation(&intent.address, |app| {
+                app.invoke_resource_action(
+                    ResourceInvocation::new(&intent.address, &actor).argument(Some(&json)),
+                )
+            });
             self.root_widget
                 .on_control_invocation_result(&intent.address, &result);
             match result {
@@ -2546,6 +2551,18 @@ impl App {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.local_invocations.remove(&invocation);
             }
+            self.advance_human_interaction(
+                invocation,
+                if invalid_identity {
+                    tilo_actions::InteractionPhase::Failed {
+                        code: Some("tilo.invalid_lifecycle_update".into()),
+                        message: "operation handler returned an update for another invocation"
+                            .into(),
+                    }
+                } else {
+                    tilo_actions::InteractionPhase::from_update(&update)
+                },
+            );
             if (update.is_terminal() || invalid_identity)
                 && kind == tilo_actions::OperationKind::Effect
             {

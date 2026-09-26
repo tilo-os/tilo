@@ -62,6 +62,9 @@ pub(super) struct InputRuntime {
     pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
     pub(super) tooltip_host: crate::widget::TooltipHost,
+    /// Where the pointer last was, in widget coordinates: a press carries no
+    /// position of its own.
+    pub(super) last_pointer: Option<vello::kurbo::Point>,
 }
 
 impl InputRuntime {
@@ -73,6 +76,7 @@ impl InputRuntime {
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
             tooltip_host: crate::widget::TooltipHost::new(),
+            last_pointer: None,
         }
     }
 }
@@ -126,6 +130,10 @@ pub(super) struct ActionRuntime {
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
     /// `None` means this process exhausted the complete request-id namespace.
     pub(super) next_broker_request_id: Option<u64>,
+    /// A person's control activations still waiting for their terminal
+    /// `Interaction` phase, keyed by the invocation that will report it.
+    pub(super) human_interactions:
+        std::collections::HashMap<tilo_actions::InvocationId, tilo_actions::SemanticInteraction>,
 }
 
 /// Which answer from the session action host a request is waiting for.
@@ -167,6 +175,7 @@ impl ActionRuntime {
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
+            human_interactions: std::collections::HashMap::new(),
         }
     }
 }

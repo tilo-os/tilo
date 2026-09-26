@@ -124,6 +124,7 @@ impl App {
             *handled = true;
             return true;
         }
+        self.observe_press_on_disabled_control(event, scale);
         if self.history_controls_event(event, scale) {
             *handled |= self.dispatch_framework_history_event(event, scale);
             return *handled;

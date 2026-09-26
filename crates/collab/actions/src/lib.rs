@@ -120,9 +120,9 @@ pub use executor::{
 };
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionActor, InteractionActorKind,
-    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionTextRange,
-    InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS, MAX_DETAIL_BYTES, MAX_ID_BYTES,
-    MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
+    InteractionAnchor, InteractionGridRange, InteractionPhase, InteractionRejection,
+    InteractionTextRange, InteractionUpdate, InteractionViolation, MAX_ANCHOR_ITEMS,
+    MAX_DETAIL_BYTES, MAX_ID_BYTES, MAX_INTERACTION_BYTES, MAX_LABEL_BYTES, SemanticInteraction,
 };
 pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{

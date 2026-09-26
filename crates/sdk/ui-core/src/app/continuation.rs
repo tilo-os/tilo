@@ -10,13 +10,18 @@ pub const STRUCTURAL_CONTINUATION_SCHEMA: u16 = u16::MAX - 1;
 /// strings and `RecordId::for_file` values: both may contain local paths or
 /// app secrets. File navigation is restored by the shell's typed
 /// `FileRecordId` launch intent; this fallback carries presentation only.
+/// Open overlays travel in their broadcast form, so toast text never does.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct PortableContinuationView {
     scroll: Vec<f64>,
     focus_ordinal: Option<usize>,
     viewport: crate::view::ViewRect,
     view_mode: Option<String>,
+    overlays: Vec<crate::view::OpenOverlay>,
 }
+
+/// More open overlays than this is not a presentation worth resuming.
+const MAX_PORTABLE_OVERLAYS: usize = 16;
 
 impl PortableContinuationView {
     fn capture(view: crate::view::View) -> Self {
@@ -33,11 +38,18 @@ impl PortableContinuationView {
                     .bytes()
                     .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         });
+        let overlays = view
+            .overlays
+            .iter()
+            .take(MAX_PORTABLE_OVERLAYS)
+            .map(crate::view::OpenOverlay::for_broadcast)
+            .collect();
         Self {
             scroll,
             focus_ordinal: view.focus.map(|focus| focus.ordinal),
             viewport: view.viewport,
             view_mode,
+            overlays,
         }
     }
 
@@ -53,11 +65,14 @@ impl PortableContinuationView {
             open_resource: None,
             viewport: self.viewport,
             view_mode: self.view_mode,
+            overlays: self.overlays,
         }
     }
 
     fn valid(&self) -> bool {
-        self.scroll.len() <= 32
+        self.overlays.len() <= MAX_PORTABLE_OVERLAYS
+            && self.into_view_for_validation().validate().is_ok()
+            && self.scroll.len() <= 32
             && self.scroll.iter().all(|value| value.is_finite())
             && [
                 self.viewport.x,
@@ -74,6 +89,12 @@ impl PortableContinuationView {
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
             })
+    }
+}
+
+impl PortableContinuationView {
+    fn into_view_for_validation(&self) -> crate::view::View {
+        self.clone().into_view()
     }
 }
 
@@ -235,6 +256,7 @@ impl App {
         let semantic = self.root_widget.continuable().and_then(|continuable| {
             continuable.continuation_metadata(&self.state.doc, &self.state.root)
         });
+        self.refresh_overlay_identity();
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
         let metadata = compose_structural_continuation_metadata(view, semantic);
         if metadata == self.continuation.last_published {

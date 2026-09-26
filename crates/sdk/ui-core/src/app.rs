@@ -55,6 +55,7 @@ use runtime::{
 };
 include!("app/continuation.rs");
 include!("app/actions.rs");
+include!("app/interaction_presence.rs");
 include!("app/accessibility.rs");
 include!("app/collaboration.rs");
 include!("app/persistence.rs");

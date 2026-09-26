@@ -84,10 +84,12 @@ freeze/thaw have them too:
   and a thawed app lost them. The View now carries the open overlays by
   semantic id.
 - **Attempts that changed nothing.** A control invoked through normal input
-  now publishes the same `Interaction` lifecycle as a broker invocation, with a
-  `Human` actor. A click that was rejected, or that failed validation, is
-  therefore visible to a follower and kept by the recorder, even though it left
-  no document change.
+  now publishes the same `Interaction` lifecycle as a broker invocation,
+  attributed by the broker to the `Person` who pressed it. A click that was
+  rejected (permission denied, disabled, invalid input, no change) or that
+  failed is therefore visible to a follower and kept by the recorder, even
+  though it left no document change. Peers draw a person's attempt only when
+  it did not happen; the rest of the lifecycle is known but not painted.
 
 The result is a `session` record in the user's own room. It holds the
 starting snapshot, the op log, the presence timeline, the inspect keyframes

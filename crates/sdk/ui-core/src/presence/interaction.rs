@@ -146,7 +146,7 @@ impl PresenceCtx {
         let mut entries = self
             .interactions
             .values()
-            .filter(|entry| entry.visible_at(now) && entry.interaction.resource.id == resource_id)
+            .filter(|entry| entry.rendered_at(now) && entry.interaction.resource.id == resource_id)
             .collect::<Vec<_>>();
         sort_entries(&mut entries);
         entries
@@ -156,10 +156,28 @@ impl PresenceCtx {
     }
 
     /// All currently visible interactions in deterministic display order.
-    /// The host uses this read-only view to resolve generic semantic-control
-    /// anchors against the current accessibility tree before falling back to
-    /// the activity rail.
+    ///
+    /// Everything within its dwell, including a person's attempts that
+    /// surface renderers leave undrawn (see [`interaction_is_rendered`]): the
+    /// People roster, a follower and a recorder see the whole lifecycle.
     pub fn visible_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
+        let mut entries = self
+            .interactions
+            .values()
+            .filter(|entry| entry.visible_at(now))
+            .collect::<Vec<_>>();
+        sort_entries(&mut entries);
+        entries
+            .into_iter()
+            .map(|entry| entry.interaction.clone())
+            .collect()
+    }
+
+    /// The interactions an app surface draws, as outlines on their resolved
+    /// controls or as activity-rail cards. The host uses this to resolve
+    /// generic semantic-control anchors against the current accessibility
+    /// tree before falling back to the activity rail.
+    pub fn rendered_interactions(&self, now: Instant) -> Vec<SemanticInteraction> {
         self.visible_entries(now)
             .into_iter()
             .map(|entry| entry.interaction.clone())
@@ -185,14 +203,16 @@ impl PresenceCtx {
     pub fn has_visible_interactions(&self, now: Instant) -> bool {
         self.interactions
             .values()
-            .any(|entry| entry.visible_at(now))
+            .any(|entry| entry.rendered_at(now))
     }
 
     /// Concise live-region copy for a semantic action phase. `Locating` is
     /// intentionally silent: it is often immediately followed by `Applying`,
     /// and narrating both turns a fast action into accessibility chatter.
     pub fn interaction_announcement(&self, interaction: &SemanticInteraction) -> Option<String> {
-        if matches!(interaction.phase, InteractionPhase::Locating) {
+        if matches!(interaction.phase, InteractionPhase::Locating)
+            || !interaction_is_rendered(interaction)
+        {
             return None;
         }
         let user = UserId(interaction.actor.id.clone());
@@ -209,6 +229,10 @@ impl PresenceCtx {
             InteractionPhase::Cancelled {
                 message: Some(message),
             } => format!("Cancelled: {message}"),
+            InteractionPhase::Rejected {
+                message: Some(message),
+                ..
+            } => format!("Refused: {message}"),
             phase => phase_label(phase),
         };
         Some(format!(
@@ -255,7 +279,7 @@ impl PresenceCtx {
                 additional: if index + 1 == visible {
                     self.interactions
                         .values()
-                        .filter(|candidate| candidate.visible_at(now))
+                        .filter(|candidate| candidate.rendered_at(now))
                         .count()
                         .saturating_sub(visible)
                 } else {
@@ -346,7 +370,7 @@ impl PresenceCtx {
         let mut entries = self
             .interactions
             .values()
-            .filter(|entry| entry.visible_at(now))
+            .filter(|entry| entry.rendered_at(now))
             .collect::<Vec<_>>();
         sort_entries(&mut entries);
         entries
@@ -437,7 +461,33 @@ impl PresenceCtx {
     }
 }
 
+/// Which interactions a peer's renderer draws: cards, control outlines and
+/// live-region announcements all read this one rule.
+///
+/// An agent has no pointer, so every phase of its work is drawn. A person
+/// does: co-present peers already watch their pointer and see the result
+/// land in the document, so a card for every click would only be noise. A
+/// person's attempt is therefore drawn only once it ends without doing what
+/// was asked (failed or rejected), which is the one outcome nothing else on
+/// screen shows. Every phase is still stored and returned by
+/// [`PresenceCtx::visible_interactions`], so the roster, a follower and a
+/// recorder keep the whole lifecycle.
+fn interaction_is_rendered(interaction: &SemanticInteraction) -> bool {
+    match interaction.actor.kind {
+        InteractionActorKind::Agent => true,
+        InteractionActorKind::Person => interaction.phase.is_unsuccessful(),
+    }
+}
+
 impl InteractionPresenceEntry {
+    fn is_rendered(&self) -> bool {
+        interaction_is_rendered(&self.interaction)
+    }
+
+    fn rendered_at(&self, now: Instant) -> bool {
+        self.visible_at(now) && self.is_rendered()
+    }
+
     fn visible_at(&self, now: Instant) -> bool {
         let age = now.saturating_duration_since(self.received_at);
         if self.interaction.phase.is_terminal() {
@@ -465,7 +515,9 @@ fn sort_entries(entries: &mut [&InteractionPresenceEntry]) {
 
 const fn phase_priority(phase: &InteractionPhase) -> u8 {
     match phase {
-        InteractionPhase::Waiting { .. } | InteractionPhase::Failed { .. } => 3,
+        InteractionPhase::Waiting { .. }
+        | InteractionPhase::Failed { .. }
+        | InteractionPhase::Rejected { .. } => 3,
         InteractionPhase::Applying | InteractionPhase::Progress { .. } => 2,
         InteractionPhase::Locating => 1,
         InteractionPhase::Committed | InteractionPhase::Cancelled { .. } => 0,
@@ -490,6 +542,7 @@ fn phase_label(phase: &InteractionPhase) -> String {
         InteractionPhase::Committed => "Committed".into(),
         InteractionPhase::Failed { .. } => "Failed".into(),
         InteractionPhase::Cancelled { .. } => "Cancelled".into(),
+        InteractionPhase::Rejected { .. } => "Refused".into(),
     }
 }
 
@@ -497,7 +550,9 @@ fn phase_color(phase: &InteractionPhase, theme: &Theme, actor: Color) -> Color {
     match phase {
         InteractionPhase::Waiting { .. } => theme.tokens.colors.semantic.warning,
         InteractionPhase::Committed => theme.tokens.colors.semantic.success,
-        InteractionPhase::Failed { .. } => theme.tokens.colors.semantic.danger,
+        InteractionPhase::Failed { .. } | InteractionPhase::Rejected { .. } => {
+            theme.tokens.colors.semantic.danger
+        }
         InteractionPhase::Cancelled { .. } => theme.tokens.colors.text_dim,
         InteractionPhase::Locating
         | InteractionPhase::Applying
@@ -742,6 +797,56 @@ mod tests {
         writer.set_surface_id("org.tilo.Writer");
         writer.apply_remote_presence("broker-agent".into(), key, payload);
         assert!(writer.has_visible_interactions(crate::time::now()));
+    }
+
+    /// A person's successful clicks are known to followers but never painted
+    /// or narrated; the attempt that was refused is.
+    #[test]
+    fn a_persons_attempt_is_drawn_only_when_it_did_not_happen() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        let person = |invocation, sequence, phase| {
+            let mut update = interaction(invocation, sequence, phase);
+            update.actor = InteractionActor {
+                id: "ada".into(),
+                kind: InteractionActorKind::Person,
+            };
+            update
+        };
+        presence
+            .apply_interaction_at(person(30, 1, InteractionPhase::Applying), at)
+            .unwrap();
+        presence
+            .apply_interaction_at(person(30, 2, InteractionPhase::Committed), at)
+            .unwrap();
+        let refused = person(
+            31,
+            1,
+            InteractionPhase::Rejected {
+                reason: tilo_actions::InteractionRejection::PermissionDenied,
+                message: Some("Commenters cannot delete pages".into()),
+            },
+        );
+        presence.apply_interaction_at(refused.clone(), at).unwrap();
+
+        let known = presence.visible_interactions(at);
+        assert_eq!(known.len(), 2, "a follower knows both attempts");
+        let drawn = presence.rendered_interactions(at);
+        assert_eq!(drawn.len(), 1, "only the refused attempt is drawn");
+        assert_eq!(drawn[0].invocation, refused.invocation);
+        assert_eq!(
+            presence
+                .interaction_card_layout(Rect::new(0.0, 0.0, 800.0, 600.0), at)
+                .len(),
+            1
+        );
+        let committed = person(32, 1, InteractionPhase::Committed);
+        assert_eq!(presence.interaction_announcement(&committed), None);
+        assert!(
+            presence
+                .interaction_announcement(&refused)
+                .is_some_and(|text| text.contains("Commenters cannot delete pages"))
+        );
     }
 
     #[test]

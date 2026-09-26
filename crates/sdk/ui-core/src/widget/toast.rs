@@ -85,6 +85,28 @@ pub enum ToastKind {
     Error,
 }
 
+impl From<ToastKind> for crate::view::ToastSeverity {
+    fn from(kind: ToastKind) -> Self {
+        match kind {
+            ToastKind::Info => Self::Info,
+            ToastKind::Success => Self::Success,
+            ToastKind::Warning => Self::Warning,
+            ToastKind::Error => Self::Error,
+        }
+    }
+}
+
+impl From<crate::view::ToastSeverity> for ToastKind {
+    fn from(severity: crate::view::ToastSeverity) -> Self {
+        match severity {
+            crate::view::ToastSeverity::Info => Self::Info,
+            crate::view::ToastSeverity::Success => Self::Success,
+            crate::view::ToastSeverity::Warning => Self::Warning,
+            crate::view::ToastSeverity::Error => Self::Error,
+        }
+    }
+}
+
 /// Horizontal placement for a transient card painted inside an app's area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ToastAnchor {
@@ -836,6 +858,41 @@ fn paint_card_text(
 }
 
 impl Widget for ToastStack {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        (!self.toasts.is_empty()).then(|| crate::view::OverlayState::Toasts {
+            toasts: self
+                .toasts
+                .iter()
+                .map(|toast| crate::view::ToastView {
+                    severity: toast.kind.into(),
+                    text: Some(toast.text.clone()),
+                })
+                .collect(),
+        })
+    }
+
+    /// Toasts are this participant's own notifications. A View only adds
+    /// them back when it carries their text (a thaw); a broadcast View
+    /// (follow, replay) never clears or replaces them.
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        let Some(crate::view::OverlayState::Toasts { toasts }) = state else {
+            return;
+        };
+        let Some(restored) = toasts
+            .iter()
+            .map(|toast| toast.text.clone().map(|text| (text, toast.severity)))
+            .collect::<Option<Vec<_>>>()
+        else {
+            return;
+        };
+        if !self.toasts.is_empty() {
+            return;
+        }
+        for (text, severity) in restored {
+            self.push(text, severity.into());
+        }
+    }
+
     fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
     fn build_layout(

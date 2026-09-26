@@ -4,7 +4,8 @@
 //! Automerge CRDT in [`crate::state::State`]) is the collaborative truth,
 //! merged and serialized with `doc.save()`; the **View** is everything about
 //! *where the user is looking* that is deliberately **not** merged — scroll,
-//! caret/selection, open resource, viewport, view mode.
+//! caret/selection, open resource, viewport, view mode, and the toolkit-owned
+//! overlays open over it (menus, popovers, dialogs, toasts).
 //!
 //! Two uses: **presence** (not here) broadcasts a subset so others can see
 //! and follow a participant; **freeze/thaw** (here) serializes State *and*
@@ -19,7 +20,7 @@ use serde::{Deserialize, Serialize};
 /// Envelope format version. Bump when the wire shape of [`FrozenApp`] changes
 /// in a way older readers cannot decode; [`FreezeThaw::thaw`] refuses a
 /// version it does not understand rather than mis-reading it.
-pub const FROZEN_VERSION: u32 = 1;
+pub const FROZEN_VERSION: u32 = 2;
 
 /// A rectangle in physical pixels — the app's viewport at capture time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -56,6 +57,109 @@ pub struct ViewContribution {
     pub view_mode: Option<String>,
 }
 
+/// Where a menu or popover was opened from.
+///
+/// Widgets anchored to themselves (a dropdown's list, a dialog) use
+/// [`OverlayAnchor::Owner`]; a context menu opened at the pointer carries the
+/// point it opened at, in the owner's surface coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum OverlayAnchor {
+    /// Anchored to the owning widget's own bounds.
+    Owner,
+    /// Opened at a point, in surface coordinates.
+    Point { x: f64, y: f64 },
+    /// Opened against a rectangle, in surface coordinates.
+    Rect { x0: f64, y0: f64, x1: f64, y1: f64 },
+}
+
+impl OverlayAnchor {
+    fn is_finite(&self) -> bool {
+        match *self {
+            OverlayAnchor::Owner => true,
+            OverlayAnchor::Point { x, y } => x.is_finite() && y.is_finite(),
+            OverlayAnchor::Rect { x0, y0, x1, y1 } => {
+                [x0, y0, x1, y1].iter().all(|v| v.is_finite())
+            }
+        }
+    }
+}
+
+/// Severity of an open toast, matching [`crate::widget::toast::ToastKind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToastSeverity {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+/// One toast in an open [`OverlayState::Toasts`] stack.
+///
+/// The text is content. It is kept in the local [`View`] so a thawed app
+/// shows the same notification, and dropped from the broadcast
+/// [`ViewSubset`]: a follower or recorder reads it from the owner's semantic
+/// node, where the node's own classification decides what may leave the
+/// device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ToastView {
+    pub severity: ToastSeverity,
+    pub text: Option<String>,
+}
+
+/// The minimal typed state that re-opens one toolkit-owned overlay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum OverlayState {
+    /// A list of choices: a context menu, a popover menu, a dropdown's list.
+    /// `highlighted` is the row under keyboard focus, when there is one.
+    Menu {
+        anchor: OverlayAnchor,
+        highlighted: Option<usize>,
+    },
+    /// A popover holding arbitrary content next to its owner.
+    Popover,
+    /// A dialog. Which dialog it is, is the owner: dialogs are declared in the
+    /// tree and opened, never constructed from this state.
+    Dialog,
+    /// The toasts currently shown by a notification stack, oldest first.
+    Toasts { toasts: Vec<ToastView> },
+}
+
+/// An overlay open in a [`View`], named by the semantic id of the widget
+/// that owns it.
+///
+/// The owner is the node that exists whether or not the overlay is open (a
+/// dropdown, a dialog declared hidden, a menu owner, a notification stack),
+/// so the same id resolves on a thawed app, a follower's app and a replay.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct OpenOverlay {
+    /// The owning node's [`SemanticId`](crate::a11y_tree::SemanticId), as a string.
+    pub owner: String,
+    pub state: OverlayState,
+}
+
+impl OpenOverlay {
+    /// The broadcastable form: toast text stays on the owner's semantic node.
+    #[must_use]
+    pub fn for_broadcast(&self) -> Self {
+        let state = match &self.state {
+            OverlayState::Toasts { toasts } => OverlayState::Toasts {
+                toasts: toasts
+                    .iter()
+                    .map(|toast| ToastView {
+                        severity: toast.severity,
+                        text: None,
+                    })
+                    .collect(),
+            },
+            other => other.clone(),
+        };
+        OpenOverlay {
+            owner: self.owner.clone(),
+            state,
+        }
+    }
+}
+
 /// A participant's View: everything about *where they are looking* that is
 /// never merged into anyone else's. Every field derives
 /// `Serialize`/`Deserialize` so a future presence layer can broadcast any
@@ -73,6 +177,8 @@ pub struct View {
     pub viewport: ViewRect,
     /// The current view mode, if the app has one.
     pub view_mode: Option<String>,
+    /// Toolkit-owned overlays open over the content, in tree order.
+    pub overlays: Vec<OpenOverlay>,
 }
 
 /// The broadcastable subset of a [`View`] — the region and resource a
@@ -94,17 +200,27 @@ pub struct ViewSubset {
     pub viewport: ViewRect,
     /// The participant's current view mode, if the app has one.
     pub view_mode: Option<String>,
+    /// The overlays open over the participant's content — what a follower
+    /// mirrors and a recorder keeps. Toast text is not carried; see
+    /// [`ToastView`].
+    pub overlays: Vec<OpenOverlay>,
 }
 
 impl ViewSubset {
     /// Project a full [`View`] onto the subset presence broadcasts. Drops
-    /// [`View::focus`] (broadcast separately as caret/selection presence).
+    /// [`View::focus`] (broadcast separately as caret/selection presence) and
+    /// the content of open toasts.
     pub fn from_view(view: &View) -> Self {
         ViewSubset {
             scroll: view.scroll.clone(),
             open_resource: view.open_resource.clone(),
             viewport: view.viewport,
             view_mode: view.view_mode.clone(),
+            overlays: view
+                .overlays
+                .iter()
+                .map(OpenOverlay::for_broadcast)
+                .collect(),
         }
     }
 
@@ -147,6 +263,12 @@ impl View {
         {
             return Err(ThawError::InvalidView("nonfinite geometry".into()));
         }
+        if self.overlays.iter().any(|overlay| match &overlay.state {
+            OverlayState::Menu { anchor, .. } => !anchor.is_finite(),
+            OverlayState::Popover | OverlayState::Dialog | OverlayState::Toasts { .. } => false,
+        }) {
+            return Err(ThawError::InvalidView("nonfinite overlay anchor".into()));
+        }
         Ok(())
     }
 }
@@ -155,11 +277,13 @@ pub(crate) fn capture_widget_view_bound(
     root: &dyn crate::widget::Widget,
     focus: Option<FocusView>,
     viewport: ViewRect,
+    overlays: Vec<OpenOverlay>,
 ) -> View {
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return View {
             focus,
             viewport,
+            overlays,
             ..View::default()
         };
     };
@@ -171,7 +295,22 @@ pub(crate) fn capture_widget_view_bound(
         open_resource,
         viewport,
         view_mode: contribution.view_mode,
+        overlays,
     }
+}
+
+/// Whether any retained widget currently has an overlay open. Cheap enough to
+/// ask every frame, so the semantic walk that names overlay owners only runs
+/// while something is (or was) open.
+pub(crate) fn any_overlay_open_bound(root: &dyn crate::widget::Widget) -> bool {
+    let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
+        return false;
+    };
+    root.open_overlay().is_some()
+        || root
+            .children()
+            .into_iter()
+            .any(|child| any_overlay_open_bound(child))
 }
 
 pub(crate) fn capture_focus(
@@ -377,6 +516,34 @@ pub trait FreezeThaw {
     }
 }
 
+/// A root with one of each toolkit-owned overlay: a dropdown list, a dialog
+/// and a notification stack. `open` builds it with all three showing.
+#[cfg(test)]
+pub(crate) fn overlay_test_root(
+    open: bool,
+    own_toast: Option<&str>,
+) -> Box<dyn crate::widget::Widget> {
+    use crate::widget::toast::{ToastKind, ToastStack};
+    use crate::widget::{Column, Dropdown, ModalDialog, Text};
+    let mut dropdown = Dropdown::new(vec!["One".into(), "Two".into(), "Three".into()], "choice");
+    let mut dialog = ModalDialog::new("Discard changes?", Text::new("Unsaved edits are lost"));
+    let mut toasts = ToastStack::new();
+    if open {
+        dropdown.open_menu();
+        dialog.set_open(true);
+        toasts.push("Couldn't send", ToastKind::Error);
+    }
+    if let Some(text) = own_toast {
+        toasts.push(text, ToastKind::Success);
+    }
+    Box::new(
+        Column::new()
+            .push(Box::new(dropdown))
+            .push(Box::new(dialog))
+            .push(Box::new(toasts)),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -573,6 +740,64 @@ mod tests {
         let f2 = v2.focus.as_ref().expect("focus restored");
         assert_eq!(f2.ordinal, 0, "focus ordinal restored");
         assert_eq!(f2.ephemeral, "caret=42", "caret restored via set_state");
+    }
+
+    /// A menu, a dialog and a toast open when the app is frozen are open,
+    /// under the same owners and with the same state, after it is thawed into
+    /// a fresh app. Asserted on the envelope bytes too, so capture drops
+    /// nothing.
+    #[test]
+    fn open_overlays_round_trip_through_freeze_and_thaw() {
+        let mut app1 = App::new_with_controlled_inputs(State::new(), overlay_test_root(true, None));
+        app1.init_layout();
+        app1.refresh_semantic_tree();
+        let v1 = app1.capture_view();
+        let kinds = v1
+            .overlays
+            .iter()
+            .map(|overlay| match &overlay.state {
+                OverlayState::Menu { .. } => "menu",
+                OverlayState::Popover => "popover",
+                OverlayState::Dialog => "dialog",
+                OverlayState::Toasts { .. } => "toasts",
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(kinds, ["menu", "dialog", "toasts"], "{:?}", v1.overlays);
+        assert!(
+            v1.overlays.iter().all(|overlay| app1
+                .semantic_tree()
+                .node(&crate::a11y_tree::SemanticId(overlay.owner.clone()))
+                .is_some()),
+            "every overlay is named by a node of the semantic tree"
+        );
+        assert_eq!(
+            v1.overlays[2].state,
+            OverlayState::Toasts {
+                toasts: vec![ToastView {
+                    severity: ToastSeverity::Error,
+                    text: Some("Couldn't send".into()),
+                }],
+            },
+            "the local View keeps the toast's text"
+        );
+
+        let frozen = app1.freeze();
+        let env: FrozenApp = postcard::from_bytes(&frozen).unwrap();
+        assert_eq!(env.view.overlays, v1.overlays);
+
+        let mut app2 =
+            App::new_with_controlled_inputs(State::new(), overlay_test_root(false, None));
+        app2.init_layout();
+        app2.refresh_semantic_tree();
+        assert!(app2.capture_view().overlays.is_empty());
+
+        app2.thaw(&frozen).expect("thaw a well-formed envelope");
+        app2.refresh_semantic_tree();
+        assert_eq!(
+            app2.capture_view().overlays,
+            v1.overlays,
+            "the thawed app shows the same menu, dialog and toast"
+        );
     }
 
     /// Thawing truncated or garbage bytes returns an error, and an envelope

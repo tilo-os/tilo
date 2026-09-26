@@ -663,6 +663,7 @@ mod tests {
                 open_resource: None,
                 viewport: ui::view::ViewRect::default(),
                 view_mode: Some("grid".into()),
+                overlays: Vec::new(),
             },
             Some(ui::collaboration::ContinuationMetadata {
                 schema_version: 1,

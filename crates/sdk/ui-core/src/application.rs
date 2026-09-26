@@ -665,10 +665,13 @@ impl AppComponent {
             .root
             .as_deref()
             .ok_or_else(|| ThawError::InvalidView("component is closed".into()))?;
+        // No semantic tree names overlay owners here; the hosting App's View
+        // carries the overlays of every component it presents.
         let mut view = crate::view::capture_widget_view_bound(
             root,
             crate::view::capture_tree_focus_bound(root),
             inherited.viewport,
+            Vec::new(),
         );
         if view.open_resource.is_none() {
             view.open_resource.clone_from(&inherited.open_resource);

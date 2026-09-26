@@ -208,7 +208,9 @@ impl SelectionRange {
 #[cfg(test)]
 mod view_key_tests {
     use super::*;
-    use crate::view::{ViewRect, ViewSubset};
+    use crate::view::{
+        OpenOverlay, OverlayAnchor, OverlayState, ToastSeverity, ToastView, ViewRect, ViewSubset,
+    };
 
     #[test]
     fn view_key_round_trips_the_subset() {
@@ -222,6 +224,28 @@ mod view_key_tests {
                 height: 600.0,
             },
             view_mode: Some("list".into()),
+            overlays: vec![
+                OpenOverlay {
+                    owner: "r:notes.page:1~k:menu".into(),
+                    state: OverlayState::Menu {
+                        anchor: OverlayAnchor::Point { x: 40.0, y: 12.5 },
+                        highlighted: Some(2),
+                    },
+                },
+                OpenOverlay {
+                    owner: "w7".into(),
+                    state: OverlayState::Dialog,
+                },
+                OpenOverlay {
+                    owner: "w9".into(),
+                    state: OverlayState::Toasts {
+                        toasts: vec![ToastView {
+                            severity: ToastSeverity::Error,
+                            text: None,
+                        }],
+                    },
+                },
+            ],
         };
         let key = PresenceKey::view(&subset);
         assert!(matches!(key, PresenceKey::View { .. }));

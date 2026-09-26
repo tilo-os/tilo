@@ -729,36 +729,7 @@ impl Session {
         update: &tilo_actions::InvocationUpdate,
         sequence: u64,
     ) {
-        let phase = match update {
-            tilo_actions::InvocationUpdate::Accepted { .. } => {
-                tilo_actions::InteractionPhase::Applying
-            }
-            tilo_actions::InvocationUpdate::Progress {
-                phase,
-                completed,
-                total,
-                ..
-            } => tilo_actions::InteractionPhase::Progress {
-                label: phase.clone(),
-                completed: *completed,
-                total: *total,
-            },
-            tilo_actions::InvocationUpdate::Item { .. } => tilo_actions::InteractionPhase::Applying,
-            tilo_actions::InvocationUpdate::Succeeded { .. } => {
-                tilo_actions::InteractionPhase::Committed
-            }
-            tilo_actions::InvocationUpdate::Failed { error, .. } => {
-                tilo_actions::InteractionPhase::Failed {
-                    code: Some(error.code.clone()),
-                    message: error.message.clone(),
-                }
-            }
-            tilo_actions::InvocationUpdate::Cancelled { message, .. } => {
-                tilo_actions::InteractionPhase::Cancelled {
-                    message: message.clone(),
-                }
-            }
-        };
+        let phase = tilo_actions::InteractionPhase::from_update(update);
         let context =
             serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone()).ok();
         let interaction = tilo_actions::SemanticInteraction {

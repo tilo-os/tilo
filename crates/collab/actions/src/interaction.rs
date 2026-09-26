@@ -8,10 +8,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ActionApp, ActionGroup, ActionResource, InvocationId};
+use crate::{ActionApp, ActionGroup, ActionResource, DoorError, InvocationId, InvocationUpdate};
 
 /// Wire version understood by this crate.
-pub const INTERACTION_VERSION: u16 = 1;
+pub const INTERACTION_VERSION: u16 = 2;
 /// Hard ceiling for one JSON-encoded update at a trust boundary.
 pub const MAX_INTERACTION_BYTES: usize = 32 * 1024;
 pub const MAX_ANCHOR_ITEMS: usize = 64;
@@ -21,11 +21,33 @@ pub const MAX_DETAIL_BYTES: usize = 2 * 1024;
 
 /// Authenticated principal kind.  This is assigned by the broker, never
 /// inferred from a display name or an `agent:` string prefix.
+///
+/// `Person` is the human kind: it covers a person's pointer, keyboard and
+/// touch activations of a bound control as well as anything they drive
+/// through the action door, because the broker attributes both to the same
+/// authenticated principal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InteractionActorKind {
     Person,
     Agent,
+}
+
+/// Why an attempt ended without running. A rejection is terminal and left no
+/// document change, which is exactly why it is carried as presence: nothing
+/// else records that it was tried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InteractionRejection {
+    /// The actor's permissions do not include this action here.
+    PermissionDenied,
+    /// The action is advertised but its precondition is unmet: the control
+    /// is disabled.
+    Unavailable,
+    /// The supplied input failed the action's declared contract.
+    Invalid,
+    /// The action ran and changed nothing.
+    NoChange,
 }
 
 /// Identity attached by the broker to the normalized interaction event.
@@ -114,14 +136,127 @@ pub enum InteractionPhase {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         message: Option<String>,
     },
+    /// Refused before, or instead of, having any effect.
+    Rejected {
+        reason: InteractionRejection,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message: Option<String>,
+    },
 }
 
 impl InteractionPhase {
     pub fn is_terminal(&self) -> bool {
         matches!(
             self,
-            Self::Committed | Self::Failed { .. } | Self::Cancelled { .. }
+            Self::Committed | Self::Failed { .. } | Self::Cancelled { .. } | Self::Rejected { .. }
         )
+    }
+
+    /// Whether the attempt ended without doing what was asked.
+    pub fn is_unsuccessful(&self) -> bool {
+        matches!(self, Self::Failed { .. } | Self::Rejected { .. })
+    }
+
+    /// The presence phase an invocation lifecycle update corresponds to.
+    ///
+    /// This is the one projection from an invocation's durable lifecycle onto
+    /// its transient presence. An agent observing its broker invocation and an
+    /// app observing a person's control activation report the same phase for
+    /// the same update.
+    pub fn from_update(update: &InvocationUpdate) -> Self {
+        match update {
+            InvocationUpdate::Accepted { .. } | InvocationUpdate::Item { .. } => Self::Applying,
+            InvocationUpdate::Progress {
+                phase,
+                completed,
+                total,
+                ..
+            } => Self::Progress {
+                label: phase.clone(),
+                completed: *completed,
+                total: *total,
+            },
+            InvocationUpdate::Succeeded { .. } => Self::Committed,
+            InvocationUpdate::Failed { error, .. } => Self::Failed {
+                code: Some(error.code.clone()),
+                message: error.message.clone(),
+            },
+            InvocationUpdate::Cancelled { message, .. } => Self::Cancelled {
+                message: message.clone(),
+            },
+        }
+    }
+
+    /// The presence phase for an attempt the action door refused.
+    ///
+    /// A refusal that means "this was never going to run for you" (outside the
+    /// actor's permission-filtered surface, precondition unmet, bad input)
+    /// becomes [`Self::Rejected`]. A confirmation request is a wait, not a
+    /// refusal. An action that ran and failed stays [`Self::Failed`].
+    pub fn from_door_error(error: &DoorError) -> Self {
+        let rejected = |reason, message: String| Self::Rejected {
+            reason,
+            message: Some(message),
+        };
+        match error {
+            DoorError::Unknown(_) | DoorError::UnregisteredType(_) => {
+                rejected(InteractionRejection::PermissionDenied, error.to_string())
+            }
+            DoorError::Unavailable { reason, .. } => {
+                rejected(InteractionRejection::Unavailable, reason.clone())
+            }
+            DoorError::MissingArgument(_)
+            | DoorError::UnexpectedArgument(_)
+            | DoorError::InvalidArguments(_) => {
+                rejected(InteractionRejection::Invalid, error.to_string())
+            }
+            DoorError::ConfirmationRequired => Self::Waiting {
+                reason: Some(error.to_string()),
+            },
+            DoorError::Failed(message) => Self::Failed {
+                code: Some(error.code().into()),
+                message: message.clone(),
+            },
+        }
+    }
+
+    /// The presence phase for the session action host's receipt, the same
+    /// lifecycle reached across the broker instead of through the local door.
+    pub fn from_receipt(status: &crate::remote::ReceiptStatus) -> Self {
+        use crate::remote::{ActionHostError, ReceiptStatus};
+        match status {
+            ReceiptStatus::Accepted => Self::Applying,
+            ReceiptStatus::Completed { .. } => Self::Committed,
+            ReceiptStatus::Failed { error } => Self::Failed {
+                code: Some(error.code.clone()),
+                message: error.message.clone(),
+            },
+            ReceiptStatus::Cancelled { message } => Self::Cancelled {
+                message: message.clone(),
+            },
+            ReceiptStatus::Rejected { error } => {
+                let reason = match error {
+                    ActionHostError::ConfirmationRequired => {
+                        return Self::Waiting {
+                            reason: Some(error.to_string()),
+                        };
+                    }
+                    ActionHostError::UnknownAction | ActionHostError::NotPermitted => {
+                        InteractionRejection::PermissionDenied
+                    }
+                    ActionHostError::InvalidRequest { .. }
+                    | ActionHostError::UnknownInvocation
+                    | ActionHostError::InvocationConflict => InteractionRejection::Invalid,
+                    ActionHostError::Unavailable { .. }
+                    | ActionHostError::NotCancellable { .. }
+                    | ActionHostError::Refused { .. } => InteractionRejection::Unavailable,
+                };
+                Self::Rejected {
+                    reason,
+                    message: Some(error.to_string()),
+                }
+            }
+        }
     }
 }
 
@@ -288,12 +423,17 @@ fn validate_phase(phase: &InteractionPhase) -> Result<(), InteractionViolation> 
         }
         InteractionPhase::Cancelled {
             message: Some(message),
+        }
+        | InteractionPhase::Rejected {
+            message: Some(message),
+            ..
         } => validate_detail("phase.message", message),
         InteractionPhase::Locating
         | InteractionPhase::Applying
         | InteractionPhase::Waiting { reason: None }
         | InteractionPhase::Committed
-        | InteractionPhase::Cancelled { message: None } => Ok(()),
+        | InteractionPhase::Cancelled { message: None }
+        | InteractionPhase::Rejected { message: None, .. } => Ok(()),
     }
 }
 
@@ -499,6 +639,153 @@ mod tests {
             .is_terminal()
         );
         assert!(InteractionPhase::Cancelled { message: None }.is_terminal());
+        let rejected = InteractionPhase::Rejected {
+            reason: InteractionRejection::Unavailable,
+            message: None,
+        };
+        assert!(rejected.is_terminal());
+        assert!(rejected.is_unsuccessful());
+        assert!(!InteractionPhase::Committed.is_unsuccessful());
+    }
+
+    /// Door refusals are the attempts that leave no document trace; each one
+    /// must surface as a terminal presence phase with its reason, and a
+    /// confirmation request must not be mistaken for one.
+    #[test]
+    fn door_refusals_project_onto_rejections_with_their_reason() {
+        let address = crate::ActionAddress::new("notes.page:1", "delete");
+        let cases = [
+            (
+                DoorError::Unknown(address.clone()),
+                Some(InteractionRejection::PermissionDenied),
+            ),
+            (
+                DoorError::Unavailable {
+                    code: "locked".into(),
+                    reason: "The page is locked".into(),
+                },
+                Some(InteractionRejection::Unavailable),
+            ),
+            (
+                DoorError::InvalidArguments("title: must not be empty".into()),
+                Some(InteractionRejection::Invalid),
+            ),
+            (
+                DoorError::MissingArgument(address),
+                Some(InteractionRejection::Invalid),
+            ),
+        ];
+        for (error, expected) in cases {
+            let phase = InteractionPhase::from_door_error(&error);
+            match (&phase, expected) {
+                (
+                    InteractionPhase::Rejected {
+                        reason,
+                        message: Some(message),
+                    },
+                    Some(expected),
+                ) => {
+                    assert_eq!(*reason, expected, "{error:?}");
+                    assert!(!message.is_empty(), "the reason travels with {error:?}");
+                }
+                other => panic!("{error:?} projected to {other:?}"),
+            }
+            assert!(phase.is_terminal());
+            let mut interaction = example(InteractionAnchor::Resource);
+            interaction.phase = phase;
+            interaction
+                .validate()
+                .expect("a rejection is a valid update");
+        }
+        assert!(matches!(
+            InteractionPhase::from_door_error(&DoorError::ConfirmationRequired),
+            InteractionPhase::Waiting { reason: Some(_) }
+        ));
+        assert!(matches!(
+            InteractionPhase::from_door_error(&DoorError::Failed("disk full".into())),
+            InteractionPhase::Failed { code: Some(code), message } if code == "action_failed" && message == "disk full"
+        ));
+    }
+
+    /// A refusal from the session action host is the same kind of attempt
+    /// as one the local door refuses, and carries its reason the same way.
+    #[test]
+    fn host_receipts_project_onto_the_same_rejections_as_the_door() {
+        use crate::remote::{ActionHostError, ReceiptStatus};
+        assert_eq!(
+            InteractionPhase::from_receipt(&ReceiptStatus::Accepted),
+            InteractionPhase::Applying
+        );
+        for (error, reason) in [
+            (
+                ActionHostError::NotPermitted,
+                InteractionRejection::PermissionDenied,
+            ),
+            (
+                ActionHostError::UnknownAction,
+                InteractionRejection::PermissionDenied,
+            ),
+            (
+                ActionHostError::InvalidRequest {
+                    reason: "bad".into(),
+                },
+                InteractionRejection::Invalid,
+            ),
+            (
+                ActionHostError::Unavailable {
+                    reason: "offline".into(),
+                },
+                InteractionRejection::Unavailable,
+            ),
+        ] {
+            let phase = InteractionPhase::from_receipt(&ReceiptStatus::Rejected {
+                error: error.clone(),
+            });
+            assert_eq!(
+                phase,
+                InteractionPhase::Rejected {
+                    reason,
+                    message: Some(error.to_string()),
+                }
+            );
+        }
+        assert!(matches!(
+            InteractionPhase::from_receipt(&ReceiptStatus::Rejected {
+                error: ActionHostError::ConfirmationRequired,
+            }),
+            InteractionPhase::Waiting { .. }
+        ));
+    }
+
+    #[test]
+    fn invocation_updates_project_onto_the_same_phases_for_every_caller() {
+        let invocation = InvocationId::new();
+        assert_eq!(
+            InteractionPhase::from_update(&InvocationUpdate::Accepted { invocation }),
+            InteractionPhase::Applying
+        );
+        assert_eq!(
+            InteractionPhase::from_update(&InvocationUpdate::Succeeded {
+                invocation,
+                output: crate::ActionOutput::default(),
+            }),
+            InteractionPhase::Committed
+        );
+        assert_eq!(
+            InteractionPhase::from_update(&InvocationUpdate::Failed {
+                invocation,
+                error: crate::ActionFailure {
+                    code: "timeout".into(),
+                    message: "late".into(),
+                    details: None,
+                    retryable: true,
+                },
+            }),
+            InteractionPhase::Failed {
+                code: Some("timeout".into()),
+                message: "late".into(),
+            }
+        );
     }
 
     #[test]

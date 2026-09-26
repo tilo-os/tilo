@@ -668,6 +668,35 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
+    fn open_overlay(&self) -> Option<crate::view::OverlayState> {
+        // The typed filter is the person's own input, not presentation; the
+        // list re-opens unfiltered.
+        self.open.then(|| crate::view::OverlayState::Menu {
+            anchor: crate::view::OverlayAnchor::Owner,
+            highlighted: self.filter.is_empty().then_some(self.highlight),
+        })
+    }
+
+    fn restore_overlay(&mut self, state: Option<&crate::view::OverlayState>) {
+        match state {
+            None => {
+                if self.open {
+                    self.close();
+                }
+            }
+            Some(crate::view::OverlayState::Menu { highlighted, .. }) => {
+                if !self.open {
+                    self.open_menu();
+                }
+                if let Some(row) = highlighted.filter(|&row| row < self.options.len()) {
+                    self.highlight = row;
+                    self.align_highlight_on_sync = false;
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
     fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
         if let Some(binding) = &mut self.local_state {
             if let Some(selected) = binding.poll() {
