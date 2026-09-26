@@ -166,6 +166,9 @@ pub struct TabDescriptor {
     pub id: u64,
     pub title: String,
     pub app_kind: Option<AppKind>,
+    /// The application's own artwork, painted in place of the `app_kind`
+    /// glyph — how an app Tilo did not package is recognisable in its tab.
+    pub icon: Option<icons::AppImage>,
 }
 
 impl TabDescriptor {
@@ -174,6 +177,7 @@ impl TabDescriptor {
             id,
             title: title.into(),
             app_kind: None,
+            icon: None,
         }
     }
 }
@@ -657,8 +661,14 @@ impl TabBar {
         accent: Option<vello::peniko::Color>,
         text_color: vello::peniko::Color,
     ) {
+        let icon_rect = square_at(r.center(), ICON_W);
+        if t.icon
+            .as_ref()
+            .is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image))
+        {
+            return;
+        }
         if let Some(kind) = t.app_kind {
-            let icon_rect = square_at(r.center(), ICON_W);
             draw_app_icon(
                 scene,
                 transform,
@@ -691,6 +701,12 @@ impl TabBar {
         // the title follows it at `ICON_GAP` — one inset and one gap for
         // every pill, instead of a glyph tucked 2 px inside the text.
         let icon_rect = leading_glyph_rect(r);
+        if t.icon
+            .as_ref()
+            .is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image))
+        {
+            return ICON_W + ICON_GAP;
+        }
         if let Some(kind) = t.app_kind {
             draw_app_icon(
                 scene,
@@ -1263,7 +1279,7 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return 0.0;
         };
-        if t.app_kind.is_some() || self.accent_ids.contains_key(&t.id) {
+        if t.app_kind.is_some() || t.icon.is_some() || self.accent_ids.contains_key(&t.id) {
             ICON_W + ICON_GAP
         } else {
             0.0
@@ -1404,6 +1420,16 @@ impl TabBar {
     pub fn toggle_pin(&mut self, id: u64) {
         if !self.pinned_ids.insert(id) {
             self.pinned_ids.remove(&id);
+        }
+    }
+    /// Replace tab `id`'s artwork. `true` when that changed what it paints.
+    pub fn set_icon(&mut self, id: u64, icon: Option<icons::AppImage>) -> bool {
+        match self.tabs.iter_mut().find(|t| t.id == id) {
+            Some(tab) if tab.icon != icon => {
+                tab.icon = icon;
+                true
+            }
+            _ => false,
         }
     }
     /// Tint `id`'s leading marker. A tab with no `app_kind` paints a filled dot
@@ -3556,6 +3582,7 @@ mod tests {
                 id: 1,
                 title: "Documentation".into(),
                 app_kind: Some(AppKind::Editor),
+                icon: None,
             }],
             1,
         );
@@ -4124,6 +4151,7 @@ mod tests {
                 id: 1,
                 title: "A".into(),
                 app_kind: Some(AppKind::Terminal),
+                icon: None,
             }],
             1,
         );

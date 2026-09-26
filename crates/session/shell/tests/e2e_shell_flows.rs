@@ -886,6 +886,7 @@ fn tab_stub(id: u64, title: &str, kind: AppKind, label: &str) -> (TabDescriptor,
             id,
             title: title.into(),
             app_kind: Some(kind),
+            icon: None,
         },
         TileContent::Stub {
             kind,
@@ -944,21 +945,25 @@ fn probe_tab_centers() -> [Point; 4] {
             id: 1,
             title: "Notes".into(),
             app_kind: Some(AppKind::Editor),
+            icon: None,
         },
         TabDescriptor {
             id: 2,
             title: "Files".into(),
             app_kind: Some(AppKind::Files),
+            icon: None,
         },
         TabDescriptor {
             id: 3,
             title: "Terminal".into(),
             app_kind: Some(AppKind::Terminal),
+            icon: None,
         },
         TabDescriptor {
             id: 4,
             title: "Browser".into(),
             app_kind: Some(AppKind::Browser),
+            icon: None,
         },
     ];
     let theme = Theme::dark();
@@ -1717,6 +1722,7 @@ impl UndoHarness {
             id: 1,
             title: "Editor".into(),
             app_kind: Some(AppKind::Editor),
+            icon: None,
         };
         let tabs = vec![(tab, TileContent::App(Box::new(editor)))];
         let mut group = WindowGroup::new(300, tabs, 1, WindowWidth::Normal);

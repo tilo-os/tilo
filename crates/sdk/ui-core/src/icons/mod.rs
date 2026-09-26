@@ -11,6 +11,10 @@
 //! `tilo-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
 //! add a variant to [`Icon`], and map it in `icon_subpaths`.
 
+mod app_image;
+
+pub use app_image::{AppImage, AppImageSource, MAX_DEVICE_PX, device_px, draw_app_image};
+
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::{Color, Fill};

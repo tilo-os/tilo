@@ -1056,6 +1056,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: vec!["steam".into()],
         };
         let command = |x11: Option<&X11Session>| {

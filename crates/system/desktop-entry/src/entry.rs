@@ -322,6 +322,21 @@ fn parse_groups(contents: &str) -> BTreeMap<String, Group> {
     groups
 }
 
+/// Every group's unlocalised values, for the other key-file formats that share
+/// this grammar (an icon theme's `index.theme`).
+pub(crate) fn unlocalised_groups(contents: &str) -> BTreeMap<String, BTreeMap<String, String>> {
+    parse_groups(contents)
+        .into_iter()
+        .map(|(name, group)| {
+            let values = group
+                .into_iter()
+                .map(|(key, value)| (key, value.default))
+                .collect();
+            (name, values)
+        })
+        .collect()
+}
+
 /// The best value for `key` given the caller's locale preference list. `locales` is already
 /// ordered most-specific-first, so this is a straight first-hit lookup with the unlocalised
 /// value as the floor.
