@@ -68,7 +68,9 @@ const MAX_PUBLICATION_TAIL_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Serialize, Deserialize)]
 struct SignedAggregate {
+    #[serde(serialize_with = "schema::blob")]
     payload: Vec<u8>,
+    #[serde(serialize_with = "schema::blob")]
     signature: Vec<u8>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

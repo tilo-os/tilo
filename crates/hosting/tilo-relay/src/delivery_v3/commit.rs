@@ -327,7 +327,9 @@ fn shared_payloads<S: serde::Serializer>(
     use serde::ser::SerializeMap;
     let mut map = serializer.serialize_map(Some(values.len()))?;
     for (id, bytes) in values {
-        map.serialize_entry(id, bytes.as_slice())?;
+        // Postcard encodes a byte string exactly as a `u8` sequence, but
+        // sizes and copies it whole rather than one call per byte.
+        map.serialize_entry(id, serde_bytes::Bytes::new(bytes.as_slice()))?;
     }
     map.end()
 }

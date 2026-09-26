@@ -386,7 +386,9 @@ struct V4View<'a> {
     host_identity_root: &'a PathBuf,
     room: &'a str,
     authority: &'a DeviceCert,
+    #[serde(serialize_with = "blob")]
     directory: &'a [u8],
+    #[serde(serialize_with = "blob")]
     peer: &'a [u8],
     outgoing: &'a [Vec<u8>],
     pending: &'a [PendingOperation],
@@ -402,21 +404,54 @@ struct V5View<'a> {
     host_identity_root: &'a PathBuf,
     room: &'a str,
     authority: &'a DeviceCert,
+    #[serde(serialize_with = "blob")]
     directory: &'a [u8],
+    #[serde(serialize_with = "blob")]
     peer: &'a [u8],
+    #[serde(serialize_with = "blob")]
     publications: &'a [u8],
     pending: &'a [PendingOperation],
     generation: u64,
     issuances: &'a [crate::enrollment::Issuance],
     publication: &'a PublicationRootsV1,
     collaboration: &'a crate::collaboration::CollaborationState,
+    #[serde(serialize_with = "blob")]
     delivery: &'a [u8],
+    #[serde(serialize_with = "optional_blob")]
     transport_hint: Option<&'a [u8]>,
 }
 #[derive(Serialize)]
 struct V6View<'a> {
     base: V5View<'a>,
+    #[serde(serialize_with = "blob")]
     creation: &'a [u8],
+}
+/// Postcard writes a byte string as its length and then its bytes, the same
+/// encoding it gives a sequence of `u8`, so the aggregate's bytes are
+/// unchanged. As a byte string it is sized and copied in one step instead of
+/// one serializer call per byte, which kept every commit proportional to the
+/// whole aggregate several times over.
+pub(super) fn blob<B, S>(bytes: &B, serializer: S) -> Result<S::Ok, S::Error>
+where
+    B: AsRef<[u8]> + ?Sized,
+    S: serde::Serializer,
+{
+    serializer.serialize_bytes(bytes.as_ref())
+}
+fn optional_blob<S: serde::Serializer>(
+    bytes: &Option<&[u8]>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    struct Blob<'a>(&'a [u8]);
+    impl Serialize for Blob<'_> {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            serializer.serialize_bytes(self.0)
+        }
+    }
+    match bytes {
+        Some(bytes) => serializer.serialize_some(&Blob(bytes)),
+        None => serializer.serialize_none(),
+    }
 }
 pub(super) const V5_READ_ONLY_REASON: &str =
     "SessionOuterV5 is read-only until native replay commit integration is activated";
