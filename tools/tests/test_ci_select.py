@@ -823,6 +823,42 @@ class SelectorTests(unittest.TestCase):
         self.assertEqual(sorted(names), sorted(packages))
         self.assertEqual(len(names), len(set(names)))
 
+    def test_recorded_test_time_separates_slow_suites(self) -> None:
+        packages = {name: {"name": name, "targets": [], "dependencies": []}
+                    for name in ("slow-a", "slow-b", "c", "d")}
+        # Equal structure: without timings the two slow suites may share a shard.
+        seconds = {"slow-a": 500, "slow-b": 400, "c": 1}
+        shards = ci_select.balance(set(packages), packages, 2, seconds)
+        placed = [set(shard["packages"].split()[1::2]) for shard in shards]
+        self.assertTrue(any("slow-a" in names for names in placed))
+        self.assertFalse(any({"slow-a", "slow-b"} <= names for names in placed))
+        self.assertEqual(sorted(shard["recorded_test_seconds"] for shard in shards), [401, 500])
+        # The structural estimate keeps its meaning.
+        self.assertEqual(sum(shard["estimated_cost"] for shard in shards),
+                         sum(ci_select.package_cost(pkg) for pkg in packages.values()))
+
+    def test_recorded_test_time_never_changes_selection_or_budgets(self) -> None:
+        changes = ["leaf/src/lib.rs"]
+        plain = ci_select.make_plan(self.metadata, self.root, changes, 2)
+        packages, _ = ci_select.package_maps(self.metadata, self.root)
+        timed = ci_select.make_plan(self.metadata, self.root, changes, 2,
+                                    test_seconds={name: 10_000 for name in packages})
+        for key in ("selected", "tested", "shard_count", "estimated_cost",
+                    "dependants_tested_nightly"):
+            self.assertEqual(plain[key], timed[key], key)
+
+    def test_checked_in_test_seconds_are_valid(self) -> None:
+        seconds = ci_select.recorded_test_seconds()
+        self.assertTrue(seconds, "tools/ci/recorded_test_time.json should carry recorded timings")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "seconds.json"
+            self.assertEqual(ci_select.recorded_test_seconds(path), {})
+            for invalid in ('[]', '{"a": 1.5}', '{"a": -1}', '{"a": "1"}', '{"a": true}'):
+                with self.subTest(invalid=invalid):
+                    path.write_text(invalid)
+                    with self.assertRaises(ValueError):
+                        ci_select.recorded_test_seconds(path)
+
     def test_each_selected_package_runs_once_on_each_native_architecture(self) -> None:
         plan = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2, force_full=True)
         rows = plan["matrix"]["include"]
