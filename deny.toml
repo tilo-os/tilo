@@ -77,6 +77,11 @@ deny = [
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
-# The vendored vello and winit forks build from path, not git, so no allowance
-# is needed here; a git dependency appearing is something to look at.
-allow-git = []
+# The vendored vello and winit forks build from path. Only the forks patched
+# in `[patch.crates-io]` may come from git; any other git dependency appearing
+# is something to look at.
+allow-git = [
+    "ssh://git@code.tilo.so/tilo/accesskit.git",
+    "ssh://git@code.tilo.so/tilo/atspi.git",
+    "ssh://git@code.tilo.so/tilo/rustypipe.git",
+]

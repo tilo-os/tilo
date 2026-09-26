@@ -325,7 +325,7 @@ firmware_setup() {
     msg "--secboot: variable store will persist across boots so an enrolment sticks"
   fi
 
-  local dir d cands
+  local dir d cands four_mb=0
   if [ "$TILO_VM_ARCH" = aarch64 ]; then
     # AAVMF/QEMU_EFI is distributed under different names by Fedora and
     # Debian-family hosts. Both layouts provide a writable, blank variable-store
@@ -373,13 +373,24 @@ firmware_setup() {
       *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
     esac
   else
+    # Debian and Ubuntu ship the 4 MB build as raw .fd (OVMF_CODE_4M*.fd with
+    # OVMF_VARS_4M*.fd) and no 2 MB one; Fedora's 2 MB build is OVMF_CODE*.fd.
     cands=""
+    for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE_4M.secboot.fd $d/OVMF_CODE_4M.fd"; done
     for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.secboot.fd"; done
     for d in $TILO_OVMF_DIRS; do cands="$cands $d/OVMF_CODE.fd"; done
     # shellcheck disable=SC2086
     TILO_FW_CODE="$(_env_first_file $cands)"
-    [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host}.
-  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf"
+    [ -n "$TILO_FW_CODE" ] || die "no OVMF firmware in ${TILO_DISTROBOX:-the host} (looked in $TILO_OVMF_DIRS).
+  Remedy: distrobox enter ${TILO_DISTROBOX:-…} -- sudo dnf install edk2-ovmf (Fedora), or apt install ovmf (Debian/Ubuntu)"
+    case "$TILO_FW_CODE" in *_4M*) four_mb=1 ;; *) four_mb=0 ;; esac
+    if [ "$TILO_TPM" = "1" ] && [ "$four_mb" = 1 ]; then
+      die "the OVMF build here ($TILO_FW_CODE) is the Debian-family 4 MB raw image,
+  whose measured boot this toolkit has not verified. Refusing to attach a TPM
+  whose PCRs would not be evidence of anything.
+  Remedy: use a host with Fedora's edk2-ovmf, which ships
+    /usr/share/edk2/ovmf/OVMF_CODE_4M.secboot.qcow2 + OVMF_VARS_4M.qcow2"
+    fi
     if [ "$TILO_TPM" = "1" ]; then
       die "the only OVMF build here is the 2 MB one ($TILO_FW_CODE), which has no TPM
   support: its TCG2 protocol reports zero active PCR banks, so nothing is ever
@@ -393,14 +404,24 @@ firmware_setup() {
     fi
     TILO_FW_FMT=raw; TILO_FW_MEASURES=0
     case "$TILO_FW_CODE" in *.secboot.fd) TILO_FW_SMM=1 ;; *) TILO_FW_SMM=0 ;; esac
-    warn "the 2 MB OVMF build ($TILO_FW_CODE) cannot measure: no PCR, event-log or"
-    warn "measured-boot result from this VM is evidence of anything."
     dir="$(dirname "$TILO_FW_CODE")"
-    case "$TILO_SECBOOT_KEYS" in
-      none|persist) TILO_FW_VARS="$dir/OVMF_VARS.fd" ;;
-      microsoft)    TILO_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
-      *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
-    esac
+    if [ "$four_mb" = 1 ]; then
+      warn "the Debian-family OVMF build ($TILO_FW_CODE) is not a verified measuring"
+      warn "firmware here: no PCR, event-log or measured-boot result from this VM is evidence."
+      case "$TILO_SECBOOT_KEYS" in
+        none|persist) TILO_FW_VARS="$dir/OVMF_VARS_4M.fd" ;;
+        microsoft)    TILO_FW_VARS="$dir/OVMF_VARS_4M.ms.fd" ;;
+        *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
+      esac
+    else
+      warn "the 2 MB OVMF build ($TILO_FW_CODE) cannot measure: no PCR, event-log or"
+      warn "measured-boot result from this VM is evidence of anything."
+      case "$TILO_SECBOOT_KEYS" in
+        none|persist) TILO_FW_VARS="$dir/OVMF_VARS.fd" ;;
+        microsoft)    TILO_FW_VARS="$dir/OVMF_VARS.secboot.fd" ;;
+        *)            TILO_FW_VARS="$TILO_SECBOOT_KEYS" ;;
+      esac
+    fi
   fi
 
   if [ -z "$(_env_first_file "$TILO_FW_VARS")" ]; then

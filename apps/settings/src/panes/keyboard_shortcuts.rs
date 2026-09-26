@@ -157,6 +157,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Make window wider",
             "Increase the focused group's width",
         ),
+        (
+            ShortcutAction::ReopenClosedTab,
+            "shortcuts.reopen_closed_tab",
+            "Reopen closed tab",
+            "Bring back the tab closed most recently in this workspace",
+        ),
     ]
     .to_vec()
 }

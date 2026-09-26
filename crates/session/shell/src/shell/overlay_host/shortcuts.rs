@@ -174,6 +174,7 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::MoveGroupRight => "move the group right",
         ShortcutAction::ResizeNarrower => "make the window narrower",
         ShortcutAction::ResizeWider => "make the window wider",
+        ShortcutAction::ReopenClosedTab => "reopen the tab you closed last",
     }
 }
 
@@ -195,7 +196,9 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
     [
         fixed(FixedChordAction::SwitchWindows),
         fixed(FixedChordAction::CloseTab),
-        fixed(FixedChordAction::ChangeWorkspace),
+        // Changing workspace is already an editable navigation pair above;
+        // its essentials slot names how to undo a close instead.
+        editable("Reopen closed tab", ShortcutAction::ReopenClosedTab),
         fixed(FixedChordAction::NewWindow),
         fixed(FixedChordAction::AddTab),
         fixed(FixedChordAction::DuplicateTab),

@@ -508,6 +508,8 @@ mod tests {
             source_label: "Flatpak",
             categories: Vec::new(),
             keywords: Vec::new(),
+            mime_types: Vec::new(),
+            terminal: false,
             window_identities: vec![desktop_id.to_string()],
         }
     }

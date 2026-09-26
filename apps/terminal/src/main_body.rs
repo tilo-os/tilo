@@ -6961,15 +6961,20 @@ impl TerminalBackend {
     ///
     /// Returns an error if no suitable confinement route is available or the backend fails to initialize.
     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let program = launch_command_from_env();
         match confinement_route() {
             ConfineRoute::Service => {
                 // Mandatory, fail-closed: never fall through to an unconfined
                 // shell when the supervisor is present.
-                ush_service_backend()
+                ush_service_backend(&program)
             }
             ConfineRoute::SelfHosted(bin) => {
                 let mut cmd = CommandBuilder::new(&bin);
                 cmd.arg("run");
+                if !program.is_empty() {
+                    cmd.arg("-c");
+                    cmd.arg(exec_script(&program));
+                }
                 Self::with_command(cmd)
             }
             ConfineRoute::BestEffort => {
@@ -6979,6 +6984,11 @@ impl TerminalBackend {
                     "terminal: Tilo app confinement is not available here; \
                      starting your login shell directly"
                 );
+                if let Some((first, rest)) = program.split_first() {
+                    let mut cmd = CommandBuilder::new(first);
+                    cmd.args(rest);
+                    return Self::with_command(cmd);
+                }
                 Self::with_command(login_shell_command())
             }
         }
@@ -7022,6 +7032,47 @@ impl TerminalBackend {
             child,
         })
     }
+}
+
+/// The program the desktop asked this terminal to run instead of a login
+/// shell — how a `Terminal=true` desktop entry opens. The shell passes it in
+/// the launcher's bounded context channel as `{"terminal_command": [argv]}`;
+/// anything else there (or nothing) means an ordinary shell.
+pub fn launch_command_from_env() -> Vec<String> {
+    std::env::var("TILO_TOOL_CONTEXT")
+        .ok()
+        .map(|context| launch_command_from_context(&context))
+        .unwrap_or_default()
+}
+
+/// [`launch_command_from_env`] over an explicit context value.
+pub fn launch_command_from_context(context: &str) -> Vec<String> {
+    let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(context)
+    else {
+        return Vec::new();
+    };
+    let Some(serde_json::Value::Array(argv)) = map.get("terminal_command") else {
+        return Vec::new();
+    };
+    let argv: Option<Vec<String>> = argv
+        .iter()
+        .map(|arg| {
+            arg.as_str()
+                .filter(|arg| !arg.contains('\0'))
+                .map(str::to_string)
+        })
+        .collect();
+    argv.filter(|argv| argv.first().is_some_and(|program| !program.is_empty()))
+        .unwrap_or_default()
+}
+
+/// One `sh -c` script that runs `argv` exactly, each word single-quoted.
+pub fn exec_script(argv: &[String]) -> String {
+    let words: Vec<String> = argv
+        .iter()
+        .map(|word| format!("'{}'", word.replace('\'', "'\\''")))
+        .collect();
+    format!("exec {}", words.join(" "))
 }
 
 /// The environment variable the launcher sets when it has opened the `ush`
@@ -7221,7 +7272,7 @@ pub fn ush_binary() -> Option<std::path::PathBuf> {
 /// guest is built on the supervisor's side, by the supervisor's rules, and this
 /// app never learns where its layer is or what it was granted.
 #[cfg(unix)]
-fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+fn ush_service_backend(program: &[String]) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     use std::os::fd::{FromRawFd, RawFd};
     use std::os::unix::net::UnixStream;
 
@@ -7230,26 +7281,31 @@ fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> 
     // documents it in `TILO_SVC_<NAME>_FD`. `from_raw_fd` takes ownership, which
     // is correct — nothing else in this process refers to it.
     let stream = unsafe { UnixStream::from_raw_fd(raw) };
-    ush_backend_on(&stream)
+    ush_backend_on(&stream, program)
 }
 
 #[cfg(windows)]
-fn ush_service_backend() -> Result<TerminalBackend, Box<dyn std::error::Error>> {
+fn ush_service_backend(_program: &[String]) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     Err("Tilo hosted terminal service transport is unavailable on Windows".into())
 }
 
 #[cfg(unix)]
 fn ush_backend_on(
     stream: &std::os::unix::net::UnixStream,
+    program: &[String],
 ) -> Result<TerminalBackend, Box<dyn std::error::Error>> {
     use std::os::fd::AsRawFd;
-    let mut request = serde_json::to_vec(&serde_json::json!({
+    let mut request = serde_json::json!({
         "op": "open-session",
         "profile": "ush",
         "cols": 80,
         "rows": 24,
         "term": "xterm-256color",
-    }))?;
+    });
+    if let (false, Some(fields)) = (program.is_empty(), request.as_object_mut()) {
+        fields.insert("command".to_string(), serde_json::json!(program));
+    }
+    let mut request = serde_json::to_vec(&request)?;
     request.push(b'\n');
     {
         let mut w = stream;
@@ -7482,7 +7538,7 @@ impl TerminalWidget {
         let stream = services
             .ush
             .ok_or(crate::HostedTerminalError::RequiredServiceMissing("ush"))?;
-        let backend = ush_backend_on(&stream)
+        let backend = ush_backend_on(&stream, &[])
             .map_err(|error| crate::HostedTerminalError::ServiceFailed(error.to_string()))?;
         Ok(Self::from_backend(backend))
     }

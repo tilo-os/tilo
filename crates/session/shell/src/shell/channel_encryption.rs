@@ -737,22 +737,34 @@ fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     /// An in-memory room: every endpoint publishes to all the others while
     /// the room is up, and loses what it publishes while it is down.
     #[derive(Default)]
-    struct Room {
+    pub(crate) struct Room {
         queues: Mutex<HashMap<usize, Vec<InboundChannelGovernance>>>,
         down: AtomicBool,
     }
 
-    struct Endpoint {
-        room: Arc<Room>,
-        id: usize,
-        room_id: RoomId,
+    pub(crate) struct Endpoint {
+        pub(crate) room: Arc<Room>,
+        pub(crate) id: usize,
+        pub(crate) room_id: RoomId,
+    }
+
+    impl Endpoint {
+        /// Endpoint `id` of `room`, joined to its broadcast.
+        pub(crate) fn join(room: &Arc<Room>, room_id: RoomId, id: usize) -> Self {
+            room.queues.lock().unwrap().entry(id).or_default();
+            Self {
+                room: Arc::clone(room),
+                id,
+                room_id,
+            }
+        }
     }
 
     impl GovernanceTransport for Endpoint {
@@ -787,14 +799,14 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct Policy {
-        allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
+    pub(crate) struct Policy {
+        pub(crate) allowed: Arc<Mutex<BTreeSet<Ed25519PublicKey>>>,
     }
 
-    struct Directory {
-        governs: bool,
-        steward: Ed25519PublicKey,
-        policy: Policy,
+    pub(crate) struct Directory {
+        pub(crate) governs: bool,
+        pub(crate) steward: Ed25519PublicKey,
+        pub(crate) policy: Policy,
     }
 
     impl ChannelDirectory for Directory {
@@ -815,11 +827,11 @@ mod tests {
         endpoint: Endpoint,
     }
 
-    fn key(seed: u8) -> SigningKey {
+    pub(crate) fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])
     }
 
-    fn public(seed: u8) -> Ed25519PublicKey {
+    pub(crate) fn public(seed: u8) -> Ed25519PublicKey {
         Ed25519PublicKey::from_bytes(key(seed).verifying_key().to_bytes())
     }
 
