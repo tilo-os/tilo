@@ -3312,6 +3312,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::RemoteAudioDecision { .. }
         | PersonalFabricAction::RemoteAudioFrame { .. }
         | PersonalFabricAction::RemoteAudioStop { .. }
+        | PersonalFabricAction::RemoteAudioKeepalive { .. }
         | PersonalFabricAction::RemoteAudioCancel { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
@@ -5462,7 +5463,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
             }
         }
         if policy.permits(ContinuityCapability::Media) {
-            for route in crate::shell::remote_audio::snapshot(None).routes {
+            for route in crate::shell::remote_audio::active_routes() {
                 let count = route_counts.entry(route.peer).or_default();
                 *count = count.saturating_add(1);
             }

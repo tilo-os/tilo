@@ -51,6 +51,26 @@ const PERSONAL_FABRIC_ACTION_QUEUE_CAPACITY: usize = 256;
 const PERSONAL_FABRIC_DATA_QUEUE_CAPACITY: usize = 192;
 const PERSONAL_DISPLAY_QUEUE_CAPACITY: usize = 16;
 
+/// Why a personal fabric action did not reach the transport.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PersonalFabricSendError {
+    /// The transport command queue is momentarily full. The action was not
+    /// sent, but the same call can succeed once the actor drains the queue.
+    Backpressure,
+    /// Identity, enrollment, wire validation or a closed transport refused
+    /// the action; retrying it unchanged cannot succeed.
+    Rejected(String),
+}
+
+impl std::fmt::Display for PersonalFabricSendError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Backpressure => formatter.write_str("personal fabric transport is busy"),
+            Self::Rejected(reason) => formatter.write_str(reason),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PersonalFabricQueueOutcome {
     Queued,
@@ -133,6 +153,10 @@ fn personal_fabric_terminal_matches_data(
             PersonalFabricAction::RemoteAudioFrame {
                 session_id: queued_session,
                 ..
+            }
+            | PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: queued_session,
+                ..
             },
         ) => session_id == queued_session,
         (
@@ -147,8 +171,9 @@ fn personal_fabric_terminal_matches_data(
 
 /// Apply backpressure without allowing untrusted bulk producers to evict
 /// queued authority decisions. Distinct media sequences are never collapsed:
-/// dropping an intermediate sequence lets the runtime's existing sequence
-/// checks fail closed instead of presenting corrupted media as contiguous.
+/// a dropped intermediate sequence stays visible to the runtime's sequence
+/// checks (live audio conceals it as a bounded gap) instead of presenting
+/// corrupted media as contiguous.
 fn queue_personal_fabric_action<T: PersonalFabricEnvelopeRef>(
     queue: &mut VecDeque<T>,
     envelope: T,
@@ -3490,12 +3515,48 @@ impl ShellNetwork {
     /// # Errors
     ///
     /// Returns an error when personal identity is unavailable, the target is
-    /// malformed/local, or the action fails the bounded wire contract.
+    /// malformed/local, the action fails the bounded wire contract, or the
+    /// transport cannot take it right now.
     pub fn send_personal_fabric_action(
         &self,
         target: &crate::shell::personal_continuity::DeviceId,
         action: crate::shell::device_fabric::PersonalFabricAction,
     ) -> Result<[u8; 16], String> {
+        self.try_send_personal_fabric_action(target, action)
+            .map_err(|error| error.to_string())
+    }
+
+    /// [`Self::send_personal_fabric_action`] that tells a momentarily full
+    /// transport queue apart from a failure retrying cannot fix, so
+    /// loss-tolerant media can drop one message and keep its route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PersonalFabricSendError::Backpressure`] when the transport
+    /// command queue is full, and [`PersonalFabricSendError::Rejected`] for
+    /// every other failure.
+    pub fn try_send_personal_fabric_action(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<[u8; 16], PersonalFabricSendError> {
+        let (request_id, command) = self
+            .personal_fabric_command(target, action)
+            .map_err(PersonalFabricSendError::Rejected)?;
+        self.cmd_tx.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => PersonalFabricSendError::Backpressure,
+            mpsc::error::TrySendError::Closed(_) => {
+                PersonalFabricSendError::Rejected("personal fabric transport is closed".into())
+            }
+        })?;
+        Ok(request_id)
+    }
+
+    fn personal_fabric_command(
+        &self,
+        target: &crate::shell::personal_continuity::DeviceId,
+        action: crate::shell::device_fabric::PersonalFabricAction,
+    ) -> Result<([u8; 16], NetCmd), String> {
         let user_public_key = self
             .personal_continuity_user
             .ok_or_else(|| "this device has no certified personal identity".to_string())?;
@@ -3536,15 +3597,15 @@ impl ShellNetwork {
         if !self.join_topic(ws) {
             return Err("personal fabric transport is unavailable".into());
         }
-        self.cmd_tx
-            .try_send(NetCmd::PublishPersonalFabricTarget {
+        Ok((
+            request_id,
+            NetCmd::PublishPersonalFabricTarget {
                 ws,
                 user_public_key,
                 target: transport_target,
                 payload: PersonalFabricPayload::Action(bytes),
-            })
-            .map_err(|error| error.to_string())?;
-        Ok(request_id)
+            },
+        ))
     }
 
     /// Send only while the exact actor membership authenticated by the caller
