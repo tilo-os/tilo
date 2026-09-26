@@ -5245,6 +5245,12 @@ impl ShellOverlayHost {
                     for (idx, tab) in g.tabs.iter().enumerate() {
                         let signature = tile_signature(&tab.tile);
                         if live_tab_ids.contains(&tab.id) {
+                            // A window's artwork can arrive after its tab:
+                            // the desktop entry is installed, or the app
+                            // sets its own.
+                            if live.set_tab_icon(tab.id, crate::app_icons::for_tile(&tab.tile)) {
+                                any_change = true;
+                            }
                             // Install the foreign widget before its first
                             // buffer: layout must publish its configure size.
                             // TileHost retains visibility and owns the opening
@@ -5286,6 +5292,7 @@ impl ShellOverlayHost {
                             id: tab.id,
                             title: tab.title.clone(),
                             app_kind: Some(crate::shell::tile_app_kind(&tab.tile)),
+                            icon: crate::app_icons::for_tile(&tab.tile),
                         };
                         // Gets its own document too, same as any tab
                         // present at boot.
@@ -7769,6 +7776,13 @@ impl ShellOverlayHost {
                     .group(label.clone())
                     .group_total(group.total)
                     .icon(icon_for_kind(&r.kind));
+                // The unconfined-host glyph stays the fallback; the app's own
+                // artwork is what a person recognises it by.
+                if r.kind == crate::shell::search::ResourceKind::HostApplication
+                    && let Some(image) = crate::app_icons::for_desktop_id(&r.id)
+                {
+                    e = e.image(image);
+                }
                 if let Some(sub) = &r.subtitle {
                     e = e.description(sub.clone());
                 }
