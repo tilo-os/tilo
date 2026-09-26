@@ -12,7 +12,7 @@
 //! - [`layout`]     — pure geometry: card heights, per-core grid, table columns.
 //! - [`model`]      — pure data: rolling histories, process rows, formatting.
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
-//! - [`charts`]     — custom Vello primitives (area charts, ring/bar gauges).
+//! - [`paint`]      — panel and text-metric helpers framing the toolkit's charts.
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
 //! - [`prefs`]      — per-window device observation and safety preferences,
 //!   deliberately outside Automerge and collaborative history.
@@ -48,12 +48,12 @@
 )]
 
 pub mod app;
-pub mod charts;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
 pub mod layout;
 pub mod model;
+pub mod paint;
 pub mod prefs;
 pub mod responsive;
 pub mod sampler;

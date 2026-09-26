@@ -305,6 +305,30 @@ use `.sorted_by_x()` for binary-window hover lookup. Tune or disable rendering
 reduction through `CartesianStyle::with_adaptive_sampling(...)`. Applications
 may still pre-aggregate when domain-specific semantics require it.
 
+A dashboard that samples on a timer can keep each history in a
+`RollingSeries`: a fixed-capacity window whose `as_slice()` reads oldest to
+newest and feeds `Series`, `Sparkline` or a `Chart` directly.
+
+## Painting inside a custom-drawn surface
+
+An app that lays out its own canvas (a dashboard card grid, a scrolling strip)
+still uses the toolkit's charts, painting them at a known rect instead of
+hand-rolling paths:
+
+| Painter | Draws |
+|---|---|
+| `Chart::draw_styled` | Rolling line/area series with grid, header/legend and axis labels |
+| `Sparkline::paint` | One trend of `f32` or `f64` samples; `Sparkline::points` returns where each sample lands |
+| `RingGauge::draw_styled` / `BarGauge::draw_styled` | A fraction as a ring or labelled bar |
+| `BarGauge::draw_span` | A `from..=to` span on a track, e.g. a day's low–high on the week's range |
+| `FunctionPlane::paint_grid` | The pan/zoom grid, axes and 1-2-5 tick labels of a function plot |
+
+`TrendStyle` chooses line width, a flat or gradient fill, straight or
+Catmull-Rom joins, per-sample markers and a leading dot on the newest sample;
+`TrendRange` maps values onto the plot (`up_to(max)`, or `fit(&data)` for the
+data's own span). `ChartStyle` and `GaugeStyle` carry the grid, header and
+track choices. Colours still resolve from the `Theme` at paint time.
+
 ## Customization and theming
 
 Use `ChartPalette::from_theme(theme)` for a visually balanced categorical

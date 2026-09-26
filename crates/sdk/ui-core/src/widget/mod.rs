@@ -2573,7 +2573,10 @@ pub use badge::{Badge, BadgeTone};
 pub mod icon;
 pub use icon::IconWidget;
 pub mod chart;
-pub use chart::{Chart, Series, Sparkline};
+pub use chart::{
+    Chart, ChartLabels, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill,
+    TrendRange, TrendStyle,
+};
 mod chart_legend;
 pub mod chart_navigation;
 pub use chart_navigation::{
@@ -2621,7 +2624,9 @@ pub use sunburst::{SunburstChart, SunburstNode, SunburstStyle};
 pub mod funnel_chart;
 pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStage, FunnelStyle};
 pub mod gauge;
-pub use gauge::{BarGauge, GaugeThresholds, RingGauge};
+pub use gauge::{BarGauge, GaugeStyle, GaugeThresholds, RingGauge};
+pub mod function_plane;
+pub use function_plane::FunctionPlane;
 pub mod resizable_split;
 pub use resizable_split::ResizableSplit;
 pub mod video_player;
