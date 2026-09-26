@@ -35,7 +35,10 @@ fn t(secs: u64) -> SystemTime {
 
 /// Build + sign a role attestation. The trust root (`issuer`) signs
 /// over the attestation's `signing_bytes()` view.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test builder: one argument per attestation field"
+)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pub: Ed25519PublicKey,
@@ -67,7 +70,7 @@ fn make_role_attestation(
 
 /// Fixture: an owner, an author, an Editor attestation, one Note,
 /// no clearance gate, sig-on-op already applied.
-#[allow(dead_code)]
+#[allow(dead_code, reason = "not every merged case reads every fixture field")]
 struct Fixture {
     owner_sk: SigningKey,
     owner_pub: Ed25519PublicKey,

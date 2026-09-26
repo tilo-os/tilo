@@ -37,7 +37,10 @@ fn t(secs: u64) -> SystemTime {
         .unwrap()
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test builder: one argument per attestation field"
+)]
 fn make_role_attestation(
     issuer_sk: &SigningKey,
     issuer_pub: Ed25519PublicKey,

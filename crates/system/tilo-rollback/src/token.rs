@@ -91,7 +91,10 @@ pub struct RollbackToken {
 }
 
 impl RollbackToken {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per sealed token field"
+    )]
     pub fn new(
         keyslot: u32,
         generation: u64,

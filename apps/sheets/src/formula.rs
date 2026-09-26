@@ -2767,7 +2767,10 @@ mod tests {
 
     /// COUNTIF/SUMIF, math, conditional statistics and logical functions.
     #[test]
-    #[allow(clippy::approx_constant)]
+    #[allow(
+        clippy::approx_constant,
+        reason = "the literals are spreadsheet inputs and expected outputs, not uses of pi or e"
+    )]
     fn math_statistics_and_logical_functions() {
         // Case `countif_sumif`.
         {

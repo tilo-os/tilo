@@ -10,8 +10,9 @@ pub const MAX_METADATA_SCAN_BYTES: usize = 16 * 1024 * 1024;
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // Header offsets are fixed and guarded by format-specific length checks.
+    clippy::indexing_slicing,
+    reason = "header offsets are fixed and guarded by format-specific length checks"
+)]
 pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
     let bytes = &bytes[..bytes.len().min(MAX_METADATA_SCAN_BYTES)];
     let ext = name
@@ -81,8 +82,9 @@ pub fn extract(name: &str, bytes: &[u8]) -> Option<FilePropertiesV1> {
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // The bounded scanner validates each segment before accessing its fields.
+    clippy::indexing_slicing,
+    reason = "the bounded scanner validates each segment before accessing its fields"
+)]
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if !bytes.starts_with(&[0xff, 0xd8]) {
         return None;
@@ -115,8 +117,9 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 #[allow(
     clippy::arithmetic_side_effects,
     clippy::cast_lossless,
-    clippy::indexing_slicing
-)] // RIFF chunk bounds are checked before fixed-width header reads.
+    clippy::indexing_slicing,
+    reason = "rIFF chunk bounds are checked before fixed-width header reads"
+)]
 fn wav_properties(bytes: &[u8]) -> Option<(u64, &'static str)> {
     if bytes.len() < 12 || !bytes.starts_with(b"RIFF") || &bytes[8..12] != b"WAVE" {
         return None;
