@@ -79,53 +79,31 @@ pub fn spawn_signal_emitter(
         .detach();
 }
 
-/// Mirror Tilo's live appearance store into the standard portal namespace.
-/// The compositor watches the same file on the same cadence, so applications
-/// and shell chrome switch coherently and `SettingChanged` is emitted only
-/// when a value truly changes.
+/// Mirror Tilo's appearance into the portal namespaces and dconf, then keep
+/// both current. The settings-store watch wakes this task on every save, and
+/// [`super::desktop_services::SettingsServiceHandle::set`] broadcasts only
+/// values that truly changed, so `SettingChanged` fires once per real edit.
 #[cfg(target_os = "linux")]
 pub fn spawn_appearance_monitor(settings: super::desktop_services::SettingsServiceHandle) {
+    let (wake, mut woken) = tokio::sync::mpsc::channel::<()>(1);
+    let watch = settings_store::watch::watch_settings(move || {
+        let _ = wake.try_send(());
+    });
+    if let Err(error) = &watch {
+        tracing::warn!(%error, "settings file is not watchable; appearance is published once");
+    }
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(std::time::Duration::from_millis(750));
+        let _watch = watch;
+        let mut dconf = super::appearance::DconfPublisher::new();
         loop {
-            interval.tick().await;
-            let theme = ui::theme::Theme::configured();
-            let background = theme.bg_app.to_rgba8();
-            let luma = 0.2126 * f64::from(background.r)
-                + 0.7152 * f64::from(background.g)
-                + 0.0722 * f64::from(background.b);
-            settings.set(
-                "org.freedesktop.appearance",
-                "color-scheme",
-                PortalSetting::Unsigned(if luma < 127.5 { 1 } else { 2 }),
-            );
-            let high_contrast = settings_store::settings_path()
-                .and_then(|path| std::fs::read_to_string(path).ok())
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .and_then(|value| {
-                    value
-                        .get("appearance")?
-                        .get("theme")?
-                        .as_str()
-                        .map(|name| name == "high-contrast" || name == "high_contrast")
-                })
-                .unwrap_or(false);
-            settings.set(
-                "org.freedesktop.appearance",
-                "contrast",
-                PortalSetting::Unsigned(u32::from(high_contrast)),
-            );
-            let accent =
-                theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX].to_rgba8();
-            settings.set(
-                "org.freedesktop.appearance",
-                "accent-color",
-                PortalSetting::Color(
-                    f64::from(accent.r) / 255.0,
-                    f64::from(accent.g) / 255.0,
-                    f64::from(accent.b) / 255.0,
-                ),
-            );
+            let appearance = super::appearance::LegacyAppearance::configured();
+            for (namespace, key, value) in appearance.portal_settings() {
+                settings.set(namespace, key, value);
+            }
+            dconf.publish(&appearance).await;
+            if woken.recv().await.is_none() {
+                break;
+            }
         }
     });
 }
