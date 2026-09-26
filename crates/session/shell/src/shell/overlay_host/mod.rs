@@ -21914,10 +21914,11 @@ impl ShellOverlayHost {
             None,
             &shape,
         );
+        // The edge is derived from the surface it bounds (HIG §9.5).
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            theme.tokens.colors.border_standard,
+            ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &shape,
         );
