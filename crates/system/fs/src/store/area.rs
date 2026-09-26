@@ -200,7 +200,8 @@ impl State {
 
 pub struct FileArea {
     data: PathBuf,
-    db: Database,
+    /// The area's index; `None` once [`FileArea::close`] released it.
+    db: std::sync::RwLock<Option<Arc<Database>>>,
     state: Mutex<State>,
     /// Serialises persistence so an older snapshot of an entry never
     /// overwrites a newer one.
@@ -235,6 +236,25 @@ fn range_set(ranges: &[(u64, u64)]) -> RangeSet {
 }
 
 impl FileArea {
+    /// The area's index database, unless the area was closed.
+    fn database(&self) -> io::Result<Arc<Database>> {
+        self.db
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .ok_or_else(|| io::Error::other("the content area is closed"))
+    }
+
+    /// Releases the area's index database, so that the same directory can
+    /// be opened again in this process while handles to this area remain.
+    /// Every later operation on this area fails.
+    pub fn close(&self) {
+        self.db
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
+
     /// Opens (or creates) the area under `dir`, holding at most `budget`
     /// resident bytes of cached entries.
     ///
@@ -254,7 +274,7 @@ impl FileArea {
         }
         let area = Self {
             data,
-            db,
+            db: std::sync::RwLock::new(Some(Arc::new(db))),
             state: Mutex::new(State::default()),
             commit: Mutex::new(()),
             create: Mutex::new(()),
@@ -272,7 +292,7 @@ impl FileArea {
         let mut entries = HashMap::new();
         let mut clock = 0_u64;
         {
-            let txn = self.db.begin_read().map_err(db_error)?;
+            let txn = self.database()?.begin_read().map_err(db_error)?;
             let table = txn.open_table(ENTRIES).map_err(db_error)?;
             for row in table.iter().map_err(db_error)? {
                 let (key, value) = row.map_err(db_error)?;
@@ -492,7 +512,7 @@ impl FileArea {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut members = Vec::with_capacity(chunks.len().saturating_mul(76));
-        let txn = self.db.begin_write().map_err(db_error)?;
+        let txn = self.database()?.begin_write().map_err(db_error)?;
         {
             let mut index = txn.open_multimap_table(CHUNKS).map_err(db_error)?;
             for (hash, offset, len) in chunks {
@@ -515,7 +535,7 @@ impl FileArea {
     /// Where chunk `hash` is resident, if it is.
     pub fn find_chunk(&self, hash: &[u8; 32]) -> Option<ChunkLocation> {
         let candidates: Vec<ChunkLocation> = {
-            let txn = self.db.begin_read().ok()?;
+            let txn = self.database().ok()?.begin_read().ok()?;
             let index = txn.open_multimap_table(CHUNKS).ok()?;
             let values = index.get(*hash).ok()?;
             values
@@ -1077,7 +1097,7 @@ impl FileArea {
             return Ok(());
         }
         let bytes = postcard::to_allocvec(stored).map_err(db_error)?;
-        let txn = self.db.begin_write().map_err(db_error)?;
+        let txn = self.database()?.begin_write().map_err(db_error)?;
         txn.open_table(ENTRIES)
             .map_err(db_error)?
             .insert(*key, bytes.as_slice())
@@ -1090,7 +1110,7 @@ impl FileArea {
             .commit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let txn = self.db.begin_write().map_err(db_error)?;
+        let txn = self.database()?.begin_write().map_err(db_error)?;
         {
             txn.open_table(ENTRIES)
                 .map_err(db_error)?
@@ -1160,7 +1180,7 @@ impl FileArea {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let stored = stored_before_sync;
-        let txn = self.db.begin_write().map_err(db_error)?;
+        let txn = self.database()?.begin_write().map_err(db_error)?;
         {
             let mut table = txn.open_table(ENTRIES).map_err(db_error)?;
             for (key, stored) in stored {
