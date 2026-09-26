@@ -146,6 +146,18 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Reorder the focused window group",
         ),
         (
+            ShortcutAction::MoveGroupToPreviousDisplay,
+            "shortcuts.move_group_to_previous_display",
+            "Move group to display on left",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
+            ShortcutAction::MoveGroupToNextDisplay,
+            "shortcuts.move_group_to_next_display",
+            "Move group to display on right",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
             ShortcutAction::ResizeNarrower,
             "shortcuts.resize_narrower",
             "Make window narrower",
@@ -618,51 +630,56 @@ impl Widget for ShortcutPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Default bindings, help text, conflict rollback and the vim-mode shell contract.
     #[test]
-    fn seeds_real_default_bindings() {
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
-            Some("Super+k")
-        );
-    }
+    fn shortcut_bindings_seed_explain_and_persist_safely() {
+        // Case `seeds_real_default_bindings`.
+        {
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                read_str_or_text(&doc, &automerge::ROOT, SEARCH).as_deref(),
+                Some("Super+k")
+            );
+        }
 
-    #[test]
-    fn help_setting_explains_fixed_and_configurable_routes() {
-        let (_, _, label, description) = entries()
-            .into_iter()
-            .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
-            .expect("help shortcut entry");
-        assert_eq!(label, "Desktop help");
-        assert!(description.contains("Super+Shift+/"));
-        assert!(description.contains("Super+?"));
-        assert!(description.contains("F1"));
-        assert!(description.contains("same guide"));
-    }
-    #[test]
-    fn conflicting_edit_is_rolled_back() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, LOCK).as_deref(),
-            Some("Super+l")
-        );
-    }
+        // Case `help_setting_explains_fixed_and_configurable_routes`.
+        {
+            let (_, _, label, description) = entries()
+                .into_iter()
+                .find(|(action, ..)| *action == ShortcutAction::ShortcutHelp)
+                .expect("help shortcut entry");
+            assert_eq!(label, "Desktop help");
+            assert!(description.contains("Super+Shift+/"));
+            assert!(description.contains("Super+?"));
+            assert!(description.contains("F1"));
+            assert!(description.contains("same guide"));
+        }
 
-    #[test]
-    fn vim_mode_toggle_persists_to_the_shell_contract() {
-        let _guard = crate::prefs::test_env::ConfigGuard::new();
-        let mut pane = ShortcutPane::default();
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        let _ = doc.put(&automerge::ROOT, VIM_MODE, true);
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert!(settings_store::hardware::DesktopControlsConfig::load().vim_mode);
+        // Case `conflicting_edit_is_rolled_back`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(&automerge::ROOT, LOCK, "Super+k");
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                read_str_or_text(&doc, &automerge::ROOT, LOCK).as_deref(),
+                Some("Super+l")
+            );
+        }
+
+        // Case `vim_mode_toggle_persists_to_the_shell_contract`.
+        {
+            let _guard = crate::prefs::test_env::ConfigGuard::new();
+            let mut pane = ShortcutPane::default();
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            let _ = doc.put(&automerge::ROOT, VIM_MODE, true);
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert!(settings_store::hardware::DesktopControlsConfig::load().vim_mode);
+        }
     }
 }

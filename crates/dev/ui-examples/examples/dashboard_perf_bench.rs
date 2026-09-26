@@ -480,311 +480,318 @@ mod damage_verifier_tests {
     };
 
     #[test]
-    fn reports_only_an_8_bit_difference_beyond_aa_at_its_native_coordinate() {
-        assert!(!pixel_differs_beyond_aa(
-            &[10, 20, 30, 40],
-            &[11, 19, 31, 39]
-        ));
-        assert!(pixel_differs_beyond_aa(
-            &[10, 20, 30, 40],
-            &[12, 20, 30, 40]
-        ));
-        assert_eq!(native_pixel_coordinates(13, 5), (3, 2));
-    }
-
-    #[test]
-    fn timing_helpers_match_the_benchmark_p99_rank_and_saturate_unaccounted_time() {
-        let values = (0_u128..100).collect::<Vec<_>>();
-        assert_eq!(p99_values(&values), 98);
-
-        let phase = Phase {
-            render_us: 100,
-            ..Phase::default()
-        };
-        let timing = OffscreenRenderTiming {
-            vello_submit_us: 20,
-            copy_submit_us: 3,
-            settle_wait_us: 70,
-            full_attempts: 0,
-            damage_setup_us: 5,
-            damage_target_creations: 0,
-            ..OffscreenRenderTiming::default()
-        };
-        assert_eq!(unaccounted_render_us(&phase, &timing), 2);
-        assert_eq!(
-            unaccounted_render_us(
-                &Phase {
-                    render_us: 1,
-                    ..Phase::default()
-                },
-                &timing,
-            ),
-            0,
-        );
-
-        let complete = OffscreenRenderTiming {
-            gpu_timestamp_span_ns: 100,
-            gpu_timestamp_last_pass_ns: 40,
-            gpu_timestamp_other_pass_ns: 30,
-            sparse_submissions: 2,
-            sparse_fine_tiles: 12,
-            sparse_written_pixels: 384,
-            coarse_prefix_pixels: 768,
-            sparse_coarse_adaptive_submissions: 2,
-            sparse_coarse_adaptive_dense_submissions: 1,
-            sparse_coarse_active_bins_submissions: 1,
-            sparse_coarse_native_bins: 85,
-            sparse_coarse_selected_native_bins: 7,
-            sparse_path_tile_bounds_submissions: 1,
-            sparse_path_tile_bounds_tiles: 48,
-            sparse_coarse_opaque_prune_submissions: 1,
-            sparse_solid_fuse_submissions: 1,
-            sparse_segment_row_mask_submissions: 1,
-            canonical_segment_order_sparse_selected_attempts: 1,
-            canonical_segment_order_full_selected_attempts: 1,
-            area_ppt8_sparse_selected_attempts: 1,
-            area_ppt8_full_selected_attempts: 1,
-            clip_single_group_sparse_selected_attempts: 1,
-            clip_single_group_full_selected_attempts: 1,
-            sparse_fine_quad_skip_submissions: 1,
-            sparse_fine_quad_total_quads: 64,
-            sparse_fine_quad_active_quads: 20,
-            sparse_fine_quad_skipped_quads: 44,
-            gpu_timestamp_expected_submissions: 1,
-            gpu_timestamp_sampled_submissions: 1,
-            ..timing
-        };
-        let partial = OffscreenRenderTiming {
-            gpu_timestamp_expected_submissions: 1,
-            gpu_timestamp_missing_submissions: 1,
-            ..timing
-        };
-        let complete_dispatch = OffscreenRenderTiming {
-            gpu_dispatch_timestamp_expected_submissions: 1,
-            gpu_dispatch_timestamp_sampled_submissions: 1,
-            gpu_dispatch_timestamp_present_stages: 1,
-            gpu_dispatch_timestamp_stage_duration_ns: [40; 32],
-            gpu_dispatch_timestamp_stage_dispatch_count: [2; 32],
-            gpu_dispatch_timestamp_unknown_duration_ns: 7,
-            gpu_dispatch_timestamp_unknown_dispatch_count: 2,
-            ..timing
-        };
-        let missing_dispatch = OffscreenRenderTiming {
-            gpu_dispatch_timestamp_expected_submissions: 1,
-            gpu_dispatch_timestamp_missing_submissions: 1,
-            gpu_dispatch_timestamp_unknown_duration_ns: 99,
-            gpu_dispatch_timestamp_unknown_dispatch_count: 99,
-            ..timing
-        };
-        let stale_dispatch = OffscreenRenderTiming {
-            gpu_dispatch_timestamp_expected_submissions: 1,
-            gpu_dispatch_timestamp_sampled_submissions: 1,
-            gpu_dispatch_timestamp_stale_submissions: 1,
-            ..timing
-        };
-        let complete_spans = [complete, partial]
-            .into_iter()
-            .filter(has_complete_gpu_timestamp)
-            .map(|sample| sample.gpu_timestamp_span_ns)
-            .collect::<Vec<_>>();
-        assert_eq!(
-            complete_spans,
-            vec![100],
-            "a missing timestamp frame must be omitted, not averaged as a zero span"
-        );
-        let complete_compute_parts = [complete, partial]
-            .into_iter()
-            .filter(has_complete_gpu_timestamp)
-            .map(|sample| {
-                (
-                    sample.gpu_timestamp_last_pass_ns,
-                    sample.gpu_timestamp_other_pass_ns,
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(complete_compute_parts, vec![(40, 30)]);
-        let complete_sparse_accounting = [complete, partial]
-            .into_iter()
-            .filter(has_complete_gpu_timestamp)
-            .map(|sample| {
-                (
-                    sample.sparse_submissions,
-                    sample.sparse_fine_tiles,
-                    sample.sparse_written_pixels,
-                    sample.coarse_prefix_pixels,
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(complete_sparse_accounting, vec![(2, 12, 384, 768)]);
-        assert_eq!(
-            sparse_coarse_profile_totals([&complete, &partial]),
-            super::SparseCoarseProfileTotals {
-                adaptive_submissions: 2,
-                adaptive_dense_submissions: 1,
-                active_bins_submissions: 1,
-                native_bins: 85,
-                selected_native_bins: 7,
-                path_tile_bounds_submissions: 1,
-                path_tile_bounds_tiles: 48,
-                opaque_prune_selected_submissions: 1,
-                solid_fuse_selected_submissions: 1,
-                segment_row_mask_selected_submissions: 1,
+    fn damage_verification_counts_real_pixel_and_tile_differences() {
+        // phase: reports_only_an_8_bit_difference_beyond_aa_at_its_native_coordinate
+        {
+            assert!(!pixel_differs_beyond_aa(
+                &[10, 20, 30, 40],
+                &[11, 19, 31, 39]
+            ));
+            assert!(pixel_differs_beyond_aa(
+                &[10, 20, 30, 40],
+                &[12, 20, 30, 40]
+            ));
+            assert_eq!(native_pixel_coordinates(13, 5), (3, 2));
+        }
+        // phase: sparse_path_tile_bounds_totals_distinguish_default_applied_and_fallback
+        {
+            let default = OffscreenRenderTiming::default();
+            let applied = OffscreenRenderTiming {
+                sparse_path_tile_bounds_submissions: 1,
+                sparse_path_tile_bounds_tiles: 24,
+                sparse_coarse_opaque_prune_submissions: 1,
+                sparse_solid_fuse_submissions: 1,
+                sparse_segment_row_mask_submissions: 1,
                 canonical_segment_order_sparse_selected_attempts: 1,
                 canonical_segment_order_full_selected_attempts: 1,
                 area_ppt8_sparse_selected_attempts: 1,
                 area_ppt8_full_selected_attempts: 1,
                 clip_single_group_sparse_selected_attempts: 1,
                 clip_single_group_full_selected_attempts: 1,
-                fine_quad_skip_submissions: 1,
-                fine_quad_total: 64,
-                fine_quad_active: 20,
-                fine_quad_skipped: 44,
-            }
-        );
-        assert_eq!(gpu_timestamp_sample_label(&complete, false), "off");
-        assert!(gpu_timestamp_sample_label(&complete, true).starts_with("span=100ns"));
-        assert!(gpu_timestamp_sample_label(&partial, true).starts_with("incomplete"));
-        assert!(dispatch_timestamp_configuration_is_valid(true, true));
-        assert!(!dispatch_timestamp_configuration_is_valid(true, false));
-        assert!(dispatch_timestamp_configuration_is_valid(false, false));
-        assert!(has_complete_gpu_dispatch_timestamp(&complete_dispatch));
-        assert!(!has_complete_gpu_dispatch_timestamp(&missing_dispatch));
-        assert!(!has_complete_gpu_dispatch_timestamp(&stale_dispatch));
-        assert!(has_gpu_dispatch_timestamp_stage(&complete_dispatch, 0));
-        assert!(!has_gpu_dispatch_timestamp_stage(&complete_dispatch, 1));
-        assert_eq!(
-            [complete_dispatch, missing_dispatch, stale_dispatch]
-                .into_iter()
-                .filter(has_complete_gpu_dispatch_timestamp)
-                .count(),
-            1
-        );
-        assert_eq!(vello::gpu_dispatch_timestamp_stage_name(0), Some("unknown"));
-        assert_eq!(
-            complete_dispatch_unknown_totals([complete_dispatch, missing_dispatch].iter()),
-            (7, 2),
-            "unknown stage totals must not include incomplete dispatch samples"
-        );
+                sparse_fine_quad_skip_submissions: 1,
+                sparse_fine_quad_total_quads: 64,
+                sparse_fine_quad_active_quads: 16,
+                sparse_fine_quad_skipped_quads: 48,
+                ..OffscreenRenderTiming::default()
+            };
+            // A sparse fallback contributes no bound coverage because returned stats did not apply it.
+            let fallback = OffscreenRenderTiming {
+                sparse_submissions: 1,
+                ..OffscreenRenderTiming::default()
+            };
+            assert_eq!(
+                sparse_coarse_profile_totals([&default, &applied, &fallback]),
+                super::SparseCoarseProfileTotals {
+                    path_tile_bounds_submissions: 1,
+                    path_tile_bounds_tiles: 24,
+                    opaque_prune_selected_submissions: 1,
+                    solid_fuse_selected_submissions: 1,
+                    segment_row_mask_selected_submissions: 1,
+                    canonical_segment_order_sparse_selected_attempts: 1,
+                    canonical_segment_order_full_selected_attempts: 1,
+                    area_ppt8_sparse_selected_attempts: 1,
+                    area_ppt8_full_selected_attempts: 1,
+                    clip_single_group_sparse_selected_attempts: 1,
+                    clip_single_group_full_selected_attempts: 1,
+                    fine_quad_skip_submissions: 1,
+                    fine_quad_total: 64,
+                    fine_quad_active: 16,
+                    fine_quad_skipped: 48,
+                    ..super::SparseCoarseProfileTotals::default()
+                }
+            );
+        }
     }
 
     #[test]
-    fn sparse_path_tile_bounds_totals_distinguish_default_applied_and_fallback() {
-        let default = OffscreenRenderTiming::default();
-        let applied = OffscreenRenderTiming {
-            sparse_path_tile_bounds_submissions: 1,
-            sparse_path_tile_bounds_tiles: 24,
-            sparse_coarse_opaque_prune_submissions: 1,
-            sparse_solid_fuse_submissions: 1,
-            sparse_segment_row_mask_submissions: 1,
-            canonical_segment_order_sparse_selected_attempts: 1,
-            canonical_segment_order_full_selected_attempts: 1,
-            area_ppt8_sparse_selected_attempts: 1,
-            area_ppt8_full_selected_attempts: 1,
-            clip_single_group_sparse_selected_attempts: 1,
-            clip_single_group_full_selected_attempts: 1,
-            sparse_fine_quad_skip_submissions: 1,
-            sparse_fine_quad_total_quads: 64,
-            sparse_fine_quad_active_quads: 16,
-            sparse_fine_quad_skipped_quads: 48,
-            ..OffscreenRenderTiming::default()
-        };
-        // A sparse fallback contributes no bound coverage because returned stats did not apply it.
-        let fallback = OffscreenRenderTiming {
-            sparse_submissions: 1,
-            ..OffscreenRenderTiming::default()
-        };
-        assert_eq!(
-            sparse_coarse_profile_totals([&default, &applied, &fallback]),
-            super::SparseCoarseProfileTotals {
-                path_tile_bounds_submissions: 1,
-                path_tile_bounds_tiles: 24,
-                opaque_prune_selected_submissions: 1,
-                solid_fuse_selected_submissions: 1,
-                segment_row_mask_selected_submissions: 1,
-                canonical_segment_order_sparse_selected_attempts: 1,
-                canonical_segment_order_full_selected_attempts: 1,
-                area_ppt8_sparse_selected_attempts: 1,
-                area_ppt8_full_selected_attempts: 1,
-                clip_single_group_sparse_selected_attempts: 1,
-                clip_single_group_full_selected_attempts: 1,
-                fine_quad_skip_submissions: 1,
-                fine_quad_total: 64,
-                fine_quad_active: 16,
-                fine_quad_skipped: 48,
-                ..super::SparseCoarseProfileTotals::default()
-            }
-        );
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
+    fn frame_budgets_use_exact_redraw_totals_and_benchmark_ranks() {
+        // phase: timing_helpers_match_the_benchmark_p99_rank_and_saturate_unaccounted_time
+        {
+            let values = (0_u128..100).collect::<Vec<_>>();
+            assert_eq!(p99_values(&values), 98);
 
-    #[test]
-    fn allocation_traffic_budget_includes_reallocations_and_requires_redraws() {
-        let traffic = allocator_traffic_bytes(10, 5);
-        assert_eq!(traffic, 15);
-        assert_eq!(ceil_bytes_per_redraw(traffic, 2), 8);
-        assert!(traffic_byte_redraw_budget_passes(traffic, 2, 8));
-        assert!(!traffic_byte_redraw_budget_passes(traffic, 2, 7));
-        assert!(!traffic_byte_redraw_budget_passes(traffic, 0, u64::MAX));
-    }
-
-    #[test]
-    fn mean_frame_budget_uses_exact_redraw_totals_and_rejects_bad_configuration() {
-        assert_eq!(redraw_frame_totals(&[]), None);
-        assert_eq!(mean_frame_budget_passes(&[], 8_000), None);
-
-        let idle = Phase {
-            total_us: 99_999,
-            ..Phase::default()
-        };
-        assert_eq!(redraw_frame_totals(&[idle.clone()]), None);
-        assert_eq!(mean_frame_budget_passes(&[idle.clone()], 8_000), None);
-        let redraws = [
-            idle,
-            Phase {
-                draw_us: 1,
-                total_us: 8_000,
-                ..Phase::default()
-            },
-            Phase {
-                render_us: 1,
-                total_us: 8_000,
-                ..Phase::default()
-            },
-        ];
-        assert_eq!(redraw_frame_totals(&redraws), Some((16_000, 2)));
-        assert_eq!(mean_frame_budget_passes(&redraws, 8_000), Some(true));
-
-        let fractional_excess = [
-            Phase {
-                draw_us: 1,
-                total_us: 8_000,
-                ..Phase::default()
-            },
-            Phase {
-                render_us: 1,
-                total_us: 8_001,
-                ..Phase::default()
-            },
-        ];
-        assert_eq!(
-            mean_frame_budget_passes(&fractional_excess, 8_000),
-            Some(false),
-            "16,001us across two redraws must not pass an 8,000us mean budget"
-        );
-
-        let all_redraws = vec![
-            Phase {
-                draw_us: 1,
-                total_us: 8_000,
+            let phase = Phase {
+                render_us: 100,
                 ..Phase::default()
             };
-            1_000
-        ];
-        assert_eq!(redraw_frame_totals(&all_redraws), Some((8_000_000, 1_000)));
-        assert_eq!(mean_frame_budget_passes(&all_redraws, 8_000), Some(true));
-        assert_eq!(parse_mean_frame_budget(None), Ok(None));
-        assert_eq!(parse_mean_frame_budget(Some("8000")), Ok(Some(8_000)));
-        assert!(parse_mean_frame_budget(Some("0")).is_err());
-        assert!(parse_mean_frame_budget(Some("nope")).is_err());
+            let timing = OffscreenRenderTiming {
+                vello_submit_us: 20,
+                copy_submit_us: 3,
+                settle_wait_us: 70,
+                full_attempts: 0,
+                damage_setup_us: 5,
+                damage_target_creations: 0,
+                ..OffscreenRenderTiming::default()
+            };
+            assert_eq!(unaccounted_render_us(&phase, &timing), 2);
+            assert_eq!(
+                unaccounted_render_us(
+                    &Phase {
+                        render_us: 1,
+                        ..Phase::default()
+                    },
+                    &timing,
+                ),
+                0,
+            );
+
+            let complete = OffscreenRenderTiming {
+                gpu_timestamp_span_ns: 100,
+                gpu_timestamp_last_pass_ns: 40,
+                gpu_timestamp_other_pass_ns: 30,
+                sparse_submissions: 2,
+                sparse_fine_tiles: 12,
+                sparse_written_pixels: 384,
+                coarse_prefix_pixels: 768,
+                sparse_coarse_adaptive_submissions: 2,
+                sparse_coarse_adaptive_dense_submissions: 1,
+                sparse_coarse_active_bins_submissions: 1,
+                sparse_coarse_native_bins: 85,
+                sparse_coarse_selected_native_bins: 7,
+                sparse_path_tile_bounds_submissions: 1,
+                sparse_path_tile_bounds_tiles: 48,
+                sparse_coarse_opaque_prune_submissions: 1,
+                sparse_solid_fuse_submissions: 1,
+                sparse_segment_row_mask_submissions: 1,
+                canonical_segment_order_sparse_selected_attempts: 1,
+                canonical_segment_order_full_selected_attempts: 1,
+                area_ppt8_sparse_selected_attempts: 1,
+                area_ppt8_full_selected_attempts: 1,
+                clip_single_group_sparse_selected_attempts: 1,
+                clip_single_group_full_selected_attempts: 1,
+                sparse_fine_quad_skip_submissions: 1,
+                sparse_fine_quad_total_quads: 64,
+                sparse_fine_quad_active_quads: 20,
+                sparse_fine_quad_skipped_quads: 44,
+                gpu_timestamp_expected_submissions: 1,
+                gpu_timestamp_sampled_submissions: 1,
+                ..timing
+            };
+            let partial = OffscreenRenderTiming {
+                gpu_timestamp_expected_submissions: 1,
+                gpu_timestamp_missing_submissions: 1,
+                ..timing
+            };
+            let complete_dispatch = OffscreenRenderTiming {
+                gpu_dispatch_timestamp_expected_submissions: 1,
+                gpu_dispatch_timestamp_sampled_submissions: 1,
+                gpu_dispatch_timestamp_present_stages: 1,
+                gpu_dispatch_timestamp_stage_duration_ns: [40; 32],
+                gpu_dispatch_timestamp_stage_dispatch_count: [2; 32],
+                gpu_dispatch_timestamp_unknown_duration_ns: 7,
+                gpu_dispatch_timestamp_unknown_dispatch_count: 2,
+                ..timing
+            };
+            let missing_dispatch = OffscreenRenderTiming {
+                gpu_dispatch_timestamp_expected_submissions: 1,
+                gpu_dispatch_timestamp_missing_submissions: 1,
+                gpu_dispatch_timestamp_unknown_duration_ns: 99,
+                gpu_dispatch_timestamp_unknown_dispatch_count: 99,
+                ..timing
+            };
+            let stale_dispatch = OffscreenRenderTiming {
+                gpu_dispatch_timestamp_expected_submissions: 1,
+                gpu_dispatch_timestamp_sampled_submissions: 1,
+                gpu_dispatch_timestamp_stale_submissions: 1,
+                ..timing
+            };
+            let complete_spans = [complete, partial]
+                .into_iter()
+                .filter(has_complete_gpu_timestamp)
+                .map(|sample| sample.gpu_timestamp_span_ns)
+                .collect::<Vec<_>>();
+            assert_eq!(
+                complete_spans,
+                vec![100],
+                "a missing timestamp frame must be omitted, not averaged as a zero span"
+            );
+            let complete_compute_parts = [complete, partial]
+                .into_iter()
+                .filter(has_complete_gpu_timestamp)
+                .map(|sample| {
+                    (
+                        sample.gpu_timestamp_last_pass_ns,
+                        sample.gpu_timestamp_other_pass_ns,
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(complete_compute_parts, vec![(40, 30)]);
+            let complete_sparse_accounting = [complete, partial]
+                .into_iter()
+                .filter(has_complete_gpu_timestamp)
+                .map(|sample| {
+                    (
+                        sample.sparse_submissions,
+                        sample.sparse_fine_tiles,
+                        sample.sparse_written_pixels,
+                        sample.coarse_prefix_pixels,
+                    )
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(complete_sparse_accounting, vec![(2, 12, 384, 768)]);
+            assert_eq!(
+                sparse_coarse_profile_totals([&complete, &partial]),
+                super::SparseCoarseProfileTotals {
+                    adaptive_submissions: 2,
+                    adaptive_dense_submissions: 1,
+                    active_bins_submissions: 1,
+                    native_bins: 85,
+                    selected_native_bins: 7,
+                    path_tile_bounds_submissions: 1,
+                    path_tile_bounds_tiles: 48,
+                    opaque_prune_selected_submissions: 1,
+                    solid_fuse_selected_submissions: 1,
+                    segment_row_mask_selected_submissions: 1,
+                    canonical_segment_order_sparse_selected_attempts: 1,
+                    canonical_segment_order_full_selected_attempts: 1,
+                    area_ppt8_sparse_selected_attempts: 1,
+                    area_ppt8_full_selected_attempts: 1,
+                    clip_single_group_sparse_selected_attempts: 1,
+                    clip_single_group_full_selected_attempts: 1,
+                    fine_quad_skip_submissions: 1,
+                    fine_quad_total: 64,
+                    fine_quad_active: 20,
+                    fine_quad_skipped: 44,
+                }
+            );
+            assert_eq!(gpu_timestamp_sample_label(&complete, false), "off");
+            assert!(gpu_timestamp_sample_label(&complete, true).starts_with("span=100ns"));
+            assert!(gpu_timestamp_sample_label(&partial, true).starts_with("incomplete"));
+            assert!(dispatch_timestamp_configuration_is_valid(true, true));
+            assert!(!dispatch_timestamp_configuration_is_valid(true, false));
+            assert!(dispatch_timestamp_configuration_is_valid(false, false));
+            assert!(has_complete_gpu_dispatch_timestamp(&complete_dispatch));
+            assert!(!has_complete_gpu_dispatch_timestamp(&missing_dispatch));
+            assert!(!has_complete_gpu_dispatch_timestamp(&stale_dispatch));
+            assert!(has_gpu_dispatch_timestamp_stage(&complete_dispatch, 0));
+            assert!(!has_gpu_dispatch_timestamp_stage(&complete_dispatch, 1));
+            assert_eq!(
+                [complete_dispatch, missing_dispatch, stale_dispatch]
+                    .into_iter()
+                    .filter(has_complete_gpu_dispatch_timestamp)
+                    .count(),
+                1
+            );
+            assert_eq!(vello::gpu_dispatch_timestamp_stage_name(0), Some("unknown"));
+            assert_eq!(
+                complete_dispatch_unknown_totals([complete_dispatch, missing_dispatch].iter()),
+                (7, 2),
+                "unknown stage totals must not include incomplete dispatch samples"
+            );
+        }
+        // phase: allocation_traffic_budget_includes_reallocations_and_requires_redraws
+        {
+            let traffic = allocator_traffic_bytes(10, 5);
+            assert_eq!(traffic, 15);
+            assert_eq!(ceil_bytes_per_redraw(traffic, 2), 8);
+            assert!(traffic_byte_redraw_budget_passes(traffic, 2, 8));
+            assert!(!traffic_byte_redraw_budget_passes(traffic, 2, 7));
+            assert!(!traffic_byte_redraw_budget_passes(traffic, 0, u64::MAX));
+        }
+        // phase: mean_frame_budget_uses_exact_redraw_totals_and_rejects_bad_configuration
+        {
+            assert_eq!(redraw_frame_totals(&[]), None);
+            assert_eq!(mean_frame_budget_passes(&[], 8_000), None);
+
+            let idle = Phase {
+                total_us: 99_999,
+                ..Phase::default()
+            };
+            assert_eq!(redraw_frame_totals(&[idle.clone()]), None);
+            assert_eq!(mean_frame_budget_passes(&[idle.clone()], 8_000), None);
+            let redraws = [
+                idle,
+                Phase {
+                    draw_us: 1,
+                    total_us: 8_000,
+                    ..Phase::default()
+                },
+                Phase {
+                    render_us: 1,
+                    total_us: 8_000,
+                    ..Phase::default()
+                },
+            ];
+            assert_eq!(redraw_frame_totals(&redraws), Some((16_000, 2)));
+            assert_eq!(mean_frame_budget_passes(&redraws, 8_000), Some(true));
+
+            let fractional_excess = [
+                Phase {
+                    draw_us: 1,
+                    total_us: 8_000,
+                    ..Phase::default()
+                },
+                Phase {
+                    render_us: 1,
+                    total_us: 8_001,
+                    ..Phase::default()
+                },
+            ];
+            assert_eq!(
+                mean_frame_budget_passes(&fractional_excess, 8_000),
+                Some(false),
+                "16,001us across two redraws must not pass an 8,000us mean budget"
+            );
+
+            let all_redraws = vec![
+                Phase {
+                    draw_us: 1,
+                    total_us: 8_000,
+                    ..Phase::default()
+                };
+                1_000
+            ];
+            assert_eq!(redraw_frame_totals(&all_redraws), Some((8_000_000, 1_000)));
+            assert_eq!(mean_frame_budget_passes(&all_redraws, 8_000), Some(true));
+            assert_eq!(parse_mean_frame_budget(None), Ok(None));
+            assert_eq!(parse_mean_frame_budget(Some("8000")), Ok(Some(8_000)));
+            assert!(parse_mean_frame_budget(Some("0")).is_err());
+            assert!(parse_mean_frame_budget(Some("nope")).is_err());
+        }
     }
 }
 

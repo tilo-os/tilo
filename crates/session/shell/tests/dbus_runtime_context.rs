@@ -40,6 +40,7 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
     let Some(socket) = std::env::var_os(CHILD_ENV) else {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("bus");
+        let log = dir.path().join("child.stdout");
         let status = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST_NAME, "--nocapture"])
             .env(CHILD_ENV, &socket)
@@ -47,11 +48,19 @@ fn dbus_clients_work_from_threads_without_a_runtime() {
                 "DBUS_SESSION_BUS_ADDRESS",
                 format!("unix:path={}", socket.display()),
             )
+            // A file, not a pipe: a D-Bus worker thread's process cannot block the read.
+            .stdout(std::fs::File::create(&log).unwrap())
             .status()
             .unwrap();
+        let stdout = std::fs::read_to_string(&log).unwrap();
         assert!(
             status.success(),
-            "D-Bus runtime-context probe failed: {status}"
+            "D-Bus runtime-context probe failed: {status}\n{stdout}"
+        );
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test: {stdout}"
         );
         return;
     };

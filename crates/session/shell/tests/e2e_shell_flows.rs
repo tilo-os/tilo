@@ -1004,88 +1004,281 @@ fn center(r: vello::kurbo::Rect) -> Point {
 // Test 3: open quick settings via the tray pill
 
 #[test]
-fn e2e_open_quick_settings() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let theme = Theme::dark();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn overlay_host_keys_and_corner_clicks_open_close_and_navigate_overlays() {
+    // Phase `overlay_host_keys_open_close_and_navigate_search_overview_and_tabs`.
+    {
+        // Phase `e2e_super_k_opens_search_palette_in_live_binary_path`.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Use the concrete-type sibling of what the live binary builds.
+            let tree = WorkspaceTree::bootstrap_demo();
+            let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+            assert!(!host.palette_visible(), "palette starts closed");
 
-    let mut renderer_opt = try_new_renderer(W_U32, H_U32);
-    let out_dir = screenshots_dir();
+            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+            let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
+            assert!(handled, "Super+K must be consumed by the overlay host");
+            assert!(
+                host.palette_visible(),
+                "Super+K must open the global-search palette in the live-binary event path"
+            );
+        }
 
-    let mut h = Harness::new(&tree);
-    assert!(!h.chrome.borrow().overlays.quick_settings);
+        // Phase `e2e_escape_closes_search_palette`.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
 
-    // A draw pass populates `tray_pill_rect`, which handle_event hit-tests.
-    h.draw_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-06-quick-settings-pre.png"),
-    );
+            // Open via Super+K rather than bypassing the host's state machine, guarding
+            // against a mutation-ordering regression.
+            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+            let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
+            assert!(host.palette_visible());
 
-    // With the sidebar click-guard narrowed, the click reaches TopBarChrome.
-    let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
-    h.click(hit.x, hit.y);
-    assert!(
-        h.chrome.borrow().overlays.quick_settings,
-        "root-level click on the three-dot tray pill should open the quick-settings overlay"
-    );
+            // Escape priority order: palette > overview > ws_settings > quick_settings.
+            let no_mods = Modifiers::default();
+            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Escape)), no_mods);
+            assert!(handled, "Escape must be consumed while the palette is open");
+            assert!(
+                !host.palette_visible(),
+                "Escape must close the global-search palette"
+            );
+        }
 
-    // The open intent is stored in shared chrome state, while the retained
-    // host owns the transition. Pin that production transition at its resting
-    // value so this assertion captures Quick Settings rather than a valid
-    // state whose first animation frame is still fully transparent.
-    h.root
-        .as_any_mut()
-        .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
-        .expect("shell integration root remains a ShellOverlayHost")
-        .force_quick_settings_settled();
+        // Phase `e2e_ctrl_tab_cycles_tabs_without_opening_overview`.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+            assert!(!chrome.borrow().overlays.overview);
+            let before =
+                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
 
-    h.draw_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-07-quick-settings-open.png"),
-    );
-    if renderer_opt.is_some() {
-        let before = out_dir.join("e2e-06-quick-settings-pre.png");
-        let rendered = out_dir.join("e2e-07-quick-settings-open.png");
-        assert_png_nonempty(&rendered);
-        let panel = h
-            .root
-            .as_any_mut()
-            .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
-            .expect("shell integration root remains a ShellOverlayHost")
-            .quick_settings_rect_for_tests();
-        assert_region_visibly_differs(&before, &rendered, panel, 1_000);
-        // The topbar clock (chrono::Local) shows behind the quick-settings
-        // popover, making this render wall-clock-dependent — a golden would flake
-        // once a minute. Compare only the panel's deterministic footprint so
-        // a boolean open state can never pass while the overlay is absent.
-    } else {
-        eprintln!("offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only");
+            let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
+            assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
+            assert!(
+                !chrome.borrow().overlays.overview,
+                "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
+            );
+            let after =
+                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
+            assert_ne!(after, before, "Ctrl+Tab must select the next tab");
+
+            let backwards = Modifiers::from(
+                winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
+            );
+            assert!(pump_host(
+                &mut host,
+                &key_press(Key::Named(NamedKey::Tab)),
+                backwards
+            ));
+            assert_eq!(
+                chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
+                before,
+                "Ctrl+Shift+Tab must return to the previous tab"
+            );
+        }
+
+        // Phase `e2e_super_tab_toggles_overview_in_live_binary_path`.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+            assert!(!chrome.borrow().overlays.overview);
+
+            let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
+            assert!(handled, "Super+Tab must be consumed by the overlay host");
+            assert!(
+                chrome.borrow().overlays.overview,
+                "Super+Tab must toggle the overview overlay in the live-binary event path"
+            );
+        }
+
+        // Phase `e2e_overview_arrows_select_and_enter_switches_room`.
+        // The overview finishes on the keyboard: arrows walk the room list, Enter
+        // commits and closes.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let started_on = tree.desktop.active;
+            assert!(
+                tree.desktop.workspaces.len() > 1,
+                "precondition: the fixture has somewhere else to go"
+            );
+            let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
+
+            let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
+            assert!(pump_host(
+                &mut host,
+                &key_press(Key::Named(NamedKey::Tab)),
+                super_key
+            ));
+            assert!(
+                chrome.borrow().overlays.overview,
+                "precondition: panel is open"
+            );
+
+            let no_mods = Modifiers::default();
+            let handled = pump_host(
+                &mut host,
+                &key_press(Key::Named(NamedKey::ArrowDown)),
+                no_mods,
+            );
+            assert!(
+                handled,
+                "the open panel must consume the arrow instead of letting the \
+                 desktop underneath it scroll"
+            );
+
+            let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), no_mods);
+            assert!(handled, "Enter must be consumed by the open panel");
+            assert!(
+                !chrome.borrow().overlays.overview,
+                "committing to a room closes the switcher"
+            );
+            assert_ne!(
+                chrome.borrow().tree().desktop.active,
+                started_on,
+                "Enter must actually go to the room the arrow selected"
+            );
+        }
+
+        // Phase `e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed`.
+        // Arrows belong to the switcher only while it's open. Driven through the
+        // root/layout since the claim concerns a key the shell declines — the
+        // event must actually reach the content.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let mut h = Harness::new(&tree);
+            assert!(
+                !h.chrome.borrow().overlays.overview,
+                "precondition: panel shut"
+            );
+
+            let before = h.chrome.borrow().tree().desktop.active;
+            h.key(Key::Named(NamedKey::ArrowDown));
+            h.key(Key::Named(NamedKey::Enter));
+            assert!(
+                !h.chrome.borrow().overlays.overview,
+                "arrows and Enter must not open the switcher"
+            );
+            assert_eq!(
+                h.chrome.borrow().tree().desktop.active,
+                before,
+                "with the panel shut, Enter must not switch rooms"
+            );
+        }
     }
-}
 
-/// The visual status pill is intentionally inset, but the screen corner is
-/// the fastest acquisition target. A hurried click at the literal top-right
-/// pixel must therefore reach the same production root path as the pill.
-#[test]
-fn e2e_top_right_corner_opens_quick_settings() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let mut h = Harness::new(&tree);
-    assert!(!h.chrome.borrow().overlays.quick_settings);
+    // Phase `e2e_quick_settings_open_from_the_tray_and_the_top_right_corner`.
+    {
+        // Phase `e2e_open_quick_settings`.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let theme = Theme::dark();
 
-    // Populate the retained top-bar geometry before the pointer event, exactly
-    // as the compositor does on its first frame.
-    h.draw_to(None, Path::new(""));
-    h.click(f64::from(W_U32 - 1), 1.0);
+            let mut renderer_opt = try_new_renderer(W_U32, H_U32);
+            let out_dir = screenshots_dir();
 
-    assert!(
-        h.chrome.borrow().overlays.quick_settings,
-        "the literal top-right screen corner must acquire Quick Settings even though the visible pill is inset"
-    );
+            let mut h = Harness::new(&tree);
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+
+            // A draw pass populates `tray_pill_rect`, which handle_event hit-tests.
+            h.draw_to(
+                renderer_opt.as_mut(),
+                &out_dir.join("e2e-06-quick-settings-pre.png"),
+            );
+
+            // With the sidebar click-guard narrowed, the click reaches TopBarChrome.
+            let hit = tray_pill_hit(&tree, &theme, h.chrome.clone());
+            h.click(hit.x, hit.y);
+            assert!(
+                h.chrome.borrow().overlays.quick_settings,
+                "root-level click on the three-dot tray pill should open the quick-settings overlay"
+            );
+
+            // The open intent is stored in shared chrome state, while the retained
+            // host owns the transition. Pin that production transition at its resting
+            // value so this assertion captures Quick Settings rather than a valid
+            // state whose first animation frame is still fully transparent.
+            h.root
+                .as_any_mut()
+                .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+                .expect("shell integration root remains a ShellOverlayHost")
+                .force_quick_settings_settled();
+
+            h.draw_to(
+                renderer_opt.as_mut(),
+                &out_dir.join("e2e-07-quick-settings-open.png"),
+            );
+            if renderer_opt.is_some() {
+                let before = out_dir.join("e2e-06-quick-settings-pre.png");
+                let rendered = out_dir.join("e2e-07-quick-settings-open.png");
+                assert_png_nonempty(&rendered);
+                let panel = h
+                    .root
+                    .as_any_mut()
+                    .and_then(|widget| widget.downcast_mut::<ShellOverlayHost>())
+                    .expect("shell integration root remains a ShellOverlayHost")
+                    .quick_settings_rect_for_tests();
+                assert_region_visibly_differs(&before, &rendered, panel, 1_000);
+                // The topbar clock (chrono::Local) shows behind the quick-settings
+                // popover, making this render wall-clock-dependent — a golden would flake
+                // once a minute. Compare only the panel's deterministic footprint so
+                // a boolean open state can never pass while the overlay is absent.
+            } else {
+                eprintln!(
+                    "offscreen: no wgpu adapter — e2e_open_quick_settings asserted state only"
+                );
+            }
+        }
+
+        // Phase `e2e_top_right_corner_opens_quick_settings`.
+        // The visual status pill is intentionally inset, but the screen corner is
+        // the fastest acquisition target. A hurried click at the literal top-right
+        // pixel must therefore reach the same production root path as the pill.
+        {
+            let _guard = TEST_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let tree = WorkspaceTree::bootstrap_demo();
+            let mut h = Harness::new(&tree);
+            assert!(!h.chrome.borrow().overlays.quick_settings);
+
+            // Populate the retained top-bar geometry before the pointer event, exactly
+            // as the compositor does on its first frame.
+            h.draw_to(None, Path::new(""));
+            h.click(f64::from(W_U32 - 1), 1.0);
+
+            assert!(
+                h.chrome.borrow().overlays.quick_settings,
+                "the literal top-right screen corner must acquire Quick Settings even though the visible pill is inset"
+            );
+        }
+    }
 }
 
 // Test 4: maximized tile renders the floating-controls chrome
@@ -1496,182 +1689,6 @@ fn pump_host(
     handled
 }
 
-#[test]
-fn e2e_super_k_opens_search_palette_in_live_binary_path() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // Use the concrete-type sibling of what the live binary builds.
-    let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-    assert!(!host.palette_visible(), "palette starts closed");
-
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-    let handled = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
-    assert!(handled, "Super+K must be consumed by the overlay host");
-    assert!(
-        host.palette_visible(),
-        "Super+K must open the global-search palette in the live-binary event path"
-    );
-}
-
-#[test]
-fn e2e_escape_closes_search_palette() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, _chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-
-    // Open via Super+K rather than bypassing the host's state machine, guarding
-    // against a mutation-ordering regression.
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-    let _ = pump_host(&mut host, &key_press(Key::Character("k".into())), mods);
-    assert!(host.palette_visible());
-
-    // Escape priority order: palette > overview > ws_settings > quick_settings.
-    let no_mods = Modifiers::default();
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Escape)), no_mods);
-    assert!(handled, "Escape must be consumed while the palette is open");
-    assert!(
-        !host.palette_visible(),
-        "Escape must close the global-search palette"
-    );
-}
-
-#[test]
-fn e2e_ctrl_tab_cycles_tabs_without_opening_overview() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-    assert!(!chrome.borrow().overlays.overview);
-    let before = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
-    assert!(handled, "Ctrl+Tab must be consumed by the overlay host");
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "Ctrl+Tab is tab navigation; only Super+Tab opens the overview"
-    );
-    let after = chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab;
-    assert_ne!(after, before, "Ctrl+Tab must select the next tab");
-
-    let backwards = Modifiers::from(
-        winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
-    );
-    assert!(pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::Tab)),
-        backwards
-    ));
-    assert_eq!(
-        chrome.borrow().tree().desktop.workspaces[0].strips[0].window_groups[0].active_tab,
-        before,
-        "Ctrl+Shift+Tab must return to the previous tab"
-    );
-}
-
-#[test]
-fn e2e_super_tab_toggles_overview_in_live_binary_path() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-    assert!(!chrome.borrow().overlays.overview);
-
-    let mods = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Tab)), mods);
-    assert!(handled, "Super+Tab must be consumed by the overlay host");
-    assert!(
-        chrome.borrow().overlays.overview,
-        "Super+Tab must toggle the overview overlay in the live-binary event path"
-    );
-}
-
-/// The overview finishes on the keyboard: arrows walk the room list, Enter
-/// commits and closes.
-#[test]
-fn e2e_overview_arrows_select_and_enter_switches_room() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let started_on = tree.desktop.active;
-    assert!(
-        tree.desktop.workspaces.len() > 1,
-        "precondition: the fixture has somewhere else to go"
-    );
-    let (mut host, chrome) = shell::shell::build_tilo_overlay_host_with_chrome(&tree);
-
-    let super_key = Modifiers::from(winit::keyboard::ModifiersState::SUPER);
-    assert!(pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::Tab)),
-        super_key
-    ));
-    assert!(
-        chrome.borrow().overlays.overview,
-        "precondition: panel is open"
-    );
-
-    let no_mods = Modifiers::default();
-    let handled = pump_host(
-        &mut host,
-        &key_press(Key::Named(NamedKey::ArrowDown)),
-        no_mods,
-    );
-    assert!(
-        handled,
-        "the open panel must consume the arrow instead of letting the \
-         desktop underneath it scroll"
-    );
-
-    let handled = pump_host(&mut host, &key_press(Key::Named(NamedKey::Enter)), no_mods);
-    assert!(handled, "Enter must be consumed by the open panel");
-    assert!(
-        !chrome.borrow().overlays.overview,
-        "committing to a room closes the switcher"
-    );
-    assert_ne!(
-        chrome.borrow().tree().desktop.active,
-        started_on,
-        "Enter must actually go to the room the arrow selected"
-    );
-}
-
-/// Arrows belong to the switcher only while it's open. Driven through the
-/// root/layout since the claim concerns a key the shell declines — the
-/// event must actually reach the content.
-#[test]
-fn e2e_overview_arrows_are_not_swallowed_while_the_panel_is_closed() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let tree = WorkspaceTree::bootstrap_demo();
-    let mut h = Harness::new(&tree);
-    assert!(
-        !h.chrome.borrow().overlays.overview,
-        "precondition: panel shut"
-    );
-
-    let before = h.chrome.borrow().tree().desktop.active;
-    h.key(Key::Named(NamedKey::ArrowDown));
-    h.key(Key::Named(NamedKey::Enter));
-    assert!(
-        !h.chrome.borrow().overlays.overview,
-        "arrows and Enter must not open the switcher"
-    );
-    assert_eq!(
-        h.chrome.borrow().tree().desktop.active,
-        before,
-        "with the panel shut, Enter must not switch rooms"
-    );
-}
-
 // Test 6 + 7: undo / redo round-trip against a CRDT-mutating widget
 //
 // Both build a standalone `WindowGroup` (960x540) with one tab hosting a
@@ -1826,61 +1843,156 @@ impl UndoHarness {
     }
 }
 
-/// Typing 'a' splices into `BODY_KEY`, `commit_action` captures the baseline,
-/// `undo` pops it back, and the next sync re-reads the empty body.
 #[test]
-fn e2e_undo_redo_round_trip_restores_golden() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut h = UndoHarness::new();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+)]
+fn e2e_undo_and_redo_restore_the_golden_layout() {
+    // Phase `e2e_undo_redo_round_trip_restores_golden`.
+    // Typing 'a' splices into `BODY_KEY`, `commit_action` captures the baseline,
+    // `undo` pops it back, and the next sync re-reads the empty body.
+    {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut h = UndoHarness::new();
 
-    let mut renderer_opt = try_new_renderer(960, 540);
-    let out_dir = screenshots_dir();
+        let mut renderer_opt = try_new_renderer(960, 540);
+        let out_dir = screenshots_dir();
 
-    // --- Baseline render (empty editor body). ---
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-undo-baseline.png"),
-    );
+        // --- Baseline render (empty editor body). ---
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-undo-baseline.png"),
+        );
 
-    // --- Mutate: type 'a'; EditorApp splices into state.doc's BODY_KEY Text. ---
-    let mods = Modifiers::default();
-    h.pump_event(&char_key_press("a"), mods);
-    // Finalise the transaction, as the App loop does after a handled event.
-    h.state.commit_action(None, None);
+        // --- Mutate: type 'a'; EditorApp splices into state.doc's BODY_KEY Text. ---
+        let mods = Modifiers::default();
+        h.pump_event(&char_key_press("a"), mods);
+        // Finalise the transaction, as the App loop does after a handled event.
+        h.state.commit_action(None, None);
 
-    assert!(
-        h.state.peek_last_undo().is_some(),
-        "typing into the editor must push ONE entry onto the undo stack — \
-         if this fires empty, EditorApp.splice_text isn't reaching the CRDT \
-         (check focus propagation)"
-    );
+        assert!(
+            h.state.peek_last_undo().is_some(),
+            "typing into the editor must push ONE entry onto the undo stack — \
+             if this fires empty, EditorApp.splice_text isn't reaching the CRDT \
+             (check focus propagation)"
+        );
 
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-undo-after-mutation.png"),
-    );
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-undo-after-mutation.png"),
+        );
 
-    // --- Undo via the direct state API. ---
-    let entry = h
-        .state
-        .undo(None, None)
-        .expect("state.undo() must restore the pre-mutation snapshot");
-    let _ = entry;
-    assert!(
-        h.state.peek_last_undo().is_none(),
-        "after one undo the undo stack should be empty again"
-    );
+        // --- Undo via the direct state API. ---
+        let entry = h
+            .state
+            .undo(None, None)
+            .expect("state.undo() must restore the pre-mutation snapshot");
+        let _ = entry;
+        assert!(
+            h.state.peek_last_undo().is_none(),
+            "after one undo the undo stack should be empty again"
+        );
 
-    // Re-sync so the editor re-reads the restored CRDT body; otherwise it still
-    // holds the post-mutation `self.text` and renders "a" regardless.
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-undo-restored.png"),
-    );
+        // Re-sync so the editor re-reads the restored CRDT body; otherwise it still
+        // holds the post-mutation `self.text` and renders "a" regardless.
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-undo-restored.png"),
+        );
 
-    assert_undo_redo_goldens(renderer_opt.as_ref(), &out_dir);
+        assert_undo_redo_goldens(renderer_opt.as_ref(), &out_dir);
+    }
+
+    // Phase `e2e_redo_after_undo_rehydrates_golden`.
+    // Extends the undo test with `redo()`: the restored-after-redo frame must
+    // match the post-mutation frame pixel-for-pixel.
+    {
+        let _guard = TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut h = UndoHarness::new();
+        let mut renderer_opt = try_new_renderer(960, 540);
+        let out_dir = screenshots_dir();
+
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-redo-baseline.png"),
+        );
+
+        let mods = Modifiers::default();
+        h.pump_event(&char_key_press("a"), mods);
+        h.state.commit_action(None, None);
+        assert!(h.state.peek_last_undo().is_some());
+
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-redo-after-mutation.png"),
+        );
+
+        // Undo leaves one redo entry; redo repopulates undo and empties redo.
+        let _ = h.state.undo(None, None).expect("undo must succeed");
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-redo-mid-undo.png"),
+        );
+
+        let _ = h.state.redo(None, None).expect(
+            "redo must succeed — if this fires None the undo didn't push onto \
+             redo_stack, which breaks Ctrl+Shift+Z in the live binary",
+        );
+        assert!(
+            h.state.peek_last_undo().is_some(),
+            "after redo the undo stack must be repopulated so a subsequent \
+             undo can unwind the redone mutation"
+        );
+
+        // `State::undo`/`redo` only restore the CRDT snapshot; widget-local state
+        // (EditorApp's cursor offset) is normally reapplied by
+        // `ui::App::apply_undo_entry`, which this harness never calls. To match the
+        // post-mutation render pixel-for-pixel, re-sync then send `End` to park the
+        // cursor where it sat right after typing "a".
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-redo-rehydrated-precaret.png"),
+        );
+        h.pump_event(&key_press(Key::Named(NamedKey::End)), mods);
+        h.render_to(
+            renderer_opt.as_mut(),
+            &out_dir.join("e2e-redo-rehydrated.png"),
+        );
+
+        if renderer_opt.is_some() {
+            let after = out_dir.join("e2e-redo-after-mutation.png");
+            let mid = out_dir.join("e2e-redo-mid-undo.png");
+            let rehydrated = out_dir.join("e2e-redo-rehydrated.png");
+            for p in [&after, &mid, &rehydrated] {
+                assert_png_nonempty(p);
+            }
+            let after_bytes = std::fs::read(&after).unwrap();
+            let mid_bytes = std::fs::read(&mid).unwrap();
+            assert_ne!(
+                after_bytes, mid_bytes,
+                "after-mutation and mid-undo must differ — otherwise the \
+                 undo didn't visibly rewind and the redo-round-trip is vacuous"
+            );
+
+            SnapshotAssertion::new(&rehydrated, &after)
+                .with_tolerance(2)
+                .assert();
+
+            SnapshotAssertion::new(&rehydrated, goldens_dir().join("e2e-redo-rehydrated.png"))
+                .with_tolerance(2)
+                .assert();
+        } else {
+            eprintln!(
+                "offscreen: no wgpu adapter — e2e_redo_after_undo_rehydrates_golden \
+                 asserted state-stack transitions only"
+            );
+        }
+    }
 }
 
 /// The three-PNG non-emptiness, diff, and golden checks for the undo
@@ -1916,94 +2028,6 @@ fn assert_undo_redo_goldens(renderer_opt: Option<&OffscreenRenderer>, out_dir: &
     } else {
         eprintln!(
             "offscreen: no wgpu adapter — e2e_undo_redo_round_trip_restores_golden \
-             asserted state-stack transitions only"
-        );
-    }
-}
-
-/// Extends the undo test with `redo()`: the restored-after-redo frame must
-/// match the post-mutation frame pixel-for-pixel.
-#[test]
-fn e2e_redo_after_undo_rehydrates_golden() {
-    let _guard = TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut h = UndoHarness::new();
-    let mut renderer_opt = try_new_renderer(960, 540);
-    let out_dir = screenshots_dir();
-
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-redo-baseline.png"),
-    );
-
-    let mods = Modifiers::default();
-    h.pump_event(&char_key_press("a"), mods);
-    h.state.commit_action(None, None);
-    assert!(h.state.peek_last_undo().is_some());
-
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-redo-after-mutation.png"),
-    );
-
-    // Undo leaves one redo entry; redo repopulates undo and empties redo.
-    let _ = h.state.undo(None, None).expect("undo must succeed");
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-redo-mid-undo.png"),
-    );
-
-    let _ = h.state.redo(None, None).expect(
-        "redo must succeed — if this fires None the undo didn't push onto \
-         redo_stack, which breaks Ctrl+Shift+Z in the live binary",
-    );
-    assert!(
-        h.state.peek_last_undo().is_some(),
-        "after redo the undo stack must be repopulated so a subsequent \
-         undo can unwind the redone mutation"
-    );
-
-    // `State::undo`/`redo` only restore the CRDT snapshot; widget-local state
-    // (EditorApp's cursor offset) is normally reapplied by
-    // `ui::App::apply_undo_entry`, which this harness never calls. To match the
-    // post-mutation render pixel-for-pixel, re-sync then send `End` to park the
-    // cursor where it sat right after typing "a".
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-redo-rehydrated-precaret.png"),
-    );
-    h.pump_event(&key_press(Key::Named(NamedKey::End)), mods);
-    h.render_to(
-        renderer_opt.as_mut(),
-        &out_dir.join("e2e-redo-rehydrated.png"),
-    );
-
-    if renderer_opt.is_some() {
-        let after = out_dir.join("e2e-redo-after-mutation.png");
-        let mid = out_dir.join("e2e-redo-mid-undo.png");
-        let rehydrated = out_dir.join("e2e-redo-rehydrated.png");
-        for p in [&after, &mid, &rehydrated] {
-            assert_png_nonempty(p);
-        }
-        let after_bytes = std::fs::read(&after).unwrap();
-        let mid_bytes = std::fs::read(&mid).unwrap();
-        assert_ne!(
-            after_bytes, mid_bytes,
-            "after-mutation and mid-undo must differ — otherwise the \
-             undo didn't visibly rewind and the redo-round-trip is vacuous"
-        );
-
-        SnapshotAssertion::new(&rehydrated, &after)
-            .with_tolerance(2)
-            .assert();
-
-        SnapshotAssertion::new(&rehydrated, goldens_dir().join("e2e-redo-rehydrated.png"))
-            .with_tolerance(2)
-            .assert();
-    } else {
-        eprintln!(
-            "offscreen: no wgpu adapter — e2e_redo_after_undo_rehydrates_golden \
              asserted state-stack transitions only"
         );
     }

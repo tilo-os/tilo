@@ -297,93 +297,95 @@ mod tests {
     }
 
     #[test]
-    fn viewport_accepts_separate_and_equals_forms() {
-        assert_eq!(
-            parse_viewport_arg(&args(&["tilo-greeter", "--viewport", "640x480"])),
-            Some((640, 480))
-        );
-        assert_eq!(
-            parse_viewport_arg(&args(&["tilo-greeter", "--viewport=360X640"])),
-            Some((360, 640))
-        );
-    }
-
-    #[test]
-    fn viewport_rejects_malformed_or_empty_dimensions() {
-        for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+    fn cli_arguments_are_bounded_and_additive() {
+        // Phase `viewport_accepts_separate_and_equals_forms`.
+        {
             assert_eq!(
-                parse_viewport_arg(&args(&["tilo-greeter", "--viewport", raw])),
-                None,
-                "accepted malformed viewport {raw:?}"
+                parse_viewport_arg(&args(&["tilo-greeter", "--viewport", "640x480"])),
+                Some((640, 480))
             );
+            assert_eq!(
+                parse_viewport_arg(&args(&["tilo-greeter", "--viewport=360X640"])),
+                Some((360, 640))
+            );
+        }
+        // Phase `viewport_rejects_malformed_or_empty_dimensions`.
+        {
+            for raw in ["", "640", "x480", "640x", "0x480", "640x0", "-1x480"] {
+                assert_eq!(
+                    parse_viewport_arg(&args(&["tilo-greeter", "--viewport", raw])),
+                    None,
+                    "accepted malformed viewport {raw:?}"
+                );
+            }
+        }
+        // Phase `shot_text_scale_accepts_only_bounded_finite_values`.
+        {
+            assert_eq!(
+                parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale=1.3"])),
+                Some(1.3)
+            );
+            for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+                assert_eq!(
+                    parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
+                    None
+                );
+            }
+        }
+        // Phase `personal_transient_scenarios_are_additive_cli_options`.
+        {
+            for (name, expected) in [
+                ("personal-error", AuthScenario::PersonalError),
+                (
+                    "personal-authenticating",
+                    AuthScenario::PersonalAuthenticating,
+                ),
+                ("personal-caps", AuthScenario::PersonalCapsLock),
+                ("personal-hint", AuthScenario::PersonalHint),
+                ("personal-starting", AuthScenario::PersonalStarting),
+            ] {
+                assert_eq!(
+                    parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
+                    Some(expected)
+                );
+            }
         }
     }
 
     #[test]
-    fn shot_text_scale_accepts_only_bounded_finite_values() {
-        assert_eq!(
-            parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale=1.3"])),
-            Some(1.3)
-        );
-        for value in ["NaN", "0.5", "2.1", "not-a-number"] {
+    fn shot_rendering_is_finite_and_retains_no_passcodes() {
+        // Phase `animation_phase_is_finite_and_nonnegative`.
+        {
             assert_eq!(
-                parse_text_scale_arg(&args(&["tilo-greeter", "--text-scale", value])),
-                None
+                parse_time_arg(&args(&["tilo-greeter", "--time=8"])),
+                Some(8.0)
             );
-        }
-    }
-
-    #[test]
-    fn animation_phase_is_finite_and_nonnegative() {
-        assert_eq!(
-            parse_time_arg(&args(&["tilo-greeter", "--time=8"])),
-            Some(8.0)
-        );
-        assert_eq!(
-            parse_time_arg(&args(&["tilo-greeter", "--time", "1.5"])),
-            Some(1.5)
-        );
-        for value in ["NaN", "inf", "-1", "not-a-number"] {
             assert_eq!(
-                parse_time_arg(&args(&["tilo-greeter", "--time", value])),
-                None
+                parse_time_arg(&args(&["tilo-greeter", "--time", "1.5"])),
+                Some(1.5)
             );
+            for value in ["NaN", "inf", "-1", "not-a-number"] {
+                assert_eq!(
+                    parse_time_arg(&args(&["tilo-greeter", "--time", value])),
+                    None
+                );
+            }
         }
-    }
-
-    #[test]
-    fn personal_transient_scenarios_are_additive_cli_options() {
-        for (name, expected) in [
-            ("personal-error", AuthScenario::PersonalError),
-            (
-                "personal-authenticating",
+        // Phase `busy_shots_do_not_retain_representative_passcodes`.
+        {
+            for scenario in [
+                AuthScenario::Authenticating,
+                AuthScenario::Fingerprint,
+                AuthScenario::Starting,
                 AuthScenario::PersonalAuthenticating,
-            ),
-            ("personal-caps", AuthScenario::PersonalCapsLock),
-            ("personal-hint", AuthScenario::PersonalHint),
-            ("personal-starting", AuthScenario::PersonalStarting),
-        ] {
-            assert_eq!(
-                parse_scenario_arg(&args(&["tilo-greeter", "--scenario", name])),
-                Some(expected)
-            );
-        }
-    }
-
-    #[test]
-    fn busy_shots_do_not_retain_representative_passcodes() {
-        for scenario in [
-            AuthScenario::Authenticating,
-            AuthScenario::Fingerprint,
-            AuthScenario::Starting,
-            AuthScenario::PersonalAuthenticating,
-            AuthScenario::PersonalStarting,
-        ] {
-            assert_eq!(
-                shot_credentials(scenario).map(|(_, passcode)| passcode),
-                Some(""),
-                "{scenario:?} must mirror the live path after secret handoff"
-            );
+                AuthScenario::PersonalStarting,
+            ] {
+                assert_eq!(
+                    shot_credentials(scenario).map(|(_, passcode)| passcode),
+                    Some(""),
+                    "{scenario:?} must mirror the live path after secret handoff"
+                );
+            }
         }
     }
 }

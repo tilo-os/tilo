@@ -1112,44 +1112,69 @@ mod tests {
     use super::*;
 
     #[test]
-    fn push_nav_defaults_to_the_master_pane() {
-        let nav = PushNav::default();
-        assert_eq!(nav.pane(), PushPane::Master);
-        assert!(
-            nav.slide().abs() < f64::EPSILON,
-            "a fresh narrow frame opens to the list"
-        );
-        assert!(!nav.is_animating());
+    fn push_navigation_defaults_to_master_and_pushes_detail() {
+        // Case `push_nav_defaults_to_the_master_pane`.
+        {
+            let nav = PushNav::default();
+            assert_eq!(nav.pane(), PushPane::Master);
+            assert!(
+                nav.slide().abs() < f64::EPSILON,
+                "a fresh narrow frame opens to the list"
+            );
+            assert!(!nav.is_animating());
+        }
+
+        // Case `push_nav_selecting_pushes_detail_and_back_returns`.
+        {
+            let mut nav = PushNav::default();
+            nav.show_detail();
+            assert_eq!(nav.pane(), PushPane::Detail);
+            assert!(nav.is_animating(), "showing the detail starts the slide");
+            assert!(nav.tick_by(0.016));
+            assert!(nav.slide() > 0.0 && nav.slide() < 1.0);
+            nav.snap(PushPane::Detail);
+            assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
+            assert!(!nav.is_animating(), "snap leaves nothing to animate");
+            nav.show_master();
+            nav.snap(PushPane::Master);
+            assert_eq!(nav.pane(), PushPane::Master);
+            assert!(nav.slide().abs() < f64::EPSILON);
+        }
+
+        // Case `push_nav_reduced_motion_lands_without_requesting_frames`.
+        {
+            let mut nav = PushNav::default();
+            nav.show_detail();
+            assert!(!nav.tick(true));
+            assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
+            assert!(!nav.is_animating());
+            nav.show_master();
+            assert!(!nav.tick(true));
+            assert!(nav.slide().abs() < f64::EPSILON);
+        }
+
+        // Case `push_mode_shows_master_then_detail`.
+        {
+            let mut ns = split(600.0, SplitMode::Push);
+            assert_eq!(ns.push_pane(), PushPane::Master);
+            // Master sits at the left edge initially.
+            ns.show_detail();
+            ns.push.snap(PushPane::Detail);
+            ns.recompute_rects();
+            assert_eq!(ns.push_pane(), PushPane::Detail);
+            // Detail is now flush with the pane; master has slid off-left.
+            assert!(
+                (ns.content_panel_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "detail occupies the pane after show_detail"
+            );
+            // Back returns to master.
+            ns.show_master();
+            ns.push.snap(PushPane::Master);
+            ns.recompute_rects();
+            assert_eq!(ns.push_pane(), PushPane::Master);
+        }
     }
 
-    #[test]
-    fn push_nav_selecting_pushes_detail_and_back_returns() {
-        let mut nav = PushNav::default();
-        nav.show_detail();
-        assert_eq!(nav.pane(), PushPane::Detail);
-        assert!(nav.is_animating(), "showing the detail starts the slide");
-        assert!(nav.tick_by(0.016));
-        assert!(nav.slide() > 0.0 && nav.slide() < 1.0);
-        nav.snap(PushPane::Detail);
-        assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
-        assert!(!nav.is_animating(), "snap leaves nothing to animate");
-        nav.show_master();
-        nav.snap(PushPane::Master);
-        assert_eq!(nav.pane(), PushPane::Master);
-        assert!(nav.slide().abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn push_nav_reduced_motion_lands_without_requesting_frames() {
-        let mut nav = PushNav::default();
-        nav.show_detail();
-        assert!(!nav.tick(true));
-        assert!((nav.slide() - 1.0).abs() < f64::EPSILON);
-        assert!(!nav.is_animating());
-        nav.show_master();
-        assert!(!nav.tick(true));
-        assert!(nav.slide().abs() < f64::EPSILON);
-    }
     use crate::widget::Text;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1266,226 +1291,489 @@ mod tests {
     }
 
     #[test]
-    fn private_child_layout_preserves_the_active_text_scale() {
-        let mut ns = NavSplit::new(
-            Box::new(Text::new("Sidebar")),
-            Box::new(Text::new("Scaled content").with_scaled_size(20.0)),
-        )
-        .with_mode(SplitMode::AlwaysDocked);
-        lay_out_with(&mut ns, &Theme::dark().with_text_scale(2.0), 1000.0, 600.0);
+    fn panes_measure_at_the_host_text_scale_and_reuse_inner_layout() {
+        // Case `private_child_layout_preserves_the_active_text_scale`.
+        {
+            let mut ns = NavSplit::new(
+                Box::new(Text::new("Sidebar")),
+                Box::new(Text::new("Scaled content").with_scaled_size(20.0)),
+            )
+            .with_mode(SplitMode::AlwaysDocked);
+            lay_out_with(&mut ns, &Theme::dark().with_text_scale(2.0), 1000.0, 600.0);
 
-        assert!(
-            ns.content.get_rect().height() >= 49.0,
-            "inner text must reserve its 200% line height, got {:?}",
-            ns.content.get_rect()
-        );
+            assert!(
+                ns.content.get_rect().height() >= 49.0,
+                "inner text must reserve its 200% line height, got {:?}",
+                ns.content.get_rect()
+            );
+        }
+
+        // Case `pure_reposition_reuses_the_inner_layout_instead_of_re_solving`.
+        // Scroll-perf regression guard: a second `apply_layout` at the SAME
+        // pane geometry (every scroll frame) must NOT rebuild + re-solve the
+        // content pane — that full rebuild was the dominant per-frame cost that
+        // made scrolling long lists crawl. A resize DOES re-solve.
+        {
+            let builds = Rc::new(Cell::new(0usize));
+            let events = Rc::new(Cell::new(0usize));
+            let mut ns = NavSplit::new(
+                Box::new(Text::new("sidebar")),
+                Box::new(Spy {
+                    builds: builds.clone(),
+                    events,
+                    rect: Rect::ZERO,
+                }),
+            )
+            .with_mode(SplitMode::AlwaysDocked);
+
+            let theme = Theme::dark();
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
+
+            let solve = |taffy: &mut TaffyTree<()>, w: f32| {
+                taffy
+                    .compute_layout(
+                        node,
+                        Size {
+                            width: taffy::AvailableSpace::Definite(w),
+                            height: taffy::AvailableSpace::Definite(600.0),
+                        },
+                    )
+                    .unwrap();
+            };
+
+            // First layout: the content pane is built + solved once.
+            solve(&mut taffy, 1200.0);
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert_eq!(builds.get(), 1, "first layout builds the content pane once");
+
+            // A scroll frame — apply_layout again at the identical geometry — must
+            // re-apply on the cached inner tree, NOT rebuild it.
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert_eq!(
+                builds.get(),
+                1,
+                "a pure reposition must not rebuild/re-solve the content pane"
+            );
+
+            // A resize changes the pane geometry → a full re-solve.
+            solve(&mut taffy, 900.0);
+            ns.apply_layout(&taffy, node, Point::ZERO);
+            assert!(
+                builds.get() > 1,
+                "a resize re-solves the content pane (build count {})",
+                builds.get()
+            );
+        }
+
+        // Case `text_under_a_split_measures_at_the_host_text_scale`.
+        // A8 (tube): every `Text` under a split kept its 1× line height under
+        // 2× glyphs because the panes were built against `Theme::dark()` and
+        // measured with a fresh `TextRenderer::new()`. Under the shared host
+        // solver the panes are now solved with the theme the outer tree was
+        // built with and the host's own renderer — so the content line is
+        // twice as tall at 200 % text, and the host path loads no font system
+        // of its own.
+        {
+            let height_at = |scale: f32| {
+                let theme = Theme::dark().with_text_scale(scale);
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                renderer.set_text_scale(scale);
+                let mut ns = NavSplit::new(
+                    Box::new(Text::new("sidebar")),
+                    Box::new(Text::new("content")),
+                )
+                .with_mode(SplitMode::AlwaysDocked);
+                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+                let content = host_layout(&mut ns, &theme, &mut renderer);
+                assert_eq!(
+                    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
+                    0,
+                    "the host path must measure with the host's renderer, not load fonts of its own"
+                );
+                content.height()
+            };
+            let one = height_at(1.0);
+            let two = height_at(2.0);
+            assert!(one > 0.0, "the content Text is laid out");
+            assert!(
+                (two / one - 2.0).abs() < 0.05,
+                "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
+            );
+        }
+
+        // Case `raw_layout_path_measures_panes_at_the_built_theme_text_scale`.
+        // A host that solves the outer tree with plain taffy and calls
+        // `apply_layout` directly gets the same answer: the panes are built
+        // against the theme the outer tree was built with, at its text scale.
+        {
+            let height_at = |scale: f32| {
+                let mut ns = NavSplit::new(
+                    Box::new(Text::new("sidebar")),
+                    Box::new(Text::new("content")),
+                )
+                .with_mode(SplitMode::AlwaysDocked);
+                lay_out_with(
+                    &mut ns,
+                    &Theme::dark().with_text_scale(scale),
+                    1200.0,
+                    600.0,
+                );
+                ns.content.get_rect().height()
+            };
+            let one = height_at(1.0);
+            let two = height_at(2.0);
+            assert!(one > 0.0);
+            assert!(
+                (two / one - 2.0).abs() < 0.05,
+                "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
+            );
+        }
+
+        // Case `authored_inputs_follow_the_responsive_scale_and_icon_rails_follow_ui_scale_only`.
+        // HIG §9.6: a breakpoint and a text-sized sidebar width are authored at
+        // 1× and resolved by the shell — `× ui_scale × text_scale.max(1.0)` —
+        // so an app never restates the rule. An icon rail follows `ui_scale`
+        // only, and text never shrinks a pane below its authored geometry.
+        {
+            let text_sized = || {
+                NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
+                    .with_breakpoint(760.0)
+                    .with_sidebar_width(300.0)
+            };
+            let rail = || {
+                NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
+                    .with_breakpoint(760.0)
+                    .with_icon_sidebar_width(86.0)
+            };
+
+            let (mut list, mut icons) = (text_sized(), rail());
+            lay_out(&mut list, 1200.0, 600.0);
+            lay_out(&mut icons, 1200.0, 600.0);
+            assert_eq!((list.breakpoint(), list.sidebar_width()), (760.0, 300.0));
+            assert_eq!((icons.breakpoint(), icons.sidebar_width()), (760.0, 86.0));
+            assert_eq!(
+                list.layout_mode(),
+                SplitLayout::Docked,
+                "1× is the authored geometry"
+            );
+
+            let two = Theme::dark().with_text_scale(2.0);
+            let (mut list, mut icons) = (text_sized(), rail());
+            lay_out_with(&mut list, &two, 1200.0, 600.0);
+            lay_out_with(&mut icons, &two, 1200.0, 600.0);
+            assert_eq!((list.breakpoint(), list.sidebar_width()), (1520.0, 600.0));
+            assert_eq!(
+                (icons.breakpoint(), icons.sidebar_width()),
+                (1520.0, 86.0),
+                "an icon rail never grows with the text scale"
+            );
+            assert_eq!(
+                list.layout_mode(),
+                SplitLayout::Overlay,
+                "a 1200 px window at 2× has the room a 600 px window has at 1×, so it pushes"
+            );
+
+            let mut small = text_sized();
+            lay_out_with(
+                &mut small,
+                &Theme::dark().with_text_scale(0.75),
+                1200.0,
+                600.0,
+            );
+            assert_eq!(
+                (small.breakpoint(), small.sidebar_width()),
+                (760.0, 300.0),
+                "text never shrinks a pane below its authored geometry"
+            );
+
+            let mut dense = rail();
+            lay_out_with(&mut dense, &Theme::dark().with_ui_scale(1.5), 1200.0, 600.0);
+            assert!((dense.breakpoint() - 1140.0).abs() < 1e-9);
+            assert!(
+                (dense.sidebar_width() - 129.0).abs() < 1e-9,
+                "ui_scale grows an icon rail with the rest of the density system"
+            );
+        }
     }
 
     #[test]
-    fn breakpoint_boundary_is_inclusive_docked() {
-        assert_eq!(SplitLayout::from_width(900.0, 900.0), SplitLayout::Docked);
-        assert_eq!(SplitLayout::from_width(899.0, 900.0), SplitLayout::Overlay);
+    fn breakpoint_docks_wide_and_overlays_narrow_by_default() {
+        // Case `breakpoint_boundary_is_inclusive_docked`.
+        {
+            assert_eq!(SplitLayout::from_width(900.0, 900.0), SplitLayout::Docked);
+            assert_eq!(SplitLayout::from_width(899.0, 900.0), SplitLayout::Overlay);
+        }
+
+        // Case `wide_is_docked_and_open_by_default`.
+        {
+            let ns = split(1200.0, SplitMode::Adaptive);
+            assert_eq!(ns.layout_mode(), SplitLayout::Docked);
+            assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
+            // Content is inset by the (full-reveal) sidebar width.
+            assert!(
+                ns.content_panel_rect().x0 > ns.get_rect().x0 + 1.0,
+                "docked content must be inset by the sidebar"
+            );
+        }
+
+        // Case `narrow_is_overlay_and_closed_by_default`.
+        {
+            let ns = split(600.0, SplitMode::Adaptive);
+            assert_eq!(ns.layout_mode(), SplitLayout::Overlay);
+            assert!(
+                !ns.is_sidebar_open(),
+                "overlay sidebar is closed by default"
+            );
+            // Content spans full width when the flap is closed.
+            assert!(
+                (ns.content_panel_rect().width() - ns.get_rect().width()).abs() < 1.0,
+                "overlay content spans full width while the flap is closed"
+            );
+        }
     }
 
     #[test]
-    fn wide_is_docked_and_open_by_default() {
-        let ns = split(1200.0, SplitMode::Adaptive);
-        assert_eq!(ns.layout_mode(), SplitLayout::Docked);
-        assert!(ns.is_sidebar_open(), "docked sidebar opens by default");
-        // Content is inset by the (full-reveal) sidebar width.
-        assert!(
-            ns.content_panel_rect().x0 > ns.get_rect().x0 + 1.0,
-            "docked content must be inset by the sidebar"
-        );
+    fn overlay_flap_opens_with_scrim_dismisses_and_blocks_obscured_content() {
+        // Case `toggle_opens_overlay_flap_and_paints_scrim`.
+        {
+            let mut ns = split(600.0, SplitMode::Adaptive);
+            ns.toggle_sidebar();
+            ns.snap_open(true); // settle the animation deterministically
+            ns.recompute_rects();
+            assert!(ns.is_sidebar_open());
+            assert!(
+                ns.scrim_rect.width() > 0.0,
+                "open overlay flap shows a scrim"
+            );
+            // The sidebar slides fully on-screen at reveal 1.
+            assert!(
+                (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
+                "fully-revealed overlay sidebar sits flush at the left edge"
+            );
+        }
+
+        // Case `esc_dismisses_open_overlay_flap`.
+        {
+            let mut ns = split(600.0, SplitMode::Adaptive);
+            ns.open_sidebar();
+            ns.snap_open(true);
+            ns.recompute_rects();
+            assert!(ns.is_sidebar_open());
+            // Esc closes it.
+            let ev = esc_event();
+            let mut handled = false;
+            dispatch(&mut ns, &ev, &mut handled);
+            assert!(handled, "Esc on an open overlay flap is consumed");
+            assert!(!ns.is_sidebar_open(), "Esc closes the overlay flap");
+        }
+
+        // Case `scrim_click_dismisses_overlay_flap`.
+        {
+            let mut ns = split(600.0, SplitMode::Adaptive);
+            ns.open_sidebar();
+            ns.snap_open(true);
+            ns.recompute_rects();
+            // Click in the scrim region, to the right of the sidebar.
+            let pt = Point::new(ns.get_rect().x1 - 20.0, 300.0);
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(pt), &mut handled);
+            dispatch(&mut ns, &left_press(), &mut handled);
+            assert!(handled, "scrim click is consumed");
+            assert!(!ns.is_sidebar_open(), "scrim click closes the overlay flap");
+        }
+
+        // Case `open_overlay_does_not_route_events_to_obscured_content`.
+        {
+            let builds = Rc::new(Cell::new(0));
+            let events = Rc::new(Cell::new(0));
+            let mut ns = NavSplit::new(
+                Box::new(Text::new("sidebar")),
+                Box::new(Spy {
+                    builds,
+                    events: events.clone(),
+                    rect: Rect::ZERO,
+                }),
+            )
+            .with_mode(SplitMode::Adaptive);
+            lay_out(&mut ns, 600.0, 600.0);
+            ns.open_sidebar();
+            ns.snap_open(true);
+            ns.recompute_rects();
+            let mut handled = false;
+            dispatch(&mut ns, &cursor_at(Point::new(580.0, 300.0)), &mut handled);
+            assert_eq!(
+                events.get(),
+                0,
+                "an open overlay is modal; obscured detail content receives no input"
+            );
+        }
     }
 
     #[test]
-    fn narrow_is_overlay_and_closed_by_default() {
-        let ns = split(600.0, SplitMode::Adaptive);
-        assert_eq!(ns.layout_mode(), SplitLayout::Overlay);
-        assert!(
-            !ns.is_sidebar_open(),
-            "overlay sidebar is closed by default"
-        );
-        // Content spans full width when the flap is closed.
-        assert!(
-            (ns.content_panel_rect().width() - ns.get_rect().width()).abs() < 1.0,
-            "overlay content spans full width while the flap is closed"
-        );
+    fn reveal_reconciles_to_the_layout_default_across_breakpoints() {
+        // Case `first_reconcile_settles_the_reveal_to_the_layout_default`.
+        {
+            // `open_when_docked` guesses reveal = 1.0 before any width is known;
+            // if the first resolved layout is an overlay the drawer must already
+            // be shut, not ease shut over the next frames.
+            let mut f = FlapState::open_when_docked();
+            assert_eq!(f.reveal(), 1.0, "constructor guess");
+            f.reconcile(SplitLayout::Overlay);
+            assert_eq!(
+                f.reveal(),
+                0.0,
+                "first resolution snaps to the overlay default (closed)",
+            );
+            assert!(
+                !f.is_animating(SplitLayout::Overlay),
+                "and requests no frames — there is nothing to animate",
+            );
+
+            // Docked first resolution keeps it open, no transient either way.
+            let mut g = FlapState::open_when_docked();
+            g.reconcile(SplitLayout::Docked);
+            assert_eq!(g.reveal(), 1.0);
+            assert!(!g.is_animating(SplitLayout::Docked));
+        }
+
+        // Case `a_later_breakpoint_cross_still_animates`.
+        {
+            // Only the *first* resolution snaps; a resize is a transition the
+            // user should see.
+            let mut f = FlapState::open_when_docked();
+            f.reconcile(SplitLayout::Docked);
+            f.reconcile(SplitLayout::Overlay);
+            assert_eq!(f.reveal(), 1.0, "the reveal has not jumped");
+            assert!(
+                f.is_animating(SplitLayout::Overlay),
+                "it eases shut over the following frames",
+            );
+        }
+
+        // Case `reconcile_drops_stale_preference_on_breakpoint_cross`.
+        {
+            let mut f = FlapState::open_when_docked();
+            f.reconcile(SplitLayout::Docked); // first: no clear
+            f.close(); // user closed it while docked
+            assert!(!f.is_open(SplitLayout::Docked));
+            f.reconcile(SplitLayout::Overlay); // crossed → clears preference
+            // Overlay default is closed regardless, so flip to docked to observe.
+            f.reconcile(SplitLayout::Docked);
+            assert!(
+                f.is_open(SplitLayout::Docked),
+                "crossing the breakpoint drops the stale user preference"
+            );
+        }
     }
 
     #[test]
-    fn toggle_opens_overlay_flap_and_paints_scrim() {
-        let mut ns = split(600.0, SplitMode::Adaptive);
-        ns.toggle_sidebar();
-        ns.snap_open(true); // settle the animation deterministically
-        ns.recompute_rects();
-        assert!(ns.is_sidebar_open());
-        assert!(
-            ns.scrim_rect.width() > 0.0,
-            "open overlay flap shows a scrim"
-        );
-        // The sidebar slides fully on-screen at reveal 1.
-        assert!(
-            (ns.sidebar_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "fully-revealed overlay sidebar sits flush at the left edge"
-        );
-    }
+    fn overlay_flap_draws_slides_and_snaps_deterministically() {
+        // Case `draw_emits_content`.
+        {
+            let mut ns = split(1200.0, SplitMode::Adaptive);
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let perms = crate::permissions::PermissionContext::permissive();
+            let mut scene = Scene::new();
+            ns.draw_with_presence(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &presence,
+                &perms,
+            );
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert!(fills >= 1, "a laid-out split must paint something");
+        }
 
-    #[test]
-    fn esc_dismisses_open_overlay_flap() {
-        let mut ns = split(600.0, SplitMode::Adaptive);
-        ns.open_sidebar();
-        ns.snap_open(true);
-        ns.recompute_rects();
-        assert!(ns.is_sidebar_open());
-        // Esc closes it.
-        let ev = esc_event();
-        let mut handled = false;
-        dispatch(&mut ns, &ev, &mut handled);
-        assert!(handled, "Esc on an open overlay flap is consumed");
-        assert!(!ns.is_sidebar_open(), "Esc closes the overlay flap");
-    }
+        // Case `overlay_flap_slides_across_frames_from_draw_path`.
+        // The overlay flap must *slide* — advance its eased reveal across
+        // successive frames from the DRAW path — not snap straight to the
+        // endpoint during the update pass. Opens the flap, draws two frames a
+        // few ms apart, and asserts the reveal moved strictly between 0 and 1.
+        {
+            let mut ns = split(600.0, SplitMode::Adaptive);
+            // Pin a deterministic CLOSED start (reveal == 0), then open: the
+            // target flips to 1 while the current reveal is 0, so a correct
+            // slide must traverse the gap across frames.
+            ns.snap_open(false);
+            assert_eq!(
+                ns.flap().reveal(),
+                0.0,
+                "snap gives a deterministic closed start"
+            );
+            ns.open_sidebar();
+            assert!(ns.is_sidebar_open());
 
-    #[test]
-    fn scrim_click_dismisses_overlay_flap() {
-        let mut ns = split(600.0, SplitMode::Adaptive);
-        ns.open_sidebar();
-        ns.snap_open(true);
-        ns.recompute_rects();
-        // Click in the scrim region, to the right of the sidebar.
-        let pt = Point::new(ns.get_rect().x1 - 20.0, 300.0);
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(pt), &mut handled);
-        dispatch(&mut ns, &left_press(), &mut handled);
-        assert!(handled, "scrim click is consumed");
-        assert!(!ns.is_sidebar_open(), "scrim click closes the overlay flap");
-    }
+            // First draw establishes the clock (dt == 0) → reveal stays at 0,
+            // proving the flap does NOT teleport on the very first frame.
+            draw_frame(&mut ns);
+            assert_eq!(
+                ns.flap().reveal(),
+                0.0,
+                "first frame establishes the clock and must not jump the slide"
+            );
 
-    #[test]
-    fn open_overlay_does_not_route_events_to_obscured_content() {
-        let builds = Rc::new(Cell::new(0));
-        let events = Rc::new(Cell::new(0));
-        let mut ns = NavSplit::new(
-            Box::new(Text::new("sidebar")),
-            Box::new(Spy {
-                builds,
-                events: events.clone(),
-                rect: Rect::ZERO,
-            }),
-        )
-        .with_mode(SplitMode::Adaptive);
-        lay_out(&mut ns, 600.0, 600.0);
-        ns.open_sidebar();
-        ns.snap_open(true);
-        ns.recompute_rects();
-        let mut handled = false;
-        dispatch(&mut ns, &cursor_at(Point::new(580.0, 300.0)), &mut handled);
-        assert_eq!(
-            events.get(),
-            0,
-            "an open overlay is modal; obscured detail content receives no input"
-        );
-    }
+            // A frame's worth of wall clock, then a second draw advances the
+            // easing by that dt.
+            elapse(&mut ns, 16);
+            draw_frame(&mut ns);
+            let r = ns.flap().reveal();
+            assert!(
+                r > 0.0 && r < 1.0,
+                "after one ~16ms frame the flap is mid-slide (reveal {r}), not snapped"
+            );
+            assert!(
+                ns.needs_animation_frame(),
+                "a mid-slide flap must keep requesting frames so the host pumps the loop"
+            );
 
-    #[test]
-    fn push_mode_shows_master_then_detail() {
-        let mut ns = split(600.0, SplitMode::Push);
-        assert_eq!(ns.push_pane(), PushPane::Master);
-        // Master sits at the left edge initially.
-        ns.show_detail();
-        ns.push.snap(PushPane::Detail);
-        ns.recompute_rects();
-        assert_eq!(ns.push_pane(), PushPane::Detail);
-        // Detail is now flush with the pane; master has slid off-left.
-        assert!(
-            (ns.content_panel_rect().x0 - ns.get_rect().x0).abs() < 1.0,
-            "detail occupies the pane after show_detail"
-        );
-        // Back returns to master.
-        ns.show_master();
-        ns.push.snap(PushPane::Master);
-        ns.recompute_rects();
-        assert_eq!(ns.push_pane(), PushPane::Master);
-    }
+            // Pump enough frames for the exponential approach to settle.
+            for _ in 0..240 {
+                elapse(&mut ns, 16);
+                draw_frame(&mut ns);
+                if !ns.flap().is_animating(ns.layout_mode()) {
+                    break;
+                }
+            }
+            assert!(
+                (ns.flap().reveal() - 1.0).abs() < 0.01,
+                "the slide eventually settles fully open (reveal {})",
+                ns.flap().reveal()
+            );
+        }
 
-    #[test]
-    fn first_reconcile_settles_the_reveal_to_the_layout_default() {
-        // `open_when_docked` guesses reveal = 1.0 before any width is known;
-        // if the first resolved layout is an overlay the drawer must already
-        // be shut, not ease shut over the next frames.
-        let mut f = FlapState::open_when_docked();
-        assert_eq!(f.reveal(), 1.0, "constructor guess");
-        f.reconcile(SplitLayout::Overlay);
-        assert_eq!(
-            f.reveal(),
-            0.0,
-            "first resolution snaps to the overlay default (closed)",
-        );
-        assert!(
-            !f.is_animating(SplitLayout::Overlay),
-            "and requests no frames — there is nothing to animate",
-        );
-
-        // Docked first resolution keeps it open, no transient either way.
-        let mut g = FlapState::open_when_docked();
-        g.reconcile(SplitLayout::Docked);
-        assert_eq!(g.reveal(), 1.0);
-        assert!(!g.is_animating(SplitLayout::Docked));
-    }
-
-    #[test]
-    fn a_later_breakpoint_cross_still_animates() {
-        // Only the *first* resolution snaps; a resize is a transition the
-        // user should see.
-        let mut f = FlapState::open_when_docked();
-        f.reconcile(SplitLayout::Docked);
-        f.reconcile(SplitLayout::Overlay);
-        assert_eq!(f.reveal(), 1.0, "the reveal has not jumped");
-        assert!(
-            f.is_animating(SplitLayout::Overlay),
-            "it eases shut over the following frames",
-        );
-    }
-
-    #[test]
-    fn reconcile_drops_stale_preference_on_breakpoint_cross() {
-        let mut f = FlapState::open_when_docked();
-        f.reconcile(SplitLayout::Docked); // first: no clear
-        f.close(); // user closed it while docked
-        assert!(!f.is_open(SplitLayout::Docked));
-        f.reconcile(SplitLayout::Overlay); // crossed → clears preference
-        // Overlay default is closed regardless, so flip to docked to observe.
-        f.reconcile(SplitLayout::Docked);
-        assert!(
-            f.is_open(SplitLayout::Docked),
-            "crossing the breakpoint drops the stale user preference"
-        );
-    }
-
-    #[test]
-    fn draw_emits_content() {
-        let mut ns = split(1200.0, SplitMode::Adaptive);
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let perms = crate::permissions::PermissionContext::permissive();
-        let mut scene = Scene::new();
-        ns.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &presence,
-            &perms,
-        );
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(fills >= 1, "a laid-out split must paint something");
+        // Case `snap_open_stays_deterministic_through_draw`.
+        // `snap_open` must remain a hard, deterministic jump for `--shots`: a
+        // draw afterward (which self-ticks) must not drift the reveal.
+        {
+            let mut ns = split(600.0, SplitMode::Adaptive);
+            ns.open_sidebar();
+            ns.snap_open(true);
+            assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
+            // Even with a time gap, a snapped (already-settled) flap stays
+            // put because tick() is a no-op once reveal == target.
+            elapse(&mut ns, 20);
+            draw_frame(&mut ns);
+            assert_eq!(
+                ns.flap().reveal(),
+                1.0,
+                "a snapped flap must not drift when the draw path self-ticks"
+            );
+            assert!(
+                !ns.needs_animation_frame(),
+                "a settled flap requests no further frames"
+            );
+        }
     }
 
     /// Pretend `ms` of wall clock passed since the last drawn frame, so the
@@ -1508,86 +1796,6 @@ mod tests {
             &theme,
             &presence,
             &perms,
-        );
-    }
-
-    /// The overlay flap must *slide* — advance its eased reveal across
-    /// successive frames from the DRAW path — not snap straight to the
-    /// endpoint during the update pass. Opens the flap, draws two frames a
-    /// few ms apart, and asserts the reveal moved strictly between 0 and 1.
-    #[test]
-    fn overlay_flap_slides_across_frames_from_draw_path() {
-        let mut ns = split(600.0, SplitMode::Adaptive);
-        // Pin a deterministic CLOSED start (reveal == 0), then open: the
-        // target flips to 1 while the current reveal is 0, so a correct
-        // slide must traverse the gap across frames.
-        ns.snap_open(false);
-        assert_eq!(
-            ns.flap().reveal(),
-            0.0,
-            "snap gives a deterministic closed start"
-        );
-        ns.open_sidebar();
-        assert!(ns.is_sidebar_open());
-
-        // First draw establishes the clock (dt == 0) → reveal stays at 0,
-        // proving the flap does NOT teleport on the very first frame.
-        draw_frame(&mut ns);
-        assert_eq!(
-            ns.flap().reveal(),
-            0.0,
-            "first frame establishes the clock and must not jump the slide"
-        );
-
-        // A frame's worth of wall clock, then a second draw advances the
-        // easing by that dt.
-        elapse(&mut ns, 16);
-        draw_frame(&mut ns);
-        let r = ns.flap().reveal();
-        assert!(
-            r > 0.0 && r < 1.0,
-            "after one ~16ms frame the flap is mid-slide (reveal {r}), not snapped"
-        );
-        assert!(
-            ns.needs_animation_frame(),
-            "a mid-slide flap must keep requesting frames so the host pumps the loop"
-        );
-
-        // Pump enough frames for the exponential approach to settle.
-        for _ in 0..240 {
-            elapse(&mut ns, 16);
-            draw_frame(&mut ns);
-            if !ns.flap().is_animating(ns.layout_mode()) {
-                break;
-            }
-        }
-        assert!(
-            (ns.flap().reveal() - 1.0).abs() < 0.01,
-            "the slide eventually settles fully open (reveal {})",
-            ns.flap().reveal()
-        );
-    }
-
-    /// `snap_open` must remain a hard, deterministic jump for `--shots`: a
-    /// draw afterward (which self-ticks) must not drift the reveal.
-    #[test]
-    fn snap_open_stays_deterministic_through_draw() {
-        let mut ns = split(600.0, SplitMode::Adaptive);
-        ns.open_sidebar();
-        ns.snap_open(true);
-        assert_eq!(ns.flap().reveal(), 1.0, "snap jumps straight to fully open");
-        // Even with a time gap, a snapped (already-settled) flap stays
-        // put because tick() is a no-op once reveal == target.
-        elapse(&mut ns, 20);
-        draw_frame(&mut ns);
-        assert_eq!(
-            ns.flap().reveal(),
-            1.0,
-            "a snapped flap must not drift when the draw path self-ticks"
-        );
-        assert!(
-            !ns.needs_animation_frame(),
-            "a settled flap requests no further frames"
         );
     }
 
@@ -1644,65 +1852,6 @@ mod tests {
         );
     }
 
-    /// Scroll-perf regression guard: a second `apply_layout` at the SAME
-    /// pane geometry (every scroll frame) must NOT rebuild + re-solve the
-    /// content pane — that full rebuild was the dominant per-frame cost that
-    /// made scrolling long lists crawl. A resize DOES re-solve.
-    #[test]
-    fn pure_reposition_reuses_the_inner_layout_instead_of_re_solving() {
-        let builds = Rc::new(Cell::new(0usize));
-        let events = Rc::new(Cell::new(0usize));
-        let mut ns = NavSplit::new(
-            Box::new(Text::new("sidebar")),
-            Box::new(Spy {
-                builds: builds.clone(),
-                events,
-                rect: Rect::ZERO,
-            }),
-        )
-        .with_mode(SplitMode::AlwaysDocked);
-
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = ns.build_layout(&mut taffy, &theme, &mut node_map);
-
-        let solve = |taffy: &mut TaffyTree<()>, w: f32| {
-            taffy
-                .compute_layout(
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(w),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-        };
-
-        // First layout: the content pane is built + solved once.
-        solve(&mut taffy, 1200.0);
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert_eq!(builds.get(), 1, "first layout builds the content pane once");
-
-        // A scroll frame — apply_layout again at the identical geometry — must
-        // re-apply on the cached inner tree, NOT rebuild it.
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert_eq!(
-            builds.get(),
-            1,
-            "a pure reposition must not rebuild/re-solve the content pane"
-        );
-
-        // A resize changes the pane geometry → a full re-solve.
-        solve(&mut taffy, 900.0);
-        ns.apply_layout(&taffy, node, Point::ZERO);
-        assert!(
-            builds.get() > 1,
-            "a resize re-solves the content pane (build count {})",
-            builds.get()
-        );
-    }
-
     /// Shared-host path: build, admit, `compute_widget_layout` with the
     /// host's renderer, `apply_layout`. Returns the content pane's rect.
     fn host_layout(ns: &mut NavSplit, theme: &Theme, renderer: &mut TextRenderer) -> Rect {
@@ -1729,135 +1878,5 @@ mod tests {
         }
         ns.apply_layout(&taffy, root, Point::ZERO);
         ns.content.get_rect()
-    }
-
-    /// A8 (tube): every `Text` under a split kept its 1× line height under
-    /// 2× glyphs because the panes were built against `Theme::dark()` and
-    /// measured with a fresh `TextRenderer::new()`. Under the shared host
-    /// solver the panes are now solved with the theme the outer tree was
-    /// built with and the host's own renderer — so the content line is
-    /// twice as tall at 200 % text, and the host path loads no font system
-    /// of its own.
-    #[test]
-    fn text_under_a_split_measures_at_the_host_text_scale() {
-        let height_at = |scale: f32| {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            renderer.set_text_scale(scale);
-            let mut ns = NavSplit::new(
-                Box::new(Text::new("sidebar")),
-                Box::new(Text::new("content")),
-            )
-            .with_mode(SplitMode::AlwaysDocked);
-            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-            let content = host_layout(&mut ns, &theme, &mut renderer);
-            assert_eq!(
-                crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get),
-                0,
-                "the host path must measure with the host's renderer, not load fonts of its own"
-            );
-            content.height()
-        };
-        let one = height_at(1.0);
-        let two = height_at(2.0);
-        assert!(one > 0.0, "the content Text is laid out");
-        assert!(
-            (two / one - 2.0).abs() < 0.05,
-            "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
-        );
-    }
-
-    /// A host that solves the outer tree with plain taffy and calls
-    /// `apply_layout` directly gets the same answer: the panes are built
-    /// against the theme the outer tree was built with, at its text scale.
-    #[test]
-    fn raw_layout_path_measures_panes_at_the_built_theme_text_scale() {
-        let height_at = |scale: f32| {
-            let mut ns = NavSplit::new(
-                Box::new(Text::new("sidebar")),
-                Box::new(Text::new("content")),
-            )
-            .with_mode(SplitMode::AlwaysDocked);
-            lay_out_with(
-                &mut ns,
-                &Theme::dark().with_text_scale(scale),
-                1200.0,
-                600.0,
-            );
-            ns.content.get_rect().height()
-        };
-        let one = height_at(1.0);
-        let two = height_at(2.0);
-        assert!(one > 0.0);
-        assert!(
-            (two / one - 2.0).abs() < 0.05,
-            "a Text line under the split is {two} px at 2× against {one} px at 1×; it must double"
-        );
-    }
-
-    /// HIG §9.6: a breakpoint and a text-sized sidebar width are authored at
-    /// 1× and resolved by the shell — `× ui_scale × text_scale.max(1.0)` —
-    /// so an app never restates the rule. An icon rail follows `ui_scale`
-    /// only, and text never shrinks a pane below its authored geometry.
-    #[test]
-    fn authored_inputs_follow_the_responsive_scale_and_icon_rails_follow_ui_scale_only() {
-        let text_sized = || {
-            NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
-                .with_breakpoint(760.0)
-                .with_sidebar_width(300.0)
-        };
-        let rail = || {
-            NavSplit::new(Box::new(Text::new("s")), Box::new(Text::new("c")))
-                .with_breakpoint(760.0)
-                .with_icon_sidebar_width(86.0)
-        };
-
-        let (mut list, mut icons) = (text_sized(), rail());
-        lay_out(&mut list, 1200.0, 600.0);
-        lay_out(&mut icons, 1200.0, 600.0);
-        assert_eq!((list.breakpoint(), list.sidebar_width()), (760.0, 300.0));
-        assert_eq!((icons.breakpoint(), icons.sidebar_width()), (760.0, 86.0));
-        assert_eq!(
-            list.layout_mode(),
-            SplitLayout::Docked,
-            "1× is the authored geometry"
-        );
-
-        let two = Theme::dark().with_text_scale(2.0);
-        let (mut list, mut icons) = (text_sized(), rail());
-        lay_out_with(&mut list, &two, 1200.0, 600.0);
-        lay_out_with(&mut icons, &two, 1200.0, 600.0);
-        assert_eq!((list.breakpoint(), list.sidebar_width()), (1520.0, 600.0));
-        assert_eq!(
-            (icons.breakpoint(), icons.sidebar_width()),
-            (1520.0, 86.0),
-            "an icon rail never grows with the text scale"
-        );
-        assert_eq!(
-            list.layout_mode(),
-            SplitLayout::Overlay,
-            "a 1200 px window at 2× has the room a 600 px window has at 1×, so it pushes"
-        );
-
-        let mut small = text_sized();
-        lay_out_with(
-            &mut small,
-            &Theme::dark().with_text_scale(0.75),
-            1200.0,
-            600.0,
-        );
-        assert_eq!(
-            (small.breakpoint(), small.sidebar_width()),
-            (760.0, 300.0),
-            "text never shrinks a pane below its authored geometry"
-        );
-
-        let mut dense = rail();
-        lay_out_with(&mut dense, &Theme::dark().with_ui_scale(1.5), 1200.0, 600.0);
-        assert!((dense.breakpoint() - 1140.0).abs() < 1e-9);
-        assert!(
-            (dense.sidebar_width() - 129.0).abs() < 1e-9,
-            "ui_scale grows an icon rail with the rest of the density system"
-        );
     }
 }

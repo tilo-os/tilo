@@ -86,7 +86,19 @@ fn is_staged(path: &Path, file: &str) -> bool {
 
 // =====================================================================
 
+/// Whole-file index operations and commits: stage, unstage, stage-untracked then
+/// commit, empty-message and missing-identity rejection, and stash save/apply.
+/// Each phase is a former test with its own fresh fixture.
 #[test]
+fn file_staging_commit_and_stash_round_trip() {
+    stage_file_writes_index();
+    unstage_file_resets_index_to_head();
+    stage_untracked_then_commit_creates_object_with_file();
+    commit_with_empty_message_is_rejected();
+    commit_without_identity_is_rejected();
+    stash_save_and_apply_roundtrip();
+}
+
 fn stage_file_writes_index() {
     let (_d, path) = init_repo();
     // Modify the tracked file in the working tree.
@@ -101,7 +113,6 @@ fn stage_file_writes_index() {
     );
 }
 
-#[test]
 fn unstage_file_resets_index_to_head() {
     let (_d, path) = init_repo();
     fs::write(path.join("file.txt"), "line 1\nCHANGED\nline 3\n").unwrap();
@@ -122,7 +133,6 @@ fn unstage_file_resets_index_to_head() {
     );
 }
 
-#[test]
 fn stage_untracked_then_commit_creates_object_with_file() {
     let (_d, path) = init_repo();
     fs::write(path.join("new.rs"), "fn main() {}\n").unwrap();
@@ -144,7 +154,6 @@ fn stage_untracked_then_commit_creates_object_with_file() {
     assert_eq!(head.author().email(), Ok("test@example.com"));
 }
 
-#[test]
 fn commit_with_empty_message_is_rejected() {
     let (_d, path) = init_repo();
     fs::write(path.join("file.txt"), "x\n").unwrap();
@@ -153,7 +162,6 @@ fn commit_with_empty_message_is_rejected() {
     assert!(err.is_err(), "blank message must be rejected");
 }
 
-#[test]
 fn commit_without_identity_is_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().to_path_buf();
@@ -171,7 +179,16 @@ fn commit_without_identity_is_rejected() {
     assert!(repo::commit(&path, "msg").is_err());
 }
 
+/// Ref operations: create+checkout, checkout existing, delete (refusing HEAD),
+/// and fetch/pull against a local remote. Each phase is a former test with its own fresh fixture.
 #[test]
+fn branch_and_remote_operations_move_refs() {
+    create_branch_and_checkout_moves_head();
+    checkout_existing_branch_switches_head();
+    delete_branch_removes_ref_and_refuses_head();
+    fetch_and_pull_against_a_local_remote();
+}
+
 fn create_branch_and_checkout_moves_head() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "feature", None, true).expect("create+checkout");
@@ -186,7 +203,6 @@ fn create_branch_and_checkout_moves_head() {
     );
 }
 
-#[test]
 fn checkout_existing_branch_switches_head() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "feature", None, false).unwrap();
@@ -204,7 +220,6 @@ fn checkout_existing_branch_switches_head() {
     );
 }
 
-#[test]
 fn delete_branch_removes_ref_and_refuses_head() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "doomed", None, false).unwrap();
@@ -230,7 +245,16 @@ fn delete_branch_removes_ref_and_refuses_head() {
     );
 }
 
+/// Hunk-level staging: stage and unstage one hunk, an untracked file's hunk stages
+/// the whole file, and a partially staged file keeps distinct diffs. Each phase is a former test with its own fresh fixture.
 #[test]
+fn hunk_staging_touches_only_the_selected_hunk() {
+    stage_hunk_stages_only_the_selected_hunk();
+    unstage_hunk_reverses_a_staged_hunk();
+    stage_hunk_of_untracked_file_stages_whole_file();
+    partially_staged_file_keeps_distinct_staged_and_worktree_diffs();
+}
+
 fn stage_hunk_stages_only_the_selected_hunk() {
     let (_d, path) = init_repo();
     // A file with two well-separated change regions so the diff has 2 hunks.
@@ -254,7 +278,7 @@ fn stage_hunk_stages_only_the_selected_hunk() {
         &mut |_, _| true,
         None,
         Some(&mut |_, _| {
-            nhunks.set(nhunks.get() + 1);
+            nhunks.set(nhunks.get().checked_add(1).unwrap());
             true
         }),
         None,
@@ -290,7 +314,6 @@ fn stage_hunk_stages_only_the_selected_hunk() {
     );
 }
 
-#[test]
 fn unstage_hunk_reverses_a_staged_hunk() {
     let (_d, path) = init_repo();
     fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
@@ -324,7 +347,6 @@ fn unstage_hunk_reverses_a_staged_hunk() {
     );
 }
 
-#[test]
 fn stash_save_and_apply_roundtrip() {
     let (_d, path) = init_repo();
     fs::write(path.join("file.txt"), "line 1\nWIP EDIT\nline 3\n").unwrap();
@@ -342,7 +364,7 @@ fn stash_save_and_apply_roundtrip() {
         let mut repo = open(&path);
         let mut count = 0;
         repo.stash_foreach(|_, _, _| {
-            count += 1;
+            count = usize::checked_add(count, 1).unwrap();
             true
         })
         .unwrap();
@@ -354,7 +376,6 @@ fn stash_save_and_apply_roundtrip() {
     assert!(restored.contains("WIP EDIT"), "apply must restore the edit");
 }
 
-#[test]
 fn fetch_and_pull_against_a_local_remote() {
     // Build an "upstream" repo with two commits, clone it via a file:// path
     // into a "local" repo at the first commit, then fetch+pull to advance.
@@ -448,7 +469,19 @@ fn fetch_and_pull_against_a_local_remote() {
 // exact UI code path is exercised end-to-end against a real repo.
 // =====================================================================
 
+/// The app's production actions drive the real repository: stage and commit,
+/// toggle-stage one file, checkout and create a branch, stage a hunk, discard a
+/// file. Each phase is a former test with its own fresh fixture.
 #[test]
+fn app_production_actions_mutate_the_repository() {
+    app_stage_and_commit_through_production_actions();
+    app_toggle_stage_single_file_mutates_index();
+    app_checkout_branch_through_production_action();
+    app_create_branch_through_production_action();
+    app_stage_hunk_through_production_action();
+    app_discard_file_through_production_action();
+}
+
 fn app_stage_and_commit_through_production_actions() {
     let (_d, path) = init_repo();
     // Two pending changes: a tracked modification and a new untracked file.
@@ -490,7 +523,6 @@ fn app_stage_and_commit_through_production_actions() {
     );
 }
 
-#[test]
 fn app_toggle_stage_single_file_mutates_index() {
     let (_d, path) = init_repo();
     fs::write(path.join("file.txt"), "line 1\nEDITED\nline 3\n").unwrap();
@@ -511,7 +543,6 @@ fn app_toggle_stage_single_file_mutates_index() {
     );
 }
 
-#[test]
 fn app_checkout_branch_through_production_action() {
     let (_d, path) = init_repo();
     repo::create_branch(&path, "feature", None, false).unwrap();
@@ -527,7 +558,6 @@ fn app_checkout_branch_through_production_action() {
     assert_eq!(app.test_head(), "feature");
 }
 
-#[test]
 fn app_create_branch_through_production_action() {
     let (_d, path) = init_repo();
     let mut app = GitClientApp::open_at(&path).unwrap();
@@ -544,7 +574,6 @@ fn app_create_branch_through_production_action() {
     assert!(app.test_branch_names().iter().any(|n| n == "topic/awesome"));
 }
 
-#[test]
 fn app_stage_hunk_through_production_action() {
     let (_d, path) = init_repo();
     fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
@@ -583,7 +612,17 @@ fn app_stage_hunk_through_production_action() {
     );
 }
 
+/// Opening repositories: a plain directory is handled gracefully and rejected by
+/// the empty state, a real repository opens, and a Unicode repository commits an
+/// exact Unicode file. Each phase is a former test with its own fresh fixture.
 #[test]
+fn opening_a_repository_accepts_real_repos_and_rejects_plain_directories() {
+    not_a_repo_is_handled_gracefully();
+    app_empty_state_opens_a_real_repository();
+    app_empty_state_rejects_a_non_repository_path();
+    app_opens_unicode_repository_and_commits_exact_unicode_file();
+}
+
 fn not_a_repo_is_handled_gracefully() {
     let dir = tempfile::tempdir().unwrap();
     // A plain directory, no git.
@@ -595,7 +634,6 @@ fn not_a_repo_is_handled_gracefully() {
     assert!(repo::load(dir.path()).is_none(), "load returns None");
 }
 
-#[test]
 fn stage_hunk_of_untracked_file_stages_whole_file() {
     // An untracked file has no index base for a per-hunk apply, so staging any
     // of its hunks must stage the whole file rather than erroring.
@@ -610,7 +648,17 @@ fn stage_hunk_of_untracked_file_stages_whole_file() {
     );
 }
 
+/// Discarding worktree changes: a tracked edit reverts, an untracked file is
+/// deleted, one hunk reverts alone, and CRLF checkout configuration survives.
+/// Each phase is a former test with its own fresh fixture.
 #[test]
+fn discard_reverts_worktree_files_and_hunks() {
+    discard_file_reverts_tracked_worktree_edit();
+    discard_file_deletes_untracked_file();
+    discard_hunk_reverts_only_the_selected_worktree_hunk();
+    discard_hunk_and_file_preserve_configured_crlf_checkout();
+}
+
 fn discard_file_reverts_tracked_worktree_edit() {
     let (_d, path) = init_repo();
     let original = fs::read_to_string(path.join("file.txt")).unwrap();
@@ -625,7 +673,6 @@ fn discard_file_reverts_tracked_worktree_edit() {
     );
 }
 
-#[test]
 fn discard_file_deletes_untracked_file() {
     let (_d, path) = init_repo();
     fs::write(path.join("scratch.tmp"), "junk\n").unwrap();
@@ -639,7 +686,6 @@ fn discard_file_deletes_untracked_file() {
     );
 }
 
-#[test]
 fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
     let (_d, path) = init_repo();
     fs::write(path.join("multi.txt"), numbered_lines()).unwrap();
@@ -663,7 +709,6 @@ fn discard_hunk_reverts_only_the_selected_worktree_hunk() {
     assert!(after.contains("line 38 EDIT"), "hunk 1's edit must remain");
 }
 
-#[test]
 fn discard_hunk_and_file_preserve_configured_crlf_checkout() {
     let (_dir, path) = init_repo();
     open(&path)
@@ -702,7 +747,6 @@ fn discard_hunk_and_file_preserve_configured_crlf_checkout() {
     );
 }
 
-#[test]
 fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     use git_client::model::DiffKey;
     let (_d, path) = init_repo();
@@ -747,7 +791,6 @@ fn partially_staged_file_keeps_distinct_staged_and_worktree_diffs() {
     );
 }
 
-#[test]
 fn app_discard_file_through_production_action() {
     let (_d, path) = init_repo();
     let original = fs::read_to_string(path.join("file.txt")).unwrap();
@@ -766,7 +809,6 @@ fn app_discard_file_through_production_action() {
     assert_eq!(app.test_change_counts(), (0, 0, 0));
 }
 
-#[test]
 fn app_empty_state_opens_a_real_repository() {
     let (_d, path) = init_repo();
     let mut app = GitClientApp::open_empty();
@@ -783,7 +825,6 @@ fn app_empty_state_opens_a_real_repository() {
     assert_eq!(app.test_head(), head);
 }
 
-#[test]
 fn app_empty_state_rejects_a_non_repository_path() {
     let dir = tempfile::tempdir().unwrap();
     let mut app = GitClientApp::open_empty();
@@ -795,7 +836,6 @@ fn app_empty_state_rejects_a_non_repository_path() {
     assert!(app.test_last_error().is_some(), "and surfaces an error");
 }
 
-#[test]
 fn app_opens_unicode_repository_and_commits_exact_unicode_file() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("Grün 🌍");

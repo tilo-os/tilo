@@ -33,7 +33,7 @@ tilo-clock = { path = "../../crates/system/tilo-clock" }
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
 # Chromium helper applies built-in network, cosmetic and scriptlet filtering.
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock", "portal"] }
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["webview-adblock"] }
 tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 

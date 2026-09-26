@@ -96,7 +96,7 @@ For a native integration test without a full workspace dispatch, use
 **Development / focused native test** (`focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
-`concept_parity_spec::overview_add_workspace::overview_add_workspace_click_appends_workspace`.
+`concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
 Use operation `check-tests` with the target/name empty to compile that package's
 test targets. Both modes use `--locked` on one native x86-64 runner and share the
 normal download/compiler caches. Missing or ignored tests fail. The job records
@@ -582,7 +582,7 @@ installed apps discover their adjacent DLL automatically. Requiring PDFium durin
 tests prevents a missing renderer from leaving backend tests unverified.
 PDF Viewer captures wait for the production worker's visible pages and thumbnails;
 unfinished rendering fails after 15 seconds. The explicit `loading` scenario keeps
-its intentional placeholder. `cargo test --locked -p pdf-viewer --test capture`
+its intentional placeholder. `cargo test --locked -p pdf-viewer --test it capture::`
 exercises this worker path separately from the synchronous library tests.
 
 Books opens EPUBs through its background importer and wakes idle windows when an
@@ -1421,7 +1421,7 @@ To prepare the native runtime in a disposable local directory:
 asset=$(bash tools/ci/install-pdfium.sh --asset-name)
 ./os/dev/cache-github-assets.sh "$asset"
 export TILO_PDFIUM_LIB=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /tmp/tilo-pdfium/8057 os/external-assets/github-assets.tsv)
-cargo test --locked -p pdf-viewer --test capture
+cargo test --locked -p pdf-viewer --test it capture::
 ```
 
 The installer verifies the archive before writing, retains its license files,

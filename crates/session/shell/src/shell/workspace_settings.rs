@@ -4254,162 +4254,178 @@ mod tab_tests {
     }
 
     #[test]
-    fn ws_settings_default_tab_is_general() {
-        let ws = ws_settings_default();
-        assert_eq!(ws.active_tab, WsTab::General);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn settings_tabs_navigate_hit_test_and_draw_the_active_pane() {
+        // Phase `settings_tabs_default_to_general_and_switch_in_nav_order`.
+        {
+            // Phase `ws_settings_default_tab_is_general`.
+            {
+                let ws = ws_settings_default();
+                assert_eq!(ws.active_tab, WsTab::General);
+            }
 
-    #[test]
-    fn select_tab_switches_active() {
-        let mut ws = ws_settings_default();
-        ws.select_tab(WsTab::Members);
-        assert_eq!(ws.active_tab, WsTab::Members);
-        ws.select_tab(WsTab::Agents);
-        assert_eq!(ws.active_tab, WsTab::Agents);
-        ws.select_tab(WsTab::Permissions);
-        assert_eq!(ws.active_tab, WsTab::Permissions);
-        ws.select_tab(WsTab::General);
-        assert_eq!(ws.active_tab, WsTab::General);
-    }
+            // Phase `select_tab_switches_active`.
+            {
+                let mut ws = ws_settings_default();
+                ws.select_tab(WsTab::Members);
+                assert_eq!(ws.active_tab, WsTab::Members);
+                ws.select_tab(WsTab::Agents);
+                assert_eq!(ws.active_tab, WsTab::Agents);
+                ws.select_tab(WsTab::Permissions);
+                assert_eq!(ws.active_tab, WsTab::Permissions);
+                ws.select_tab(WsTab::General);
+                assert_eq!(ws.active_tab, WsTab::General);
+            }
 
-    #[test]
-    fn ws_tab_default_matches_general() {
-        assert_eq!(WsTab::default(), WsTab::General);
-    }
+            // Phase `ws_tab_default_matches_general`.
+            {
+                assert_eq!(WsTab::default(), WsTab::General);
+            }
 
-    #[test]
-    fn ws_tab_all_iterates_in_nav_order() {
-        assert_eq!(
-            WsTab::all(),
-            [
-                WsTab::General,
-                WsTab::Members,
-                WsTab::Agents,
-                WsTab::Permissions,
-                WsTab::Apps
-            ]
-        );
-    }
+            // Phase `ws_tab_all_iterates_in_nav_order`.
+            {
+                assert_eq!(
+                    WsTab::all(),
+                    [
+                        WsTab::General,
+                        WsTab::Members,
+                        WsTab::Agents,
+                        WsTab::Permissions,
+                        WsTab::Apps
+                    ]
+                );
+            }
 
-    #[test]
-    fn compact_labels_keep_every_destination_distinct() {
-        assert_eq!(
-            WsTab::all().map(|tab| tab.compact_label()),
-            ["General", "People", "Agents", "Privacy", "Apps"]
-        );
-    }
+            // Phase `compact_labels_keep_every_destination_distinct`.
+            {
+                assert_eq!(
+                    WsTab::all().map(|tab| tab.compact_label()),
+                    ["General", "People", "Agents", "Privacy", "Apps"]
+                );
+            }
 
-    #[test]
-    fn permissions_tab_is_reachable_on_a_workspace_with_no_grants() {
-        // A host who wants to grant something before any grant exists
-        // has to be able to reach the tab that grants it.
-        let ws = Workspace::new(WorkspaceId::default(), "no-grants");
-        assert!(!ws.has_app_grants());
-        assert!(WsTab::all().contains(&WsTab::Permissions));
-        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let layout = permissions_pane_layout(&ws, pane);
-        assert!(
-            layout.choice_rect.area() > 0.0,
-            "the capability picker must be laid out even with zero grants"
-        );
-    }
-
-    #[test]
-    fn sidebar_rect_is_the_token_sidebar_width() {
-        let ws = ws_settings_default();
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        let sidebar = ws.sidebar_rect(modal);
-        assert_eq!(sidebar.width(), SIDEBAR_WIDTH);
-        assert_eq!(
-            SIDEBAR_WIDTH,
-            f64::from(ui::tokens::Metrics::BASE.sidebar_width),
-            "the lens sidebar is the docked-sidebar width (HIG §9.6), not a bespoke 256"
-        );
-        assert_eq!(sidebar.height(), modal.height());
-        assert_eq!(sidebar.x0, modal.x0);
-    }
-
-    #[test]
-    fn pane_rect_starts_after_sidebar() {
-        let ws = ws_settings_default();
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        let pane = ws.pane_rect(modal);
-        assert_eq!(pane.x0, modal.x0 + SIDEBAR_WIDTH);
-        assert_eq!(pane.x1, modal.x1);
-        assert!((pane.width() + SIDEBAR_WIDTH - modal.width()).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn nav_rows_yield_one_rect_per_tab_in_order() {
-        let ws = ws_settings_default();
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        let rows = ws.nav_rows(modal);
-        assert_eq!(rows.len(), 5);
-        assert_eq!(rows[0].0, WsTab::General);
-        assert_eq!(rows[1].0, WsTab::Members);
-        assert_eq!(rows[2].0, WsTab::Agents);
-        assert_eq!(rows[3].0, WsTab::Permissions);
-        assert_eq!(rows[4].0, WsTab::Apps);
-        for (_, r) in &rows {
-            assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
-            assert!(r.x1 > r.x0);
+            // Phase `permissions_tab_is_reachable_on_a_workspace_with_no_grants`.
+            {
+                // A host who wants to grant something before any grant exists
+                // has to be able to reach the tab that grants it.
+                let ws = Workspace::new(WorkspaceId::default(), "no-grants");
+                assert!(!ws.has_app_grants());
+                assert!(WsTab::all().contains(&WsTab::Permissions));
+                let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+                let layout = permissions_pane_layout(&ws, pane);
+                assert!(
+                    layout.choice_rect.area() > 0.0,
+                    "the capability picker must be laid out even with zero grants"
+                );
+            }
         }
-        let stride = NAV_ROW_HEIGHT + NAV_ROW_GAP;
-        assert!((rows[1].1.y0 - rows[0].1.y0 - stride).abs() < f64::EPSILON);
-        assert!((rows[2].1.y0 - rows[1].1.y0 - stride).abs() < f64::EPSILON);
-    }
 
-    #[test]
-    fn nav_hit_test_returns_tab_at_point() {
-        let ws = ws_settings_default();
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        for (tab, row) in ws.nav_rows(modal) {
-            assert_eq!(ws.nav_hit_test(modal, row.center()), Some(tab));
+        // Phase `settings_sidebar_nav_geometry_and_hit_testing`.
+        {
+            // Phase `sidebar_rect_is_the_token_sidebar_width`.
+            {
+                let ws = ws_settings_default();
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                let sidebar = ws.sidebar_rect(modal);
+                assert_eq!(sidebar.width(), SIDEBAR_WIDTH);
+                assert_eq!(
+                    SIDEBAR_WIDTH,
+                    f64::from(ui::tokens::Metrics::BASE.sidebar_width),
+                    "the lens sidebar is the docked-sidebar width (HIG §9.6), not a bespoke 256"
+                );
+                assert_eq!(sidebar.height(), modal.height());
+                assert_eq!(sidebar.x0, modal.x0);
+            }
+
+            // Phase `pane_rect_starts_after_sidebar`.
+            {
+                let ws = ws_settings_default();
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                let pane = ws.pane_rect(modal);
+                assert_eq!(pane.x0, modal.x0 + SIDEBAR_WIDTH);
+                assert_eq!(pane.x1, modal.x1);
+                assert!((pane.width() + SIDEBAR_WIDTH - modal.width()).abs() < f64::EPSILON);
+            }
+
+            // Phase `nav_rows_yield_one_rect_per_tab_in_order`.
+            {
+                let ws = ws_settings_default();
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                let rows = ws.nav_rows(modal);
+                assert_eq!(rows.len(), 5);
+                assert_eq!(rows[0].0, WsTab::General);
+                assert_eq!(rows[1].0, WsTab::Members);
+                assert_eq!(rows[2].0, WsTab::Agents);
+                assert_eq!(rows[3].0, WsTab::Permissions);
+                assert_eq!(rows[4].0, WsTab::Apps);
+                for (_, r) in &rows {
+                    assert!((r.height() - NAV_ROW_HEIGHT).abs() < f64::EPSILON);
+                    assert!(r.x1 > r.x0);
+                }
+                let stride = NAV_ROW_HEIGHT + NAV_ROW_GAP;
+                assert!((rows[1].1.y0 - rows[0].1.y0 - stride).abs() < f64::EPSILON);
+                assert!((rows[2].1.y0 - rows[1].1.y0 - stride).abs() < f64::EPSILON);
+            }
+
+            // Phase `nav_hit_test_returns_tab_at_point`.
+            {
+                let ws = ws_settings_default();
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                for (tab, row) in ws.nav_rows(modal) {
+                    assert_eq!(ws.nav_hit_test(modal, row.center()), Some(tab));
+                }
+                assert_eq!(
+                    ws.nav_hit_test(modal, Point::new(modal.x1 - 10.0, modal.y1 - 10.0)),
+                    None
+                );
+            }
         }
-        assert_eq!(
-            ws.nav_hit_test(modal, Point::new(modal.x1 - 10.0, modal.y1 - 10.0)),
-            None
-        );
-    }
 
-    #[test]
-    fn draw_body_paints_sidebar_when_pane_drawer_absent() {
-        let ws = ws_settings_default();
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        ws.draw_body(&mut scene, Affine::IDENTITY, modal, &mut tr, &theme, None);
-        assert!(
-            !scene.encoding().draw_tags.is_empty(),
-            "sidebar must paint at least one draw command even without a pane drawer"
-        );
-    }
+        // Phase `draw_body_paints_the_sidebar_and_the_active_pane`.
+        {
+            // Phase `draw_body_paints_sidebar_when_pane_drawer_absent`.
+            {
+                let ws = ws_settings_default();
+                let mut scene = Scene::new();
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                ws.draw_body(&mut scene, Affine::IDENTITY, modal, &mut tr, &theme, None);
+                assert!(
+                    !scene.encoding().draw_tags.is_empty(),
+                    "sidebar must paint at least one draw command even without a pane drawer"
+                );
+            }
 
-    #[test]
-    fn draw_body_invokes_pane_drawer_for_active_tab() {
-        let mut ws = ws_settings_default();
-        ws.select_tab(WsTab::Members);
-        let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
-        let expected_pane = ws.pane_rect(modal);
+            // Phase `draw_body_invokes_pane_drawer_for_active_tab`.
+            {
+                let mut ws = ws_settings_default();
+                ws.select_tab(WsTab::Members);
+                let modal = Rect::new(0.0, 0.0, 896.0, 600.0);
+                let expected_pane = ws.pane_rect(modal);
 
-        let mut observed: Option<Rect> = None;
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let mut drawer =
-            |_s: &mut Scene, _x: Affine, pane: Rect, _t: &mut TextRenderer, _th: &Theme| {
-                observed = Some(pane);
-            };
-        ws.draw_body(
-            &mut scene,
-            Affine::IDENTITY,
-            modal,
-            &mut tr,
-            &theme,
-            Some(&mut drawer),
-        );
-        assert_eq!(observed, Some(expected_pane));
+                let mut observed: Option<Rect> = None;
+                let mut scene = Scene::new();
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let mut drawer =
+                    |_s: &mut Scene, _x: Affine, pane: Rect, _t: &mut TextRenderer, _th: &Theme| {
+                        observed = Some(pane);
+                    };
+                ws.draw_body(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    modal,
+                    &mut tr,
+                    &theme,
+                    Some(&mut drawer),
+                );
+                assert_eq!(observed, Some(expected_pane));
+            }
+        }
     }
 }
 
@@ -4436,219 +4452,294 @@ mod members_pane_tests {
     }
 
     #[test]
-    fn members_rows_come_from_the_roster() {
-        let ws = ws_with_two_members();
-        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let rows = members_pane_rows(&ws, pane);
-        assert_eq!(rows.len(), 2, "owner + invited peer");
-        let owner_row = rows
-            .iter()
-            .find(|r| r.user == OWNER)
-            .expect("owner is in the roster");
-        assert!(owner_row.is_workspace_owner);
-        assert_eq!(owner_row.role, CapRole::Owner);
-        let peer_row = rows.iter().find(|r| r.user == PEER).expect("peer row");
-        assert!(!peer_row.is_workspace_owner);
-        assert_eq!(peer_row.role, CapRole::Viewer);
-        for row in &rows {
-            assert!(row.role_rect.x0 > row.row_rect.x0);
-            assert!(row.remove_rect.x1 <= row.row_rect.x1);
-            assert!(row.role_rect.x1 <= row.remove_rect.x0);
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn member_roles_come_from_the_roster_and_change_only_within_owner_authority() {
+        // Phase `members_rows_come_from_the_roster`.
+        {
+            let ws = ws_with_two_members();
+            let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+            let rows = members_pane_rows(&ws, pane);
+            assert_eq!(rows.len(), 2, "owner + invited peer");
+            let owner_row = rows
+                .iter()
+                .find(|r| r.user == OWNER)
+                .expect("owner is in the roster");
+            assert!(owner_row.is_workspace_owner);
+            assert_eq!(owner_row.role, CapRole::Owner);
+            let peer_row = rows.iter().find(|r| r.user == PEER).expect("peer row");
+            assert!(!peer_row.is_workspace_owner);
+            assert_eq!(peer_row.role, CapRole::Viewer);
+            for row in &rows {
+                assert!(row.role_rect.x0 > row.row_rect.x0);
+                assert!(row.remove_rect.x1 <= row.row_rect.x1);
+                assert!(row.role_rect.x1 <= row.remove_rect.x0);
+            }
+        }
+
+        // Phase `owner_can_promote_a_member_and_role_of_agrees`.
+        {
+            let mut ws = ws_with_two_members();
+            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            let edit = set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Editor,
+            );
+            assert!(!edit.is_empty());
+            assert_eq!(
+                ws.role_of(&PEER.to_string()),
+                Some(CapRole::Editor),
+                "the role the panel shows must be the role the model decides with"
+            );
+            assert!(ws.allows(
+                &ws.actor_for_person(&PEER.to_string()),
+                &crate::shell::state::ResourceRef::Workspace,
+                Verb::Write
+            ));
+        }
+
+        // Phase `owner_can_demote_a_member`.
+        {
+            // `grant_capability` keeps the strongest of two grants, so the
+            // old membership must be retired first or `role_of` keeps
+            // answering the higher role.
+            let mut ws = ws_with_two_members();
+            set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Editor,
+            );
+            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Editor));
+            set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Viewer,
+            );
+            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            assert!(
+                !ws.allows(
+                    &ws.actor_for_person(&PEER.to_string()),
+                    &crate::shell::state::ResourceRef::Workspace,
+                    Verb::Write
+                ),
+                "a demoted member must stop being able to write, not merely stop reading as Editor"
+            );
+        }
+
+        // Phase `non_owner_cannot_change_a_role`.
+        {
+            let mut ws = ws_with_two_members();
+            let edit = set_member_role(
+                &mut ws,
+                &PEER.to_string(),
+                &PEER.to_string(),
+                CapRole::Owner,
+            );
+            assert!(
+                edit.is_empty(),
+                "a viewer must not be able to promote itself"
+            );
+            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+        }
+
+        // Phase `the_recorded_owner_role_is_structural`.
+        {
+            let mut ws = ws_with_two_members();
+            let edit = set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &OWNER.to_string(),
+                CapRole::Viewer,
+            );
+            assert!(edit.is_empty());
+            assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+        }
+
+        // Phase `role_chip_cycles_through_the_positive_roles`.
+        {
+            assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
+            assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
+            assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
+            assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
+            assert_eq!(next_role(CapRole::Denied), CapRole::Viewer);
+        }
+
+        // Phase `role_control_cannot_create_or_transfer_ownership`.
+        {
+            let mut ws = ws_with_two_members();
+            let edit = set_member_role(
+                &mut ws,
+                &OWNER.to_string(),
+                &PEER.to_string(),
+                CapRole::Owner,
+            );
+            assert!(edit.is_empty());
+            assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
+            assert_eq!(ws.owner.as_deref(), Some(OWNER));
+        }
+
+        // Phase `delegated_admin_cannot_partially_demote_or_remove_itself`.
+        {
+            let mut ws = ws_with_two_members();
+            let admin =
+                CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Admin);
+            ws.grant_as(&OWNER.to_string(), admin)
+                .expect("owner delegates administration");
+            let before = ws.capabilities.clone();
+
+            assert!(
+                set_member_role(
+                    &mut ws,
+                    &PEER.to_string(),
+                    &PEER.to_string(),
+                    CapRole::Viewer,
+                )
+                .is_empty()
+            );
+            assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
+            assert_eq!(ws.capabilities, before);
+            assert!(ws.may_administer(&PEER.to_string()));
         }
     }
 
     #[test]
-    fn owner_can_promote_a_member_and_role_of_agrees() {
-        let mut ws = ws_with_two_members();
-        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
-        let edit = set_member_role(
-            &mut ws,
-            &OWNER.to_string(),
-            &PEER.to_string(),
-            CapRole::Editor,
-        );
-        assert!(!edit.is_empty());
-        assert_eq!(
-            ws.role_of(&PEER.to_string()),
-            Some(CapRole::Editor),
-            "the role the panel shows must be the role the model decides with"
-        );
-        assert!(ws.allows(
-            &ws.actor_for_person(&PEER.to_string()),
-            &crate::shell::state::ResourceRef::Workspace,
-            Verb::Write
-        ));
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn member_removal_and_ownership_protect_the_owner() {
+        // Phase `removing_a_member_takes_their_grants_but_never_removes_the_owner`.
+        {
+            // Phase `removing_a_member_takes_their_grants_with_them`.
+            {
+                let mut ws = ws_with_two_members();
+                let cap = CapOverride::grant(
+                    Subject::person(PEER),
+                    Scope::FsPath("/var/workspace".into()),
+                    Verb::Write,
+                );
+                ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
+                assert_eq!(
+                    members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count,
+                    1
+                );
 
-    #[test]
-    fn owner_can_demote_a_member() {
-        // `grant_capability` keeps the strongest of two grants, so the
-        // old membership must be retired first or `role_of` keeps
-        // answering the higher role.
-        let mut ws = ws_with_two_members();
-        set_member_role(
-            &mut ws,
-            &OWNER.to_string(),
-            &PEER.to_string(),
-            CapRole::Editor,
-        );
-        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Editor));
-        set_member_role(
-            &mut ws,
-            &OWNER.to_string(),
-            &PEER.to_string(),
-            CapRole::Viewer,
-        );
-        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
-        assert!(
-            !ws.allows(
-                &ws.actor_for_person(&PEER.to_string()),
-                &crate::shell::state::ResourceRef::Workspace,
-                Verb::Write
-            ),
-            "a demoted member must stop being able to write, not merely stop reading as Editor"
-        );
-    }
+                let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
+                assert_eq!(edit.revoked.len(), 2, "membership + the file grant");
+                assert_eq!(ws.role_of(&PEER.to_string()), None);
+                assert!(
+                    !ws.allows(
+                        &ws.actor_for_person(&PEER.to_string()),
+                        &crate::shell::state::ResourceRef::FsPath("/var/workspace/notes".into()),
+                        Verb::Write
+                    ),
+                    "removing a member must revoke what they held, not just hide them"
+                );
+            }
 
-    #[test]
-    fn non_owner_cannot_change_a_role() {
-        let mut ws = ws_with_two_members();
-        let edit = set_member_role(
-            &mut ws,
-            &PEER.to_string(),
-            &PEER.to_string(),
-            CapRole::Owner,
-        );
-        assert!(
-            edit.is_empty(),
-            "a viewer must not be able to promote itself"
-        );
-        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
-    }
+            // Phase `the_owner_cannot_be_removed`.
+            {
+                let mut ws = ws_with_two_members();
+                let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
+                assert!(edit.is_empty());
+                assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
+            }
+        }
 
-    #[test]
-    fn the_recorded_owner_role_is_structural() {
-        let mut ws = ws_with_two_members();
-        let edit = set_member_role(
-            &mut ws,
-            &OWNER.to_string(),
-            &OWNER.to_string(),
-            CapRole::Viewer,
-        );
-        assert!(edit.is_empty());
-        assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
-    }
+        // Phase `ownership_is_a_separate_ceremony_named_by_person`.
+        {
+            // Phase `ownership_ceremony_is_separate_typed_confirmed_and_accessible`.
+            {
+                let (owner_key, owner_public) = collab_types::generate_keypair();
+                let (_, recipient_public) = collab_types::generate_keypair();
+                let owner = hex::encode(owner_public.as_bytes());
+                let recipient = hex::encode(recipient_public.as_bytes());
+                let mut ws = Workspace::new(WorkspaceId(91), "Research");
+                ws.set_owner(owner.clone());
+                ws.grant_capability(CapOverride::membership(
+                    Subject::person(recipient.clone()),
+                    ws.room.to_string(),
+                    Verb::Admin,
+                ));
+                ws.pending_ownership_transfer = Some(
+                    collab_types::OwnershipTransferProposalV1::new(
+                        ws.room.to_string(),
+                        [8; 32],
+                        owner_public,
+                        recipient_public,
+                        500,
+                        &owner_key,
+                    )
+                    .unwrap(),
+                );
 
-    #[test]
-    fn removing_a_member_takes_their_grants_with_them() {
-        let mut ws = ws_with_two_members();
-        let cap = CapOverride::grant(
-            Subject::person(PEER),
-            Scope::FsPath("/var/workspace".into()),
-            Verb::Write,
-        );
-        ws.grant_as(&OWNER.to_string(), cap).expect("owner grants");
-        assert_eq!(
-            members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0))[1].grant_count,
-            1
-        );
+                let owner_resource = ownership_transfer_resource(&ws, &owner);
+                assert!(owner_resource.actions.iter().any(|action| {
+                    action.id == "ownership.propose"
+                        && action.contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
+                }));
+                assert!(
+                    owner_resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "ownership.cancel")
+                );
+                let recipient_resource = ownership_transfer_resource(&ws, &recipient);
+                let accept = recipient_resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "ownership.accept")
+                    .unwrap();
+                assert!(matches!(
+                    accept.contract.confirmation,
+                    tilo_actions::ConfirmationPolicy::Phrase { .. }
+                ));
+                assert!(
+                    ownership_transfer_status(&ws, &recipient)
+                        .unwrap()
+                        .contains("offered you ownership")
+                );
+                assert_eq!(role_verb(CapRole::Owner), None);
+            }
 
-        let edit = remove_member(&mut ws, &OWNER.to_string(), &PEER.to_string());
-        assert_eq!(edit.revoked.len(), 2, "membership + the file grant");
-        assert_eq!(ws.role_of(&PEER.to_string()), None);
-        assert!(
-            !ws.allows(
-                &ws.actor_for_person(&PEER.to_string()),
-                &crate::shell::state::ResourceRef::FsPath("/var/workspace/notes".into()),
-                Verb::Write
-            ),
-            "removing a member must revoke what they held, not just hide them"
-        );
-    }
+            // Phase `ownership_status_prefers_a_known_person_name_to_a_key`.
+            {
+                let mut ws = ws_with_two_members();
+                let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
+                let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[18; 32]);
+                let owner_public = collab_types::Ed25519PublicKey::from_bytes(
+                    owner_key.verifying_key().to_bytes(),
+                );
+                let recipient_public = collab_types::Ed25519PublicKey::from_bytes(
+                    recipient_key.verifying_key().to_bytes(),
+                );
+                let owner = public_key_member_id(owner_public);
+                let recipient = public_key_member_id(recipient_public);
+                ws.collaborators.push(
+                    crate::shell::state::Collaborator::new(recipient.clone(), "Morgan")
+                        .as_invited(),
+                );
+                ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
+                    ws.room.to_string(),
+                    [23; 32],
+                    owner_public,
+                    recipient_public,
+                    u64::MAX,
+                    &owner_key,
+                )
+                .ok();
 
-    #[test]
-    fn the_owner_cannot_be_removed() {
-        let mut ws = ws_with_two_members();
-        let edit = remove_member(&mut ws, &OWNER.to_string(), &OWNER.to_string());
-        assert!(edit.is_empty());
-        assert_eq!(ws.role_of(&OWNER.to_string()), Some(CapRole::Owner));
-    }
-
-    #[test]
-    fn role_chip_cycles_through_the_positive_roles() {
-        assert_eq!(next_role(CapRole::Viewer), CapRole::Commenter);
-        assert_eq!(next_role(CapRole::Commenter), CapRole::Editor);
-        assert_eq!(next_role(CapRole::Editor), CapRole::Viewer);
-        assert_eq!(next_role(CapRole::Owner), CapRole::Viewer);
-        assert_eq!(next_role(CapRole::Denied), CapRole::Viewer);
-    }
-
-    #[test]
-    fn role_control_cannot_create_or_transfer_ownership() {
-        let mut ws = ws_with_two_members();
-        let edit = set_member_role(
-            &mut ws,
-            &OWNER.to_string(),
-            &PEER.to_string(),
-            CapRole::Owner,
-        );
-        assert!(edit.is_empty());
-        assert_eq!(ws.role_of(&PEER.to_string()), Some(CapRole::Viewer));
-        assert_eq!(ws.owner.as_deref(), Some(OWNER));
-    }
-
-    #[test]
-    fn ownership_ceremony_is_separate_typed_confirmed_and_accessible() {
-        let (owner_key, owner_public) = collab_types::generate_keypair();
-        let (_, recipient_public) = collab_types::generate_keypair();
-        let owner = hex::encode(owner_public.as_bytes());
-        let recipient = hex::encode(recipient_public.as_bytes());
-        let mut ws = Workspace::new(WorkspaceId(91), "Research");
-        ws.set_owner(owner.clone());
-        ws.grant_capability(CapOverride::membership(
-            Subject::person(recipient.clone()),
-            ws.room.to_string(),
-            Verb::Admin,
-        ));
-        ws.pending_ownership_transfer = Some(
-            collab_types::OwnershipTransferProposalV1::new(
-                ws.room.to_string(),
-                [8; 32],
-                owner_public,
-                recipient_public,
-                500,
-                &owner_key,
-            )
-            .unwrap(),
-        );
-
-        let owner_resource = ownership_transfer_resource(&ws, &owner);
-        assert!(owner_resource.actions.iter().any(|action| {
-            action.id == "ownership.propose"
-                && action.contract.confirmation == tilo_actions::ConfirmationPolicy::Confirm
-        }));
-        assert!(
-            owner_resource
-                .actions
-                .iter()
-                .any(|action| action.id == "ownership.cancel")
-        );
-        let recipient_resource = ownership_transfer_resource(&ws, &recipient);
-        let accept = recipient_resource
-            .actions
-            .iter()
-            .find(|action| action.id == "ownership.accept")
-            .unwrap();
-        assert!(matches!(
-            accept.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Phrase { .. }
-        ));
-        assert!(
-            ownership_transfer_status(&ws, &recipient)
-                .unwrap()
-                .contains("offered you ownership")
-        );
-        assert_eq!(role_verb(CapRole::Owner), None);
+                let status = ownership_transfer_status(&ws, &owner).unwrap();
+                assert!(status.contains("Morgan"));
+                assert!(!status.contains(&short_id(&recipient)));
+            }
+        }
     }
 
     #[test]
@@ -4734,6 +4825,62 @@ mod members_pane_tests {
 
         let viewer = "viewer".to_string();
         assert!(permission_profile_resource(&ws, &viewer).actions.is_empty());
+    }
+
+    #[test]
+    fn draw_members_pane_paints_members_and_skips_a_zero_area_pane() {
+        // Phase `draw_members_pane_paints_more_with_members_than_without`.
+        {
+            let theme = Theme::dark();
+            let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+            let mut tr = TextRenderer::new();
+
+            let mut empty = Scene::new();
+            draw_members_pane(
+                &mut empty,
+                Affine::IDENTITY,
+                pane,
+                &Workspace::new(WorkspaceId::default(), "empty"),
+                &OWNER.to_string(),
+                true,
+                &mut tr,
+                &theme,
+            );
+            let mut full = Scene::new();
+            draw_members_pane(
+                &mut full,
+                Affine::IDENTITY,
+                pane,
+                &ws_with_two_members(),
+                &OWNER.to_string(),
+                true,
+                &mut tr,
+                &theme,
+            );
+            assert!(
+                full.encoding().draw_tags.len() > empty.encoding().draw_tags.len(),
+                "a populated roster must paint more than the empty state"
+            );
+        }
+
+        // Phase `draw_members_pane_no_op_on_zero_area_pane`.
+        {
+            let ws = ws_with_two_members();
+            let mut scene = Scene::new();
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            draw_members_pane(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(100.0, 100.0, 100.0, 100.0),
+                &ws,
+                &OWNER.to_string(),
+                true,
+                &mut tr,
+                &theme,
+            );
+            assert!(scene.encoding().draw_tags.is_empty());
+        }
     }
 
     #[test]
@@ -4832,110 +4979,6 @@ mod members_pane_tests {
         .expect("the owner revokes");
         assert!(!tree.desktop.workspaces[0].allows(&as_app, &freeform, Verb::Read));
     }
-
-    #[test]
-    fn ownership_status_prefers_a_known_person_name_to_a_key() {
-        let mut ws = ws_with_two_members();
-        let owner_key = ed25519_dalek::SigningKey::from_bytes(&[17; 32]);
-        let recipient_key = ed25519_dalek::SigningKey::from_bytes(&[18; 32]);
-        let owner_public =
-            collab_types::Ed25519PublicKey::from_bytes(owner_key.verifying_key().to_bytes());
-        let recipient_public =
-            collab_types::Ed25519PublicKey::from_bytes(recipient_key.verifying_key().to_bytes());
-        let owner = public_key_member_id(owner_public);
-        let recipient = public_key_member_id(recipient_public);
-        ws.collaborators
-            .push(crate::shell::state::Collaborator::new(recipient.clone(), "Morgan").as_invited());
-        ws.pending_ownership_transfer = collab_types::OwnershipTransferProposalV1::new(
-            ws.room.to_string(),
-            [23; 32],
-            owner_public,
-            recipient_public,
-            u64::MAX,
-            &owner_key,
-        )
-        .ok();
-
-        let status = ownership_transfer_status(&ws, &owner).unwrap();
-        assert!(status.contains("Morgan"));
-        assert!(!status.contains(&short_id(&recipient)));
-    }
-
-    #[test]
-    fn delegated_admin_cannot_partially_demote_or_remove_itself() {
-        let mut ws = ws_with_two_members();
-        let admin =
-            CapOverride::membership(Subject::person(PEER), ws.room.to_string(), Verb::Admin);
-        ws.grant_as(&OWNER.to_string(), admin)
-            .expect("owner delegates administration");
-        let before = ws.capabilities.clone();
-
-        assert!(
-            set_member_role(
-                &mut ws,
-                &PEER.to_string(),
-                &PEER.to_string(),
-                CapRole::Viewer,
-            )
-            .is_empty()
-        );
-        assert!(remove_member(&mut ws, &PEER.to_string(), &PEER.to_string()).is_empty());
-        assert_eq!(ws.capabilities, before);
-        assert!(ws.may_administer(&PEER.to_string()));
-    }
-
-    #[test]
-    fn draw_members_pane_paints_more_with_members_than_without() {
-        let theme = Theme::dark();
-        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let mut tr = TextRenderer::new();
-
-        let mut empty = Scene::new();
-        draw_members_pane(
-            &mut empty,
-            Affine::IDENTITY,
-            pane,
-            &Workspace::new(WorkspaceId::default(), "empty"),
-            &OWNER.to_string(),
-            true,
-            &mut tr,
-            &theme,
-        );
-        let mut full = Scene::new();
-        draw_members_pane(
-            &mut full,
-            Affine::IDENTITY,
-            pane,
-            &ws_with_two_members(),
-            &OWNER.to_string(),
-            true,
-            &mut tr,
-            &theme,
-        );
-        assert!(
-            full.encoding().draw_tags.len() > empty.encoding().draw_tags.len(),
-            "a populated roster must paint more than the empty state"
-        );
-    }
-
-    #[test]
-    fn draw_members_pane_no_op_on_zero_area_pane() {
-        let ws = ws_with_two_members();
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        draw_members_pane(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(100.0, 100.0, 100.0, 100.0),
-            &ws,
-            &OWNER.to_string(),
-            true,
-            &mut tr,
-            &theme,
-        );
-        assert!(scene.encoding().draw_tags.is_empty());
-    }
 }
 
 #[cfg(test)]
@@ -4967,163 +5010,176 @@ mod agents_pane_tests {
     }
 
     #[test]
-    fn agent_rows_are_separate_and_count_only_scoped_permissions() {
-        let ws = ws_with_agent();
-        assert_eq!(
-            members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0)).len(),
-            1
-        );
-        let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].agent, AGENT);
-        assert_eq!(rows[0].role, CapRole::Viewer);
-        assert_eq!(
-            rows[0].grant_count, 1,
-            "membership is not an extra permission"
-        );
-        assert_eq!(rows[0].preset, AgentAuthorityPreset::Contributor);
-        assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn agents_are_scoped_permission_subjects_presented_honestly() {
+        // Phase `agent_rows_and_profiles_present_scoped_bundles_honestly`.
+        {
+            // Phase `agent_rows_are_separate_and_count_only_scoped_permissions`.
+            {
+                let ws = ws_with_agent();
+                assert_eq!(
+                    members_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0)).len(),
+                    1
+                );
+                let rows = agents_pane_rows(&ws, Rect::new(0.0, 0.0, 640.0, 480.0));
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].agent, AGENT);
+                assert_eq!(rows[0].role, CapRole::Viewer);
+                assert_eq!(
+                    rows[0].grant_count, 1,
+                    "membership is not an extra permission"
+                );
+                assert_eq!(rows[0].preset, AgentAuthorityPreset::Contributor);
+                assert!(rows[0].review_rect.x1 < rows[0].remove_rect.x0);
+            }
 
-    #[test]
-    fn profiles_describe_scoped_bundles_not_human_roles() {
-        let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
-        ws.set_owner(OWNER);
-        let edit = admit_agent(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            AgentAuthorityPreset::Observer,
-        );
-        assert_eq!(edit.granted.len(), 1);
-        assert_eq!(ws.role_of_agent(AGENT), Some(CapRole::Viewer));
-        assert!(
-            !ws.allows(
-                &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("so.tilo.notes".into()),
-                Verb::Read,
-            ),
-            "admission must never turn the Observer label into ambient app access"
-        );
-        assert_eq!(
-            agent_authority_preset(&ws, AGENT),
-            AgentAuthorityPreset::Observer
-        );
+            // Phase `profiles_describe_scoped_bundles_not_human_roles`.
+            {
+                let mut ws = Workspace::new(WorkspaceId::from(18), "profile-test");
+                ws.set_owner(OWNER);
+                let edit = admit_agent(
+                    &mut ws,
+                    &OWNER.to_string(),
+                    AGENT,
+                    AgentAuthorityPreset::Observer,
+                );
+                assert_eq!(edit.granted.len(), 1);
+                assert_eq!(ws.role_of_agent(AGENT), Some(CapRole::Viewer));
+                assert!(
+                    !ws.allows(
+                        &ws.actor_for_agent(AGENT),
+                        &ResourceRef::App("so.tilo.notes".into()),
+                        Verb::Read,
+                    ),
+                    "admission must never turn the Observer label into ambient app access"
+                );
+                assert_eq!(
+                    agent_authority_preset(&ws, AGENT),
+                    AgentAuthorityPreset::Observer
+                );
 
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::agent(AGENT),
-                Scope::FsPath("/var/workspace/brief.md".into()),
-                Verb::Read,
-            ),
-        )
-        .expect("owner grants one selected file");
-        assert_eq!(
-            agent_authority_preset(&ws, AGENT),
-            AgentAuthorityPreset::Observer
-        );
-    }
+                ws.grant_as(
+                    &OWNER.to_string(),
+                    CapOverride::grant(
+                        Subject::agent(AGENT),
+                        Scope::FsPath("/var/workspace/brief.md".into()),
+                        Verb::Read,
+                    ),
+                )
+                .expect("owner grants one selected file");
+                assert_eq!(
+                    agent_authority_preset(&ws, AGENT),
+                    AgentAuthorityPreset::Observer
+                );
+            }
 
-    #[test]
-    fn sensitive_or_broad_agent_grants_are_never_hidden_behind_a_preset() {
-        let mut ws = ws_with_agent();
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::agent(AGENT),
-                Scope::NetHost("*".into()),
-                Verb::Read,
-            ),
-        )
-        .expect("owner grants network access for the test");
-        assert_eq!(
-            agent_authority_preset(&ws, AGENT),
-            AgentAuthorityPreset::Custom
-        );
-    }
+            // Phase `sensitive_or_broad_agent_grants_are_never_hidden_behind_a_preset`.
+            {
+                let mut ws = ws_with_agent();
+                ws.grant_as(
+                    &OWNER.to_string(),
+                    CapOverride::grant(
+                        Subject::agent(AGENT),
+                        Scope::NetHost("*".into()),
+                        Verb::Read,
+                    ),
+                )
+                .expect("owner grants network access for the test");
+                assert_eq!(
+                    agent_authority_preset(&ws, AGENT),
+                    AgentAuthorityPreset::Custom
+                );
+            }
 
-    #[test]
-    fn agent_onboarding_and_review_geometry_are_separate_from_revocation() {
-        let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
-        let add = agents_add_rect(pane);
-        let row = agents_pane_rows(&ws_with_agent(), pane)
-            .into_iter()
-            .next()
-            .expect("agent row");
-        assert!(add.y1 <= row.row_rect.y0);
-        assert!(row.review_rect.x1 < row.remove_rect.x0);
-    }
+            // Phase `agent_onboarding_and_review_geometry_are_separate_from_revocation`.
+            {
+                let pane = Rect::new(0.0, 0.0, 640.0, 480.0);
+                let add = agents_add_rect(pane);
+                let row = agents_pane_rows(&ws_with_agent(), pane)
+                    .into_iter()
+                    .next()
+                    .expect("agent row");
+                assert!(add.y1 <= row.row_rect.y0);
+                assert!(row.review_rect.x1 < row.remove_rect.x0);
+            }
+        }
 
-    #[test]
-    fn admission_does_not_become_ambient_human_role_authority() {
-        let ws = ws_with_agent();
-        assert!(ws.allows(
-            &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("so.tilo.notes".into()),
-            Verb::Write,
-        ));
-        assert!(
-            !ws.allows(
-                &ws.actor_for_agent(AGENT),
-                &ResourceRef::App("so.tilo.sheets".into()),
-                Verb::Write,
-            ),
-            "an Editor admission pass must not become ambient human-role authority",
-        );
-    }
+        // Phase `agent_admission_and_revocation_are_scoped_permission_subjects`.
+        {
+            // Phase `admission_does_not_become_ambient_human_role_authority`.
+            {
+                let ws = ws_with_agent();
+                assert!(ws.allows(
+                    &ws.actor_for_agent(AGENT),
+                    &ResourceRef::App("so.tilo.notes".into()),
+                    Verb::Write,
+                ));
+                assert!(
+                    !ws.allows(
+                        &ws.actor_for_agent(AGENT),
+                        &ResourceRef::App("so.tilo.sheets".into()),
+                        Verb::Write,
+                    ),
+                    "an Editor admission pass must not become ambient human-role authority",
+                );
+            }
 
-    #[test]
-    fn revoking_an_agent_removes_membership_and_scoped_grants() {
-        let mut ws = ws_with_agent();
-        let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-        assert_eq!(edit.revoked.len(), 2);
-        assert!(ws.agent_members().is_empty());
-        assert!(!ws.allows(
-            &ws.actor_for_agent(AGENT),
-            &ResourceRef::App("so.tilo.notes".into()),
-            Verb::Write,
-        ));
-    }
+            // Phase `revoking_an_agent_removes_membership_and_scoped_grants`.
+            {
+                let mut ws = ws_with_agent();
+                let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
+                assert_eq!(edit.revoked.len(), 2);
+                assert!(ws.agent_members().is_empty());
+                assert!(!ws.allows(
+                    &ws.actor_for_agent(AGENT),
+                    &ResourceRef::App("so.tilo.notes".into()),
+                    Verb::Write,
+                ));
+            }
 
-    #[test]
-    fn non_owner_cannot_remove_an_agent() {
-        let mut ws = ws_with_agent();
-        let before = ws.capabilities.clone();
-        assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
-        assert_eq!(ws.capabilities, before);
-    }
+            // Phase `non_owner_cannot_remove_an_agent`.
+            {
+                let mut ws = ws_with_agent();
+                let before = ws.capabilities.clone();
+                assert!(remove_agent(&mut ws, &"viewer".into(), AGENT).is_empty());
+                assert_eq!(ws.capabilities, before);
+            }
 
-    #[test]
-    fn admitted_agent_is_a_first_class_permission_subject() {
-        let ws = ws_with_agent();
-        let subjects = grant_subjects(&ws);
-        let index = subjects
-            .iter()
-            .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
-            .expect("agent is offered in the permission composer");
-        let draft = GrantDraft {
-            subject_index: index,
-            ..GrantDraft::default()
-        };
-        let cap = draft_capability(&ws, &draft).expect("agent grant can be composed");
-        assert!(subject_is_agent(&cap.subject, AGENT));
-    }
+            // Phase `admitted_agent_is_a_first_class_permission_subject`.
+            {
+                let ws = ws_with_agent();
+                let subjects = grant_subjects(&ws);
+                let index = subjects
+                    .iter()
+                    .position(|subject| subject.kind == SubjectKind::Agent && subject.id == AGENT)
+                    .expect("agent is offered in the permission composer");
+                let draft = GrantDraft {
+                    subject_index: index,
+                    ..GrantDraft::default()
+                };
+                let cap = draft_capability(&ws, &draft).expect("agent grant can be composed");
+                assert!(subject_is_agent(&cap.subject, AGENT));
+            }
 
-    #[test]
-    fn agent_membership_is_not_duplicated_in_permissions() {
-        let ws = ws_with_agent();
-        let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
-        assert!(layout.rows.iter().all(|row| !row.cap_id.is_empty()));
-        assert_eq!(
-            layout
-                .rows
-                .iter()
-                .filter(|row| row.subject.kind == SubjectKind::Agent)
-                .count(),
-            1,
-            "only the explicit app grant belongs in Privacy & Security",
-        );
+            // Phase `agent_membership_is_not_duplicated_in_permissions`.
+            {
+                let ws = ws_with_agent();
+                let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
+                assert!(layout.rows.iter().all(|row| !row.cap_id.is_empty()));
+                assert_eq!(
+                    layout
+                        .rows
+                        .iter()
+                        .filter(|row| row.subject.kind == SubjectKind::Agent)
+                        .count(),
+                    1,
+                    "only the explicit app grant belongs in Privacy & Security",
+                );
+            }
+        }
     }
 }
 
@@ -5161,611 +5217,646 @@ mod permissions_pane_tests {
     }
 
     #[test]
-    fn stable_file_record_scope_is_presented_without_inventing_a_path() {
-        let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
-        assert_eq!(
-            scope_label(&Scope::FsRecord(record.to_string())),
-            "one shared file (b0d4e23f-c…)"
-        );
-        assert_eq!(
-            capability_allows(&CapOverride::grant(
-                Subject::Principal(Principal::App("files".to_string())),
-                Scope::FsRecord(record.to_string()),
-                Verb::Read,
-            )),
-            "View one shared file (b0d4e23f-c…)"
-        );
-    }
-
-    #[test]
-    fn rows_are_one_per_granted_capability() {
-        let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        assert_eq!(layout.rows.len(), 2);
-        for row in &layout.rows {
-            assert_eq!(row.subject.kind, SubjectKind::App);
-            assert_eq!(row.subject.id, "firefox");
-            assert!(row.revoke_rect.x1 <= row.row_rect.x1);
-            assert!(row.revoke_rect.x0 > row.row_rect.x0);
-            assert!(!row.cap_id.is_empty(), "rows are keyed by capability id");
-        }
-        assert_ne!(layout.rows[0].cap_id, layout.rows[1].cap_id);
-        assert_eq!(layout.overflow, 0);
-    }
-
-    #[test]
-    fn membership_capabilities_are_not_listed_as_permissions() {
-        let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        assert!(
-            layout
-                .rows
-                .iter()
-                .all(|r| r.subject.kind == SubjectKind::App),
-            "only non-membership grants belong in the Permissions list"
-        );
-    }
-
-    #[test]
-    fn a_workspace_scoped_app_grant_is_listed_and_revocable() {
-        let mut ws = ws_with_grants();
-        let id = ws
-            .grant_as(
-                &OWNER.to_string(),
-                CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
-            )
-            .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane());
-        let row = layout
-            .rows
-            .iter()
-            .find(|r| r.cap_id == id)
-            .expect("the workspace-scoped app grant has a row");
-        assert_eq!(row.subject.kind, SubjectKind::App);
-        assert_eq!(row.allows, "Administer this workspace");
-        assert_eq!(
-            apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
-                .revoked
-                .len(),
-            1
-        );
-        assert!(!ws.allows(
-            &ws.actor_for_app("firefox"),
-            &ResourceRef::Workspace,
-            Verb::Admin
-        ));
-    }
-
-    #[test]
-    fn a_persons_membership_is_left_to_the_members_tab() {
-        let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        assert!(
-            layout
-                .rows
-                .iter()
-                .all(|r| r.subject.kind == SubjectKind::App),
-            "no person membership rows in the Permissions list"
-        );
-        assert!(
-            !members_pane_rows(&ws, pane()).is_empty(),
-            "but Members has one"
-        );
-    }
-
-    #[test]
-    fn person_and_role_subjects_are_listed_too() {
-        let mut ws = ws_with_grants();
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::person("peer-user"),
-                Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
-            ),
-        )
-        .expect("owner grants");
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::Role(CapRole::Editor),
-                Scope::Device("camera".into()),
-                Verb::Read,
-            ),
-        )
-        .expect("owner grants");
-        // This assertion is about grouping every subject kind, so give
-        // the viewport room for every seeded row after the explanatory
-        // header and composer.
-        let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
-        let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
-        assert!(kinds.contains(&SubjectKind::App));
-        assert!(kinds.contains(&SubjectKind::Member));
-        assert!(kinds.contains(&SubjectKind::Role));
-        let mut sorted = kinds.clone();
-        sorted.sort();
-        assert_eq!(kinds, sorted, "rows must be grouped by subject kind");
-    }
-
-    #[test]
-    fn rows_carry_the_scope_and_grantor_the_model_recorded() {
-        let mut ws = Workspace::new(WorkspaceId::from(4), "labels");
-        ws.set_owner(OWNER);
-        ws.grant_as(
-            &OWNER.to_string(),
-            CapOverride::grant(
-                Subject::app("terminal"),
-                Scope::FsPath("/var/workspace".into()),
-                Verb::Write,
-            )
-            .expiring(Expiry::EndOfSession),
-        )
-        .expect("owner grants");
-        let layout = permissions_pane_layout(&ws, pane());
-        let row = &layout.rows[0];
-        assert_eq!(row.allows, "Edit workspace files");
-        assert_eq!(row.expiry, "Session");
-        assert_eq!(
-            row.granted_by.as_deref(),
-            Some("granted by owner-user"),
-            "grant_as records the grantor; the row shows it"
-        );
-    }
-
-    /// No capability line may name the mount point workspace files are
-    /// projected at (HIG §4). Swept over every scope kind, not just the
-    /// two the panel shows today, so a new scope can't reintroduce the leak.
-    #[test]
-    fn no_capability_line_leaks_the_workspace_mount_point() {
-        use collab_types::role::ArtifactKind;
-        let scopes = vec![
-            Scope::Workspace,
-            Scope::Room("r".into()),
-            Scope::App("firefox".into()),
-            Scope::FsPath(WORKSPACE_FILES_PATH.into()),
-            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
-            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
-            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design/drafts")),
-            Scope::Device("camera".into()),
-            Scope::NetHost("*".into()),
-            Scope::NetHost("example.com".into()),
-            Scope::Action {
-                app: "notes".into(),
-                action: "export".into(),
-            },
-            Scope::ResourceType(ArtifactKind::Note),
-        ];
-        let verbs = [
-            Verb::Read,
-            Verb::Write,
-            Verb::Admin,
-            Verb::Comment,
-            Verb::Invite,
-        ];
-        for scope in &scopes {
-            for verb in verbs {
-                let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
-                let line = capability_allows(&cap);
-                assert!(
-                    !line.contains(WORKSPACE_FILES_PATH),
-                    "the permission line {line:?} names {WORKSPACE_FILES_PATH} \
-                     — where the OS keeps workspace files is not what the user \
-                     is being asked to agree to",
-                );
-                assert!(
-                    !line.contains("/var/"),
-                    "the permission line {line:?} exposes a system path",
-                );
-                assert!(
-                    !line.is_empty(),
-                    "every scope must still describe itself; {scope:?} produced \
-                     an empty line",
-                );
-            }
-        }
-    }
-
-    /// The projection root and a path inside it must read as different
-    /// things, so a row never understates what is being granted.
-    #[test]
-    fn workspace_scopes_distinguish_the_root_from_a_folder_inside_it() {
-        let root = CapOverride::grant(
-            Subject::app("a"),
-            Scope::FsPath(WORKSPACE_FILES_PATH.into()),
-            Verb::Write,
-        );
-        let sub = CapOverride::grant(
-            Subject::app("a"),
-            Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
-            Verb::Write,
-        );
-        assert_eq!(capability_allows(&root), "Edit workspace files");
-        assert_eq!(
-            capability_allows(&sub),
-            "Edit \u{201c}design\u{201d} in this workspace",
-        );
-        assert_ne!(
-            capability_allows(&root),
-            capability_allows(&sub),
-            "granting every workspace file must not read the same as granting \
-             one folder in it",
-        );
-    }
-
-    #[test]
-    fn the_composer_offers_the_roster_and_the_workspaces_apps() {
-        let ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        assert_eq!(
-            subjects[0],
-            GrantSubject {
-                kind: SubjectKind::Member,
-                id: OWNER.to_string()
-            },
-            "people come first"
-        );
-        assert!(subjects.contains(&GrantSubject {
-            kind: SubjectKind::App,
-            id: "firefox".to_string()
-        }));
-    }
-
-    #[test]
-    fn granting_from_the_composer_writes_a_capability_that_enforces() {
-        let mut ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        let firefox = subjects
-            .iter()
-            .position(|s| s.id == "firefox")
-            .expect("firefox is a candidate subject");
-        let mut draft = GrantDraft {
-            subject_index: firefox,
-            choice_index: 0,
-            expiry: Expiry::Never,
-        };
-        while draft.choice().label != "Microphone" {
-            draft.cycle_choice();
-        }
-        assert!(!ws.allows(
-            &ws.actor_for_app("firefox"),
-            &ResourceRef::Device("microphone".into()),
-            Verb::Read
-        ));
-
-        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
-        assert_eq!(edit.granted.len(), 1);
-        assert!(
-            ws.allows(
-                &ws.actor_for_app("firefox"),
-                &ResourceRef::Device("microphone".into()),
-                Verb::Read
-            ),
-            "the granted capability must start working, not merely start rendering"
-        );
-    }
-
-    #[test]
-    fn granting_records_the_chosen_expiry() {
-        let mut ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        // Re-granting an existing capability merges expiries, so pick
-        // something the app doesn't already hold to observe this one.
-        let mut draft = GrantDraft {
-            subject_index: firefox,
-            choice_index: 0,
-            expiry: Expiry::AfterUse,
-        };
-        while draft.choice().label != "Microphone" {
-            draft.cycle_choice();
-        }
-        let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
-        let id = &edit.granted[0];
-        let cap = ws
-            .capabilities
-            .iter()
-            .find(|c| &c.id == id)
-            .expect("stored capability");
-        assert_eq!(cap.expiry, Expiry::AfterUse);
-        assert!(
-            !cap.persists_across_restart(),
-            "an after-use grant must not be written down as permanent"
-        );
-    }
-
-    #[test]
-    fn re_granting_never_shortens_an_existing_grant() {
-        // `grant_capability` keeps the longer expiry for the same
-        // (subject, scope, effect, verb).
-        let mut ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        let mut draft = GrantDraft {
-            subject_index: firefox,
-            choice_index: 0,
-            expiry: Expiry::AfterUse,
-        };
-        while draft.choice().label != "Camera" {
-            draft.cycle_choice();
-        }
-        apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
-        let camera = ws
-            .capabilities
-            .iter()
-            .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            camera.len(),
-            1,
-            "the re-grant merges rather than duplicating"
-        );
-        assert_eq!(
-            camera[0].expiry,
-            Expiry::Never,
-            "the existing permanent grant is not demoted to once-only"
-        );
-        let layout = permissions_pane_layout(&ws, pane());
-        let row = layout
-            .rows
-            .iter()
-            .find(|r| r.allows.contains("camera"))
-            .expect("camera row");
-        assert_eq!(
-            row.expiry, "Always",
-            "the row must report the expiry that is stored, not the one that was asked for"
-        );
-    }
-
-    #[test]
-    fn a_non_owner_cannot_grant() {
-        let mut ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        let draft = GrantDraft {
-            subject_index: firefox,
-            choice_index: 0,
-            expiry: Expiry::Never,
-        };
-        let before = ws.capabilities.len();
-        let edit = apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft);
-        assert!(edit.is_empty(), "grant_as must refuse a non-administrator");
-        assert_eq!(ws.capabilities.len(), before);
-    }
-
-    #[test]
-    fn revoking_a_row_stops_the_capability_working() {
-        let mut ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        let camera_row = layout
-            .rows
-            .iter()
-            .find(|r| r.allows.contains("camera"))
-            .expect("camera row");
-        let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id);
-        assert_eq!(edit.revoked, vec![camera_row.cap_id.clone()]);
-        assert!(
-            !ws.allows(
-                &ws.actor_for_app("firefox"),
-                &ResourceRef::Device("camera".into()),
-                Verb::Read
-            ),
-            "the revoked capability must stop working, not merely stop rendering"
-        );
-        let after = permissions_pane_layout(&ws, pane());
-        assert_eq!(after.rows.len(), 1);
-    }
-
-    #[test]
-    fn a_non_owner_cannot_revoke() {
-        let mut ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        let target = layout.rows[0].cap_id.clone();
-        let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
-        assert!(edit.is_empty());
-        assert_eq!(permissions_pane_layout(&ws, pane()).rows.len(), 2);
-    }
-
-    #[test]
-    fn revoking_an_unknown_id_is_a_no_op() {
-        let mut ws = ws_with_grants();
-        let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
-        assert!(edit.is_empty());
-        assert_eq!(ws.capabilities.len(), 3, "owner membership + two grants");
-    }
-
-    #[test]
-    fn every_offered_capability_produces_a_scope_an_enforcement_point_reads() {
-        let ws = ws_with_grants();
-        let subjects = grant_subjects(&ws);
-        let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
-        for (i, choice) in GRANT_CHOICES.iter().enumerate() {
-            let draft = GrantDraft {
-                subject_index: firefox,
-                choice_index: i,
-                expiry: Expiry::Never,
-            };
-            let cap = draft_capability(&ws, &draft).expect("every choice resolves");
-            assert_eq!(cap.effect, Effect::Grant);
-            let resource = match &cap.scope {
-                Scope::Device(d) => ResourceRef::Device(d.clone()),
-                Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
-                Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
-                Scope::Workspace => ResourceRef::Workspace,
-                Scope::Action { app, action } => ResourceRef::Action {
-                    app: app.clone(),
-                    action: action.clone(),
-                },
-                other => panic!("unexpected scope in the grant table: {other:?}"),
-            };
-            let mut probe = ws.clone();
-            probe
-                .grant_as(&OWNER.to_string(), cap.clone())
-                .expect("owner grants");
-            assert!(
-                probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
-                "granting {:?} must make the decision function allow it",
-                choice.label
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn permission_rows_list_each_grant_with_its_real_scope_and_subject() {
+        // Phase `stable_file_record_scope_is_presented_without_inventing_a_path`.
+        {
+            let record = "b0d4e23f-c7cb-4ded-a427-b32cf9da9341";
+            assert_eq!(
+                scope_label(&Scope::FsRecord(record.to_string())),
+                "one shared file (b0d4e23f-c…)"
+            );
+            assert_eq!(
+                capability_allows(&CapOverride::grant(
+                    Subject::Principal(Principal::App("files".to_string())),
+                    Scope::FsRecord(record.to_string()),
+                    Verb::Read,
+                )),
+                "View one shared file (b0d4e23f-c…)"
             );
         }
-    }
 
-    #[test]
-    fn draw_permissions_pane_paints_an_empty_state_with_no_grants() {
-        let ws = Workspace::new(WorkspaceId::default(), "empty");
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        draw_permissions_pane(
-            &mut scene,
-            Affine::IDENTITY,
-            pane(),
-            &ws,
-            &GrantDraft::default(),
-            true,
-            &mut tr,
-            &theme,
-        );
-        assert!(
-            !scene.encoding().draw_tags.is_empty(),
-            "the composer and the empty state must both paint"
-        );
-    }
+        // Phase `rows_are_one_per_granted_capability`.
+        {
+            let ws = ws_with_grants();
+            let layout = permissions_pane_layout(&ws, pane());
+            assert_eq!(layout.rows.len(), 2);
+            for row in &layout.rows {
+                assert_eq!(row.subject.kind, SubjectKind::App);
+                assert_eq!(row.subject.id, "firefox");
+                assert!(row.revoke_rect.x1 <= row.row_rect.x1);
+                assert!(row.revoke_rect.x0 > row.row_rect.x0);
+                assert!(!row.cap_id.is_empty(), "rows are keyed by capability id");
+            }
+            assert_ne!(layout.rows[0].cap_id, layout.rows[1].cap_id);
+            assert_eq!(layout.overflow, 0);
+        }
 
-    #[test]
-    fn draw_permissions_pane_paints_more_with_grants_than_without() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let draft = GrantDraft::default();
+        // Phase `membership_capabilities_are_not_listed_as_permissions`.
+        {
+            let ws = ws_with_grants();
+            let layout = permissions_pane_layout(&ws, pane());
+            assert!(
+                layout
+                    .rows
+                    .iter()
+                    .all(|r| r.subject.kind == SubjectKind::App),
+                "only non-membership grants belong in the Permissions list"
+            );
+        }
 
-        let mut empty = Scene::new();
-        draw_permissions_pane(
-            &mut empty,
-            Affine::IDENTITY,
-            pane(),
-            &Workspace::new(WorkspaceId::default(), "empty"),
-            &draft,
-            true,
-            &mut tr,
-            &theme,
-        );
-        let mut full = Scene::new();
-        draw_permissions_pane(
-            &mut full,
-            Affine::IDENTITY,
-            pane(),
-            &ws_with_grants(),
-            &draft,
-            true,
-            &mut tr,
-            &theme,
-        );
-        assert!(full.encoding().draw_tags.len() > empty.encoding().draw_tags.len());
-    }
+        // Phase `a_persons_membership_is_left_to_the_members_tab`.
+        {
+            let ws = ws_with_grants();
+            let layout = permissions_pane_layout(&ws, pane());
+            assert!(
+                layout
+                    .rows
+                    .iter()
+                    .all(|r| r.subject.kind == SubjectKind::App),
+                "no person membership rows in the Permissions list"
+            );
+            assert!(
+                !members_pane_rows(&ws, pane()).is_empty(),
+                "but Members has one"
+            );
+        }
 
-    #[test]
-    fn draw_permissions_pane_no_op_on_zero_area_pane() {
-        let ws = ws_with_grants();
-        let mut scene = Scene::new();
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        draw_permissions_pane(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(100.0, 100.0, 100.0, 100.0),
-            &ws,
-            &GrantDraft::default(),
-            true,
-            &mut tr,
-            &theme,
-        );
-        assert!(scene.encoding().draw_tags.is_empty());
-    }
-
-    #[test]
-    fn rows_that_do_not_fit_are_counted_rather_than_clipped() {
-        let mut ws = Workspace::new(WorkspaceId::from(9), "many");
-        ws.set_owner(OWNER);
-        for i in 0..12 {
+        // Phase `person_and_role_subjects_are_listed_too`.
+        {
+            let mut ws = ws_with_grants();
             ws.grant_as(
                 &OWNER.to_string(),
                 CapOverride::grant(
-                    Subject::app(format!("app-{i}")),
+                    Subject::person("peer-user"),
+                    Scope::FsPath("/var/workspace".into()),
+                    Verb::Write,
+                ),
+            )
+            .expect("owner grants");
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::Role(CapRole::Editor),
                     Scope::Device("camera".into()),
                     Verb::Read,
                 ),
             )
             .expect("owner grants");
+            // This assertion is about grouping every subject kind, so give
+            // the viewport room for every seeded row after the explanatory
+            // header and composer.
+            let layout = permissions_pane_layout(&ws, Rect::new(0.0, 0.0, 660.0, 620.0));
+            let kinds: Vec<SubjectKind> = layout.rows.iter().map(|r| r.subject.kind).collect();
+            assert!(kinds.contains(&SubjectKind::App));
+            assert!(kinds.contains(&SubjectKind::Member));
+            assert!(kinds.contains(&SubjectKind::Role));
+            let mut sorted = kinds.clone();
+            sorted.sort();
+            assert_eq!(kinds, sorted, "rows must be grouped by subject kind");
         }
-        let short_pane = Rect::new(0.0, 0.0, 660.0, 300.0);
-        let layout = permissions_pane_layout(&ws, short_pane);
-        assert!(layout.rows.len() < 12);
-        assert_eq!(layout.rows.len() + layout.overflow, 12);
-        for row in &layout.rows {
-            assert!(
-                row.row_rect.y1 <= short_pane.y1,
-                "a laid-out row must fit inside the pane"
-            );
-        }
-    }
 
-    #[test]
-    fn expiry_segments_are_laid_out_in_picker_order_without_overlap() {
-        let ws = ws_with_grants();
-        let layout = permissions_pane_layout(&ws, pane());
-        for i in 1..3 {
-            assert!(layout.expiry_rects[i].x0 >= layout.expiry_rects[i - 1].x1 - f64::EPSILON);
-        }
-        assert!(layout.expiry_rects[2].x1 <= layout.submit_rect.x0);
-        assert!(layout.subject_rect.x1 <= layout.choice_rect.x0);
-        assert!(layout.choice_rect.x1 <= layout.expiry_rects[0].x0);
-    }
-
-    #[test]
-    fn narrow_panes_stack_policy_controls_inside_their_rows() {
-        let ws = ws_with_grants();
-        let pane = Rect::new(0.0, 0.0, 326.0, 620.0);
-        let layout = permissions_pane_layout(&ws, pane);
-        for rect in std::iter::once(layout.subject_rect)
-            .chain(std::iter::once(layout.choice_rect))
-            .chain(layout.expiry_rects)
-            .chain(std::iter::once(layout.submit_rect))
+        // Phase `rows_carry_the_scope_and_grantor_the_model_recorded`.
         {
-            assert!(
-                rect.x0 >= pane.x0 && rect.x1 <= pane.x1,
-                "compact permission control must remain inside its pane: {rect:?} in {pane:?}"
+            let mut ws = Workspace::new(WorkspaceId::from(4), "labels");
+            ws.set_owner(OWNER);
+            ws.grant_as(
+                &OWNER.to_string(),
+                CapOverride::grant(
+                    Subject::app("terminal"),
+                    Scope::FsPath("/var/workspace".into()),
+                    Verb::Write,
+                )
+                .expiring(Expiry::EndOfSession),
+            )
+            .expect("owner grants");
+            let layout = permissions_pane_layout(&ws, pane());
+            let row = &layout.rows[0];
+            assert_eq!(row.allows, "Edit workspace files");
+            assert_eq!(row.expiry, "Session");
+            assert_eq!(
+                row.granted_by.as_deref(),
+                Some("granted by owner-user"),
+                "grant_as records the grantor; the row shows it"
             );
         }
-        assert!(
-            layout.subject_rect.y1 < layout.expiry_rects[0].y0,
-            "narrow composer promotes expiry/grant controls to a second row"
-        );
 
-        let candidates = [desktop_policy::AppCandidate {
-            package_id: "so.tilo.viewer".into(),
-            display_name: "Viewer".into(),
-            resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
-        }];
-        let rows = default_app_rows(pane, &candidates);
-        let row = rows.first().expect("a narrow policy row fits");
-        assert!(row.workspace_rect.x0 >= row.row_rect.x0);
-        assert!(row.user_rect.x1 <= row.row_rect.x1);
-        assert!(
-            row.workspace_rect.y0 > row.row_rect.y0 + 20.0,
-            "the resource label keeps its own line above both choices"
-        );
-        assert!(
-            row.workspace_rect.x1 <= row.user_rect.x0,
-            "the two explicit choices never overlap at phone width"
-        );
+        // Phase `no_capability_line_leaks_the_workspace_mount_point`.
+        // No capability line may name the mount point workspace files are
+        // projected at (HIG §4). Swept over every scope kind, not just the
+        // two the panel shows today, so a new scope can't reintroduce the leak.
+        {
+            use collab_types::role::ArtifactKind;
+            let scopes = vec![
+                Scope::Workspace,
+                Scope::Room("r".into()),
+                Scope::App("firefox".into()),
+                Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/")),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design/drafts")),
+                Scope::Device("camera".into()),
+                Scope::NetHost("*".into()),
+                Scope::NetHost("example.com".into()),
+                Scope::Action {
+                    app: "notes".into(),
+                    action: "export".into(),
+                },
+                Scope::ResourceType(ArtifactKind::Note),
+            ];
+            let verbs = [
+                Verb::Read,
+                Verb::Write,
+                Verb::Admin,
+                Verb::Comment,
+                Verb::Invite,
+            ];
+            for scope in &scopes {
+                for verb in verbs {
+                    let cap = CapOverride::grant(Subject::app("a"), scope.clone(), verb);
+                    let line = capability_allows(&cap);
+                    assert!(
+                        !line.contains(WORKSPACE_FILES_PATH),
+                        "the permission line {line:?} names {WORKSPACE_FILES_PATH} \
+                         — where the OS keeps workspace files is not what the user \
+                         is being asked to agree to",
+                    );
+                    assert!(
+                        !line.contains("/var/"),
+                        "the permission line {line:?} exposes a system path",
+                    );
+                    assert!(
+                        !line.is_empty(),
+                        "every scope must still describe itself; {scope:?} produced \
+                         an empty line",
+                    );
+                }
+            }
+        }
+
+        // Phase `workspace_scopes_distinguish_the_root_from_a_folder_inside_it`.
+        // The projection root and a path inside it must read as different
+        // things, so a row never understates what is being granted.
+        {
+            let root = CapOverride::grant(
+                Subject::app("a"),
+                Scope::FsPath(WORKSPACE_FILES_PATH.into()),
+                Verb::Write,
+            );
+            let sub = CapOverride::grant(
+                Subject::app("a"),
+                Scope::FsPath(format!("{WORKSPACE_FILES_PATH}/design")),
+                Verb::Write,
+            );
+            assert_eq!(capability_allows(&root), "Edit workspace files");
+            assert_eq!(
+                capability_allows(&sub),
+                "Edit \u{201c}design\u{201d} in this workspace",
+            );
+            assert_ne!(
+                capability_allows(&root),
+                capability_allows(&sub),
+                "granting every workspace file must not read the same as granting \
+                 one folder in it",
+            );
+        }
     }
 
     #[test]
-    fn long_identifiers_are_shortened_rather_than_overrun() {
-        let long = "a".repeat(64);
-        let shortened = short_id(&long);
-        assert!(shortened.chars().count() <= 11);
-        assert!(shortened.ends_with('…'));
-        assert_eq!(short_id("quinten"), "quinten");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn granting_and_revoking_permissions_is_owner_only_and_enforced() {
+        // Phase `granting_from_the_composer_is_owner_only_and_enforced`.
+        {
+            // Phase `the_composer_offers_the_roster_and_the_workspaces_apps`.
+            {
+                let ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                assert_eq!(
+                    subjects[0],
+                    GrantSubject {
+                        kind: SubjectKind::Member,
+                        id: OWNER.to_string()
+                    },
+                    "people come first"
+                );
+                assert!(subjects.contains(&GrantSubject {
+                    kind: SubjectKind::App,
+                    id: "firefox".to_string()
+                }));
+            }
+
+            // Phase `granting_from_the_composer_writes_a_capability_that_enforces`.
+            {
+                let mut ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                let firefox = subjects
+                    .iter()
+                    .position(|s| s.id == "firefox")
+                    .expect("firefox is a candidate subject");
+                let mut draft = GrantDraft {
+                    subject_index: firefox,
+                    choice_index: 0,
+                    expiry: Expiry::Never,
+                };
+                while draft.choice().label != "Microphone" {
+                    draft.cycle_choice();
+                }
+                assert!(!ws.allows(
+                    &ws.actor_for_app("firefox"),
+                    &ResourceRef::Device("microphone".into()),
+                    Verb::Read
+                ));
+
+                let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+                assert_eq!(edit.granted.len(), 1);
+                assert!(
+                    ws.allows(
+                        &ws.actor_for_app("firefox"),
+                        &ResourceRef::Device("microphone".into()),
+                        Verb::Read
+                    ),
+                    "the granted capability must start working, not merely start rendering"
+                );
+            }
+
+            // Phase `granting_records_the_chosen_expiry`.
+            {
+                let mut ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+                // Re-granting an existing capability merges expiries, so pick
+                // something the app doesn't already hold to observe this one.
+                let mut draft = GrantDraft {
+                    subject_index: firefox,
+                    choice_index: 0,
+                    expiry: Expiry::AfterUse,
+                };
+                while draft.choice().label != "Microphone" {
+                    draft.cycle_choice();
+                }
+                let edit = apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+                let id = &edit.granted[0];
+                let cap = ws
+                    .capabilities
+                    .iter()
+                    .find(|c| &c.id == id)
+                    .expect("stored capability");
+                assert_eq!(cap.expiry, Expiry::AfterUse);
+                assert!(
+                    !cap.persists_across_restart(),
+                    "an after-use grant must not be written down as permanent"
+                );
+            }
+
+            // Phase `re_granting_never_shortens_an_existing_grant`.
+            {
+                // `grant_capability` keeps the longer expiry for the same
+                // (subject, scope, effect, verb).
+                let mut ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+                let mut draft = GrantDraft {
+                    subject_index: firefox,
+                    choice_index: 0,
+                    expiry: Expiry::AfterUse,
+                };
+                while draft.choice().label != "Camera" {
+                    draft.cycle_choice();
+                }
+                apply_grant_draft(&mut ws, &OWNER.to_string(), &draft);
+                let camera = ws
+                    .capabilities
+                    .iter()
+                    .filter(|c| matches!(&c.scope, Scope::Device(d) if d == "camera"))
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    camera.len(),
+                    1,
+                    "the re-grant merges rather than duplicating"
+                );
+                assert_eq!(
+                    camera[0].expiry,
+                    Expiry::Never,
+                    "the existing permanent grant is not demoted to once-only"
+                );
+                let layout = permissions_pane_layout(&ws, pane());
+                let row = layout
+                    .rows
+                    .iter()
+                    .find(|r| r.allows.contains("camera"))
+                    .expect("camera row");
+                assert_eq!(
+                    row.expiry, "Always",
+                    "the row must report the expiry that is stored, not the one that was asked for"
+                );
+            }
+
+            // Phase `a_non_owner_cannot_grant`.
+            {
+                let mut ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+                let draft = GrantDraft {
+                    subject_index: firefox,
+                    choice_index: 0,
+                    expiry: Expiry::Never,
+                };
+                let before = ws.capabilities.len();
+                let edit = apply_grant_draft(&mut ws, &"someone-else".to_string(), &draft);
+                assert!(edit.is_empty(), "grant_as must refuse a non-administrator");
+                assert_eq!(ws.capabilities.len(), before);
+            }
+
+            // Phase `every_offered_capability_produces_a_scope_an_enforcement_point_reads`.
+            {
+                let ws = ws_with_grants();
+                let subjects = grant_subjects(&ws);
+                let firefox = subjects.iter().position(|s| s.id == "firefox").unwrap();
+                for (i, choice) in GRANT_CHOICES.iter().enumerate() {
+                    let draft = GrantDraft {
+                        subject_index: firefox,
+                        choice_index: i,
+                        expiry: Expiry::Never,
+                    };
+                    let cap = draft_capability(&ws, &draft).expect("every choice resolves");
+                    assert_eq!(cap.effect, Effect::Grant);
+                    let resource = match &cap.scope {
+                        Scope::Device(d) => ResourceRef::Device(d.clone()),
+                        Scope::NetHost(h) => ResourceRef::NetHost(h.clone()),
+                        Scope::FsPath(p) => ResourceRef::FsPath(p.clone()),
+                        Scope::Workspace => ResourceRef::Workspace,
+                        Scope::Action { app, action } => ResourceRef::Action {
+                            app: app.clone(),
+                            action: action.clone(),
+                        },
+                        other => panic!("unexpected scope in the grant table: {other:?}"),
+                    };
+                    let mut probe = ws.clone();
+                    probe
+                        .grant_as(&OWNER.to_string(), cap.clone())
+                        .expect("owner grants");
+                    assert!(
+                        probe.allows(&probe.actor_for_app("firefox"), &resource, cap.verb),
+                        "granting {:?} must make the decision function allow it",
+                        choice.label
+                    );
+                }
+            }
+        }
+
+        // Phase `revoking_a_permission_row_is_owner_only_and_enforced`.
+        {
+            // Phase `a_workspace_scoped_app_grant_is_listed_and_revocable`.
+            {
+                let mut ws = ws_with_grants();
+                let id = ws
+                    .grant_as(
+                        &OWNER.to_string(),
+                        CapOverride::grant(Subject::app("firefox"), Scope::Workspace, Verb::Admin),
+                    )
+                    .expect("owner grants");
+                let layout = permissions_pane_layout(&ws, pane());
+                let row = layout
+                    .rows
+                    .iter()
+                    .find(|r| r.cap_id == id)
+                    .expect("the workspace-scoped app grant has a row");
+                assert_eq!(row.subject.kind, SubjectKind::App);
+                assert_eq!(row.allows, "Administer this workspace");
+                assert_eq!(
+                    apply_revoke(&mut ws, &OWNER.to_string(), &row.cap_id)
+                        .revoked
+                        .len(),
+                    1
+                );
+                assert!(!ws.allows(
+                    &ws.actor_for_app("firefox"),
+                    &ResourceRef::Workspace,
+                    Verb::Admin
+                ));
+            }
+
+            // Phase `revoking_a_row_stops_the_capability_working`.
+            {
+                let mut ws = ws_with_grants();
+                let layout = permissions_pane_layout(&ws, pane());
+                let camera_row = layout
+                    .rows
+                    .iter()
+                    .find(|r| r.allows.contains("camera"))
+                    .expect("camera row");
+                let edit = apply_revoke(&mut ws, &OWNER.to_string(), &camera_row.cap_id);
+                assert_eq!(edit.revoked, vec![camera_row.cap_id.clone()]);
+                assert!(
+                    !ws.allows(
+                        &ws.actor_for_app("firefox"),
+                        &ResourceRef::Device("camera".into()),
+                        Verb::Read
+                    ),
+                    "the revoked capability must stop working, not merely stop rendering"
+                );
+                let after = permissions_pane_layout(&ws, pane());
+                assert_eq!(after.rows.len(), 1);
+            }
+
+            // Phase `a_non_owner_cannot_revoke`.
+            {
+                let mut ws = ws_with_grants();
+                let layout = permissions_pane_layout(&ws, pane());
+                let target = layout.rows[0].cap_id.clone();
+                let edit = apply_revoke(&mut ws, &"someone-else".to_string(), &target);
+                assert!(edit.is_empty());
+                assert_eq!(permissions_pane_layout(&ws, pane()).rows.len(), 2);
+            }
+
+            // Phase `revoking_an_unknown_id_is_a_no_op`.
+            {
+                let mut ws = ws_with_grants();
+                let edit = apply_revoke(&mut ws, &OWNER.to_string(), "cap-does-not-exist");
+                assert!(edit.is_empty());
+                assert_eq!(ws.capabilities.len(), 3, "owner membership + two grants");
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn the_permissions_pane_draws_every_state_and_fits_its_rows() {
+        // Phase `draw_permissions_pane_paints_empty_and_granted_states`.
+        {
+            // Phase `draw_permissions_pane_paints_an_empty_state_with_no_grants`.
+            {
+                let ws = Workspace::new(WorkspaceId::default(), "empty");
+                let mut scene = Scene::new();
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                draw_permissions_pane(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    pane(),
+                    &ws,
+                    &GrantDraft::default(),
+                    true,
+                    &mut tr,
+                    &theme,
+                );
+                assert!(
+                    !scene.encoding().draw_tags.is_empty(),
+                    "the composer and the empty state must both paint"
+                );
+            }
+
+            // Phase `draw_permissions_pane_paints_more_with_grants_than_without`.
+            {
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let draft = GrantDraft::default();
+
+                let mut empty = Scene::new();
+                draw_permissions_pane(
+                    &mut empty,
+                    Affine::IDENTITY,
+                    pane(),
+                    &Workspace::new(WorkspaceId::default(), "empty"),
+                    &draft,
+                    true,
+                    &mut tr,
+                    &theme,
+                );
+                let mut full = Scene::new();
+                draw_permissions_pane(
+                    &mut full,
+                    Affine::IDENTITY,
+                    pane(),
+                    &ws_with_grants(),
+                    &draft,
+                    true,
+                    &mut tr,
+                    &theme,
+                );
+                assert!(full.encoding().draw_tags.len() > empty.encoding().draw_tags.len());
+            }
+
+            // Phase `draw_permissions_pane_no_op_on_zero_area_pane`.
+            {
+                let ws = ws_with_grants();
+                let mut scene = Scene::new();
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                draw_permissions_pane(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(100.0, 100.0, 100.0, 100.0),
+                    &ws,
+                    &GrantDraft::default(),
+                    true,
+                    &mut tr,
+                    &theme,
+                );
+                assert!(scene.encoding().draw_tags.is_empty());
+            }
+        }
+
+        // Phase `permission_rows_fit_their_pane_without_clipping_or_overlap`.
+        {
+            // Phase `rows_that_do_not_fit_are_counted_rather_than_clipped`.
+            {
+                let mut ws = Workspace::new(WorkspaceId::from(9), "many");
+                ws.set_owner(OWNER);
+                for i in 0..12 {
+                    ws.grant_as(
+                        &OWNER.to_string(),
+                        CapOverride::grant(
+                            Subject::app(format!("app-{i}")),
+                            Scope::Device("camera".into()),
+                            Verb::Read,
+                        ),
+                    )
+                    .expect("owner grants");
+                }
+                let short_pane = Rect::new(0.0, 0.0, 660.0, 300.0);
+                let layout = permissions_pane_layout(&ws, short_pane);
+                assert!(layout.rows.len() < 12);
+                assert_eq!(layout.rows.len() + layout.overflow, 12);
+                for row in &layout.rows {
+                    assert!(
+                        row.row_rect.y1 <= short_pane.y1,
+                        "a laid-out row must fit inside the pane"
+                    );
+                }
+            }
+
+            // Phase `expiry_segments_are_laid_out_in_picker_order_without_overlap`.
+            {
+                let ws = ws_with_grants();
+                let layout = permissions_pane_layout(&ws, pane());
+                for i in 1..3 {
+                    assert!(
+                        layout.expiry_rects[i].x0 >= layout.expiry_rects[i - 1].x1 - f64::EPSILON
+                    );
+                }
+                assert!(layout.expiry_rects[2].x1 <= layout.submit_rect.x0);
+                assert!(layout.subject_rect.x1 <= layout.choice_rect.x0);
+                assert!(layout.choice_rect.x1 <= layout.expiry_rects[0].x0);
+            }
+
+            // Phase `narrow_panes_stack_policy_controls_inside_their_rows`.
+            {
+                let ws = ws_with_grants();
+                let pane = Rect::new(0.0, 0.0, 326.0, 620.0);
+                let layout = permissions_pane_layout(&ws, pane);
+                for rect in std::iter::once(layout.subject_rect)
+                    .chain(std::iter::once(layout.choice_rect))
+                    .chain(layout.expiry_rects)
+                    .chain(std::iter::once(layout.submit_rect))
+                {
+                    assert!(
+                        rect.x0 >= pane.x0 && rect.x1 <= pane.x1,
+                        "compact permission control must remain inside its pane: {rect:?} in {pane:?}"
+                    );
+                }
+                assert!(
+                    layout.subject_rect.y1 < layout.expiry_rects[0].y0,
+                    "narrow composer promotes expiry/grant controls to a second row"
+                );
+
+                let candidates = [desktop_policy::AppCandidate {
+                    package_id: "so.tilo.viewer".into(),
+                    display_name: "Viewer".into(),
+                    resources: [desktop_policy::ResourceKind::extension("pdf").unwrap()].into(),
+                }];
+                let rows = default_app_rows(pane, &candidates);
+                let row = rows.first().expect("a narrow policy row fits");
+                assert!(row.workspace_rect.x0 >= row.row_rect.x0);
+                assert!(row.user_rect.x1 <= row.row_rect.x1);
+                assert!(
+                    row.workspace_rect.y0 > row.row_rect.y0 + 20.0,
+                    "the resource label keeps its own line above both choices"
+                );
+                assert!(
+                    row.workspace_rect.x1 <= row.user_rect.x0,
+                    "the two explicit choices never overlap at phone width"
+                );
+            }
+
+            // Phase `long_identifiers_are_shortened_rather_than_overrun`.
+            {
+                let long = "a".repeat(64);
+                let shortened = short_id(&long);
+                assert!(shortened.chars().count() <= 11);
+                assert!(shortened.ends_with('…'));
+                assert_eq!(short_id("quinten"), "quinten");
+            }
+        }
     }
 }
 
@@ -5824,66 +5915,69 @@ mod default_app_authority_tests {
     }
 
     #[test]
-    fn admin_policy_and_personal_escape_hatch_are_separately_authorized() {
-        let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
-        let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
-        let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
-        let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
-        ws.set_owner("owner");
+    fn default_app_authority_is_separately_authorized_and_cycles_inheritance_first() {
+        // Phase `admin_policy_and_personal_escape_hatch_are_separately_authorized`.
+        {
+            let candidates = [candidate("so.tilo.viewer"), candidate("so.tilo.other")];
+            let resolver = desktop_policy::DefaultAppResolver::new(&candidates);
+            let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
+            let mut ws = Workspace::new(WorkspaceId::from(7), "Docs");
+            ws.set_owner("owner");
 
-        assert!(
+            assert!(
+                ws.set_default_app_policy_as(
+                    &"member".into(),
+                    pdf.clone(),
+                    desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
+                    &resolver
+                )
+                .is_err()
+            );
             ws.set_default_app_policy_as(
-                &"member".into(),
+                &"owner".into(),
                 pdf.clone(),
                 desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
-                &resolver
+                &resolver,
             )
-            .is_err()
-        );
-        ws.set_default_app_policy_as(
-            &"owner".into(),
-            pdf.clone(),
-            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into()),
-            &resolver,
-        )
-        .unwrap();
+            .unwrap();
 
-        assert!(
+            assert!(
+                ws.set_default_app_choice_as(
+                    &"owner".into(),
+                    &"member".into(),
+                    pdf.clone(),
+                    desktop_policy::UserWorkspaceChoice::PersonalDefault,
+                    &resolver
+                )
+                .is_err()
+            );
             ws.set_default_app_choice_as(
-                &"owner".into(),
+                &"member".into(),
                 &"member".into(),
                 pdf.clone(),
-                desktop_policy::UserWorkspaceChoice::PersonalDefault,
-                &resolver
+                desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into()),
+                &resolver,
             )
-            .is_err()
-        );
-        ws.set_default_app_choice_as(
-            &"member".into(),
-            &"member".into(),
-            pdf.clone(),
-            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into()),
-            &resolver,
-        )
-        .unwrap();
-        assert_eq!(
-            ws.default_apps.user_choices["member"][&pdf],
-            desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into())
-        );
-    }
+            .unwrap();
+            assert_eq!(
+                ws.default_apps.user_choices["member"][&pdf],
+                desktop_policy::UserWorkspaceChoice::App("so.tilo.other".into())
+            );
+        }
 
-    #[test]
-    fn controls_cycle_through_inheritance_before_apps() {
-        let candidates = [candidate("so.tilo.viewer")];
-        let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
-        assert_eq!(
-            next_workspace_default(None, &pdf, &candidates),
-            desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into())
-        );
-        assert_eq!(
-            next_user_default(None, &pdf, &candidates),
-            desktop_policy::UserWorkspaceChoice::PersonalDefault
-        );
+        // Phase `controls_cycle_through_inheritance_before_apps`.
+        {
+            let candidates = [candidate("so.tilo.viewer")];
+            let pdf = desktop_policy::ResourceKind::extension("pdf").unwrap();
+            assert_eq!(
+                next_workspace_default(None, &pdf, &candidates),
+                desktop_policy::WorkspaceDefaultPolicy::App("so.tilo.viewer".into())
+            );
+            assert_eq!(
+                next_user_default(None, &pdf, &candidates),
+                desktop_policy::UserWorkspaceChoice::PersonalDefault
+            );
+        }
     }
 }
 
@@ -5895,39 +5989,42 @@ mod rest_edge_tests {
     use super::*;
 
     #[test]
-    fn pane_cards_and_footer_keep_an_edge_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let colors = &theme.tokens.colors;
-            for (what, fill) in [
-                ("row / intro / composer card", colors.surfaces.raised),
-                ("sidebar footer row", colors.lift(0.35)),
-            ] {
-                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
-                assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
-                    theme.name
-                );
+    fn rest_panes_keep_edges_and_the_section_step() {
+        // Phase `pane_cards_and_footer_keep_an_edge_on_every_palette`.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let colors = &theme.tokens.colors;
+                for (what, fill) in [
+                    ("row / intro / composer card", colors.surfaces.raised),
+                    ("sidebar footer row", colors.lift(0.35)),
+                ] {
+                    let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
             }
         }
-    }
 
-    /// The default-apps empty state starts where the first row would, under
-    /// the column-label line, instead of centring itself over the header.
-    #[test]
-    fn default_apps_empty_state_starts_below_the_header_block() {
-        let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
-        let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
-        let label_line_bottom = heading_y + 22.0 + 14.0;
-        assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
-        assert!(default_app_rows(pane, &[]).is_empty());
-    }
+        // Phase `default_apps_empty_state_starts_below_the_header_block`.
+        // The default-apps empty state starts where the first row would, under
+        // the column-label line, instead of centring itself over the header.
+        {
+            let pane = Rect::new(0.0, 0.0, 508.0, 560.0);
+            let heading_y = pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP;
+            let label_line_bottom = heading_y + 22.0 + 14.0;
+            assert!(default_app_rows_top(pane) >= label_line_bottom + 4.0);
+            assert!(default_app_rows(pane, &[]).is_empty());
+        }
 
-    /// The pane lead-in and the lens body lead-in add up to one `s4` step.
-    #[test]
-    fn pane_lead_in_completes_the_section_step() {
-        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-        let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
-        assert_eq!(PANE_PAD_TOP + s2, s4);
+        // Phase `pane_lead_in_completes_the_section_step`.
+        // The pane lead-in and the lens body lead-in add up to one `s4` step.
+        {
+            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+            let s2 = f64::from(ui::tokens::Spacing::BASE.s2);
+            assert_eq!(PANE_PAD_TOP + s2, s4);
+        }
     }
 }

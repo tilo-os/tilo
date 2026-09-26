@@ -1122,132 +1122,306 @@ mod tests {
     }
 
     #[test]
-    fn semantic_footer_uses_current_dialog_visibility_and_existing_actions() {
-        use automerge::transaction::Transactable;
-        let fired = Rc::new(Cell::new(0));
-        let callback = fired.clone();
-        let mut dialog = ModalDialog::new("Review", TestContent)
-            .open(true)
-            .primary_action("Restore", move || callback.set(callback.get() + 1));
-        let target = dialog.accessibility().unwrap().children[0]
-            .action_target
-            .clone()
-            .unwrap();
-        let mut doc = AutoCommit::new();
-        assert!(dialog.perform_semantic_action(
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert_eq!(fired.get(), 1);
-        dialog.set_open(false);
-        assert!(dialog.accessibility().unwrap().children.is_empty());
-        assert!(!dialog.perform_semantic_action(
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        dialog.set_open(true);
-        dialog.primary_action = None; // Unavailable footer action is absent in all input paths.
-        assert!(!dialog.perform_semantic_action(
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        let callback = fired.clone();
-        let mut replacement = ModalDialog::new("Review", TestContent)
-            .open(true)
-            .primary_action("Restore", move || callback.set(callback.get() + 1));
-        assert!(!replacement.perform_semantic_action(
-            &target,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        let fresh = replacement.accessibility().unwrap().children[0]
-            .action_target
-            .clone()
-            .unwrap();
-        assert!(replacement.perform_semantic_action(
-            &fresh,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert_eq!(fired.get(), 2);
-        assert_eq!(doc.pending_ops(), 0);
-    }
+    fn dialog_accessibility_exposes_open_content_and_real_actions() {
+        fn semantic_footer_uses_current_dialog_visibility_and_existing_actions() {
+            use automerge::transaction::Transactable;
+            let fired = Rc::new(Cell::new(0));
+            let callback = fired.clone();
+            let mut dialog = ModalDialog::new("Review", TestContent)
+                .open(true)
+                .primary_action("Restore", move || callback.set(callback.get() + 1));
+            let target = dialog.accessibility().unwrap().children[0]
+                .action_target
+                .clone()
+                .unwrap();
+            let mut doc = AutoCommit::new();
+            assert!(dialog.perform_semantic_action(
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(fired.get(), 1);
+            dialog.set_open(false);
+            assert!(dialog.accessibility().unwrap().children.is_empty());
+            assert!(!dialog.perform_semantic_action(
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            dialog.set_open(true);
+            dialog.primary_action = None; // Unavailable footer action is absent in all input paths.
+            assert!(!dialog.perform_semantic_action(
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            let callback = fired.clone();
+            let mut replacement = ModalDialog::new("Review", TestContent)
+                .open(true)
+                .primary_action("Restore", move || callback.set(callback.get() + 1));
+            assert!(!replacement.perform_semantic_action(
+                &target,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            let fresh = replacement.accessibility().unwrap().children[0]
+                .action_target
+                .clone()
+                .unwrap();
+            assert!(replacement.perform_semantic_action(
+                &fresh,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(fired.get(), 2);
+            assert_eq!(doc.pending_ops(), 0);
+        }
 
-    #[test]
-    fn detached_layout_places_dialog_and_content() {
-        let content = CountingContent::default();
-        let mut dialog = ModalDialog::new("Detached", content).open(true);
-        dialog.layout_in(
-            Rect::new(20.0, 30.0, 820.0, 630.0),
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
+        fn accessibility_footer_actions_reach_the_real_callbacks() {
+            use crate::a11y::Action;
+            let clicked = Rc::new(Cell::new(0));
+            let observed = clicked.clone();
+            let mut dialog = ModalDialog::new("Confirm", TestContent)
+                .open(true)
+                .primary_action("Apply", move || observed.set(observed.get() + 1))
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            let node = dialog.accessibility().unwrap();
+            assert!(
+                node.children
+                    .iter()
+                    .any(|child| child.name.as_deref() == Some("Apply")),
+                "the painted primary action must be accessible"
+            );
+            let mut doc = AutoCommit::new();
+            assert!(dialog.perform_semantic_action(
+                "modal.primary",
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(clicked.get(), 1);
+            dialog.set_open(false);
+            assert!(!dialog.perform_semantic_action(
+                "modal.primary",
+                &Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert_eq!(
+                clicked.get(),
+                1,
+                "closed controls cannot activate stale callbacks"
+            );
+        }
 
-        assert_eq!(dialog.get_rect(), Rect::new(180.0, 170.0, 660.0, 490.0));
-        assert_ne!(dialog.content().get_rect(), Rect::ZERO);
+        fn accessibility_reports_dialog_role_modal_and_title() {
+            use crate::a11y::Role;
+            let d = ModalDialog::new("Confirm delete", TestContent).open(true);
+            let node = Widget::accessibility(&d).expect("dialog is not presentational");
+            assert_eq!(node.role, Role::Dialog);
+            assert_eq!(node.name.as_deref(), Some("Confirm delete"));
+            assert!(node.state.modal, "a backdrop dialog is modal");
+            assert!(!node.state.hidden, "an open dialog is visible");
+        }
 
-        dialog.set_max_size(400.0, 200.0);
-        dialog.layout_in(
-            Rect::new(20.0, 30.0, 820.0, 630.0),
-            &Theme::dark(),
-            &mut TextRenderer::new(),
-        );
-        assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
-    }
+        fn accessibility_closed_dialog_is_hidden() {
+            let d = ModalDialog::new("Confirm delete", TestContent).open(false);
+            let node = Widget::accessibility(&d).unwrap();
+            assert!(node.state.hidden, "a closed dialog is hidden from the tree");
+        }
 
-    #[test]
-    fn retained_layout_preserves_large_text_before_the_first_draw() {
-        let mut dialog = ModalDialog::new(
-            "Large text",
-            Text::new("Scaled dialog content").with_scaled_size(20.0),
-        )
-        .open(true);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
+        fn children_exposes_dialog_content() {
+            let d = ModalDialog::new("Title", TestContent).open(true);
+            assert_eq!(
+                Widget::children(&d).len(),
+                1,
+                "the dialog body must be reachable as a child for the a11y tree",
+            );
+        }
+
+        fn closed_dialog_prunes_content_from_the_production_accessibility_tree() {
+            use crate::accesskit_bridge::build_tree_update;
+            use crate::widget::Button;
+            use accesskit::Role as AccessKitRole;
+
+            let mut d = ModalDialog::new(
+                "Confirm",
+                Button::new("modal-child", "Confirm action", None),
             )
-            .unwrap();
-        dialog.apply_layout(&taffy, node, Point::ZERO);
+            .open(true);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
 
-        assert!(
-            dialog.content().get_rect().height() >= 49.0,
-            "dialog content must reserve its 200% line height before paint, got {:?}",
-            dialog.content().get_rect()
-        );
+            let open = build_tree_update(&d, &node_map, None, 1.0);
+            assert!(
+                open.nodes
+                    .iter()
+                    .any(|(_, node)| node.role() == AccessKitRole::Button),
+                "test precondition: open dialog exports its content button",
+            );
+
+            d.set_open(false);
+            let closed = build_tree_update(&d, &node_map, None, 1.0);
+            assert!(
+                closed
+                    .nodes
+                    .iter()
+                    .all(|(_, node)| node.role() != AccessKitRole::Button),
+                "a closed dialog must not leave content controls in the production accessibility tree",
+            );
+            assert!(
+                Widget::children_mut(&mut d).is_empty(),
+                "closed modal content must also be pruned from mutable propagation",
+            );
+        }
+
+        semantic_footer_uses_current_dialog_visibility_and_existing_actions();
+        accessibility_footer_actions_reach_the_real_callbacks();
+        accessibility_reports_dialog_role_modal_and_title();
+        accessibility_closed_dialog_is_hidden();
+        children_exposes_dialog_content();
+        closed_dialog_prunes_content_from_the_production_accessibility_tree();
     }
 
     #[test]
-    fn detached_event_path_preserves_modal_dismissal() {
-        let dismissed = Rc::new(Cell::new(false));
-        let flag = Rc::clone(&dismissed);
-        let mut dialog = ModalDialog::new("Detached", TestContent)
-            .on_dismiss(move || flag.set(true))
-            .open(true);
+    fn detached_and_retained_layout_place_dialog_content() {
+        fn detached_layout_places_dialog_and_content() {
+            let content = CountingContent::default();
+            let mut dialog = ModalDialog::new("Detached", content).open(true);
+            dialog.layout_in(
+                Rect::new(20.0, 30.0, 820.0, 630.0),
+                &Theme::dark(),
+                &mut TextRenderer::new(),
+            );
 
-        assert!(dialog.handle_detached(
-            &key_press_event(NamedKey::Escape),
-            1.0,
-            Modifiers::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-        ));
-        assert!(dismissed.get());
+            assert_eq!(dialog.get_rect(), Rect::new(180.0, 170.0, 660.0, 490.0));
+            assert_ne!(dialog.content().get_rect(), Rect::ZERO);
+
+            dialog.set_max_size(400.0, 200.0);
+            dialog.layout_in(
+                Rect::new(20.0, 30.0, 820.0, 630.0),
+                &Theme::dark(),
+                &mut TextRenderer::new(),
+            );
+            assert_eq!(dialog.get_rect(), Rect::new(220.0, 230.0, 620.0, 430.0));
+        }
+
+        fn retained_layout_preserves_large_text_before_the_first_draw() {
+            let mut dialog = ModalDialog::new(
+                "Large text",
+                Text::new("Scaled dialog content").with_scaled_size(20.0),
+            )
+            .open(true);
+            let theme = Theme::dark().with_text_scale(2.0);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = dialog.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            dialog.apply_layout(&taffy, node, Point::ZERO);
+
+            assert!(
+                dialog.content().get_rect().height() >= 49.0,
+                "dialog content must reserve its 200% line height before paint, got {:?}",
+                dialog.content().get_rect()
+            );
+        }
+
+        fn detached_event_path_preserves_modal_dismissal() {
+            let dismissed = Rc::new(Cell::new(false));
+            let flag = Rc::clone(&dismissed);
+            let mut dialog = ModalDialog::new("Detached", TestContent)
+                .on_dismiss(move || flag.set(true))
+                .open(true);
+
+            assert!(dialog.handle_detached(
+                &key_press_event(NamedKey::Escape),
+                1.0,
+                Modifiers::default(),
+                &mut AutoCommit::new(),
+                &automerge::ROOT,
+            ));
+            assert!(dismissed.get());
+        }
+
+        /// The title bar is the heading line plus `s4` above and below (48 at
+        /// 1×) and grows with the text scale instead of clipping a large
+        /// heading; the footer is the shared `Button` height plus `s2` (56 at
+        /// 1×) and follows `ui_scale` like every other bar.
+        fn chrome_heights_follow_the_theme() {
+            let base = DialogChrome::default();
+            assert_eq!(base, DialogChrome::from_theme(&Theme::dark()));
+            assert!((base.title_bar - 48.0).abs() < 1e-6, "{base:?}");
+            assert!((base.footer - 56.0).abs() < 1e-6, "{base:?}");
+            assert!((base.button - 40.0).abs() < 1e-6, "{base:?}");
+
+            let large = DialogChrome::from_theme(&Theme::dark().with_text_scale(2.0));
+            assert!(
+                large.title_bar >= base.title_bar + f64::from(TypeScale::default().lg) - 1e-6,
+                "a 2× heading gets a taller bar: {large:?}"
+            );
+            assert!(
+                (large.footer - base.footer).abs() < 1e-6,
+                "text scale does not move the footer: {large:?}"
+            );
+
+            let ui = DialogChrome::from_theme(&Theme::dark().with_ui_scale(2.0));
+            assert!((ui.footer - 112.0).abs() < 1e-6, "{ui:?}");
+            assert!((ui.button - 80.0).abs() < 1e-6, "{ui:?}");
+        }
+
+        /// The body is placed under the title bar the theme resolves, with the
+        /// theme the host laid out with — not a default dark 1× one — so a 200 %
+        /// heading never paints over the content.
+        fn content_starts_below_the_title_bar_at_a_large_text_scale() {
+            let theme = Theme::dark().with_text_scale(2.0);
+            let content = CountingContent::default();
+            let mut d = ModalDialog::new("Title", content).open(true);
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+            taffy
+                .compute_layout(
+                    node,
+                    taffy::Size {
+                        width: taffy::AvailableSpace::Definite(800.0),
+                        height: taffy::AvailableSpace::Definite(600.0),
+                    },
+                )
+                .unwrap();
+            d.apply_layout(&taffy, node, Point::ZERO);
+            let chrome = DialogChrome::from_theme(&theme);
+            assert_eq!(d.chrome, chrome, "the dialog adopted the layout theme");
+            let content_top = d.content().get_rect().y0;
+            assert!(
+                (content_top - (d.rect.y0 + chrome.title_bar)).abs() < 0.5,
+                "content top {content_top} vs title bar bottom {}",
+                d.rect.y0 + chrome.title_bar,
+            );
+            assert!(
+                d.primary_rect == Rect::ZERO || d.primary_rect.height() == chrome.button,
+                "footer buttons are one Button tall"
+            );
+        }
+
+        detached_layout_places_dialog_and_content();
+        retained_layout_preserves_large_text_before_the_first_draw();
+        detached_event_path_preserves_modal_dismissal();
+        chrome_heights_follow_the_theme();
+        content_starts_below_the_title_bar_at_a_large_text_scale();
     }
 
     fn color_fill_count<C: Widget + 'static>(d: &mut ModalDialog<C>) -> usize {
@@ -1265,472 +1439,318 @@ mod tests {
     }
 
     #[test]
-    fn modal_dialog_dismiss_on_esc() {
-        let dismissed = Rc::new(Cell::new(false));
-        let dismissed_clone = Rc::clone(&dismissed);
-        let mut d = ModalDialog::new("Title", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-            .on_dismiss(move || dismissed_clone.set(true));
-        dispatch(&mut d, &key_press_event(NamedKey::Escape));
-        assert!(
-            dismissed.get(),
-            "Escape on an open dialog must invoke the on_dismiss callback",
-        );
-    }
-
-    #[test]
-    fn modal_dialog_backdrop_click_dismisses() {
-        let dismissed = Rc::new(Cell::new(false));
-        let dismissed_clone = Rc::clone(&dismissed);
-        let mut d = ModalDialog::new("Title", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-            .on_dismiss(move || dismissed_clone.set(true));
-        // Well outside the centered 480×320 dialog rect but inside the
-        // 800×600 backdrop.
-        let click_point = Point::new(10.0, 10.0);
-        assert!(
-            !d.dialog_rect().contains(click_point),
-            "test geometry sanity: (10,10) must be outside the dialog rect",
-        );
-        dispatch(&mut d, &cursor_at(click_point));
-        dispatch(&mut d, &left_press());
-        assert!(
-            dismissed.get(),
-            "backdrop click outside the dialog box must invoke on_dismiss",
-        );
-    }
-
-    #[test]
-    fn modal_dialog_primary_action_invokes_callback() {
-        let fired = Rc::new(Cell::new(false));
-        let fired_clone = Rc::clone(&fired);
-        let mut d = ModalDialog::new("Title", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-            .primary_action("OK", move || fired_clone.set(true));
-        // Drive a real `apply_layout` pass so `primary_rect` is populated
-        // through the five-pass path (not just `with_viewport`).
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let theme = Theme::dark();
-        let node = d.build_layout(&mut taffy, &theme, &mut node_map);
-        let avail = taffy::Size {
-            width: taffy::AvailableSpace::Definite(800.0),
-            height: taffy::AvailableSpace::Definite(600.0),
-        };
-        taffy.compute_layout(node, avail).unwrap();
-        d.apply_layout(&taffy, node, Point::ZERO);
-        let click_point = d.primary_rect().center();
-        assert!(
-            d.primary_rect().contains(click_point),
-            "test sanity: rect.center() must lie inside primary_rect",
-        );
-        dispatch(&mut d, &cursor_at(click_point));
-        dispatch(&mut d, &left_press());
-        assert!(
-            fired.get(),
-            "click inside primary_rect must invoke the primary action callback",
-        );
-    }
-
-    #[test]
-    fn modal_dialog_enter_invokes_primary_unless_content_consumes_it() {
-        let fired = Rc::new(Cell::new(0usize));
-        let fired_clone = Rc::clone(&fired);
-        let (mut d, _) = laid_out_counting(true);
-        d.primary_action = Some(DialogAction {
-            label: "Save".into(),
-            on_click: Box::new(move || fired_clone.set(fired_clone.get() + 1)),
-        });
-
-        dispatch(&mut d, &key_press_event(NamedKey::Enter));
-        assert_eq!(fired.get(), 1, "Enter invokes the semantic primary action");
-
-        d.content_mut().consume = true;
-        dispatch(&mut d, &key_press_event(NamedKey::Enter));
-        assert_eq!(
-            fired.get(),
-            1,
-            "an editor that consumes Enter suppresses the dialog default"
-        );
-    }
-
-    #[test]
-    fn modal_dialog_action_order_follows_platform_conventions() {
-        use crate::platform::{Platform, PlatformConventions};
-
-        let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-        let mut dialog = ModalDialog::new("Title", TestContent).with_viewport(viewport);
-        dialog.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
-        assert!(dialog.primary_rect().x0 > dialog.secondary_rect().x0);
-
-        dialog.set_platform_conventions(PlatformConventions::new(Platform::Windows));
-        assert!(dialog.primary_rect().x0 < dialog.secondary_rect().x0);
-    }
-
-    /// Asserted via the Vello encoding directly so this doesn't depend on
-    /// pixel readback.
-    #[test]
-    fn modal_dialog_paints_backdrop_when_open() {
-        let mut d = ModalDialog::<TestContent>::new("Title", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        let open_fills = color_fill_count(&mut d);
-        assert!(
-            open_fills >= 1,
-            "an open dialog must emit at least one COLOR fill (the backdrop); got {open_fills}",
-        );
-
-        // Guards against a future refactor that paints the backdrop
-        // unconditionally.
-        let mut closed = ModalDialog::<TestContent>::new("Title", TestContent)
-            .open(false)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        let closed_fills = color_fill_count(&mut closed);
-        assert_eq!(
-            closed_fills, 0,
-            "a closed dialog must emit zero COLOR fills; got {closed_fills}",
-        );
-    }
-
-    /// Drives the real draw path for two variants identical but for
-    /// `with_destructive`, so only the primary button's fill colour can
-    /// account for a diff in the encoded fill data.
-    #[test]
-    fn destructive_primary_paints_a_different_fill_than_accent() {
-        fn draw_data(destructive: bool) -> Vec<u32> {
-            let mut d = ModalDialog::new("Delete?", TestContent)
+    fn dialog_dismisses_and_invokes_primary_by_key_and_pointer() {
+        fn modal_dialog_dismiss_on_esc() {
+            let dismissed = Rc::new(Cell::new(false));
+            let dismissed_clone = Rc::clone(&dismissed);
+            let mut d = ModalDialog::new("Title", TestContent)
                 .open(true)
                 .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-                .with_destructive(destructive)
-                .primary_action("Delete", || {});
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let theme = Theme::dark();
-            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(800.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-            d.apply_layout(&taffy, node, Point::ZERO);
-            let mut tr = TextRenderer::new();
-            let presence = PresenceCtx::default();
-            let mut scene = Scene::new();
-            d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-            scene.encoding().draw_data.clone()
-        }
-        assert_ne!(
-            draw_data(false),
-            draw_data(true),
-            "a destructive primary must paint a different colour than the accent primary",
-        );
-    }
-
-    /// The title bar is the heading line plus `s4` above and below (48 at
-    /// 1×) and grows with the text scale instead of clipping a large
-    /// heading; the footer is the shared `Button` height plus `s2` (56 at
-    /// 1×) and follows `ui_scale` like every other bar.
-    #[test]
-    fn chrome_heights_follow_the_theme() {
-        let base = DialogChrome::default();
-        assert_eq!(base, DialogChrome::from_theme(&Theme::dark()));
-        assert!((base.title_bar - 48.0).abs() < 1e-6, "{base:?}");
-        assert!((base.footer - 56.0).abs() < 1e-6, "{base:?}");
-        assert!((base.button - 40.0).abs() < 1e-6, "{base:?}");
-
-        let large = DialogChrome::from_theme(&Theme::dark().with_text_scale(2.0));
-        assert!(
-            large.title_bar >= base.title_bar + f64::from(TypeScale::default().lg) - 1e-6,
-            "a 2× heading gets a taller bar: {large:?}"
-        );
-        assert!(
-            (large.footer - base.footer).abs() < 1e-6,
-            "text scale does not move the footer: {large:?}"
-        );
-
-        let ui = DialogChrome::from_theme(&Theme::dark().with_ui_scale(2.0));
-        assert!((ui.footer - 112.0).abs() < 1e-6, "{ui:?}");
-        assert!((ui.button - 80.0).abs() < 1e-6, "{ui:?}");
-    }
-
-    /// The body is placed under the title bar the theme resolves, with the
-    /// theme the host laid out with — not a default dark 1× one — so a 200 %
-    /// heading never paints over the content.
-    #[test]
-    fn content_starts_below_the_title_bar_at_a_large_text_scale() {
-        let theme = Theme::dark().with_text_scale(2.0);
-        let content = CountingContent::default();
-        let mut d = ModalDialog::new("Title", content).open(true);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = d.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(800.0),
-                    height: taffy::AvailableSpace::Definite(600.0),
-                },
-            )
-            .unwrap();
-        d.apply_layout(&taffy, node, Point::ZERO);
-        let chrome = DialogChrome::from_theme(&theme);
-        assert_eq!(d.chrome, chrome, "the dialog adopted the layout theme");
-        let content_top = d.content().get_rect().y0;
-        assert!(
-            (content_top - (d.rect.y0 + chrome.title_bar)).abs() < 0.5,
-            "content top {content_top} vs title bar bottom {}",
-            d.rect.y0 + chrome.title_bar,
-        );
-        assert!(
-            d.primary_rect == Rect::ZERO || d.primary_rect.height() == chrome.button,
-            "footer buttons are one Button tall"
-        );
-    }
-
-    /// A dialog button is a `Button`: the pointer resting on it repaints
-    /// the face (HIG §7 — hover must be visible), and the pointer leaving
-    /// the window takes the face back to rest.
-    #[test]
-    fn primary_action_paints_hover_when_the_pointer_rests_on_it() {
-        fn draw_data(hover: bool, then_leave: bool) -> Vec<u32> {
-            let mut d = ModalDialog::new("Save?", TestContent)
-                .open(true)
-                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-                .primary_action("Save", || {});
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let theme = Theme::dark();
-            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(800.0),
-                        height: taffy::AvailableSpace::Definite(600.0),
-                    },
-                )
-                .unwrap();
-            d.apply_layout(&taffy, node, Point::ZERO);
-            if hover {
-                let centre = d.primary_rect.center();
-                dispatch(&mut d, &cursor_at(centre));
-            }
-            if then_leave {
-                dispatch(
-                    &mut d,
-                    &WindowEvent::CursorLeft {
-                        device_id: synth_device(),
-                    },
-                );
-            }
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            d.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::default(),
+                .on_dismiss(move || dismissed_clone.set(true));
+            dispatch(&mut d, &key_press_event(NamedKey::Escape));
+            assert!(
+                dismissed.get(),
+                "Escape on an open dialog must invoke the on_dismiss callback",
             );
-            scene.encoding().draw_data.clone()
         }
-        let rest = draw_data(false, false);
-        assert_ne!(
-            draw_data(true, false),
-            rest,
-            "the hovered primary action paints the same as one at rest",
-        );
-        assert_eq!(
-            draw_data(true, true),
-            rest,
-            "the pointer left the window but the button still paints hovered",
-        );
+
+        fn modal_dialog_backdrop_click_dismisses() {
+            let dismissed = Rc::new(Cell::new(false));
+            let dismissed_clone = Rc::clone(&dismissed);
+            let mut d = ModalDialog::new("Title", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .on_dismiss(move || dismissed_clone.set(true));
+            // Well outside the centered 480×320 dialog rect but inside the
+            // 800×600 backdrop.
+            let click_point = Point::new(10.0, 10.0);
+            assert!(
+                !d.dialog_rect().contains(click_point),
+                "test geometry sanity: (10,10) must be outside the dialog rect",
+            );
+            dispatch(&mut d, &cursor_at(click_point));
+            dispatch(&mut d, &left_press());
+            assert!(
+                dismissed.get(),
+                "backdrop click outside the dialog box must invoke on_dismiss",
+            );
+        }
+
+        fn modal_dialog_primary_action_invokes_callback() {
+            let fired = Rc::new(Cell::new(false));
+            let fired_clone = Rc::clone(&fired);
+            let mut d = ModalDialog::new("Title", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .primary_action("OK", move || fired_clone.set(true));
+            // Drive a real `apply_layout` pass so `primary_rect` is populated
+            // through the five-pass path (not just `with_viewport`).
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+            let theme = Theme::dark();
+            let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+            let avail = taffy::Size {
+                width: taffy::AvailableSpace::Definite(800.0),
+                height: taffy::AvailableSpace::Definite(600.0),
+            };
+            taffy.compute_layout(node, avail).unwrap();
+            d.apply_layout(&taffy, node, Point::ZERO);
+            let click_point = d.primary_rect().center();
+            assert!(
+                d.primary_rect().contains(click_point),
+                "test sanity: rect.center() must lie inside primary_rect",
+            );
+            dispatch(&mut d, &cursor_at(click_point));
+            dispatch(&mut d, &left_press());
+            assert!(
+                fired.get(),
+                "click inside primary_rect must invoke the primary action callback",
+            );
+        }
+
+        fn modal_dialog_enter_invokes_primary_unless_content_consumes_it() {
+            let fired = Rc::new(Cell::new(0usize));
+            let fired_clone = Rc::clone(&fired);
+            let (mut d, _) = laid_out_counting(true);
+            d.primary_action = Some(DialogAction {
+                label: "Save".into(),
+                on_click: Box::new(move || fired_clone.set(fired_clone.get() + 1)),
+            });
+
+            dispatch(&mut d, &key_press_event(NamedKey::Enter));
+            assert_eq!(fired.get(), 1, "Enter invokes the semantic primary action");
+
+            d.content_mut().consume = true;
+            dispatch(&mut d, &key_press_event(NamedKey::Enter));
+            assert_eq!(
+                fired.get(),
+                1,
+                "an editor that consumes Enter suppresses the dialog default"
+            );
+        }
+
+        fn modal_dialog_action_order_follows_platform_conventions() {
+            use crate::platform::{Platform, PlatformConventions};
+
+            let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+            let mut dialog = ModalDialog::new("Title", TestContent).with_viewport(viewport);
+            dialog.set_platform_conventions(PlatformConventions::new(Platform::MacOs));
+            assert!(dialog.primary_rect().x0 > dialog.secondary_rect().x0);
+
+            dialog.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+            assert!(dialog.primary_rect().x0 < dialog.secondary_rect().x0);
+        }
+
+        modal_dialog_dismiss_on_esc();
+        modal_dialog_backdrop_click_dismisses();
+        modal_dialog_primary_action_invokes_callback();
+        modal_dialog_enter_invokes_primary_unless_content_consumes_it();
+        modal_dialog_action_order_follows_platform_conventions();
     }
 
     #[test]
-    fn accessibility_footer_actions_reach_the_real_callbacks() {
-        use crate::a11y::Action;
-        let clicked = Rc::new(Cell::new(0));
-        let observed = clicked.clone();
-        let mut dialog = ModalDialog::new("Confirm", TestContent)
-            .open(true)
-            .primary_action("Apply", move || observed.set(observed.get() + 1))
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        let node = dialog.accessibility().unwrap();
-        assert!(
-            node.children
-                .iter()
-                .any(|child| child.name.as_deref() == Some("Apply")),
-            "the painted primary action must be accessible"
-        );
-        let mut doc = AutoCommit::new();
-        assert!(dialog.perform_semantic_action(
-            "modal.primary",
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert_eq!(clicked.get(), 1);
-        dialog.set_open(false);
-        assert!(!dialog.perform_semantic_action(
-            "modal.primary",
-            &Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert_eq!(
-            clicked.get(),
-            1,
-            "closed controls cannot activate stale callbacks"
-        );
+    fn dialog_paints_backdrop_destructive_and_hover_faces() {
+        /// Asserted via the Vello encoding directly so this doesn't depend on
+        /// pixel readback.
+        fn modal_dialog_paints_backdrop_when_open() {
+            let mut d = ModalDialog::<TestContent>::new("Title", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            let open_fills = color_fill_count(&mut d);
+            assert!(
+                open_fills >= 1,
+                "an open dialog must emit at least one COLOR fill (the backdrop); got {open_fills}",
+            );
+
+            // Guards against a future refactor that paints the backdrop
+            // unconditionally.
+            let mut closed = ModalDialog::<TestContent>::new("Title", TestContent)
+                .open(false)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            let closed_fills = color_fill_count(&mut closed);
+            assert_eq!(
+                closed_fills, 0,
+                "a closed dialog must emit zero COLOR fills; got {closed_fills}",
+            );
+        }
+
+        /// Drives the real draw path for two variants identical but for
+        /// `with_destructive`, so only the primary button's fill colour can
+        /// account for a diff in the encoded fill data.
+        fn destructive_primary_paints_a_different_fill_than_accent() {
+            fn draw_data(destructive: bool) -> Vec<u32> {
+                let mut d = ModalDialog::new("Delete?", TestContent)
+                    .open(true)
+                    .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                    .with_destructive(destructive)
+                    .primary_action("Delete", || {});
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let theme = Theme::dark();
+                let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+                taffy
+                    .compute_layout(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(800.0),
+                            height: taffy::AvailableSpace::Definite(600.0),
+                        },
+                    )
+                    .unwrap();
+                d.apply_layout(&taffy, node, Point::ZERO);
+                let mut tr = TextRenderer::new();
+                let presence = PresenceCtx::default();
+                let mut scene = Scene::new();
+                d.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+                scene.encoding().draw_data.clone()
+            }
+            assert_ne!(
+                draw_data(false),
+                draw_data(true),
+                "a destructive primary must paint a different colour than the accent primary",
+            );
+        }
+
+        /// A dialog button is a `Button`: the pointer resting on it repaints
+        /// the face (HIG §7 — hover must be visible), and the pointer leaving
+        /// the window takes the face back to rest.
+        fn primary_action_paints_hover_when_the_pointer_rests_on_it() {
+            fn draw_data(hover: bool, then_leave: bool) -> Vec<u32> {
+                let mut d = ModalDialog::new("Save?", TestContent)
+                    .open(true)
+                    .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                    .primary_action("Save", || {});
+                let mut taffy = TaffyTree::<()>::new();
+                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+                let theme = Theme::dark();
+                let node = d.build_layout(&mut taffy, &theme, &mut node_map);
+                taffy
+                    .compute_layout(
+                        node,
+                        taffy::Size {
+                            width: taffy::AvailableSpace::Definite(800.0),
+                            height: taffy::AvailableSpace::Definite(600.0),
+                        },
+                    )
+                    .unwrap();
+                d.apply_layout(&taffy, node, Point::ZERO);
+                if hover {
+                    let centre = d.primary_rect.center();
+                    dispatch(&mut d, &cursor_at(centre));
+                }
+                if then_leave {
+                    dispatch(
+                        &mut d,
+                        &WindowEvent::CursorLeft {
+                            device_id: synth_device(),
+                        },
+                    );
+                }
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                d.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::default(),
+                );
+                scene.encoding().draw_data.clone()
+            }
+            let rest = draw_data(false, false);
+            assert_ne!(
+                draw_data(true, false),
+                rest,
+                "the hovered primary action paints the same as one at rest",
+            );
+            assert_eq!(
+                draw_data(true, true),
+                rest,
+                "the pointer left the window but the button still paints hovered",
+            );
+        }
+
+        modal_dialog_paints_backdrop_when_open();
+        destructive_primary_paints_a_different_fill_than_accent();
+        primary_action_paints_hover_when_the_pointer_rests_on_it();
     }
 
     #[test]
-    fn accessibility_reports_dialog_role_modal_and_title() {
-        use crate::a11y::Role;
-        let d = ModalDialog::new("Confirm delete", TestContent).open(true);
-        let node = Widget::accessibility(&d).expect("dialog is not presentational");
-        assert_eq!(node.role, Role::Dialog);
-        assert_eq!(node.name.as_deref(), Some("Confirm delete"));
-        assert!(node.state.modal, "a backdrop dialog is modal");
-        assert!(!node.state.hidden, "an open dialog is visible");
-    }
+    fn open_dialog_captures_input_and_closed_dialog_is_inert() {
+        /// An OPEN dialog reports its box rect via `modal_capture`; a closed
+        /// one reports `None`. This is the signal the App uses to suppress its
+        /// own focus shortcuts and swallow click-through.
+        fn modal_capture_reflects_open_state() {
+            let mut d = ModalDialog::new("T", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert!(
+                Widget::modal_capture(&d).is_some(),
+                "an open dialog must report a modal-capture rect"
+            );
+            // Mutate to closed via a fresh instance (open() consumes self).
+            d = ModalDialog::new("T", TestContent)
+                .open(false)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert!(
+                Widget::modal_capture(&d).is_none(),
+                "a closed dialog must NOT report modal capture"
+            );
+        }
 
-    #[test]
-    fn accessibility_closed_dialog_is_hidden() {
-        let d = ModalDialog::new("Confirm delete", TestContent).open(false);
-        let node = Widget::accessibility(&d).unwrap();
-        assert!(node.state.hidden, "a closed dialog is hidden from the tree");
-    }
+        /// Every keyboard event while open is consumed (Tab included) so it
+        /// never reaches the host's focus-cycling shortcut.
+        fn open_dialog_swallows_all_keyboard_events() {
+            let (mut d, _events) = laid_out_counting(true);
+            let handled = dispatch_handled(&mut d, &char_key_event());
+            assert!(handled, "an open dialog must consume every keyboard event");
+        }
 
-    #[test]
-    fn children_exposes_dialog_content() {
-        let d = ModalDialog::new("Title", TestContent).open(true);
-        assert_eq!(
-            Widget::children(&d).len(),
-            1,
-            "the dialog body must be reachable as a child for the a11y tree",
-        );
-    }
+        /// A press OUTSIDE the box is consumed (swallowed) AND dismisses; it
+        /// must not leak to widgets behind the backdrop.
+        fn open_dialog_swallows_outside_press_and_dismisses() {
+            let dismissed = Rc::new(Cell::new(false));
+            let dc = Rc::clone(&dismissed);
+            let mut d = ModalDialog::new("T", TestContent)
+                .open(true)
+                .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
+                .on_dismiss(move || dc.set(true));
+            dispatch(&mut d, &cursor_at(Point::new(5.0, 5.0)));
+            let handled = dispatch_handled(&mut d, &left_press());
+            assert!(handled, "outside press must be swallowed (handled=true)");
+            assert!(dismissed.get(), "outside press must also dismiss");
+        }
 
-    #[test]
-    fn closed_dialog_prunes_content_from_the_production_accessibility_tree() {
-        use crate::accesskit_bridge::build_tree_update;
-        use crate::widget::Button;
-        use accesskit::Role as AccessKitRole;
-
-        let mut d = ModalDialog::new(
-            "Confirm",
-            Button::new("modal-child", "Confirm action", None),
-        )
-        .open(true);
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        d.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-
-        let open = build_tree_update(&d, &node_map, None, 1.0);
-        assert!(
-            open.nodes
-                .iter()
-                .any(|(_, node)| node.role() == AccessKitRole::Button),
-            "test precondition: open dialog exports its content button",
-        );
-
-        d.set_open(false);
-        let closed = build_tree_update(&d, &node_map, None, 1.0);
-        assert!(
-            closed
-                .nodes
-                .iter()
-                .all(|(_, node)| node.role() != AccessKitRole::Button),
-            "a closed dialog must not leave content controls in the production accessibility tree",
-        );
-        assert!(
-            Widget::children_mut(&mut d).is_empty(),
-            "closed modal content must also be pruned from mutable propagation",
-        );
-    }
-
-    /// An OPEN dialog reports its box rect via `modal_capture`; a closed
-    /// one reports `None`. This is the signal the App uses to suppress its
-    /// own focus shortcuts and swallow click-through.
-    #[test]
-    fn modal_capture_reflects_open_state() {
-        let mut d = ModalDialog::new("T", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert!(
-            Widget::modal_capture(&d).is_some(),
-            "an open dialog must report a modal-capture rect"
-        );
-        // Mutate to closed via a fresh instance (open() consumes self).
-        d = ModalDialog::new("T", TestContent)
-            .open(false)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert!(
-            Widget::modal_capture(&d).is_none(),
-            "a closed dialog must NOT report modal capture"
-        );
-    }
-
-    /// Every keyboard event while open is consumed (Tab included) so it
-    /// never reaches the host's focus-cycling shortcut.
-    #[test]
-    fn open_dialog_swallows_all_keyboard_events() {
-        let (mut d, _events) = laid_out_counting(true);
-        let handled = dispatch_handled(&mut d, &char_key_event());
-        assert!(handled, "an open dialog must consume every keyboard event");
-    }
-
-    /// A press OUTSIDE the box is consumed (swallowed) AND dismisses; it
-    /// must not leak to widgets behind the backdrop.
-    #[test]
-    fn open_dialog_swallows_outside_press_and_dismisses() {
-        let dismissed = Rc::new(Cell::new(false));
-        let dc = Rc::clone(&dismissed);
-        let mut d = ModalDialog::new("T", TestContent)
-            .open(true)
-            .with_viewport(Rect::new(0.0, 0.0, 800.0, 600.0))
-            .on_dismiss(move || dc.set(true));
-        dispatch(&mut d, &cursor_at(Point::new(5.0, 5.0)));
-        let handled = dispatch_handled(&mut d, &left_press());
-        assert!(handled, "outside press must be swallowed (handled=true)");
-        assert!(dismissed.get(), "outside press must also dismiss");
-    }
-
-    /// A press INSIDE the box (not on an action button) is consumed AND
-    /// forwarded to the content so an embedded field can focus/click.
-    #[test]
-    fn open_dialog_forwards_inbox_press_to_content() {
-        let (mut d, events) = laid_out_counting(true);
-        let center = d.dialog_rect().center();
-        // Arm hover, then press inside the box.
-        dispatch(&mut d, &cursor_at(center));
-        let before = events.get();
-        let handled = dispatch_handled(&mut d, &left_press());
-        assert!(handled, "in-box press must be consumed (modal-blocking)");
-        assert!(
-            events.get() > before,
-            "in-box press must be forwarded to the content widget so its \
+        /// A press INSIDE the box (not on an action button) is consumed AND
+        /// forwarded to the content so an embedded field can focus/click.
+        fn open_dialog_forwards_inbox_press_to_content() {
+            let (mut d, events) = laid_out_counting(true);
+            let center = d.dialog_rect().center();
+            // Arm hover, then press inside the box.
+            dispatch(&mut d, &cursor_at(center));
+            let before = events.get();
+            let handled = dispatch_handled(&mut d, &left_press());
+            assert!(handled, "in-box press must be consumed (modal-blocking)");
+            assert!(
+                events.get() > before,
+                "in-box press must be forwarded to the content widget so its \
              fields can focus/click (got {} forwarded events)",
-            events.get()
-        );
-    }
+                events.get()
+            );
+        }
 
-    /// A closed dialog ignores everything (no forwarding, not handled).
-    #[test]
-    fn closed_dialog_is_inert() {
-        let (mut d, events) = laid_out_counting(false);
-        let handled = dispatch_handled(&mut d, &left_press());
-        assert!(!handled, "a closed dialog must not consume events");
-        assert_eq!(events.get(), 0, "a closed dialog must not forward events");
+        /// A closed dialog ignores everything (no forwarding, not handled).
+        fn closed_dialog_is_inert() {
+            let (mut d, events) = laid_out_counting(false);
+            let handled = dispatch_handled(&mut d, &left_press());
+            assert!(!handled, "a closed dialog must not consume events");
+            assert_eq!(events.get(), 0, "a closed dialog must not forward events");
+        }
+
+        modal_capture_reflects_open_state();
+        open_dialog_swallows_all_keyboard_events();
+        open_dialog_swallows_outside_press_and_dismisses();
+        open_dialog_forwards_inbox_press_to_content();
+        closed_dialog_is_inert();
     }
 }

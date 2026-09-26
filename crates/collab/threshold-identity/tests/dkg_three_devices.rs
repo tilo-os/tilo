@@ -95,7 +95,17 @@ fn sign_with_two(
     primary.aggregate_signature(&[p_a, p_b]).unwrap()
 }
 
+/// A 2-of-3 DKG gives all devices one group key and distinct shares, and each of the three
+/// possible two-device quorums produces a signature that verifies through `collab_types`.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_three_device_dkg_agrees_and_every_two_device_quorum_signs() {
+    three_device_dkg_produces_consistent_group_state();
+    three_device_quorum_1_2_signs_and_verifies();
+    three_device_quorum_1_3_signs_and_verifies();
+    three_device_quorum_2_3_signs_and_verifies();
+}
+
 fn three_device_dkg_produces_consistent_group_state() {
     let (a, b, c) = run_three_device_dkg();
     assert_eq!(a.group_public_key, b.group_public_key);
@@ -109,7 +119,6 @@ fn three_device_dkg_produces_consistent_group_state() {
     assert_eq!(indices.len(), 3, "every device gets a distinct share index");
 }
 
-#[test]
 fn three_device_quorum_1_2_signs_and_verifies() {
     let (a, b, _c) = run_three_device_dkg();
     let payload: Vec<u8> = b"a+b quorum payload".to_vec();
@@ -119,7 +128,6 @@ fn three_device_quorum_1_2_signs_and_verifies() {
         .expect("a+b quorum must verify via collab_types");
 }
 
-#[test]
 fn three_device_quorum_1_3_signs_and_verifies() {
     let (a, _b, c) = run_three_device_dkg();
     let payload: Vec<u8> = b"a+c quorum payload".to_vec();
@@ -129,7 +137,6 @@ fn three_device_quorum_1_3_signs_and_verifies() {
         .expect("a+c quorum must verify via collab_types");
 }
 
-#[test]
 fn three_device_quorum_2_3_signs_and_verifies() {
     let (_a, b, c) = run_three_device_dkg();
     let payload: Vec<u8> = b"b+c quorum payload".to_vec();

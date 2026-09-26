@@ -181,56 +181,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn last_error_line_picks_the_bottom_line() {
-        let o = Output {
-            code: 1,
-            stdout: vec![],
-            stderr: "WARNING:esys: noise\nERROR: real problem\n\n".into(),
-        };
-        assert_eq!(o.last_error_line(), "ERROR: real problem");
-    }
-
-    #[test]
-    fn last_error_line_skips_the_tpm2_tools_epilogue() {
-        let o = Output {
-            code: 1,
-            stdout: vec![],
-            stderr: "WARNING:esys: noise\nERROR: value is out of range\n\
-                     ERROR: Unable to run tpm2_changeauth\n"
-                .into(),
-        };
-        assert_eq!(o.last_error_line(), "ERROR: value is out of range");
-    }
-
-    #[test]
-    fn last_error_line_falls_back_when_the_epilogue_is_all_there_is() {
-        let o = Output {
-            code: 1,
-            stdout: vec![],
-            stderr: "ERROR: Unable to run tpm2_changeauth\n".into(),
-        };
-        assert_eq!(o.last_error_line(), "ERROR: Unable to run tpm2_changeauth");
-    }
-
-    #[test]
-    fn real_runner_captures_status_and_streams() {
-        let r = Real::new();
-        let out = r
-            .run(
-                "/bin/sh",
-                &argv!["-c", "printf hi; printf bad >&2; exit 3"],
-                None,
-            )
-            .unwrap();
-        assert_eq!(out.code, 3);
-        assert_eq!(out.stdout_utf8(), "hi");
-        assert_eq!(out.last_error_line(), "bad");
-    }
-
-    #[test]
-    fn stdin_is_forwarded() {
-        let r = Real::new();
-        let out = r.run("/bin/cat", &argv![], Some(b"secret")).unwrap();
-        assert_eq!(out.stdout_utf8(), "secret");
+    fn tool_runs_capture_streams_forward_stdin_and_report_the_last_error() {
+        // Phase `last_error_line_picks_the_bottom_line`.
+        {
+            let o = Output {
+                code: 1,
+                stdout: vec![],
+                stderr: "WARNING:esys: noise\nERROR: real problem\n\n".into(),
+            };
+            assert_eq!(o.last_error_line(), "ERROR: real problem");
+        }
+        // Phase `last_error_line_skips_the_tpm2_tools_epilogue`.
+        {
+            let o = Output {
+                code: 1,
+                stdout: vec![],
+                stderr: "WARNING:esys: noise\nERROR: value is out of range\n\
+                         ERROR: Unable to run tpm2_changeauth\n"
+                    .into(),
+            };
+            assert_eq!(o.last_error_line(), "ERROR: value is out of range");
+        }
+        // Phase `last_error_line_falls_back_when_the_epilogue_is_all_there_is`.
+        {
+            let o = Output {
+                code: 1,
+                stdout: vec![],
+                stderr: "ERROR: Unable to run tpm2_changeauth\n".into(),
+            };
+            assert_eq!(o.last_error_line(), "ERROR: Unable to run tpm2_changeauth");
+        }
+        // Phase `real_runner_captures_status_and_streams`.
+        {
+            let r = Real::new();
+            let out = r
+                .run(
+                    "/bin/sh",
+                    &argv!["-c", "printf hi; printf bad >&2; exit 3"],
+                    None,
+                )
+                .unwrap();
+            assert_eq!(out.code, 3);
+            assert_eq!(out.stdout_utf8(), "hi");
+            assert_eq!(out.last_error_line(), "bad");
+        }
+        // Phase `stdin_is_forwarded`.
+        {
+            let r = Real::new();
+            let out = r.run("/bin/cat", &argv![], Some(b"secret")).unwrap();
+            assert_eq!(out.stdout_utf8(), "secret");
+        }
     }
 }

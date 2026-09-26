@@ -922,378 +922,394 @@ mod tests {
     use crate::model::{AnnoKind, HiColor};
     use tilo_automerge::ApplyIncoming;
 
+    /// Settings, fonts, progress, library prefs, schemes and library entries round-trip through the document.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn settings_round_trip() {
-        let mut doc = AutoCommit::new();
-        let s = Settings {
-            font_scale: 1.3,
-            line_spacing: 1.45,
-            font_id: "serif".into(),
-            theme: ReadTheme::Dark,
-            scheme_id: "midnight".into(),
-            mode: crate::model::ReadMode::TwoUp,
-            composition: crate::model::CompositionStyle::Ragged,
-        };
-        BooksDoc::write_settings(&mut doc, &s);
-        let back = BooksDoc::read_settings(&doc);
-        assert!((back.font_scale - 1.3).abs() < 0.001);
-        assert!((back.line_spacing - 1.45).abs() < 0.001);
-        assert_eq!(back.font_id, "serif");
-        assert_eq!(back.theme, ReadTheme::Dark);
-        assert_eq!(back.scheme_id, "midnight");
-        assert_eq!(
-            back.mode,
-            crate::model::ReadMode::TwoUp,
-            "reading mode persists"
-        );
-        assert_eq!(
-            back.composition,
-            crate::model::CompositionStyle::Ragged,
-            "composition style persists"
-        );
-        // A fresh document defaults to the paged reading mode.
-        assert_eq!(
-            BooksDoc::read_settings(&AutoCommit::new()).mode,
-            crate::model::ReadMode::Paged
-        );
-        assert_eq!(
-            BooksDoc::read_settings(&AutoCommit::new()).composition,
-            crate::model::CompositionStyle::Book
-        );
-    }
+    fn settings_and_library_registries_round_trip() {
+        // --- phase: settings_round_trip ---
+        {
+            let mut doc = AutoCommit::new();
+            let s = Settings {
+                font_scale: 1.3,
+                line_spacing: 1.45,
+                font_id: "serif".into(),
+                theme: ReadTheme::Dark,
+                scheme_id: "midnight".into(),
+                mode: crate::model::ReadMode::TwoUp,
+                composition: crate::model::CompositionStyle::Ragged,
+            };
+            BooksDoc::write_settings(&mut doc, &s);
+            let back = BooksDoc::read_settings(&doc);
+            assert!((back.font_scale - 1.3).abs() < 0.001);
+            assert!((back.line_spacing - 1.45).abs() < 0.001);
+            assert_eq!(back.font_id, "serif");
+            assert_eq!(back.theme, ReadTheme::Dark);
+            assert_eq!(back.scheme_id, "midnight");
+            assert_eq!(
+                back.mode,
+                crate::model::ReadMode::TwoUp,
+                "reading mode persists"
+            );
+            assert_eq!(
+                back.composition,
+                crate::model::CompositionStyle::Ragged,
+                "composition style persists"
+            );
+            // A fresh document defaults to the paged reading mode.
+            assert_eq!(
+                BooksDoc::read_settings(&AutoCommit::new()).mode,
+                crate::model::ReadMode::Paged
+            );
+            assert_eq!(
+                BooksDoc::read_settings(&AutoCommit::new()).composition,
+                crate::model::CompositionStyle::Book
+            );
+        }
 
-    #[test]
-    fn fonts_registry_defaults_and_round_trips() {
-        let mut doc = AutoCommit::new();
-        // No stored registry -> the built-in defaults, without writing.
-        let defaults = BooksDoc::read_fonts(&doc);
-        assert!(defaults.iter().any(|f| f.kind == FontKind::Serif));
+        // --- phase: fonts_registry_defaults_and_round_trips ---
+        {
+            let mut doc = AutoCommit::new();
+            // No stored registry -> the built-in defaults, without writing.
+            let defaults = BooksDoc::read_fonts(&doc);
+            assert!(defaults.iter().any(|f| f.kind == FontKind::Serif));
 
-        // A custom registry (rename + hide + a named face) round-trips exactly.
-        let mut custom = default_fonts();
-        custom[0].name = "Book".into();
-        custom[1].shown = false;
-        custom.push(FontEntry::new(
-            "u1",
-            FontKind::Named("Literata".into()),
-            "Literata",
-            1.1,
-            true,
-        ));
-        BooksDoc::write_fonts(&mut doc, &custom);
-        let back = BooksDoc::read_fonts(&doc);
-        assert_eq!(back.len(), custom.len());
-        assert_eq!(back[0].name, "Book");
-        assert!(!back[1].shown);
-        assert_eq!(
-            back.last().unwrap().kind,
-            FontKind::Named("Literata".into())
-        );
-        assert!((back.last().unwrap().size_mult - 1.1).abs() < 0.001);
-    }
+            // A custom registry (rename + hide + a named face) round-trips exactly.
+            let mut custom = default_fonts();
+            custom[0].name = "Book".into();
+            custom[1].shown = false;
+            custom.push(FontEntry::new(
+                "u1",
+                FontKind::Named("Literata".into()),
+                "Literata",
+                1.1,
+                true,
+            ));
+            BooksDoc::write_fonts(&mut doc, &custom);
+            let back = BooksDoc::read_fonts(&doc);
+            assert_eq!(back.len(), custom.len());
+            assert_eq!(back[0].name, "Book");
+            assert!(!back[1].shown);
+            assert_eq!(
+                back.last().unwrap().kind,
+                FontKind::Named("Literata".into())
+            );
+            assert!((back.last().unwrap().size_mult - 1.1).abs() < 0.001);
+        }
 
-    #[test]
-    fn progress_round_trip() {
-        let mut doc = AutoCommit::new();
-        let p = Progress {
-            chapter: 2,
-            page: 5,
-            fraction: 0.42,
-            opened: 1_720_000_000_000,
-        };
-        BooksDoc::write_progress(&mut doc, "book:x", &p);
-        let back = BooksDoc::read_progress(&doc, "book:x");
-        assert_eq!(back.chapter, 2);
-        assert_eq!(back.page, 5);
-        assert!((back.fraction - 0.42).abs() < 0.001);
-        assert_eq!(
-            back.opened, 1_720_000_000_000,
-            "open time persists for recent-sort"
-        );
-        // Unknown book -> default.
-        assert_eq!(BooksDoc::read_progress(&doc, "nope"), Progress::default());
-    }
+        // --- phase: progress_round_trip ---
+        {
+            let mut doc = AutoCommit::new();
+            let p = Progress {
+                chapter: 2,
+                page: 5,
+                fraction: 0.42,
+                opened: 1_720_000_000_000,
+            };
+            BooksDoc::write_progress(&mut doc, "book:x", &p);
+            let back = BooksDoc::read_progress(&doc, "book:x");
+            assert_eq!(back.chapter, 2);
+            assert_eq!(back.page, 5);
+            assert!((back.fraction - 0.42).abs() < 0.001);
+            assert_eq!(
+                back.opened, 1_720_000_000_000,
+                "open time persists for recent-sort"
+            );
+            // Unknown book -> default.
+            assert_eq!(BooksDoc::read_progress(&doc, "nope"), Progress::default());
+        }
 
-    #[test]
-    fn library_prefs_round_trip() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(BooksDoc::read_library_prefs(&doc), LibraryPrefs::default());
-        let p = LibraryPrefs {
-            sort: LibrarySort::Recent,
-            hide_read: true,
-        };
-        BooksDoc::write_library_prefs(&mut doc, &p);
-        assert_eq!(BooksDoc::read_library_prefs(&doc), p);
-    }
+        // --- phase: library_prefs_round_trip ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(BooksDoc::read_library_prefs(&doc), LibraryPrefs::default());
+            let p = LibraryPrefs {
+                sort: LibrarySort::Recent,
+                hide_read: true,
+            };
+            BooksDoc::write_library_prefs(&mut doc, &p);
+            assert_eq!(BooksDoc::read_library_prefs(&doc), p);
+        }
 
-    #[test]
-    fn schemes_registry_round_trips_with_a_custom_scheme() {
-        let mut doc = AutoCommit::new();
-        assert_eq!(BooksDoc::read_schemes(&doc).len(), default_schemes().len());
-        let mut schemes = default_schemes();
-        schemes[0].enabled = false; // disable a built-in
-        schemes.push(ColorScheme::from_bg("u1", "Ocean", [0x0A, 0x22, 0x33]));
-        BooksDoc::write_schemes(&mut doc, &schemes);
-        let back = BooksDoc::read_schemes(&doc);
-        assert_eq!(back.len(), schemes.len());
-        assert!(!back[0].enabled, "disabled state round-trips");
-        let custom = back.last().unwrap();
-        assert_eq!(custom.name, "Ocean");
-        assert_eq!(custom.page, [0x0A, 0x22, 0x33]);
-        assert!(custom.dark && !custom.builtin);
-    }
+        // --- phase: schemes_registry_round_trips_with_a_custom_scheme ---
+        {
+            let mut doc = AutoCommit::new();
+            assert_eq!(BooksDoc::read_schemes(&doc).len(), default_schemes().len());
+            let mut schemes = default_schemes();
+            schemes[0].enabled = false; // disable a built-in
+            schemes.push(ColorScheme::from_bg("u1", "Ocean", [0x0A, 0x22, 0x33]));
+            BooksDoc::write_schemes(&mut doc, &schemes);
+            let back = BooksDoc::read_schemes(&doc);
+            assert_eq!(back.len(), schemes.len());
+            assert!(!back[0].enabled, "disabled state round-trips");
+            let custom = back.last().unwrap();
+            assert_eq!(custom.name, "Ocean");
+            assert_eq!(custom.page, [0x0A, 0x22, 0x33]);
+            assert!(custom.dark && !custom.builtin);
+        }
 
-    #[test]
-    fn annotations_upsert_list_remove() {
-        let mut doc = AutoCommit::new();
-        let a = Annotation::new("book:x", AnnoKind::Highlight, 1, 3)
-            .with_excerpt("a passage")
-            .with_color(HiColor::Green)
-            .with_note("nice");
-        let id = a.id;
-        BooksDoc::upsert_annotation(&mut doc, &a);
-        let list = BooksDoc::annotations_for(&doc, "book:x");
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].kind, AnnoKind::Highlight);
-        assert_eq!(list[0].color, HiColor::Green);
-        assert_eq!(list[0].note, "nice");
-        // Update in place (no duplicate).
-        let mut a2 = a.clone();
-        a2.note = "edited".into();
-        BooksDoc::upsert_annotation(&mut doc, &a2);
-        assert_eq!(BooksDoc::annotations_for(&doc, "book:x").len(), 1);
-        assert_eq!(BooksDoc::annotations_for(&doc, "book:x")[0].note, "edited");
-        // Remove.
-        BooksDoc::remove_annotation(&mut doc, id);
-        assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
-        assert!(BooksDoc::annotation_is_deleted(&doc, id));
+        // --- phase: library_entries_round_trip_and_preserve_added_time ---
+        {
+            use crate::model::LibraryEntry;
+            let mut doc = AutoCommit::new();
+            assert!(
+                BooksDoc::read_library_entries(&doc).is_empty(),
+                "fresh library is empty"
+            );
 
-        // A stale peer can still carry the old row. It must not revive a
-        // deletion just because its map write arrives after the tombstone.
-        BooksDoc::upsert_annotation(&mut doc, &a2);
-        assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
-    }
+            let e = LibraryEntry {
+                id: "book:abc".into(),
+                shared: false,
+                title: "Novel".into(),
+                author: "A. Writer".into(),
+                subject: "Fiction".into(),
+                added: 1_000,
+            };
+            BooksDoc::upsert_library_entry(&mut doc, &e);
+            let back = BooksDoc::read_library_entries(&doc);
+            assert_eq!(back.len(), 1);
+            assert_eq!(back[0], e);
 
-    #[test]
-    fn group_tombstone_hides_a_late_comment_without_deleting_unrelated_rows() {
-        let mut doc = AutoCommit::new();
-        let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
-        let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
-        let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
-            .with_group(group)
-            .with_note("late peer comment");
-        let unrelated = Annotation::new("book:x", AnnoKind::Note, 0, 2).with_note("keep me");
-        BooksDoc::upsert_annotation(&mut doc, &highlight);
-        BooksDoc::remove_group(&mut doc, group);
-        // Simulate an offline peer's comment arriving after the group was
-        // deleted. The row is never reintroduced to the visible collection.
-        BooksDoc::upsert_annotation(&mut doc, &comment);
-        BooksDoc::upsert_annotation(&mut doc, &unrelated);
+            // Re-importing the same content after it is shared advertises the
+            // canonical workspace availability, but still keeps its shelf order.
+            let moved = LibraryEntry {
+                shared: true,
+                added: 9_999,
+                ..e.clone()
+            };
+            BooksDoc::upsert_library_entry(&mut doc, &moved);
+            let back = BooksDoc::read_library_entries(&doc);
+            assert_eq!(
+                back.len(),
+                1,
+                "same content id updates in place, not duplicated"
+            );
+            assert!(back[0].shared, "shared availability is replicated");
+            assert_eq!(
+                back[0].added, 1_000,
+                "added time is preserved across a re-import"
+            );
+            let bytes = doc.save();
+            let stored = String::from_utf8_lossy(&bytes);
+            assert!(
+                !stored.contains("/home/reader/Novel.epub"),
+                "a source path must not enter the replicated document"
+            );
 
-        assert!(BooksDoc::group_is_deleted(&doc, group));
-        assert!(BooksDoc::annotation_is_deleted(&doc, highlight.id));
-        let rows = BooksDoc::annotations_for(&doc, "book:x");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, unrelated.id);
-    }
-
-    #[test]
-    fn tombstones_win_when_independent_replicas_merge() {
-        let mut base = AutoCommit::new();
-        let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
-        let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
-        let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
-            .with_group(group)
-            .with_note("offline comment");
-        BooksDoc::upsert_annotation(&mut base, &highlight);
-
-        // Different actors diverge from the same ancestor: one reader deletes
-        // the highlight while another reader adds a comment to it offline.
-        let mut deleting_peer = base.fork().with_actor(ActorId::random());
-        let mut editing_peer = base.fork().with_actor(ActorId::random());
-        BooksDoc::remove_group(&mut deleting_peer, group);
-        BooksDoc::upsert_annotation(&mut editing_peer, &comment);
-
-        deleting_peer
-            .merge_incoming(&mut editing_peer)
-            .expect("independent replicas merge");
-        editing_peer
-            .merge_incoming(&mut deleting_peer)
-            .expect("second replica converges");
-
-        for peer in [&deleting_peer, &editing_peer] {
-            assert!(BooksDoc::group_is_deleted(peer, group));
-            assert!(BooksDoc::annotations_for(peer, "book:x").is_empty());
-            assert!(!BooksDoc::annotation_is_live(peer, highlight.id));
-            assert!(!BooksDoc::annotation_is_live(peer, comment.id));
+            BooksDoc::remove_library_entry(&mut doc, "book:abc");
+            assert!(
+                BooksDoc::read_library_entries(&doc).is_empty(),
+                "removed from the shelf"
+            );
         }
     }
 
+    /// Annotations upsert, list, filter and remove; group tombstones hide late comments and win across replicas.
     #[test]
-    fn library_entries_round_trip_and_preserve_added_time() {
-        use crate::model::LibraryEntry;
-        let mut doc = AutoCommit::new();
-        assert!(
-            BooksDoc::read_library_entries(&doc).is_empty(),
-            "fresh library is empty"
-        );
+    fn annotations_round_trip_and_tombstones_win() {
+        // --- phase: annotations_upsert_list_remove ---
+        {
+            let mut doc = AutoCommit::new();
+            let a = Annotation::new("book:x", AnnoKind::Highlight, 1, 3)
+                .with_excerpt("a passage")
+                .with_color(HiColor::Green)
+                .with_note("nice");
+            let id = a.id;
+            BooksDoc::upsert_annotation(&mut doc, &a);
+            let list = BooksDoc::annotations_for(&doc, "book:x");
+            assert_eq!(list.len(), 1);
+            assert_eq!(list[0].kind, AnnoKind::Highlight);
+            assert_eq!(list[0].color, HiColor::Green);
+            assert_eq!(list[0].note, "nice");
+            // Update in place (no duplicate).
+            let mut a2 = a.clone();
+            a2.note = "edited".into();
+            BooksDoc::upsert_annotation(&mut doc, &a2);
+            assert_eq!(BooksDoc::annotations_for(&doc, "book:x").len(), 1);
+            assert_eq!(BooksDoc::annotations_for(&doc, "book:x")[0].note, "edited");
+            // Remove.
+            BooksDoc::remove_annotation(&mut doc, id);
+            assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
+            assert!(BooksDoc::annotation_is_deleted(&doc, id));
 
-        let e = LibraryEntry {
-            id: "book:abc".into(),
-            shared: false,
-            title: "Novel".into(),
-            author: "A. Writer".into(),
-            subject: "Fiction".into(),
-            added: 1_000,
-        };
-        BooksDoc::upsert_library_entry(&mut doc, &e);
-        let back = BooksDoc::read_library_entries(&doc);
-        assert_eq!(back.len(), 1);
-        assert_eq!(back[0], e);
+            // A stale peer can still carry the old row. It must not revive a
+            // deletion just because its map write arrives after the tombstone.
+            BooksDoc::upsert_annotation(&mut doc, &a2);
+            assert!(BooksDoc::annotations_for(&doc, "book:x").is_empty());
+        }
 
-        // Re-importing the same content after it is shared advertises the
-        // canonical workspace availability, but still keeps its shelf order.
-        let moved = LibraryEntry {
-            shared: true,
-            added: 9_999,
-            ..e.clone()
-        };
-        BooksDoc::upsert_library_entry(&mut doc, &moved);
-        let back = BooksDoc::read_library_entries(&doc);
-        assert_eq!(
-            back.len(),
-            1,
-            "same content id updates in place, not duplicated"
-        );
-        assert!(back[0].shared, "shared availability is replicated");
-        assert_eq!(
-            back[0].added, 1_000,
-            "added time is preserved across a re-import"
-        );
-        let bytes = doc.save();
-        let stored = String::from_utf8_lossy(&bytes);
-        assert!(
-            !stored.contains("/home/reader/Novel.epub"),
-            "a source path must not enter the replicated document"
-        );
-
-        BooksDoc::remove_library_entry(&mut doc, "book:abc");
-        assert!(
-            BooksDoc::read_library_entries(&doc).is_empty(),
-            "removed from the shelf"
-        );
-    }
-
-    #[test]
-    fn legacy_location_fields_are_removed_before_syncing() {
-        let mut doc = AutoCommit::new();
-        let library = doc.put_object(&ROOT, "library", ObjType::Map).unwrap();
-        let entry = doc
-            .put_object(&library, "book:legacy", ObjType::Map)
-            .unwrap();
-        doc.put(&entry, "path", "/private/device/novel.epub")
-            .unwrap();
-        let watches = doc
-            .put_object(&ROOT, "watched_folders", ObjType::List)
-            .unwrap();
-        doc.insert(&watches, 0, "/private/device/books").unwrap();
-
-        BooksDoc::strip_legacy_library_paths(&mut doc);
-        // Automerge preserves historical operation payloads for existing
-        // replicas, but after migration the current collaborative state has no
-        // readable location field and future changes cannot replicate one.
-        assert!(doc.get(&entry, "path").unwrap().is_none());
-        assert!(doc.get(&ROOT, "watched_folders").unwrap().is_none());
-    }
-
-    #[test]
-    fn annotations_filtered_by_book() {
-        let mut doc = AutoCommit::new();
-        BooksDoc::upsert_annotation(
-            &mut doc,
-            &Annotation::new("book:a", AnnoKind::Bookmark, 0, 0),
-        );
-        BooksDoc::upsert_annotation(&mut doc, &Annotation::new("book:b", AnnoKind::Note, 0, 0));
-        assert_eq!(BooksDoc::annotations_for(&doc, "book:a").len(), 1);
-        assert_eq!(BooksDoc::annotations_for(&doc, "book:b").len(), 1);
-    }
-
-    #[test]
-    fn independently_created_keyed_roots_materialise_every_branch() {
-        let mut left = AutoCommit::new().with_actor(ActorId::random());
-        let mut right = AutoCommit::new().with_actor(ActorId::random());
-        let left_book = LibraryEntry {
-            id: "book:left".into(),
-            shared: true,
-            title: "Left".into(),
-            author: "A".into(),
-            subject: String::new(),
-            added: 1,
-        };
-        let right_book = LibraryEntry {
-            id: "book:right".into(),
-            shared: true,
-            title: "Right".into(),
-            author: "B".into(),
-            subject: String::new(),
-            added: 2,
-        };
-        let left_annotation = Annotation::new(&left_book.id, AnnoKind::Note, 0, 1);
-        let right_annotation = Annotation::new(&right_book.id, AnnoKind::Bookmark, 0, 2);
-        BooksDoc::upsert_library_entry(&mut left, &left_book);
-        BooksDoc::upsert_annotation(&mut left, &left_annotation);
-        BooksDoc::write_progress(
-            &mut left,
-            "book:shared-progress",
-            &Progress {
-                chapter: 1,
-                page: 3,
-                fraction: 0.25,
-                opened: 10,
-            },
-        );
-        BooksDoc::upsert_library_entry(&mut right, &right_book);
-        BooksDoc::upsert_annotation(&mut right, &right_annotation);
-        BooksDoc::write_progress(
-            &mut right,
-            "book:shared-progress",
-            &Progress {
-                chapter: 4,
-                page: 9,
-                fraction: 0.75,
-                opened: 20,
-            },
-        );
-
-        left.merge_incoming(&mut right).unwrap();
-        right.merge_incoming(&mut left).unwrap();
-        for peer in [&left, &right] {
-            assert_eq!(
-                BooksDoc::read_library_entries(peer)
-                    .into_iter()
-                    .map(|entry| entry.id)
-                    .collect::<Vec<_>>(),
-                vec!["book:left".to_string(), "book:right".to_string()]
+        // --- phase: annotations_filtered_by_book ---
+        {
+            let mut doc = AutoCommit::new();
+            BooksDoc::upsert_annotation(
+                &mut doc,
+                &Annotation::new("book:a", AnnoKind::Bookmark, 0, 0),
             );
-            let annotation_ids = BooksDoc::list_annotations(peer)
-                .into_iter()
-                .map(|annotation| annotation.id)
-                .collect::<std::collections::HashSet<_>>();
-            assert_eq!(
-                annotation_ids,
-                [left_annotation.id, right_annotation.id]
-                    .into_iter()
-                    .collect()
+            BooksDoc::upsert_annotation(&mut doc, &Annotation::new("book:b", AnnoKind::Note, 0, 0));
+            assert_eq!(BooksDoc::annotations_for(&doc, "book:a").len(), 1);
+            assert_eq!(BooksDoc::annotations_for(&doc, "book:b").len(), 1);
+        }
+
+        // --- phase: group_tombstone_hides_a_late_comment_without_deleting_unrelated_rows ---
+        {
+            let mut doc = AutoCommit::new();
+            let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+            let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
+            let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
+                .with_group(group)
+                .with_note("late peer comment");
+            let unrelated = Annotation::new("book:x", AnnoKind::Note, 0, 2).with_note("keep me");
+            BooksDoc::upsert_annotation(&mut doc, &highlight);
+            BooksDoc::remove_group(&mut doc, group);
+            // Simulate an offline peer's comment arriving after the group was
+            // deleted. The row is never reintroduced to the visible collection.
+            BooksDoc::upsert_annotation(&mut doc, &comment);
+            BooksDoc::upsert_annotation(&mut doc, &unrelated);
+
+            assert!(BooksDoc::group_is_deleted(&doc, group));
+            assert!(BooksDoc::annotation_is_deleted(&doc, highlight.id));
+            let rows = BooksDoc::annotations_for(&doc, "book:x");
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, unrelated.id);
+        }
+
+        // --- phase: tombstones_win_when_independent_replicas_merge ---
+        {
+            let mut base = AutoCommit::new();
+            let group = Uuid::from_u128(0x1111_2222_3333_4444_5555_6666_7777_8888);
+            let highlight = Annotation::new("book:x", AnnoKind::Highlight, 0, 1).with_group(group);
+            let comment = Annotation::new("book:x", AnnoKind::Note, 0, 1)
+                .with_group(group)
+                .with_note("offline comment");
+            BooksDoc::upsert_annotation(&mut base, &highlight);
+
+            // Different actors diverge from the same ancestor: one reader deletes
+            // the highlight while another reader adds a comment to it offline.
+            let mut deleting_peer = base.fork().with_actor(ActorId::random());
+            let mut editing_peer = base.fork().with_actor(ActorId::random());
+            BooksDoc::remove_group(&mut deleting_peer, group);
+            BooksDoc::upsert_annotation(&mut editing_peer, &comment);
+
+            deleting_peer
+                .merge_incoming(&mut editing_peer)
+                .expect("independent replicas merge");
+            editing_peer
+                .merge_incoming(&mut deleting_peer)
+                .expect("second replica converges");
+
+            for peer in [&deleting_peer, &editing_peer] {
+                assert!(BooksDoc::group_is_deleted(peer, group));
+                assert!(BooksDoc::annotations_for(peer, "book:x").is_empty());
+                assert!(!BooksDoc::annotation_is_live(peer, highlight.id));
+                assert!(!BooksDoc::annotation_is_live(peer, comment.id));
+            }
+        }
+    }
+
+    /// Legacy location fields are removed before syncing and independently created keyed roots materialise every branch.
+    #[test]
+    fn document_migrates_legacy_fields_and_merges_keyed_roots() {
+        // --- phase: legacy_location_fields_are_removed_before_syncing ---
+        {
+            let mut doc = AutoCommit::new();
+            let library = doc.put_object(&ROOT, "library", ObjType::Map).unwrap();
+            let entry = doc
+                .put_object(&library, "book:legacy", ObjType::Map)
+                .unwrap();
+            doc.put(&entry, "path", "/private/device/novel.epub")
+                .unwrap();
+            let watches = doc
+                .put_object(&ROOT, "watched_folders", ObjType::List)
+                .unwrap();
+            doc.insert(&watches, 0, "/private/device/books").unwrap();
+
+            BooksDoc::strip_legacy_library_paths(&mut doc);
+            // Automerge preserves historical operation payloads for existing
+            // replicas, but after migration the current collaborative state has no
+            // readable location field and future changes cannot replicate one.
+            assert!(doc.get(&entry, "path").unwrap().is_none());
+            assert!(doc.get(&ROOT, "watched_folders").unwrap().is_none());
+        }
+
+        // --- phase: independently_created_keyed_roots_materialise_every_branch ---
+        {
+            let mut left = AutoCommit::new().with_actor(ActorId::random());
+            let mut right = AutoCommit::new().with_actor(ActorId::random());
+            let left_book = LibraryEntry {
+                id: "book:left".into(),
+                shared: true,
+                title: "Left".into(),
+                author: "A".into(),
+                subject: String::new(),
+                added: 1,
+            };
+            let right_book = LibraryEntry {
+                id: "book:right".into(),
+                shared: true,
+                title: "Right".into(),
+                author: "B".into(),
+                subject: String::new(),
+                added: 2,
+            };
+            let left_annotation = Annotation::new(&left_book.id, AnnoKind::Note, 0, 1);
+            let right_annotation = Annotation::new(&right_book.id, AnnoKind::Bookmark, 0, 2);
+            BooksDoc::upsert_library_entry(&mut left, &left_book);
+            BooksDoc::upsert_annotation(&mut left, &left_annotation);
+            BooksDoc::write_progress(
+                &mut left,
+                "book:shared-progress",
+                &Progress {
+                    chapter: 1,
+                    page: 3,
+                    fraction: 0.25,
+                    opened: 10,
+                },
             );
-            assert_eq!(
-                BooksDoc::read_progress(peer, "book:shared-progress"),
-                Progress {
+            BooksDoc::upsert_library_entry(&mut right, &right_book);
+            BooksDoc::upsert_annotation(&mut right, &right_annotation);
+            BooksDoc::write_progress(
+                &mut right,
+                "book:shared-progress",
+                &Progress {
                     chapter: 4,
                     page: 9,
                     fraction: 0.75,
                     opened: 20,
-                }
+                },
             );
+
+            left.merge_incoming(&mut right).unwrap();
+            right.merge_incoming(&mut left).unwrap();
+            for peer in [&left, &right] {
+                assert_eq!(
+                    BooksDoc::read_library_entries(peer)
+                        .into_iter()
+                        .map(|entry| entry.id)
+                        .collect::<Vec<_>>(),
+                    vec!["book:left".to_string(), "book:right".to_string()]
+                );
+                let annotation_ids = BooksDoc::list_annotations(peer)
+                    .into_iter()
+                    .map(|annotation| annotation.id)
+                    .collect::<std::collections::HashSet<_>>();
+                assert_eq!(
+                    annotation_ids,
+                    [left_annotation.id, right_annotation.id]
+                        .into_iter()
+                        .collect()
+                );
+                assert_eq!(
+                    BooksDoc::read_progress(peer, "book:shared-progress"),
+                    Progress {
+                        chapter: 4,
+                        page: 9,
+                        fraction: 0.75,
+                        opened: 20,
+                    }
+                );
+            }
         }
     }
 }

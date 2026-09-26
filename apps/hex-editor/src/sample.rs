@@ -51,24 +51,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn starts_with_png_signature() {
+    fn png_header_has_signature_chunk_tags_and_iend() {
         let b = png_header();
         assert_eq!(&b[..8], &[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-    }
-
-    #[test]
-    fn contains_chunk_tags() {
-        let b = png_header();
         // IHDR tag follows the 8-byte signature + 4-byte length.
         assert_eq!(&b[12..16], b"IHDR");
         // Width/height fields are big-endian 2.
         assert_eq!(&b[16..20], &2u32.to_be_bytes());
         assert_eq!(&b[20..24], &2u32.to_be_bytes());
-    }
-
-    #[test]
-    fn ends_with_iend() {
-        let b = png_header();
         let len = b.len();
         assert_eq!(&b[len - 8..len - 4], b"IEND");
     }

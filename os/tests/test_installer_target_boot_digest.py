@@ -162,77 +162,76 @@ class BootDigestCliTests(unittest.TestCase):
             check=False,
         )
 
-    def test_real_cli_hashes_only_virtual_kernel_and_initramfs_bytes(self):
-        with tempfile.TemporaryDirectory(prefix="tilo-boot-digest-") as temporary:
-            root = Path(temporary)
-            fixtures = [
-                pe_fixture(),
-                pe_fixture(cmdline=b"root=tilo-auto tilo.mode=normal"),
-                pe_fixture(cmdline=b"different command line", padding=b"Z"),
-            ]
-            for index, contents in enumerate(fixtures):
-                with self.subTest(index=index):
-                    path = root / f"fixture-{index}.efi"
-                    path.write_bytes(contents)
-                    result = self.cli("boot-digest", path)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertEqual(result.stdout, EXPECTED_DIGEST + "\n")
-                    self.assertEqual(result.stderr, "")
-                    self.assertEqual(path.read_bytes(), contents)
+    def test_real_boot_digest_cli(self):
+        with self.subTest(phase="real_cli_hashes_only_virtual_kernel_and_initramfs_bytes"):
+            with tempfile.TemporaryDirectory(prefix="tilo-boot-digest-") as temporary:
+                root = Path(temporary)
+                fixtures = [
+                    pe_fixture(),
+                    pe_fixture(cmdline=b"root=tilo-auto tilo.mode=normal"),
+                    pe_fixture(cmdline=b"different command line", padding=b"Z"),
+                ]
+                for index, contents in enumerate(fixtures):
+                    with self.subTest(index=index):
+                        path = root / f"fixture-{index}.efi"
+                        path.write_bytes(contents)
+                        result = self.cli("boot-digest", path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertEqual(result.stdout, EXPECTED_DIGEST + "\n")
+                        self.assertEqual(result.stderr, "")
+                        self.assertEqual(path.read_bytes(), contents)
 
-            for label, contents in (
-                ("kernel", pe_fixture(kernel=b"X" + KERNEL[1:])),
-                ("initrd", pe_fixture(initrd=b"X" + INITRD[1:])),
-            ):
-                with self.subTest(changed=label):
-                    path = root / f"changed-{label}.efi"
-                    path.write_bytes(contents)
-                    result = self.cli("boot-digest", path)
-                    self.assertEqual(result.returncode, 0, result.stderr)
-                    self.assertRegex(result.stdout, r"^[0-9a-f]{64}\n$")
-                    self.assertNotEqual(result.stdout, EXPECTED_DIGEST + "\n")
-                    self.assertEqual(path.read_bytes(), contents)
+                for label, contents in (
+                    ("kernel", pe_fixture(kernel=b"X" + KERNEL[1:])),
+                    ("initrd", pe_fixture(initrd=b"X" + INITRD[1:])),
+                ):
+                    with self.subTest(changed=label):
+                        path = root / f"changed-{label}.efi"
+                        path.write_bytes(contents)
+                        result = self.cli("boot-digest", path)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertRegex(result.stdout, r"^[0-9a-f]{64}\n$")
+                        self.assertNotEqual(result.stdout, EXPECTED_DIGEST + "\n")
+                        self.assertEqual(path.read_bytes(), contents)
+        with self.subTest(phase="real_cli_rejects_invalid_required_sections_without_a_digest"):
+            good = pe_fixture()
+            initrd_header_raw_size = len(INITRD) + 23
+            cases = {
+                "missing linux": pe_fixture(omit=(".linux",)),
+                "missing initrd": pe_fixture(omit=(".initrd",)),
+                "duplicate linux": pe_fixture(duplicate=(".linux",)),
+                "duplicate initrd": pe_fixture(duplicate=(".initrd",)),
+                "zero linux": mutate_required_section(good, ".linux", virtual_size=0),
+                "virtual larger than raw": mutate_required_section(
+                    good, ".initrd", virtual_size=initrd_header_raw_size + 1
+                ),
+                "required bytes outside file": mutate_required_section(
+                    good, ".linux", raw_offset=len(good) - 1
+                ),
+            }
+            with tempfile.TemporaryDirectory(prefix="tilo-boot-digest-invalid-") as temporary:
+                root = Path(temporary)
+                for label, contents in cases.items():
+                    with self.subTest(case=label):
+                        path = root / (label.replace(" ", "-") + ".efi")
+                        path.write_bytes(contents)
+                        result = self.cli("boot-digest", path)
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertEqual(result.stdout, "")
+                        self.assertEqual(path.read_bytes(), contents)
 
-    def test_real_cli_rejects_invalid_required_sections_without_a_digest(self):
-        good = pe_fixture()
-        initrd_header_raw_size = len(INITRD) + 23
-        cases = {
-            "missing linux": pe_fixture(omit=(".linux",)),
-            "missing initrd": pe_fixture(omit=(".initrd",)),
-            "duplicate linux": pe_fixture(duplicate=(".linux",)),
-            "duplicate initrd": pe_fixture(duplicate=(".initrd",)),
-            "zero linux": mutate_required_section(good, ".linux", virtual_size=0),
-            "virtual larger than raw": mutate_required_section(
-                good, ".initrd", virtual_size=initrd_header_raw_size + 1
-            ),
-            "required bytes outside file": mutate_required_section(
-                good, ".linux", raw_offset=len(good) - 1
-            ),
-        }
-        with tempfile.TemporaryDirectory(prefix="tilo-boot-digest-invalid-") as temporary:
-            root = Path(temporary)
-            for label, contents in cases.items():
-                with self.subTest(case=label):
-                    path = root / (label.replace(" ", "-") + ".efi")
-                    path.write_bytes(contents)
-                    result = self.cli("boot-digest", path)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertEqual(result.stdout, "")
-                    self.assertEqual(path.read_bytes(), contents)
-
-            absent = root / "absent.efi"
-            result = self.cli("boot-digest", absent)
-            self.assertNotEqual(result.returncode, 0)
-            self.assertEqual(result.stdout, "")
-            self.assertFalse(absent.exists())
-
-    def test_boot_digest_arity_fails_before_any_default_discovery(self):
-        for arguments in (("boot-digest",), ("boot-digest", "one", "two")):
-            with self.subTest(arguments=arguments):
-                result = self.cli(*arguments)
+                absent = root / "absent.efi"
+                result = self.cli("boot-digest", absent)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "")
-                self.assertIn("boot-digest needs one UKI path", result.stderr)
+                self.assertFalse(absent.exists())
+        with self.subTest(phase="boot_digest_arity_fails_before_any_default_discovery"):
+            for arguments in (("boot-digest",), ("boot-digest", "one", "two")):
+                with self.subTest(arguments=arguments):
+                    result = self.cli(*arguments)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("boot-digest needs one UKI path", result.stderr)
 
 
 class InstallerBootDigestGuardTests(unittest.TestCase):
@@ -309,88 +308,87 @@ run_guard "$1" "$2"
             self.assertEqual(new.read_bytes(), NEW_SENTINEL)
             self.assertEqual(unrelated.read_bytes(), UNRELATED_SENTINEL)
 
-    def test_equal_virtual_payloads_with_different_cmdlines_are_promoted(self):
-        with tempfile.TemporaryDirectory(prefix="tilo-boot-guard-success-") as temporary:
-            root = Path(temporary)
-            installed_bytes = pe_fixture(cmdline=b"tilo.mode=install", padding=b"I")
-            variant_bytes = pe_fixture(cmdline=b"root=tilo-auto tilo.mode=normal", padding=b"V")
-            installed, variant, new, unrelated = self.make_paths(
-                root, installed_bytes, variant_bytes
-            )
-            result = self.run_real_guard(installed, variant)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertEqual(installed.read_bytes(), variant_bytes)
-            self.assertFalse(new.exists())
-            self.assertEqual(unrelated.read_bytes(), UNRELATED_SENTINEL)
-
-    def test_virtual_payload_changes_are_refused_before_promotion(self):
-        for label, variant_bytes in (
-            ("kernel", pe_fixture(kernel=b"X" + KERNEL[1:])),
-            ("initrd", pe_fixture(initrd=b"X" + INITRD[1:])),
-        ):
-            with self.subTest(changed=label):
-                self.assert_refused_without_promotion(
-                    pe_fixture(),
-                    variant_bytes,
-                    "target UKI changes the bootc kernel/initramfs identity",
-                )
-
-    def test_failed_real_observations_are_refused_before_promotion(self):
-        malformed = b"not a PE image"
-        cases = (
-            ("installed malformed", malformed, pe_fixture(),
-             "cannot read installed UKI boot identity"),
-            ("variant malformed", pe_fixture(), malformed,
-             "cannot read target UKI boot identity"),
-            ("installed absent", None, pe_fixture(),
-             "cannot read installed UKI boot identity"),
-            ("variant absent", pe_fixture(), None,
-             "cannot read target UKI boot identity"),
-            ("both helper reads fail", malformed, malformed,
-             "cannot read installed UKI boot identity"),
-        )
-        for label, installed, variant, expected_error in cases:
-            with self.subTest(case=label):
-                self.assert_refused_without_promotion(installed, variant, expected_error)
-
-    def test_successful_malformed_digest_output_is_a_fault_and_is_refused(self):
-        faults = {
-            "empty": "",
-            "nonhex": "g" * 64,
-            "wrong length": "a" * 63,
-            "multiline": "a" * 64 + "\n" + "a" * 64,
-        }
-        for label, output in faults.items():
-            with self.subTest(fault=label), tempfile.TemporaryDirectory(
-                prefix="tilo-boot-guard-fault-"
-            ) as temporary:
+    def test_promotion_guard(self):
+        with self.subTest(phase="equal_virtual_payloads_with_different_cmdlines_are_promoted"):
+            with tempfile.TemporaryDirectory(prefix="tilo-boot-guard-success-") as temporary:
+                root = Path(temporary)
+                installed_bytes = pe_fixture(cmdline=b"tilo.mode=install", padding=b"I")
+                variant_bytes = pe_fixture(cmdline=b"root=tilo-auto tilo.mode=normal", padding=b"V")
                 installed, variant, new, unrelated = self.make_paths(
-                    Path(temporary), DESTINATION_SENTINEL, b"variant sentinel"
+                    root, installed_bytes, variant_bytes
                 )
-                result = self.run_fault_guard(installed, variant, output)
-                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("UKI boot identity is not a SHA-256 digest", result.stderr)
-                self.assertEqual(installed.read_bytes(), DESTINATION_SENTINEL)
-                self.assertEqual(new.read_bytes(), NEW_SENTINEL)
+                result = self.run_real_guard(installed, variant)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(installed.read_bytes(), variant_bytes)
+                self.assertFalse(new.exists())
                 self.assertEqual(unrelated.read_bytes(), UNRELATED_SENTINEL)
+        with self.subTest(phase="virtual_payload_changes_are_refused_before_promotion"):
+            for label, variant_bytes in (
+                ("kernel", pe_fixture(kernel=b"X" + KERNEL[1:])),
+                ("initrd", pe_fixture(initrd=b"X" + INITRD[1:])),
+            ):
+                with self.subTest(changed=label):
+                    self.assert_refused_without_promotion(
+                        pe_fixture(),
+                        variant_bytes,
+                        "target UKI changes the bootc kernel/initramfs identity",
+                    )
 
-    def test_extraction_fails_closed_when_the_guard_subject_changes(self):
-        source = INSTALLER.read_text()
-        mutations = (
-            "",
-            source.replace(START_MARKER, "", 1),
-            source.replace(END_MARKER, "", 1),
-            source.replace(
-                '  mv -f "$TARGET_UKI.new" "$TARGET_UKI"',
-                '  unexpected_command\n  mv -f "$TARGET_UKI.new" "$TARGET_UKI"',
-                1,
-            ),
-            source.replace(" boot-digest \"$TARGET_VARIANT\"", " show \"$TARGET_VARIANT\"", 1),
-        )
-        for changed in mutations:
-            with self.subTest(tail=changed[-80:]):
-                with self.assertRaises(ValueError):
-                    guard_statements(changed)
+    def test_guard_faults_are_refused(self):
+        with self.subTest(phase="failed_real_observations_are_refused_before_promotion"):
+            malformed = b"not a PE image"
+            cases = (
+                ("installed malformed", malformed, pe_fixture(),
+                 "cannot read installed UKI boot identity"),
+                ("variant malformed", pe_fixture(), malformed,
+                 "cannot read target UKI boot identity"),
+                ("installed absent", None, pe_fixture(),
+                 "cannot read installed UKI boot identity"),
+                ("variant absent", pe_fixture(), None,
+                 "cannot read target UKI boot identity"),
+                ("both helper reads fail", malformed, malformed,
+                 "cannot read installed UKI boot identity"),
+            )
+            for label, installed, variant, expected_error in cases:
+                with self.subTest(case=label):
+                    self.assert_refused_without_promotion(installed, variant, expected_error)
+        with self.subTest(phase="successful_malformed_digest_output_is_a_fault_and_is_refused"):
+            faults = {
+                "empty": "",
+                "nonhex": "g" * 64,
+                "wrong length": "a" * 63,
+                "multiline": "a" * 64 + "\n" + "a" * 64,
+            }
+            for label, output in faults.items():
+                with self.subTest(fault=label), tempfile.TemporaryDirectory(
+                    prefix="tilo-boot-guard-fault-"
+                ) as temporary:
+                    installed, variant, new, unrelated = self.make_paths(
+                        Path(temporary), DESTINATION_SENTINEL, b"variant sentinel"
+                    )
+                    result = self.run_fault_guard(installed, variant, output)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("UKI boot identity is not a SHA-256 digest", result.stderr)
+                    self.assertEqual(installed.read_bytes(), DESTINATION_SENTINEL)
+                    self.assertEqual(new.read_bytes(), NEW_SENTINEL)
+                    self.assertEqual(unrelated.read_bytes(), UNRELATED_SENTINEL)
+        with self.subTest(phase="extraction_fails_closed_when_the_guard_subject_changes"):
+            source = INSTALLER.read_text()
+            mutations = (
+                "",
+                source.replace(START_MARKER, "", 1),
+                source.replace(END_MARKER, "", 1),
+                source.replace(
+                    '  mv -f "$TARGET_UKI.new" "$TARGET_UKI"',
+                    '  unexpected_command\n  mv -f "$TARGET_UKI.new" "$TARGET_UKI"',
+                    1,
+                ),
+                source.replace(" boot-digest \"$TARGET_VARIANT\"", " show \"$TARGET_VARIANT\"", 1),
+            )
+            for changed in mutations:
+                with self.subTest(tail=changed[-80:]):
+                    with self.assertRaises(ValueError):
+                        guard_statements(changed)
 
 
 if __name__ == "__main__":

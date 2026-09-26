@@ -444,106 +444,111 @@ mod tests {
         .unwrap()
     }
 
+    /// Exact certified devices approve once; a wrong target, expiry, denial or mutation fails
+    /// closed; a foreign identity or a future decision fails closed.
     #[test]
-    fn exact_certified_devices_approve_once() {
-        let mut rng = UnwrapErr(SysRng);
-        let root = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester = ed25519_dalek::SigningKey::generate(&mut rng);
-        let approver = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester_cert = cert(&root, &requester);
-        let approver_cert = cert(&root, &approver);
-        let request = request(&requester, &approver);
-        request
-            .verify_for(&requester_cert, approver.verifying_key().to_bytes(), 200)
-            .unwrap();
-        let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
-        let mut ledger = ApprovalLedger::default();
-        ledger
-            .consume(&request, &approval, &requester_cert, &approver_cert, 300)
-            .unwrap();
-        assert_eq!(
-            ledger.consume(&request, &approval, &requester_cert, &approver_cert, 301),
-            Err(ApprovalError::Replay)
-        );
-    }
+    fn device_approvals_count_once_and_fail_closed_on_anything_unexpected() {
+        // Phase: exact_certified_devices_approve_once.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let root = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester = ed25519_dalek::SigningKey::generate(&mut rng);
+            let approver = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester_cert = cert(&root, &requester);
+            let approver_cert = cert(&root, &approver);
+            let request = request(&requester, &approver);
+            request
+                .verify_for(&requester_cert, approver.verifying_key().to_bytes(), 200)
+                .unwrap();
+            let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
+            let mut ledger = ApprovalLedger::default();
+            ledger
+                .consume(&request, &approval, &requester_cert, &approver_cert, 300)
+                .unwrap();
+            assert_eq!(
+                ledger.consume(&request, &approval, &requester_cert, &approver_cert, 301),
+                Err(ApprovalError::Replay)
+            );
+        }
 
-    #[test]
-    fn wrong_target_expiry_denial_and_mutation_fail_closed() {
-        let mut rng = UnwrapErr(SysRng);
-        let root = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester = ed25519_dalek::SigningKey::generate(&mut rng);
-        let approver = ed25519_dalek::SigningKey::generate(&mut rng);
-        let other = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester_cert = cert(&root, &requester);
-        let approver_cert = cert(&root, &approver);
-        let request = request(&requester, &approver);
-        assert_eq!(
-            request.verify_for(&requester_cert, other.verifying_key().to_bytes(), 200),
-            Err(ApprovalError::WrongDevice)
-        );
-        assert_eq!(
-            request.verify_for(&requester_cert, approver.verifying_key().to_bytes(), 1_000),
-            Err(ApprovalError::Expired)
-        );
+        // Phase: wrong_target_expiry_denial_and_mutation_fail_closed.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let root = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester = ed25519_dalek::SigningKey::generate(&mut rng);
+            let approver = ed25519_dalek::SigningKey::generate(&mut rng);
+            let other = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester_cert = cert(&root, &requester);
+            let approver_cert = cert(&root, &approver);
+            let request = request(&requester, &approver);
+            assert_eq!(
+                request.verify_for(&requester_cert, other.verifying_key().to_bytes(), 200),
+                Err(ApprovalError::WrongDevice)
+            );
+            assert_eq!(
+                request.verify_for(&requester_cert, approver.verifying_key().to_bytes(), 1_000),
+                Err(ApprovalError::Expired)
+            );
 
-        let denial = DeviceApproval::sign_for(&request, false, 250, &approver).unwrap();
-        assert_eq!(
-            ApprovalLedger::default().consume(
-                &request,
-                &denial,
-                &requester_cert,
-                &approver_cert,
-                300
-            ),
-            Err(ApprovalError::Denied)
-        );
-        let mut mutated = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
-        mutated.approved = false;
-        assert_eq!(
-            ApprovalLedger::default().consume(
-                &request,
-                &mutated,
-                &requester_cert,
-                &approver_cert,
-                300
-            ),
-            Err(ApprovalError::Signature)
-        );
-    }
+            let denial = DeviceApproval::sign_for(&request, false, 250, &approver).unwrap();
+            assert_eq!(
+                ApprovalLedger::default().consume(
+                    &request,
+                    &denial,
+                    &requester_cert,
+                    &approver_cert,
+                    300
+                ),
+                Err(ApprovalError::Denied)
+            );
+            let mut mutated = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
+            mutated.approved = false;
+            assert_eq!(
+                ApprovalLedger::default().consume(
+                    &request,
+                    &mutated,
+                    &requester_cert,
+                    &approver_cert,
+                    300
+                ),
+                Err(ApprovalError::Signature)
+            );
+        }
 
-    #[test]
-    fn foreign_identity_and_future_decision_fail_closed() {
-        let mut rng = UnwrapErr(SysRng);
-        let requester_root = ed25519_dalek::SigningKey::generate(&mut rng);
-        let approver_root = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester = ed25519_dalek::SigningKey::generate(&mut rng);
-        let approver = ed25519_dalek::SigningKey::generate(&mut rng);
-        let requester_cert = cert(&requester_root, &requester);
-        let foreign_approver_cert = cert(&approver_root, &approver);
-        let request = request(&requester, &approver);
-        let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
-        assert_eq!(
-            ApprovalLedger::default().consume(
-                &request,
-                &approval,
-                &requester_cert,
-                &foreign_approver_cert,
-                300,
-            ),
-            Err(ApprovalError::DifferentIdentity)
-        );
+        // Phase: foreign_identity_and_future_decision_fail_closed.
+        {
+            let mut rng = UnwrapErr(SysRng);
+            let requester_root = ed25519_dalek::SigningKey::generate(&mut rng);
+            let approver_root = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester = ed25519_dalek::SigningKey::generate(&mut rng);
+            let approver = ed25519_dalek::SigningKey::generate(&mut rng);
+            let requester_cert = cert(&requester_root, &requester);
+            let foreign_approver_cert = cert(&approver_root, &approver);
+            let request = request(&requester, &approver);
+            let approval = DeviceApproval::sign_for(&request, true, 250, &approver).unwrap();
+            assert_eq!(
+                ApprovalLedger::default().consume(
+                    &request,
+                    &approval,
+                    &requester_cert,
+                    &foreign_approver_cert,
+                    300,
+                ),
+                Err(ApprovalError::DifferentIdentity)
+            );
 
-        let future = DeviceApproval::sign_for(&request, true, 400, &approver).unwrap();
-        let approver_cert = cert(&requester_root, &approver);
-        assert_eq!(
-            ApprovalLedger::default().consume(
-                &request,
-                &future,
-                &requester_cert,
-                &approver_cert,
-                300,
-            ),
-            Err(ApprovalError::Expired)
-        );
+            let future = DeviceApproval::sign_for(&request, true, 400, &approver).unwrap();
+            let approver_cert = cert(&requester_root, &approver);
+            assert_eq!(
+                ApprovalLedger::default().consume(
+                    &request,
+                    &future,
+                    &requester_cert,
+                    &approver_cert,
+                    300,
+                ),
+                Err(ApprovalError::Expired)
+            );
+        }
     }
 }

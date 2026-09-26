@@ -129,6 +129,8 @@ mod output_management_protocol;
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "per_output_groups.rs"]
+mod per_output_groups;
 #[path = "per_output_scale.rs"]
 mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
@@ -155,6 +157,8 @@ mod real_apps_visual;
 mod remote_cursors_test;
 #[path = "reopen_closed_tab.rs"]
 mod reopen_closed_tab;
+#[path = "runtime_daemon_process.rs"]
+mod runtime_daemon_process;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]

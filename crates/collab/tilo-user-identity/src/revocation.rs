@@ -267,91 +267,100 @@ mod tests {
         (root_sk, entry)
     }
 
+    /// Revocations sign and verify; a tampered device key or reason fails; a wrong root fails the
+    /// pre-sign guard.
     #[test]
-    fn sign_and_verify() {
-        let (_root, entry) = fresh_entry(RevocationReason::Lost);
-        verify_revocation_entry(&entry).unwrap();
-    }
+    fn revocations_verify_only_untampered_and_from_the_root() {
+        // Phase: sign_and_verify.
+        {
+            let (_root, entry) = fresh_entry(RevocationReason::Lost);
+            verify_revocation_entry(&entry).unwrap();
+        }
 
-    #[test]
-    fn tampered_device_pubkey_fails() {
-        let (_root, mut entry) = fresh_entry(RevocationReason::Stolen);
-        entry.revoked_device_public_key[0] ^= 0x01;
-        assert_eq!(
-            verify_revocation_entry(&entry).unwrap_err(),
-            RevocationError::BadSignature
-        );
-    }
+        // Phase: tampered_device_pubkey_fails.
+        {
+            let (_root, mut entry) = fresh_entry(RevocationReason::Stolen);
+            entry.revoked_device_public_key[0] ^= 0x01;
+            assert_eq!(
+                verify_revocation_entry(&entry).unwrap_err(),
+                RevocationError::BadSignature
+            );
+        }
 
-    #[test]
-    fn tampered_reason_fails() {
-        let (_root, mut entry) = fresh_entry(RevocationReason::Lost);
-        entry.reason = RevocationReason::Retired;
-        assert_eq!(
-            verify_revocation_entry(&entry).unwrap_err(),
-            RevocationError::BadSignature
-        );
-    }
+        // Phase: tampered_reason_fails.
+        {
+            let (_root, mut entry) = fresh_entry(RevocationReason::Lost);
+            entry.reason = RevocationReason::Retired;
+            assert_eq!(
+                verify_revocation_entry(&entry).unwrap_err(),
+                RevocationError::BadSignature
+            );
+        }
 
-    #[test]
-    fn list_dedups_earliest_wins() {
-        let (root_sk, _) = UserIdentity::generate("Alice", 1);
-        let user_pk = root_sk.verifying_key().to_bytes();
-        let device_pk = [42u8; 32];
-
-        let sign = |at: u64| {
-            let mut e = RevocationEntry {
-                user_public_key: user_pk,
-                revoked_device_public_key: device_pk,
-                revoked_at_ns: at,
-                reason: RevocationReason::Lost,
+        // Phase: signed_by_wrong_root_fails_pre_sign_guard.
+        {
+            let (_, alice) = UserIdentity::generate("Alice", 1);
+            let (bob_sk, _) = UserIdentity::generate("Bob", 2);
+            let mut entry = RevocationEntry {
+                user_public_key: alice.public_key,
+                revoked_device_public_key: [7u8; 32],
+                revoked_at_ns: 100,
+                reason: RevocationReason::Retired,
                 signature: [0u8; 64],
             };
-            sign_revocation_entry(&mut e, &root_sk).unwrap();
-            e
-        };
-
-        let mut list = RevocationList::new();
-        assert!(list.insert(sign(200)).unwrap());
-        // Earlier timestamp arrives second — should overwrite the
-        // later one so the "cut-off" is the earlier moment.
-        assert!(list.insert(sign(100)).unwrap());
-        // Later duplicate is a no-op.
-        assert!(!list.insert(sign(300)).unwrap());
-
-        assert!(list.is_revoked(&device_pk));
-        assert!(list.is_revoked_at(&device_pk, 100));
-        assert!(list.is_revoked_at(&device_pk, 200));
-        // Just before the cut-off — not revoked yet.
-        assert!(!list.is_revoked_at(&device_pk, 99));
+            assert_eq!(
+                sign_revocation_entry(&mut entry, &bob_sk).unwrap_err(),
+                RevocationError::BadSignature
+            );
+        }
     }
 
+    /// Lists dedup with the earliest revocation winning and reject a bad signature.
     #[test]
-    fn list_rejects_bad_signature() {
-        let (_root, mut entry) = fresh_entry(RevocationReason::Compromised);
-        entry.signature[0] ^= 0x01;
-        let mut list = RevocationList::new();
-        assert_eq!(
-            list.insert(entry).unwrap_err(),
-            RevocationError::BadSignature
-        );
-        assert!(list.is_empty());
-    }
+    fn revocation_lists_dedup_and_reject_bad_signatures() {
+        // Phase: list_dedups_earliest_wins.
+        {
+            let (root_sk, _) = UserIdentity::generate("Alice", 1);
+            let user_pk = root_sk.verifying_key().to_bytes();
+            let device_pk = [42u8; 32];
 
-    #[test]
-    fn signed_by_wrong_root_fails_pre_sign_guard() {
-        let (_, alice) = UserIdentity::generate("Alice", 1);
-        let (bob_sk, _) = UserIdentity::generate("Bob", 2);
-        let mut entry = RevocationEntry {
-            user_public_key: alice.public_key,
-            revoked_device_public_key: [7u8; 32],
-            revoked_at_ns: 100,
-            reason: RevocationReason::Retired,
-            signature: [0u8; 64],
-        };
-        assert_eq!(
-            sign_revocation_entry(&mut entry, &bob_sk).unwrap_err(),
-            RevocationError::BadSignature
-        );
+            let sign = |at: u64| {
+                let mut e = RevocationEntry {
+                    user_public_key: user_pk,
+                    revoked_device_public_key: device_pk,
+                    revoked_at_ns: at,
+                    reason: RevocationReason::Lost,
+                    signature: [0u8; 64],
+                };
+                sign_revocation_entry(&mut e, &root_sk).unwrap();
+                e
+            };
+
+            let mut list = RevocationList::new();
+            assert!(list.insert(sign(200)).unwrap());
+            // Earlier timestamp arrives second — should overwrite the
+            // later one so the "cut-off" is the earlier moment.
+            assert!(list.insert(sign(100)).unwrap());
+            // Later duplicate is a no-op.
+            assert!(!list.insert(sign(300)).unwrap());
+
+            assert!(list.is_revoked(&device_pk));
+            assert!(list.is_revoked_at(&device_pk, 100));
+            assert!(list.is_revoked_at(&device_pk, 200));
+            // Just before the cut-off — not revoked yet.
+            assert!(!list.is_revoked_at(&device_pk, 99));
+        }
+
+        // Phase: list_rejects_bad_signature.
+        {
+            let (_root, mut entry) = fresh_entry(RevocationReason::Compromised);
+            entry.signature[0] ^= 0x01;
+            let mut list = RevocationList::new();
+            assert_eq!(
+                list.insert(entry).unwrap_err(),
+                RevocationError::BadSignature
+            );
+            assert!(list.is_empty());
+        }
     }
 }

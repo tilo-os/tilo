@@ -658,94 +658,98 @@ mod tests {
     use collab_types::generate_keypair;
 
     #[test]
-    fn mint_now_produces_url_and_envelope() {
-        let mut s = InviteMintScreen::new();
-        s.set_channel(ChannelId::new(), "engineering");
-        s.set_expiry(InviteExpiry::OneHour);
-        let (sk, pk) = generate_keypair();
-        let env = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap()
-            .clone();
-        assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
-        assert_eq!(env.role, ChannelRole::Editor);
-    }
+    fn invite_mint_produces_revokes_and_lays_out_links() {
+        fn mint_now_produces_url_and_envelope() {
+            let mut s = InviteMintScreen::new();
+            s.set_channel(ChannelId::new(), "engineering");
+            s.set_expiry(InviteExpiry::OneHour);
+            let (sk, pk) = generate_keypair();
+            let env = s
+                .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap()
+                .clone();
+            assert!(s.last_url().unwrap().starts_with("tilo://invite/"));
+            assert_eq!(env.role, ChannelRole::Editor);
+        }
 
-    #[test]
-    fn mint_now_errors_without_channel() {
-        let mut s = InviteMintScreen::new();
-        let (sk, pk) = generate_keypair();
-        let err = s
-            .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap_err();
-        assert!(matches!(
-            err,
-            crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
-        ));
-    }
+        fn mint_now_errors_without_channel() {
+            let mut s = InviteMintScreen::new();
+            let (sk, pk) = generate_keypair();
+            let err = s
+                .mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap_err();
+            assert!(matches!(
+                err,
+                crate::widget::identity_flow::IdentityFlowError::DecodeFailed(_)
+            ));
+        }
 
-    #[test]
-    fn revoke_clears_state() {
-        let mut s = InviteMintScreen::new();
-        s.set_channel(ChannelId::new(), "engineering");
-        let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap();
-        assert!(s.last_envelope().is_some());
-        s.revoke();
-        assert!(s.last_envelope().is_none());
-        assert!(s.last_url().is_none());
-        assert!(s.qr.is_none());
-    }
+        fn revoke_clears_state() {
+            let mut s = InviteMintScreen::new();
+            s.set_channel(ChannelId::new(), "engineering");
+            let (sk, pk) = generate_keypair();
+            s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap();
+            assert!(s.last_envelope().is_some());
+            s.revoke();
+            assert!(s.last_envelope().is_none());
+            assert!(s.last_url().is_none());
+            assert!(s.qr.is_none());
+        }
 
-    #[test]
-    fn expiry_one_hour_resolves_one_hour_ahead() {
-        let now = SystemTime::UNIX_EPOCH;
-        let expires = InviteExpiry::OneHour.resolve(now);
-        assert_eq!(
-            expires.duration_since(now).unwrap(),
-            Duration::from_secs(3600)
-        );
-    }
+        fn expiry_one_hour_resolves_one_hour_ahead() {
+            let now = SystemTime::UNIX_EPOCH;
+            let expires = InviteExpiry::OneHour.resolve(now);
+            assert_eq!(
+                expires.duration_since(now).unwrap(),
+                Duration::from_secs(3600)
+            );
+        }
 
-    /// Before an invite exists the body is the control plus a hint; after
-    /// one exists the QR is square, centred, and the link sits under it —
-    /// nothing at an absolute offset, nothing running off the card.
-    #[test]
-    fn plan_shows_a_centred_qr_and_link_only_once_minted() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 620.0, 200.0);
-        let mut s = InviteMintScreen::new();
-        let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert_eq!(empty.segments.len(), 4);
-        assert_eq!(empty.segments[0].height(), 34.0);
-        assert!(empty.qr.is_none() && empty.link_lines.is_empty());
-        assert!(
-            empty.hint.is_some(),
-            "an empty state is designed, not blank"
-        );
+        /// Before an invite exists the body is the control plus a hint; after
+        /// one exists the QR is square, centred, and the link sits under it —
+        /// nothing at an absolute offset, nothing running off the card.
+        fn plan_shows_a_centred_qr_and_link_only_once_minted() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 620.0, 200.0);
+            let mut s = InviteMintScreen::new();
+            let empty = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert_eq!(empty.segments.len(), 4);
+            assert_eq!(empty.segments[0].height(), 34.0);
+            assert!(empty.qr.is_none() && empty.link_lines.is_empty());
+            assert!(
+                empty.hint.is_some(),
+                "an empty state is designed, not blank"
+            );
 
-        s.set_channel(ChannelId::new(), "engineering");
-        let (sk, pk) = generate_keypair();
-        s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
-            .unwrap();
-        let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        let qr = minted.qr.expect("a minted invite shows its QR");
-        assert!((qr.width() - qr.height()).abs() < 1e-9, "the QR is square");
-        assert!((qr.center().x - body.center().x).abs() < 1e-9, "centred");
-        assert!(qr.width() <= body.width());
-        assert!(
-            minted.link_lines.len() > 1,
-            "a 200-character link needs more than one row at this width"
-        );
-        let whole: String = minted.link_lines.iter().map(|(l, _)| l.as_str()).collect();
-        assert_eq!(whole, s.last_url().unwrap(), "the link is readable in full");
-        let (_, first) = &minted.link_lines[0];
-        let (_, last) = minted.link_lines.last().unwrap();
-        assert!(first.y0 > qr.y1);
-        assert!(first.x1 <= body.x1, "the link rows stay inside the body");
-        assert!(minted.hint.is_none());
-        assert!((minted.bottom - last.y1).abs() < 1e-9);
+            s.set_channel(ChannelId::new(), "engineering");
+            let (sk, pk) = generate_keypair();
+            s.mint_now(pk, &sk, "Alice", ChannelRole::Editor, crate::time::wall())
+                .unwrap();
+            let minted = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            let qr = minted.qr.expect("a minted invite shows its QR");
+            assert!((qr.width() - qr.height()).abs() < 1e-9, "the QR is square");
+            assert!((qr.center().x - body.center().x).abs() < 1e-9, "centred");
+            assert!(qr.width() <= body.width());
+            assert!(
+                minted.link_lines.len() > 1,
+                "a 200-character link needs more than one row at this width"
+            );
+            let whole: String = minted.link_lines.iter().map(|(l, _)| l.as_str()).collect();
+            assert_eq!(whole, s.last_url().unwrap(), "the link is readable in full");
+            let (_, first) = &minted.link_lines[0];
+            let (_, last) = minted.link_lines.last().unwrap();
+            assert!(first.y0 > qr.y1);
+            assert!(first.x1 <= body.x1, "the link rows stay inside the body");
+            assert!(minted.hint.is_none());
+            assert!((minted.bottom - last.y1).abs() < 1e-9);
+        }
+
+        mint_now_produces_url_and_envelope();
+        mint_now_errors_without_channel();
+        revoke_clears_state();
+        expiry_one_hour_resolves_one_hour_ahead();
+        plan_shows_a_centred_qr_and_link_only_once_minted();
     }
 }

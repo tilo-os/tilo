@@ -3066,14 +3066,25 @@ mod portal_tests {
     use super::*;
     use image::{Rgba, RgbaImage};
 
+    /// Responsive layout: the toolbar compacts before collisions, and every published
+    /// target (empty-state open, phone toolbar, More menu, inspector, graph ports) is
+    /// touch sized, disjoint and semantically reachable.
     #[test]
+    fn responsive_layout_publishes_touch_sized_disjoint_targets() {
+        toolbar_compacts_before_desktop_actions_can_collide();
+        empty_state_open_is_a_real_touch_sized_semantic_button();
+        phone_toolbar_targets_are_touch_sized_and_never_overlap();
+        phone_more_exposes_every_tool_as_disjoint_touch_targets();
+        compact_inspector_controls_remain_touch_sized_and_disjoint();
+        advanced_graph_exposes_touch_sized_accessible_ports();
+    }
+
     fn toolbar_compacts_before_desktop_actions_can_collide() {
         assert!(compact_toolbar_for(820.0));
         assert!(compact_toolbar_for(1_024.0));
         assert!(!compact_toolbar_for(1_280.0));
     }
 
-    #[test]
     fn empty_state_open_is_a_real_touch_sized_semantic_button() {
         let mut app = ImageEditorApp::new();
         layout_at(&mut app, 390.0, 760.0);
@@ -3118,7 +3129,6 @@ mod portal_tests {
         app.apply_layout(&tree, child, Point::ZERO);
     }
 
-    #[test]
     fn phone_toolbar_targets_are_touch_sized_and_never_overlap() {
         for width in [360.0, 390.0] {
             let mut app = ImageEditorApp::new();
@@ -3136,7 +3146,17 @@ mod portal_tests {
         }
     }
 
+    /// Direct edits (toolbar, slider, remove, keyboard connection, crop) dispatch the
+    /// canonical document actions and undo/redo as whole gestures.
     #[test]
+    fn direct_edits_dispatch_canonical_actions_and_undo_as_gestures() {
+        undo_and_redo_restore_the_complete_non_destructive_project();
+        direct_editor_affordances_dispatch_canonical_document_actions();
+        continuous_adjustment_is_one_undoable_gesture();
+        keyboard_connection_flow_selects_a_real_port_and_commits();
+        direct_crop_edits_the_graph_node_and_recomputes_later_steps();
+    }
+
     fn keyboard_connection_flow_selects_a_real_port_and_commits() {
         let mut app = ImageEditorApp::new();
         layout_at(&mut app, 1_280.0, 800.0);
@@ -3168,7 +3188,6 @@ mod portal_tests {
         );
     }
 
-    #[test]
     fn undo_and_redo_restore_the_complete_non_destructive_project() {
         let mut app = ImageEditorApp::new();
         let mut state = AutoCommit::new();
@@ -3189,7 +3208,6 @@ mod portal_tests {
         assert_eq!(ProjectDoc::read(&state), edited);
     }
 
-    #[test]
     fn direct_editor_affordances_dispatch_canonical_document_actions() {
         let mut app = ImageEditorApp::new();
         let mut document = AutoCommit::new();
@@ -3221,7 +3239,6 @@ mod portal_tests {
         assert!(app.take_committed_action().is_some());
     }
 
-    #[test]
     fn continuous_adjustment_is_one_undoable_gesture() {
         let mut app = ImageEditorApp::new();
         let mut state = AutoCommit::new();
@@ -3240,7 +3257,6 @@ mod portal_tests {
         assert_eq!(app.project, before);
     }
 
-    #[test]
     fn advanced_graph_exposes_touch_sized_accessible_ports() {
         let mut app = ImageEditorApp::new();
         layout_at(&mut app, 1_280.0, 800.0);
@@ -3272,7 +3288,6 @@ mod portal_tests {
         }
     }
 
-    #[test]
     fn phone_more_exposes_every_tool_as_disjoint_touch_targets() {
         for width in [360.0, 390.0] {
             let mut app = ImageEditorApp::new();
@@ -3300,6 +3315,11 @@ mod portal_tests {
     }
 
     #[test]
+    fn host_picker_opens_validated_images_and_cancels_quietly() {
+        portal_selection_opens_through_the_same_validated_path_as_drop();
+        cancelling_the_host_picker_is_quiet_and_retryable();
+    }
+
     fn portal_selection_opens_through_the_same_validated_path_as_drop() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chosen.png");
@@ -3322,7 +3342,6 @@ mod portal_tests {
         assert!(app.picker.is_none());
     }
 
-    #[test]
     fn cancelling_the_host_picker_is_quiet_and_retryable() {
         let mut app = ImageEditorApp::new();
         let mut doc = AutoCommit::new();
@@ -3335,7 +3354,6 @@ mod portal_tests {
         assert!(app.picker.is_none());
     }
 
-    #[test]
     fn compact_inspector_controls_remain_touch_sized_and_disjoint() {
         let mut app = ImageEditorApp::new();
         app.inspector_rect = Rect::new(12.0, 680.0, 608.0, 740.0);
@@ -3351,7 +3369,15 @@ mod portal_tests {
         assert!(app.inspector_rect.contains(remove.center()));
     }
 
+    /// The inspector slider and its assistive counterparts do real graph work.
     #[test]
+    fn inspector_and_assistive_controls_edit_the_graph() {
+        shared_inspector_slider_maps_every_adjustment_across_its_full_range();
+        inspector_semantics_offer_only_controls_that_do_real_work();
+        assistive_remove_preserves_later_steps_and_is_undoable();
+        assistive_slider_changes_the_graph_operation();
+    }
+
     fn shared_inspector_slider_maps_every_adjustment_across_its_full_range() {
         let cases = [
             ("exposure", Operation::Exposure { stops: 0.0 }),
@@ -3374,7 +3400,6 @@ mod portal_tests {
         }
     }
 
-    #[test]
     fn inspector_semantics_offer_only_controls_that_do_real_work() {
         let mut app = ImageEditorApp::new();
         app.inspector_rect = Rect::new(12.0, 680.0, 608.0, 740.0);
@@ -3415,7 +3440,6 @@ mod portal_tests {
         }));
     }
 
-    #[test]
     fn assistive_remove_preserves_later_steps_and_is_undoable() {
         let mut app = ImageEditorApp::new();
         let mut document = AutoCommit::new();
@@ -3451,7 +3475,6 @@ mod portal_tests {
         );
     }
 
-    #[test]
     fn assistive_slider_changes_the_graph_operation() {
         let mut app = ImageEditorApp::new();
         let mut document = AutoCommit::new();
@@ -3476,6 +3499,12 @@ mod portal_tests {
     }
 
     #[test]
+    fn adjustment_stack_navigates_scrolls_and_previews_every_step() {
+        keyboard_step_navigation_follows_the_visible_latest_first_order();
+        long_adjustment_stacks_scroll_to_every_step_and_clamp();
+        graph_previews_include_original_intermediate_and_final_states();
+    }
+
     fn keyboard_step_navigation_follows_the_visible_latest_first_order() {
         let mut app = ImageEditorApp::new();
         let _ =
@@ -3493,7 +3522,6 @@ mod portal_tests {
         assert!(app.editor.selection.contains("latest"));
     }
 
-    #[test]
     fn long_adjustment_stacks_scroll_to_every_step_and_clamp() {
         let mut app = ImageEditorApp::new();
         app.rect = Rect::new(0.0, 0.0, 390.0, 760.0);
@@ -3515,7 +3543,6 @@ mod portal_tests {
         assert_eq!(app.stack_scroll, 0.0);
     }
 
-    #[test]
     fn graph_previews_include_original_intermediate_and_final_states() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.png");
@@ -3544,7 +3571,6 @@ mod portal_tests {
         assert_eq!(preview_ids[2], "output");
     }
 
-    #[test]
     fn direct_crop_edits_the_graph_node_and_recomputes_later_steps() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.png");

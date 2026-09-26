@@ -42,9 +42,11 @@ the ceremony persists that seed, and `IdentityRecord::into_threshold_identity` r
 whose secret does not derive its recorded public key. The mismatch is fatal in `runtime-identity`
 in every build profile. Firstboot now goes through the same encoder, so there is one writer of
 the format. Held by
-`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::ceremony_minted_record_signs_for_its_own_recorded_public_key`
+`crates/sdk/ui-core/src/widget/identity_flow/mod.rs::tests::identity_record_serialization_and_signing_round_trips`
+(phase `ceremony_minted_record_signs_for_its_own_recorded_public_key`)
 and
-`crates/runtime/runtime-identity/src/lib.rs::tests::secret_that_does_not_derive_the_recorded_pubkey_is_refused`.
+`crates/runtime/runtime-identity/src/unix.rs::tests::a_local_secret_must_derive_the_recorded_key_to_sign`
+(phase `secret_that_does_not_derive_the_recorded_pubkey_is_refused`).
 
 ---
 
@@ -416,8 +418,10 @@ and returns its serialized bytes for fan-out. Existing members process the same
 commit, and the removed member becomes inactive after processing it. The
 two-member convenience admission now refuses once an existing peer would need
 a commit, so multi-party admission cannot silently discard epoch state. Held by
-`third_member_joins::removal_commit_advances_survivors_and_excludes_removed_member`
-and `multi_party_add_cannot_drop_the_commit`. Production brokers now validate
+`third_member_joins::members_who_miss_or_are_removed_by_a_commit_cannot_decrypt_after_it`
+(phase `removal_commit_advances_survivors_and_excludes_removed_member`) and
+`third_member_joins::a_third_member_joins_and_everyone_can_talk` (phase
+`multi_party_add_cannot_drop_the_commit`). Production brokers now validate
 route-bound signed metadata and relay opaque MLS payloads byte-for-byte, while
 `ui::collaboration` can encrypt/decrypt after a trusted caller installs the
 exact route's `ChannelGroup`. The crypto layer now supplies vault-key-sealed
@@ -726,8 +730,8 @@ production collaboration message; a later revocation removes the peer immediatel
 also withdraws this machine's exported filesystem authority and stops the app identity broker
 from signing locally. Held by
 `shell::network::tests::identity_hello_redeems_invite_as_editor_and_revocation_removes_trust`,
-`shell::state::identity_fs_tests::filesystem_export_maps_selected_person_through_verified_device_chain`,
-and `identity_broker::tests::signing_requires_the_exact_app_action_capability`.
+`shell::state::identity_fs_tests::filesystem_export_maps_verified_people_and_per_workspace_membership`,
+and `identity_broker::tests::identity_service_wire_is_pinned_and_signing_requires_the_exact_capability`.
 
 ## P2-4 — Egress documentation describes a weaker mechanism than the code implements
 

@@ -550,6 +550,67 @@ opt-level = 3
 [profile.test.package.swash]
 opt-level = 3
 
+# Same reason for the hot paths the tilo-ui tests profile as dominant in a debug
+# build: shader translation (naga) for every renderer, deflate and hashing for
+# large documents and PNG captures, font parsing and shaping, and QR encoding.
+# Dev and test stay identical so `cargo build` and `cargo test` share artifacts.
+[profile.dev.package.naga]
+opt-level = 3
+[profile.test.package.naga]
+opt-level = 3
+[profile.dev.package.zlib-rs]
+opt-level = 3
+[profile.test.package.zlib-rs]
+opt-level = 3
+[profile.dev.package.harfrust]
+opt-level = 3
+[profile.test.package.harfrust]
+opt-level = 3
+[profile.dev.package.qrcode]
+opt-level = 3
+[profile.test.package.qrcode]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.test.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
+[profile.test.package.fdeflate]
+opt-level = 3
+[profile.dev.package.simd-adler32]
+opt-level = 3
+[profile.test.package.simd-adler32]
+opt-level = 3
+
+# Text shaping (cosmic-text, fontdb, slotmap and the unicode tables) dominates
+# large-document editor tests, and RSA key generation (crypto-bigint) dominates
+# the tilo-crypto tests, when built at opt-level 0.
+[profile.dev.package.cosmic-text]
+opt-level = 3
+[profile.test.package.cosmic-text]
+opt-level = 3
+[profile.dev.package.slotmap]
+opt-level = 3
+[profile.test.package.slotmap]
+opt-level = 3
+[profile.dev.package.unicode-bidi]
+opt-level = 3
+[profile.test.package.unicode-bidi]
+opt-level = 3
+[profile.dev.package.unicode-script]
+opt-level = 3
+[profile.test.package.unicode-script]
+opt-level = 3
+[profile.dev.package.unicode-linebreak]
+opt-level = 3
+[profile.test.package.unicode-linebreak]
+opt-level = 3
+[profile.dev.package.crypto-bigint]
+opt-level = 3
+[profile.test.package.crypto-bigint]
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"

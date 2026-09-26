@@ -142,71 +142,75 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn workers_are_bounded_and_named() {
-        let runtime = daemon("probe").workers(2).build().unwrap();
-        assert_eq!(runtime.metrics().num_workers(), 2);
-        let names = runtime.block_on(async {
-            let mut names = BTreeSet::new();
-            for _ in 0..16 {
-                let name = tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
+    fn daemon_threads_are_bounded_and_named() {
+        // phase: workers_are_bounded_and_named
+        {
+            let runtime = daemon("probe").workers(2).build().unwrap();
+            assert_eq!(runtime.metrics().num_workers(), 2);
+            let names = runtime.block_on(async {
+                let mut names = BTreeSet::new();
+                for _ in 0..16 {
+                    let name =
+                        tokio::spawn(async { std::thread::current().name().map(str::to_owned) })
+                            .await
+                            .unwrap();
+                    names.insert(name.unwrap());
+                }
+                names
+            });
+            assert!(
+                names.iter().all(|name| name.starts_with("probe-rt-")),
+                "{names:?}"
+            );
+        }
+        // phase: the_default_worker_count_is_capped
+        {
+            let runtime = daemon("capped").build().unwrap();
+            assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
+        }
+        // phase: blocking_threads_carry_the_name_but_do_not_drive_tasks
+        {
+            let runtime = daemon("svc").workers(1).max_blocking(2).build().unwrap();
+            let (name, driving) = runtime
+                .block_on(async {
+                    tokio::task::spawn_blocking(|| {
+                        (
+                            std::thread::current().name().map(str::to_owned),
+                            crate::in_async_context(),
+                        )
+                    })
+                    .await
+                })
+                .unwrap();
+            let name = name.unwrap();
+            assert!(name.starts_with("svc-rt-"), "{name}");
+            assert!(!driving, "{name} is a blocking-pool thread");
+        }
+    }
+
+    #[test]
+    fn daemon_workers_refuse_to_block_or_nest() {
+        // phase: workers_refuse_to_block_but_blocking_threads_may
+        {
+            let runtime = daemon("guard").workers(1).build().unwrap();
+            let (on_worker, on_blocking) = runtime.block_on(async {
+                let on_worker = tokio::spawn(async { crate::block_on(async {}) })
                     .await
                     .unwrap();
-                names.insert(name.unwrap());
-            }
-            names
-        });
-        assert!(
-            names.iter().all(|name| name.starts_with("probe-rt-")),
-            "{names:?}"
-        );
-    }
-
-    #[test]
-    fn the_default_worker_count_is_capped() {
-        let runtime = daemon("capped").build().unwrap();
-        assert!(runtime.metrics().num_workers() <= Daemon::DEFAULT_MAX_WORKERS);
-    }
-
-    #[test]
-    fn blocking_threads_carry_the_name_but_do_not_drive_tasks() {
-        let runtime = daemon("svc").workers(1).max_blocking(2).build().unwrap();
-        let (name, driving) = runtime
-            .block_on(async {
-                tokio::task::spawn_blocking(|| {
-                    (
-                        std::thread::current().name().map(str::to_owned),
-                        crate::in_async_context(),
-                    )
-                })
-                .await
-            })
-            .unwrap();
-        let name = name.unwrap();
-        assert!(name.starts_with("svc-rt-"), "{name}");
-        assert!(!driving, "{name} is a blocking-pool thread");
-    }
-
-    #[test]
-    fn workers_refuse_to_block_but_blocking_threads_may() {
-        let runtime = daemon("guard").workers(1).build().unwrap();
-        let (on_worker, on_blocking) = runtime.block_on(async {
-            let on_worker = tokio::spawn(async { crate::block_on(async {}) })
-                .await
-                .unwrap();
-            let on_blocking = tokio::task::spawn_blocking(|| crate::block_on(async { 1 }))
-                .await
-                .unwrap();
-            (on_worker, on_blocking)
-        });
-        assert!(matches!(on_worker, Err(Error::InsideRuntime)));
-        assert_eq!(on_blocking.unwrap(), 1);
-    }
-
-    #[test]
-    fn run_refuses_to_nest() {
-        let outer = daemon("outer")
-            .workers(1)
-            .run(async { daemon("inner").workers(1).run(async {}) });
-        assert!(matches!(outer.unwrap(), Err(Error::InsideRuntime)));
+                let on_blocking = tokio::task::spawn_blocking(|| crate::block_on(async { 1 }))
+                    .await
+                    .unwrap();
+                (on_worker, on_blocking)
+            });
+            assert!(matches!(on_worker, Err(Error::InsideRuntime)));
+            assert_eq!(on_blocking.unwrap(), 1);
+        }
+        // phase: run_refuses_to_nest
+        {
+            let outer = daemon("outer")
+                .workers(1)
+                .run(async { daemon("inner").workers(1).run(async {}) });
+            assert!(matches!(outer.unwrap(), Err(Error::InsideRuntime)));
+        }
     }
 }
