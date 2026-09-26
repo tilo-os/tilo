@@ -371,97 +371,6 @@ fn the_view_map_is_bounded_expires_and_caps_find() {
     assert!(!views.is_empty());
 }
 
-#[test]
-#[ignore = "timing probe; run by hand"]
-fn probe_keystroke_cost_on_a_large_document() {
-    let mut state = ui::State::new();
-    let mut wp = WordProcessorWidget::new();
-    wp.sync(&mut state.doc, &state.root);
-    {
-        let containers = qdoc::model::open(&state.doc, &automerge::ROOT).unwrap();
-        let mut id_gen = qdoc::model::seeded_id_gen(&state.doc, &containers);
-        let mut dm = qdoc::DocMut {
-            doc: &mut state.doc,
-            c: &containers,
-            ids: &mut id_gen,
-        };
-        let mut after = body_ids(dm.doc).pop();
-        for i in 0..5000 {
-            let id = dm.insert_block(after.as_deref(), "paragraph");
-            dm.splice_text(&id, 0, 0, &format!("paragraph {i} text"));
-            after = Some(id);
-        }
-    }
-    wp.sync(&mut state.doc, &state.root);
-    let ids = body_ids(&state.doc);
-    let target = ids[2500].clone();
-    wp.model_mut().set_caret(Caret {
-        block: target.clone(),
-        offset: 3,
-    });
-    let view = wp.local_participant_view();
-    let scans = qdoc::model::ordered_keys_scan_count();
-    let start = std::time::Instant::now();
-    for _ in 0..50 {
-        let _ = crate::actions::editing::type_text(&view, &state.doc, "x").unwrap();
-    }
-    eprintln!(
-        "pure type_text only: 50 calls {:?}, ordered-key scans {}",
-        start.elapsed(),
-        qdoc::model::ordered_keys_scan_count() - scans
-    );
-    let mut host = ui::ActionHost::new();
-    let action = crate::actions::splice_text_action(RegionKind::Body, &target, 0, 0, "z");
-    let scans = qdoc::model::ordered_keys_scan_count();
-    let start = std::time::Instant::now();
-    for _ in 0..50 {
-        host.try_dispatch(
-            &mut state.doc,
-            crate::actions::WORD_PROCESSOR_ACTION_TYPE,
-            &action,
-        )
-        .unwrap();
-    }
-    eprintln!(
-        "executor dispatch only: 50 SpliceText {:?}, ordered-key scans {}",
-        start.elapsed(),
-        qdoc::model::ordered_keys_scan_count() - scans
-    );
-    let scans = qdoc::model::ordered_keys_scan_count();
-    let start = std::time::Instant::now();
-    for _ in 0..50 {
-        wp.insert_text_via_action(&mut state.doc, "x");
-    }
-    eprintln!(
-        "primitive: 50 keystrokes {:?}, ordered-key scans {}",
-        start.elapsed(),
-        qdoc::model::ordered_keys_scan_count() - scans
-    );
-    let scans = qdoc::model::ordered_keys_scan_count();
-    let start = std::time::Instant::now();
-    for _ in 0..50 {
-        let caret = wp.model().caret().clone();
-        let region = wp.model().region_kind();
-        wp.splice_via_action(
-            &mut state.doc,
-            region,
-            &caret.block,
-            caret.offset,
-            caret.offset,
-            "y",
-        );
-        wp.model_mut().set_caret(Caret {
-            block: caret.block,
-            offset: caret.offset + 1,
-        });
-    }
-    eprintln!(
-        "direct splice: 50 keystrokes {:?}, ordered-key scans {}",
-        start.elapsed(),
-        qdoc::model::ordered_keys_scan_count() - scans
-    );
-}
-
 // ---- keyboard ↔ action parity ---------------------------------------------
 
 enum Input {
@@ -524,12 +433,13 @@ type Step = Box<dyn Fn(&ParticipantView, &AutoCommit) -> crate::actions::editing
 /// last envelope must be byte-identical to the step's last envelope, and the
 /// documents and resulting carets/selections must agree.
 fn assert_keyboard_action_parity(
+    case: &str,
     texts: &[&str],
     setup: impl FnOnce(&mut WordProcessorWidget, &mut ui::State, &[String]),
     inputs: &[Input],
     steps: &[Step],
 ) {
-    assert_eq!(inputs.len(), steps.len());
+    assert_eq!(inputs.len(), steps.len(), "{case}");
     let (mut keyboard, mut state, ids) = widget_with(texts);
     setup(&mut keyboard, &mut state, &ids);
     keyboard.sync(&mut state.doc, &state.root);
@@ -558,7 +468,7 @@ fn assert_keyboard_action_parity(
             assert_eq!(
                 keyboard.last_dispatched_for_test(),
                 Some(&expected),
-                "keystroke and published primitive build the same envelope"
+                "{case}: keystroke and published primitive build the same envelope"
             );
         }
         agent_widget
@@ -567,149 +477,114 @@ fn assert_keyboard_action_parity(
     }
     assert_eq!(
         keyboard.model().block_texts(&state.doc),
-        agent_widget.model().block_texts(&agent_state.doc)
+        agent_widget.model().block_texts(&agent_state.doc),
+        "{case}"
     );
     let local = keyboard.local_participant_view();
     let remote = agent_widget
         .participant_view(&agent, &agent_state.doc)
         .unwrap();
-    assert_eq!(local.caret, remote.caret);
+    assert_eq!(local.caret, remote.caret, "{case}");
     assert_eq!(
         local.anchor.filter(|a| *a != local.caret),
-        remote.anchor.filter(|a| *a != remote.caret)
+        remote.anchor.filter(|a| *a != remote.caret),
+        "{case}"
     );
 }
 
+/// Put the caret at `to` in `block`, anchored at `from`.
+fn select_in(wp: &mut WordProcessorWidget, block: &str, from: usize, to: usize) {
+    wp.model_mut().set_caret(Caret {
+        block: block.to_owned(),
+        offset: from,
+    });
+    if from != to {
+        wp.model_mut().set_anchor();
+        wp.model_mut().set_caret(Caret {
+            block: block.to_owned(),
+            offset: to,
+        });
+    }
+}
+
+fn typed(text: &'static str) -> Step {
+    Box::new(move |v, d| crate::actions::editing::type_text(v, d, text))
+}
+
+type Setup = fn(&mut WordProcessorWidget, &mut ui::State, &[String]);
+
 #[test]
-fn typing_matches_type_text() {
-    use crate::actions::editing::type_text;
-    assert_keyboard_action_parity(
-        &["hello world"],
-        |wp, _, ids| {
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 5,
-            });
-        },
-        &[Input::Char('a'), Input::Char('b'), Input::Char('c')],
-        &[
-            Box::new(|v, d| type_text(v, d, "a")),
-            Box::new(|v, d| type_text(v, d, "b")),
-            Box::new(|v, d| type_text(v, d, "c")),
-        ],
-    );
+fn keystrokes_match_their_published_primitives() {
+    use crate::actions::editing::{
+        DeleteDirection, InlineMark, delete, new_paragraph, select_all, toggle_mark,
+    };
+    let bold: fn() -> Step = || Box::new(|v, d| toggle_mark(v, d, InlineMark::Strong));
+    let cases: Vec<(&str, &[&str], Setup, Vec<Input>, Vec<Step>)> = vec![
+        (
+            "typing matches type_text",
+            &["hello world"],
+            |wp, _, ids| select_in(wp, &ids[0], 5, 5),
+            vec![Input::Char('a'), Input::Char('b'), Input::Char('c')],
+            vec![typed("a"), typed("b"), typed("c")],
+        ),
+        (
+            "typing over a selection matches type_text",
+            &["abcdef"],
+            |wp, _, ids| select_in(wp, &ids[0], 0, 3),
+            vec![Input::Char('x'), Input::Char('y')],
+            vec![typed("x"), typed("y")],
+        ),
+        (
+            "Enter in a list matches new_paragraph",
+            &["item"],
+            |wp, state, ids| {
+                select_in(wp, &ids[0], 4, 4);
+                wp.dispatch_paragraph_style(&mut state.doc, "list_item", None, Some(false));
+            },
+            vec![Input::Named(NamedKey::Enter), Input::Named(NamedKey::Enter)],
+            vec![Box::new(new_paragraph), Box::new(new_paragraph)],
+        ),
+        (
+            "Backspace and Delete across blocks match delete",
+            &["first", "second"],
+            |wp, _, ids| select_in(wp, &ids[1], 0, 0),
+            vec![
+                Input::Named(NamedKey::Backspace),
+                Input::Named(NamedKey::Delete),
+            ],
+            vec![
+                Box::new(|v, d| delete(v, d, DeleteDirection::Backward, 1)),
+                Box::new(|v, d| delete(v, d, DeleteDirection::Forward, 1)),
+            ],
+        ),
+        (
+            "Ctrl+B on a selection matches toggle_mark",
+            &["make this bold"],
+            |wp, _, ids| select_in(wp, &ids[0], 5, 9),
+            vec![Input::Ctrl('b'), Input::Ctrl('b')],
+            vec![bold(), bold()],
+        ),
+        (
+            "Ctrl+A matches select_all",
+            &["one", "two"],
+            |_, _, _| {},
+            vec![Input::Ctrl('a')],
+            vec![Box::new(select_all)],
+        ),
+    ];
+    for (case, texts, setup, inputs, steps) in cases {
+        assert_keyboard_action_parity(case, texts, setup, &inputs, &steps);
+    }
 }
 
 #[test]
 fn typing_over_a_selection_keeps_typed_order() {
-    use crate::actions::editing::type_text;
-    assert_keyboard_action_parity(
-        &["abcdef"],
-        |wp, _, ids| {
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 0,
-            });
-            wp.model_mut().set_anchor();
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 3,
-            });
-        },
-        &[Input::Char('x'), Input::Char('y')],
-        &[
-            Box::new(|v, d| type_text(v, d, "x")),
-            Box::new(|v, d| type_text(v, d, "y")),
-        ],
-    );
     let (mut wp, mut state, ids) = widget_with(&["abcdef"]);
     wp.lifecycle.focused = true;
-    wp.model_mut().set_caret(Caret {
-        block: ids[0].clone(),
-        offset: 0,
-    });
-    wp.model_mut().set_anchor();
-    wp.model_mut().set_caret(Caret {
-        block: ids[0].clone(),
-        offset: 3,
-    });
+    select_in(&mut wp, &ids[0], 0, 3);
     press(&mut wp, &mut state, &Input::Char('x'));
     press(&mut wp, &mut state, &Input::Char('y'));
     assert_eq!(wp.model().block_texts(&state.doc)[0], "xydef");
-}
-
-#[test]
-fn enter_in_a_list_matches_new_paragraph() {
-    use crate::actions::editing::new_paragraph;
-    assert_keyboard_action_parity(
-        &["item"],
-        |wp, state, ids| {
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 4,
-            });
-            wp.dispatch_paragraph_style(&mut state.doc, "list_item", None, Some(false));
-        },
-        &[Input::Named(NamedKey::Enter), Input::Named(NamedKey::Enter)],
-        &[Box::new(new_paragraph), Box::new(new_paragraph)],
-    );
-}
-
-#[test]
-fn backspace_across_blocks_matches_erase_text() {
-    use crate::actions::editing::{DeleteDirection, delete};
-    assert_keyboard_action_parity(
-        &["first", "second"],
-        |wp, _, ids| {
-            wp.model_mut().set_caret(Caret {
-                block: ids[1].clone(),
-                offset: 0,
-            });
-        },
-        &[
-            Input::Named(NamedKey::Backspace),
-            Input::Named(NamedKey::Delete),
-        ],
-        &[
-            Box::new(|v, d| delete(v, d, DeleteDirection::Backward, 1)),
-            Box::new(|v, d| delete(v, d, DeleteDirection::Forward, 1)),
-        ],
-    );
-}
-
-#[test]
-fn ctrl_b_on_a_selection_matches_toggle_mark() {
-    use crate::actions::editing::{InlineMark, toggle_mark};
-    assert_keyboard_action_parity(
-        &["make this bold"],
-        |wp, _, ids| {
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 5,
-            });
-            wp.model_mut().set_anchor();
-            wp.model_mut().set_caret(Caret {
-                block: ids[0].clone(),
-                offset: 9,
-            });
-        },
-        &[Input::Ctrl('b'), Input::Ctrl('b')],
-        &[
-            Box::new(|v, d| toggle_mark(v, d, InlineMark::Strong)),
-            Box::new(|v, d| toggle_mark(v, d, InlineMark::Strong)),
-        ],
-    );
-}
-
-#[test]
-fn ctrl_a_matches_select_all() {
-    use crate::actions::editing::select_all;
-    assert_keyboard_action_parity(
-        &["one", "two"],
-        |_, _, _| {},
-        &[Input::Ctrl('a')],
-        &[Box::new(select_all)],
-    );
 }
 
 #[test]
