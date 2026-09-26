@@ -31,14 +31,16 @@ fn selection_adopts_focus_only_when_the_semantic_target_acquires_it() {
         anchor: 0,
         focus: 0,
     };
-    app.dispatch_a11y_action(accesskit::NodeId(u64::from(title) + 1), &selection);
+    let title_id = app.accessibility_node_id(title).expect("exported");
+    app.dispatch_a11y_action(title_id, &selection);
     assert_eq!(app.focused_node, Some(title));
     assert!(
         app.inspect_node(title, |widget| widget.is_focused())
             .unwrap()
     );
     // Plain TextInput moves its selection without implicitly acquiring focus.
-    app.dispatch_a11y_action(accesskit::NodeId(u64::from(body) + 1), &selection);
+    let body_id = app.accessibility_node_id(body).expect("exported");
+    app.dispatch_a11y_action(body_id, &selection);
     assert_eq!(app.focused_node, Some(title));
     let root = app.layout.root_node.unwrap();
     run_layout_pass(&mut app, root, 900, 650, 1.0, true, None).unwrap();

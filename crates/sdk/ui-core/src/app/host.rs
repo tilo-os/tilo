@@ -1105,7 +1105,7 @@ mod screen_reader_tests {
         app.autofocus_first = true;
         app.init_layout();
         let second = app.focusable_order[1];
-        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        let ak_id = app.accessibility_node_id(second).expect("exported");
         app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
         let spoken = rec.0.borrow();
         assert_eq!(
@@ -1129,7 +1129,7 @@ mod screen_reader_tests {
         );
         let before = rec.0.borrow().spoken().len();
         let second = app.focusable_order[1];
-        let ak_id = accesskit::NodeId(u64::from(second) + 1);
+        let ak_id = app.accessibility_node_id(second).expect("exported");
         app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
         assert_eq!(
             rec.0.borrow().spoken().len(),
@@ -3023,22 +3023,15 @@ impl App {
     /// The retained widget behind a semantic node of the last refresh,
     /// resolved through the same exported aliases every semantic dispatch
     /// uses; an alias that is no longer admitted resolves to nothing.
-    fn semantic_node_widget(&mut self, id: &crate::a11y_tree::SemanticId) -> Option<NodeId> {
+    fn semantic_node_widget(&self, id: &crate::a11y_tree::SemanticId) -> Option<NodeId> {
         let raw = self
             .accessibility
             .semantic_tree
             .node(id)
             .and_then(|node| node.widget_taffy_id)?;
-        let exported = self.bindings.exported_nodes(&self.layout.node_map);
-        let target = accesskit::NodeId(raw.saturating_add(1));
-        match self
-            .with_native_presentation(|root, _, _, _, _| exported.resolve(root, target))
-            .ok()
-            .flatten()
-        {
-            Some(crate::accesskit_bridge::A11yTarget::Widget(node)) => Some(node),
-            _ => None,
-        }
+        self.bindings
+            .exported_nodes(&self.layout.node_map)
+            .admitted(NodeId::from(raw))
     }
 
     fn restore_overlay_at(
@@ -4621,7 +4614,7 @@ mod semantic_tree_app_tests {
         // Retained widget ids have the same stable AccessKit mapping used by
         // the native provider. This exercises the public AT-SPI action path,
         // rather than manually draining the widget's queued intent.
-        let accesskit_button = accesskit::NodeId(u64::from(button) + 1);
+        let accesskit_button = app.accessibility_node_id(button).expect("exported");
 
         assert_eq!(
             app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
@@ -6804,10 +6797,8 @@ mod bound_component_tests {
         let leaf = app.focusable_order[0];
         app.set_focused_node(Some(leaf));
         let _ = app.ime_window_state();
-        app.dispatch_a11y_action(
-            accesskit::NodeId(u64::from(leaf).saturating_add(1)),
-            &crate::a11y::Action::Focus,
-        );
+        let leaf_id = app.accessibility_node_id(leaf).expect("exported");
+        app.dispatch_a11y_action(leaf_id, &crate::a11y::Action::Focus);
         let layout_root = app.layout.root_node.unwrap();
         app.layout.layout_dirty = true;
         run_layout_pass(&mut app, layout_root, 400, 300, 1.0, true, None).unwrap();

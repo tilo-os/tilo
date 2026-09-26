@@ -86,16 +86,16 @@ pub(crate) struct SemanticOperation {
 pub struct SemanticId(pub String);
 
 impl SemanticId {
-    fn root() -> Self {
+    pub(crate) fn root() -> Self {
         SemanticId("root".into())
     }
-    fn test_id(id: &str) -> Self {
+    pub(crate) fn test_id(id: &str) -> Self {
         SemanticId(format!("t:{id}"))
     }
-    fn synthetic(parent: &SemanticId, index: usize) -> Self {
+    pub(crate) fn synthetic(parent: &SemanticId, index: usize) -> Self {
         SemanticId(format!("{}~{}", parent.0, index))
     }
-    fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
+    pub(crate) fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
         SemanticId(format!("{}~k:{}", parent.0, key))
     }
     fn resource(id: &str) -> Self {
@@ -408,8 +408,7 @@ impl SemanticTree {
             ptr_to_taffy.insert(w_ptr as *const (), taffy_id);
         }
 
-        let mut identities = IdentityCounts::default();
-        count_identities::<BOUND>(root, 0, &mut identities);
+        let identities = crate::semantic_identity::IdentityScope::new::<BOUND>(&[root]);
         let mut builder = Build::<BOUND> {
             nodes: HashMap::new(),
             order: Vec::new(),
@@ -420,7 +419,6 @@ impl SemanticTree {
             ptr_to_taffy: &ptr_to_taffy,
             focused,
             identities,
-            owners: vec![0],
             doc,
             resource_refs: HashMap::new(),
             declared_resources: Vec::new(),
@@ -804,81 +802,6 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
     }
 }
 
-/// How often each candidate identity occurs this frame, so only an identity
-/// that names exactly one widget is used as one.
-#[derive(Default)]
-struct IdentityCounts {
-    /// Test ids across the live tree, counted on accessible widgets only: a
-    /// forwarding wrapper that reports its inner widget's id without being
-    /// accessible itself does not count against it.
-    test_ids: HashMap<String, usize>,
-    /// Semantic keys per nearest accessible ancestor (by data address; `0`
-    /// for the window root), which is the parent a keyed id is minted under.
-    keys: HashMap<(usize, String), usize>,
-    /// Each widget's semantics as the counting pass read them, so the build
-    /// asks every widget once per refresh. Keyed by data address and name,
-    /// queued in walk order for a wrapper that shares its child's address.
-    access: HashMap<(usize, String), std::collections::VecDeque<Option<AccessNode>>>,
-}
-
-impl IdentityCounts {
-    fn access_of(&mut self, w: &dyn Widget) -> Option<AccessNode> {
-        self.access
-            .get_mut(&(widget_address(w), w.name().to_owned()))
-            .and_then(std::collections::VecDeque::pop_front)
-            .unwrap_or_else(|| w.accessibility())
-    }
-}
-
-fn widget_address(w: &dyn Widget) -> usize {
-    std::ptr::from_ref::<dyn Widget>(w).cast::<()>() as usize
-}
-
-fn count_identities<const BOUND: bool>(w: &dyn Widget, owner: usize, counts: &mut IdentityCounts) {
-    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
-        return;
-    };
-    let mut child_owner = owner;
-    let access = w.accessibility();
-    counts
-        .access
-        .entry((widget_address(w), w.name().to_owned()))
-        .or_default()
-        .push_back(access.clone());
-    if let Some(access) = access {
-        if let Some(id) = w.test_id().filter(|id| !id.is_empty()) {
-            let count = counts.test_ids.entry(id.to_owned()).or_insert(0);
-            *count = count.saturating_add(1);
-        }
-        if let Some(key) = access.semantic_key {
-            let count = counts.keys.entry((owner, key)).or_insert(0);
-            *count = count.saturating_add(1);
-        }
-        child_owner = widget_address(w);
-    }
-    for child in w.children() {
-        count_identities::<BOUND>(child, child_owner, counts);
-    }
-}
-
-/// The next `Name[index]` path segment under `path_base`, counting same-named
-/// siblings exactly as the headless driver's target registry does.
-fn structural_path(
-    w: &dyn Widget,
-    path_base: &str,
-    sibling_counts: &mut HashMap<String, usize>,
-) -> String {
-    let name = w.name();
-    let index = sibling_counts.entry(name.to_owned()).or_insert(0);
-    let current = *index;
-    *index = index.saturating_add(1);
-    if path_base.is_empty() {
-        format!("{name}[{current}]")
-    } else {
-        format!("{path_base}/{name}[{current}]")
-    }
-}
-
 fn intersect_clip(clip: Option<Rect>, child_clip: Option<Rect>) -> Option<Rect> {
     match (clip, child_clip) {
         (Some(outer), Some(inner)) => Some(outer.intersect(inner)),
@@ -897,11 +820,8 @@ struct Build<'a, const BOUND: bool> {
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
     overlays: Vec<crate::view::OpenOverlay>,
-    /// How often each candidate identity occurs this frame.
-    identities: IdentityCounts,
-    /// Data addresses of the accessible widgets above the one being visited,
-    /// innermost last; `0` stands for the window root.
-    owners: Vec<usize>,
+    /// The shared identity derivation for this walk.
+    identities: crate::semantic_identity::IdentityScope,
     /// The document a widget's [`Referent`](tilo_reference::Referent) reads
     /// to say what its content is about. `None` for a bare structural walk.
     doc: Option<&'a tilo_actions::Doc>,
@@ -969,46 +889,30 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             .ptr_to_taffy
             .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())
             .copied();
-        let path = structural_path(w, path_base, sibling_counts);
+        let path = crate::semantic_identity::structural_path(w, path_base, sibling_counts);
         let child_clip = intersect_clip(clip, w.child_clip_rect());
         let mut child_counts = HashMap::new();
         match self.identities.access_of(w) {
             Some(access) => {
-                let owner = self.owners.last().copied().unwrap_or(0);
-                let unique_test_id = w
-                    .test_id()
-                    .filter(|id| !id.is_empty() && self.identities.test_ids.get(*id) == Some(&1));
-                let unique_key = access.semantic_key.as_ref().filter(|key| {
-                    let shared = self
-                        .identities
-                        .keys
-                        .get(&(owner, (*key).clone()))
-                        .is_some_and(|count| *count > 1);
-                    if shared {
-                        // Reported once per frame, never used as identity:
-                        // two siblings under one key would each answer to it.
-                        let id = SemanticId::keyed(semantic_parent, key);
-                        if !self.duplicate_ids.contains(&id) {
-                            self.duplicate_ids.push(id);
-                        }
-                    }
-                    !shared
-                });
-                let (id, durable, structural) = if let Some(test_id) = unique_test_id {
-                    (SemanticId::test_id(test_id), true, false)
-                } else if let Some(key) = unique_key {
-                    (SemanticId::keyed(semantic_parent, key), true, false)
-                } else {
-                    (SemanticId(path.clone()), false, true)
-                };
+                let crate::semantic_identity::Identified {
+                    id,
+                    durable,
+                    children_base,
+                    shared_key,
+                } = self.identities.enter(w, &access, semantic_parent, path);
+                // Reported once per frame, never used as identity: two
+                // siblings under one key would each answer to it.
+                if let Some(shared) = shared_key
+                    && !self.duplicate_ids.contains(&shared)
+                {
+                    self.duplicate_ids.push(shared);
+                }
                 for state in w.open_overlays() {
                     self.overlays.push(crate::view::OpenOverlay {
                         owner: id.as_str().to_string(),
                         state,
                     });
                 }
-                self.owners.push(widget_address(w));
-                let children_base = if structural { path } else { id.0.clone() };
 
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
@@ -1042,7 +946,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                     children.push(child);
                 }
 
-                self.owners.pop();
+                self.identities.leave();
                 let mut state = access.state;
                 if let (Some(t), Some(f)) = (taffy_id, self.focused)
                     && t == f
@@ -1120,10 +1024,7 @@ impl<const BOUND: bool> Build<'_, BOUND> {
         hosted: Vec<HostedWidget<'_>>,
         clip: Option<Rect>,
     ) -> SemanticId {
-        let id = access.key.map_or_else(
-            || SemanticId::synthetic(parent, index),
-            |key| SemanticId::keyed(parent, key),
-        );
+        let id = crate::semantic_identity::synthetic_id(parent, index, access);
         let durable = access.key.is_some() && parent_durable;
         let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();

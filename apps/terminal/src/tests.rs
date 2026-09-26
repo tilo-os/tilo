@@ -1504,7 +1504,10 @@ fn menu_clear_uses_real_app_permission_and_confirmation_admission() {
         assert_eq!(accepted, role == Role::Editor);
         // The public assistive dispatch drains exactly the same pending
         // controls as the native event loop, without a window or test bypass.
-        app.dispatch_a11y_action(ui::accesskit::NodeId(owner + 1), &Action::Focus);
+        let owner_id = app
+            .accessibility_node_id(ui::taffy::NodeId::from(owner))
+            .expect("menu owner is exported");
+        app.dispatch_a11y_action(owner_id, &Action::Focus);
         assert!(
             drain_writes(&writes).is_empty(),
             "no PTY effect before explicit confirmation"

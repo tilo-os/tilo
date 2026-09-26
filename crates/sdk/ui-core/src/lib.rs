@@ -106,6 +106,7 @@ pub mod action_host;
 pub mod action_palette;
 pub mod animation;
 pub mod inspect;
+mod semantic_identity;
 #[cfg(test)]
 extern crate self as tilo_ui;
 #[cfg(test)]

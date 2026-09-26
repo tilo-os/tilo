@@ -999,6 +999,29 @@ impl App {
         true
     }
 
+    /// The AccessKit id the widget laid out at `node` is exported under, or
+    /// `None` when it is not exported this frame. Ids come from the widget's
+    /// semantic identity, so this is how anything holding a layout node —
+    /// focus bookkeeping, a test — names the same node an assistive
+    /// technology sees.
+    pub fn accessibility_node_id(&mut self, node: NodeId) -> Option<accesskit::NodeId> {
+        let _entry = self.enter_wake_scope();
+        let exported = self.bindings.exported_nodes(&self.layout.node_map);
+        let alias = exported.focus(Some(node))?;
+        if self.history.is_some() {
+            return crate::accesskit_bridge::widget_ak_id_bound(
+                &self.history_presentation_roots(),
+                &exported.nodes,
+                alias,
+            );
+        }
+        self.with_native_presentation(|root, nodes, _, _, _| {
+            crate::accesskit_bridge::widget_ak_id_bound(&[root], nodes, alias)
+        })
+        .ok()
+        .flatten()
+    }
+
     /// `scale` is the window scale factor so bounds land in physical pixels
     /// (what AT-SPI expects).
     pub fn build_a11y_tree_update(&mut self, scale: f64) -> accesskit::TreeUpdate {
@@ -1101,9 +1124,6 @@ impl App {
         target: accesskit::NodeId,
         action: &crate::a11y::Action,
     ) -> Option<(f64, f64)> {
-        use crate::a11y::Action;
-        use crate::accesskit_bridge::A11yTarget;
-
         let _entry = self.enter_wake_scope();
 
         self.refresh_control_action_availability();
@@ -1131,6 +1151,19 @@ impl App {
                 .ok()
                 .flatten()?
         };
+        self.dispatch_a11y_target(resolved, action)
+    }
+
+    /// Carry out `action` on an already resolved accessibility target: the
+    /// half of [`dispatch_a11y_action`](Self::dispatch_a11y_action) after the
+    /// AccessKit id has been found in the current presentation.
+    fn dispatch_a11y_target(
+        &mut self,
+        resolved: crate::accesskit_bridge::A11yTarget,
+        action: &crate::a11y::Action,
+    ) -> Option<(f64, f64)> {
+        use crate::a11y::Action;
+        use crate::accesskit_bridge::A11yTarget;
         let (taffy_id, key_path, ordinal_path, semantic_target, synthetic) = match resolved {
             A11yTarget::Root => return None,
             A11yTarget::Widget(id) => (id, Vec::new(), Vec::new(), None, false),
@@ -1469,12 +1502,7 @@ impl App {
                     // native accessibility. Resolve only current admissions;
                     // an expired alias must never fall back to a raw layout id.
                     let exported = self.bindings.exported_nodes(&self.layout.node_map);
-                    let Some(crate::accesskit_bridge::A11yTarget::Widget(taffy_id)) = exported
-                        .resolve(
-                            self.root_widget.as_ref(),
-                            accesskit::NodeId(taffy_raw.saturating_add(1)),
-                        )
-                    else {
+                    let Some(taffy_id) = exported.admitted(taffy::NodeId::from(taffy_raw)) else {
                         return Ok(false);
                     };
                     let keyed_path = semantic_target
@@ -1516,8 +1544,17 @@ impl App {
                     }
                     return Ok(false);
                 }
-                let ak = accesskit::NodeId(taffy_raw.saturating_add(1));
-                if let Some((x, y)) = self.dispatch_a11y_action(ak, &verb) {
+                // The semantic node names the exported (possibly
+                // lifetime-aliased) layout node; an expired alias is gone.
+                let exported = self.bindings.exported_nodes(&self.layout.node_map);
+                let Some(node) = exported.admitted(taffy::NodeId::from(taffy_raw)) else {
+                    return Ok(false);
+                };
+                let _entry = self.enter_wake_scope();
+                self.refresh_control_action_availability();
+                if let Some((x, y)) = self
+                    .dispatch_a11y_target(crate::accesskit_bridge::A11yTarget::Widget(node), &verb)
+                {
                     return Ok(self.dispatch_semantic_click(x, y));
                 }
                 Ok(true)

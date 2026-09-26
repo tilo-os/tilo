@@ -53,6 +53,12 @@ impl ExportedNodes {
     pub(crate) fn focus(&self, node: Option<NodeId>) -> Option<NodeId> {
         self.exported.get(&node?).copied()
     }
+    /// The layout node an exported (possibly lifetime-aliased) node stands
+    /// for, when it is still admitted. An expired alias names nothing.
+    pub(crate) fn admitted(&self, exported: NodeId) -> Option<NodeId> {
+        self.actual.get(&exported).copied()
+    }
+
     pub(crate) fn resolve(&self, root: &dyn Widget, id: accesskit::NodeId) -> Option<A11yTarget> {
         let target = crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id)?;
         Some(match target {
