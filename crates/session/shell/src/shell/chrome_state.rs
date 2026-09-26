@@ -408,6 +408,8 @@ pub struct QuickSettingsState {
     /// Certified personal devices known to the device fabric, read when the
     /// popover opens. `None` when this session has no device fabric.
     pub personal_devices: Option<usize>,
+    /// Mirror of the persisted Do Not Disturb switch for the tile.
+    pub do_not_disturb: bool,
     /// Private clipboard history entries, read when the popover opens.
     pub clipboard_items: usize,
 }
@@ -480,6 +482,7 @@ impl Default for QuickSettingsState {
             power_profile: PowerProfile::Balanced,
             awake_holders: Vec::new(),
             personal_devices: None,
+            do_not_disturb: false,
             clipboard_items: 0,
         }
     }
@@ -523,6 +526,7 @@ impl QuickSettingsState {
             power_profile: PowerProfile::Balanced,
             awake_holders: Vec::new(),
             personal_devices: None,
+            do_not_disturb: false,
             clipboard_items: 0,
         }
     }
@@ -627,7 +631,7 @@ pub struct ChromeState {
     notification_bridge: Option<NotificationBridge>,
     /// Oldest-first, bounded to [`MAX_HISTORY`]. Every notification
     /// that leaves [`Self::notifications`] lands here, as does
-    /// anything [`Self::dnd`] suppressed.
+    /// anything [`Self::notifications_quiet`] suppressed.
     notification_history: Vec<Notification>,
     /// History removed by the most recent Clear all action. Kept only long
     /// enough to make that destructive-looking action safely reversible.
@@ -640,11 +644,10 @@ pub struct ChromeState {
     priority_contacts: crate::priority_contacts::PriorityContactRegistry,
     notification_policy: settings_store::notification_policy::NotificationPolicy,
     notification_policy_checked: Option<std::time::Instant>,
-    /// While `true`, fresh notifications go straight to
-    /// [`Self::notification_history`] instead of showing as banners.
-    /// Independent of [`Self::session_locked`], which suppresses
-    /// lock-screen *content* but still shows a count.
-    dnd: bool,
+    /// True while this session projects to a wireless display. Notification
+    /// contents must not reach a room full of people, so banners are held
+    /// in history exactly as under Do Not Disturb.
+    presenting: bool,
     /// Short, bounded edge flash requested by the visual-alert accessibility
     /// setting. Local session state only; it is never synced or written back.
     visual_alert_until: Option<std::time::Instant>,
@@ -807,7 +810,7 @@ impl ChromeState {
             priority_contacts: crate::priority_contacts::PriorityContactRegistry::in_memory(),
             notification_policy: settings_store::notification_policy::NotificationPolicy::default(),
             notification_policy_checked: None,
-            dnd: false,
+            presenting: false,
             visual_alert_until: None,
             session_locked: false,
             active_exposures: Vec::new(),
@@ -1767,12 +1770,13 @@ impl ChromeState {
         self.push_notification_full(Notification::new(title, body))
     }
 
-    /// Enforces the [`MAX_NOTIFICATIONS`] cap. When [`Self::dnd`] is
-    /// set, goes straight to history instead of a banner, unless it
-    /// carries [`Notification::bypass_dnd`] (shell-only; D-Bus can't set it).
+    /// Enforces the [`MAX_NOTIFICATIONS`] cap. While
+    /// [`Self::notifications_quiet`], goes straight to history instead of a
+    /// banner, unless it carries [`Notification::bypass_dnd`] (shell-only;
+    /// D-Bus can't set it).
     pub fn push_notification_full(&mut self, n: Notification) -> u64 {
         let id = n.id;
-        if self.dnd && !n.bypass_dnd {
+        if self.notifications_quiet() && !n.bypass_dnd {
             self.record_history(n);
             self.bump();
             return id;
@@ -2062,25 +2066,80 @@ impl ChromeState {
 
     // ---------- Do-Not-Disturb ----------
 
-    /// Whether Do-Not-Disturb is active. While `true`, freshly posted
-    /// notifications are suppressed from the banner surface and go
-    /// straight to history.
+    /// The person's persisted Do Not Disturb switch
+    /// ([`NotificationPolicy::do_not_disturb`]). The palette action, the
+    /// Quick Settings tile and Personal Settings all edit this one value.
+    ///
+    /// [`NotificationPolicy::do_not_disturb`]: settings_store::notification_policy::NotificationPolicy::do_not_disturb
     pub fn dnd(&self) -> bool {
-        self.dnd
+        self.notification_policy.do_not_disturb
     }
 
-    /// No-op (no revision bump) when the value is unchanged.
+    /// No-op (no revision bump) when the value is unchanged. A live session
+    /// (one with a notification bridge, which also reloads the policy) persists
+    /// the change to the shared settings document; unit tests and offscreen
+    /// captures never write the developer's real settings.
     pub fn set_dnd(&mut self, on: bool) {
-        if self.dnd != on {
-            self.dnd = on;
+        if self.notification_policy.do_not_disturb == on {
+            return;
+        }
+        self.notification_policy.do_not_disturb = on;
+        self.quick_settings.do_not_disturb = on;
+        if self.notification_bridge.is_some()
+            && !cfg!(test)
+            && let Err(error) =
+                settings_store::notification_policy::NotificationPolicy::save_do_not_disturb(on)
+        {
+            tracing::warn!(%error, "could not persist Do Not Disturb");
+        }
+        self.bump();
+    }
+
+    pub fn toggle_dnd(&mut self) -> bool {
+        let on = !self.dnd();
+        self.set_dnd(on);
+        on
+    }
+
+    /// Mirror whether a wireless projection is live. No-op when unchanged.
+    pub fn set_presenting(&mut self, presenting: bool) {
+        if self.presenting != presenting {
+            self.presenting = presenting;
             self.bump();
         }
     }
 
-    pub fn toggle_dnd(&mut self) -> bool {
-        self.dnd = !self.dnd;
-        self.bump();
-        self.dnd
+    /// Notifications are withheld automatically while the screen is seen by
+    /// others: a live projection, or a surface shared with a collaborator.
+    pub fn notifications_auto_quiet(&self) -> bool {
+        self.presenting || !self.active_exposures.is_empty()
+    }
+
+    /// Whether fresh banners are held in history right now, for any reason
+    /// that does not depend on the sender (a focus schedule can be pierced
+    /// by priority apps, so it is applied per notification instead).
+    pub fn notifications_quiet(&self) -> bool {
+        self.dnd() || self.notifications_auto_quiet()
+    }
+
+    /// Why banners are being held, for the status pill: Do Not Disturb, an
+    /// automatic hold while presenting or sharing, or the focus schedule and
+    /// when it ends. `None` when notifications show normally.
+    pub fn quiet_status(&self, local_minute: u16, weekday_from_monday: u8) -> Option<String> {
+        if self.dnd() {
+            return Some("Do Not Disturb".into());
+        }
+        if self.notifications_auto_quiet() {
+            return Some(if self.presenting {
+                "Do Not Disturb while presenting".into()
+            } else {
+                "Do Not Disturb while sharing".into()
+            });
+        }
+        self.notification_policy
+            .focus
+            .active_until(local_minute, weekday_from_monday)
+            .map(|end| format!("Focus until {:02}:{:02}", end / 60, end % 60))
     }
 
     // ---------- D-Bus notification wiring ----------
@@ -2108,6 +2167,7 @@ impl ChromeState {
         &mut self,
         policy: settings_store::notification_policy::NotificationPolicy,
     ) {
+        self.quick_settings.do_not_disturb = policy.do_not_disturb;
         self.notification_policy = policy;
         self.notification_policy_checked = Some(std::time::Instant::now());
     }
@@ -2164,6 +2224,7 @@ impl ChromeState {
         if refresh_policy {
             let policy = settings_store::notification_policy::NotificationPolicy::load();
             if policy != self.notification_policy {
+                self.quick_settings.do_not_disturb = policy.do_not_disturb;
                 self.notification_policy = policy;
                 self.bump();
             }
@@ -2229,7 +2290,7 @@ impl ChromeState {
                     self.notification_badges.insert(app_id, count.min(9_999));
                 }
             }
-            if effective.sounds {
+            if effective.sounds && !self.notifications_auto_quiet() {
                 let _ = self
                     .notification_sound
                     .as_ref()

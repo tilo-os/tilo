@@ -14685,7 +14685,13 @@ impl ShellOverlayHost {
                 st.bump();
             }
             RootAction::Changed(pending) => {
-                chrome.borrow_mut().bump();
+                {
+                    let mut st = chrome.borrow_mut();
+                    if let Some(on) = pending.do_not_disturb {
+                        st.set_dnd(on);
+                    }
+                    st.bump();
+                }
                 self.dispatch_quick_settings_toggle_actions(
                     pending.wifi,
                     pending.bluetooth,
@@ -16629,6 +16635,12 @@ impl Widget for ShellOverlayHost {
             theme.tokens.typography.scale.sm,
         );
         if let Some(chrome) = self.chrome.as_ref() {
+            // A live projection holds notification banners back so their
+            // contents never reach the room.
+            chrome.borrow_mut().set_presenting(matches!(
+                self.projection_overlay.controller().status,
+                crate::shell::projection::ProjectionStatus::Connected { .. }
+            ));
             let state = chrome.borrow();
             let available_height = (self.rect.height() - 64.0).max(1.0);
             self.qs_root

@@ -1021,6 +1021,7 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
         "Volume",
         "Wi-Fi",
         "Bluetooth",
+        "Night Light",
         "Devices",
         "Clipboard",
         "Change power profile",
@@ -1053,4 +1054,36 @@ fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
         Some("Brightness"),
         "Tab wraps to the first stop"
     );
+}
+
+/// The Do Not Disturb tile edits the one persisted switch the palette action
+/// and Personal Settings share, and the notification stack honours it.
+#[test]
+fn do_not_disturb_tile_click_holds_notifications() {
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    host = host.with_quick_settings_config(QuickSettingsConfig {
+        controls: vec![
+            settings_store::hardware::QuickSettingsControl::Wifi,
+            settings_store::hardware::QuickSettingsControl::DoNotDisturb,
+        ],
+    });
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    repaint(&mut host);
+    let centre = quick_settings_target(&host, "quick_settings_do_not_disturb").center();
+    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    {
+        let st = chrome.borrow();
+        assert!(st.dnd(), "the tile turns Do Not Disturb on");
+        assert!(st.quick_settings.do_not_disturb);
+    }
+    chrome.borrow_mut().push_notification("Held", "while quiet");
+    {
+        let st = chrome.borrow();
+        assert!(st.notifications().is_empty());
+        assert_eq!(st.notification_history().len(), 1);
+    }
+    repaint(&mut host);
+    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    assert!(!chrome.borrow().dnd(), "a second click turns it back off");
 }
