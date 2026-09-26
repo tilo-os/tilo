@@ -2,7 +2,7 @@
 //! file from a [`BlobSource`] and checking its hash on the way.
 //!
 //! This is the reverse of [`crate::pack::pack`]. It does **not** check the
-//! publisher signature — see [`crate::verify`] for that. Unpack succeeds on
+//! publisher signature — see [`crate::verify()`] for that. Unpack succeeds on
 //! an unsigned package so build tooling can round-trip without keys.
 
 use std::collections::BTreeMap;

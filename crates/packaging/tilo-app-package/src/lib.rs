@@ -17,7 +17,7 @@
 //!   [`BlobSink`] edges — see [`blobs`].
 //! - [`PackageMeta`] — the signed root, manifest and collection with every
 //!   hash link checked. See [`package`].
-//! - [`pack`], [`unpack`], [`verify`] and the [`tapp`] archive codec
+//! - [`pack()`], [`unpack()`], [`verify()`] and the [`tapp`] archive codec
 //!   (thin or full) — the operations consumers compose.
 //! - [`SigningIdentity`] — wraps either a plain Ed25519
 //!   `SigningKey` or a 1-of-1 `ThresholdIdentity`. The true

@@ -6,10 +6,10 @@
 //! ## Play locally, replay anywhere
 //!
 //! An [`Action`] is a *value* that deterministically mutates a CRDT
-//! [`Doc`](action::Doc). Applied to the local replica, its
+//! [`Doc`]. Applied to the local replica, its
 //! [`ActionEnvelope`] is replicated; a peer starting from the same state
-//! [`replay`](executor::replay)s it and lands on the **identical**
-//! document — the [executor](executor) pins the Automerge actor id (from
+//! [`replay`]s it and lands on the **identical**
+//! document — the [executor] pins the Automerge actor id (from
 //! the action's [`ActionId`]) and commit timestamp on every apply, so
 //! the resulting change is content-addressed identical everywhere.
 //!
@@ -26,7 +26,7 @@
 //! video → its comments; a book → its annotations) via
 //! [`ResourceProvider`]. Each resource exports [`ActionSpec`]s; the
 //! palette lists them, and choosing one
-//! [`dispatch`](executor::dispatch)es the underlying action.
+//! [`dispatch`]es the underlying action.
 //!
 //! ## The door
 //!
@@ -49,8 +49,8 @@
 //!
 //! Each action declares an [`ExecutionLocus`]: `ClientLocal` (this
 //! client applies + replicates; peers replay) or `ServerPreferred`
-//! (route to an authoritative host). [`dispatch`](executor::dispatch) honours
-//! it against an [`ActionTransport`](executor::ActionTransport) and refuses
+//! (route to an authoritative host). [`dispatch`] honours
+//! it against an [`ActionTransport`] and refuses
 //! the operation when no host answers.
 //!
 //! ## Sharing this vocabulary with the compositor

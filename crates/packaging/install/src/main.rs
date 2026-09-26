@@ -765,7 +765,7 @@ fn satisfy_runtime(checked: &Checked, flags: &RuntimeFlags) -> Result<(), Error>
     })
 }
 
-/// Write the PATH shims a [cli] package publishes; returns the command
+/// Write the PATH shims a `cli` package publishes; returns the command
 /// names now on PATH for it.
 fn write_cli_shims(
     manifest: &tilo_app_package::Manifest,

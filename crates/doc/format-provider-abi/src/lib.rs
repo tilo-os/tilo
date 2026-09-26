@@ -30,7 +30,7 @@
 //!
 //! # Guests
 //!
-//! Implement [`Provider`] and invoke [`export_provider!`]; the macro emits the
+//! Implement [`Provider`] and invoke `export_provider!`; the macro emits the
 //! exports above.
 
 #![cfg_attr(
