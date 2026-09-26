@@ -155,9 +155,17 @@ image = { workspace = true, features = ["jpeg", "png", "webp"] }
 collab-types = { path = "../../collab/collab-types" }
 # The content of the `session` record the recorder produces.
 session-trace = { path = "../../collab/session-trace" }
-# The private feedback room is the reporter's derived direct room with the Tilo
-# team principal.
+# What a remark is and where it goes: the private feedback room is the
+# reporter's derived direct room with the Tilo team principal.
 tilo-reference = { path = "../../collab/reference" }
+# The on-device review contract a recording passes before it leaves.
+tilo-feedback-review = { path = "../../collab/feedback-review", features = ["trace"] }
+# A remark about a control names it by the same `ui:` id the semantic tree
+# publishes, percent-encoded exactly as `ui-core` encodes it.
+percent-encoding = "2"
+# Review asks the device-local review model through the gateway's session
+# verb, off the frame loop.
+tilo-model-gateway = { path = "../../agent/model-gateway" }
 # The neighbour wire vocabulary (`NeighbourMsg`) and its retention rules,
 # shared with every other peer that speaks the collaboration protocol.
 neighbour-wire = { path = "../../collab/neighbour-wire" }

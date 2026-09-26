@@ -156,6 +156,7 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::Lock => "lock the screen",
         ShortcutAction::QuickSettings => "open Quick Settings",
         ShortcutAction::ShortcutHelp => "open this guide",
+        ShortcutAction::Remark => "say something about what you picked",
         ShortcutAction::FocusPreviousWindow => "focus the previous window",
         ShortcutAction::FocusNextWindow => "focus the next window",
         ShortcutAction::PreviousTab => "select the previous tab",

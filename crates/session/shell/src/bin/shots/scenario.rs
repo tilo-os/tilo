@@ -394,6 +394,8 @@ pub enum Action {
     ShowHostDesktopOnboarding,
     SetOnboardingVisual(shell::onboarding_view::OnboardingVisualState),
     SetLockVisual(super::driver::LockVisualState),
+    /// One step of the remark surface (see `super::remark`).
+    Remark(super::remark::RemarkStep),
 }
 
 /// A named, ordered list of actions.
@@ -650,6 +652,7 @@ fn apply_pointer_and_capture<S: SnapshotSink>(
         Action::ShowHostDesktopOnboarding => driver.show_host_desktop_onboarding(),
         Action::SetOnboardingVisual(state) => driver.set_onboarding_visual_state(*state),
         Action::SetLockVisual(state) => driver.set_lock_visual_state(*state),
+        Action::Remark(step) => super::remark::apply(driver, step),
         Action::SeedRoomActivity { explore } => {
             driver.seed_room_activity_for_shots(*explore);
         }
@@ -1580,6 +1583,9 @@ pub fn catalogue() -> Vec<Scenario> {
     vec![
         host_desktop_first_login(),
         lock_screen_states(),
+        remark_flow(),
+        remark_review(),
+        remark_recording(),
         capture_studio(),
         capture_multi_selection(),
         capture_selection_editing(),
@@ -2771,6 +2777,110 @@ fn palette_close_anim() -> Scenario {
                 frames: 10,
                 gap_frames: 1,
             },
+        ],
+    }
+}
+
+/// Say something about this: pick two controls, write, choose where it goes.
+fn remark_flow() -> Scenario {
+    use super::remark::RemarkStep as R;
+    Scenario {
+        name: "remark_flow",
+        description: "Super+M picks controls across apps, then the composer says something about them.",
+        actions: vec![
+            Action::Wait(8),
+            Action::Modifiers(ModifiersState::SUPER),
+            Action::Key(Key::Character("m".into())),
+            Action::Modifiers(ModifiersState::empty()),
+            Action::Remark(R::SeedDirectory),
+            Action::Wait(20),
+            Action::Relayout,
+            Action::Wait(4),
+            Action::Snapshot("remark-01-pick"),
+            Action::Remark(R::Invoke("remark.pick.walk", r#"{"direction":"in"}"#)),
+            Action::Remark(R::Invoke("remark.pick.walk", r#"{"direction":"in"}"#)),
+            Action::Remark(R::Invoke("remark.pick.walk", r#"{"direction":"in"}"#)),
+            Action::Wait(2),
+            Action::Snapshot("remark-02-pick-focus"),
+            Action::Remark(R::PickTwoButtons),
+            Action::Wait(2),
+            Action::Snapshot("remark-03-picked"),
+            Action::Remark(R::Invoke("remark.pick.done", "{}")),
+            Action::Wait(16),
+            Action::Snapshot("remark-04-compose-empty"),
+            Action::Remark(R::Invoke(
+                "remark.text.set",
+                r#"{"text":"History sits right against the note's title, and it looks disabled until you hover it."}"#,
+            )),
+            Action::Wait(2),
+            Action::Snapshot("remark-05-compose"),
+            Action::ClickNamed("remark_destination"),
+            Action::Wait(2),
+            Action::Snapshot("remark-06-destinations"),
+            Action::ClickNamed("remark_destination[community]"),
+            Action::Wait(2),
+            Action::Snapshot("remark-07-public"),
+        ],
+    }
+}
+
+/// Review, on the device: the walk-through of a recorded failure.
+fn remark_review() -> Scenario {
+    use super::remark::RemarkStep as R;
+    Scenario {
+        name: "remark_review",
+        description: "Walk through a recording before it is sent: titles, hidden text, the model in use, cutting a step.",
+        actions: vec![
+            Action::Remark(R::Invoke(
+                "remark.crash",
+                r#"{"app":"so.tilo.mail","label":"Mail"}"#,
+            )),
+            Action::Remark(R::SeedDirectory),
+            Action::Remark(R::SeedReview),
+            Action::Wait(20),
+            Action::Snapshot("remark-10-review"),
+            Action::Remark(R::Invoke("remark.review.select", r#"{"step":2}"#)),
+            Action::Wait(2),
+            Action::Snapshot("remark-11-review-failed-step"),
+            Action::Remark(R::Invoke("remark.review.select", r#"{"step":0}"#)),
+            Action::Remark(R::Invoke(
+                "remark.review.redact-word",
+                r#"{"step":0,"node":"t:subject","at":10}"#,
+            )),
+            Action::Remark(R::Invoke("remark.review.cut", r#"{"step":1,"cut":true}"#)),
+            Action::Wait(2),
+            Action::Snapshot("remark-12-review-edited"),
+            Action::Remark(R::Invoke("remark.review.close", "{}")),
+            Action::Wait(16),
+            Action::Snapshot("remark-13-compose-with-recording"),
+        ],
+    }
+}
+
+/// Recording from the composer, and an app that quit unexpectedly.
+fn remark_recording() -> Scenario {
+    use super::remark::RemarkStep as R;
+    Scenario {
+        name: "remark_recording",
+        description: "The Recorder's pill with Stop while showing what happened, and the crash notification.",
+        actions: vec![
+            Action::OpenHostedWindow {
+                app: "Files",
+                title: "Files",
+            },
+            Action::Wait(PLACEMENT_SETTLE_FRAMES),
+            Action::Remark(R::Invoke("remark.open", "{}")),
+            Action::Remark(R::SeedDirectory),
+            Action::Remark(R::Invoke("remark.pick.cancel", "{}")),
+            Action::Wait(16),
+            Action::Snapshot("remark-20-compose-app"),
+            Action::Remark(R::SeedRecording),
+            Action::Wait(20),
+            Action::Snapshot("remark-21-recording-pill"),
+            Action::Remark(R::Invoke("remark.discard", "{}")),
+            Action::Remark(R::SeedCrash),
+            Action::Wait(30),
+            Action::Snapshot("remark-22-crash-notification"),
         ],
     }
 }

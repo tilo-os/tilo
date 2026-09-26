@@ -211,12 +211,15 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Admin;
         }
         // Recording admits the Recorder agent to the room.
-        "peer.invite.named" | "agent.invite" | "feedback.record.start" => {
+        "peer.invite.named" | "agent.invite" | "feedback.record.start" | "remark.record.start" => {
             contract.permission = PermissionRequirement::Invite;
         }
         "feedback.record.stop"
         | "feedback.record.capture-recent"
-        | "feedback.recent-buffer.set" => {
+        | "feedback.recent-buffer.set"
+        | "remark.record.stop"
+        | "remark.record.recent"
+        | "remark.send" => {
             contract.retry = RetryPolicy::AtMostOnce;
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
@@ -762,6 +765,28 @@ struct Action {
     /// Empty for everything that only needs to be told to happen.
     params: &'static [ActionParam],
     apply: fn(&mut ChromeState, &ActionArgs) -> Result<(), ActionError>,
+}
+
+/// Run shell action `id` with JSON `args`, bound against its declared
+/// parameters exactly as an invocation through the catalogue is: the path a
+/// notification's action and a chrome control take, so neither is a second
+/// way to do the same thing.
+///
+/// # Errors
+///
+/// When no shell action is `id`, the arguments do not bind, or the action
+/// refuses.
+pub fn apply(
+    st: &mut ChromeState,
+    id: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), ActionError> {
+    let action = Action::ALL
+        .iter()
+        .find(|action| action.id == id)
+        .ok_or_else(|| ActionError::Refused(format!("no shell action `{id}`")))?;
+    let bound = ActionArgs::bind_json(action.params, args).map_err(ActionError::Arguments)?;
+    (action.apply)(st, &bound)
 }
 
 /// A chrome toggle: no parameters, and nothing that can fail.
@@ -1409,6 +1434,199 @@ impl Action {
                     .map_err(|error| ActionError::Refused(format!("setting not saved: {error}")))
             },
         },
+        // The remark surface: saying something about any part of any app,
+        // to Tilo or to a colleague. Every step is one of these, so the
+        // pointer, the keyboard, agents and tilo-control share one path.
+        chrome(
+            "remark.open",
+            "Say something about this…",
+            "Pick any part of any app and send a remark to a colleague, or feedback to Tilo",
+            crate::shell::remark::act::open,
+        ),
+        Action {
+            id: "remark.crash",
+            label: "Tell us what happened",
+            subtitle: "Report an app that quit unexpectedly, with the last two minutes when kept",
+            params: crate::shell::remark::act::CRASH_PARAMS,
+            apply: crate::shell::remark::act::open_crash,
+        },
+        chrome(
+            "remark.discard",
+            "Discard the remark",
+            "Close without sending; a recording made for it is forgotten",
+            crate::shell::remark::act::discard,
+        ),
+        chrome(
+            "remark.pick.start",
+            "Pick more",
+            "Point at, or walk to, more things the remark is about",
+            crate::shell::remark::act::pick_start,
+        ),
+        Action {
+            id: "remark.pick.at",
+            label: "Pick at a point",
+            subtitle: "Pick the node an app describes at a screen point, as a click does",
+            params: crate::shell::remark::act::PICK_AT_PARAMS,
+            apply: crate::shell::remark::act::pick_at,
+        },
+        Action {
+            id: "remark.pick.node",
+            label: "Pick a node",
+            subtitle: "Pick a node by its surface and stable semantic id",
+            params: crate::shell::remark::act::PICK_NODE_PARAMS,
+            apply: crate::shell::remark::act::pick_node,
+        },
+        Action {
+            id: "remark.pick.region",
+            label: "Pick an area",
+            subtitle: "Pick every node a screen rectangle sweeps, as a drag does",
+            params: crate::shell::remark::act::PICK_REGION_PARAMS,
+            apply: crate::shell::remark::act::pick_region,
+        },
+        Action {
+            id: "remark.pick.walk",
+            label: "Walk the pick focus",
+            subtitle: "Move to the enclosing node, a child or a sibling, as the arrow keys do",
+            params: crate::shell::remark::act::PICK_WALK_PARAMS,
+            apply: crate::shell::remark::act::pick_walk,
+        },
+        Action {
+            id: "remark.pick.take",
+            label: "Pick the focused node",
+            subtitle: "Add the node the walk stands on, as Space does",
+            params: crate::shell::remark::act::PICK_TAKE_PARAMS,
+            apply: crate::shell::remark::act::pick_take,
+        },
+        chrome(
+            "remark.pick.done",
+            "Done picking",
+            "Make what is picked the remark's subject",
+            crate::shell::remark::act::pick_done,
+        ),
+        chrome(
+            "remark.pick.cancel",
+            "Stop picking",
+            "Leave pick mode without adding anything",
+            crate::shell::remark::act::pick_cancel,
+        ),
+        Action {
+            id: "remark.pick.remove",
+            label: "Remove a pick",
+            subtitle: "Take one thing back out of what the remark is about",
+            params: crate::shell::remark::act::INDEX_PARAMS,
+            apply: crate::shell::remark::act::pick_remove,
+        },
+        Action {
+            id: "remark.text.set",
+            label: "Write the remark",
+            subtitle: "Set what the remark says",
+            params: crate::shell::remark::act::TEXT_PARAMS,
+            apply: crate::shell::remark::act::set_text,
+        },
+        Action {
+            id: "remark.destination.set",
+            label: "Choose where the remark goes",
+            subtitle: "The Tilo team privately, the community publicly, or a person or room you share",
+            params: crate::shell::remark::act::DESTINATION_PARAMS,
+            apply: crate::shell::remark::act::set_destination,
+        },
+        Action {
+            id: "remark.frames.set",
+            label: "Include screen frames",
+            subtitle: "Keep pictures of the recorded windows, personal fields masked",
+            params: crate::shell::remark::act::ENABLED_PARAMS,
+            apply: crate::shell::remark::act::set_frames,
+        },
+        chrome(
+            "remark.record.start",
+            "Record from now",
+            "The Recorder agent joins what you picked and records until you stop",
+            crate::shell::remark::act::record,
+        ),
+        chrome(
+            "remark.record.stop",
+            "Stop recording",
+            "Attach what was recorded to the remark; nothing is sent yet",
+            crate::shell::remark::act::stop,
+        ),
+        chrome(
+            "remark.record.recent",
+            "Use the last 2 minutes",
+            "Attach what the recent buffer kept on this device",
+            crate::shell::remark::act::use_recent,
+        ),
+        chrome(
+            "remark.record.remove",
+            "Remove the recording",
+            "Take the recording off the remark and forget it",
+            crate::shell::remark::act::remove_recording,
+        ),
+        chrome(
+            "remark.review.open",
+            "Review before sending",
+            "Walk through the recording step by step, hide text and cut steps",
+            crate::shell::remark::act::review_open,
+        ),
+        chrome(
+            "remark.review.close",
+            "Back to the remark",
+            "Leave the walk-through, keeping every decision",
+            crate::shell::remark::act::review_close,
+        ),
+        Action {
+            id: "remark.review.select",
+            label: "Show a step",
+            subtitle: "Show one step of the walk-through",
+            params: crate::shell::remark::act::STEP_PARAMS,
+            apply: crate::shell::remark::act::review_select,
+        },
+        Action {
+            id: "remark.review.redact",
+            label: "Hide text",
+            subtitle: "Hide a run of a step's text from what is sent",
+            params: crate::shell::remark::act::REDACT_PARAMS,
+            apply: crate::shell::remark::act::review_redact,
+        },
+        Action {
+            id: "remark.review.redact-word",
+            label: "Hide a word",
+            subtitle: "Hide the word at a position, as a click on it does",
+            params: crate::shell::remark::act::REDACT_WORD_PARAMS,
+            apply: crate::shell::remark::act::review_redact_word,
+        },
+        Action {
+            id: "remark.review.unredact",
+            label: "Show text again",
+            subtitle: "Show a run you hid; what review hid on its own stays hidden",
+            params: crate::shell::remark::act::REDACT_PARAMS,
+            apply: crate::shell::remark::act::review_unredact,
+        },
+        Action {
+            id: "remark.review.cut",
+            label: "Cut or keep a step",
+            subtitle: "Leave a step out of what is sent, or keep it again",
+            params: crate::shell::remark::act::CUT_PARAMS,
+            apply: crate::shell::remark::act::review_cut,
+        },
+        chrome(
+            "remark.review.model.set-up",
+            "Set up the review model",
+            "Download the recommended on-device model for review, after its license",
+            crate::shell::remark::act::review_set_up_model,
+        ),
+        Action {
+            id: "remark.conversation.open",
+            label: "Open the conversation",
+            subtitle: "Go to the workspace a remark was sent to, where its replies arrive",
+            params: crate::shell::remark::act::ROOM_PARAMS,
+            apply: crate::shell::remark::act::open_conversation,
+        },
+        chrome(
+            "remark.send",
+            "Send the remark",
+            "Deliver it; replies arrive in Chat",
+            crate::shell::remark::act::send,
+        ),
         chrome(
             "tab.new.terminal.here",
             "New terminal tab here",
@@ -1951,6 +2169,11 @@ impl SearchProvider for ActionsProvider {
                 && (!ctx.chrome.collab_available()
                     || ctx.chrome.tree().desktop.active_workspace().is_none())
             {
+                continue;
+            }
+            // The remark surface offers its steps only while one is being
+            // written; opening it is always offered.
+            if !crate::shell::remark::offered(action.id, &ctx.chrome.remark) {
                 continue;
             }
             let label_lower = action.label.to_lowercase();
@@ -2866,9 +3089,11 @@ mod tests {
     #[test]
     fn empty_needle_returns_everything() {
         let p = ActionsProvider::new();
-        // Peer-sync and agent rows included, so "everything" means the whole table.
+        // Peer-sync, agent and remark rows included, so "everything" means
+        // the whole table.
         let c = chrome_with_room();
         c.borrow_mut().peer_sync_enabled = true;
+        c.borrow_mut().remark.stage = crate::shell::remark::Stage::Compose;
         let cs = c.borrow();
         let doc = AutoCommit::new();
         let out = p.query(SearchContext {
@@ -2884,6 +3109,35 @@ mod tests {
                 .all(|action| out.iter().any(|result| result.id == action.id))
         );
         assert!(out.iter().all(|r| r.score == 0));
+    }
+
+    /// Saying something is always offered; its steps only while a remark is
+    /// being written, so Ctrl+K is not full of controls for nothing.
+    #[test]
+    fn remark_steps_are_offered_only_while_one_is_being_written() {
+        let p = ActionsProvider::new();
+        let doc = AutoCommit::new();
+        let ids = |chrome: &ChromeState| {
+            p.query(SearchContext {
+                needle: "",
+                wanted: &[ResourceKind::Action],
+                chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+            .into_iter()
+            .map(|result| result.id)
+            .filter(|id| id.starts_with("remark."))
+            .collect::<Vec<_>>()
+        };
+        let c = chrome_with_room();
+        let closed = ids(&c.borrow());
+        assert!(closed.contains(&"remark.open".to_string()));
+        assert!(!closed.contains(&"remark.send".to_string()));
+        crate::shell::remark::act::open(&mut c.borrow_mut(), &ActionArgs::none()).unwrap();
+        let open = ids(&c.borrow());
+        assert!(open.contains(&"remark.send".to_string()));
+        assert!(open.contains(&"remark.pick.at".to_string()));
     }
 
     /// Offered only by a session running peer sync, and when offered,

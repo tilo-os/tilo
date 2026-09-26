@@ -8,6 +8,7 @@
 mod diff;
 mod driver;
 mod mode;
+mod remark;
 mod scenario;
 
 use std::path::PathBuf;

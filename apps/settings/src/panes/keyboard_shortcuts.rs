@@ -19,6 +19,7 @@ const SEARCH: &str = "shortcuts.search";
 const OVERVIEW: &str = "shortcuts.overview";
 const LOCK: &str = "shortcuts.lock";
 const QUICK_SETTINGS: &str = "shortcuts.quick_settings";
+const REMARK: &str = "shortcuts.remark";
 const VIM_MODE: &str = "shortcuts.vim_mode";
 
 fn draft_key(key: &str) -> String {
@@ -54,6 +55,12 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             QUICK_SETTINGS,
             "Quick Settings",
             "Open the shell control surface",
+        ),
+        (
+            ShortcutAction::Remark,
+            REMARK,
+            "Say something about this",
+            "Pick any part of any app and send a remark to a colleague or feedback to Tilo",
         ),
         (
             ShortcutAction::ShortcutHelp,
@@ -185,6 +192,7 @@ fn is_desktop_navigation(action: ShortcutAction) -> bool {
             | ShortcutAction::WorkspaceOverview
             | ShortcutAction::Lock
             | ShortcutAction::QuickSettings
+            | ShortcutAction::Remark
             | ShortcutAction::ShortcutHelp
     )
 }

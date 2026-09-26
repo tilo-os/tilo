@@ -268,7 +268,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+            | ChordKey::Char('k' | 'q' | 'm' | '/' | '-' | '=')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -789,6 +789,11 @@ pub fn chrome_captures_input(fb: &FrameBuilder) -> bool {
         return true;
     }
     if fb.host().palette_visible() {
+        return true;
+    }
+    // Pick mode reaches across every app, so the apps must not take the
+    // pointer from it; the composer takes what lands on it.
+    if fb.host().remark_captures_input() {
         return true;
     }
     // The portal's file chooser, for the same reason as the peer-sync card

@@ -33,6 +33,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Spatial previous/next window | Super+Left/Right | Select group/tab |
 | Summon/dismiss workspace wheel | Super+S | — |
 | Dismiss top transient surface | Escape | Scrim/close action |
+| Say something about this (pick, remark, feedback) | Super+M | Quick Settings; Search "Say something about this…" |
 
 Ctrl+Left/Right is deliberately never captured: text fields and editors retain
 word-wise movement. Ctrl+Up/Down likewise remains application-owned. Escape is

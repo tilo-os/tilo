@@ -1876,6 +1876,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             // What the recorder holds and what waits for review; `null`
             // when this session has no broker to record through.
             "feedback": chrome.recorder().map(|recorder| recorder.status_json()),
+            // The remark being written, pick mode's scene and selection,
+            // review's steps, and how the last one sent ended.
+            "remark": crate::shell::remark::status_json(&chrome),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
             // What is actually on screen — without it a harness can only see that *a*

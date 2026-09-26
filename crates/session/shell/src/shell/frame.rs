@@ -969,6 +969,13 @@ impl FrameBuilder {
         }
         self.host.apply_layout(&self.taffy, child, Point::ORIGIN);
         self.layout_osk_overlay();
+        // Pick mode reads the apps the shell hosts in-process from the
+        // shell's own semantic tree: the tree AccessKit is built from.
+        if self.host.remark_wants_shell_tree() {
+            let mut tree = ui::a11y_tree::SemanticTree::new();
+            tree.refresh(self.host.as_ref(), &self.node_map, None, &[]);
+            self.host.set_remark_shell_tree(tree);
+        }
     }
 
     fn layout_osk_overlay(&mut self) {
@@ -2547,6 +2554,9 @@ impl FrameBuilder {
             put(format!("member_remove[{index}]"), *remove_rect);
             put(format!("member_remove[{user}]"), *remove_rect);
         }
+        for (name, rect) in host.remark_test_rects() {
+            put(name, rect);
+        }
         for (which, rect) in host.peer_sync_prompt_rects_for_tests() {
             put(format!("peer_sync_{which}"), rect);
         }
@@ -3887,3 +3897,51 @@ mod tests {
 #[cfg(test)]
 #[path = "frame_retained_tests.rs"]
 mod retained_tests;
+
+#[cfg(test)]
+mod remark_pick_tests {
+    use super::*;
+
+    /// Pick mode reads the apps the shell hosts in-process from the shell's
+    /// own semantic tree, so the bootstrap desktop's apps can be picked.
+    #[test]
+    fn pick_mode_sees_the_in_process_apps() {
+        let mut fb = FrameBuilder::new((1600, 900));
+        fb.relayout();
+        fb.with_chrome(|st| {
+            crate::shell::search::providers::actions::apply(
+                st,
+                "remark.open",
+                &serde_json::Map::new(),
+            )
+            .expect("the remark surface opens");
+        });
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        for _ in 0..3 {
+            fb.host_mut().update(&mut doc, &root);
+            fb.relayout();
+        }
+        let tiles = fb.host().in_process_tiles();
+        let chrome = fb.chrome();
+        assert_eq!(
+            chrome.pick.scene.surfaces.len(),
+            tiles.len(),
+            "every in-process app on screen is pickable"
+        );
+        let surface = &chrome.pick.scene.surfaces[0];
+        let (tab, _, _, tile) = &tiles[0];
+        assert_eq!(surface.key, format!("tab:{tab}"));
+        assert_eq!(surface.screen, *tile);
+        let centre = tile.center();
+        let hit = chrome
+            .pick
+            .scene
+            .node_at(centre)
+            .expect("the app's own tree answers under the pointer");
+        assert!(
+            tile.contains(hit.screen_rect().center()),
+            "what is hit lies in the app it was picked in"
+        );
+    }
+}

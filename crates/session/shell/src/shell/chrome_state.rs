@@ -676,6 +676,19 @@ pub struct ChromeState {
     /// The session recorder, once the collaboration broker is up. Absent in
     /// bare and headless hosts, where recording actions refuse.
     recorder: Option<std::sync::Arc<crate::shell::recorder::Recorder>>,
+    /// The remark being written: what it is about, what it says, where it
+    /// goes, and the recording that may travel with it.
+    pub remark: crate::shell::remark::Composer,
+    /// Pick mode's live state: every surface's tree and the selection.
+    pub pick: crate::shell::remark::pick::PickState,
+    /// Where a remark can go, gathered by the host when the composer opens.
+    remark_directory: crate::shell::remark::Directory,
+    /// Drained once per frame by the host's remark pump.
+    remark_requests: Vec<crate::shell::remark::Request>,
+    /// How the last remark sent from this session ended, after its
+    /// composer closed: what `state-dump` reports and the conversation a
+    /// notification opens.
+    pub last_remark: Option<crate::shell::remark::Sending>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -805,6 +818,11 @@ impl ChromeState {
             peer_sync_requests: Vec::new(),
             presence_requests: Vec::new(),
             recorder: None,
+            remark: crate::shell::remark::Composer::default(),
+            pick: crate::shell::remark::pick::PickState::default(),
+            remark_directory: crate::shell::remark::Directory::default(),
+            remark_requests: Vec::new(),
+            last_remark: None,
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -897,6 +915,28 @@ impl ChromeState {
 
     pub fn recorder(&self) -> Option<&std::sync::Arc<crate::shell::recorder::Recorder>> {
         self.recorder.as_ref()
+    }
+
+    /// Where a remark can go right now.
+    pub fn remark_directory(&self) -> &crate::shell::remark::Directory {
+        &self.remark_directory
+    }
+
+    pub fn set_remark_directory(&mut self, directory: crate::shell::remark::Directory) {
+        if self.remark_directory != directory {
+            self.remark_directory = directory;
+            self.bump();
+        }
+    }
+
+    pub fn push_remark_request(&mut self, request: crate::shell::remark::Request) {
+        if !self.remark_requests.contains(&request) {
+            self.remark_requests.push(request);
+        }
+    }
+
+    pub fn take_remark_requests(&mut self) -> Vec<crate::shell::remark::Request> {
+        std::mem::take(&mut self.remark_requests)
     }
 
     pub fn push_presence_request(&mut self, request: PresenceRequest) {
@@ -1811,7 +1851,13 @@ impl ChromeState {
             return false;
         };
         let removed = self.notifications.remove(pos);
-        if let Some(command) = removed
+        if let Some(action) = removed.shell_action.clone() {
+            if let Err(error) =
+                crate::shell::search::providers::actions::apply(self, &action.id, &action.args)
+            {
+                tracing::warn!(action = %action.id, %error, "a notification's shell action was refused");
+            }
+        } else if let Some(command) = removed
             .default_action_key()
             .and_then(|key| removed.remote_action_command(&key))
             .or_else(|| removed.remote_dismiss_command())

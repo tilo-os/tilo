@@ -39,6 +39,8 @@ pub enum RootAction {
     None,
     OpenSettings,
     OpenPowerMenu,
+    /// Say something about what is on screen: the remark surface.
+    OpenRemark,
     Enter(QsLevel),
     Changed(PendingRootActions),
     LayoutChanged,
@@ -807,6 +809,7 @@ impl QuickSettingsRoot {
             }
             1 => self.action(0),
             2 => self.action(3),
+            3 => self.action(1),
             _ => Rect::ZERO,
         }
     }
@@ -957,10 +960,10 @@ impl QuickSettingsRoot {
             // duplicates Done with an unexplained checkmark.
             self.edit_controls(state).len().saturating_add(2)
         } else {
-            // Brightness, Volume, controls, power profile, then three utilities.
+            // Brightness, Volume, controls, power profile, then four utilities.
             Self::CONTROL_FOCUS_START
                 .saturating_add(self.visible_controls(state).len())
-                .saturating_add(4)
+                .saturating_add(5)
         };
         if count == 0 {
             return false;
@@ -1042,6 +1045,9 @@ impl QuickSettingsRoot {
             return RootAction::OpenSettings;
         }
         if i == base.saturating_add(3) {
+            return RootAction::OpenRemark;
+        }
+        if i == base.saturating_add(4) {
             return RootAction::OpenPowerMenu;
         }
         RootAction::None
@@ -1187,6 +1193,9 @@ impl QuickSettingsRoot {
         }
         if self.utility(panel, state, 2).contains(point) {
             return RootAction::OpenPowerMenu;
+        }
+        if self.utility(panel, state, 3).contains(point) {
+            return RootAction::OpenRemark;
         }
         RootAction::None
     }
@@ -1405,7 +1414,7 @@ impl QuickSettingsRoot {
         // tooltip or accessibility tree is not sufficient discoverability.
         for (i, (icon, label)) in [
             (ui::icons::Icon::Settings2, "Settings"),
-            (ui::icons::Icon::Shield, "Privacy"),
+            (ui::icons::Icon::MessageSquare, "Feedback"),
             (ui::icons::Icon::History, "History"),
             (ui::icons::Icon::Power, "Power"),
         ]
@@ -2055,7 +2064,7 @@ impl QuickSettingsRoot {
             ));
         }
         if !self.edit_mode {
-            for (index, name) in ["Settings", "Privacy", "History", "Power"]
+            for (index, name) in ["Settings", "Feedback", "History", "Power"]
                 .into_iter()
                 .enumerate()
             {
@@ -2345,7 +2354,8 @@ mod tests {
         for (path, expected) in [
             (utility_start, RootAction::LayoutChanged),
             (utility_start + 1, RootAction::OpenSettings),
-            (utility_start + 2, RootAction::OpenPowerMenu),
+            (utility_start + 2, RootAction::OpenRemark),
+            (utility_start + 3, RootAction::OpenPowerMenu),
         ] {
             assert!(root.focus_accessibility_path(&[path], &state));
             assert_eq!(root.keyboard_focus, Some(path));
@@ -2589,7 +2599,7 @@ mod tests {
         let mut root = QuickSettingsRoot::default();
         let state = QuickSettingsState::default();
         root.panel = Rect::new(0., 48., 400., 520.);
-        let actions: Vec<_> = (0..3)
+        let actions: Vec<_> = (0..4)
             .map(|index| root.utility(root.panel, &state, index))
             .collect();
         for action in &actions {

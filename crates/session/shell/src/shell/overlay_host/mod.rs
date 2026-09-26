@@ -31,6 +31,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 
 mod device_fabric;
 mod history;
+mod remark;
 mod shortcuts;
 
 pub use device_fabric::{
@@ -1858,6 +1859,8 @@ pub struct ShellOverlayHost {
     /// Collaborator roster popover, including its painted geometry and hit
     /// targets. The host only applies its semantic actions to chrome state.
     collaborators_overlay: CollaboratorsOverlay,
+    /// The remark surface's view and its broker, recorder and delivery work.
+    remark: remark::RemarkHost,
     /// Peer whose live tab focus this session mirrors. Local-only and
     /// ephemeral: follow is a viewing mode, never shared workspace state.
     followed_peer: Option<String>,
@@ -3312,6 +3315,7 @@ impl ShellOverlayHost {
             activity_awareness_workspace: None,
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
+            remark: remark::RemarkHost::default(),
             projection_overlay: inputs.projection_overlay,
             followed_peer: None,
             followed_room: None,
@@ -6364,6 +6368,9 @@ impl ShellOverlayHost {
             posted = true;
         }
         for event in events {
+            // Whether this launch was still opening: a failure after the
+            // window came up is an app that stopped while in use.
+            let mut was_opening = false;
             if self.room_activity.observe_agent_launch_event(&event) {
                 chrome_handle.borrow_mut().bump();
                 posted = true;
@@ -6420,10 +6427,11 @@ impl ShellOverlayHost {
                 }
                 // A failed process can never claim its promised toplevel, so
                 // clear it at the same boundary as the opening notice.
-                crate::shell::launcher::clear_pending_placement(&event.package_id);
+                was_opening = crate::shell::launcher::clear_pending_placement(&event.package_id);
                 if let Some(notice) =
                     crate::shell::catalogue::take_pending_notice(&event.package_id)
                 {
+                    was_opening = true;
                     let mut st = chrome_handle.borrow_mut();
                     st.dismiss_notification(notice);
                     st.bump();
@@ -6468,6 +6476,23 @@ impl ShellOverlayHost {
                 LaunchEventKind::SpawnFailed { .. } | LaunchEventKind::Failed { .. } => {}
             }
             event.log_failure();
+            // An app that was already in use and quit abnormally: offer to
+            // tell Tilo what happened, about that app, with what the recent
+            // buffer kept when it is on.
+            if matches!(event.kind, LaunchEventKind::Failed { .. }) && !was_opening {
+                let mut st = chrome_handle.borrow_mut();
+                let buffered = st
+                    .recorder()
+                    .is_some_and(|recorder| recorder.recent_buffer_enabled());
+                st.push_notification_full(crate::shell::remark::crash_notification(
+                    &event.display_name,
+                    &event.package_id,
+                    buffered,
+                ));
+                st.bump();
+                posted = true;
+                continue;
+            }
             let Some(notice) = event.failure_notice() else {
                 continue;
             };
@@ -11986,6 +12011,17 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
+        if shortcut_pressed(ShortcutAction::Remark) {
+            if !repeat && let Some(chrome) = self.chrome.clone() {
+                let _ = crate::shell::search::providers::actions::apply(
+                    &mut chrome.borrow_mut(),
+                    "remark.open",
+                    &serde_json::Map::new(),
+                );
+            }
+            *handled = true;
+            return true;
+        }
         if shortcut_pressed(ShortcutAction::QuickSettings) {
             if !repeat && let Some(chrome) = self.chrome.clone() {
                 chrome.borrow_mut().toggle_quick_settings();
@@ -14861,6 +14897,17 @@ impl ShellOverlayHost {
                 // policy; opening it as a fallback would silently change the
                 // meaning of this personal/device-settings action.
             }
+            RootAction::OpenRemark => {
+                let mut st = chrome.borrow_mut();
+                st.overlays.quick_settings = false;
+                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                let _ = crate::shell::search::providers::actions::apply(
+                    &mut st,
+                    "remark.open",
+                    &serde_json::Map::new(),
+                );
+                st.bump();
+            }
             RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
                 self.power_menu.open();
@@ -16296,7 +16343,8 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
-        let presence_dirty = self.pump_presence_requests() | self.pump_recorder();
+        let presence_dirty =
+            self.pump_presence_requests() | self.pump_recorder() | self.pump_remark();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
@@ -16805,6 +16853,9 @@ impl Widget for ShellOverlayHost {
         if let Some((_, display)) = self.personal_display.as_mut() {
             display.draw(scene, transform, text_renderer, theme, presence);
         }
+        // Above every app and the ordinary chrome, so pick mode reaches all
+        // of them; below Capture Studio, which can capture it.
+        self.draw_remark(scene, transform, text_renderer, theme, presence);
         self.capture_studio
             .draw(scene, transform, text_renderer, theme, presence);
     }
@@ -16936,6 +16987,19 @@ impl Widget for ShellOverlayHost {
             if !is_unmodified_tab && !is_unmodified_activation {
                 *handled = true;
             }
+            return;
+        }
+        // The remark surface: pick mode and review own the seat; the
+        // composer owns what lands on it and its text field's keys.
+        if self.handle_remark_event(
+            event,
+            scale_factor,
+            *modifiers,
+            state,
+            path,
+            handled,
+            focus_target,
+        ) {
             return;
         }
         // Split into named gates and dispatch stages — was one

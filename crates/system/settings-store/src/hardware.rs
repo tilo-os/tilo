@@ -767,6 +767,8 @@ pub enum ShortcutAction {
     Lock,
     QuickSettings,
     ShortcutHelp,
+    /// Say something about what is picked or selected: the remark surface.
+    Remark,
     FocusPreviousWindow,
     FocusNextWindow,
     PreviousTab,
@@ -1183,6 +1185,9 @@ impl Default for ShortcutConfig {
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
             (ShortcutAction::Lock, super_chord("l")),
             (ShortcutAction::QuickSettings, super_chord("q")),
+            // M for remark: the same gesture sends feedback to Tilo and a
+            // remark to a colleague, so it is named after neither.
+            (ShortcutAction::Remark, super_chord("m")),
             // A physical question-mark press reports the shifted slash key
             // plus Shift. Keep the stored/default chord identical to that
             // live event rather than accepting the unshifted slash instead.
@@ -1679,7 +1684,8 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 21);
+        assert_eq!(cfg.bindings.len(), 22);
+        assert_eq!(cfg.bindings[&ShortcutAction::Remark].display(), "Super+m");
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

@@ -2816,16 +2816,19 @@ pub(crate) fn take_staged_resume_for_package(
 /// Drop the newest unclaimed placement note for `package_id`, if any —
 /// undoing the most recently staged launch that failed before a surface was
 /// created without destroying older concurrent launches' destinations.
-pub fn clear_pending_placement(package_id: &str) {
+/// Returns whether one was waiting: whether the launch was still opening.
+pub fn clear_pending_placement(package_id: &str) -> bool {
     let mut pending = lock(&PENDING_PLACEMENT);
     let note = pending
         .iter()
         .rposition(|p| p.key == package_id && p.claimed_by.is_none())
         .map(|index| pending.remove(index));
     drop(pending);
-    if let Some(note) = note {
-        tilo_startup_metrics::launch_failed(note.launch_metric_id);
-    }
+    let Some(note) = note else {
+        return false;
+    };
+    tilo_startup_metrics::launch_failed(note.launch_metric_id);
+    true
 }
 
 /// Forget the one claimed placement belonging to a launch that reported a

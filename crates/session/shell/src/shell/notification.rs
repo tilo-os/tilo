@@ -145,6 +145,17 @@ pub struct Notification {
     pub show_on_lock_screen: bool,
     /// Hide body text in the live banner while retaining it in local history.
     pub show_preview: bool,
+    /// For a notification the shell itself posts: the shell action its
+    /// default action runs, from the same catalogue `Ctrl+K` and agents
+    /// use, so acting on a notification is never a path of its own.
+    pub shell_action: Option<ShellAction>,
+}
+
+/// A shell action a notification runs when acted on.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ShellAction {
+    pub id: String,
+    pub args: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Notification {
@@ -168,6 +179,7 @@ impl Notification {
             bypass_dnd: false,
             show_on_lock_screen: true,
             show_preview: true,
+            shell_action: None,
         }
     }
 
@@ -216,6 +228,7 @@ impl Notification {
             bypass_dnd: false,
             show_on_lock_screen: false,
             show_preview: true,
+            shell_action: None,
         }
     }
 
@@ -265,6 +278,7 @@ impl Notification {
             // screen disclosure surface.
             show_on_lock_screen: false,
             show_preview: !body_redacted,
+            shell_action: None,
         })
     }
 
@@ -324,6 +338,26 @@ impl Notification {
             return Some(k.clone());
         }
         self.actions.first().map(|(k, _)| k.clone())
+    }
+
+    /// The shell action this notification's default action runs, labelled
+    /// as the action the toast offers.
+    #[must_use]
+    pub fn with_shell_action(
+        mut self,
+        label: impl Into<String>,
+        id: impl Into<String>,
+        args: serde_json::Value,
+    ) -> Self {
+        self.actions = vec![("default".into(), label.into())];
+        self.shell_action = Some(ShellAction {
+            id: id.into(),
+            args: match args {
+                serde_json::Value::Object(map) => map,
+                _ => serde_json::Map::new(),
+            },
+        });
+        self
     }
 
     #[must_use]

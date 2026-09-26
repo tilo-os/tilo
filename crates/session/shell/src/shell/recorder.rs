@@ -651,6 +651,22 @@ impl Recorder {
         })
     }
 
+    /// Read a session waiting for review without taking it: review walks
+    /// through it while it stays in memory, and only sending or discarding
+    /// takes it.
+    pub fn with_pending<T>(
+        &self,
+        id: &RecordId,
+        read: impl FnOnce(&PendingSession) -> T,
+    ) -> Option<T> {
+        let control = lock(&self.control);
+        control
+            .awaiting_review
+            .iter()
+            .find(|pending| &pending.checkout.id == id)
+            .map(read)
+    }
+
     /// Hand a reviewed-or-discarded session over, removing it from memory.
     pub fn take_session(&self, id: &RecordId) -> Option<PendingSession> {
         let mut control = lock(&self.control);
