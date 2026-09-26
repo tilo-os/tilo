@@ -349,6 +349,9 @@ pub struct DisplayPane {
     isolate_document: bool,
     require_operation_token: bool,
     needs_seed: bool,
+    /// The arrangement canvas's in-progress drag; kept here because the
+    /// composition is rebuilt between frames.
+    arrangement_drag: ui::LocalState<Option<super::display_arrangement::ArrangementDrag>>,
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
 }
@@ -411,6 +414,7 @@ impl DisplayPane {
             isolate_document: false,
             require_operation_token: false,
             needs_seed: true,
+            arrangement_drag: ui::LocalState::new(None),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -470,6 +474,7 @@ impl DisplayPane {
             isolate_document: false,
             require_operation_token: false,
             needs_seed: true,
+            arrangement_drag: ui::LocalState::new(None),
             composed: None,
             rect: Rect::ZERO,
         }
@@ -601,6 +606,20 @@ impl DisplayPane {
             }
             Op::SetPosition { connector, label } => {
                 let _ = state.put(root, output_key(connector, "position"), label.as_str());
+                // A relative position replaces an exact one from a drag.
+                let _ = state.delete(root, output_key(connector, "x"));
+                let _ = state.delete(root, output_key(connector, "y"));
+            }
+            Op::MoveOutput { connector, x, y } => {
+                let _ = state.put(root, output_key(connector, "x"), i64::from(*x));
+                let _ = state.put(root, output_key(connector, "y"), i64::from(*y));
+            }
+            Op::Identify => {
+                self.finish_display_operation(
+                    settings_store::display_identify::IdentifyRequest::request()
+                        .map(|_| "Each display shows its number.".into())
+                        .map_err(|error| format!("Displays could not be identified: {error}")),
+                );
             }
             Op::SetMirror { connector, label } => {
                 let _ = state.put(root, output_key(connector, "mirror"), label.as_str());
@@ -684,9 +703,10 @@ impl DisplayPane {
         crate::widgets::cards(cards)
     }
 
-    /// The "Displays" arrangement card: one row per *connected* output plus a
-    /// caption about idle ports. See [`Self::connected_outputs`] for why
-    /// disconnected ports aren't enumerated.
+    /// The "Displays" arrangement card: a drag-to-arrange canvas of the
+    /// connected outputs with an Identify button, plus a caption about idle
+    /// ports. See [`Self::connected_outputs`] for why disconnected ports
+    /// aren't enumerated.
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
         if connected.is_empty() {
             return card(
@@ -695,25 +715,121 @@ impl DisplayPane {
             );
         }
         let disconnected = self.outputs.len() - connected.len();
-        let mut out_rows: Vec<El> = Vec::new();
-        for (index, o) in connected.iter().enumerate() {
-            let config = self.output_config.outputs.get(&o.connector);
-            let status = if config.is_some_and(|config| !config.enabled) {
-                "Disabled"
-            } else if config.map_or(index == 0, |config| config.primary) {
-                "Active · primary"
-            } else {
-                "Active"
-            };
-            out_rows.push(value_row(&o.label, status));
-        }
+        let displays = self.arranged_displays(connected);
+        let moves = displays
+            .iter()
+            .filter(|display| display.movable)
+            .filter_map(|display| {
+                crate::actions::display_output_move_binding(display.connector.clone())
+                    .map(|binding| (display.connector.clone(), binding))
+            })
+            .collect();
+        let mut out_rows: Vec<El> = vec![
+            Box::new(super::display_arrangement::DisplayArrangement::new(
+                displays,
+                moves,
+                self.arrangement_drag.clone(),
+            )),
+            caption(&crate::i18n::t("display-arrangement-hint")),
+            setting_row(
+                &crate::i18n::t("display-identify-row"),
+                Box::new(
+                    Button::new(
+                        "settings.display.identify",
+                        &crate::i18n::t("display-identify"),
+                        None,
+                    )
+                    .on_action(
+                        crate::actions::display_unit_binding("identify")
+                            .expect("display identify action is published"),
+                    ),
+                ),
+            ),
+        ];
         // One honest line about the idle ports rather than a row each.
-        out_rows.push(caption(if disconnected == 0 {
+        out_rows.push(caption(if connected.len() > 1 {
+            "Super+P switches between extend, mirror and single-screen at any time."
+        } else if disconnected == 0 {
             "Connect a second display to extend or mirror your screen."
         } else {
             "Connect a display to a free port to extend or mirror your screen."
         }));
         card("Displays", rows(out_rows))
+    }
+
+    /// The connected outputs as the arrangement canvas draws them: staged
+    /// layout first, committed layout otherwise, numbered the way the
+    /// compositor numbers them for Identify.
+    fn arranged_displays(
+        &self,
+        connected: &[&DisplayOutput],
+    ) -> Vec<super::display_arrangement::ArrangedDisplay> {
+        use super::display_arrangement::{ArrangedDisplay, placement::Placement};
+
+        let config = self
+            .pending_candidate
+            .as_ref()
+            .unwrap_or(&self.output_config);
+        let numbers =
+            settings_store::display_identify::number_displays(connected.iter().map(|output| {
+                (
+                    output.builtin,
+                    if output.connector_label.is_empty() {
+                        output.connector.as_str()
+                    } else {
+                        output.connector_label.as_str()
+                    },
+                    output.connector.as_str(),
+                )
+            }));
+        let mut next_free_x = 0_i32;
+        let mut placed: Vec<ArrangedDisplay> = Vec::new();
+        for (index, output) in connected.iter().enumerate() {
+            let entry = config.outputs.get(&output.connector);
+            let resolved = entry.cloned().unwrap_or_default();
+            if !resolved.enabled {
+                continue;
+            }
+            let mode = resolved.mode.or(output.current_mode).unwrap_or(OutputMode {
+                width: 1920,
+                height: 1080,
+                refresh_mhz: 60_000,
+            });
+            let (width, height) =
+                settings_store::display_mode::output_extent(mode, resolved.transform);
+            // An output with no saved position has never been arranged: put
+            // it after the others rather than on top of them.
+            let (x, y) = if entry.is_some() {
+                (resolved.x, resolved.y)
+            } else {
+                (next_free_x, 0)
+            };
+            next_free_x = next_free_x.max(x.saturating_add(width));
+            placed.push(ArrangedDisplay {
+                connector: output.connector.clone(),
+                label: output.label.clone(),
+                number: numbers.get(index).copied().unwrap_or(index + 1),
+                placement: Placement::new(x, y, width, height),
+                primary: resolved.primary,
+                movable: resolved.mirror_of.is_none(),
+            });
+        }
+        // A mirror shows its target's picture, so it sits on the target.
+        let targets: Vec<(String, Placement)> = placed
+            .iter()
+            .map(|display| (display.connector.clone(), display.placement))
+            .collect();
+        for display in &mut placed {
+            if let Some(target) = config
+                .outputs
+                .get(&display.connector)
+                .and_then(|entry| entry.mirror_of.as_ref())
+                && let Some((_, at)) = targets.iter().find(|(connector, _)| connector == target)
+            {
+                display.placement = display.placement.at(at.x, at.y);
+            }
+        }
+        placed
     }
 
     /// The brightness slider + night-light comfort preferences card.
@@ -1896,7 +2012,20 @@ impl DisplayPane {
                 changed = true;
             }
         }
-        if let Some(position) =
+        let exact = ui::doc::read_i64_coerced(state, root, output_key(&output.connector, "x"))
+            .zip(ui::doc::read_i64_coerced(
+                state,
+                root,
+                output_key(&output.connector, "y"),
+            ))
+            .and_then(|(x, y)| Some((i32::try_from(x).ok()?, i32::try_from(y).ok()?)));
+        if let Some((x, y)) = exact {
+            if (cfg.x, cfg.y) != (x, y) {
+                cfg.x = x;
+                cfg.y = y;
+                changed = true;
+            }
+        } else if let Some(position) =
             read_str_or_text(state, root, output_key(&output.connector, "position"))
         {
             let relative = ["Left", "Right", "Above", "Below"].iter().find_map(|side| {
@@ -2469,6 +2598,107 @@ mod tests {
             Some((full_hd_5994, full_hd_60)),
             "software mirroring needs a shared extent, not identical connector clocks"
         );
+    }
+
+    fn laptop_with_monitor_pane() -> DisplayPane {
+        let full_hd = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let qhd = OutputMode {
+            width: 2560,
+            height: 1440,
+            refresh_mhz: 60_000,
+        };
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![qhd]),
+                display_with_modes("eDP-1", "Built-in display", true, vec![full_hd]),
+            ]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                x: 1920,
+                ..Default::default()
+            },
+        );
+        pane
+    }
+
+    #[test]
+    fn the_arrangement_numbers_and_sizes_displays_like_identify() {
+        let pane = laptop_with_monitor_pane();
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!((panel.number, monitor.number), (1, 2));
+        assert!(panel.primary && !monitor.primary);
+        assert_eq!(
+            monitor.placement,
+            super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
+        );
+    }
+
+    #[test]
+    fn a_dropped_display_stages_its_exact_position() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor_pane();
+        let mut doc = AutoCommit::new();
+        pane.execute_local_command(
+            &mut doc,
+            crate::actions::DisplayOperation::MoveOutput {
+                connector: "HDMI-A-1".into(),
+                x: -2560,
+                y: -360,
+            },
+        );
+        let staged = pane.pending_candidate.as_ref().expect("the drop is staged");
+        assert_eq!(
+            (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
+            (-2560, -360)
+        );
+        assert!(
+            DisplayTransaction::load().is_none(),
+            "a drop is staged like every other edit, not applied"
+        );
+
+        // Choosing a relative position afterwards replaces the exact one.
+        pane.execute_local_command(
+            &mut doc,
+            crate::actions::DisplayOperation::SetPosition {
+                connector: "HDMI-A-1".into(),
+                label: "Right of Built-in display".into(),
+            },
+        );
+        let staged = pane.pending_candidate.as_ref().unwrap();
+        assert_eq!(
+            (staged.outputs["HDMI-A-1"].x, staged.outputs["HDMI-A-1"].y),
+            (1920, 0)
+        );
+    }
+
+    #[test]
+    fn identify_asks_the_compositor_to_number_the_displays() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = laptop_with_monitor_pane();
+        assert!(settings_store::display_identify::IdentifyRequest::load().is_none());
+        pane.execute_local_command(
+            &mut AutoCommit::new(),
+            crate::actions::DisplayOperation::Identify,
+        );
+        let request = settings_store::display_identify::IdentifyRequest::load()
+            .expect("Identify writes the request the compositor polls");
+        assert!(request.remaining_ms(unix_now_ms()).is_some());
     }
 
     #[test]

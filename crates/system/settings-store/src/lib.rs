@@ -46,6 +46,7 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 pub mod continuity;
+pub mod display_identify;
 pub mod display_mode;
 pub mod hardware;
 pub mod notification_policy;

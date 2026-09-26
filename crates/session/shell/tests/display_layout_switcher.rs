@@ -1,15 +1,18 @@
-//! Super+P display layouts, end to end through the real overlay host: the
-//! chord opens the sheet over a compositor-published display snapshot,
-//! keys choose a layout, and the staged display transaction the compositor
-//! applies is read back from the settings file it watches.
+//! Display layout and identification, end to end through the real overlay
+//! host over a compositor-published display snapshot: Super+P opens the
+//! layout sheet, keys choose a layout, and the staged display transaction
+//! the compositor applies is read back from the settings file it watches;
+//! an Identify request from Settings puts a numbered card on every display.
 
 use std::collections::{BTreeMap, HashMap};
 
+use settings_store::display_identify::IdentifyRequest;
 use settings_store::hardware::{
     DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplayTransaction, DisplayTransactionState,
-    OutputDescriptor, OutputMode, process_start_ticks,
+    LiveOutputPlacement, OutputDescriptor, OutputMode, process_start_ticks,
 };
 use shell::shell::build_tilo_overlay_host_with_chrome;
+use shell::shell::overlay_host::OutputGeometry;
 use shell::shell::overlay_host::ShellOverlayHost;
 use shell::shell::state::WorkspaceTree;
 use taffy::prelude::TaffyMaxContent;
@@ -17,7 +20,7 @@ use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::a11y::{AccessNode, Role};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::Point;
+use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
 
@@ -49,6 +52,16 @@ fn output(connector: &str, builtin: bool, modes: &[OutputMode]) -> DisplayOutput
     }
 }
 
+fn placement(connector: &str, x: i32, width: u32, height: u32) -> LiveOutputPlacement {
+    LiveOutputPlacement {
+        connector: connector.into(),
+        x,
+        y: 0,
+        width,
+        height,
+    }
+}
+
 /// Publish a laptop panel and an HDMI monitor exactly as the compositor
 /// does: the runtime snapshot, stamped with a live publisher identity.
 fn publish_laptop_with_monitor() {
@@ -61,6 +74,10 @@ fn publish_laptop_with_monitor() {
         outputs: vec![
             output("eDP-1", true, &[mode(2560, 1600), mode(1920, 1080)]),
             output("HDMI-A-1", false, &[mode(3840, 2160), mode(1920, 1080)]),
+        ],
+        layout: vec![
+            placement("eDP-1", 0, 2560, 1600),
+            placement("HDMI-A-1", 2560, 3840, 2160),
         ],
     }
     .save()
@@ -280,4 +297,48 @@ fn super_p_again_cycles_and_enter_applies_the_highlighted_layout() {
     let transaction = staged();
     assert!(transaction.candidate.outputs["eDP-1"].enabled);
     assert!(!transaction.candidate.outputs["HDMI-A-1"].enabled);
+}
+
+#[test]
+fn identify_puts_a_numbered_card_on_every_display() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    publish_laptop_with_monitor();
+    let (mut host, _chrome) = build_tilo_overlay_host_with_chrome(&WorkspaceTree::bootstrap_demo());
+    let outputs = [
+        OutputGeometry {
+            x: 0.0,
+            width: 2560.0,
+            height: 1600.0,
+        },
+        OutputGeometry {
+            x: 2560.0,
+            width: 3840.0,
+            height: 2160.0,
+        },
+    ];
+    host.set_output_geometry(&outputs);
+    let _layout = layout_host(&mut host);
+    assert!(host.display_identify_labels().is_empty());
+    assert!(!host.poll_display_identify(), "nothing was asked yet");
+
+    IdentifyRequest::request().expect("Settings writes the request");
+    assert!(host.poll_display_identify());
+    let labels = host.display_identify_labels();
+    assert_eq!(labels.len(), outputs.len(), "one card per display");
+    for (label, output) in labels.iter().zip(&outputs) {
+        assert_eq!(
+            label.output,
+            Rect::new(output.x, 0.0, output.x + output.width, output.height),
+            "each card is centred on its own display"
+        );
+    }
+    let named: Vec<(usize, &str)> = labels
+        .iter()
+        .map(|label| (label.number, label.name.as_str()))
+        .collect();
+    assert_eq!(named, [(1, "Built-in display"), (2, "HDMI-A-1")]);
+    assert!(
+        !host.poll_display_identify(),
+        "one request shows the numbers once"
+    );
 }
