@@ -2279,6 +2279,7 @@ COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
     os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
     os/etc/containers/policy.json os/etc/containers/registries.d/code.podesta.ai.yaml \
     os/etc/containers/registries.d/code.tilo.so.yaml \
+    os/etc/containers/registries.d/registry.tilo.so.yaml \
     /run/tilo-trust-inputs/
 RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
     mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
@@ -2287,6 +2288,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
  && cp -a /run/tilo-trust-inputs/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml \
  && cp -a /run/tilo-trust-inputs/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml \
+ && cp -a /run/tilo-trust-inputs/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml \
  && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \

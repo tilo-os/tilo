@@ -97,11 +97,16 @@ class ContainerSignaturePolicyTests(unittest.TestCase):
                 self.assertNotIn({'type': 'insecureAcceptAnything'}, requirements)
 
     def test_signed_repositories_look_up_sigstore_attachments(self):
+        # registries.d scopes are a host, a namespace or a repository; the
+        # most specific scope containing the repository decides.
         attachments = attachment_repositories()
-        for scope in signed_repositories():
-            with self.subTest(scope=scope):
-                enabled, _ = attachments.get(scope, (False, None))
-                self.assertTrue(enabled, f'{scope} has no use-sigstore-attachments entry')
+        for repository in signed_repositories():
+            with self.subTest(repository=repository):
+                scopes = [scope for scope in attachments
+                          if repository == scope or repository.startswith(scope + '/')]
+                self.assertTrue(scopes, f'{repository} has no use-sigstore-attachments entry')
+                enabled, _ = attachments[max(scopes, key=len)]
+                self.assertTrue(enabled, f'{repository} disables sigstore attachments')
 
     def test_image_recipes_install_every_attachment_file(self):
         for recipe in IMAGE_RECIPES:
