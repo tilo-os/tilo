@@ -655,10 +655,13 @@ bounds.
   loop-mounted store) are gone too: an epoch is now one signed changeset,
   written in one log transaction (see "What the operation log implements"
   in §8.3).
-- *Content is still stored twice.* The daemon chunks the snapshot file into
-  its existing content store (gear CDC, v1 manifests); capture therefore runs
-  with `hash_content = false` and the FastCDC manifests of §7 are unused until
-  the file-backed `ChunkStore` (§7.4) replaces the blob copy.
+- *Content is stored once.* The capture chunks what changed in the format
+  of §7 (re-hashing only changed extents of a file it chunked before), and
+  publishing clones the snapshot file into the content store's area on the
+  store volume (`<store>/.content/<room>/`) instead of reading it. A peer
+  fetches missing ranges into the area and fills placeholders by copying
+  area ranges, which clones extents. See "What the content format and store
+  implement" in §7.
 
 **Not yet**
 
@@ -755,6 +758,52 @@ rule, and two physical backings:
 - The daemon writes the snapshot file that it hashes, so "the bytes on disk
   still match the hash" holds by construction. Sending re-verifies anyway: a
   corrupt disk must never propagate.
+
+**What the content format and store implement** (`crates/system/fs-content`,
+`crates/system/fs/src/store/`, `hydration/ranges.rs`):
+
+- *Chunking* follows the table of §7.1: normalised FastCDC, tiers sticky per
+  record with the 4× hysteresis, chunk hashes computed on several threads,
+  and cut points of a large body found on several threads (each thread
+  chunks a segment; the true sequence joins a segment's cuts at the first
+  cut both found, which is exact because a cut depends only on the bytes
+  from its chunk's start). Compression in transfer is not implemented.
+- *The manifest is one self-contained blob* rather than `HashSeq[meta, …]`
+  with a separate meta blob: a `HashSeq` whose first entry is a header
+  (`"tilocf"`, format 2, tier, total length, chunk count), then the chunk
+  hashes, then the chunk lengths packed eight to an entry. One blob tells a
+  reader where every chunk starts; a `GET` of the content id names chunk
+  `i` at position `i + 2` and never asks for the header or length entries,
+  and the provider authorises exactly those positions of a readable content
+  id. Small files keep the cost of the earlier format: a manifest and one
+  chunk. Legacy postcard manifests are read everywhere; the format is told
+  apart by the header, and nothing is converted in bulk.
+- *Backings.* The content store keeps loose blobs in iroh-blobs (manifests,
+  the chunks of content up to 1 MiB, legacy content) and everything larger
+  in a **file area**: one sparse file per content id at the file's own
+  offsets, with persisted range residency, a chunk index (chunk hash →
+  entry, offset, length) and a retention class. The provider does not go
+  through a custom iroh-blobs store backend: it is handed a store that
+  answers the provider's requests itself, reading area chunks from their
+  files, checking each against its hash and computing its BAO outboard
+  from the bytes it just read, and forwarding everything else to the loose
+  store. A corrupt or stale file fails the request instead of reaching a
+  peer.
+- *Ranged fetches.* A read of file-backed content turns its missing byte
+  ranges into `GET`s of the content id whose `RangeSpecSeq` names the
+  chunks it overlaps and, within each, the 16 KiB groups needed (16 MiB of
+  groups per request, 8 requests in flight per peer, spread over peers,
+  retried on the next peer). Verified groups are written straight into the
+  area; residency is recorded after the data is synced, in batches of
+  256 MiB, so a crash or restart resumes with what is missing and never
+  trusts unsynced bytes. Chunks this device already holds, in another entry
+  or as loose blobs, are copied locally instead of fetched, so a new version
+  of a large file costs only its changed chunks on the wire. Concurrent
+  readers of overlapping ranges share one fetch.
+- *Streaming publish.* A Tier 1 author never holds a file in memory: the
+  capture maps the snapshot, and the content store clones it into the area.
+  Content without a capture (a FUSE commit is already in memory) is chunked
+  from memory, or as a stream from a file.
 
 ### 7.5 Dedup scope and the access rule
 
@@ -992,10 +1041,16 @@ One engine moves record operations, file content, CRDT segments and packages.
 **What the transfer engine implements** (`crates/system/fs/src/sync/session.rs`,
 `hydration/batch.rs`, `blob_access.rs`, `record_reconcile.rs`):
 
-- `tilo-fs-session/1`: one connection per peer, authenticated once, a
+- `tilo-fs-session/2`: one connection per peer, authenticated once, a
   QUIC stream per request, every request authorised against the live
   policy and certification. It carries the namespace (Automerge sync
   between writers; changes since the reader's heads for read-only peers),
+  each payload bound to the requesting workspace by the sender's device
+  signature over the workspace, the payload kind and the digest of its
+  bytes, and applied only from a device the receiver's policy lets read
+  (or, for sync, write) the whole workspace
+  (`crates/system/fs/src/namespace_binding.rs`; `tilo-fs-sync/1` does the
+  same),
   range-based reconciliation of record stream heads, pulls of up to 1024
   streams per request with files up to 4 KiB inline, batched replica
   receipts (only for revisions not acknowledged recently), the authority
@@ -1009,14 +1064,22 @@ One engine moves record operations, file content, CRDT segments and packages.
   ranges; the serving side authorises chunks through them from an index
   rebuilt only when the namespace heads change, concurrently and without
   holding the namespace lock.
-- Not yet: `HashSeq` manifests and BAO range requests into a chunk (content
-  is still gear-CDC v1 manifests), priority classes, hedged multi-peer
-  splitting of one large file, and push of content (announcements make
-  peers pull).
+- Large content goes as ranged `GET`s of the content id (see "What the
+  content format and store implement" in §7). Priority classes order
+  them: a blocked read and the read-ahead of an active sequential reader
+  are interactive and sent at once; pinned, predictive and backfill work
+  is admitted only while no interactive request is on the wire, and claims
+  its ranges only once admitted, so it never holds a range a reader waits
+  for. A background transfer therefore delays a foreground read by at most
+  the requests already in flight.
+- Not yet: hedged multi-peer splitting of one large file (requests are
+  spread over peers, but a slow peer is not raced), and push of content
+  (announcements make peers pull).
 
-- **Resumability.** Partial content survives restarts as a range bitmap
-  (iroh-blobs partial blobs for loose content, and the per-file bitmap for
-  materialised files). Reconciliation resumes from digests, not cursors.
+- **Resumability.** Partial content survives restarts as persisted range
+  residency: the file area's per-entry range set (recorded only after its
+  bytes are synced) and the placeholder's residency xattr for materialised
+  files. Reconciliation resumes from digests, not cursors.
 
 ---
 
@@ -1236,6 +1299,16 @@ mmap-written). [R9]
 - **Two eviction models merge into one.** The Settings namespace path
   (`docs/sync-storage-hydration.md:22-44`) and the record-plane path become one
   (`docs/personal-and-workspace-settings.md:94-104` names this debt).
+
+**Implemented:** the content store's file area is the one bounded cache.
+Its entries carry a retention class: fetched content is *cached* and is
+evicted least recently used first once cached resident bytes exceed the
+budget (a quarter of the area's filesystem by default); content this device
+may be the only holder of (what it authored) is *local-only*, and "Keep
+offline" hydration makes an entry *pinned*; neither is ever evicted by the
+budget. Explicit eviction through the queue above removes area entries by
+any of their hashes. Watermarks, ARC scoring and punching holes into
+partially cold files are not implemented; eviction is per entry.
 
 ### 12.3 Pinning and offline
 

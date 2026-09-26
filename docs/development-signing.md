@@ -147,7 +147,7 @@ these boundaries:
    identity matches the development bundle. Adding a public key after sealing
    does not preserve the existing measurement.
 4. The development origin must explicitly name the retained HTTPS repository
-   `code.tilo.so/tilo/tilo-development`, or an isolated
+   `registry.tilo.so/tilo/tilo-development`, or an isolated
    `HOST[:PORT]/tilo-development/os` repository, with a tag or immutable SHA-256
    digest. Retained-repository tags identify the native architecture, for example
    `development-x86_64` or `development-aarch64`; known build/profile/source

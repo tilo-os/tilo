@@ -52,7 +52,9 @@ use smithay::wayland::fractional_scale::{
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::output::Output as SmithayOutput;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
     InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
@@ -78,14 +80,15 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit,
-    delegate_output,
-    delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
+    delegate_output, delegate_input_method_manager, delegate_pointer_constraints,
+    delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
+use crate::compositor::output_management::OutputManagementState;
 use crate::compositor::remote_seat::RemoteSeats;
 use crate::compositor::render_node::{ProbeError, RenderNode};
 use crate::compositor::selection::SelectionState;
@@ -600,6 +603,10 @@ pub struct State {
     pub session_lock_state: SessionLockManagerState,
     /// Bridge from the protocol handler to the native run loop's authoritative lock (see [`SessionLockHooks`]).
     pub session_lock: SessionLockHooks,
+    /// `zwlr_output_manager_v1` + `zwlr_output_power_manager_v1`: display
+    /// arrangement and panel power for external tools. Privileged clients
+    /// only, like session-lock, since either can black out every screen.
+    pub output_management: OutputManagementState,
     /// `zwp_pointer_gestures_v1` global state — advertises touchpad
     /// pinch/swipe/hold gestures to clients. On a bare-TTY (DRM) session
     /// Mutter isn't around to expose gestures, so the compositor does; winit
@@ -611,6 +618,12 @@ pub struct State {
     pub cursor_shape_state: CursorShapeManagerState,
     /// The cursor the pointer-focused client asked for.
     pub client_cursor: crate::compositor::client_cursor::ClientCursor,
+    /// `zwp_relative_pointer_manager_v1`: unclamped motion deltas for games.
+    pub relative_pointer_state: RelativePointerManagerState,
+    /// `zwp_pointer_constraints_v1`: lock or confine the pointer, granted
+    /// only as [`crate::compositor::pointer_lock`] allows.
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
     /// Local-input → client-surface routing state: the live foreign-surface
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
@@ -873,6 +886,10 @@ impl State {
     /// The protocol callbacks and the frame builder must share this handle:
     /// otherwise a restored local tab can remain in the rendered tree after
     /// its Wayland surface is adopted and destroyed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one place creates every protocol global the compositor advertises"
+    )]
     pub fn new_with_workspace_tree(
         loop_handle: LoopHandle<'static, Self>,
         display_handle: DisplayHandle,
@@ -915,17 +932,14 @@ impl State {
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
         let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
-        // Session locking controls the compositor's authentication boundary:
-        // only clients accepted on the session's privileged socket may even
-        // see the manager. Sandboxed and ordinary host applications receive
-        // the public socket and cannot acquire (or later release) the lock.
-        let session_lock_state =
-            SessionLockManagerState::new::<Self, _>(&display_handle, is_privileged_client);
+        let (session_lock_state, output_management) = Self::privileged_globals(&display_handle);
         // Read the persisted display scale from the shared settings store so the compositor advertises what the Settings app wrote.
         let scale = load_display_scale();
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         // Clipboard + primary selection + drag-and-drop, advertised before
         // the struct literal (which moves `display_handle`). Selection
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
@@ -988,9 +1002,13 @@ impl State {
             output_size: (0, 0),
             session_lock_state,
             session_lock: SessionLockHooks::default(),
+            output_management,
             pointer_gestures_state,
             cursor_shape_state,
             client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
+            relative_pointer_state,
+            pointer_constraints_state,
+            pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
@@ -1002,6 +1020,20 @@ impl State {
         };
         state.activate_keyboard_source(initial_keyboard_index);
         state
+    }
+
+    /// Globals only clients on the privileged socket may see. Session
+    /// locking controls the compositor's authentication boundary; output
+    /// management and output power can reconfigure or black out every
+    /// screen. Sandboxed and ordinary host applications receive the public
+    /// socket and see neither.
+    fn privileged_globals(
+        display_handle: &DisplayHandle,
+    ) -> (SessionLockManagerState, OutputManagementState) {
+        (
+            SessionLockManagerState::new::<Self, _>(display_handle, is_privileged_client),
+            OutputManagementState::new(display_handle),
+        )
     }
 
     /// Advertise `zwp_linux_dmabuf_v1` when the probed render node is
@@ -2139,6 +2171,14 @@ impl State {
         let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let serial = self.next_serial();
         match action {
+            // A portal session is remote input too: it must not move a
+            // pointer a local client holds locked or confined.
+            RemoteAction::PointerMotionAbsolute { .. }
+            | RemoteAction::PointerMotionRelative { .. }
+                if self.pointer_lock.is_engaged() =>
+            {
+                false
+            }
             RemoteAction::PointerMotionAbsolute { x, y, .. } => {
                 self.remote_pointer_motion_absolute(x, y, serial, time)
             }
@@ -2902,7 +2942,7 @@ fn is_osk_client(client: &Client) -> bool {
 /// A client cannot opt into this bit: only the dedicated privileged socket
 /// acceptor constructs this state, while the sandbox launcher exposes only
 /// the public socket.
-fn is_privileged_client(client: &Client) -> bool {
+pub(crate) fn is_privileged_client(client: &Client) -> bool {
     client
         .get_data::<ClientState>()
         .is_some_and(|data| data.privileged)
@@ -4490,6 +4530,8 @@ delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
+delegate_relative_pointer!(State);
+delegate_pointer_constraints!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);

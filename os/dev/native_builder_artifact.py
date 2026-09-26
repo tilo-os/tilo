@@ -58,7 +58,7 @@ def expected_inputs(repo, revision, architecture, base, rpms, wpe_reference,
 
 def repository(architecture):
     require(architecture in tools.ARCHES, 'unsupported architecture')
-    return 'code.tilo.so/tilo/tilo-development-native-builder-' + architecture
+    return 'registry.tilo.so/tilo/tilo-development-native-builder-' + architecture
 
 
 def file_record(path):

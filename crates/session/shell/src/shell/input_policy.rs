@@ -120,7 +120,6 @@ fn is_modifier_key(key: &Key) -> bool {
                 | NamedKey::Meta
                 | NamedKey::CapsLock
                 | NamedKey::AltGraph
-                | NamedKey::NumLock
         )
     )
 }
@@ -171,6 +170,10 @@ pub enum ChordKey {
     Enter,
     /// `F1`..`F12`, numbered from 1.
     Function(u8),
+    /// Num Lock. A lock key rather than a held modifier, so unlike Shift it
+    /// can carry a chord (Shift+Alt+Num Lock toggles mouse keys); on its own
+    /// it always reaches the focused client.
+    NumLock,
     /// A single printable character, already lowercased.
     Char(char),
     /// A bare modifier. Never a chord on its own — a client's xkb state has to see modifier transitions or it desynchronises from the seat.
@@ -256,7 +259,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
             | ChordKey::ArrowRight
             | ChordKey::ArrowUp
             | ChordKey::ArrowDown
-            | ChordKey::Char('k' | 'q' | '/' | '-' | '=')
+            | ChordKey::Char('k' | 'q' | '/' | '-' | '=' | '1'..='9' | 'e' | 'v' | 'a' | 'f')
     ) && ((mods.logo && !mods.ctrl && !mods.alt)
         || (matches!(key, ChordKey::Tab) && (mods.ctrl || mods.alt)))
     {
@@ -286,6 +289,7 @@ pub fn shell_owns_chord(key: ChordKey, mods: ChordMods, overlay_open: bool) -> b
         | ChordKey::Delete
         | ChordKey::Enter
         | ChordKey::Function(_)
+        | ChordKey::NumLock
         | ChordKey::Other
         | ChordKey::Modifier => false,
     }
@@ -309,6 +313,7 @@ pub fn chord_key_for_logical(key: &Key) -> ChordKey {
         Key::Named(NamedKey::Escape) => ChordKey::Escape,
         Key::Named(NamedKey::Delete) => ChordKey::Delete,
         Key::Named(NamedKey::Enter) => ChordKey::Enter,
+        Key::Named(NamedKey::NumLock) => ChordKey::NumLock,
         Key::Named(NamedKey::F1) => ChordKey::Function(1),
         Key::Named(NamedKey::F2) => ChordKey::Function(2),
         Key::Named(NamedKey::F3) => ChordKey::Function(3),
@@ -343,8 +348,9 @@ pub fn chord_key_for_evdev(code: u32) -> ChordKey {
         104 => ChordKey::PageUp,
         109 => ChordKey::PageDown,
         99 => ChordKey::PrintScreen,
-        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, NumLock, left/right Super
-        29 | 97 | 42 | 54 | 56 | 100 | 58 | 69 | 125 | 126 => ChordKey::Modifier,
+        // left/right Ctrl, left/right Shift, Alt/AltGr, CapsLock, left/right Super
+        29 | 97 | 42 | 54 | 56 | 100 | 58 | 125 | 126 => ChordKey::Modifier,
+        69 => ChordKey::NumLock,
         57 => ChordKey::Space,
         59..=68 => ChordKey::Function(u8::try_from(code.saturating_sub(58)).unwrap_or(0)),
         87 => ChordKey::Function(11),
@@ -560,6 +566,7 @@ pub fn evdev_from_logical(key: &Key) -> Option<u32> {
             NamedKey::F8 => Some(66),
             NamedKey::F9 => Some(67),
             NamedKey::F10 => Some(68),
+            NamedKey::NumLock => Some(69),
             NamedKey::F11 => Some(87),
             NamedKey::F12 => Some(88),
             NamedKey::PrintScreen => Some(99),
@@ -965,6 +972,136 @@ pub fn track_forwarded_key<S: std::hash::BuildHasher>(
         press_can_forward
     } else {
         forwarded.remove(&code)
+    }
+}
+
+/// Super pressed and released with nothing in between: the tap that opens
+/// global search on every mainstream desktop.
+///
+/// Fed every input event ahead of chord routing, so a Super chord the
+/// shell handles (Super+L, Super+Left) disarms it exactly like one a
+/// client receives, and a Super-click or Super-scroll does too.
+#[derive(Debug, Default)]
+pub struct SuperTap {
+    armed: bool,
+}
+
+impl SuperTap {
+    /// `true` on the release that completes a lone tap.
+    pub fn observe(&mut self, event: &WindowEvent) -> bool {
+        match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                let is_super = matches!(
+                    key.logical_key,
+                    Key::Named(NamedKey::Super | NamedKey::Meta)
+                );
+                match (is_super, key.state) {
+                    (true, ElementState::Pressed) => {
+                        // Autorepeat of the held key keeps the tap alive;
+                        // a fresh press starts one.
+                        if !key.repeat {
+                            self.armed = true;
+                        }
+                        false
+                    }
+                    (true, ElementState::Released) => std::mem::take(&mut self.armed),
+                    (false, ElementState::Pressed) => {
+                        self.armed = false;
+                        false
+                    }
+                    (false, ElementState::Released) => false,
+                }
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                ..
+            }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_) => {
+                self.armed = false;
+                false
+            }
+            _ => false,
+        }
+    }
+}
+
+#[cfg(test)]
+mod super_tap_tests {
+    use super::*;
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    fn key(logical: Key, state: ElementState) -> WindowEvent {
+        // winit's `KeyEvent` has a private platform field, so the struct is
+        // zero-initialised and every public field overwritten.
+        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+        ev.logical_key = logical;
+        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+        ev.location = KeyLocation::Left;
+        ev.state = state;
+        ev.repeat = false;
+        ev.text = None;
+        WindowEvent::KeyboardInput {
+            device_id: unsafe { std::mem::zeroed() },
+            event: ev,
+            is_synthetic: false,
+        }
+    }
+
+    fn super_key(state: ElementState) -> WindowEvent {
+        key(Key::Named(NamedKey::Super), state)
+    }
+
+    #[test]
+    fn a_lone_super_tap_fires_on_release() {
+        let mut tap = SuperTap::default();
+        assert!(!tap.observe(&super_key(ElementState::Pressed)));
+        assert!(tap.observe(&super_key(ElementState::Released)));
+        assert!(
+            !tap.observe(&super_key(ElementState::Released)),
+            "one tap, one search"
+        );
+    }
+
+    #[test]
+    fn any_key_in_between_makes_it_a_chord_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Pressed));
+        tap.observe(&key(Key::Character("l".into()), ElementState::Released));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&key(Key::Named(NamedKey::Shift), ElementState::Pressed));
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&key(Key::Named(NamedKey::Tab), ElementState::Pressed));
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_super_click_or_scroll_is_not_a_tap() {
+        let mut tap = SuperTap::default();
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseInput {
+            device_id: unsafe { std::mem::zeroed() },
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+
+        tap.observe(&super_key(ElementState::Pressed));
+        tap.observe(&WindowEvent::MouseWheel {
+            device_id: unsafe { std::mem::zeroed() },
+            delta: MouseScrollDelta::LineDelta(0.0, 1.0),
+            phase: winit::event::TouchPhase::Moved,
+        });
+        assert!(!tap.observe(&super_key(ElementState::Released)));
+    }
+
+    #[test]
+    fn a_modifier_released_alone_is_not_super() {
+        let mut tap = SuperTap::default();
+        tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Pressed));
+        assert!(!tap.observe(&key(Key::Named(NamedKey::Alt), ElementState::Released)));
     }
 }
 
@@ -1831,6 +1968,7 @@ mod tests {
             NamedKey::F8,
             NamedKey::F9,
             NamedKey::F10,
+            NamedKey::NumLock,
             NamedKey::F11,
             NamedKey::F12,
             NamedKey::PrintScreen,
@@ -2012,6 +2150,20 @@ pub fn is_remote_input_kill_switch(event: &WindowEvent, modifiers: Modifiers) ->
     event.state == ElementState::Pressed
         && modifiers.state().super_key()
         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
+}
+
+/// Is `event` a press of the fixed mouse-keys chord, Shift+Alt+Num Lock?
+/// Held-key repeats are ignored so holding the chord flips it once.
+pub fn is_mouse_keys_toggle(event: &WindowEvent, modifiers: Modifiers) -> bool {
+    let WindowEvent::KeyboardInput { event: key, .. } = event else {
+        return false;
+    };
+    key.state == ElementState::Pressed
+        && !key.repeat
+        && crate::shell::fixed_chords::fixed_action(
+            chord_key_for_logical(&key.logical_key),
+            ChordMods::from(&modifiers),
+        ) == Some(crate::shell::fixed_chords::FixedChordAction::ToggleMouseKeys)
 }
 
 /// Is `event` a press of the configured session-lock binding?

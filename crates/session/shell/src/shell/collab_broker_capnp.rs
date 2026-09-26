@@ -7171,6 +7171,77 @@ impl channel_handle::Server for CapnpChannelHandle {
         results.get().set_reply_json(&reply);
         Promise::ok(())
     }
+
+    fn speaker_command(
+        self: Rc<Self>,
+        params: channel_handle::SpeakerCommandParams,
+        mut results: channel_handle::SpeakerCommandResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        let route = self.route();
+        if route.app_id != "so.tilo.settings" {
+            return Promise::err(capnp::Error::failed(
+                "speaker groups are managed only by the certified Settings application".into(),
+            ));
+        }
+        let request = match params.get() {
+            Ok(request) => request,
+            Err(error) => return Promise::err(error),
+        };
+        let claimed_app = match request.get_app_id().and_then(|value| {
+            value
+                .to_str()
+                .map_err(|error| capnp::Error::failed(error.to_string()))
+        }) {
+            Ok(value) => value,
+            Err(error) => return Promise::err(error),
+        };
+        if claimed_app != route.app_id {
+            return Promise::err(capnp::Error::failed(
+                "speaker command app id must match the certified connection route".into(),
+            ));
+        }
+        let bytes = match request.get_command_json() {
+            Ok(bytes) if bytes.len() <= runtime_collab::MAX_SPEAKER_WIRE_BYTES => bytes,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker command exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(error),
+        };
+        let command = match serde_json::from_slice::<runtime_collab::SpeakerCommand>(bytes) {
+            Ok(command) if command.valid() => command,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker command is structurally invalid".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        let Some(network) = self.state.workspace_control_network() else {
+            return Promise::err(capnp::Error::failed(
+                "certified personal-device network is unavailable".into(),
+            ));
+        };
+        let reply = crate::shell::speaker_settings::handle(&network, command);
+        let reply = match serde_json::to_vec(&reply) {
+            Ok(reply) if reply.len() <= runtime_collab::MAX_SPEAKER_WIRE_BYTES => reply,
+            Ok(_) => {
+                return Promise::err(capnp::Error::failed(
+                    "speaker reply exceeds the local protocol bound".into(),
+                ));
+            }
+            Err(error) => return Promise::err(capnp::Error::failed(error.to_string())),
+        };
+        results.get().set_reply_json(&reply);
+        Promise::ok(())
+    }
 }
 
 struct CapnpWorkspaceControlHandle {

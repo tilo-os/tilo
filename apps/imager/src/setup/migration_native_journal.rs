@@ -4,7 +4,6 @@ use super::migration_journal::{PersistenceBoundary, persistence_result};
 use super::migration_journal_log::{Log, read_record};
 use super::migration_native::{Plan, PlanEntry};
 use super::{migration_durability as durability, nofollow::metadata_nofollow};
-use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,6 +12,7 @@ use std::{
     sync::{Arc, atomic::AtomicBool},
     time::SystemTime,
 };
+use tilo_ntfs_protocol::{Entry, Identity, Issue, NativePath};
 const MAGIC: &[u8; 8] = b"TILOJL3\n";
 
 // Finite history for this bounded inventory: eight conservative recovery

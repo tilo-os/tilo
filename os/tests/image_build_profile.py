@@ -251,7 +251,7 @@ print('sha256:''' + '3' * 64 + '''')
 ''')
         self.commit_fixture()
         inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
-            TILO_WPE_BUILD_CACHE_REF='code.tilo.so/tilo/tilo-development-wpe-cache-aarch64',
+            TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64',
             TILO_WPE_SOURCE_DATE_EPOCH='0')
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -277,7 +277,7 @@ print('sha256:' + '5' * 64)
         self.commit_fixture()
         inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
             TILO_WPE_STAGE_RECEIPT='/private/receipt with spaces.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-            TILO_WPE_BUILD_CACHE_REF='code.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
+            TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
         result = self.run_builder(**inputs)
         self.assertEqual(result.returncode, 0, result.stderr)
         arguments = self.log.read_bytes().decode().split('\0')
@@ -332,7 +332,7 @@ print('sha256:' + '6' * 64)
         self.write('os/dev/prepare-wpe-stage.py', "raise AssertionError('must never compile WPE')\n")
         inputs.update(TILO_WITH_BROWSER='1', WPE_BUILDROOT_REF='registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:' + '4' * 64,
             TILO_WPE_STAGE_RECEIPT='/private/required.json', TILO_WPE_SOURCE_DATE_EPOCH='0',
-            TILO_WPE_BUILD_CACHE_REF='code.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
+            TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
         for source, status in (("raise SystemExit(82)\n", 82), ("print('mutable:tag')\n", 1)):
             with self.subTest(source=source):
                 self.write('os/dev/wpe-stage-artifact.py', source)
@@ -351,7 +351,7 @@ print('sha256:' + '6' * 64)
         self.assert_rejected_before_build(self.run_builder(**inputs), 'WPE artifact import requires an explicit dependency epoch')
 
     def test_wpe_cache_is_rejected_for_production_or_browserless_build(self):
-        result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='code.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
+        result = self.run_builder(TILO_WPE_BUILD_CACHE_REF='registry.tilo.so/tilo/tilo-development-wpe-cache-aarch64')
         self.assert_rejected_before_build(result, 'WPE stage caching requires a fresh full-browser development build')
 
     def test_development_signer_failure_never_enters_sealing(self):
@@ -422,7 +422,9 @@ print('sha256:' + '6' * 64)
             env=self.env | overrides,
             text=True,
             capture_output=True,
-            timeout=10,
+            # The builder runs against stubs in well under a second; the bound
+            # only catches a hang, so a loaded runner must not trip it.
+            timeout=120,
             check=False,
         )
 

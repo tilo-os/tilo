@@ -122,7 +122,7 @@ if grep -Eq 'COSIGN_PRIVATE_KEY|COSIGN_PASSWORD|WPE_SNAPSHOT_CREDENTIAL_BROKER' 
 else
   ok 'WPE snapshot has no exportable signing key path'
 fi
-has "$snapshot_workflow" 'uses: ./.forgejo/actions/tilo-registry-login' \
+has "$snapshot_workflow" 'registry: registry.tilo.so' \
   'WPE snapshot authenticates to the registry like the other snapshot workflows'
 has "$snapshot_workflow" 'token: ${{ github.token }}' \
   'WPE pin branch is pushed with the job-scoped Forgejo token'

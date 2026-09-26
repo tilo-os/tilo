@@ -16,6 +16,7 @@
 //! output streams on stderr and its outcome is one [`JobLine`] on stdout.
 
 pub mod client;
+pub mod display;
 pub mod input;
 pub mod manifest;
 
@@ -25,11 +26,12 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 pub use client::{Client, ClientError};
-pub use input::{Button, InputAction};
+pub use display::OutputSpec;
+pub use input::{Button, InputAction, Stick};
 pub use manifest::{ComponentInfo, Manifest, Scope};
 
 /// Bumped on any incompatible change to a request, response or semantics.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 5;
 
 /// Where in-VM builds keep one synced source tree per host worktree; its
 /// `target/` is the worktree's own, evictable build dir.
@@ -236,6 +238,11 @@ pub struct SlotCreate {
     pub kind: SlotKind,
     #[serde(default)]
     pub owner: Owner,
+    /// Headful only: one vkms connector per output, left to right, with
+    /// this mode and scale applied through the display settings. Empty
+    /// means one connector at the compositor's default mode and scale.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -570,6 +577,10 @@ pub enum Action {
     ReleaseSeat {
         seat: String,
     },
+    /// The outputs' modes and scales, confirmed through the display settings.
+    SetOutputs {
+        outputs: String,
+    },
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
@@ -670,6 +681,9 @@ pub struct SlotInfo {
     /// `systemctl is-active` of the session unit (`vm` reports `n/a`).
     pub session: String,
     pub seat: Option<String>,
+    /// The outputs the slot was created with (`--outputs`), left to right.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
     /// How the running session differs from a greetd session (capabilities,
     /// `SELinux` domain); `None` when it matches or is not running.
     #[serde(default)]
@@ -992,9 +1006,49 @@ pub fn valid_slot_name(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
+/// Distribution package names travel on a root command line, so only the
+/// characters package names use get through: `gtk4-devel-tools`, `libfoo++`,
+/// `python3.13`. No option can start one.
+pub fn valid_package_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
+}
+
+/// How long `tilo-vmd install-packages` may take by default.
+pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_names_cannot_smuggle_options_or_shell() {
+        for good in [
+            "xterm",
+            "gtk4-devel-tools",
+            "libstdc++",
+            "python3.13",
+            "a_b",
+        ] {
+            assert!(valid_package_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-y",
+            "--installroot=/",
+            "a b",
+            "a;b",
+            "$(x)",
+            "a/b",
+            "*",
+        ] {
+            assert!(!valid_package_name(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn request_line_is_flat_json_rpc() {
@@ -1010,6 +1064,25 @@ mod tests {
         );
         let back: RequestEnvelope = serde_json::from_str(&line).unwrap();
         assert_eq!(back, envelope);
+    }
+
+    #[test]
+    fn slot_create_carries_outputs_as_spec_strings() {
+        let request = Request::SlotCreate(SlotCreate {
+            name: "a".into(),
+            kind: SlotKind::Headful,
+            owner: Owner::default(),
+            outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+        });
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value["params"]["outputs"],
+            serde_json::json!(["2560x1600@2", "1920x1080@1"])
+        );
+        assert_eq!(serde_json::from_value::<Request>(value).unwrap(), request);
+        // A client that sends no outputs gets the single default connector.
+        let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
+        assert!(bare.outputs.is_empty());
     }
 
     #[test]

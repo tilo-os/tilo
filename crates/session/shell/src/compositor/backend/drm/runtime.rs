@@ -40,6 +40,9 @@ use winit::keyboard::{
 };
 use winit::platform::scancode::PhysicalKeyExtScancode as _;
 
+use super::access_keys::{
+    BounceKeys, BounceVerdict, ButtonEdge, MouseKeys, MouseKeysOutput, PointerButton,
+};
 use super::devices::{ModeInfo, filter_kms_nodes, is_kms_node, order_by_connected_connectors};
 #[cfg(test)]
 use super::gestures::GestureAction;
@@ -59,7 +62,8 @@ use super::scanout::{
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
+    TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -230,6 +234,10 @@ pub struct DrmDispatchState {
     pub slow_pending: HashMap<xkb::Keycode, std::time::Instant>,
     /// Sticky modifiers stay logically down through the next non-modifier.
     pub sticky_latched: ModifiersState,
+    /// Swallows contact bounce ahead of every other key handling.
+    bounce_keys: BounceKeys,
+    /// The numeric keypad as a pointer, while mouse keys is on.
+    mouse_keys: MouseKeys,
     pub physical_modifiers: ModifiersState,
     /// Winit synthesises repeat presses for the hosted backend. Bare libinput
     /// only supplies key edges, so the DRM adapter mirrors that established
@@ -256,6 +264,12 @@ pub struct DrmDispatchState {
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
+    /// The capability snapshot last published for Settings, kept so
+    /// output-management heads never force-probe connectors themselves.
+    pub display_capabilities: Vec<settings_store::hardware::DisplayOutputSnapshot>,
+    /// The built-in panel's orientation from the accelerometer, overriding
+    /// its configured transform while set. `None` on machines without one.
+    pub device_rotation: Option<settings_store::hardware::OutputTransform>,
     /// Current pointer position in scene coordinates (physical pixels of
     /// the combined texture): where the cursor is drawn and what the shell
     /// hit-tests. Always derived from [`Self::logical_pointer`].
@@ -278,6 +292,9 @@ pub struct DrmDispatchState {
     /// What the pointer shows, applied to every scanout (including ones a
     /// hotplug adds later).
     pub pointer_image: crate::compositor::cursor::PointerImage,
+    /// Where local motion may take the pointer while a client locks or
+    /// confines it.
+    pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -515,6 +532,11 @@ pub enum ScanoutCommand {
     },
     SetCursorSize(u32),
     SetPointerImage(crate::compositor::cursor::PointerImage),
+    /// Switch one panel off or back on for an output-power client.
+    SetOutputPower {
+        output: OutputId,
+        on: bool,
+    },
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -837,6 +859,8 @@ impl DrmDispatchState {
             accessibility,
             slow_pending: HashMap::new(),
             sticky_latched: ModifiersState::empty(),
+            bounce_keys: BounceKeys::default(),
+            mouse_keys: MouseKeys::default(),
             physical_modifiers: ModifiersState::empty(),
             key_repeat: KeyRepeat::default(),
             devices: Vec::new(),
@@ -849,12 +873,15 @@ impl DrmDispatchState {
             direct_touch: DirectTouchOwnership::default(),
             outputs_changed: false,
             output_meta: HashMap::new(),
+            display_capabilities: Vec::new(),
+            device_rotation: None,
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
             display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
+            pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -917,7 +944,7 @@ impl DrmDispatchState {
     /// Publish the live hardware contract for Settings. Failure is benign in
     /// test/headless sessions (usually no `XDG_RUNTIME_DIR`) and never changes
     /// the output plan itself.
-    fn publish_display_snapshot(&self) {
+    fn publish_display_snapshot(&mut self) {
         let outputs = display_capabilities(&self.cards, &self.color_profiles);
         let layout = self
             .live
@@ -933,6 +960,13 @@ impl DrmDispatchState {
                 }
             })
             .collect();
+        if outputs != self.display_capabilities {
+            self.display_capabilities.clone_from(&outputs);
+            // A disabled connector appearing changes the heads external
+            // configuration tools see, even with no modeset to report.
+            self.outputs_changed = true;
+            self.push(BackendEvent::OutputsChanged);
+        }
         let snapshot = settings_store::hardware::DisplayHardwareSnapshot {
             generated_unix_ms: unix_now_ms(),
             backend: "drm-kms-xrgb8888".into(),
@@ -1184,6 +1218,7 @@ impl DrmDispatchState {
                 color_buffer: Vec::new(),
                 direct_targets: None,
                 direct_unavailable: None,
+                powered_off: false,
                 scanout: build.scanout,
             });
         }
@@ -1217,6 +1252,13 @@ impl DrmDispatchState {
                 .map_or(settings_store::hardware::OutputTransform::Normal, |c| {
                     c.transform
                 });
+            // The accelerometer is in the built-in panel's lid: its reading
+            // turns that panel and never an external monitor.
+            if let Some(rotation) = self.device_rotation
+                && is_builtin_connector(&entry.connector_name)
+            {
+                entry.transform = rotation;
+            }
         }
         // Scale first: an output's logical extent — what the arrangement
         // is made of — is its mode over its scale.
@@ -1385,6 +1427,19 @@ impl DrmDispatchState {
 
     /// Relative pointer motion, in logical pixels. Returns the new scene
     /// position.
+    /// Keep a confined pointer inside its region after it moved from
+    /// `previous`, returning where it ends up (scene coordinates).
+    fn confine_pointer(&mut self, previous: (f64, f64)) -> (f64, f64) {
+        let moved = self.pointer;
+        match self.pointer_constraint.constrain(previous, moved) {
+            Some(confined) if confined != moved => {
+                self.set_pointer_scene(confined);
+                confined
+            }
+            _ => moved,
+        }
+    }
+
     fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
         let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
         self.set_pointer_logical(logical);
@@ -1478,6 +1533,8 @@ impl DrmDispatchState {
         self.handle_direct_touch_cancel();
         self.key_repeat.cancel();
         self.slow_pending.clear();
+        self.bounce_keys.reset();
+        self.release_mouse_keys();
         self.sticky_latched = ModifiersState::empty();
         self.physical_modifiers = ModifiersState::empty();
         if let Some(keyboard) = self.keyboard.as_mut() {
@@ -1549,12 +1606,28 @@ impl DrmDispatchState {
                 AccelProfile::Adaptive
             });
         }
+        if let Some(method) = plan.click_method {
+            use smithay::reexports::input::ClickMethod;
+            let _ = device.config_click_set_method(match method {
+                input_config::ClickMethod::ButtonAreas => ClickMethod::ButtonAreas,
+                input_config::ClickMethod::Clickfinger => ClickMethod::Clickfinger,
+            });
+        }
+        if let Some(method) = plan.scroll_method {
+            use smithay::reexports::input::ScrollMethod;
+            let _ = device.config_scroll_set_method(match method {
+                input_config::ScrollMethod::TwoFinger => ScrollMethod::TwoFinger,
+                input_config::ScrollMethod::Edge => ScrollMethod::Edge,
+            });
+        }
         tracing::info!(
             device = device.name(),
             touchpad = caps.is_touchpad(),
             tap = ?plan.tap,
             natural_scroll = ?plan.natural_scroll,
             accel = ?plan.accel_speed(),
+            click_method = ?plan.click_method,
+            scroll_method = ?plan.scroll_method,
             "DRM input: configured device"
         );
     }
@@ -1654,6 +1727,28 @@ impl DrmDispatchState {
     ///
     /// `keycode` is smithay's [`KeyboardKeyEvent::key_code`], already including the +8 evdev→xkb offset, so it feeds straight into xkb state.
     fn handle_keyboard_key(&mut self, keycode: xkb::Keycode, pressed: bool) {
+        let evdev = keycode.raw().saturating_sub(8);
+        let now = std::time::Instant::now();
+        if self.accessibility.bounce_keys {
+            let verdict = if pressed {
+                self.bounce_keys
+                    .press(evdev, now, self.accessibility.bounce_window())
+            } else {
+                self.bounce_keys.release(evdev, now)
+            };
+            if verdict == BounceVerdict::Reject {
+                if pressed && self.accessibility.bounce_keys_alert {
+                    self.push(BackendEvent::VisualAlert);
+                }
+                return;
+            }
+        }
+        if self.accessibility.mouse_keys
+            && let Some(output) = self.mouse_keys.key(evdev, pressed, now)
+        {
+            self.apply_mouse_keys(output);
+            return;
+        }
         if self.accessibility.slow_keys {
             if pressed {
                 self.slow_pending.insert(keycode, std::time::Instant::now());
@@ -1680,6 +1775,61 @@ impl DrmDispatchState {
             }
         } else {
             self.key_repeat.release(keycode);
+        }
+    }
+
+    /// Deliver what mouse keys produced: a nudge moves the pointer exactly as
+    /// relative device motion would, and button edges arrive as clicks.
+    fn apply_mouse_keys(&mut self, output: MouseKeysOutput) {
+        self.move_pointer_from_keys(output.motion);
+        for edge in output.buttons {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn move_pointer_from_keys(&mut self, (dx, dy): (f64, f64)) {
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let (x, y) = self.move_pointer_by((dx, dy));
+        // Synthetic motion has no acceleration curve, and libinput stamps
+        // real motion on CLOCK_MONOTONIC, so the keys do the same.
+        self.push(BackendEvent::RelativePointerMotion {
+            dx,
+            dy,
+            dx_unaccel: dx,
+            dy_unaccel: dy,
+            time_usec: crate::shell::network::fabric_monotonic_us(),
+        });
+        self.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
+    fn push_mouse_keys_button(&mut self, edge: ButtonEdge) {
+        let button = match edge.button {
+            PointerButton::Left => MouseButton::Left,
+            PointerButton::Middle => MouseButton::Middle,
+            PointerButton::Right => MouseButton::Right,
+        };
+        let state = if edge.pressed {
+            ElementState::Pressed
+        } else {
+            ElementState::Released
+        };
+        self.push(BackendEvent::Input(mouse_input_event(state, button)));
+    }
+
+    /// Stop any glide and release every button mouse keys is holding, so
+    /// switching it off mid-drag never leaves a button stuck down.
+    fn release_mouse_keys(&mut self) {
+        for edge in self.mouse_keys.reset() {
+            self.push_mouse_keys_button(edge);
+        }
+    }
+
+    fn pump_mouse_keys(&mut self, now: std::time::Instant) {
+        if self.accessibility.mouse_keys {
+            let motion = self.mouse_keys.motion(now);
+            self.move_pointer_from_keys(motion);
         }
     }
 
@@ -2116,6 +2266,8 @@ impl DrmDispatchState {
                 self.key_repeat.cancel();
                 self.slow_pending.clear();
                 if device.has_capability(smithay::reexports::input::DeviceCapability::Keyboard) {
+                    self.bounce_keys.reset();
+                    self.release_mouse_keys();
                     // A vanished keyboard cannot send the releases which
                     // clear Smithay's seat XKB state. Tell the compositor
                     // boundary to retire those keys before another device
@@ -2155,19 +2307,34 @@ impl DrmDispatchState {
                         .map(|p| p.logical_size)
                         .collect::<Vec<_>>(),
                 );
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
                 let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
                 self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
-                let (x, y) = self.pointer;
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             // Relative motion (mouse): accumulate in logical pixels, clamp to
             // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
+                    dx_unaccel: event.delta_x_unaccel(),
+                    dy_unaccel: event.delta_y_unaccel(),
+                    time_usec: event.time(),
                 });
+                // A locked pointer stays put; a confined one slides along
+                // its region's edge. Relative motion above is reported
+                // either way — that is what a game reads.
+                if self.pointer_constraint == PointerConstraintRegion::Locked {
+                    return;
+                }
+                let previous = self.pointer;
+                self.move_pointer_by((event.delta_x(), event.delta_y()));
+                let (x, y) = self.confine_pointer(previous);
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
             InputEvent::PointerButton { event } => {
@@ -2180,8 +2347,11 @@ impl DrmDispatchState {
                 }
             }
             InputEvent::PointerAxis { event } => {
-                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0);
-                let dy = event.amount(Axis::Vertical).unwrap_or(0.0);
+                // The user's scroll speed scales wheel and finger scrolling
+                // alike, before either becomes a line or pixel delta.
+                let speed = self.input.scroll_speed;
+                let dx = event.amount(Axis::Horizontal).unwrap_or(0.0) * speed;
+                let dy = event.amount(Axis::Vertical).unwrap_or(0.0) * speed;
                 // Keep finger/continuous scrolling in pixel units. Converting
                 // it to line deltas quantises short touchpad movements and
                 // makes kinetic scrolling look laggy; only a wheel has a
@@ -2483,6 +2653,9 @@ pub struct ScanoutEntry {
     /// Permanent failure for this output generation. Cleared only when a
     /// lifecycle/topology boundary makes reprobe meaningful.
     pub direct_unavailable: Option<String>,
+    /// An output-power client switched this panel off. It is neither
+    /// painted nor lit by a session wake until switched back on.
+    pub powered_off: bool,
     pub scanout: DrmScanout,
 }
 
@@ -2691,7 +2864,17 @@ impl DrmRuntime {
     /// source today; exposing it lets the parent compositor block on the
     /// nested calloop fd when otherwise idle without delaying held keys.
     pub fn next_service_deadline(&self) -> Option<std::time::Instant> {
-        self.dispatch.key_repeat.next_deadline()
+        let repeat = self.dispatch.key_repeat.next_deadline();
+        let glide = self
+            .dispatch
+            .accessibility
+            .mouse_keys
+            .then(|| self.dispatch.mouse_keys.next_deadline())
+            .flatten();
+        match (repeat, glide) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 
     /// Acquire the session, enumerate DRM devices, attach libinput, and wire everything onto an internal calloop — returns `Err`, not a panic, matching the binary entry point's `eprintln!` + `exit(1)` contract.
@@ -2849,6 +3032,22 @@ impl DrmRuntime {
             .command(ScanoutCommand::SetPointerImage(image));
     }
 
+    pub fn set_pointer_constraint(
+        &mut self,
+        constraint: crate::compositor::backend::PointerConstraintRegion,
+    ) {
+        self.dispatch.pointer_constraint = constraint;
+    }
+
+    /// Place the pointer at global `(x, y)` (clamped to the outputs) and
+    /// tell the compositor, as if it had moved there.
+    pub fn warp_pointer(&mut self, x: f64, y: f64) {
+        let dispatch = &mut self.dispatch;
+        dispatch.set_pointer_scene((x, y));
+        let (x, y) = dispatch.pointer;
+        dispatch.push(BackendEvent::Input(cursor_moved_event(x, y)));
+    }
+
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
     }
@@ -2898,6 +3097,12 @@ impl DrmRuntime {
         }
         if !accessibility.slow_keys {
             self.dispatch.slow_pending.clear();
+        }
+        if !accessibility.bounce_keys {
+            self.dispatch.bounce_keys.reset();
+        }
+        if !accessibility.mouse_keys {
+            self.dispatch.release_mouse_keys();
         }
         self.dispatch.gestures.set_config(GestureConfig {
             natural_scroll: input.natural_scroll_for(true),
@@ -3056,6 +3261,58 @@ impl DrmRuntime {
         }
     }
 
+    /// Every attached connector as output-management heads: the cached
+    /// capability snapshot joined with the outputs being driven and the
+    /// effective intent for the ones that are off.
+    pub fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        let live: Vec<crate::compositor::output_heads::LiveHead> = self
+            .dispatch
+            .live
+            .iter()
+            .filter_map(|entry| {
+                let output = self.dispatch.output_meta.get(&entry.id)?;
+                Some(crate::compositor::output_heads::LiveHead {
+                    key: entry.config_key.clone(),
+                    output: output.clone(),
+                    physical_size_mm: entry.physical_mm,
+                })
+            })
+            .collect();
+        crate::compositor::output_heads::heads_from_capabilities(
+            &self.dispatch.display_capabilities,
+            &settings_store::hardware::DisplayConfig::load_effective(&self.dispatch.display_set),
+            &live,
+        )
+    }
+
+    /// Turn the built-in panel to follow the device. Touch input follows
+    /// automatically: it is mapped through each live output's transform.
+    pub fn set_device_rotation(
+        &mut self,
+        rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+        if self.dispatch.device_rotation == rotation {
+            return;
+        }
+        self.dispatch.device_rotation = rotation;
+        self.dispatch.relayout_outputs();
+        self.dispatch.command(ScanoutCommand::Reconfigure {
+            remove: Vec::new(),
+            add: Vec::new(),
+            outputs: self.dispatch.output_table(),
+            removal_ack: None,
+        });
+        self.dispatch.outputs_changed = true;
+        self.dispatch.push(BackendEvent::OutputsChanged);
+        self.dispatch.push(BackendEvent::Redraw);
+    }
+
+    /// Ask the scanout owner to switch one panel off or on.
+    pub fn set_output_power(&self, output: OutputId, on: bool) {
+        self.dispatch
+            .command(ScanoutCommand::SetOutputPower { output, on });
+    }
+
     /// Drain pending events from the internal calloop — non-blocking, a zero timeout so the outer compositor loop owns the cadence.
     pub fn dispatch_pending(&mut self) {
         use std::time::Duration;
@@ -3067,8 +3324,9 @@ impl DrmRuntime {
             self.dispatch
                 .rescan_outputs("udev card re-added after teardown");
         }
-        self.dispatch
-            .pump_keyboard_repeat(std::time::Instant::now());
+        let now = std::time::Instant::now();
+        self.dispatch.pump_keyboard_repeat(now);
+        self.dispatch.pump_mouse_keys(now);
     }
 
     /// Test-only seam: construct a `DrmRuntime`-shaped dispatch state with the given output set already populated, used by `super::mod` tests to verify `DrmBackend::outputs()` without real hardware.
@@ -3104,6 +3362,27 @@ fn device_caps(device: &smithay::reexports::input::Device) -> DeviceCaps {
         supports_flat_acceleration: device
             .config_accel_profiles()
             .contains(&smithay::reexports::input::AccelProfile::Flat),
+        supports_click_areas: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::ButtonAreas),
+        supports_clickfinger: device
+            .config_click_methods()
+            .contains(&smithay::reexports::input::ClickMethod::Clickfinger),
+        default_click_method: match device.config_click_default_method() {
+            Some(smithay::reexports::input::ClickMethod::ButtonAreas) => {
+                Some(input_config::ClickMethod::ButtonAreas)
+            }
+            Some(smithay::reexports::input::ClickMethod::Clickfinger) => {
+                Some(input_config::ClickMethod::Clickfinger)
+            }
+            _ => None,
+        },
+        supports_two_finger_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::TwoFinger),
+        supports_edge_scroll: device
+            .config_scroll_methods()
+            .contains(&smithay::reexports::input::ScrollMethod::Edge),
     }
 }
 
@@ -5147,6 +5426,111 @@ mod tests {
         );
     }
 
+    fn keyboard_dispatch(accessibility: AccessibilityInputSettings) -> DrmDispatchState {
+        let (mut state, _rx) = dispatch_with_channel();
+        state.keyboard = Some(
+            KeyboardXkb::from_settings(&KeyboardSettings::default())
+                .expect("the default test keymap must compile"),
+        );
+        state.accessibility = accessibility;
+        state
+    }
+
+    fn typed_keys(state: &DrmDispatchState) -> usize {
+        state
+            .events
+            .iter()
+            .filter(|e| matches!(e, BackendEvent::Input(WindowEvent::KeyboardInput { .. })))
+            .count()
+    }
+
+    #[test]
+    fn bounce_keys_swallow_a_rebound_press_and_flash_when_asked() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            bounce_keys: true,
+            bounce_keys_alert: true,
+            ..Default::default()
+        });
+        let a = xkb::Keycode::new(38); // KEY_A + 8
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 2, "the first keystroke is real");
+        state.events.clear();
+
+        // Pressed again well inside the 300 ms default window.
+        state.handle_keyboard_key(a, true);
+        state.handle_keyboard_key(a, false);
+        assert_eq!(typed_keys(&state), 0, "press and release both swallowed");
+        assert_eq!(
+            state
+                .events
+                .iter()
+                .filter(|e| matches!(e, BackendEvent::VisualAlert))
+                .count(),
+            1,
+            "one flash per swallowed press"
+        );
+    }
+
+    #[test]
+    fn mouse_keys_turn_the_keypad_into_clicks_instead_of_typing() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp5 = xkb::Keycode::new(76 + 8);
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        let clicks: Vec<_> = state
+            .events
+            .iter()
+            .filter_map(|e| match e {
+                BackendEvent::Input(WindowEvent::MouseInput { state, button, .. }) => {
+                    Some((*state, *button))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            clicks,
+            [
+                (ElementState::Pressed, MouseButton::Left),
+                (ElementState::Released, MouseButton::Left)
+            ]
+        );
+        assert_eq!(typed_keys(&state), 0);
+
+        state.events.clear();
+        state.accessibility.mouse_keys = false;
+        state.handle_keyboard_key(kp5, true);
+        state.handle_keyboard_key(kp5, false);
+        assert_eq!(
+            typed_keys(&state),
+            2,
+            "with mouse keys off the keypad types"
+        );
+    }
+
+    #[test]
+    fn switching_mouse_keys_off_mid_drag_releases_the_button() {
+        let mut state = keyboard_dispatch(AccessibilityInputSettings {
+            mouse_keys: true,
+            ..Default::default()
+        });
+        let kp0 = xkb::Keycode::new(82 + 8);
+        state.handle_keyboard_key(kp0, true);
+        state.events.clear();
+        state.release_mouse_keys();
+        assert!(state.events.iter().any(|e| matches!(
+            e,
+            BackendEvent::Input(WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            })
+        )));
+    }
+
     #[test]
     fn resume_retires_held_shift_and_backspace_before_the_next_key() {
         // Model the failure mode exactly: both keys go down, then the machine
@@ -5809,6 +6193,7 @@ mod tests {
             is_pointer: true,
             supports_left_handed: true,
             supports_flat_acceleration: true,
+            ..DeviceCaps::default()
         };
         let plan = input_config::plan_for(&state.input, &caps);
         assert_eq!(plan.tap, Some(true));
