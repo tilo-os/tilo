@@ -36,6 +36,13 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertEqual(result.stderr, '::error::CI builder resolution failed (ValueError)\n')
         self.assertNotIn('Traceback', result.stderr)
 
+    def test_metadata_is_read_from_the_package_owner_without_a_redirect(self):
+        # Redirects are refused, so a renamed owner must be spelled out here.
+        self.assertEqual(
+            resolver.FILES_URL,
+            'https://code.sandbox.example/api/v1/packages/tilo/container/tilo-builder/latest/files',
+        )
+
     def test_actual_forgejo_manifest_record_contract(self):
         # Fields retained from authenticated package-file API read on 2026-09-19.
         row = {'id': 229897, 'Size': 493, 'name': 'manifest.json',
