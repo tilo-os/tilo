@@ -242,7 +242,7 @@ pub enum InstallPhase {
 /// HTTP-download `url` to `dest`, reporting as the bytes arrive. Blocking.
 ///
 /// `on_progress` fires once when headers land, then at most once per
-/// [`PROGRESS_STEP_BYTES`], and once more on the last byte — possible
+/// `PROGRESS_STEP_BYTES`, and once more on the last byte — possible
 /// because the body is streamed rather than buffered whole, which
 /// also keeps a large package off the heap.
 ///

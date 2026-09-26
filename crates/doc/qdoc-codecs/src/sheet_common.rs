@@ -1,7 +1,7 @@
 //! Shared helpers for the spreadsheet codecs (`.xlsx`/`.ods`): the bounded OPC/ODF
 //! ZIP container (reusing the hardened [`crate::safety`] reader) and
 //! prefix-insensitive XML name/attribute access. Every byte of untrusted
-//! spreadsheet input enters through [`SheetPackage::read`], so the same zip-bomb /
+//! spreadsheet input enters through `SheetPackage::read`, so the same zip-bomb /
 //! entry-count / DTD-XXE guards the document codecs enforce apply verbatim to
 //! spreadsheets.
 
@@ -14,7 +14,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 /// A spreadsheet format provider — the workbook analogue of [`crate::format::FormatProvider`].
-/// Import is bounded/hardened via [`SheetPackage::read`]; the contract is identical either side of a sandbox.
+/// Import is bounded/hardened via `SheetPackage::read`; the contract is identical either side of a sandbox.
 pub trait SheetProvider: Send + Sync {
     fn schema_id(&self) -> &str;
     fn detect(&self, head: &[u8]) -> Confidence;

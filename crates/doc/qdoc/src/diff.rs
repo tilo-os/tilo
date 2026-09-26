@@ -305,7 +305,7 @@ fn diff_attrs(old: &BTreeMap<String, AttrVal>, new: &BTreeMap<String, AttrVal>) 
 }
 
 /// Character-level diff of two paragraph texts into `Equal`/`Insert`/`Delete` runs, LCS-based
-/// (minimal shared subsequence as `Equal`, surrounding edits as insert/delete). Capped by [`RUN_DIFF_CHAR_CAP`].
+/// (minimal shared subsequence as `Equal`, surrounding edits as insert/delete). Capped by `RUN_DIFF_CHAR_CAP`.
 pub fn text_runs(old: &str, new: &str) -> Vec<TextRun> {
     if old == new {
         return if old.is_empty() {

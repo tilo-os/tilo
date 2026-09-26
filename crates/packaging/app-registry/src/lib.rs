@@ -2,7 +2,7 @@
 //!
 //! This crate provides the protocol that makes "open an app from the store"
 //! fetch, verify, and cache a remote `.tapp`. It sits between the
-//! packaging foundation ([`pkg`]: manifest, signing, verify) and the
+//! packaging foundation (`pkg`: manifest, signing, verify) and the
 //! two consumers that drive it:
 //!
 //! - the app-host daemon, whose remote-fetch calls

@@ -65,9 +65,9 @@ pub enum AttestorScope {
     /// Trusts every package the attestor signs.
     #[default]
     All,
-    /// Only trusts packages whose manifest declares one of these MIME types in [providers].mime.
+    /// Only trusts packages whose manifest declares one of these MIME types in `providers`.mime.
     Mime(Vec<String>),
-    /// Only trusts packages whose [package].id starts with one of these prefixes.
+    /// Only trusts packages whose [package](crate::package).id starts with one of these prefixes.
     Prefix(Vec<String>),
 }
 
@@ -109,7 +109,7 @@ impl AttestorScope {
         }
     }
 
-    /// Does this scope match a package with the given id + mime list from [providers].mime?
+    /// Does this scope match a package with the given id + mime list from `providers`.mime?
     pub fn covers(&self, package_id: &str, mime: &[String]) -> bool {
         match self {
             AttestorScope::All => true,
