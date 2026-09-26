@@ -62,7 +62,7 @@ class ReceiptProductionPathTests(unittest.TestCase):
                     output = ''
                 elif command[1] == 'verify':
                     self.assertEqual(command[2:4], ['--trusted-key', '1' * 64])
-                    output = 'ok: tapp:' + '5' * 64 + ' verifies and publisher is trusted\n'
+                    output = 'ok: tapp:' + '5' * 64 + ' verifies and publisher is trusted (full)\n'
                 else:
                     self.assertEqual(command[1], 'inspect')
                     output = 'package-id: tapp:' + '5' * 64 + '\npublisher-identity: ed25519:' + '1' * 64 + '\nsigned: yes\n\n--- manifest.toml ---\n'
