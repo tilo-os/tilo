@@ -235,6 +235,9 @@ enum CompletionPolicy {
 const LINUX_FENCE_WAIT: Duration = Duration::from_secs(1);
 const LINUX_MAP_CALLBACK_WAIT: Duration = Duration::from_secs(1);
 const BUMP_SETTLEMENT_WAIT: Duration = Duration::from_secs(1);
+/// Bound on the construction-time warm-up frames, which include pipeline compilation on CPU
+/// Vulkan drivers and so are not frame work.
+const PIPELINE_WARMUP: Duration = Duration::from_secs(60);
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,7 +446,7 @@ impl RetainedGpuTarget {
             },
         )
         .map_err(|e| BridgeError::Renderer(format!("{e:?}")))?;
-        Ok(Self {
+        let mut target = Self {
             device: gpu.device.clone(),
             queue: gpu.queue.clone(),
             renderer,
@@ -469,7 +472,77 @@ impl RetainedGpuTarget {
             last_clip_single_group_full_attempts: 0,
             last_clip_single_group_sparse_attempts: 0,
             last_sparse_render_stats: None,
-        })
+        };
+        target.warm_pipelines()?;
+        Ok(target)
+    }
+
+    /// Run the full and the sparse render paths once so every frame deadline measures rendering
+    /// alone. Mesa's CPU Vulkan driver (lavapipe, the DRM CPU-fallback adapter) compiles each
+    /// compute pipeline on its first dispatch, not at creation. With a cold shader cache (first
+    /// boot, or a fresh CI home) that compilation ran inside the first frame's one-second fence
+    /// allowance and failed it, and the first sparse frame paid it again.
+    ///
+    /// # Errors
+    /// Fails when the device cannot complete the warm-up frames within [`PIPELINE_WARMUP`].
+    fn warm_pipelines(&mut self) -> Result<(), BridgeError> {
+        use vello::kurbo::{Affine, Rect};
+        use vello::peniko::{BlendMode, Fill};
+
+        let (width, height) = self.size;
+        let full = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+        let inset = full.inset(-f64::from(width.min(height)) / 4.0);
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            Color::from_rgb8(0x20, 0x30, 0x40),
+            None,
+            &full,
+        );
+        // A clip layer adds the clip reduce/leaf stages ordinary shell frames use.
+        scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            1.0,
+            Affine::IDENTITY,
+            &inset,
+        );
+        scene.fill(
+            Fill::EvenOdd,
+            Affine::IDENTITY,
+            Color::from_rgb8(0xC0, 0x80, 0x40),
+            None,
+            &full,
+        );
+        scene.pop_layer();
+        let damage = [vello::FineDamageRect {
+            x: 0,
+            y: 0,
+            width: width.min(16),
+            height: height.min(16),
+        }];
+        let deadline = Instant::now()
+            .checked_add(PIPELINE_WARMUP)
+            .ok_or_else(|| BridgeError::Renderer("warm-up deadline out of range".to_owned()))?;
+        for damage in [
+            SceneDamage {
+                revision: 1,
+                previous_revision: None,
+                regions: None,
+            },
+            SceneDamage {
+                revision: 2,
+                previous_revision: Some(1),
+                regions: Some(&damage),
+            },
+        ] {
+            self.render_until(&scene, damage, deadline)?;
+        }
+        // The warm-up picture is not content: the first real frame renders in full.
+        self.invalidate();
+        self.reset_attempts();
+        Ok(())
     }
 
     /// Change the clear color, invalidating retained content only when it changes.
