@@ -9277,3 +9277,16 @@ mod tests;
 #[cfg(all(test, unix))]
 #[path = "framework_history_tests.rs"]
 mod framework_history_tests;
+
+#[cfg(test)]
+mod merge_support_tests {
+    use super::merge_supported_path;
+
+    #[test]
+    fn merge_is_never_offered_for_binary_or_unsupported_names() {
+        assert!(merge_supported_path(std::path::Path::new("notes.txt")));
+        assert!(merge_supported_path(std::path::Path::new("draft.QDOC")));
+        assert!(!merge_supported_path(std::path::Path::new("photo.png")));
+        assert!(!merge_supported_path(std::path::Path::new("unknown")));
+    }
+}
