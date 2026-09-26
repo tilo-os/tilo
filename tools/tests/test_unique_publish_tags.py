@@ -76,6 +76,17 @@ class ShellPushTests(unittest.TestCase):
         self.assertIn('--tag "$IMAGE_REPOSITORY:$unique"', text)
         self.assertIn('--tag "$PUBLIC_IMAGE_REPOSITORY:$unique"', text)
 
+    def test_base_mirror_dev_disk_and_wine_pushes_are_unique(self):
+        mirror = self.read("mirror-base.yml")
+        self.assertIn('fedora-bootc:${BASE_SOURCE##*:}-$(date -u +%Y%m%d)-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', mirror)
+        dev_disk = self.read("dev-disk.yml")
+        self.assertIn("build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH", dev_disk)
+        publish = (ROOT / "os/dev/publish-dev-disk.sh").read_text()
+        self.assertIn('"docker://$REPOSITORY:$DEV_TAG-$ARCH-${image_digest:7:16}"', publish)
+        self.assertIn('"docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}"', publish)
+        wine = (ROOT / "os/dev/run-wine-ci.sh").read_text()
+        self.assertEqual(wine.count("${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:?}-${target}"), 2)
+
     def test_native_index_promotion_always_pushes_a_fresh_candidate(self):
         text = (ROOT / "os/dev/promote-native-index.py").read_text()
         self.assertIn("tilo-native-index-", text)
