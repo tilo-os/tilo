@@ -4092,6 +4092,37 @@ fn install_device_fabric_bridge(
                         session_id,
                     )?;
                 }
+                DeviceFabricUiAction::ResolveSpeakerGroupConsent { group, approved } => {
+                    crate::shell::device_fabric_runtime::require_speaker_groups()?;
+                    crate::shell::speaker_group_runtime::resolve_consent(
+                        &fabric_net,
+                        group,
+                        approved,
+                    )?;
+                }
+                DeviceFabricUiAction::LeaveSpeakerGroup { group } => {
+                    crate::shell::speaker_group_runtime::leave_group(&fabric_net, group)?;
+                }
+                DeviceFabricUiAction::StartSpeakerGroupAudio {
+                    source_token,
+                    group,
+                } => {
+                    let _ = crate::shell::device_fabric_runtime::request_speaker_group_audio(
+                        &fabric_net,
+                        source_token,
+                        group,
+                    )?;
+                }
+                DeviceFabricUiAction::PlayMediaOnSpeakerGroup { session_id, group } => {
+                    let _ = crate::shell::device_fabric_runtime::play_media_on_speaker_group(
+                        &fabric_net,
+                        &session_id,
+                        group,
+                    )?;
+                }
+                DeviceFabricUiAction::StopSpeakerGroupSession { session_id } => {
+                    crate::shell::speaker_group_runtime::stop_session(&fabric_net, session_id)?;
+                }
                 DeviceFabricUiAction::RequestRemoteCapture { peer, kind } => {
                     let binding = active_physical_gamepad_binding(&tree_handle.read())
                         .ok_or_else(|| "focus an app before using a remote input".to_string())?;

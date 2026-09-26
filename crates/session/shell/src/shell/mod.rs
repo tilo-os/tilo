@@ -107,6 +107,8 @@ pub mod session_audio_policy;
 pub mod session_policy;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
+pub mod speaker_group;
+pub mod speaker_group_runtime;
 pub mod split_row;
 pub mod state;
 pub mod status;
