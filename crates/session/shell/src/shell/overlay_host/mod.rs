@@ -32,6 +32,7 @@ use crate::shell::quick_settings::actions::QsActions as _;
 mod controller;
 mod device_fabric;
 mod history;
+mod notification_center;
 mod shortcuts;
 
 pub use controller::{ControllerDelivery, ControllerKey};
@@ -51,9 +52,9 @@ use device_fabric::{
 use history::notification_severity_label;
 use history::{
     HistoryTargetAddress, clipboard_history_matches_query, clipboard_history_relative_time,
-    clipboard_history_source_label, history_target_address,
-    notification_history_accessible_description, notification_history_relative_time,
+    clipboard_history_source_label, history_target_address, notification_history_relative_time,
 };
+use notification_center::{NotificationRowControl, notification_row_controls};
 #[cfg(test)]
 use shortcuts::configured_shortcut_matches;
 pub(crate) use shortcuts::shortcut_chord_matches;
@@ -562,6 +563,13 @@ pub struct ShellOverlayHost {
     qs_notification_wheel_remainder: f64,
     /// Synthetic accessibility focus: false is Clear all, true is Undo.
     qs_notification_action_focus: Option<bool>,
+    /// Keyboard selection in the notification centre, by row identity so it
+    /// stays on the same row when new notifications arrive above it.
+    qs_notification_selected: Option<crate::shell::notification_history::RowIdentity>,
+    /// A trailing control of the selected row holding focus, if any.
+    qs_notification_row_control: Option<NotificationRowControl>,
+    /// App groups the viewer folded in the notification centre.
+    qs_notification_collapsed: std::collections::BTreeSet<String>,
     /// Offset into the separate clipboard history. Clipboard and notification
     /// panes retain independent positions when the person switches between
     /// them.
@@ -2026,7 +2034,7 @@ impl ShellOverlayHost {
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
         let (search_registry, room_records, qs_action_slot) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
-        Self::from_inputs(
+        let mut host = Self::from_inputs(
             content,
             OverlayInputs {
                 search_registry,
@@ -2056,7 +2064,11 @@ impl ShellOverlayHost {
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 session_action_policy,
             },
-        )
+        );
+        // Offer Switch user only where the display manager can open a greeter
+        // beside this session; greetd cannot.
+        host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        host
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
@@ -2196,6 +2208,9 @@ impl ShellOverlayHost {
             ),
             qs_notification_wheel_remainder: 0.0,
             qs_notification_action_focus: None,
+            qs_notification_selected: None,
+            qs_notification_row_control: None,
+            qs_notification_collapsed: std::collections::BTreeSet::new(),
             qs_clipboard_history_start: 0,
             qs_clipboard_wheel_remainder: 0.0,
             qs_selected_clipboard: None,
@@ -8151,7 +8166,9 @@ impl ShellOverlayHost {
                 DrillInList::list_height(qs::LIST_TOP, rows)
             }
             QsLevel::Notifications => {
-                let total = state.notification_history().len();
+                let total = state
+                    .notification_history_rows(&self.qs_notification_collapsed)
+                    .len();
                 NotificationHistoryLayout::preferred_height(total.min(7), total, self.qs_type_px)
             }
             QsLevel::Clipboard => {
@@ -8178,10 +8195,7 @@ impl ShellOverlayHost {
     /// overlap the final body line on small displays or at enlarged text
     /// sizes; a history that fits ends on the panel padding instead.
     fn qs_notification_visible_rows(&self) -> usize {
-        let total = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let total = self.qs_notification_rows().len();
         self.qs_notification_layout().visible_rows(total)
     }
 
@@ -8215,7 +8229,7 @@ impl ShellOverlayHost {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let history_len = chrome.borrow().notification_history().len();
+        let history_len = self.qs_notification_rows().len();
         let max_start = self.qs_notification_max_start(history_len);
         let current = self.qs_notification_history_start.min(max_start);
         let next = if movement.is_negative() {
@@ -8324,11 +8338,16 @@ impl ShellOverlayHost {
     /// Keyboard navigation for the notification drill-in. It is deliberately
     /// available without pointer hover so the retained error history remains
     /// usable by keyboard and assistive-technology users.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one match keeps every notification-centre key and its precedence over Clear/Undo visible together"
+    )]
     fn handle_qs_notification_keyboard(&mut self, logical_key: &Key) -> bool {
-        let history_len = self
-            .chrome
-            .as_ref()
-            .map_or(0, |chrome| chrome.borrow().notification_history().len());
+        let rows = self.qs_notification_rows();
+        let history_len = rows.len();
+        let selected = self.chrome.as_ref().and_then(|chrome| {
+            self.qs_notification_selected_row(&rows, chrome.borrow().notification_history())
+        });
         let page = isize::try_from(self.qs_notification_visible_rows()).unwrap_or(isize::MAX);
         match logical_key {
             Key::Named(NamedKey::Enter | NamedKey::Space)
@@ -8339,6 +8358,43 @@ impl ShellOverlayHost {
                 }
                 self.qs_notification_action_focus = Some(true);
                 self.qs_notification_history_start = 0;
+                self.qs_notification_selected = None;
+            }
+            Key::Named(NamedKey::Enter | NamedKey::Space) if selected.is_some() => {
+                if let Some(index) = selected {
+                    let control = self.qs_notification_row_control;
+                    self.qs_activate_notification_row(index, control);
+                }
+            }
+            Key::Named(NamedKey::Delete) if selected.is_some() => {
+                if let Some(index) = selected {
+                    self.qs_dismiss_notification_row(index);
+                }
+            }
+            Key::Named(direction @ (NamedKey::ArrowRight | NamedKey::ArrowLeft))
+                if selected.is_some_and(|index| {
+                    matches!(rows.get(index), Some(crate::shell::notification_history::HistoryRow::Group { expanded, .. })
+                        if *expanded == (*direction == NamedKey::ArrowLeft))
+                }) =>
+            {
+                if let Some(index) = selected {
+                    self.qs_activate_notification_row(index, None);
+                }
+            }
+            Key::Named(NamedKey::ArrowRight | NamedKey::ArrowLeft) if selected.is_some() => {}
+            Key::Named(NamedKey::ArrowDown) => self.qs_move_notification_selection(1),
+            Key::Named(NamedKey::ArrowUp) => self.qs_move_notification_selection(-1),
+            Key::Named(NamedKey::PageDown) if selected.is_some() => {
+                self.qs_move_notification_selection(page);
+            }
+            Key::Named(NamedKey::PageUp) if selected.is_some() => {
+                self.qs_move_notification_selection(page.saturating_neg());
+            }
+            Key::Named(NamedKey::Home) if selected.is_some() => {
+                self.qs_select_notification_row(0);
+            }
+            Key::Named(NamedKey::End) if selected.is_some() => {
+                self.qs_select_notification_row(usize::MAX);
             }
             Key::Named(NamedKey::Enter | NamedKey::Space)
                 if self.chrome.as_ref().is_some_and(|chrome| {
@@ -8356,12 +8412,6 @@ impl ShellOverlayHost {
                 }
                 self.qs_notification_history_start = 0;
                 self.qs_notification_wheel_remainder = 0.0;
-            }
-            Key::Named(NamedKey::ArrowDown) => {
-                let _ = self.scroll_qs_notification_history(1);
-            }
-            Key::Named(NamedKey::ArrowUp) => {
-                let _ = self.scroll_qs_notification_history(-1);
             }
             Key::Named(NamedKey::PageDown) => {
                 let _ = self.scroll_qs_notification_history(page);
@@ -8893,6 +8943,10 @@ impl ShellOverlayHost {
             crate::shell::quick_settings::QsLevel::Vpn => self
                 .qs_vpn_pane
                 .semantic_rects(self.quick_settings_rect(), &state.quick_settings.vpns),
+            crate::shell::quick_settings::QsLevel::Notifications => {
+                drop(state);
+                self.notification_center_semantic_rects()
+            }
             _ => Vec::new(),
         }
     }
@@ -12468,10 +12522,19 @@ impl ShellOverlayHost {
             && chrome.borrow().can_undo_notification_history_clear()
         {
             chrome.borrow_mut().undo_notification_history_clear();
-        } else if self.qs_notification_clear_rect().contains(p) {
+        } else if self.qs_notification_clear_rect().contains(p)
+            && !chrome.borrow().notification_history().is_empty()
+        {
             chrome.borrow_mut().clear_notification_history();
             self.qs_notification_history_start = 0;
             self.qs_notification_wheel_remainder = 0.0;
+            self.qs_notification_selected = None;
+        } else if let Some(hit) = self.qs_notification_row_hit(p) {
+            // A pointer press acts on the row without leaving a keyboard
+            // selection ring behind it.
+            self.qs_notification_selected = None;
+            self.qs_notification_row_control = None;
+            self.qs_activate_notification_row(hit.row, hit.control);
         }
     }
 
@@ -14923,7 +14986,26 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
         ) {
             return None;
         }
-        match child_path {
+        if let [0, 0, row, rest @ ..] = child_path {
+            let rows = state.notification_history_rows(&host.qs_notification_collapsed);
+            let start = host.qs_notification_history_start;
+            let index = start.saturating_add(*row);
+            let identity = rows
+                .get(index)
+                .and_then(|row| row.identity(state.notification_history()));
+            drop(state);
+            let control = match rest {
+                [] => None,
+                [0] => Some(NotificationRowControl::Dismiss),
+                [1] => Some(NotificationRowControl::HandToAgent),
+                _ => return None,
+            };
+            host.qs_notification_selected = Some(identity?);
+            host.qs_notification_row_control = control;
+            host.qs_notification_action_focus = None;
+            return Some(None);
+        }
+        let focus = match child_path {
             [0, 1] if !state.notification_history().is_empty() => Some(false),
             [0, index]
                 if state.can_undo_notification_history_clear()
@@ -14937,10 +15019,17 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
                 Some(true)
             }
             _ => None,
-        }
+        };
+        focus.map(Some)
     });
-    if let Some(undo) = notification_focus {
-        host.qs_notification_action_focus = Some(undo);
+    if let Some(action) = notification_focus {
+        if let Some(undo) = action {
+            host.qs_notification_action_focus = Some(undo);
+            host.qs_notification_selected = None;
+        }
+        if let Some(chrome) = host.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
         true
     } else {
         host.chrome.as_ref().is_some_and(|chrome| {
@@ -15014,6 +15103,7 @@ impl Widget for ShellOverlayHost {
             let mut state = chrome.borrow_mut();
             state.sync_external_tree_revision();
             state.expire_notification_history_clear(Instant::now());
+            state.flush_notification_history();
         }
         let mut search_index_ready = false;
         // Retained search indexes are maintained on the compositor tick,
@@ -16204,7 +16294,9 @@ impl Widget for ShellOverlayHost {
                             state.quick_settings.current_level(),
                             crate::shell::quick_settings::QsLevel::Notifications
                         ) {
-                            let total = state.notification_history().len();
+                            let total = state
+                                .notification_history_rows(&self.qs_notification_collapsed)
+                                .len();
                             let visible = self.qs_notification_visible_rows();
                             let start = self.qs_notification_history_start.min(total.saturating_sub(visible));
                             let shown = visible.min(total.saturating_sub(start));
@@ -16212,7 +16304,7 @@ impl Widget for ShellOverlayHost {
                                 "No retained notifications.".to_string()
                             } else {
                                 format!(
-                                    "Showing newest notifications {} through {} of {total}. Use Up and Down to move one notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification.",
+                                    "Showing newest rows {} through {} of {total}, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.",
                                     start.saturating_add(1),
                                     start.saturating_add(shown),
                                 )
@@ -16223,25 +16315,8 @@ impl Widget for ShellOverlayHost {
                             // compositor crosses a relative-time boundary while
                             // constructing the accessibility tree.
                             let now = Instant::now();
-                            let items = state
-                                .notification_history()
-                                .iter()
-                                .rev()
-                                .skip(start)
-                                .take(shown)
-                                .enumerate()
-                                .map(|(index, notification)| {
-                                    AccessNode::new(Role::ListItem)
-                                        .with_name(notification.title.clone())
-                                        .with_description(
-                                            notification_history_accessible_description(
-                                                notification,
-                                                now,
-                                            ),
-                                        )
-                                        .with_position(index.saturating_add(1), shown)
-                                })
-                                .collect();
+                            let _ = shown;
+                            let items = self.qs_notification_accessibility_rows(now);
                             let history = AccessNode::new(Role::List)
                                 .with_name("Retained notifications")
                                 .with_children(items);
@@ -17007,6 +17082,16 @@ impl Widget for ShellOverlayHost {
                     }
                     match child_path {
                         [0] => Some(self.quick_settings_rect()),
+                        [0, 0, row, rest @ ..] => {
+                            let items = self.qs_notification_accessibility_rows(Instant::now());
+                            let item = items.get(*row)?;
+                            let node = match rest {
+                                [] => item,
+                                [control] => item.children.get(*control)?,
+                                _ => return None,
+                            };
+                            node.bounds.map(ui::a11y::AccessBounds::to_rect)
+                        }
                         [0, 1] if !state.notification_history().is_empty() => {
                             Some(self.qs_notification_clear_rect())
                         }
@@ -21583,10 +21668,12 @@ impl ShellOverlayHost {
             return;
         }
 
-        let visible_rows = layout.visible_rows(history.len());
-        let _ = self.clamp_qs_notification_history_start(history.len());
+        let rows = self.qs_notification_rows();
+        let visible_rows = layout.visible_rows(rows.len());
+        let _ = self.clamp_qs_notification_history_start(rows.len());
         let start = self.qs_notification_history_start;
-        let shown = visible_rows.min(history.len().saturating_sub(start));
+        let shown = visible_rows.min(rows.len().saturating_sub(start));
+        let selected = self.qs_notification_selected_row(&rows, &history);
 
         chip(
             scene,
@@ -21596,10 +21683,10 @@ impl ShellOverlayHost {
             colors.text_dim,
         );
 
-        let position = if history.len() > visible_rows {
+        let position = if rows.len() > visible_rows {
             let first = start.saturating_add(1);
             let last = start.saturating_add(shown);
-            format!("Newest {first}\u{2013}{last} of {}", history.len())
+            format!("Newest {first}\u{2013}{last} of {}", rows.len())
         } else {
             format!(
                 "{} notification{}",
@@ -21617,14 +21704,58 @@ impl ShellOverlayHost {
         );
 
         let now = Instant::now();
-        for (index, notification) in history
-            .iter()
-            .rev()
-            .skip(start)
-            .take(visible_rows)
-            .enumerate()
-        {
-            let row = layout.row(index);
+        for (offset, history_row) in rows.iter().enumerate().skip(start).take(visible_rows) {
+            let row = layout.row(offset.saturating_sub(start));
+            let row_selected = selected == Some(offset);
+            let (notification, grouped) = match history_row {
+                crate::shell::notification_history::HistoryRow::Group {
+                    label,
+                    count,
+                    expanded,
+                    newest,
+                    ..
+                } => {
+                    let Some(newest) = history.get(*newest) else {
+                        continue;
+                    };
+                    ui::surface::card(
+                        scene,
+                        transform,
+                        row,
+                        qs::control_radius(theme, row),
+                        qs::control_fill(theme, cursor.is_some_and(|p| row.contains(p))),
+                    );
+                    Self::draw_qs_notification_group_row(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &layout,
+                        row,
+                        (label, *count, *expanded, newest),
+                    );
+                    self.draw_qs_notification_row_controls(
+                        scene,
+                        transform,
+                        theme,
+                        notification_row_controls(&layout, row, false),
+                        self.qs_notification_row_control.filter(|_| row_selected),
+                    );
+                    if row_selected && self.qs_notification_row_control.is_none() {
+                        Self::draw_qs_notification_selection(scene, transform, theme, row);
+                    }
+                    continue;
+                }
+                crate::shell::notification_history::HistoryRow::Item { index, grouped } => {
+                    let Some(notification) = history.get(*index) else {
+                        continue;
+                    };
+                    (notification, *grouped)
+                }
+            };
+            let agent = self.qs_notification_agent(notification);
+            let controls = notification_row_controls(&layout, row, agent.is_some());
+            let text_right = controls.1.unwrap_or(controls.0).x0 - qs::RELATED_GAP;
             // A history row is a resting Control surface (HIG §9.5): the
             // lift floor with its derived edge, never a ramp-slot wash.
             ui::surface::card(
@@ -21632,7 +21763,7 @@ impl ShellOverlayHost {
                 transform,
                 row,
                 qs::control_radius(theme, row),
-                qs::control_fill(theme, false),
+                qs::control_fill(theme, cursor.is_some_and(|p| row.contains(p))),
             );
             // Keep severity scannable without taking another line in the
             // fixed-height responsive card. The accessibility description
@@ -21658,9 +21789,10 @@ impl ShellOverlayHost {
             let relative_time = notification_history_relative_time(notification, now);
             let (time_width, _) = text_renderer.measure(&relative_time, caption_size, None);
             // Source/time, title, body: three measured lines on the control
-            // padding, inset `s3` like every row glyph in the panel.
-            let x = row.x0 + qs::CONTROL_INSET;
-            let inner_w = row.width() - 2.0 * qs::CONTROL_INSET;
+            // padding, inset `s3` like every row glyph in the panel. A
+            // grouped notification sits one glyph in, under its header's
+            // label, so the fold reads as a hierarchy.
+            let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let source_y = row.y0 + qs::CONTROL_PAD;
             text_renderer.draw_text(
                 scene,
@@ -21669,7 +21801,7 @@ impl ShellOverlayHost {
                 colors.text_dim,
                 transform.pre_translate((x, source_y).into()),
                 Some(f64_to_f32_lossy(
-                    inner_w - f64::from(time_width) - qs::RELATED_GAP,
+                    row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP - x,
                 )),
             );
             text_renderer.draw_text(
@@ -21689,7 +21821,7 @@ impl ShellOverlayHost {
                 label_size,
                 colors.text_primary,
                 transform.pre_translate((x, title_y).into()),
-                Some(f64_to_f32_lossy(inner_w)),
+                Some(f64_to_f32_lossy(text_right - x)),
                 TextWeight::Semibold,
             );
             if notification.show_preview && !notification.body.is_empty() {
@@ -21699,8 +21831,18 @@ impl ShellOverlayHost {
                     caption_size,
                     colors.text_dim,
                     transform.pre_translate((x, title_y + layout.label_lh).into()),
-                    Some(f64_to_f32_lossy(inner_w)),
+                    Some(f64_to_f32_lossy(text_right - x)),
                 );
+            }
+            self.draw_qs_notification_row_controls(
+                scene,
+                transform,
+                theme,
+                controls,
+                self.qs_notification_row_control.filter(|_| row_selected),
+            );
+            if row_selected && self.qs_notification_row_control.is_none() {
+                Self::draw_qs_notification_selection(scene, transform, theme, row);
             }
         }
 
@@ -21750,13 +21892,13 @@ impl ShellOverlayHost {
                 ),
                 None,
             );
-        } else if history.len() > visible_rows {
+        } else if rows.len() > visible_rows {
             let newer = if start > 0 {
                 "\u{2191} Newer"
             } else {
                 "At newest"
             };
-            let older = if start.saturating_add(shown) < history.len() {
+            let older = if start.saturating_add(shown) < rows.len() {
                 "\u{2193} Older"
             } else {
                 "At oldest"

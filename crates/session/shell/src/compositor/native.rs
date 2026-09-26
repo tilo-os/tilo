@@ -5432,7 +5432,14 @@ pub fn run() {
     // The xdg-desktop-portal backend, served from *this* process on the tree
     // it owns — see `start_portal_backend` for why not the separate daemon.
     let notif_bridge = crate::notifications::NotificationBridge::new();
-    frame_builder.with_chrome(|st| st.set_notification_bridge(notif_bridge.clone()));
+    frame_builder.with_chrome(|st| {
+        st.set_notification_bridge(notif_bridge.clone());
+        if let Some(store) =
+            crate::shell::notification_history::NotificationHistoryStore::for_user()
+        {
+            st.attach_notification_history_store(store);
+        }
+    });
     let inhibit_registry = tilo_power_mgmt::InhibitRegistry::new();
     frame_builder
         .host_mut()
@@ -9303,6 +9310,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (0, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -9359,6 +9367,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (x, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -11529,6 +11538,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let geo = output_geometry(&outs);
@@ -11560,6 +11570,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11605,6 +11616,7 @@ mod external_floating_security_tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
