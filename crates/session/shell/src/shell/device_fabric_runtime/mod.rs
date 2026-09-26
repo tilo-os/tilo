@@ -5581,7 +5581,8 @@ impl crate::shell::automation_triggers::DeviceDirectory for FabricDeviceDirector
 )]
 pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host::DeviceFabricView {
     use crate::shell::overlay_host::{
-        DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaOutputView,
+        DeviceFabricView, FabricDeviceView, FabricMediaView, LocalMediaInputView,
+        LocalMediaOutputView,
     };
 
     let policy = ContinuityPolicySnapshot::load();
@@ -5650,7 +5651,25 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         Vec::new()
     };
 
-    let mut local_outputs = media::audio::enumerate()
+    let graph = media::audio::enumerate();
+    let mut local_inputs = graph
+        .sources
+        .iter()
+        .map(|source| LocalMediaInputView {
+            node_id: source.id,
+            label: source.description.clone(),
+            is_default: source.is_default,
+            level_percent: source.volume.map(input_level_percent),
+            muted: source.muted.unwrap_or(false),
+        })
+        .collect::<Vec<_>>();
+    local_inputs.sort_by(|left, right| {
+        right
+            .is_default
+            .cmp(&left.is_default)
+            .then_with(|| left.label.cmp(&right.label))
+    });
+    let mut local_outputs = graph
         .sinks
         .into_iter()
         .map(|sink| LocalMediaOutputView {
@@ -5759,6 +5778,7 @@ pub fn device_fabric_view(network: &ShellNetwork) -> crate::shell::overlay_host:
         local_media,
         media_handoffs: media_handoff_status_views(network),
         local_outputs,
+        local_inputs,
         transfers,
         remote_audio: crate::shell::remote_audio::RemoteAudioView::default(),
         speaker_groups: if policy.permits(ContinuityCapability::Media) {
@@ -5794,6 +5814,89 @@ pub fn route_local_audio(node_id: u32) -> Result<(), String> {
     control.set_default_sink(node_id)?;
     for stream in graph.playback_streams {
         control.route_stream(stream.id, target_serial)?;
+    }
+    Ok(())
+}
+
+/// An input level in `0.0..=1.0` as a whole percentage.
+#[must_use]
+pub fn input_level_percent(level: f32) -> u8 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "the level is clamped to 0..=1 first, so the percentage is 0..=100"
+    )]
+    let percent = (level.clamp(0.0, 1.0) * 100.0).round() as u8;
+    percent
+}
+
+/// How far one step of the input level moves.
+const INPUT_LEVEL_STEP: f32 = 0.05;
+
+/// Record from one currently enumerated input from now on: make it the
+/// default source and move every running capture stream onto it.
+///
+/// # Errors
+///
+/// Returns an error if the input disappeared or `PipeWire` rejects any graph
+/// edit. The node id is resolved against a fresh graph before it is used.
+pub fn select_local_input(node_id: u32) -> Result<(), String> {
+    let graph = media::audio::enumerate();
+    let source = graph
+        .sources
+        .iter()
+        .find(|source| source.id == node_id)
+        .ok_or_else(|| "that input is no longer connected".to_string())?;
+    let target_serial = source.serial;
+    let control = media::audio::real_control();
+    control.set_default_source(node_id)?;
+    for stream in graph.record_streams {
+        control.route_stream(stream.id, target_serial)?;
+    }
+    Ok(())
+}
+
+/// The input level one step up or down from `current`, within `0..=1`.
+#[must_use]
+pub fn stepped_input_level(current: Option<f32>, raise: bool) -> f32 {
+    let current = current.unwrap_or(0.0);
+    let next = if raise {
+        current + INPUT_LEVEL_STEP
+    } else {
+        current - INPUT_LEVEL_STEP
+    };
+    ((next / INPUT_LEVEL_STEP).round() * INPUT_LEVEL_STEP).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+#[test]
+fn input_level_steps_snap_to_the_grid_and_stay_in_range() {
+    assert!((stepped_input_level(Some(0.62), true) - 0.65).abs() < 1e-6);
+    assert!((stepped_input_level(Some(0.62), false) - 0.55).abs() < 1e-6);
+    assert!((stepped_input_level(Some(0.99), true) - 1.0).abs() < 1e-6);
+    assert!(stepped_input_level(Some(0.01), false).abs() < 1e-6);
+    assert!((stepped_input_level(None, true) - 0.05).abs() < 1e-6);
+    assert_eq!(input_level_percent(0.625), 63);
+    assert_eq!(input_level_percent(7.0), 100);
+}
+
+/// Raise or lower one input's level by a step. Raising a muted input unmutes
+/// it: reaching for "louder" means "let them hear me".
+///
+/// # Errors
+///
+/// Returns an error if the input disappeared or `wpctl` rejects the change.
+pub fn step_input_level(node_id: u32, raise: bool) -> Result<(), String> {
+    let graph = media::audio::enumerate();
+    let source = graph
+        .sources
+        .iter()
+        .find(|source| source.id == node_id)
+        .ok_or_else(|| "that input is no longer connected".to_string())?;
+    let control = media::audio::real_control();
+    control.set_node_volume(node_id, stepped_input_level(source.volume, raise))?;
+    if raise && source.muted == Some(true) {
+        control.set_node_mute(node_id, false)?;
     }
     Ok(())
 }

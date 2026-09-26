@@ -43,7 +43,7 @@ pub use controller::{ControllerDelivery, ControllerKey};
 pub use device_fabric::{
     BluetoothHandoffAuthorizationView, DeviceFabricBridge, DeviceFabricUiAction, DeviceFabricView,
     FabricDeviceView, FabricMediaView, FabricTransferStatus, FabricTransferView,
-    GamepadAuthorizationView, LocalMediaOutputView, RealtimeContinuityBridge,
+    GamepadAuthorizationView, LocalMediaInputView, LocalMediaOutputView, RealtimeContinuityBridge,
     RealtimeContinuityUiAction,
 };
 use device_fabric::{
@@ -13379,6 +13379,12 @@ impl ShellOverlayHost {
                 },
                 format!("Audio is now routed to {}", output.label),
             )),
+            DeviceFabricPaneRow::LocalInput(input) if !input.is_default => Some((
+                DeviceFabricUiAction::SelectLocalInput {
+                    node_id: input.node_id,
+                },
+                format!("Recording from {}", input.label),
+            )),
             DeviceFabricPaneRow::Tethering(status) => {
                 if status.phase
                     == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
@@ -13631,6 +13637,28 @@ impl ShellOverlayHost {
         row_index: usize,
         item: &DeviceFabricPaneRow,
     ) -> Option<(DeviceFabricUiAction, String)> {
+        if let DeviceFabricPaneRow::LocalInput(input) = item {
+            if !input.is_default {
+                return None;
+            }
+            let (lower, raise) =
+                Self::qs_realtime_consent_actions(self.qs_device_row_rect(row_index));
+            let raise = if raise.contains(point) {
+                true
+            } else if lower.contains(point) {
+                false
+            } else {
+                return None;
+            };
+            // A level step is its own feedback: the row's level updates.
+            return Some((
+                DeviceFabricUiAction::StepInputLevel {
+                    node_id: input.node_id,
+                    raise,
+                },
+                String::new(),
+            ));
+        }
         let DeviceFabricPaneRow::Device(device) = item else {
             return None;
         };
@@ -13695,9 +13723,14 @@ impl ShellOverlayHost {
         if let Some(chrome) = self.chrome.as_ref() {
             let mut state = chrome.borrow_mut();
             match result {
-                Ok(_) => state.push_notification("Devices & media", success),
-                Err(error) => state.push_notification("Could not complete device action", error),
-            };
+                Ok(_) if success.is_empty() => {}
+                Ok(_) => {
+                    state.push_notification("Devices & media", success);
+                }
+                Err(error) => {
+                    state.push_notification("Could not complete device action", error);
+                }
+            }
             state.bump();
         }
     }
@@ -17334,6 +17367,20 @@ impl Widget for ShellOverlayHost {
                                             },
                                             Vec::new(),
                                         ),
+                                        DeviceFabricPaneRow::LocalInput(input) => {
+                                            let detail = Self::local_input_detail(&input);
+                                            let actions = if input.is_default {
+                                                vec![
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Lower input level"),
+                                                    AccessNode::new(Role::Button)
+                                                        .with_name("Raise input level"),
+                                                ]
+                                            } else {
+                                                Vec::new()
+                                            };
+                                            (input.label, detail, actions)
+                                        }
                                         DeviceFabricPaneRow::Tethering(status) => (
                                             format!("Tethering with {}", status.peer_label),
                                             match status.phase {
@@ -22562,6 +22609,23 @@ impl ShellOverlayHost {
         )
     }
 
+    /// The Devices row text for a local input: whether it is the one in
+    /// use, and its level.
+    fn local_input_detail(input: &LocalMediaInputView) -> String {
+        use std::fmt::Write as _;
+        if !input.is_default {
+            return "Microphone · record from here".into();
+        }
+        let mut detail = "Current microphone".to_string();
+        if let Some(level) = input.level_percent {
+            let _ = write!(detail, " · input level {level}%");
+        }
+        if input.muted {
+            detail.push_str(" · muted");
+        }
+        detail
+    }
+
     fn qs_realtime_consent_actions(row: Rect) -> (Rect, Rect) {
         (
             Rect::new(row.x1 - 72.0, row.y0 + 10.0, row.x1 - 38.0, row.y1 - 10.0),
@@ -23255,6 +23319,13 @@ impl ShellOverlayHost {
                     self.qs_selected_media.as_ref() == Some(&media.session_id),
                     true,
                 ),
+                DeviceFabricPaneRow::LocalInput(input) => (
+                    input.label.clone(),
+                    Self::local_input_detail(input),
+                    ui::icons::Icon::Mic,
+                    input.is_default,
+                    true,
+                ),
                 DeviceFabricPaneRow::LocalOutput(output) => (
                     output.label.clone(),
                     output.bluetooth_codec.as_ref().map_or_else(
@@ -23395,7 +23466,12 @@ impl ShellOverlayHost {
                 DeviceFabricPaneRow::Tethering(status)
                     if status.phase == crate::shell::personal_tethering_runtime::TetheringPhase::ConsentRequired
             );
+            let input_level = matches!(
+                item,
+                DeviceFabricPaneRow::LocalInput(input) if input.is_default
+            );
             let trailing = if tethering_consent
+                || input_level
                 || matches!(
                     item,
                     DeviceFabricPaneRow::Device(_)
@@ -23525,6 +23601,24 @@ impl ShellOverlayHost {
                             _ => "Decline this call handoff",
                         }),
                 );
+            } else if input_level {
+                let (lower, raise) = Self::qs_realtime_consent_actions(row);
+                for (rect, icon, name) in [
+                    (lower, ui::icons::Icon::ArrowDown, "Lower input level"),
+                    (raise, ui::icons::Icon::ArrowUp, "Raise input level"),
+                ] {
+                    Button::paint(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        &ButtonFace::new(rect, "")
+                            .ghost()
+                            .icon(icon)
+                            .hovered(self.last_cursor.is_some_and(|point| rect.contains(point)))
+                            .accessible_name(name),
+                    );
+                }
             } else if let DeviceFabricPaneRow::Device(device) = item {
                 let (placements, control) = Self::qs_device_row_actions(row);
                 for (rect, icon, name) in [

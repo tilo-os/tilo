@@ -286,6 +286,39 @@ fn device_actions(view: &DeviceFabricView) -> Vec<DeviceAction> {
             confirm: false,
         });
     }
+    for input in &view.local_inputs {
+        let token = opaque(
+            "so.tilo.continuity.audio-input.v1",
+            &input.node_id.to_le_bytes(),
+        );
+        if input.is_default {
+            for (raise, verb) in [(true, "Raise"), (false, "Lower")] {
+                actions.push(DeviceAction {
+                    id: format!(
+                        "audio.input-level.{}.{token}",
+                        if raise { "raise" } else { "lower" }
+                    ),
+                    title: format!("{verb} the input level of {}", input.label),
+                    subtitle: "Change the current microphone's level by one step".into(),
+                    action: DeviceFabricUiAction::StepInputLevel {
+                        node_id: input.node_id,
+                        raise,
+                    },
+                    confirm: false,
+                });
+            }
+        } else {
+            actions.push(DeviceAction {
+                id: format!("audio.input.{token}"),
+                title: format!("Use {} as the microphone", input.label),
+                subtitle: "Record from this local input from now on".into(),
+                action: DeviceFabricUiAction::SelectLocalInput {
+                    node_id: input.node_id,
+                },
+                confirm: false,
+            });
+        }
+    }
     for source in &view.remote_audio.sources {
         for target in eligible
             .iter()
