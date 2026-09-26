@@ -253,6 +253,8 @@ pub struct InputSettings {
     pub touchpad_gestures: bool,
     /// Whether touchpads send events at all; the touchpad-toggle key flips it.
     pub touchpad_enabled: bool,
+    /// Switch touchpads off while an external mouse is plugged in.
+    pub touchpad_disabled_on_external_mouse: bool,
     /// Which button a clickpad press means.
     pub touchpad_click_method: TouchpadClickMethod,
     /// Two-finger or edge scrolling on touchpads.
@@ -284,6 +286,7 @@ impl Default for InputSettings {
             flat_acceleration: false,
             touchpad_gestures: true,
             touchpad_enabled: true,
+            touchpad_disabled_on_external_mouse: false,
             touchpad_click_method: TouchpadClickMethod::Default,
             touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
             scroll_speed: 1.0,
@@ -359,6 +362,10 @@ impl InputSettings {
             touchpad_enabled: bool_at(
                 settings_store::hardware::TOUCHPAD_ENABLED_KEY,
                 d.touchpad_enabled,
+            ),
+            touchpad_disabled_on_external_mouse: bool_at(
+                settings_store::hardware::TOUCHPAD_DISABLED_ON_EXTERNAL_MOUSE_KEY,
+                d.touchpad_disabled_on_external_mouse,
             ),
             touchpad_click_method: section
                 .get("touchpad_click_method")
@@ -532,6 +539,17 @@ pub struct DeviceCaps {
     pub default_click_method: Option<ClickMethod>,
     pub supports_two_finger_scroll: bool,
     pub supports_edge_scroll: bool,
+    /// libinput can switch the device off while an external mouse is present.
+    pub supports_disable_on_external_mouse: bool,
+}
+
+/// A libinput send-events mode, independent of the libinput bindings so the
+/// plan stays a pure value.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SendEvents {
+    Enabled,
+    Disabled,
+    DisabledOnExternalMouse,
 }
 
 /// A libinput click method, independent of the libinput bindings so the plan
@@ -571,7 +589,7 @@ pub struct DevicePlan {
     pub flat_acceleration: Option<bool>,
     /// Whether the device sends events. Asked only of touchpads: a mouse or
     /// keyboard is never switched off by the touchpad key.
-    pub send_events: Option<bool>,
+    pub send_events: Option<SendEvents>,
     /// Always a method the device listed; `Default` resolves to the device's
     /// own default so switching back really undoes an earlier choice.
     pub click_method: Option<ClickMethod>,
@@ -616,7 +634,15 @@ pub fn plan_for(settings: &InputSettings, caps: &DeviceCaps) -> DevicePlan {
         flat_acceleration: caps
             .supports_flat_acceleration
             .then_some(settings.flat_acceleration),
-        send_events: caps.is_touchpad().then_some(settings.touchpad_enabled),
+        send_events: caps.is_touchpad().then_some(if !settings.touchpad_enabled {
+            SendEvents::Disabled
+        } else if settings.touchpad_disabled_on_external_mouse
+            && caps.supports_disable_on_external_mouse
+        {
+            SendEvents::DisabledOnExternalMouse
+        } else {
+            SendEvents::Enabled
+        }),
         click_method: match settings.touchpad_click_method {
             TouchpadClickMethod::Default => caps.default_click_method,
             TouchpadClickMethod::Areas => caps
@@ -746,6 +772,7 @@ mod tests {
             default_click_method: Some(ClickMethod::ButtonAreas),
             supports_two_finger_scroll: true,
             supports_edge_scroll: true,
+            supports_disable_on_external_mouse: true,
         }
     }
 
@@ -874,18 +901,56 @@ mod tests {
         {
             assert_eq!(
                 plan_for(&InputSettings::default(), &touchpad()).send_events,
-                Some(true),
+                Some(SendEvents::Enabled),
                 "an absent preference leaves the touchpad on"
             );
             let off = InputSettings::from_section(&section(json!({"touchpad_enabled": false})));
             assert!(!off.touchpad_enabled);
-            assert_eq!(plan_for(&off, &touchpad()).send_events, Some(false));
+            assert_eq!(
+                plan_for(&off, &touchpad()).send_events,
+                Some(SendEvents::Disabled)
+            );
             assert_eq!(
                 plan_for(&off, &mouse()).send_events,
                 None,
                 "a mouse is never switched off by the touchpad key"
             );
             assert_eq!(plan_for(&off, &keyboard()).send_events, None);
+        }
+        // Phase `a_touchpad_can_step_aside_while_a_mouse_is_connected`.
+        {
+            let with_mouse = InputSettings::from_section(&section(json!({
+                "touchpad_disabled_on_external_mouse": true
+            })));
+            assert!(with_mouse.touchpad_disabled_on_external_mouse);
+            assert!(!InputSettings::default().touchpad_disabled_on_external_mouse);
+            assert_eq!(
+                plan_for(&with_mouse, &touchpad()).send_events,
+                Some(SendEvents::DisabledOnExternalMouse)
+            );
+            assert_eq!(
+                plan_for(&with_mouse, &mouse()).send_events,
+                None,
+                "the mouse itself is never switched off"
+            );
+            let unsupported = DeviceCaps {
+                supports_disable_on_external_mouse: false,
+                ..touchpad()
+            };
+            assert_eq!(
+                plan_for(&with_mouse, &unsupported).send_events,
+                Some(SendEvents::Enabled),
+                "a touchpad libinput cannot hand off keeps working"
+            );
+            let off = InputSettings::from_section(&section(json!({
+                "touchpad_enabled": false,
+                "touchpad_disabled_on_external_mouse": true
+            })));
+            assert_eq!(
+                plan_for(&off, &touchpad()).send_events,
+                Some(SendEvents::Disabled),
+                "switched off means off, mouse or not"
+            );
         }
         // Phase `turning_tap_off_turns_tap_drag_off_with_it`.
         {
