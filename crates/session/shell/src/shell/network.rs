@@ -6205,14 +6205,27 @@ impl ShellNetwork {
             && self
                 .personal_continuity_user
                 .is_some_and(|local_user| identity.is_same_user(&local_user));
-        let allowed = if pinned_inviter || same_person_continuation {
+        let person = collab_types::caps::Principal::person_from_key(
+            collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
+        )
+        .id()
+        .to_string();
+        // A direct room's id is derived from its two members, so the only
+        // person who can have created it besides this one is the other
+        // member. Joined without an invite, it bootstraps from exactly that
+        // person's certified device; the replica then pins that device as
+        // the room's governance writer.
+        let direct_room_peer = pinned_authority_may_bootstrap
+            && tree.room_authority(room) == crate::shell::state::RoomAuthority::Unpinned
+            && tilo_reference::DirectRoom::between(
+                &crate::shell::state::local_user_id_for_room(&room),
+                &person,
+            )
+            .and_then(|direct| crate::shell::state::RoomId::parse(&direct.room_id()))
+                == Some(room);
+        let allowed = if pinned_inviter || same_person_continuation || direct_room_peer {
             true
         } else {
-            let person = collab_types::caps::Principal::person_from_key(
-                collab_types::crypto::Ed25519PublicKey::from_bytes(identity.user_pubkey),
-            )
-            .id()
-            .to_string();
             tree.desktop
                 .workspaces
                 .iter()
@@ -9934,6 +9947,68 @@ mod tests {
                 true,
             ),
             "bootstrap authority is pinned to one authenticated transport peer"
+        );
+    }
+
+    #[test]
+    fn only_the_other_member_can_bootstrap_a_derived_direct_room() {
+        use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+
+        let certified = |seed: u8| {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+            let device = iroh::SecretKey::from_bytes(&[seed.wrapping_add(1); 32]);
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: *device.public().as_bytes(),
+                device_label: format!("device {seed}"),
+                capabilities: DeviceCapabilities::member(),
+                issued_at_ns: 1,
+                expires_at_ns: None,
+                signature: [0; 64],
+            };
+            sign_device_cert(&mut cert, &root).expect("certificate");
+            (device, cert, hex::encode(root.verifying_key().to_bytes()))
+        };
+        let (_, _, me) = certified(0x71);
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_USER_ID", &me);
+        let (reporter, reporter_cert, reporter_person) = certified(0x81);
+        let (stranger, stranger_cert, _) = certified(0x91);
+
+        let direct = tilo_reference::DirectRoom::between(&me, &reporter_person).expect("pair");
+        let room = RoomId::parse(&direct.room_id()).expect("room id");
+        let mut tree = WorkspaceTree::default();
+        let local = tree.append_empty_workspace("Reporter");
+        assert!(tree.set_room(local, room));
+        let (net, _commands) = shell_network_for_test(tree.shared(), 71);
+        for (device, cert) in [(&reporter, &reporter_cert), (&stranger, &stranger_cert)] {
+            net.accept_identity_hello(
+                room_topic_id(room),
+                &crate::shell::state::PeerOrigin::peer(&device.public()),
+                &device.public(),
+                cert,
+                &[],
+            );
+        }
+        let allows = |device: &iroh::SecretKey, bootstrap: bool| {
+            net.peer_room_allows(
+                &crate::shell::state::PeerOrigin::peer(&device.public()),
+                room_topic_id(room),
+                crate::shell::state::Verb::Write,
+                bootstrap,
+            )
+        };
+        assert!(
+            allows(&reporter, true),
+            "the other member of the derived pair may supply the room's first governance"
+        );
+        assert!(
+            !allows(&reporter, false),
+            "bootstrapping governance is not general room authority"
+        );
+        assert!(
+            !allows(&stranger, true),
+            "nobody outside the pair can bootstrap a direct room"
         );
     }
 
