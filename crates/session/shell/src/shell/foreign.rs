@@ -78,6 +78,9 @@ use crate::compositor::surface_readback::{
 };
 use crate::shell::state::{TileContent as ShellTile, WorkspaceTree};
 
+mod sheets;
+pub use sheets::{PointRoute, SheetLink};
+
 /// Wayland `wl_surface` protocol id, widened — same key space the rest of the compositor uses for foreign surfaces.
 pub type SurfaceId = u64;
 
@@ -618,6 +621,8 @@ pub struct ChildFrame {
 pub struct ForeignFrameStore {
     entries: Mutex<HashMap<SurfaceId, ForeignEntry>>,
     children: Mutex<HashMap<SurfaceId, Vec<ChildFrame>>>,
+    /// Transient toplevels drawn on their parent's tile, bottom to top.
+    sheets: Mutex<Vec<SheetLink>>,
     /// Total completed buffer imports, of any route. A dmabuf import costs a
     /// GPU readback (or full-frame CPU map), so burst commits are coalesced and
     /// paint only reads the latest completed pixels.
@@ -1326,14 +1331,21 @@ impl ForeignFrameStore {
             tree.retain(|child| child.surface != id);
         }
         drop(children);
+        self.detach_sheet(id);
         #[cfg(target_os = "linux")]
         if let Some(Ok(worker)) = ASYNC_DMABUF_CAPTURE.get() {
             worker.forget_surface(id);
         }
     }
 
-    /// Current frame counter for `id`; `0` when nothing has landed.
+    /// Current frame counter for `id`, its subsurfaces and the sheets on
+    /// its tile; `0` when nothing has landed.
     pub fn frame_seq(&self, id: SurfaceId) -> u64 {
+        self.surface_and_children_seq(id)
+            .wrapping_add(self.sheets_seq(id))
+    }
+
+    fn surface_and_children_seq(&self, id: SurfaceId) -> u64 {
         let children = self
             .children
             .lock()
@@ -1769,6 +1781,8 @@ pub struct ForeignSurfaceWidget {
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
     cached_seq: u64,
+    /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
+    sheet_images: Vec<(SheetLink, ImageData)>,
     /// Layout moved or resized the client since the last composed frame.
     /// Even when the client has not committed new pixels yet, the retained
     /// scene must be rebuilt so its cached image is drawn into the new rect.
@@ -1791,6 +1805,7 @@ impl ForeignSurfaceWidget {
             rect: Rect::ZERO,
             cached: None,
             cached_seq: 0,
+            sheet_images: Vec::new(),
             placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
@@ -1880,20 +1895,56 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        match store().snapshot(self.surface_id) {
-            Some(frame) => {
-                self.cached = Some(ImageData {
-                    data: Blob::new(std::sync::Arc::new(frame.rgba)),
-                    format: ImageFormat::Rgba8,
-                    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-                    alpha_type: ImageAlphaType::AlphaPremultiplied,
-                    width: frame.width,
-                    height: frame.height,
-                });
-            }
-            None => self.cached = None,
-        }
+        self.cached = store().snapshot(self.surface_id).map(frame_image);
+        self.sheet_images = store()
+            .sheets_over(self.surface_id)
+            .into_iter()
+            .filter_map(|link| Some((link, frame_image(store().snapshot(link.surface)?))))
+            .collect();
         true
+    }
+
+    /// Paint the tile's sheets over its image: each centred where
+    /// [`ForeignFrameStore::sheet_rect_in_root`] puts it, a modal one
+    /// behind the OS scrim so the window it blocks reads as inactive.
+    fn draw_sheets(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        dst: Rect,
+        image: &ImageData,
+        theme: &Theme,
+    ) {
+        let sx = dst.width() / f64::from(image.width.max(1));
+        let sy = dst.height() / f64::from(image.height.max(1));
+        for (link, sheet) in &self.sheet_images {
+            if link.modal {
+                crate::shell::overlay_host::fill_scrim(
+                    scene,
+                    transform,
+                    self.rect,
+                    crate::shell::overlay_host::MODAL_SCRIM_ALPHA,
+                    theme,
+                );
+            }
+            let Some(local) = store().sheet_rect_in_root(self.surface_id, link.surface) else {
+                continue;
+            };
+            let at = translated_and_scaled(
+                transform,
+                dst.x0 + local.x0 * sx,
+                dst.y0 + local.y0 * sy,
+                sx,
+                sy,
+            );
+            scene.fill(
+                Fill::NonZero,
+                at,
+                &ImageBrush::new(sheet.clone()),
+                None,
+                &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
+            );
+        }
     }
 
     /// Whether this surface's window is still being held back, and so the
@@ -1934,6 +1985,18 @@ impl ForeignSurfaceWidget {
         let dx = bounds.x0;
         let dy = bounds.y0;
         Some(Rect::new(dx, dy, dx + dw, dy + dh))
+    }
+}
+
+/// A captured frame as a GPU-uploadable image.
+fn frame_image(frame: FrameSnapshot) -> ImageData {
+    ImageData {
+        data: Blob::new(std::sync::Arc::new(frame.rgba)),
+        format: ImageFormat::Rgba8,
+        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: frame.width,
+        height: frame.height,
     }
 }
 
@@ -2112,6 +2175,7 @@ impl Widget for ForeignSurfaceWidget {
                 None,
                 &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
             );
+            self.draw_sheets(scene, transform, dst, &image, theme);
             scene.pop_layer();
             self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
             return;
@@ -2447,6 +2511,14 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
+        if store().is_sheet(id) {
+            // A sheet sizes itself; its bounds were staged when it attached.
+            if !toplevel.is_initial_configure_sent() {
+                toplevel.send_configure();
+                sent = sent.saturating_add(1);
+            }
+            continue;
+        }
         let (min, max) =
             smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
                 let mut cached = states
@@ -2568,7 +2640,7 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
         let id = crate::compositor::state::surface_id(surface);
         let visible_tab = {
             let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, id)
+            is_visible_tab(&tree, store().sheet_root(id))
         };
         if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
             continue;
