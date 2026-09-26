@@ -64,13 +64,15 @@ pub mod entry;
 pub mod handshake;
 pub mod moderation;
 pub mod snapshot;
+pub mod target;
 pub mod verify;
+pub mod version;
 
 pub use change::{EntryAction, EntryChangeRequest, sign_change_request};
 pub use entry::{
     ENTRY_DOMAIN, EntryValidationError, INDEX_DOMAIN, LocalizedImages, LocalizedText,
     RegistryEntry, RegistryImage, RegistryImageKind, RegistryTarget, RegistryVersion,
-    TILO_OS_PLATFORM, entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
+    entry_signing_message, index_signing_message, sign_entry, valid_language_tag,
 };
 pub use handshake::{PROTOCOL_VERSION, RegistryHandshake};
 pub use moderation::{
@@ -87,6 +89,11 @@ pub use snapshot::{
     SignedRegistrySnapshot, SnapshotError, sign_channel_authorization, sign_snapshot,
     sign_snapshot_delegated, snapshot_hash, snapshot_signing_message, verify_channel_authorization,
     verify_snapshot,
+};
+pub use target::{
+    TILO_OS_PLATFORM, TargetError, WASM_FEATURES, WASM_ISA_BASELINE, WASM32_ARCHITECTURE,
+    WEB_PLATFORM, WEB_RUNTIME_NAME, WasmIsa, WebRuntime, canonical_wasm_isa, parse_wasm_isa,
+    parse_web_runtime, valid_abi_id,
 };
 pub use verify::{VerifyError, verify_change_request, verify_entry_signature};
 

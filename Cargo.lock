@@ -11441,6 +11441,7 @@ dependencies = [
  "getrandom 0.4.1",
  "hex",
  "postcard",
+ "semver",
  "serde",
  "serde_json",
  "thiserror 2.0.18",

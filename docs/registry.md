@@ -265,12 +265,44 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape, but the
-official registry currently accepts only `platform = "tilo-os"` with
-`architecture = "x86_64"` or `"aarch64"`. A release must publish a distinct
-native `.tapp` for both architectures. Pass each tapp's target with
-`tilo-app-package entry --arch`; generic Linux, macOS, and Windows builds do not
-belong in the Tilo OS app channel.
+future platform families without changing the signed entry shape. Two families
+are accepted (`registry_types::target`):
+
+| `platform` | `architecture` | `isa` | `runtime` |
+|---|---|---|---|
+| `tilo-os` | `x86_64`, `aarch64` | `x86_64`, `x86_64-v2`…`v4`, `aarch64`, `aarch64-v8.2`/`v8.4`/`v9` | optional, `tilo-runtime/<version>` |
+| `web` | `wasm32` | canonical wasm feature set, see below | **required**, `tilo-runtime/<version>+abi.<id>` |
+
+A native release must publish a distinct `.tapp` for both architectures. Pass
+each tapp's target with `tilo-app-package entry --arch`; generic Linux, macOS,
+and Windows builds do not belong in the Tilo OS app channel. Web versions sit
+beside native versions in the same entry: version identity is
+`(version, platform, architecture)`.
+
+**Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
+feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,
+`call-indirect-overlong`, `exception-handling`, `extended-const`,
+`multimemory`, `multivalue`, `mutable-globals`, `nontrapping-fptoint`,
+`reference-types`, `relaxed-simd`, `sign-ext`, `simd128`, `tail-call` (LLVM's
+`target_features` spelling). Features appear at most once and in byte-wise
+ascending order, so every feature set has exactly one spelling, for example
+`wasm32-mvp+bulk-memory+multivalue+mutable-globals+nontrapping-fptoint+reference-types+sign-ext`.
+Unknown features are refused rather than dropped: a client must be able to
+decide support from the string alone (it runs a module when the features it
+offers are a superset). The `isa` is at most 256 bytes.
+
+**Web `runtime`.** `tilo-runtime/<version>+abi.<id>`. `<version>` is the
+toolkit-core release, CalVer or a SemVer core (`2026.07`, `2026.7.0-browser.1`)
+without build metadata; `<id>` is the core's build ABI identifier, 16–64
+lower-case hex digits, exactly the bytes of the module's `tilo.runtime_abi`
+custom section. The loader refuses a module whose ABI differs from the loaded
+core, so the registry only offers an app version when a core with the same
+`<id>` is published.
+
+Existing native clients validate every version of every entry before trusting
+a snapshot and predate the `web` family: they reject a snapshot containing a
+web version. Roll out a client that accepts web targets before the first web
+version is published to a registry those clients follow.
 
 ### 6. Moderator workflow
 
