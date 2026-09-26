@@ -171,6 +171,8 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
+#[path = "transient_sheets.rs"]
+mod transient_sheets;
 #[path = "two_netns_share.rs"]
 mod two_netns_share;
 #[path = "wayland_test.rs"]
