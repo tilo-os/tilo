@@ -88,6 +88,24 @@ class CopyPlanTests(unittest.TestCase):
         ]))
         self.assertTrue(lines[0].startswith('# dry run'))
 
+    def test_extra_references_are_planned_under_the_same_owner_rules(self):
+        lines = self.plan(EXTRA_REFERENCES=' '.join([
+            f'old.example/public/runner-image@{CHILD}',
+            f'old.example/someone-else/image@{CHILD}',
+            f'old.example/legacy/tilo-lenovo-83ed-firmware@{CHILD}',
+        ]))
+        self.assertIn(
+            f'copy digest    old.example/public/runner-image@{CHILD} -> '
+            f'registry.tilo.so/tilo/runner-image@{CHILD} (+ cosign tags)', lines)
+        self.assertFalse([line for line in lines if 'someone-else' in line or 'lenovo' in line], lines)
+
+    def test_extra_references_outside_the_source_registry_are_refused(self):
+        for bad in (f'elsewhere.example/public/runner-image@{CHILD}', 'old.example/public/runner-image@sha256:zz'):
+            result = self.run_script(f'{self.stubs}{os.pathsep}{self.bare}', EXTRA_REFERENCES=bad)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn('EXTRA_REFERENCES', result.stderr)
+        self.assertFalse(self.calls.exists())
+
     def test_resign_is_planned_only_for_policy_verified_repositories(self):
         resign = [line for line in self.plan(RESIGN='1') if line.startswith('re-sign')]
         self.assertEqual(resign, ['re-sign        registry.tilo.so/tilo/tilo@<digest of :latest>'])
