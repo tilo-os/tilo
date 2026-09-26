@@ -323,84 +323,87 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builder_enforces_global_row_and_explicit_cell_keys() {
-        let table = VirtualTableSemantics::new("Results", Rect::new(0.0, 0.0, 200.0, 100.0))
-            .focused(true)
-            .columns(vec![TableSemanticColumn::new("Name", None)])
-            .rows(vec![
-                TableSemanticRow::new(
-                    41,
-                    100,
-                    None,
-                    vec![TableSemanticCell::new(Some("Ada".into()), None)],
-                )
-                .controls(vec![TableSemanticControl::toggle(
-                    "Enable Ada",
-                    "people.toggle:ada",
-                    Rect::new(160.0, 40.0, 200.0, 70.0),
-                    true,
-                )]),
-            ])
-            .build();
-        assert!(table.state.focused);
-        assert_eq!(table.children[0].key, Some(0));
-        assert_eq!(table.children[0].children[0].key, Some(0));
-        assert_eq!(table.children[1].key, Some(42));
-        assert_eq!(table.children[1].pos_in_set, Some(42));
-        assert_eq!(table.children[1].children[0].value.as_deref(), Some("Ada"));
-        let toggle = &table.children[1].children[1];
-        assert_eq!(toggle.role, Role::ToggleButton);
-        assert_eq!(toggle.state.checked, Some(true));
-        assert_eq!(toggle.action_target.as_deref(), Some("people.toggle:ada"));
-    }
+    fn table_semantics_enforce_keys_and_clip_to_the_viewport() {
+        // Case `builder_enforces_global_row_and_explicit_cell_keys`.
+        {
+            let table = VirtualTableSemantics::new("Results", Rect::new(0.0, 0.0, 200.0, 100.0))
+                .focused(true)
+                .columns(vec![TableSemanticColumn::new("Name", None)])
+                .rows(vec![
+                    TableSemanticRow::new(
+                        41,
+                        100,
+                        None,
+                        vec![TableSemanticCell::new(Some("Ada".into()), None)],
+                    )
+                    .controls(vec![TableSemanticControl::toggle(
+                        "Enable Ada",
+                        "people.toggle:ada",
+                        Rect::new(160.0, 40.0, 200.0, 70.0),
+                        true,
+                    )]),
+                ])
+                .build();
+            assert!(table.state.focused);
+            assert_eq!(table.children[0].key, Some(0));
+            assert_eq!(table.children[0].children[0].key, Some(0));
+            assert_eq!(table.children[1].key, Some(42));
+            assert_eq!(table.children[1].pos_in_set, Some(42));
+            assert_eq!(table.children[1].children[0].value.as_deref(), Some("Ada"));
+            let toggle = &table.children[1].children[1];
+            assert_eq!(toggle.role, Role::ToggleButton);
+            assert_eq!(toggle.state.checked, Some(true));
+            assert_eq!(toggle.action_target.as_deref(), Some("people.toggle:ada"));
+        }
 
-    #[test]
-    fn viewport_clips_partial_geometry_and_omits_hidden_rows_and_controls() {
-        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let table = VirtualTableSemantics::new("Results", viewport)
-            .columns(vec![TableSemanticColumn::new(
-                "Name",
-                Some(Rect::new(0.0, -10.0, 150.0, 20.0)),
-            )])
-            .rows(vec![
-                TableSemanticRow::new(
-                    8,
-                    20,
-                    Some(Rect::new(0.0, 70.0, 200.0, 130.0)),
-                    vec![TableSemanticCell::new(
-                        Some("Partial".into()),
-                        Some(Rect::new(0.0, 70.0, 150.0, 130.0)),
-                    )],
-                )
-                .controls(vec![
-                    TableSemanticControl::button(
-                        "Visible",
-                        "row.visible",
-                        Rect::new(150.0, 80.0, 190.0, 120.0),
-                    ),
-                    TableSemanticControl::button(
-                        "Hidden",
-                        "row.hidden",
-                        Rect::new(150.0, 110.0, 190.0, 140.0),
-                    ),
-                ]),
-                TableSemanticRow::new(9, 20, Some(Rect::new(0.0, 130.0, 200.0, 180.0)), vec![]),
-            ])
-            .build();
+        // Case `viewport_clips_partial_geometry_and_omits_hidden_rows_and_controls`.
+        {
+            let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
+            let table = VirtualTableSemantics::new("Results", viewport)
+                .columns(vec![TableSemanticColumn::new(
+                    "Name",
+                    Some(Rect::new(0.0, -10.0, 150.0, 20.0)),
+                )])
+                .rows(vec![
+                    TableSemanticRow::new(
+                        8,
+                        20,
+                        Some(Rect::new(0.0, 70.0, 200.0, 130.0)),
+                        vec![TableSemanticCell::new(
+                            Some("Partial".into()),
+                            Some(Rect::new(0.0, 70.0, 150.0, 130.0)),
+                        )],
+                    )
+                    .controls(vec![
+                        TableSemanticControl::button(
+                            "Visible",
+                            "row.visible",
+                            Rect::new(150.0, 80.0, 190.0, 120.0),
+                        ),
+                        TableSemanticControl::button(
+                            "Hidden",
+                            "row.hidden",
+                            Rect::new(150.0, 110.0, 190.0, 140.0),
+                        ),
+                    ]),
+                    TableSemanticRow::new(9, 20, Some(Rect::new(0.0, 130.0, 200.0, 180.0)), vec![]),
+                ])
+                .build();
 
-        assert_eq!(table.children.len(), 2, "header plus one visible row");
-        let row = &table.children[1];
-        assert_eq!(
-            row.bounds.map(crate::a11y::AccessBounds::to_rect),
-            Some(Rect::new(0.0, 70.0, 200.0, 100.0))
-        );
-        assert_eq!(row.children.len(), 2, "one cell and one visible control");
-        assert_eq!(row.children[1].name.as_deref(), Some("Visible"));
-        assert_eq!(
-            row.children[1]
-                .bounds
-                .map(crate::a11y::AccessBounds::to_rect),
-            Some(Rect::new(150.0, 80.0, 190.0, 100.0))
-        );
+            assert_eq!(table.children.len(), 2, "header plus one visible row");
+            let row = &table.children[1];
+            assert_eq!(
+                row.bounds.map(crate::a11y::AccessBounds::to_rect),
+                Some(Rect::new(0.0, 70.0, 200.0, 100.0))
+            );
+            assert_eq!(row.children.len(), 2, "one cell and one visible control");
+            assert_eq!(row.children[1].name.as_deref(), Some("Visible"));
+            assert_eq!(
+                row.children[1]
+                    .bounds
+                    .map(crate::a11y::AccessBounds::to_rect),
+                Some(Rect::new(150.0, 80.0, 190.0, 100.0))
+            );
+        }
     }
 }

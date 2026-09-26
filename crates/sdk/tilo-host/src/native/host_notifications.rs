@@ -344,124 +344,127 @@ mod tests {
     use super::*;
 
     #[test]
-    fn notification_hosts_can_be_recreated_on_successive_threads() {
-        for _ in 0..4 {
-            std::thread::spawn(|| {
-                let host = HostNotifications::new("so.tilo.clocks").unwrap();
-                let xml = host.notification_xml("Timer", "Ready").unwrap();
-                assert!(xml.GetXml().unwrap().to_string().contains("Ready"));
-            })
-            .join()
-            .unwrap();
-        }
-    }
-
-    #[test]
-    fn notification_activation_uri_is_preserved_without_xml_injection() {
-        let uri = "tilo-clocks:open?one=1&two=2";
-        let host = HostNotifications::new("so.tilo.clocks")
-            .unwrap()
-            .with_protocol_activation(uri)
-            .unwrap();
-        let xml = host.notification_xml("Tea <ready>", "A & B").unwrap();
-        let root = xml.DocumentElement().unwrap();
-        assert_eq!(
-            root.GetAttribute(&HSTRING::from("activationType"))
-                .unwrap()
-                .to_string(),
-            "protocol"
-        );
-        assert_eq!(
-            root.GetAttribute(&HSTRING::from("launch"))
-                .unwrap()
-                .to_string(),
-            uri
-        );
-        assert_eq!(
-            xml.GetElementsByTagName(&HSTRING::from("text"))
-                .unwrap()
-                .Length()
-                .unwrap(),
-            2
-        );
-        // The failing builder consumes the host and releases its apartment.
-        // Release the test's private COM inspection objects first.
-        drop(root);
-        drop(xml);
-        assert!(host.with_protocol_activation("not a URI").is_err());
-    }
-
-    #[test]
-    fn repeated_shortcut_registration_owns_its_property_string() {
-        let directory = tempfile::tempdir().unwrap();
-        let shortcut = directory.path().join("Clocks test.lnk");
-        for id in [
-            "so.tilo.test.first",
-            "so.tilo.test.second",
-            "so.tilo.test.third",
-        ] {
-            register_shortcut(
-                id,
-                "Tilo test",
-                &std::env::current_exe().unwrap(),
-                &shortcut,
-            )
-            .unwrap();
-            let _apartment = Apartment::new().unwrap();
-            // SAFETY: thread apartment initialized, all interfaces owned locally.
-            unsafe {
-                let link: IShellLinkW =
-                    CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
-                let file: IPersistFile = link.cast().unwrap();
-                file.Load(&HSTRING::from(shortcut.as_os_str()), STGM_READWRITE)
-                    .unwrap();
-                let store: IPropertyStore = link.cast().unwrap();
-                let key = PROPERTYKEY {
-                    fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
-                    pid: 5,
-                };
-                let value = store.GetValue(&key).unwrap();
-                assert_eq!(
-                    windows::core::BSTR::try_from(&value).unwrap().to_string(),
-                    id
-                );
+    fn notification_hosts_registrations_and_schedules_are_owned_and_exact() {
+        // phase: notification_hosts_can_be_recreated_on_successive_threads
+        {
+            for _ in 0..4 {
+                std::thread::spawn(|| {
+                    let host = HostNotifications::new("so.tilo.clocks").unwrap();
+                    let xml = host.notification_xml("Timer", "Ready").unwrap();
+                    assert!(xml.GetXml().unwrap().to_string().contains("Ready"));
+                })
+                .join()
+                .unwrap();
             }
         }
+        // phase: repeated_shortcut_registration_owns_its_property_string
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let shortcut = directory.path().join("Clocks test.lnk");
+            for id in [
+                "so.tilo.test.first",
+                "so.tilo.test.second",
+                "so.tilo.test.third",
+            ] {
+                register_shortcut(
+                    id,
+                    "Tilo test",
+                    &std::env::current_exe().unwrap(),
+                    &shortcut,
+                )
+                .unwrap();
+                let _apartment = Apartment::new().unwrap();
+                // SAFETY: thread apartment initialized, all interfaces owned locally.
+                unsafe {
+                    let link: IShellLinkW =
+                        CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+                    let file: IPersistFile = link.cast().unwrap();
+                    file.Load(&HSTRING::from(shortcut.as_os_str()), STGM_READWRITE)
+                        .unwrap();
+                    let store: IPropertyStore = link.cast().unwrap();
+                    let key = PROPERTYKEY {
+                        fmtid: GUID::from_u128(0x9f4c2855_9f79_4b39_a8d0_e1d42de1d5f3),
+                        pid: 5,
+                    };
+                    let value = store.GetValue(&key).unwrap();
+                    assert_eq!(
+                        windows::core::BSTR::try_from(&value).unwrap().to_string(),
+                        id
+                    );
+                }
+            }
+        }
+        // phase: scheduler_time_conversion_preserves_windows_precision
+        {
+            let time = UNIX_EPOCH + Duration::new(1_800_000_000, 123_456_700);
+            assert_eq!(
+                from_windows_time(to_windows_time(time).unwrap()).unwrap(),
+                time
+            );
+            assert!(to_windows_time(UNIX_EPOCH - Duration::from_secs(1)).is_err());
+            assert!(
+                from_windows_time(windows::Foundation::DateTime {
+                    UniversalTime: i64::MIN
+                })
+                .is_err()
+            );
+        }
     }
 
     #[test]
-    fn scheduler_time_conversion_preserves_windows_precision() {
-        let time = UNIX_EPOCH + Duration::new(1_800_000_000, 123_456_700);
-        assert_eq!(
-            from_windows_time(to_windows_time(time).unwrap()).unwrap(),
-            time
-        );
-        assert!(to_windows_time(UNIX_EPOCH - Duration::from_secs(1)).is_err());
-        assert!(
-            from_windows_time(windows::Foundation::DateTime {
-                UniversalTime: i64::MIN
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn notification_text_cannot_add_markup() {
-        let _apartment = Apartment::new().unwrap();
-        let value = "Tea & <coffee> \"ready\" 'now'";
-        let xml = XmlDocument::new().unwrap();
-        xml.LoadXml(&HSTRING::from(format!(
-            "<text>{}</text>",
-            escape_xml(value)
-        )))
-        .unwrap();
-        assert_eq!(
-            xml.DocumentElement()
+    fn notification_content_is_preserved_without_markup_or_xml_injection() {
+        // phase: notification_activation_uri_is_preserved_without_xml_injection
+        {
+            let uri = "tilo-clocks:open?one=1&two=2";
+            let host = HostNotifications::new("so.tilo.clocks")
                 .unwrap()
-                .InnerText()
-                .unwrap()
-                .to_string(),
-            value
-        );
+                .with_protocol_activation(uri)
+                .unwrap();
+            let xml = host.notification_xml("Tea <ready>", "A & B").unwrap();
+            let root = xml.DocumentElement().unwrap();
+            assert_eq!(
+                root.GetAttribute(&HSTRING::from("activationType"))
+                    .unwrap()
+                    .to_string(),
+                "protocol"
+            );
+            assert_eq!(
+                root.GetAttribute(&HSTRING::from("launch"))
+                    .unwrap()
+                    .to_string(),
+                uri
+            );
+            assert_eq!(
+                xml.GetElementsByTagName(&HSTRING::from("text"))
+                    .unwrap()
+                    .Length()
+                    .unwrap(),
+                2
+            );
+            // The failing builder consumes the host and releases its apartment.
+            // Release the test's private COM inspection objects first.
+            drop(root);
+            drop(xml);
+            assert!(host.with_protocol_activation("not a URI").is_err());
+        }
+        // phase: notification_text_cannot_add_markup
+        {
+            let _apartment = Apartment::new().unwrap();
+            let value = "Tea & <coffee> \"ready\" 'now'";
+            let xml = XmlDocument::new().unwrap();
+            xml.LoadXml(&HSTRING::from(format!(
+                "<text>{}</text>",
+                escape_xml(value)
+            )))
+            .unwrap();
+            assert_eq!(
+                xml.DocumentElement()
+                    .unwrap()
+                    .InnerText()
+                    .unwrap()
+                    .to_string(),
+                value
+            );
+        }
     }
 }

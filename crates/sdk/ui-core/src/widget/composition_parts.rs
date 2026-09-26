@@ -318,11 +318,16 @@ mod tests {
         }
     }
     #[test]
-    fn manual_forwards_mutable_admission_exactly_once() {
-        check_mutable_admission(false);
-    }
-    #[test]
-    fn nested_composition_forwards_mutable_admission_exactly_once() {
-        check_mutable_admission(true);
+    fn compositions_forward_mutable_admission_exactly_once() {
+        fn manual_forwards_mutable_admission_exactly_once() {
+            check_mutable_admission(false);
+        }
+
+        fn nested_composition_forwards_mutable_admission_exactly_once() {
+            check_mutable_admission(true);
+        }
+
+        manual_forwards_mutable_admission_exactly_once();
+        nested_composition_forwards_mutable_admission_exactly_once();
     }
 }

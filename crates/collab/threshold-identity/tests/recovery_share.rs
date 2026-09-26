@@ -65,7 +65,18 @@ fn setup_2_of_3() -> (ThresholdIdentity, ThresholdIdentity, ThresholdIdentity) {
     (a, b, c)
 }
 
+/// A recovery share exports as 24 BIP39 words, round-trips to the identical share, re-enters a
+/// quorum after device loss, rejects a corrupted mnemonic, and is refused in single-device mode.
+/// Runs each phase below in order; every phase builds its own fixture.
 #[test]
+fn a_paper_recovery_share_round_trips_and_restores_a_quorum() {
+    export_produces_24_word_bip39_mnemonic();
+    mnemonic_round_trip_recovers_identical_share();
+    recovery_share_can_re_enter_quorum_after_device_loss();
+    corrupted_mnemonic_fails_decode();
+    export_in_single_device_mode_errors();
+}
+
 fn export_produces_24_word_bip39_mnemonic() {
     let (_a, _b, c) = setup_2_of_3();
     let rs = c.export_recovery_share().unwrap();
@@ -78,7 +89,6 @@ fn export_produces_24_word_bip39_mnemonic() {
     assert_eq!(rs.verifying_share_bytes.len(), 32);
 }
 
-#[test]
 fn mnemonic_round_trip_recovers_identical_share() {
     let (_a, _b, c) = setup_2_of_3();
     let rs1 = c.export_recovery_share().unwrap();
@@ -96,7 +106,6 @@ fn mnemonic_round_trip_recovers_identical_share() {
     assert_eq!(imported.share_index(), rs1.share_index);
 }
 
-#[test]
 fn recovery_share_can_re_enter_quorum_after_device_loss() {
     // Scenario: user has devices A, B, C; loses A and B; has the paper
     // recovery share (modelled as device C's exported share). Wants to
@@ -135,7 +144,6 @@ fn recovery_share_can_re_enter_quorum_after_device_loss() {
         .expect("post-recovery signature must verify via collab_types");
 }
 
-#[test]
 fn corrupted_mnemonic_fails_decode() {
     let (_a, _b, c) = setup_2_of_3();
     let rs = c.export_recovery_share().unwrap();
@@ -163,7 +171,6 @@ fn corrupted_mnemonic_fails_decode() {
     );
 }
 
-#[test]
 fn export_in_single_device_mode_errors() {
     // A single-device identity must not expose a "recovery share" —
     // there's no separation between the device and the secret; the user

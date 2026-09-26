@@ -380,9 +380,95 @@ mod tests {
     use winit::event::{DeviceId, ElementState, MouseButton};
 
     #[test]
-    fn native_opener_rejects_nul_without_truncating_the_url() {
-        let error = try_os_open("https://example.invalid/\0unexpected").unwrap_err();
-        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    fn link_opens_its_url_by_pointer_and_keyboard() {
+        fn native_opener_rejects_nul_without_truncating_the_url() {
+            let error = try_os_open("https://example.invalid/\0unexpected").unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        }
+
+        fn click_opens_url_through_the_opener_with_the_right_url() {
+            let (services, recorder) = crate::host::HostServices::recording();
+            let _host = crate::host::enter(&services);
+            // Opening runs as background work; pump it so the open is observable.
+            let work = crate::background::Pumped::new();
+            let _work = work.background().enter();
+            let mut link = Link::new("https://example.com/page");
+            let (tree, node) = laid_out(&mut link);
+
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut dispatch = |link: &mut Link, ev: WindowEvent| {
+                let mut handled = false;
+                let mut focus = None;
+                link.handle_event(
+                    &ev,
+                    1.0,
+                    &mods,
+                    &mut doc,
+                    &root,
+                    &mut handled,
+                    &mut focus,
+                    node,
+                    &tree,
+                );
+            };
+
+            dispatch(
+                &mut link,
+                WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+            );
+            dispatch(
+                &mut link,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+            );
+            assert!(
+                recorder.opened_uris().is_empty(),
+                "does not open until release"
+            );
+            dispatch(
+                &mut link,
+                WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Released,
+                    button: MouseButton::Left,
+                },
+            );
+            work.run_pending();
+
+            assert_eq!(
+                recorder.opened_uris(),
+                ["https://example.com/page"],
+                "opened exactly the link's URL on release"
+            );
+            assert_eq!(link.last_activated(), Some("https://example.com/page"));
+        }
+
+        fn keyboard_activate_opens_url() {
+            let (services, recorder) = crate::host::HostServices::recording();
+            let work = crate::background::Pumped::new();
+            let _work = work.background().enter();
+            let mut link = Link::new("https://w3.org");
+            let mut doc = AutoCommit::new();
+            let handled = crate::host::scoped(&services, || {
+                link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
+            });
+            assert!(handled, "Activate is handled");
+            work.run_pending();
+            assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
+        }
+
+        native_opener_rejects_nul_without_truncating_the_url();
+        click_opens_url_through_the_opener_with_the_right_url();
+        keyboard_activate_opens_url();
     }
 
     /// Lay the link out at a known rect so it has a non-zero hit box.
@@ -406,126 +492,48 @@ mod tests {
     }
 
     #[test]
-    fn click_opens_url_through_the_opener_with_the_right_url() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let _host = crate::host::enter(&services);
-        // Opening runs as background work; pump it so the open is observable.
-        let work = crate::background::Pumped::new();
-        let _work = work.background().enter();
-        let mut link = Link::new("https://example.com/page");
-        let (tree, node) = laid_out(&mut link);
-
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-            let mut handled = false;
-            let mut focus = None;
-            link.handle_event(
-                &ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
+    fn link_semantics_cursor_and_default_label() {
+        fn renders_as_a_link_in_the_accessibility_tree() {
+            use crate::a11y::Role;
+            let link = Link::new("https://turing.org.uk").with_label("Turing");
+            let node = Widget::accessibility(&link).expect("a link is not presentational");
+            assert_eq!(node.role, Role::Link);
+            assert_eq!(
+                node.name.as_deref(),
+                Some("Turing"),
+                "the visible label is the accessible name"
             );
-        };
+            assert_eq!(
+                node.value.as_deref(),
+                Some("https://turing.org.uk"),
+                "the URL is the accessible value"
+            );
+            assert!(node.state.focusable, "a link is keyboard-focusable");
+        }
 
-        dispatch(
-            &mut link,
-            WindowEvent::CursorMoved {
-                device_id: device,
-                position: (10.0, 10.0).into(),
-            },
-        );
-        dispatch(
-            &mut link,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-        );
-        assert!(
-            recorder.opened_uris().is_empty(),
-            "does not open until release"
-        );
-        dispatch(
-            &mut link,
-            WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Released,
-                button: MouseButton::Left,
-            },
-        );
-        work.run_pending();
+        fn hovered_link_requests_the_pointer_cursor() {
+            let mut link = Link::new("https://example.com");
+            let _ = laid_out(&mut link);
+            assert_eq!(
+                Widget::cursor_shape(&link, Point::new(10.0, 10.0)),
+                Some(winit::window::CursorIcon::Pointer),
+                "pointer over the link asks for the pointing-hand cursor",
+            );
+            assert_eq!(
+                Widget::cursor_shape(&link, Point::new(500.0, 500.0)),
+                None,
+                "off the link, no cursor claim",
+            );
+        }
 
-        assert_eq!(
-            recorder.opened_uris(),
-            ["https://example.com/page"],
-            "opened exactly the link's URL on release"
-        );
-        assert_eq!(link.last_activated(), Some("https://example.com/page"));
-    }
+        fn default_label_is_the_url() {
+            let link = Link::new("https://example.com");
+            assert_eq!(link.label(), "https://example.com");
+            assert_eq!(link.url(), "https://example.com");
+        }
 
-    #[test]
-    fn keyboard_activate_opens_url() {
-        let (services, recorder) = crate::host::HostServices::recording();
-        let work = crate::background::Pumped::new();
-        let _work = work.background().enter();
-        let mut link = Link::new("https://w3.org");
-        let mut doc = AutoCommit::new();
-        let handled = crate::host::scoped(&services, || {
-            link.perform_action(&crate::a11y::Action::Activate, &mut doc, &automerge::ROOT)
-        });
-        assert!(handled, "Activate is handled");
-        work.run_pending();
-        assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
-    }
-
-    #[test]
-    fn renders_as_a_link_in_the_accessibility_tree() {
-        use crate::a11y::Role;
-        let link = Link::new("https://turing.org.uk").with_label("Turing");
-        let node = Widget::accessibility(&link).expect("a link is not presentational");
-        assert_eq!(node.role, Role::Link);
-        assert_eq!(
-            node.name.as_deref(),
-            Some("Turing"),
-            "the visible label is the accessible name"
-        );
-        assert_eq!(
-            node.value.as_deref(),
-            Some("https://turing.org.uk"),
-            "the URL is the accessible value"
-        );
-        assert!(node.state.focusable, "a link is keyboard-focusable");
-    }
-
-    #[test]
-    fn hovered_link_requests_the_pointer_cursor() {
-        let mut link = Link::new("https://example.com");
-        let _ = laid_out(&mut link);
-        assert_eq!(
-            Widget::cursor_shape(&link, Point::new(10.0, 10.0)),
-            Some(winit::window::CursorIcon::Pointer),
-            "pointer over the link asks for the pointing-hand cursor",
-        );
-        assert_eq!(
-            Widget::cursor_shape(&link, Point::new(500.0, 500.0)),
-            None,
-            "off the link, no cursor claim",
-        );
-    }
-
-    #[test]
-    fn default_label_is_the_url() {
-        let link = Link::new("https://example.com");
-        assert_eq!(link.label(), "https://example.com");
-        assert_eq!(link.url(), "https://example.com");
+        renders_as_a_link_in_the_accessibility_tree();
+        hovered_link_requests_the_pointer_cursor();
+        default_label_is_the_url();
     }
 }

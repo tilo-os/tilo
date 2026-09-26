@@ -233,7 +233,7 @@ need "$manager_source" 'HARDWARE_CATALOG_PATH' 'manager has no separate signed P
 need "$manager_source" 'HARDWARE_TRUST_PATH' 'manager has no separate PCI hardware trust key'
 need "$manager_source" 'recommended_boot_packs' 'manager does not authorize packs from observed hardware'
 need "$manager_source" 'PCI_DEVICES_PATH' 'manager accepts caller-supplied PCI identity'
-need "$manager_source" 'subsystem_rule_wins_over_generic_pci_rule' 'PCI matching has no deterministic specificity test'
+need "$manager_source" 'fn boot_packs_and_catalogues_are_digest_pinned_signed_and_matched' 'PCI matching has no deterministic specificity test'
 need "$manager_source" 'verify(&keyring)' 'manager does not verify catalog signatures'
 need "$manager_source" 'preflight(&host)' 'manager does not revalidate deployment image/ABI'
 need "$manager_source" 'bootc://' 'manager accepts non-BootPack artifact sources'

@@ -10,6 +10,7 @@
 //! gesture routing · [`outputs`] stable `OutputId` allocation · [`runtime`] hardware glue + the
 //! inner calloop loop · [`scanout`] modeset/flip/cursor/card handle · [`paint`] CPU-fallback vello → RGBA bridge.
 
+pub mod access_keys;
 pub mod devices;
 pub mod gestures;
 pub mod hotplug;
@@ -385,119 +386,120 @@ mod phase_window_tests {
     }
 
     #[test]
-    fn phase_window_accumulates_completed_frame_costs() {
-        let mut window = PhaseWindow::default();
-        window.record(timing(2));
-        window.record(timing(3));
+    fn phase_window_accumulates_and_records_every_frame_outcome() {
+        // Phase `phase_window_accumulates_completed_frame_costs`.
+        {
+            let mut window = PhaseWindow::default();
+            window.record(timing(2));
+            window.record(timing(3));
 
-        assert_eq!(window.frames, 2);
-        assert_eq!(window.direct_frames, 0);
-        assert_eq!(window.direct_dropped, 0);
-        assert_eq!(window.flip_completions, 0);
-        assert_eq!(window.submit_us, 5);
-        assert_eq!(window.gpu_readback_map_us, 10);
-        assert_eq!(window.settle_us, 15);
-        assert_eq!(window.cpu_swizzle_us, 20);
-        assert_eq!(window.readback_bytes, 25);
-        assert_eq!(window.output_bytes, 30);
-        assert_eq!(window.bridge_us, 0);
-        assert_eq!(window.scanout_us, 0);
-        assert_eq!(window.unprofiled_frames, 0);
+            assert_eq!(window.frames, 2);
+            assert_eq!(window.direct_frames, 0);
+            assert_eq!(window.direct_dropped, 0);
+            assert_eq!(window.flip_completions, 0);
+            assert_eq!(window.submit_us, 5);
+            assert_eq!(window.gpu_readback_map_us, 10);
+            assert_eq!(window.settle_us, 15);
+            assert_eq!(window.cpu_swizzle_us, 20);
+            assert_eq!(window.readback_bytes, 25);
+            assert_eq!(window.output_bytes, 30);
+            assert_eq!(window.bridge_us, 0);
+            assert_eq!(window.scanout_us, 0);
+            assert_eq!(window.unprofiled_frames, 0);
+        }
+        // Phase `phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing`.
+        {
+            let mut window = PhaseWindow::default();
+            window.record_legacy_attempt(None, 41, 7);
+            window.record_legacy_attempt(Some(timing(2)), 23, 5);
+
+            assert_eq!(window.frames, 2);
+            assert_eq!(window.unprofiled_frames, 1);
+            assert_eq!(window.bridge_us, 64);
+            assert_eq!(window.scanout_us, 12);
+            assert_eq!(window.submit_us, 2);
+            assert_eq!(window.gpu_readback_map_us, 4);
+            let summary = window.summary_fields(window.started + Duration::from_micros(99));
+            assert_eq!(summary.frames, 2);
+            assert_eq!(summary.unprofiled_frames, 1);
+            assert_eq!(summary.bridge_us, 64);
+            assert_eq!(summary.scanout_us, 12);
+            assert_eq!(summary.window_us, 99);
+        }
+        // Phase `phase_window_records_direct_submission_drop_and_flip_completion`.
+        {
+            let mut window = PhaseWindow::default();
+            window.record_direct_submit();
+            window.record_direct_drop();
+            window.record_flip_completions(2);
+
+            assert_eq!(window.frames, 1);
+            assert_eq!(window.direct_frames, 1);
+            assert_eq!(window.direct_dropped, 1);
+            assert_eq!(window.flip_completions, 2);
+            assert_eq!(window.readback_bytes, 0);
+            assert_eq!(window.output_bytes, 0);
+        }
     }
 
     #[test]
-    fn phase_window_keeps_failed_legacy_attempt_visible_without_vello_timing() {
-        let mut window = PhaseWindow::default();
-        window.record_legacy_attempt(None, 41, 7);
-        window.record_legacy_attempt(Some(timing(2)), 23, 5);
+    fn phase_window_flush_timing_and_reset() {
+        // Phase `phase_window_is_due_only_after_the_bounded_interval`.
+        {
+            let mut window = PhaseWindow::default();
+            let started = Instant::now();
+            window.started = started;
 
-        assert_eq!(window.frames, 2);
-        assert_eq!(window.unprofiled_frames, 1);
-        assert_eq!(window.bridge_us, 64);
-        assert_eq!(window.scanout_us, 12);
-        assert_eq!(window.submit_us, 2);
-        assert_eq!(window.gpu_readback_map_us, 4);
-        let summary = window.summary_fields(window.started + Duration::from_micros(99));
-        assert_eq!(summary.frames, 2);
-        assert_eq!(summary.unprofiled_frames, 1);
-        assert_eq!(summary.bridge_us, 64);
-        assert_eq!(summary.scanout_us, 12);
-        assert_eq!(summary.window_us, 99);
-    }
+            let just_before = (started + PHASE_WINDOW_INTERVAL)
+                .checked_sub(Duration::from_nanos(1))
+                .unwrap();
+            assert!(!window.due(just_before));
+            assert!(window.due(started + PHASE_WINDOW_INTERVAL));
+        }
+        // Phase `explicit_profiling_flushes_the_first_observation_without_a_later_frame`.
+        {
+            let mut window = PhaseWindow::default();
+            let started = Instant::now();
+            window.started = started;
 
-    #[test]
-    fn phase_window_is_due_only_after_the_bounded_interval() {
-        let mut window = PhaseWindow::default();
-        let started = Instant::now();
-        window.started = started;
+            assert!(!window.should_emit(started + Duration::from_millis(1), true));
+            window.record_legacy_attempt(None, 41, 7);
+            assert!(window.should_emit(started + Duration::from_millis(1), true));
+            assert!(!window.should_emit(started + Duration::from_millis(1), false));
+            assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
+        }
+        // Phase `profiling_keeps_direct_drops_and_completions_visible_without_a_frame`.
+        {
+            let mut window = PhaseWindow::default();
+            let now = Instant::now();
+            window.started = now;
+            window.record_direct_drop();
+            window.record_flip_completions(1);
 
-        let just_before = (started + PHASE_WINDOW_INTERVAL)
-            .checked_sub(Duration::from_nanos(1))
-            .unwrap();
-        assert!(!window.due(just_before));
-        assert!(window.due(started + PHASE_WINDOW_INTERVAL));
-    }
+            assert!(window.should_emit(now, true));
+        }
+        // Phase `phase_window_reset_discards_the_previous_sample_without_moving_its_clock`.
+        {
+            let mut window = PhaseWindow::default();
+            window.record(timing(7));
+            let now = Instant::now();
+            window.reset(now);
 
-    #[test]
-    fn explicit_profiling_flushes_the_first_observation_without_a_later_frame() {
-        let mut window = PhaseWindow::default();
-        let started = Instant::now();
-        window.started = started;
-
-        assert!(!window.should_emit(started + Duration::from_millis(1), true));
-        window.record_legacy_attempt(None, 41, 7);
-        assert!(window.should_emit(started + Duration::from_millis(1), true));
-        assert!(!window.should_emit(started + Duration::from_millis(1), false));
-        assert!(window.should_emit(started + PHASE_WINDOW_INTERVAL, false));
-    }
-
-    #[test]
-    fn profiling_keeps_direct_drops_and_completions_visible_without_a_frame() {
-        let mut window = PhaseWindow::default();
-        let now = Instant::now();
-        window.started = now;
-        window.record_direct_drop();
-        window.record_flip_completions(1);
-
-        assert!(window.should_emit(now, true));
-    }
-
-    #[test]
-    fn phase_window_reset_discards_the_previous_sample_without_moving_its_clock() {
-        let mut window = PhaseWindow::default();
-        window.record(timing(7));
-        let now = Instant::now();
-        window.reset(now);
-
-        assert_eq!(window.started, now);
-        assert_eq!(window.frames, 0);
-        assert_eq!(window.direct_frames, 0);
-        assert_eq!(window.direct_dropped, 0);
-        assert_eq!(window.flip_completions, 0);
-        assert_eq!(window.submit_us, 0);
-        assert_eq!(window.gpu_readback_map_us, 0);
-        assert_eq!(window.settle_us, 0);
-        assert_eq!(window.cpu_swizzle_us, 0);
-        assert_eq!(window.readback_bytes, 0);
-        assert_eq!(window.output_bytes, 0);
-        assert_eq!(window.bridge_us, 0);
-        assert_eq!(window.scanout_us, 0);
-        assert_eq!(window.unprofiled_frames, 0);
-    }
-
-    #[test]
-    fn phase_window_records_direct_submission_drop_and_flip_completion() {
-        let mut window = PhaseWindow::default();
-        window.record_direct_submit();
-        window.record_direct_drop();
-        window.record_flip_completions(2);
-
-        assert_eq!(window.frames, 1);
-        assert_eq!(window.direct_frames, 1);
-        assert_eq!(window.direct_dropped, 1);
-        assert_eq!(window.flip_completions, 2);
-        assert_eq!(window.readback_bytes, 0);
-        assert_eq!(window.output_bytes, 0);
+            assert_eq!(window.started, now);
+            assert_eq!(window.frames, 0);
+            assert_eq!(window.direct_frames, 0);
+            assert_eq!(window.direct_dropped, 0);
+            assert_eq!(window.flip_completions, 0);
+            assert_eq!(window.submit_us, 0);
+            assert_eq!(window.gpu_readback_map_us, 0);
+            assert_eq!(window.settle_us, 0);
+            assert_eq!(window.cpu_swizzle_us, 0);
+            assert_eq!(window.readback_bytes, 0);
+            assert_eq!(window.output_bytes, 0);
+            assert_eq!(window.bridge_us, 0);
+            assert_eq!(window.scanout_us, 0);
+            assert_eq!(window.unprofiled_frames, 0);
+        }
     }
 }
 
@@ -519,7 +521,8 @@ mod direct_eligibility_tests {
     }
 
     #[test]
-    fn direct_path_requires_the_complete_safe_contract() {
+    fn direct_path_eligibility_requires_the_full_contract_and_proven_identity() {
+        // Phase `direct_path_requires_the_complete_safe_contract`.
         assert_eq!(direct_scanout_rejection(eligible()), None);
         for (rejected, reason) in [
             (
@@ -567,10 +570,7 @@ mod direct_eligibility_tests {
         ] {
             assert_eq!(direct_scanout_rejection(rejected), Some(reason));
         }
-    }
-
-    #[test]
-    fn drm_node_identity_can_prove_virtual_renderer_without_pci_identity() {
+        // Phase `drm_node_identity_can_prove_virtual_renderer_without_pci_identity`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -580,10 +580,7 @@ mod direct_eligibility_tests {
             }),
             None
         );
-    }
-
-    #[test]
-    fn matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id() {
+        // Phase `matching_drm_node_is_authoritative_when_the_card_has_no_pci_bus_id`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "0000:66:00.0",
@@ -593,10 +590,7 @@ mod direct_eligibility_tests {
             }),
             None
         );
-    }
-
-    #[test]
-    fn missing_renderer_identities_still_fail_closed() {
+        // Phase `missing_renderer_identities_still_fail_closed`.
         assert_eq!(
             direct_scanout_rejection(DirectEligibility {
                 renderer_pci: "",
@@ -629,33 +623,32 @@ mod direct_damage_history_tests {
     }
 
     #[test]
-    fn matching_scanout_history_preserves_sparse_damage() {
-        let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
-        assert_eq!(damage.previous_revision, Some(8));
-        assert_eq!(damage.regions, Some(REGION.as_slice()));
-    }
-
-    #[test]
-    fn stale_or_missing_scanout_history_forces_a_dense_boundary() {
+    fn direct_damage_history_keeps_sparse_damage_only_when_it_matches() {
+        // Phase `matching_scanout_history_preserves_sparse_damage`.
+        {
+            let damage = damage_for_direct_target(Some(8), sparse(Some(8)));
+            assert_eq!(damage.previous_revision, Some(8));
+            assert_eq!(damage.regions, Some(REGION.as_slice()));
+        }
+        // Phase `stale_or_missing_scanout_history_forces_a_dense_boundary`.
         for target_revision in [None, Some(7), Some(9)] {
             let damage = damage_for_direct_target(target_revision, sparse(Some(8)));
             assert_eq!(damage.previous_revision, None);
             assert_eq!(damage.regions, None);
         }
-    }
-
-    #[test]
-    fn an_already_dense_frame_remains_dense() {
-        let damage = damage_for_direct_target(
-            Some(8),
-            SceneDamage {
-                revision: 9,
-                previous_revision: None,
-                regions: None,
-            },
-        );
-        assert_eq!(damage.previous_revision, None);
-        assert_eq!(damage.regions, None);
+        // Phase `an_already_dense_frame_remains_dense`.
+        {
+            let damage = damage_for_direct_target(
+                Some(8),
+                SceneDamage {
+                    revision: 9,
+                    previous_revision: None,
+                    regions: None,
+                },
+            );
+            assert_eq!(damage.previous_revision, None);
+            assert_eq!(damage.regions, None);
+        }
     }
 }
 
@@ -927,7 +920,7 @@ fn apply_scanout_command(
         ScanoutCommand::Resume { dpms_on } => {
             for e in scanouts.iter_mut() {
                 e.scanout.restore();
-                e.scanout.set_dpms(dpms_on);
+                e.scanout.set_dpms(dpms_on && !e.powered_off);
                 e.direct_targets = None;
             }
             *blanked = !dpms_on;
@@ -946,6 +939,18 @@ fn apply_scanout_command(
         ScanoutCommand::SetPointerImage(image) => {
             for entry in scanouts.iter_mut() {
                 entry.scanout.set_pointer_image(image.clone());
+            }
+        }
+        ScanoutCommand::SetOutputPower { output, on } => {
+            for entry in scanouts.iter_mut().filter(|entry| entry.id == output) {
+                entry.powered_off = !on;
+                entry.direct_targets = None;
+                // While the session is blanked every panel is already off;
+                // the wake restores this one only if it is still wanted.
+                if !*blanked && !*paused {
+                    entry.scanout.set_dpms(on);
+                }
+                tracing::info!(output = output.0, on, "DRM present: output power changed");
             }
         }
     }
@@ -971,7 +976,7 @@ fn paint_scanouts(
     mut phase_window: Option<&mut PhaseWindow>,
     direct_bypass_reported: &mut bool,
 ) -> PaintScanoutSample {
-    if scanouts.is_empty() {
+    if scanouts.iter().all(|entry| entry.powered_off) {
         return PaintScanoutSample::default();
     }
     let target_size = combined_geometry(outputs);
@@ -1299,7 +1304,7 @@ fn paint_scanouts(
     let bridge_us = bridge_started.elapsed().as_micros();
     let scanout_started = Instant::now();
     let (cw, ch) = (target_size.0 as usize, target_size.1 as usize);
-    for e in scanouts.iter_mut() {
+    for e in scanouts.iter_mut().filter(|entry| !entry.powered_off) {
         paint_one_scanout(e, outputs, rgba, cw, ch, pointer);
     }
     PaintScanoutSample {
@@ -1490,7 +1495,7 @@ impl Presenter for DrmPresenter {
         });
         self.blanked = !on;
         for e in &mut self.scanouts {
-            e.scanout.set_dpms(on);
+            e.scanout.set_dpms(on && !e.powered_off);
             e.direct_targets = None;
         }
     }
@@ -1653,7 +1658,7 @@ impl Backend for DrmBackend {
             s.set_dpms(on);
         }
         for e in &mut self.inner.scanouts {
-            e.scanout.set_dpms(on);
+            e.scanout.set_dpms(on && !e.powered_off);
             e.direct_targets = None;
         }
     }
@@ -1688,6 +1693,18 @@ impl Backend for DrmBackend {
     fn switch_vt(&mut self, vt: i32) {
         self.inner.change_vt(vt);
     }
+
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        self.inner.output_heads()
+    }
+
+    fn set_output_power(&mut self, output: OutputId, on: bool) {
+        self.inner.set_output_power(output, on);
+    }
+
+    fn set_device_rotation(&mut self, rotation: Option<settings_store::hardware::OutputTransform>) {
+        self.inner.set_device_rotation(rotation);
+    }
 }
 
 #[cfg(test)]
@@ -1695,7 +1712,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn page_flip_drain_uses_one_representative_per_card() {
+    fn page_flip_completion_is_routed_per_card() {
+        // Phase `page_flip_drain_uses_one_representative_per_card`.
         // A fake scanout inventory: card0 has two CRTCs, card1 has two more
         // whose handle values may overlap card0's.  No real compositor or
         // DRM node is involved; this pins the grouping rule used before the
@@ -1705,116 +1723,117 @@ mod tests {
             vec![(100, 0), (200, 2)],
             "each card must drain its own shared event stream exactly once"
         );
+        // Phase `overlapping_crtcs_route_flip_completion_only_within_its_card`.
+        {
+            // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
+            // it can in DRM. A completion from card 200 must not clear card 100's
+            // pending flip merely because their local handle values match.
+            let scanouts = [(100, 7u32), (100, 8), (200, 7), (200, 8)];
+            assert_eq!(
+                page_flip_completion_recipients(&scanouts, &[(200, 7)]),
+                vec![(2, 7)],
+                "only the same card's CRTC receives the completion"
+            );
+        }
     }
 
     #[test]
-    fn overlapping_crtcs_route_flip_completion_only_within_its_card() {
-        // Fake card/CRTC topology. CRTC 7 exists on both cards, exactly as
-        // it can in DRM. A completion from card 200 must not clear card 100's
-        // pending flip merely because their local handle values match.
-        let scanouts = [(100, 7u32), (100, 8), (200, 7), (200, 8)];
-        assert_eq!(
-            page_flip_completion_recipients(&scanouts, &[(200, 7)]),
-            vec![(2, 7)],
-            "only the same card's CRTC receives the completion"
-        );
+    fn presenter_follows_session_pause_resume_and_reconfigure() {
+        // Phase `a_pause_stops_the_presenter_and_a_resume_starts_it`.
+        // The reconfiguration path with no live scanouts.
+        //
+        // Building a `ScanoutEntry` needs a modeset connector, so the scanout-touching half of
+        // `Reconfigure`/`Resume` can't be exercised off hardware; what can be exercised is the
+        // *gating* — whether the presenter paints at all, and which output table it believes in.
+        {
+            let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+            let mut outputs: Vec<Output> = Vec::new();
+            let (mut paused, mut blanked) = (false, false);
+
+            apply_scanout_command(
+                ScanoutCommand::Pause,
+                &mut scanouts,
+                &mut outputs,
+                &mut paused,
+                &mut blanked,
+            );
+            assert!(
+                paused,
+                "a paused session must not present into CRTCs it lost"
+            );
+
+            apply_scanout_command(
+                ScanoutCommand::Resume { dpms_on: true },
+                &mut scanouts,
+                &mut outputs,
+                &mut paused,
+                &mut blanked,
+            );
+            assert!(!paused, "and must start again when it gets them back");
+            assert!(!blanked);
+        }
+        // Phase `resuming_a_blanked_session_leaves_the_panels_off`.
+        {
+            // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
+            let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+            let mut outputs: Vec<Output> = Vec::new();
+            let (mut paused, mut blanked) = (true, false);
+            apply_scanout_command(
+                ScanoutCommand::Resume { dpms_on: false },
+                &mut scanouts,
+                &mut outputs,
+                &mut paused,
+                &mut blanked,
+            );
+            assert!(!paused, "the CRTCs are ours again");
+            assert!(blanked, "but the panels stay off");
+        }
+        // Phase `a_reconfigure_adopts_the_new_output_table`.
+        {
+            // The presenter sizes its paint buffer from `combined_geometry` of this table and presents each output's sub-rect from its position, so adopting it is what makes an unplugged monitor stop being painted for.
+            let mut scanouts: Vec<ScanoutEntry> = Vec::new();
+            let mut outputs: Vec<Output> = vec![
+                Output::new(OutputId(0), (1920, 1080), 1.0),
+                Output {
+                    id: OutputId(1),
+                    position: (1920, 0),
+                    size: (2560, 1440),
+                    scale: 1.0,
+                    transform: settings_store::hardware::OutputTransform::Normal,
+                    color_profile: None,
+                    refresh_mhz: None,
+                    logical_position: (1920, 0),
+                    identity: crate::compositor::backend::OutputIdentity::default(),
+                },
+            ];
+            let (mut paused, mut blanked) = (false, false);
+            apply_scanout_command(
+                ScanoutCommand::Reconfigure {
+                    remove: vec![OutputId(0)],
+                    add: Vec::new(),
+                    outputs: vec![Output::new(OutputId(1), (2560, 1440), 1.0)],
+                    removal_ack: None,
+                },
+                &mut scanouts,
+                &mut outputs,
+                &mut paused,
+                &mut blanked,
+            );
+            assert_eq!(outputs.len(), 1);
+            assert_eq!(outputs[0].id, OutputId(1));
+            assert_eq!(
+                combined_geometry(&outputs),
+                (2560, 1440),
+                "the scene must shrink to what is still plugged in"
+            );
+        }
     }
 
-    /// The reconfiguration path with no live scanouts.
-    ///
-    /// Building a `ScanoutEntry` needs a modeset connector, so the scanout-touching half of
-    /// `Reconfigure`/`Resume` can't be exercised off hardware; what can be exercised is the
-    /// *gating* — whether the presenter paints at all, and which output table it believes in.
     #[test]
-    fn a_pause_stops_the_presenter_and_a_resume_starts_it() {
-        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
-        let mut outputs: Vec<Output> = Vec::new();
-        let (mut paused, mut blanked) = (false, false);
-
-        apply_scanout_command(
-            ScanoutCommand::Pause,
-            &mut scanouts,
-            &mut outputs,
-            &mut paused,
-            &mut blanked,
-        );
-        assert!(
-            paused,
-            "a paused session must not present into CRTCs it lost"
-        );
-
-        apply_scanout_command(
-            ScanoutCommand::Resume { dpms_on: true },
-            &mut scanouts,
-            &mut outputs,
-            &mut paused,
-            &mut blanked,
-        );
-        assert!(!paused, "and must start again when it gets them back");
-        assert!(!blanked);
-    }
-
-    #[test]
-    fn resuming_a_blanked_session_leaves_the_panels_off() {
-        // Restoring a session that was idle-blanked must not light the screen: the user turned it off, and a VT switch is not consent.
-        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
-        let mut outputs: Vec<Output> = Vec::new();
-        let (mut paused, mut blanked) = (true, false);
-        apply_scanout_command(
-            ScanoutCommand::Resume { dpms_on: false },
-            &mut scanouts,
-            &mut outputs,
-            &mut paused,
-            &mut blanked,
-        );
-        assert!(!paused, "the CRTCs are ours again");
-        assert!(blanked, "but the panels stay off");
-    }
-
-    #[test]
-    fn a_reconfigure_adopts_the_new_output_table() {
-        // The presenter sizes its paint buffer from `combined_geometry` of this table and presents each output's sub-rect from its position, so adopting it is what makes an unplugged monitor stop being painted for.
-        let mut scanouts: Vec<ScanoutEntry> = Vec::new();
-        let mut outputs: Vec<Output> = vec![
-            Output::new(OutputId(0), (1920, 1080), 1.0),
-            Output {
-                id: OutputId(1),
-                position: (1920, 0),
-                size: (2560, 1440),
-                scale: 1.0,
-                transform: settings_store::hardware::OutputTransform::Normal,
-                color_profile: None,
-                refresh_mhz: None,
-                logical_position: (1920, 0),
-                identity: crate::compositor::backend::OutputIdentity::default(),
-            },
-        ];
-        let (mut paused, mut blanked) = (false, false);
-        apply_scanout_command(
-            ScanoutCommand::Reconfigure {
-                remove: vec![OutputId(0)],
-                add: Vec::new(),
-                outputs: vec![Output::new(OutputId(1), (2560, 1440), 1.0)],
-                removal_ack: None,
-            },
-            &mut scanouts,
-            &mut outputs,
-            &mut paused,
-            &mut blanked,
-        );
-        assert_eq!(outputs.len(), 1);
-        assert_eq!(outputs[0].id, OutputId(1));
-        assert_eq!(
-            combined_geometry(&outputs),
-            (2560, 1440),
-            "the scene must shrink to what is still plugged in"
-        );
-    }
-
-    /// The DRM backend's construction must surface a real error (`Box<dyn Error>`) on any dev
-    /// machine off a free TTY. Exact text varies; we only assert `Err`, not a panic, so this test is portable across CI.
-    #[test]
-    fn drm_backend_new_returns_err_when_no_seat_available() {
+    fn drm_backend_construction_and_output_publication() {
+        // Phase `drm_backend_new_returns_err_when_no_seat_available`.
+        // The DRM backend's construction must surface a real error (`Box<dyn Error>`) on any dev
+        // machine off a free TTY. Exact text varies; we only assert `Err`, not a panic, so this test is portable across CI.
         // On the dev machine this runs under, a Wayland/X11 compositor already holds the seat; libseat refuses with an error — exactly the contract we want.
         match DrmBackend::new() {
             Ok(_) => {
@@ -1829,78 +1848,75 @@ mod tests {
                 );
             }
         }
-    }
+        // Phase `drm_backend_outputs_returns_populated_list_when_runtime_has_outputs`.
+        // Verify `outputs()` returns the populated list when the runtime has synthesised outputs. Can't
+        // call `DrmRuntime::new` from a dev machine, so exercise `refresh_outputs` directly on a synthesised dispatch state.
+        {
+            let synthesized = vec![
+                (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
+                (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
+            ];
+            let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized);
 
-    /// Verify `outputs()` returns the populated list when the runtime has synthesised outputs. Can't
-    /// call `DrmRuntime::new` from a dev machine, so exercise `refresh_outputs` directly on a synthesised dispatch state.
-    #[test]
-    fn drm_backend_outputs_returns_populated_list_when_runtime_has_outputs() {
-        let synthesized = vec![
-            (OutputId(0), Output::new(OutputId(0), (1920, 1080), 1.0)),
-            (OutputId(1), Output::new(OutputId(1), (1280, 720), 1.0)),
-        ];
-        let dispatch = runtime::DrmRuntime::synthesize_for_tests(synthesized);
+            // Mirror what `refresh_outputs` does: we can't easily build a full `DrmRuntime`, so copy that helper's sort/shape policy here for the test.
+            let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();
+            outs.sort_by_key(|o| o.id.0);
 
-        // Mirror what `refresh_outputs` does: we can't easily build a full `DrmRuntime`, so copy that helper's sort/shape policy here for the test.
-        let mut outs: Vec<Output> = dispatch.output_meta.values().cloned().collect();
-        outs.sort_by_key(|o| o.id.0);
-
-        assert_eq!(
-            outs.len(),
-            2,
-            "two synthesised outputs must surface as two entries"
-        );
-        assert_eq!(outs[0].id, OutputId(0));
-        assert_eq!(outs[0].size, (1920, 1080));
-        assert_eq!(outs[1].id, OutputId(1));
-        assert_eq!(outs[1].size, (1280, 720));
-    }
-
-    /// The bridge field must exist and the legacy "scene discarded" warn-and-latch field must not,
-    /// so a future refactor re-adding a fail-silent path has to re-design this test. Verified via the production type's shape (not a `tracing` capture) to keep the test fast and dependency-free.
-    #[test]
-    fn drm_backend_does_not_warn_about_vello_anymore() {
-        // Pull the struct's field list via raw source text, anchored on `pub struct DrmBackend {` … the first following `}`, so neither the test body nor doc-comments interfere.
-        let src = include_str!("mod.rs");
-        let start = src
-            .find("pub struct DrmBackend {")
-            .expect("struct DrmBackend must exist in mod.rs");
-        let after = &src[start..];
-        let end = after.find("\n}").expect("struct must close") + start;
-        let struct_def = &src[start..=end + 1];
-        assert!(
-            struct_def.contains("paint:"),
-            "Phase 5.2: DrmBackend struct must carry a `paint:` field for the bridge. Got:\n{struct_def}"
-        );
-        assert!(
-            !struct_def.contains("warned_about_vello"),
-            "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"
-        );
-    }
-
-    #[test]
-    fn drm_presenter_starts_without_a_cross_thread_gpu_device() {
-        // `take_presenter` is the ownership boundary.  Constructing the
-        // bridge before this point and moving it with the scanouts can wedge
-        // software Vulkan adapters after their first submissions.  Keep the
-        // invariant visible in the production initializer without requiring
-        // a DRM seat or a wgpu adapter in this unit test.
-        let src = include_str!("mod.rs");
-        let start = src
-            .find("fn take_presenter(&mut self)")
-            .expect("DRM backend must expose its presenter");
-        let body = &src[start..];
-        let initializer = body
-            .split("fn set_dpms")
-            .next()
-            .expect("presenter initializer must precede set_dpms");
-        assert!(
-            initializer.contains("paint: None"),
-            "the render thread must construct its own wgpu bridge"
-        );
-        assert!(
-            !initializer.contains("paint: self.paint.take()"),
-            "a live wgpu bridge must never cross the thread boundary"
-        );
+            assert_eq!(
+                outs.len(),
+                2,
+                "two synthesised outputs must surface as two entries"
+            );
+            assert_eq!(outs[0].id, OutputId(0));
+            assert_eq!(outs[0].size, (1920, 1080));
+            assert_eq!(outs[1].id, OutputId(1));
+            assert_eq!(outs[1].size, (1280, 720));
+        }
+        // Phase `drm_backend_does_not_warn_about_vello_anymore`.
+        // The bridge field must exist and the legacy "scene discarded" warn-and-latch field must not,
+        // so a future refactor re-adding a fail-silent path has to re-design this test. Verified via the production type's shape (not a `tracing` capture) to keep the test fast and dependency-free.
+        {
+            // Pull the struct's field list via raw source text, anchored on `pub struct DrmBackend {` … the first following `}`, so neither the test body nor doc-comments interfere.
+            let src = include_str!("mod.rs");
+            let start = src
+                .find("pub struct DrmBackend {")
+                .expect("struct DrmBackend must exist in mod.rs");
+            let after = &src[start..];
+            let end = after.find("\n}").expect("struct must close") + start;
+            let struct_def = &src[start..=end + 1];
+            assert!(
+                struct_def.contains("paint:"),
+                "Phase 5.2: DrmBackend struct must carry a `paint:` field for the bridge. Got:\n{struct_def}"
+            );
+            assert!(
+                !struct_def.contains("warned_about_vello"),
+                "Phase 5.2: DrmBackend struct must drop the legacy latch field. Got:\n{struct_def}"
+            );
+        }
+        // Phase `drm_presenter_starts_without_a_cross_thread_gpu_device`.
+        {
+            // `take_presenter` is the ownership boundary.  Constructing the
+            // bridge before this point and moving it with the scanouts can wedge
+            // software Vulkan adapters after their first submissions.  Keep the
+            // invariant visible in the production initializer without requiring
+            // a DRM seat or a wgpu adapter in this unit test.
+            let src = include_str!("mod.rs");
+            let start = src
+                .find("fn take_presenter(&mut self)")
+                .expect("DRM backend must expose its presenter");
+            let body = &src[start..];
+            let initializer = body
+                .split("fn set_dpms")
+                .next()
+                .expect("presenter initializer must precede set_dpms");
+            assert!(
+                initializer.contains("paint: None"),
+                "the render thread must construct its own wgpu bridge"
+            );
+            assert!(
+                !initializer.contains("paint: self.paint.take()"),
+                "a live wgpu bridge must never cross the thread boundary"
+            );
+        }
     }
 }

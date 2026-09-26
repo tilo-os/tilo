@@ -466,164 +466,166 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn in_memory_store_is_a_separate_document() {
-        let mut store = OwnerHistoryStore::memory();
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "not-in-shared-doc".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "watch:1".into(),
-            }
-        ));
-        let shared = AutoCommit::new();
-        assert!(shared.get(&ROOT, HISTORY_ROOT).unwrap().is_none());
-        assert!(store.document().get(&ROOT, HISTORY_ROOT).unwrap().is_some());
-    }
-
-    #[test]
-    fn persisted_store_reopens_with_owner_only_permissions() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("alice.automerge");
-        let mut store = OwnerHistoryStore::open_path(path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "restart-video".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "watch:1".into(),
-            }
-        ));
-        assert_eq!(
-            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-        let reopened = OwnerHistoryStore::open_path(path);
-        assert!(
-            reopened
-                .document()
-                .get(&ROOT, HISTORY_ROOT)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn unsafe_existing_file_or_symlink_is_not_overwritten() {
-        let temp = TempDir::new().unwrap();
-        let unsafe_path = temp.path().join("unsafe.automerge");
-        fs::write(&unsafe_path, b"not an automerge document").unwrap();
-        fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o600)).unwrap();
-        let mut unsafe_store = OwnerHistoryStore::open_path(unsafe_path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(unsafe_store.recovery_disabled());
-        assert!(!unsafe_store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "must-not-overwrite".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "x".into(),
-            }
-        ));
-        assert_eq!(
-            fs::read(&unsafe_path).unwrap(),
-            b"not an automerge document"
-        );
-
-        let target = temp.path().join("target.automerge");
-        fs::write(&target, b"keep-the-target").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-        let link = temp.path().join("link.automerge");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let mut linked_store = OwnerHistoryStore::open_path(link);
-        assert!(linked_store.recovery_disabled());
-        assert!(!linked_store.dispatch(
-            &mut host,
-            &OwnerHistoryAction::SetEntry {
-                video_id: "must-not-follow".into(),
-                watched_at_ms: 1,
-                present: true,
-                mutation_id: "y".into(),
-            }
-        ));
-        assert_eq!(fs::read(&target).unwrap(), b"keep-the-target");
-    }
-
-    #[test]
-    fn owned_broad_permissions_are_safely_tightened_before_loading() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("broad.automerge");
-        fs::write(&path, AutoCommit::new().save()).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
-        let store = OwnerHistoryStore::open_path(path.clone());
-        assert!(!store.recovery_disabled());
-        assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
-            0o600
-        );
-    }
-
-    #[test]
-    fn owner_names_do_not_alias_for_distinct_or_adversarial_ids() {
-        assert_ne!(owner_file_id("user:alice"), owner_file_id("user:bob"));
-        assert_ne!(owner_file_id("AaAaAaAa"), owner_file_id("BBBBBBBB"));
-        assert_eq!(owner_file_id("user:alice").len(), 64);
-    }
-
-    #[test]
-    fn compaction_keeps_bounded_visible_history_and_migration_on_restart() {
-        let temp = TempDir::new().unwrap();
-        let path = temp.path().join("compact.automerge");
-        let mut store = OwnerHistoryStore::open_path(path.clone());
-        let mut host = ui::ActionHost::new();
-        assert!(store.dispatch(&mut host, &OwnerHistoryAction::LegacyMigrationComplete));
-        for watched_at_ms in 0..55_u64 {
+    fn history_store_files_are_owner_only_and_never_clobber_unsafe_paths() {
+        // Case `in_memory_store_is_a_separate_document`.
+        {
+            let mut store = OwnerHistoryStore::memory();
+            let mut host = ui::ActionHost::new();
             assert!(store.dispatch(
                 &mut host,
                 &OwnerHistoryAction::SetEntry {
-                    video_id: format!("video-{watched_at_ms}"),
-                    watched_at_ms,
+                    video_id: "not-in-shared-doc".into(),
+                    watched_at_ms: 1,
                     present: true,
-                    mutation_id: format!("watch-{watched_at_ms}"),
+                    mutation_id: "watch:1".into(),
                 }
             ));
+            let shared = AutoCommit::new();
+            assert!(shared.get(&ROOT, HISTORY_ROOT).unwrap().is_none());
+            assert!(store.document().get(&ROOT, HISTORY_ROOT).unwrap().is_some());
         }
-        store.force_compact_for_test().unwrap();
-        store.persist().unwrap();
-        let reopened = OwnerHistoryStore::open_path(path);
-        assert!(reopened.has_legacy_migration_marker());
-        let (_, history) = reopened
-            .document()
-            .get(&ROOT, HISTORY_ROOT)
-            .unwrap()
-            .unwrap();
-        let (_, entries) = reopened
-            .document()
-            .get(&history, "entries")
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            reopened.document().keys(&entries).count(),
-            MAX_HISTORY_ENTRIES
-        );
-        assert!(
-            reopened
+        // Case `persisted_store_reopens_with_owner_only_permissions`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("alice.automerge");
+            let mut store = OwnerHistoryStore::open_path(path.clone());
+            let mut host = ui::ActionHost::new();
+            assert!(store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "restart-video".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "watch:1".into(),
+                }
+            ));
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            let reopened = OwnerHistoryStore::open_path(path);
+            assert!(
+                reopened
+                    .document()
+                    .get(&ROOT, HISTORY_ROOT)
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        // Case `unsafe_existing_file_or_symlink_is_not_overwritten`.
+        {
+            let temp = TempDir::new().unwrap();
+            let unsafe_path = temp.path().join("unsafe.automerge");
+            fs::write(&unsafe_path, b"not an automerge document").unwrap();
+            fs::set_permissions(&unsafe_path, fs::Permissions::from_mode(0o600)).unwrap();
+            let mut unsafe_store = OwnerHistoryStore::open_path(unsafe_path.clone());
+            let mut host = ui::ActionHost::new();
+            assert!(unsafe_store.recovery_disabled());
+            assert!(!unsafe_store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "must-not-overwrite".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "x".into(),
+                }
+            ));
+            assert_eq!(
+                fs::read(&unsafe_path).unwrap(),
+                b"not an automerge document"
+            );
+
+            let target = temp.path().join("target.automerge");
+            fs::write(&target, b"keep-the-target").unwrap();
+            fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+            let link = temp.path().join("link.automerge");
+            std::os::unix::fs::symlink(&target, &link).unwrap();
+            let mut linked_store = OwnerHistoryStore::open_path(link);
+            assert!(linked_store.recovery_disabled());
+            assert!(!linked_store.dispatch(
+                &mut host,
+                &OwnerHistoryAction::SetEntry {
+                    video_id: "must-not-follow".into(),
+                    watched_at_ms: 1,
+                    present: true,
+                    mutation_id: "y".into(),
+                }
+            ));
+            assert_eq!(fs::read(&target).unwrap(), b"keep-the-target");
+        }
+        // Case `owned_broad_permissions_are_safely_tightened_before_loading`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("broad.automerge");
+            fs::write(&path, AutoCommit::new().save()).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+            let store = OwnerHistoryStore::open_path(path.clone());
+            assert!(!store.recovery_disabled());
+            assert_eq!(
+                fs::metadata(path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn history_store_names_owners_and_compacts_safely() {
+        // Case `owner_names_do_not_alias_for_distinct_or_adversarial_ids`.
+        {
+            assert_ne!(owner_file_id("user:alice"), owner_file_id("user:bob"));
+            assert_ne!(owner_file_id("AaAaAaAa"), owner_file_id("BBBBBBBB"));
+            assert_eq!(owner_file_id("user:alice").len(), 64);
+        }
+        // Case `compaction_keeps_bounded_visible_history_and_migration_on_restart`.
+        {
+            let temp = TempDir::new().unwrap();
+            let path = temp.path().join("compact.automerge");
+            let mut store = OwnerHistoryStore::open_path(path.clone());
+            let mut host = ui::ActionHost::new();
+            assert!(store.dispatch(&mut host, &OwnerHistoryAction::LegacyMigrationComplete));
+            for watched_at_ms in 0..55_u64 {
+                assert!(store.dispatch(
+                    &mut host,
+                    &OwnerHistoryAction::SetEntry {
+                        video_id: format!("video-{watched_at_ms}"),
+                        watched_at_ms,
+                        present: true,
+                        mutation_id: format!("watch-{watched_at_ms}"),
+                    }
+                ));
+            }
+            store.force_compact_for_test().unwrap();
+            store.persist().unwrap();
+            let reopened = OwnerHistoryStore::open_path(path);
+            assert!(reopened.has_legacy_migration_marker());
+            let (_, history) = reopened
                 .document()
-                .get(&entries, "video-54")
+                .get(&ROOT, HISTORY_ROOT)
                 .unwrap()
-                .is_some()
-        );
-        assert!(
-            reopened
+                .unwrap();
+            let (_, entries) = reopened
                 .document()
-                .get(&entries, "video-0")
+                .get(&history, "entries")
                 .unwrap()
-                .is_none()
-        );
+                .unwrap();
+            assert_eq!(
+                reopened.document().keys(&entries).count(),
+                MAX_HISTORY_ENTRIES
+            );
+            assert!(
+                reopened
+                    .document()
+                    .get(&entries, "video-54")
+                    .unwrap()
+                    .is_some()
+            );
+            assert!(
+                reopened
+                    .document()
+                    .get(&entries, "video-0")
+                    .unwrap()
+                    .is_none()
+            );
+        }
     }
 }

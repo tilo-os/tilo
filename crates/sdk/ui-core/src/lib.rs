@@ -187,6 +187,7 @@ pub use text_break::{LineBreakKind, line_break_opportunities};
 pub mod close_admission;
 pub mod reader_hud;
 pub mod record;
+pub mod remote_actions;
 pub mod render_thread;
 pub mod reorder;
 pub mod richtext;
@@ -274,6 +275,9 @@ pub use profiling::{
 };
 pub use reader_hud::{HudAction, HudSwatch, MarkerDrag, ReaderHudStyle, SelectionHud};
 pub use record::{RecordCheckout, RecordId, RecordKind, RecordRef, RecordSet, RecordStore};
+pub use remote_actions::{
+    CatalogueCall, InvocationCall, RemoteActions, RemoteActionsGuard, RemoteCall,
+};
 pub use reorder::{
     DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
 };
@@ -288,9 +292,10 @@ pub use state::{
 pub use text_break::discretionary_hyphen_breaks;
 pub use theme::{AppearanceIntent, Theme};
 pub use ui_graph::{
-    LiveUi, UI_GRAPH_VERSION, UiBuildContext, UiButtonStyle, UiComponentRequest, UiDocument,
-    UiDocumentExt, UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole,
-    UiTextSource,
+    LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION, UiBuildContext,
+    UiButtonStyle, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit, UiGraphEditor,
+    UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
+    parse_ui_graph_edits,
 };
 pub use undo::{UndoAccess, UndoRequest, UndoStatus};
 pub use view::{

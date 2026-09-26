@@ -141,27 +141,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_pixels_keep_their_proportion() {
-        assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
-        assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
-        assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
-    }
-
-    #[test]
-    fn legacy_custom_shape_deserializes_as_fraction() {
-        let width: WindowWidth = serde_json::from_str(r#"{"Custom":600}"#).unwrap();
-        assert_eq!(width, WindowWidth::Fraction(500));
-    }
-
-    #[test]
-    fn out_of_range_fraction_is_clamped_on_load() {
-        let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
-        assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
-    }
-
-    #[test]
-    fn resolve_respects_the_pixel_floor() {
-        assert!((WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON);
-        assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+    fn widths_load_legacy_shapes_as_clamped_fractions_with_a_pixel_floor() {
+        // Phase `legacy_pixels_keep_their_proportion`.
+        {
+            assert_eq!(WindowWidth::from_legacy_pixels(400).permille(), 333);
+            assert_eq!(WindowWidth::from_legacy_pixels(600).permille(), 500);
+            assert_eq!(WindowWidth::from_legacy_pixels(1200).permille(), 1000);
+        }
+        // Phase `legacy_custom_shape_deserializes_as_fraction`.
+        {
+            let width: WindowWidth = serde_json::from_str(r#"{"Custom":600}"#).unwrap();
+            assert_eq!(width, WindowWidth::Fraction(500));
+        }
+        // Phase `out_of_range_fraction_is_clamped_on_load`.
+        {
+            let width: WindowWidth = serde_json::from_str(r#"{"Fraction":5}"#).unwrap();
+            assert_eq!(width, WindowWidth::Fraction(WIDTH_MIN_PERMILLE));
+        }
+        // Phase `resolve_respects_the_pixel_floor`.
+        {
+            assert!(
+                (WindowWidth::Fraction(150).resolve(800.0) - WIDTH_FLOOR_PX).abs() < f64::EPSILON
+            );
+            assert!((WindowWidth::Wide.resolve(1000.0) - 1000.0).abs() < f64::EPSILON);
+        }
     }
 }

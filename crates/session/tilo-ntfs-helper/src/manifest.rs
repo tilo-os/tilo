@@ -1,12 +1,12 @@
 //! Native report schema-2 positive completion verifier. Native facts are untrusted, bounded data.
 use crate::protocol::{Report, identity};
-use tilo_ntfs_protocol::{CopyTimes, CopyTimesUnavailableReason, Entry, Issue, NativePath};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     io,
 };
+use tilo_ntfs_protocol::{CopyTimes, CopyTimesUnavailableReason, Entry, Issue, NativePath};
 pub struct Manifest {
     pub entries: Vec<Entry>,
     pub issues: Vec<Issue>,

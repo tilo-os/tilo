@@ -365,54 +365,52 @@ impl RegionSettings {
 mod tests {
     use super::*;
 
+    /// The region section's defaults, its cross-app JSON contract, and its
+    /// round-trip through the shared settings file.
     #[test]
-    fn defaults_match_the_documented_contract() {
+    fn region_settings_default_and_round_trip_the_cross_app_contract() {
         let r = RegionSettings::default();
         assert_eq!(r.locale.currency, Currency::USD);
         assert_eq!(r.locale.date_format, DateStyle::Iso);
         assert_eq!(r.locale.time_format, TimeStyle::H24);
         assert_eq!(r.locale.measurement, Measurement::Metric);
-    }
 
-    #[test]
-    fn json_repr_uses_variant_names_so_sheets_can_read_it() {
-        let r = RegionSettings {
+        let region = |currency, date_format, time_format, measurement| RegionSettings {
             locale: Locale {
-                currency: Currency::EUR,
-                date_format: DateStyle::Eu,
-                time_format: TimeStyle::H12,
-                measurement: Measurement::Imperial,
+                currency,
+                date_format,
+                time_format,
+                measurement,
                 ..Default::default()
             },
         };
-        let json = r.to_json_merged("");
-        // These exact strings are the cross-app contract. If serde ever
-        // renamed a variant this test would catch the drift.
-        assert!(json.contains("\"currency\": \"EUR\""));
-        assert!(json.contains("\"date_format\": \"EU\""));
-        assert!(json.contains("\"time_format\": \"H12\""));
-        assert!(json.contains("\"measurement\": \"Imperial\""));
-        assert!(json.contains("\"version\": 1"));
-    }
+        let json = region(
+            Currency::EUR,
+            DateStyle::Eu,
+            TimeStyle::H12,
+            Measurement::Imperial,
+        )
+        .to_json_merged("");
+        // These exact strings are the cross-app contract Sheets reads. If serde
+        // ever renamed a variant this test would catch the drift.
+        for want in [
+            "\"currency\": \"EUR\"",
+            "\"date_format\": \"EU\"",
+            "\"time_format\": \"H12\"",
+            "\"measurement\": \"Imperial\"",
+            "\"version\": 1",
+        ] {
+            assert!(json.contains(want), "{want} missing from {json}");
+        }
 
-    #[test]
-    fn round_trips_through_json() {
-        let r = RegionSettings {
-            locale: Locale {
-                currency: Currency::JPY,
-                date_format: DateStyle::Long,
-                time_format: TimeStyle::H24,
-                measurement: Measurement::Metric,
-                ..Default::default()
-            },
-        };
-        let json = r.to_json_merged("");
-        let back = RegionSettings::from_json(&json);
-        assert_eq!(r, back);
-    }
+        let r = region(
+            Currency::JPY,
+            DateStyle::Long,
+            TimeStyle::H24,
+            Measurement::Metric,
+        );
+        assert_eq!(RegionSettings::from_json(&r.to_json_merged("")), r);
 
-    #[test]
-    fn merge_preserves_foreign_keys() {
         let existing = r#"{"version":1,"theme":{"name":"dracula"},"locale":{"currency":"USD","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#;
         let r = RegionSettings {
             locale: Locale {
@@ -421,27 +419,31 @@ mod tests {
             },
         };
         let out = r.to_json_merged(existing);
-        // Our edit landed.
-        assert!(out.contains("\"currency\": \"GBP\""));
-        // The unrelated `theme` section survived.
-        assert!(out.contains("dracula"));
+        assert!(
+            out.contains("\"currency\": \"GBP\""),
+            "our edit landed: {out}"
+        );
+        assert!(
+            out.contains("dracula"),
+            "the unrelated `theme` section survived: {out}"
+        );
     }
 
+    /// Missing, unparsable or partially invalid documents degrade to defaults
+    /// rather than erroring.
     #[test]
-    fn missing_file_falls_back_to_defaults() {
-        let r = RegionSettings::from_json("");
-        assert_eq!(r, RegionSettings::default());
-        let r2 = RegionSettings::from_json("not json at all {");
-        assert_eq!(r2, RegionSettings::default());
-    }
-
-    #[test]
-    fn unknown_enum_string_degrades_to_default_locale() {
+    fn region_settings_degrade_to_defaults() {
+        for input in ["", "not json at all {"] {
+            assert_eq!(
+                RegionSettings::from_json(input),
+                RegionSettings::default(),
+                "{input:?}"
+            );
+        }
+        // The whole locale section fails to parse (XXX isn't a Currency).
         let r = RegionSettings::from_json(
             r#"{"locale":{"currency":"XXX","date_format":"Iso","time_format":"H24","measurement":"Metric"}}"#,
         );
-        // The whole locale section fails to parse (XXX isn't a Currency)
-        // and we fall back to defaults rather than erroring.
         assert_eq!(r.locale, Locale::default());
     }
 }

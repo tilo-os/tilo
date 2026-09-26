@@ -3310,80 +3310,165 @@ mod tests {
         }
     }
 
-    /// The signal indicator must use the Material Design Icons `wifi-strength`
-    /// family (Private Use Area, `U+F09xx`) — the same family the sidebar's
-    /// Network glyph uses and which the shipped fonts actually carry — never the
-    /// Unicode block elements (`U+258x`), which fall back to a `.notdef` tofu
-    /// box and convey no signal level.
+    /// MDI signal glyphs, one row per network, refresh and the first snapshot via the wake.
     #[test]
-    fn wifi_signal_glyph_uses_the_mdi_family_not_block_elements() {
-        for signal in 0u8..=6 {
-            let g = wifi_signal_glyph(signal);
-            let cp = g.chars().next().unwrap() as u32;
-            assert!(
-                (0xF091F..=0xF092B).contains(&cp),
-                "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
-            );
-            // Never a Unicode block element (the old tofu bars).
-            assert!(
-                !(0x2580..=0x259F).contains(&cp),
-                "block-element bars are tofu"
-            );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn wifi_list_arrives_through_the_wake_and_renders_each_network() {
+        // Case `wifi_signal_glyph_uses_the_mdi_family_not_block_elements`.
+        // The signal indicator must use the Material Design Icons `wifi-strength`
+        // family (Private Use Area, `U+F09xx`) — the same family the sidebar's
+        // Network glyph uses and which the shipped fonts actually carry — never the
+        // Unicode block elements (`U+258x`), which fall back to a `.notdef` tofu
+        // box and convey no signal level.
+        {
+            for signal in 0u8..=6 {
+                let g = wifi_signal_glyph(signal);
+                let cp = g.chars().next().unwrap() as u32;
+                assert!(
+                    (0xF091F..=0xF092B).contains(&cp),
+                    "signal {signal} glyph U+{cp:04X} must be an MDI wifi-strength glyph"
+                );
+                // Never a Unicode block element (the old tofu bars).
+                assert!(
+                    !(0x2580..=0x259F).contains(&cp),
+                    "block-element bars are tofu"
+                );
+            }
+            // Distinct levels for 1..=4 so strength is legible at a glance.
+            let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
+            let unique: std::collections::HashSet<&&str> = levels.iter().collect();
+            assert_eq!(unique.len(), 4, "each bar level is a distinct glyph");
         }
-        // Distinct levels for 1..=4 so strength is legible at a glance.
-        let levels: Vec<&str> = (1u8..=4).map(wifi_signal_glyph).collect();
-        let unique: std::collections::HashSet<&&str> = levels.iter().collect();
-        assert_eq!(unique.len(), 4, "each bar level is a distinct glyph");
+
+        // Case `wifi_list_renders_each_returned_network`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let nets = sample_networks();
+            let pane =
+                NetworkPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, nets);
+            assert_eq!(pane.networks().len(), 3);
+            let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
+            assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
+            // Status line picks the connected network.
+            assert_eq!(pane.connection_status_text(), "Connected to Home_Network");
+        }
+
+        // Case `refresh_button_replaces_network_list`.
+        // Refresh only starts the rescan; the new list arrives through the
+        // wake and is applied by the next sync.
+        {
+            let fresh = vec![WifiNetworkInfo {
+                ssid: "NewSpot".to_string(),
+                signal: 4,
+                secure: false,
+                security: os_actions::WifiSecurity::Open,
+                connected: false,
+            }];
+            let expected = fresh.clone();
+            let (before, pending, after) = on_ui_thread(move |wakes| {
+                let rec = Arc::new(RecordingDispatcher::default());
+                let mut pane = NetworkPane::with_dispatcher(
+                    rec as Arc<dyn Dispatcher + Send + Sync>,
+                    true,
+                    sample_networks(),
+                );
+                // Swap the lister to a fresh set so we can observe the refresh.
+                pane.lister = Arc::new(move || Ok(fresh.clone()));
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
+                pane.sync(&mut doc, &root);
+                let before = pane.networks().to_vec();
+                let pending = pane.snapshot_request.is_pending();
+                // Each wake is followed by the sync the host would run.
+                while pane.snapshot_request.is_pending() {
+                    wakes
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .unwrap();
+                    pane.sync(&mut doc, &root);
+                }
+                (before, pending, pane.networks().to_vec())
+            });
+            assert_eq!(
+                before,
+                sample_networks(),
+                "the sync does not wait for the scan"
+            );
+            assert!(pending);
+            assert_eq!(after, expected);
+        }
+
+        // Case `the_first_snapshot_arrives_through_the_wake`.
+        // The production pane is built without querying `NetworkManager`: it
+        // shows a pending view and acts on no control until the first snapshot
+        // arrives through the wake.
+        {
+            let outcome = on_ui_thread(|wakes| {
+                // The scan waits for the test, so the pending state is observed
+                // deterministically.
+                let (release, gate) = std::sync::mpsc::channel::<()>();
+                let gate = Mutex::new(gate);
+                let rec = Arc::new(RecordingDispatcher::default());
+                let mut pane = NetworkPane::from_parts(
+                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                    Arc::new(move || {
+                        let _ = gate.lock().unwrap().recv();
+                        Ok(sample_networks())
+                    }),
+                    Arc::new(Vec::<VpnInfo>::new),
+                    Arc::new(EmptyWifiContinuityClient),
+                    true,
+                    Vec::new(),
+                );
+                pane.begin_initial_load();
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                let loading = !pane.loaded && pane.networks().is_empty();
+                let unseeded = doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_none();
+                // A control flipped before the snapshot is not acted on yet.
+                let _ = doc.put(&root, AIRPLANE_KEY, true);
+                pane.sync(&mut doc, &root);
+                let inert = rec.calls().is_empty();
+                release.send(()).unwrap();
+                while !pane.loaded {
+                    wakes
+                        .recv_timeout(std::time::Duration::from_secs(30))
+                        .unwrap();
+                    pane.sync(&mut doc, &root);
+                }
+                (
+                    loading,
+                    unseeded,
+                    inert,
+                    pane.loaded,
+                    pane.networks().to_vec(),
+                    doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_some(),
+                )
+            });
+            let (loading, unseeded, inert, loaded, networks, seeded) = outcome;
+            assert!(loading, "construction does not wait for NetworkManager");
+            assert!(unseeded, "controls are not seeded from unread state");
+            assert!(inert, "no control acts before the first snapshot");
+            assert!(loaded);
+            assert_eq!(networks, sample_networks());
+            assert!(seeded, "the first snapshot seeds the controls");
+        }
     }
 
+    /// Enterprise/VPN editors open only explicitly and seed per profile; diagnostics run off the UI thread.
     #[test]
-    fn wifi_list_renders_each_returned_network() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let nets = sample_networks();
-        let pane =
-            NetworkPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, true, nets);
-        assert_eq!(pane.networks().len(), 3);
-        let by_ssid: Vec<&str> = pane.networks().iter().map(|n| n.ssid.as_str()).collect();
-        assert_eq!(by_ssid, vec!["Home_Network", "Cafe_Guest", "Neighbour_5G"]);
-        // Status line picks the connected network.
-        assert_eq!(pane.connection_status_text(), "Connected to Home_Network");
-    }
-
-    #[test]
-    fn enterprise_editor_opens_only_after_its_explicit_action() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        assert!(!pane.enterprise_editor_open);
-
-        let _ = doc.put(&root, ENTERPRISE_EDITOR_KEY, true);
-        pane.sync(&mut doc, &root);
-        assert!(pane.enterprise_editor_open);
-        assert!(pane.take_structure_dirty());
-        assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY).unwrap_or(false));
-    }
-
-    /// Diagnostics read the system bus. The UI thread only starts the read;
-    /// the outcome — a report or an error, depending on the host — arrives
-    /// through the wake and is applied by the next sync.
-    #[test]
-    fn diagnostics_run_off_the_ui_thread_and_report_through_the_wake() {
-        let outcome = ui::rt::spawn_thread("settings-ui-test", || {
-            ui::rt::mark_ui_thread();
-            let mut scope = ui::WakeScope::new();
-            let (woke, wakes) = std::sync::mpsc::channel();
-            scope
-                .bind(move |_| {
-                    let _ = woke.send(());
-                })
-                .unwrap();
-            let _entry = scope.enter();
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn network_diagnostics_and_advanced_editors_are_explicit_and_off_thread() {
+        // Case `enterprise_editor_opens_only_after_its_explicit_action`.
+        {
             let rec = Arc::new(RecordingDispatcher::default());
             let mut pane = NetworkPane::with_dispatcher(
                 rec as Arc<dyn Dispatcher + Send + Sync>,
@@ -3393,26 +3478,170 @@ mod tests {
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, DIAGNOSTICS_KEY, true);
+            assert!(!pane.enterprise_editor_open);
+
+            let _ = doc.put(&root, ENTERPRISE_EDITOR_KEY, true);
             pane.sync(&mut doc, &root);
-            assert!(!read_bool(&doc, &root, DIAGNOSTICS_KEY).unwrap_or(true));
-            assert!(pane.diagnostics_request.is_pending());
-            wakes
-                .recv_timeout(std::time::Duration::from_secs(10))
-                .unwrap();
-            pane.sync(&mut doc, &root);
-            (pane.diagnostics.is_some(), pane.connection_notice.clone())
-        })
-        .unwrap()
-        .join()
-        .unwrap();
-        match outcome {
-            (true, _) => {}
-            (false, Some(notice)) => {
-                assert!(notice.starts_with("Diagnostics unavailable:"), "{notice}");
-                assert!(!notice.contains("UI thread"), "{notice}");
+            assert!(pane.enterprise_editor_open);
+            assert!(pane.take_structure_dirty());
+            assert!(!read_bool(&doc, &root, ENTERPRISE_EDITOR_KEY).unwrap_or(false));
+        }
+
+        // Case `diagnostics_run_off_the_ui_thread_and_report_through_the_wake`.
+        // Diagnostics read the system bus. The UI thread only starts the read;
+        // the outcome — a report or an error, depending on the host — arrives
+        // through the wake and is applied by the next sync.
+        {
+            let outcome = ui::rt::spawn_thread("settings-ui-test", || {
+                ui::rt::mark_ui_thread();
+                let mut scope = ui::WakeScope::new();
+                let (woke, wakes) = std::sync::mpsc::channel();
+                scope
+                    .bind(move |_| {
+                        let _ = woke.send(());
+                    })
+                    .unwrap();
+                let _entry = scope.enter();
+                let rec = Arc::new(RecordingDispatcher::default());
+                let mut pane = NetworkPane::with_dispatcher(
+                    rec as Arc<dyn Dispatcher + Send + Sync>,
+                    true,
+                    sample_networks(),
+                );
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                let _ = doc.put(&root, DIAGNOSTICS_KEY, true);
+                pane.sync(&mut doc, &root);
+                assert!(!read_bool(&doc, &root, DIAGNOSTICS_KEY).unwrap_or(true));
+                assert!(pane.diagnostics_request.is_pending());
+                wakes
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .unwrap();
+                pane.sync(&mut doc, &root);
+                (pane.diagnostics.is_some(), pane.connection_notice.clone())
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+            match outcome {
+                (true, _) => {}
+                (false, Some(notice)) => {
+                    assert!(notice.starts_with("Diagnostics unavailable:"), "{notice}");
+                    assert!(!notice.contains("UI thread"), "{notice}");
+                }
+                (false, None) => panic!("diagnostics finished without a report or an error"),
             }
-            (false, None) => panic!("diagnostics finished without a report or an error"),
+        }
+
+        // Case `advanced_vpn_action_opens_the_exact_profile_context`.
+        {
+            use std::sync::Mutex;
+
+            let seen = Arc::new(Mutex::new(Vec::new()));
+            let record = Arc::clone(&seen);
+            let mut pane = NetworkPane::new_demo(sample_networks())
+                .with_vpns(vec![VpnInfo {
+                    name: "Work VPN".into(),
+                    active: false,
+                }])
+                .with_tool_opener(Arc::new(move |intent| {
+                    record.lock().unwrap().push(intent);
+                    Ok(())
+                }));
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, NetworkPane::vpn_studio_key("Work VPN"), true);
+            pane.sync(&mut doc, &root);
+
+            assert_eq!(
+                seen.lock().unwrap().as_slice(),
+                &[ToolIntent::Vpn {
+                    route: VpnRoute::Profile,
+                    profile: Some("Work VPN".into()),
+                }]
+            );
+            assert!(
+                !read_bool(&doc, &root, NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false)
+            );
+        }
+
+        // Case `advanced_editors_seed_networkmanager_values_per_profile`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                Vec::new(),
+            );
+            let wifi = SavedNetworkProfile {
+                name: "Office".into(),
+                uuid: "11111111-1111-1111-1111-111111111111".into(),
+                kind: "802-11-wireless".into(),
+                autoconnect: true,
+            };
+            let lan = SavedNetworkProfile {
+                name: "Dock".into(),
+                uuid: "22222222-2222-2222-2222-222222222222".into(),
+                kind: "802-3-ethernet".into(),
+                autoconnect: true,
+            };
+            pane.profiles = vec![wifi.clone(), lan.clone()];
+            pane.selected_wifi_profile = Some(wifi.uuid.clone());
+            pane.selected_wired_profile = Some(lan.uuid.clone());
+            pane.profile_settings.insert(
+                wifi.uuid.clone(),
+                os_actions::ConnectionProfileSettings {
+                    metered: Some(os_actions::MeteredPolicy::Metered),
+                    mac: Some(os_actions::MacPolicy::Random),
+                    proxy: Some(os_actions::ProxyConfiguration {
+                        automatic_url: Some("https://proxy.example/pac".into()),
+                        browser_only: true,
+                    }),
+                    ipv4: None,
+                },
+            );
+            pane.profile_settings.insert(
+                lan.uuid.clone(),
+                os_actions::ConnectionProfileSettings {
+                    ipv4: Some(IpConfiguration {
+                        automatic: false,
+                        addresses: vec!["192.0.2.44/24".into()],
+                        gateway: Some("192.0.2.1".into()),
+                        dns: vec!["1.1.1.1".into()],
+                    }),
+                    ..Default::default()
+                },
+            );
+            let mut doc = AutoCommit::new();
+            pane.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                read_str_or_text(
+                    &doc,
+                    &automerge::ROOT,
+                    format!("network.profile.metered.{}", wifi.uuid)
+                )
+                .as_deref(),
+                Some("Metered")
+            );
+            assert_eq!(
+                read_str_or_text(
+                    &doc,
+                    &automerge::ROOT,
+                    format!("network.profile.proxy.{}", wifi.uuid)
+                )
+                .as_deref(),
+                Some("https://proxy.example/pac")
+            );
+            assert!(
+                !read_bool(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "automatic"))
+                    .unwrap_or(false)
+            );
+            assert_eq!(
+                read_str_or_text(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "address")).as_deref(),
+                Some("192.0.2.44/24")
+            );
         }
     }
 
@@ -3428,29 +3657,129 @@ mod tests {
         }
     }
 
+    /// Wi-Fi/wired toggles dispatch in order off-thread, revert on failure, and ignore replicated latches.
     #[test]
-    fn wifi_toggle_invokes_set_wifi() {
-        let calls = on_ui_thread(|wakes| {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn radio_toggles_run_off_thread_and_ignore_replicated_values() {
+        // Case `wifi_toggle_invokes_set_wifi`.
+        {
+            let calls = on_ui_thread(|wakes| {
+                let rec = Arc::new(RecordingDispatcher::default());
+                let mut pane = NetworkPane::with_dispatcher(
+                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                    true,
+                    sample_networks(),
+                );
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                // User flips the toggle off.
+                let _ = doc.put(
+                    &root,
+                    WIFI_ENABLED_KEY,
+                    automerge::ScalarValue::Boolean(false),
+                );
+                pane.sync(&mut doc, &root);
+                settle(&mut pane, &mut doc, wakes);
+                rec.calls()
+            });
+            assert_eq!(calls, vec!["set_wifi(false)"]);
+        }
+
+        // Case `wifi_changes_run_off_the_ui_thread_in_order_and_revert_on_failure`.
+        // Switching Wi-Fi never waits on the UI thread: the sync returns while
+        // the switch is still running, changes run in request order, and a
+        // failed one reverts the toggle.
+        {
+            let outcome = on_ui_thread(|wakes| {
+                let (release, gate) = std::sync::mpsc::channel();
+                let dispatcher = Arc::new(GatedWifi {
+                    gate: Mutex::new(gate),
+                    calls: Mutex::new(Vec::new()),
+                });
+                let mut pane = NetworkPane::with_dispatcher(
+                    dispatcher.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                    true,
+                    sample_networks(),
+                );
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
+                pane.sync(&mut doc, &root);
+                let busy_while_running = pane.actions_busy() && !pane.last_wifi_enabled;
+                let _ = doc.put(&root, WIFI_ENABLED_KEY, true);
+                pane.sync(&mut doc, &root);
+                // The first switch succeeds, the second fails.
+                release.send(Ok(())).unwrap();
+                release.send(Err("radio is blocked".into())).unwrap();
+                settle(&mut pane, &mut doc, wakes);
+                (
+                    busy_while_running,
+                    dispatcher.calls.lock().unwrap().clone(),
+                    pane.last_wifi_enabled,
+                    read_bool(&doc, &root, WIFI_ENABLED_KEY),
+                )
+            });
+            let (busy, calls, enabled, key) = outcome;
+            assert!(busy, "the sync returns while the switch is running");
+            assert_eq!(calls, ["set_wifi(false)", "set_wifi(true)"]);
+            assert!(!enabled, "the failed switch back on is reverted");
+            assert_eq!(key, Some(false));
+        }
+
+        // Case `replicated_radio_toggle_is_inert_without_its_local_token`.
+        {
             let rec = Arc::new(RecordingDispatcher::default());
+            let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
+            let commands = ui::LocalState::new(None);
             let mut pane = NetworkPane::with_dispatcher(
                 rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
                 true,
                 sample_networks(),
-            );
+            )
+            .with_command_state(&commands)
+            .with_operation_status(&status);
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
+            let initial_heads = doc.get_heads();
             pane.sync(&mut doc, &root);
-            // User flips the toggle off.
-            let _ = doc.put(
-                &root,
-                WIFI_ENABLED_KEY,
-                automerge::ScalarValue::Boolean(false),
-            );
+            assert_eq!(doc.get_heads(), initial_heads);
+            let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
             pane.sync(&mut doc, &root);
-            settle(&mut pane, &mut doc, wakes);
-            rec.calls()
-        });
-        assert_eq!(calls, vec!["set_wifi(false)"]);
+            assert!(rec.calls().is_empty());
+            assert!(pane.last_wifi_enabled);
+        }
+
+        // Case `wired_toggle_only_dispatches_the_primary_lan_interface`.
+        {
+            let (calls, wifi) = on_ui_thread(|wakes| {
+                let rec = Arc::new(RecordingDispatcher::default());
+                let mut pane = NetworkPane::with_dispatcher(
+                    rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                    true,
+                    sample_networks(),
+                )
+                .with_wired(WiredInfo {
+                    connected: true,
+                    device: Some("enp3s0".into()),
+                    speed: Some("1000 Mb/s".into()),
+                    ipv4: Some("192.0.2.10".into()),
+                });
+                let mut doc = AutoCommit::new();
+                let root = automerge::ROOT;
+                pane.sync(&mut doc, &root);
+                let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
+                pane.sync(&mut doc, &root);
+                settle(&mut pane, &mut doc, wakes);
+                (rec.calls(), pane.last_wifi_enabled)
+            });
+            assert_eq!(calls, vec!["set_wired(false)"]);
+            assert!(wifi, "LAN must not change the Wi-Fi radio");
+        }
     }
 
     /// A dispatcher whose Wi-Fi switch waits for the test and can fail, so
@@ -3489,129 +3818,222 @@ mod tests {
         }
     }
 
-    /// Switching Wi-Fi never waits on the UI thread: the sync returns while
-    /// the switch is still running, changes run in request order, and a
-    /// failed one reverts the toggle.
+    /// Connect, secure prompts, shared passwords, explicit profile sharing, join and collapse.
     #[test]
-    fn wifi_changes_run_off_the_ui_thread_in_order_and_revert_on_failure() {
-        let outcome = on_ui_thread(|wakes| {
-            let (release, gate) = std::sync::mpsc::channel();
-            let dispatcher = Arc::new(GatedWifi {
-                gate: Mutex::new(gate),
-                calls: Mutex::new(Vec::new()),
-            });
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn wifi_connect_prompts_shares_and_joins_explicitly() {
+        // Case `connect_button_invokes_connect_wifi_once`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
             let mut pane = NetworkPane::with_dispatcher(
-                dispatcher.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
                 true,
                 sample_networks(),
             );
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
+            let _ = doc.put(
+                &root,
+                connect_key("Cafe_Guest").as_str(),
+                automerge::ScalarValue::Boolean(true),
+            );
             pane.sync(&mut doc, &root);
-            let busy_while_running = pane.actions_busy() && !pane.last_wifi_enabled;
-            let _ = doc.put(&root, WIFI_ENABLED_KEY, true);
             pane.sync(&mut doc, &root);
-            // The first switch succeeds, the second fails.
-            release.send(Ok(())).unwrap();
-            release.send(Err("radio is blocked".into())).unwrap();
-            settle(&mut pane, &mut doc, wakes);
-            (
-                busy_while_running,
-                dispatcher.calls.lock().unwrap().clone(),
-                pane.last_wifi_enabled,
-                read_bool(&doc, &root, WIFI_ENABLED_KEY),
-            )
-        });
-        let (busy, calls, enabled, key) = outcome;
-        assert!(busy, "the sync returns while the switch is running");
-        assert_eq!(calls, ["set_wifi(false)", "set_wifi(true)"]);
-        assert!(!enabled, "the failed switch back on is reverted");
-        assert_eq!(key, Some(false));
-    }
+            // Connection dispatch deliberately runs off the UI thread. Wait for
+            // the recorder exactly as the password-bearing async path below does;
+            // asserting immediately races the worker and can falsely report that
+            // the visible Connect button did nothing.
+            // A hang guard for the worker thread, not a latency budget.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                if !rec.calls().is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
+        }
 
-    #[test]
-    fn replicated_radio_toggle_is_inert_without_its_local_token() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let status = ui::LocalState::new(crate::actions::LocalOperationStatus::Idle);
-        let commands = ui::LocalState::new(None);
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        )
-        .with_command_state(&commands)
-        .with_operation_status(&status);
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let initial_heads = doc.get_heads();
-        pane.sync(&mut doc, &root);
-        assert_eq!(doc.get_heads(), initial_heads);
-        let _ = doc.put(&root, WIFI_ENABLED_KEY, false);
-        pane.sync(&mut doc, &root);
-        assert!(rec.calls().is_empty());
-        assert!(pane.last_wifi_enabled);
-    }
-
-    #[test]
-    fn wired_toggle_only_dispatches_the_primary_lan_interface() {
-        let (calls, wifi) = on_ui_thread(|wakes| {
+        // Case `connect_on_secure_network_opens_password_prompt`.
+        // Clicking "Connect" on a SECURE network does not connect immediately —
+        // it expands the inline password prompt (mirrored into the document)
+        // and fires no dispatch yet.
+        {
             let rec = Arc::new(RecordingDispatcher::default());
             let mut pane = NetworkPane::with_dispatcher(
                 rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
                 true,
                 sample_networks(),
-            )
-            .with_wired(WiredInfo {
-                connected: true,
-                device: Some("enp3s0".into()),
-                speed: Some("1000 Mb/s".into()),
-                ipv4: Some("192.0.2.10".into()),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Press Connect on the secure "Neighbour_5G".
+            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+            pane.sync(&mut doc, &root);
+            wait_for_password_prompt(&mut pane, &mut doc, &root);
+            assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
+            assert_eq!(
+                read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
+                Some("Neighbour_5G"),
+                "expansion is mirrored into the document so it survives rebuilds"
+            );
+            assert!(rec.calls().is_empty(), "no connect dispatched before Join");
+            assert!(pane.take_structure_dirty(), "expanding requests a rebuild");
+        }
+
+        // Case `secure_connect_uses_shared_password_before_prompting`.
+        {
+            let rec = Arc::new(PwRecorder::default());
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let mut pane = NetworkPane::with_dispatcher(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            pane.wifi_continuity = Arc::new(SharedPasswordClient {
+                commands: Arc::clone(&commands),
             });
             let mut doc = AutoCommit::new();
             let root = automerge::ROOT;
             pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, WIRED_ENABLED_KEY, false);
+            let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
             pane.sync(&mut doc, &root);
-            settle(&mut pane, &mut doc, wakes);
-            (rec.calls(), pane.last_wifi_enabled)
-        });
-        assert_eq!(calls, vec!["set_wired(false)"]);
-        assert!(wifi, "LAN must not change the Wi-Fi radio");
-    }
-
-    #[test]
-    fn connect_button_invokes_connect_wifi_once() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(
-            &root,
-            connect_key("Cafe_Guest").as_str(),
-            automerge::ScalarValue::Boolean(true),
-        );
-        pane.sync(&mut doc, &root);
-        pane.sync(&mut doc, &root);
-        // Connection dispatch deliberately runs off the UI thread. Wait for
-        // the recorder exactly as the password-bearing async path below does;
-        // asserting immediately races the worker and can falsely report that
-        // the visible Connect button did nothing.
-        // A hang guard for the worker thread, not a latency budget.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            if !rec.calls().is_empty() {
-                break;
+            // A hang guard for the worker thread, not a latency budget.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                pane.sync(&mut doc, &root);
+                if !rec.calls.lock().unwrap().is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            assert_eq!(
+                rec.calls.lock().unwrap().as_slice(),
+                ["connect_wifi(Neighbour_5G, pw=shared-secret)"]
+            );
+            assert!(pane.expanded_ssid.is_none());
+            assert!(matches!(
+                commands.lock().unwrap().as_slice(),
+                [ui::collaboration::WifiContinuityCommand::Lookup { ssid, .. }]
+                    if ssid == "Neighbour_5G"
+            ));
         }
-        assert_eq!(rec.calls(), vec!["connect_wifi(Cafe_Guest)"]);
+
+        // Case `saved_wifi_profile_share_is_explicit_and_uses_only_local_handle`.
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let commands = Arc::new(Mutex::new(Vec::new()));
+            let mut pane = NetworkPane::with_dispatcher(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            pane.profiles = vec![SavedNetworkProfile {
+                name: "Studio".into(),
+                uuid: "12345678-1234-1234-1234-123456789abc".into(),
+                kind: "802-11-wireless".into(),
+                autoconnect: true,
+            }];
+            pane.wifi_continuity = Arc::new(SharedPasswordClient {
+                commands: Arc::clone(&commands),
+            });
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+
+            assert!(commands.lock().unwrap().is_empty(), "sharing is opt-in");
+            let _ = doc.put(
+                &root,
+                profile_share_key("12345678-1234-1234-1234-123456789abc"),
+                true,
+            );
+            pane.sync(&mut doc, &root);
+            // A hang guard for the worker thread, not a latency budget.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                pane.sync(&mut doc, &root);
+                if !commands.lock().unwrap().is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert!(matches!(
+                commands.lock().unwrap().as_slice(),
+                [ui::collaboration::WifiContinuityCommand::ShareSavedProfile { profile_uuid }]
+                    if profile_uuid == "12345678-1234-1234-1234-123456789abc"
+            ));
+        }
+
+        // Case `join_connects_with_typed_password`.
+        // Pressing "Join" in the prompt connects WITH the typed password and
+        // collapses the prompt.
+        {
+            let rec = Arc::new(PwRecorder::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            // Open the prompt, type a password, press Join.
+            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+            pane.sync(&mut doc, &root);
+            wait_for_password_prompt(&mut pane, &mut doc, &root);
+            *pane
+                .secret_buffers
+                .get("Neighbour_5G")
+                .unwrap()
+                .lock()
+                .unwrap() = "hunter2".into();
+            let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
+            pane.sync(&mut doc, &root);
+            // A hang guard for the worker thread, not a latency budget.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while std::time::Instant::now() < deadline {
+                if !rec.calls.lock().unwrap().is_empty() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            assert_eq!(
+                rec.calls.lock().unwrap().as_slice(),
+                ["connect_wifi(Neighbour_5G, pw=hunter2)"]
+            );
+            assert_eq!(pane.expanded_ssid, None, "Join collapses the prompt");
+            assert_eq!(
+                read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
+                Some("")
+            );
+        }
+
+        // Case `second_connect_press_collapses_prompt`.
+        // Pressing Connect a second time on the same expanded network collapses
+        // the prompt (it acts as a toggle / Cancel).
+        {
+            let rec = Arc::new(RecordingDispatcher::default());
+            let mut pane = NetworkPane::with_dispatcher(
+                rec as Arc<dyn Dispatcher + Send + Sync>,
+                true,
+                sample_networks(),
+            );
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            pane.sync(&mut doc, &root);
+            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+            pane.sync(&mut doc, &root);
+            wait_for_password_prompt(&mut pane, &mut doc, &root);
+            assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
+            let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
+            pane.sync(&mut doc, &root);
+            assert_eq!(pane.expanded_ssid, None);
+        }
     }
 
     /// Run `body` on a thread marked as the UI thread, inside a bound wake
@@ -3634,109 +4056,6 @@ mod tests {
         .unwrap()
         .join()
         .unwrap()
-    }
-
-    /// Refresh only starts the rescan; the new list arrives through the
-    /// wake and is applied by the next sync.
-    #[test]
-    fn refresh_button_replaces_network_list() {
-        let fresh = vec![WifiNetworkInfo {
-            ssid: "NewSpot".to_string(),
-            signal: 4,
-            secure: false,
-            security: os_actions::WifiSecurity::Open,
-            connected: false,
-        }];
-        let expected = fresh.clone();
-        let (before, pending, after) = on_ui_thread(move |wakes| {
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::with_dispatcher(
-                rec as Arc<dyn Dispatcher + Send + Sync>,
-                true,
-                sample_networks(),
-            );
-            // Swap the lister to a fresh set so we can observe the refresh.
-            pane.lister = Arc::new(move || Ok(fresh.clone()));
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let _ = doc.put(&root, REFRESH_KEY, automerge::ScalarValue::Boolean(true));
-            pane.sync(&mut doc, &root);
-            let before = pane.networks().to_vec();
-            let pending = pane.snapshot_request.is_pending();
-            // Each wake is followed by the sync the host would run.
-            while pane.snapshot_request.is_pending() {
-                wakes
-                    .recv_timeout(std::time::Duration::from_secs(30))
-                    .unwrap();
-                pane.sync(&mut doc, &root);
-            }
-            (before, pending, pane.networks().to_vec())
-        });
-        assert_eq!(
-            before,
-            sample_networks(),
-            "the sync does not wait for the scan"
-        );
-        assert!(pending);
-        assert_eq!(after, expected);
-    }
-
-    /// The production pane is built without querying `NetworkManager`: it
-    /// shows a pending view and acts on no control until the first snapshot
-    /// arrives through the wake.
-    #[test]
-    fn the_first_snapshot_arrives_through_the_wake() {
-        let outcome = on_ui_thread(|wakes| {
-            // The scan waits for the test, so the pending state is observed
-            // deterministically.
-            let (release, gate) = std::sync::mpsc::channel::<()>();
-            let gate = Mutex::new(gate);
-            let rec = Arc::new(RecordingDispatcher::default());
-            let mut pane = NetworkPane::from_parts(
-                rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-                Arc::new(move || {
-                    let _ = gate.lock().unwrap().recv();
-                    Ok(sample_networks())
-                }),
-                Arc::new(Vec::<VpnInfo>::new),
-                Arc::new(EmptyWifiContinuityClient),
-                true,
-                Vec::new(),
-            );
-            pane.begin_initial_load();
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            pane.sync(&mut doc, &root);
-            let loading = !pane.loaded && pane.networks().is_empty();
-            let unseeded = doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_none();
-            // A control flipped before the snapshot is not acted on yet.
-            let _ = doc.put(&root, AIRPLANE_KEY, true);
-            pane.sync(&mut doc, &root);
-            let inert = rec.calls().is_empty();
-            release.send(()).unwrap();
-            while !pane.loaded {
-                wakes
-                    .recv_timeout(std::time::Duration::from_secs(30))
-                    .unwrap();
-                pane.sync(&mut doc, &root);
-            }
-            (
-                loading,
-                unseeded,
-                inert,
-                pane.loaded,
-                pane.networks().to_vec(),
-                doc.get(&root, WIFI_ENABLED_KEY).unwrap().is_some(),
-            )
-        });
-        let (loading, unseeded, inert, loaded, networks, seeded) = outcome;
-        assert!(loading, "construction does not wait for NetworkManager");
-        assert!(unseeded, "controls are not seeded from unread state");
-        assert!(inert, "no control acts before the first snapshot");
-        assert!(loaded);
-        assert_eq!(networks, sample_networks());
-        assert!(seeded, "the first snapshot seeds the controls");
     }
 
     /// A dispatcher that captures the password handed to `connect_wifi`, so
@@ -3771,345 +4090,65 @@ mod tests {
         }
     }
 
-    /// Clicking "Connect" on a SECURE network does not connect immediately —
-    /// it expands the inline password prompt (mirrored into the document)
-    /// and fires no dispatch yet.
+    /// Wired rows, VPN parsing and rows, and their empty states.
     #[test]
-    fn connect_on_secure_network_opens_password_prompt() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Press Connect on the secure "Neighbour_5G".
-        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-        pane.sync(&mut doc, &root);
-        wait_for_password_prompt(&mut pane, &mut doc, &root);
-        assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
-        assert_eq!(
-            read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
-            Some("Neighbour_5G"),
-            "expansion is mirrored into the document so it survives rebuilds"
-        );
-        assert!(rec.calls().is_empty(), "no connect dispatched before Join");
-        assert!(pane.take_structure_dirty(), "expanding requests a rebuild");
-    }
-
-    #[test]
-    fn secure_connect_uses_shared_password_before_prompting() {
-        let rec = Arc::new(PwRecorder::default());
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        pane.wifi_continuity = Arc::new(SharedPasswordClient {
-            commands: Arc::clone(&commands),
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, connect_key("Neighbour_5G"), true);
-        pane.sync(&mut doc, &root);
-        // A hang guard for the worker thread, not a latency budget.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            pane.sync(&mut doc, &root);
-            if !rec.calls.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+    fn wired_and_vpn_rows_reflect_real_profiles() {
+        // Case `wired_rows_reflect_connected_snapshot`.
+        {
+            let pane = NetworkPane::new_demo(sample_networks()).with_wired(WiredInfo {
+                connected: true,
+                device: Some("eth0".into()),
+                speed: Some("100 Mb/s".into()),
+                ipv4: Some("10.0.0.7".into()),
+            });
+            // The Wired card body builds three rows when connected.
+            assert_eq!(pane.wired_rows().len(), 3);
         }
-        assert_eq!(
-            rec.calls.lock().unwrap().as_slice(),
-            ["connect_wifi(Neighbour_5G, pw=shared-secret)"]
-        );
-        assert!(pane.expanded_ssid.is_none());
-        assert!(matches!(
-            commands.lock().unwrap().as_slice(),
-            [ui::collaboration::WifiContinuityCommand::Lookup { ssid, .. }]
-                if ssid == "Neighbour_5G"
-        ));
-    }
 
-    #[test]
-    fn saved_wifi_profile_share_is_explicit_and_uses_only_local_handle() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let commands = Arc::new(Mutex::new(Vec::new()));
-        let mut pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        pane.profiles = vec![SavedNetworkProfile {
-            name: "Studio".into(),
-            uuid: "12345678-1234-1234-1234-123456789abc".into(),
-            kind: "802-11-wireless".into(),
-            autoconnect: true,
-        }];
-        pane.wifi_continuity = Arc::new(SharedPasswordClient {
-            commands: Arc::clone(&commands),
-        });
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-
-        assert!(commands.lock().unwrap().is_empty(), "sharing is opt-in");
-        let _ = doc.put(
-            &root,
-            profile_share_key("12345678-1234-1234-1234-123456789abc"),
-            true,
-        );
-        pane.sync(&mut doc, &root);
-        // A hang guard for the worker thread, not a latency budget.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            pane.sync(&mut doc, &root);
-            if !commands.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
+        // Case `wired_rows_show_not_connected_when_down`.
+        {
+            let pane = NetworkPane::new_demo(sample_networks());
+            // Default WiredInfo is disconnected → status + caption only.
+            assert_eq!(pane.wired_rows().len(), 2);
         }
-        assert!(matches!(
-            commands.lock().unwrap().as_slice(),
-            [ui::collaboration::WifiContinuityCommand::ShareSavedProfile { profile_uuid }]
-                if profile_uuid == "12345678-1234-1234-1234-123456789abc"
-        ));
-    }
 
-    /// Pressing "Join" in the prompt connects WITH the typed password and
-    /// collapses the prompt.
-    #[test]
-    fn join_connects_with_typed_password() {
-        let rec = Arc::new(PwRecorder::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec.clone() as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        // Open the prompt, type a password, press Join.
-        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-        pane.sync(&mut doc, &root);
-        wait_for_password_prompt(&mut pane, &mut doc, &root);
-        *pane
-            .secret_buffers
-            .get("Neighbour_5G")
-            .unwrap()
-            .lock()
-            .unwrap() = "hunter2".into();
-        let _ = doc.put(&root, join_key("Neighbour_5G").as_str(), true);
-        pane.sync(&mut doc, &root);
-        // A hang guard for the worker thread, not a latency budget.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            if !rec.calls.lock().unwrap().is_empty() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        assert_eq!(
-            rec.calls.lock().unwrap().as_slice(),
-            ["connect_wifi(Neighbour_5G, pw=hunter2)"]
-        );
-        assert_eq!(pane.expanded_ssid, None, "Join collapses the prompt");
-        assert_eq!(
-            read_str_or_text(&doc, &root, EXPANDED_KEY).as_deref(),
-            Some("")
-        );
-    }
-
-    /// Pressing Connect a second time on the same expanded network collapses
-    /// the prompt (it acts as a toggle / Cancel).
-    #[test]
-    fn second_connect_press_collapses_prompt() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            sample_networks(),
-        );
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-        pane.sync(&mut doc, &root);
-        wait_for_password_prompt(&mut pane, &mut doc, &root);
-        assert_eq!(pane.expanded_ssid.as_deref(), Some("Neighbour_5G"));
-        let _ = doc.put(&root, connect_key("Neighbour_5G").as_str(), true);
-        pane.sync(&mut doc, &root);
-        assert_eq!(pane.expanded_ssid, None);
-    }
-
-    #[test]
-    fn wired_rows_reflect_connected_snapshot() {
-        let pane = NetworkPane::new_demo(sample_networks()).with_wired(WiredInfo {
-            connected: true,
-            device: Some("eth0".into()),
-            speed: Some("100 Mb/s".into()),
-            ipv4: Some("10.0.0.7".into()),
-        });
-        // The Wired card body builds three rows when connected.
-        assert_eq!(pane.wired_rows().len(), 3);
-    }
-
-    #[test]
-    fn wired_rows_show_not_connected_when_down() {
-        let pane = NetworkPane::new_demo(sample_networks());
-        // Default WiredInfo is disconnected → status + caption only.
-        assert_eq!(pane.wired_rows().len(), 2);
-    }
-
-    #[test]
-    fn parse_vpn_connections_filters_to_vpn_types_and_marks_active() {
-        let all = "Wired connection 1:ethernet\n\
+        // Case `parse_vpn_connections_filters_to_vpn_types_and_marks_active`.
+        {
+            let all = "Wired connection 1:ethernet\n\
                    Work VPN:vpn\n\
                    home-wg:wireguard\n\
                    MyWifi:wifi\n";
-        let active = "Wired connection 1\nhome-wg\n";
-        let vpns = parse_vpn_connections(all, active);
-        assert_eq!(vpns.len(), 2, "only vpn + wireguard rows: {vpns:?}");
-        let work = vpns.iter().find(|v| v.name == "Work VPN").unwrap();
-        let wg = vpns.iter().find(|v| v.name == "home-wg").unwrap();
-        assert!(!work.active, "Work VPN isn't in the active set");
-        assert!(wg.active, "home-wg is up");
-    }
+            let active = "Wired connection 1\nhome-wg\n";
+            let vpns = parse_vpn_connections(all, active);
+            assert_eq!(vpns.len(), 2, "only vpn + wireguard rows: {vpns:?}");
+            let work = vpns.iter().find(|v| v.name == "Work VPN").unwrap();
+            let wg = vpns.iter().find(|v| v.name == "home-wg").unwrap();
+            assert!(!work.active, "Work VPN isn't in the active set");
+            assert!(wg.active, "home-wg is up");
+        }
 
-    #[test]
-    fn vpn_rows_reflect_configured_profiles() {
-        let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
-            VpnInfo {
-                name: "Work VPN".into(),
-                active: true,
-            },
-            VpnInfo {
-                name: "Home WG".into(),
-                active: false,
-            },
-        ]);
-        assert_eq!(pane.vpns().len(), 2);
-        // 2 status rows + 1 caption.
-        assert_eq!(pane.vpn_rows().len(), 3);
-    }
+        // Case `vpn_rows_reflect_configured_profiles`.
+        {
+            let pane = NetworkPane::new_demo(sample_networks()).with_vpns(vec![
+                VpnInfo {
+                    name: "Work VPN".into(),
+                    active: true,
+                },
+                VpnInfo {
+                    name: "Home WG".into(),
+                    active: false,
+                },
+            ]);
+            assert_eq!(pane.vpns().len(), 2);
+            // 2 status rows + 1 caption.
+            assert_eq!(pane.vpn_rows().len(), 3);
+        }
 
-    #[test]
-    fn vpn_rows_show_empty_state_when_none() {
-        let pane = NetworkPane::new_demo(sample_networks());
-        // Empty-state explanation plus the single Studio handoff.
-        assert_eq!(pane.vpn_rows().len(), 2);
-    }
-
-    #[test]
-    fn advanced_vpn_action_opens_the_exact_profile_context() {
-        use std::sync::Mutex;
-
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let record = Arc::clone(&seen);
-        let mut pane = NetworkPane::new_demo(sample_networks())
-            .with_vpns(vec![VpnInfo {
-                name: "Work VPN".into(),
-                active: false,
-            }])
-            .with_tool_opener(Arc::new(move |intent| {
-                record.lock().unwrap().push(intent);
-                Ok(())
-            }));
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        pane.sync(&mut doc, &root);
-        let _ = doc.put(&root, NetworkPane::vpn_studio_key("Work VPN"), true);
-        pane.sync(&mut doc, &root);
-
-        assert_eq!(
-            seen.lock().unwrap().as_slice(),
-            &[ToolIntent::Vpn {
-                route: VpnRoute::Profile,
-                profile: Some("Work VPN".into()),
-            }]
-        );
-        assert!(!read_bool(&doc, &root, NetworkPane::vpn_studio_key("Work VPN")).unwrap_or(false));
-    }
-
-    #[test]
-    fn advanced_editors_seed_networkmanager_values_per_profile() {
-        let rec = Arc::new(RecordingDispatcher::default());
-        let mut pane = NetworkPane::with_dispatcher(
-            rec as Arc<dyn Dispatcher + Send + Sync>,
-            true,
-            Vec::new(),
-        );
-        let wifi = SavedNetworkProfile {
-            name: "Office".into(),
-            uuid: "11111111-1111-1111-1111-111111111111".into(),
-            kind: "802-11-wireless".into(),
-            autoconnect: true,
-        };
-        let lan = SavedNetworkProfile {
-            name: "Dock".into(),
-            uuid: "22222222-2222-2222-2222-222222222222".into(),
-            kind: "802-3-ethernet".into(),
-            autoconnect: true,
-        };
-        pane.profiles = vec![wifi.clone(), lan.clone()];
-        pane.selected_wifi_profile = Some(wifi.uuid.clone());
-        pane.selected_wired_profile = Some(lan.uuid.clone());
-        pane.profile_settings.insert(
-            wifi.uuid.clone(),
-            os_actions::ConnectionProfileSettings {
-                metered: Some(os_actions::MeteredPolicy::Metered),
-                mac: Some(os_actions::MacPolicy::Random),
-                proxy: Some(os_actions::ProxyConfiguration {
-                    automatic_url: Some("https://proxy.example/pac".into()),
-                    browser_only: true,
-                }),
-                ipv4: None,
-            },
-        );
-        pane.profile_settings.insert(
-            lan.uuid.clone(),
-            os_actions::ConnectionProfileSettings {
-                ipv4: Some(IpConfiguration {
-                    automatic: false,
-                    addresses: vec!["192.0.2.44/24".into()],
-                    gateway: Some("192.0.2.1".into()),
-                    dns: vec!["1.1.1.1".into()],
-                }),
-                ..Default::default()
-            },
-        );
-        let mut doc = AutoCommit::new();
-        pane.sync(&mut doc, &automerge::ROOT);
-        assert_eq!(
-            read_str_or_text(
-                &doc,
-                &automerge::ROOT,
-                format!("network.profile.metered.{}", wifi.uuid)
-            )
-            .as_deref(),
-            Some("Metered")
-        );
-        assert_eq!(
-            read_str_or_text(
-                &doc,
-                &automerge::ROOT,
-                format!("network.profile.proxy.{}", wifi.uuid)
-            )
-            .as_deref(),
-            Some("https://proxy.example/pac")
-        );
-        assert!(
-            !read_bool(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "automatic")).unwrap_or(false)
-        );
-        assert_eq!(
-            read_str_or_text(&doc, &automerge::ROOT, ipv4_key(&lan.uuid, "address")).as_deref(),
-            Some("192.0.2.44/24")
-        );
+        // Case `vpn_rows_show_empty_state_when_none`.
+        {
+            let pane = NetworkPane::new_demo(sample_networks());
+            // Empty-state explanation plus the single Studio handoff.
+            assert_eq!(pane.vpn_rows().len(), 2);
+        }
     }
 }

@@ -68,7 +68,12 @@ impl Cli {
                     name: slot,
                     slot_flag,
                     ..
-                },
+                }
+                | SlotCommand::Apps(SlotAppsCommand::Install {
+                    name: slot,
+                    slot_flag,
+                    ..
+                }),
             ),
         ) = &mut self.command
         {
@@ -302,7 +307,10 @@ pub fn writes_receipt(command: Option<&Command>) -> bool {
                     VmCommand::List | VmCommand::Status { .. } | VmCommand::Ssh { raw: false, .. }
                 )
                 | Command::Slot(
-                    SlotCommand::List | SlotCommand::Show { .. } | SlotCommand::Exec { .. }
+                    SlotCommand::List
+                        | SlotCommand::Show { .. }
+                        | SlotCommand::Exec { .. }
+                        | SlotCommand::Apps(SlotAppsCommand::List)
                 )
                 | Command::Scenario(ScenarioCommand::Install(InstallScenarioArgs {
                     dry_run: true,
@@ -811,6 +819,9 @@ pub enum SlotCommand {
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
     },
+    /// Third-party apps for checking desktop features: X11 apps, GTK, dialogs, tray, MIME handlers.
+    #[command(subcommand)]
+    Apps(SlotAppsCommand),
     /// Remove a slot: its session, user and generations (layers stay until gc).
     #[command(
         after_help = "Examples:\n  tilo-vm slot rm review-a\n  tilo-vm slot rm --slot review-a"
@@ -821,6 +832,30 @@ pub enum SlotCommand {
         /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
         #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
         slot_flag: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SlotAppsCommand {
+    /// List the app sets and what each app checks.
+    #[command(after_help = "Examples:\n  tilo-vm slot apps list\n  tilo-vm slot apps list --json")]
+    List,
+    /// Install an app set with the VM's package manager, then restart the slot's session so it sees it.
+    #[command(
+        after_help = "Examples:\n  tilo-vm slot apps install --set verification\n  tilo-vm slot apps install --set verification --slot review-a\n\nThe packages come from the distribution, not from Tilo: tilo-vmd runs the\nVM's own install line (dnf install --transient on the dev image), so they\nland in a transient overlay on /usr that the next VM reboot discards; run\nthis again after a reboot. No image ever carries them. The VM needs network\naccess to the distribution's mirrors. Every slot on the VM can use them\nafter its session restarts; this command restarts the slot's session.\n\nThe sets and their apps are listed by tilo-vm slot apps list (the data is\ncrates/dev/tilo-vm/data/app-sets.toml)."
+    )]
+    Install {
+        /// The slot whose session restarts to see the apps (default: your slot).
+        name: Option<String>,
+        /// The slot, as a flag (same as the positional; every slot command takes `--slot`).
+        #[arg(long = "slot", value_name = "SLOT", conflicts_with = "name")]
+        slot_flag: Option<String>,
+        /// The app set to install (tilo-vm slot apps list).
+        #[arg(long, value_name = "SET")]
+        set: String,
+        /// Seconds before the install is stopped.
+        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        timeout: u64,
     },
 }
 
@@ -891,357 +926,404 @@ mod tests {
         assert!(error.contains("outside 0.5 to 4"), "{error}");
     }
 
+    /// Every slot command takes the slot flag, every argument says what it is, ages read like durations,
+    /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
     #[test]
-    fn every_slot_command_takes_the_slot_flag() {
-        for args in [
-            &["tilo-vm", "rollback", "--slot", "a"][..],
-            &["tilo-vm", "logs", "--slot", "a"],
-            &["tilo-vm", "shot", "--slot", "a"],
-            &["tilo-vm", "seat", "claim", "--slot", "a"],
-            &["tilo-vm", "seat", "release", "--slot", "a"],
-            &["tilo-vm", "slot", "create", "--slot", "a"],
-            &["tilo-vm", "slot", "restart", "--slot", "a"],
-            &["tilo-vm", "slot", "rm", "--slot", "a"],
-            &["tilo-vm", "slot", "show", "--slot", "a"],
-            &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
-            &["tilo-vm", "slot", "show", "a"],
-        ] {
-            let cli = Cli::try_parse_from(args).unwrap().normalized();
-            let slot = match cli.command {
-                Some(
-                    Command::Rollback { slot, .. }
-                    | Command::Logs { slot, .. }
-                    | Command::Shot { slot, .. }
-                    | Command::Seat(
-                        SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
-                    )
-                    | Command::Slot(
-                        SlotCommand::Create { name: slot, .. }
-                        | SlotCommand::Restart { name: slot, .. }
-                        | SlotCommand::Rm { name: slot, .. }
-                        | SlotCommand::Show { name: slot, .. }
-                        | SlotCommand::Exec { name: slot, .. },
-                    ),
-                ) => slot,
-                other => panic!("{other:?}"),
-            };
-            assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
-        }
-        assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
-        assert!(Cli::try_parse_from(["tilo-vm", "slot", "rm", "a", "--slot", "b"]).is_err());
-        for args in [
-            &["tilo-vm", "swap", "--slot", "a", "shell"][..],
-            &["tilo-vm", "input", "--slot", "a", "key", "super"],
-            &["tilo-vm", "control", "--slot", "a", "actions", "list"],
-            &["tilo-vm", "status", "--slot", "a"],
-        ] {
-            Cli::try_parse_from(args).unwrap();
-        }
-    }
-
-    #[test]
-    fn every_argument_says_what_it_is() {
-        fn walk(command: &clap::Command, path: &str) {
-            for arg in command.get_arguments() {
-                let id = arg.get_id().as_str();
-                if ["help", "version"].contains(&id) || arg.is_hide_set() {
-                    continue;
-                }
-                assert!(
-                    arg.get_help().is_some() || arg.get_long_help().is_some(),
-                    "{path}: argument {id} has no description"
-                );
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn every_command_documents_its_arguments_purpose_and_receipts() {
+        // Phase: every_slot_command_takes_the_slot_flag.
+        {
+            for args in [
+                &["tilo-vm", "rollback", "--slot", "a"][..],
+                &["tilo-vm", "logs", "--slot", "a"],
+                &["tilo-vm", "shot", "--slot", "a"],
+                &["tilo-vm", "seat", "claim", "--slot", "a"],
+                &["tilo-vm", "seat", "release", "--slot", "a"],
+                &["tilo-vm", "slot", "create", "--slot", "a"],
+                &["tilo-vm", "slot", "restart", "--slot", "a"],
+                &["tilo-vm", "slot", "rm", "--slot", "a"],
+                &["tilo-vm", "slot", "show", "--slot", "a"],
+                &["tilo-vm", "slot", "exec", "--slot", "a", "--", "true"],
+                &[
+                    "tilo-vm", "slot", "apps", "install", "--set", "v", "--slot", "a",
+                ],
+                &["tilo-vm", "slot", "show", "a"],
+            ] {
+                let cli = Cli::try_parse_from(args).unwrap().normalized();
+                let slot = match cli.command {
+                    Some(
+                        Command::Rollback { slot, .. }
+                        | Command::Logs { slot, .. }
+                        | Command::Shot { slot, .. }
+                        | Command::Seat(
+                            SeatCommand::Claim { slot, .. } | SeatCommand::Release { slot, .. },
+                        )
+                        | Command::Slot(
+                            SlotCommand::Create { name: slot, .. }
+                            | SlotCommand::Restart { name: slot, .. }
+                            | SlotCommand::Rm { name: slot, .. }
+                            | SlotCommand::Show { name: slot, .. }
+                            | SlotCommand::Exec { name: slot, .. }
+                            | SlotCommand::Apps(SlotAppsCommand::Install { name: slot, .. }),
+                        ),
+                    ) => slot,
+                    other => panic!("{other:?}"),
+                };
+                assert_eq!(slot.as_deref(), Some("a"), "{args:?}");
             }
-            for sub in command.get_subcommands() {
-                walk(sub, &format!("{path} {}", sub.get_name()));
+            assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--slot", "b"]).is_err());
+            assert!(Cli::try_parse_from(["tilo-vm", "slot", "rm", "a", "--slot", "b"]).is_err());
+            for args in [
+                &["tilo-vm", "swap", "--slot", "a", "shell"][..],
+                &["tilo-vm", "input", "--slot", "a", "key", "super"],
+                &["tilo-vm", "control", "--slot", "a", "actions", "list"],
+                &["tilo-vm", "status", "--slot", "a"],
+            ] {
+                Cli::try_parse_from(args).unwrap();
             }
         }
-        walk(&Cli::command(), "tilo-vm");
-    }
 
-    #[test]
-    fn ages_read_like_durations() {
-        assert_eq!(parse_age("0"), Ok(0));
-        assert_eq!(parse_age("90s"), Ok(90));
-        assert_eq!(parse_age("30m"), Ok(1800));
-        assert_eq!(parse_age("1h"), Ok(3600));
-        assert_eq!(parse_age("2d"), Ok(172_800));
-        assert!(parse_age("1w").is_err());
-        assert!(parse_age("soon").is_err());
-        let cli = Cli::try_parse_from(["tilo-vm", "gc", "--min-age", "0"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Gc {
-                min_age: Some(0),
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn every_subcommand_has_a_purpose_and_examples() {
-        fn walk(command: &clap::Command, path: &str) {
-            for sub in command.get_subcommands() {
-                let name = format!("{path} {}", sub.get_name());
-                assert!(sub.get_about().is_some(), "{name} has no one-line purpose");
-                if sub.get_subcommands().next().is_none() {
-                    let help = sub
-                        .get_after_help()
-                        .map(ToString::to_string)
-                        .unwrap_or_default();
+        // Phase: every_argument_says_what_it_is.
+        {
+            fn walk(command: &clap::Command, path: &str) {
+                for arg in command.get_arguments() {
+                    let id = arg.get_id().as_str();
+                    if ["help", "version"].contains(&id) || arg.is_hide_set() {
+                        continue;
+                    }
                     assert!(
-                        help.contains("Examples:\n  tilo-vm"),
-                        "{name} has no examples"
+                        arg.get_help().is_some() || arg.get_long_help().is_some(),
+                        "{path}: argument {id} has no description"
                     );
                 }
-                walk(sub, &name);
+                for sub in command.get_subcommands() {
+                    walk(sub, &format!("{path} {}", sub.get_name()));
+                }
+            }
+            walk(&Cli::command(), "tilo-vm");
+        }
+
+        // Phase: ages_read_like_durations.
+        {
+            assert_eq!(parse_age("0"), Ok(0));
+            assert_eq!(parse_age("90s"), Ok(90));
+            assert_eq!(parse_age("30m"), Ok(1800));
+            assert_eq!(parse_age("1h"), Ok(3600));
+            assert_eq!(parse_age("2d"), Ok(172_800));
+            assert!(parse_age("1w").is_err());
+            assert!(parse_age("soon").is_err());
+            let cli = Cli::try_parse_from(["tilo-vm", "gc", "--min-age", "0"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Gc {
+                    min_age: Some(0),
+                    ..
+                })
+            ));
+        }
+
+        // Phase: every_subcommand_has_a_purpose_and_examples.
+        {
+            fn walk(command: &clap::Command, path: &str) {
+                for sub in command.get_subcommands() {
+                    let name = format!("{path} {}", sub.get_name());
+                    assert!(sub.get_about().is_some(), "{name} has no one-line purpose");
+                    if sub.get_subcommands().next().is_none() {
+                        let help = sub
+                            .get_after_help()
+                            .map(ToString::to_string)
+                            .unwrap_or_default();
+                        assert!(
+                            help.contains("Examples:\n  tilo-vm"),
+                            "{name} has no examples"
+                        );
+                    }
+                    walk(sub, &name);
+                }
+            }
+            Cli::command().debug_assert();
+            walk(&Cli::command(), "tilo-vm");
+        }
+
+        // Phase: only_state_changing_or_long_commands_write_receipts.
+        {
+            let parse = |args: &[&str]| {
+                let mut all = vec!["tilo-vm"];
+                all.extend_from_slice(args);
+                Cli::try_parse_from(all).unwrap().command
+            };
+            for quiet in [
+                &[][..],
+                &["status"],
+                &["doctor"],
+                &["guide", "quickstart"],
+                &["vm", "list"],
+                &["vm", "status"],
+                &["slot", "list"],
+                &["slot", "show"],
+                &["slot", "exec", "--", "true"],
+                &["logs"],
+                &["vm", "ssh"],
+                &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
+                &["scenario", "install", "--dry-run"],
+            ] {
+                assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
+            }
+            // --raw is the one vm ssh that changes the VM behind tilo-vm.
+            assert!(writes_receipt(
+                parse(&["vm", "ssh", "--raw", "--", "podman", "login"]).as_ref()
+            ));
+            for loud in [
+                &["swap", "shell"][..],
+                &["vm", "create", "dev"],
+                &["vm", "start"],
+                &["slot", "create"],
+                &["rollback"],
+                &["gc"],
+                &["seat", "claim"],
+                &["shot"],
+                &["vm", "restart"],
+                &["scenario", "install"],
+            ] {
+                assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
             }
         }
-        Cli::command().debug_assert();
-        walk(&Cli::command(), "tilo-vm");
     }
 
+    /// Swap usage shows the slot as an option and swap takes an optional slot; the install scenario takes
+    /// a medium, a layout and an unlock; upgrade takes one source and base options only with local; vm ssh
+    /// takes the VM like every other VM command.
     #[test]
-    fn swap_usage_shows_the_slot_as_an_option() {
-        let mut command = Cli::command();
-        let swap = command.find_subcommand_mut("swap").unwrap();
-        let usage = swap.render_usage().to_string();
-        assert!(usage.contains("[OPTIONS] <COMPONENT>"), "{usage}");
-        assert!(!usage.contains("<SLOT>"), "{usage}");
-        let help = swap.render_long_help().to_string();
-        assert!(help.contains("--slot <SLOT>"), "{help}");
-        assert!(
-            help.contains("--profile dev compiles much faster"),
-            "{help}"
-        );
-        assert!(help.contains("dev-overrides"), "{help}");
-    }
-
-    #[test]
-    fn only_state_changing_or_long_commands_write_receipts() {
-        let parse = |args: &[&str]| {
-            let mut all = vec!["tilo-vm"];
-            all.extend_from_slice(args);
-            Cli::try_parse_from(all).unwrap().command
-        };
-        for quiet in [
-            &[][..],
-            &["status"],
-            &["doctor"],
-            &["guide", "quickstart"],
-            &["vm", "list"],
-            &["vm", "status"],
-            &["slot", "list"],
-            &["slot", "show"],
-            &["slot", "exec", "--", "true"],
-            &["logs"],
-            &["vm", "ssh"],
-            &["vm", "ssh", "--", "systemctl", "status", "tilo-vmd"],
-            &["scenario", "install", "--dry-run"],
-        ] {
-            assert!(!writes_receipt(parse(quiet).as_ref()), "{quiet:?}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+    )]
+    fn command_shapes_take_exactly_their_documented_options() {
+        // Phase: swap_usage_shows_the_slot_as_an_option.
+        {
+            let mut command = Cli::command();
+            let swap = command.find_subcommand_mut("swap").unwrap();
+            let usage = swap.render_usage().to_string();
+            assert!(usage.contains("[OPTIONS] <COMPONENT>"), "{usage}");
+            assert!(!usage.contains("<SLOT>"), "{usage}");
+            let help = swap.render_long_help().to_string();
+            assert!(help.contains("--slot <SLOT>"), "{help}");
+            assert!(
+                help.contains("--profile dev compiles much faster"),
+                "{help}"
+            );
+            assert!(help.contains("dev-overrides"), "{help}");
         }
-        // --raw is the one vm ssh that changes the VM behind tilo-vm.
-        assert!(writes_receipt(
-            parse(&["vm", "ssh", "--raw", "--", "podman", "login"]).as_ref()
-        ));
-        for loud in [
-            &["swap", "shell"][..],
-            &["vm", "create", "dev"],
-            &["vm", "start"],
-            &["slot", "create"],
-            &["rollback"],
-            &["gc"],
-            &["seat", "claim"],
-            &["shot"],
-            &["vm", "restart"],
-            &["scenario", "install"],
-        ] {
-            assert!(writes_receipt(parse(loud).as_ref()), "{loud:?}");
+
+        // Phase: swap_takes_an_optional_slot.
+        {
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "shell")
+            );
+            let cli = Cli::try_parse_from([
+                "tilo-vm", "--json", "swap", "--slot", "vm", "fs", "--from", "layer:ab",
+            ])
+            .unwrap();
+            assert!(cli.json);
+            assert!(
+                matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "swap", "shell", "--profile", "dev"]).unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Swap { profile: Some(ref p), .. }) if p == "dev")
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--cmdline", "ro"]).is_err());
+            let cli = Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--direct", "--jobs", "4"])
+                .unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Swap {
+                    direct: true,
+                    jobs: Some(4),
+                    ..
+                })
+            ));
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "swap", "app:notes", "--builder", "host"]).unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Swap {
+                    builder: Some(Builder::Host),
+                    ..
+                })
+            ));
+            let cli = Cli::try_parse_from([
+                "tilo-vm", "input", "--slot", "b", "click", "right", "--at", "4", "5",
+            ])
+            .unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Input { action: InputCommand::Click { ref button, at: Some(ref at) }, .. }) if button == "right" && at == &[4, 5]
+            ));
+            assert!(Cli::try_parse_from(["tilo-vm", "input", "key"]).is_err());
+            let cli = Cli::try_parse_from(["tilo-vm", "control", "click", "--x", "1"]).unwrap();
+            assert!(
+                matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
+            );
+            assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
         }
-    }
 
-    #[test]
-    fn swap_takes_an_optional_slot() {
-        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell"]).unwrap();
-        assert!(
-            matches!(cli.command, Some(Command::Swap { ref component, slot: None, .. }) if component == "shell")
-        );
-        let cli = Cli::try_parse_from([
-            "tilo-vm", "--json", "swap", "--slot", "vm", "fs", "--from", "layer:ab",
-        ])
-        .unwrap();
-        assert!(cli.json);
-        assert!(
-            matches!(cli.command, Some(Command::Swap { ref component, slot: Some(ref slot), ref from, builder: None, profile: None, direct: false, jobs: None, cmdline: None }) if component == "fs" && slot == "vm" && from == "layer:ab")
-        );
-        assert!(Cli::try_parse_from(["tilo-vm", "swap", "vm", "fs"]).is_err());
-        let cli = Cli::try_parse_from(["tilo-vm", "swap", "shell", "--profile", "dev"]).unwrap();
-        assert!(
-            matches!(cli.command, Some(Command::Swap { profile: Some(ref p), .. }) if p == "dev")
-        );
-        assert!(Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--cmdline", "ro"]).is_err());
-        let cli =
-            Cli::try_parse_from(["tilo-vm", "swap", "kernel", "--direct", "--jobs", "4"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Swap {
-                direct: true,
-                jobs: Some(4),
-                ..
-            })
-        ));
-        let cli =
-            Cli::try_parse_from(["tilo-vm", "swap", "app:notes", "--builder", "host"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Swap {
-                builder: Some(Builder::Host),
-                ..
-            })
-        ));
-        let cli = Cli::try_parse_from([
-            "tilo-vm", "input", "--slot", "b", "click", "right", "--at", "4", "5",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Input { action: InputCommand::Click { ref button, at: Some(ref at) }, .. }) if button == "right" && at == &[4, 5]
-        ));
-        assert!(Cli::try_parse_from(["tilo-vm", "input", "key"]).is_err());
-        let cli = Cli::try_parse_from(["tilo-vm", "control", "click", "--x", "1"]).unwrap();
-        assert!(
-            matches!(cli.command, Some(Command::Control { ref args, .. }) if args == &["click", "--x", "1"])
-        );
-        assert!(Cli::try_parse_from(["tilo-vm"]).unwrap().command.is_none());
-    }
-
-    #[test]
-    fn the_install_scenario_takes_a_medium_a_layout_and_an_unlock() {
-        let cli = Cli::try_parse_from([
-            "tilo-vm",
-            "scenario",
-            "install",
-            "--medium",
-            "/m/installer.qcow2",
-            "--layout",
-            "guided-alongside",
-            "--encrypt",
-            "tpm-pin",
-            "--graphics",
-            "software",
-            "--skip-target-boot",
-        ])
-        .unwrap();
-        let Some(Command::Scenario(ScenarioCommand::Install(args))) = cli.command else {
-            panic!("not the install scenario");
-        };
-        assert_eq!(
-            args.medium.as_deref(),
-            Some(std::path::Path::new("/m/installer.qcow2"))
-        );
-        assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
-        assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
-        assert_eq!(args.graphics, crate::scenario::Graphics::Software);
-        assert!(args.skip_target_boot);
-        assert_eq!(args.install_timeout, 3600);
-        let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
-        let Some(Command::Scenario(ScenarioCommand::Install(args))) = defaults.command else {
-            panic!("not the install scenario");
-        };
-        assert_eq!(args.layout, crate::scenario::Layout::Erase);
-        assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
-        assert!(!args.skip_target_boot);
-        assert!(
-            Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"]).is_err()
-        );
-        let retained = Cli::try_parse_from([
-            "tilo-vm",
-            "scenario",
-            "install",
-            "--username",
-            "bob",
-            "--credentials-stdin",
-        ])
-        .unwrap();
-        let Some(Command::Scenario(ScenarioCommand::Install(args))) = retained.command else {
-            panic!("not the install scenario");
-        };
-        assert_eq!(args.username.as_deref(), Some("bob"));
-        assert!(args.credentials_stdin);
-        for invalid in [
-            vec!["tilo-vm", "scenario", "install", "--username", "bob"],
-            vec!["tilo-vm", "scenario", "install", "--credentials-stdin"],
-            vec![
+        // Phase: the_install_scenario_takes_a_medium_a_layout_and_an_unlock.
+        {
+            let cli = Cli::try_parse_from([
+                "tilo-vm",
+                "scenario",
+                "install",
+                "--medium",
+                "/m/installer.qcow2",
+                "--layout",
+                "guided-alongside",
+                "--encrypt",
+                "tpm-pin",
+                "--graphics",
+                "software",
+                "--skip-target-boot",
+            ])
+            .unwrap();
+            let Some(Command::Scenario(ScenarioCommand::Install(args))) = cli.command else {
+                panic!("not the install scenario");
+            };
+            assert_eq!(
+                args.medium.as_deref(),
+                Some(std::path::Path::new("/m/installer.qcow2"))
+            );
+            assert_eq!(args.layout, crate::scenario::Layout::GuidedAlongside);
+            assert_eq!(args.encrypt, crate::scenario::Unlock::TpmPin);
+            assert_eq!(args.graphics, crate::scenario::Graphics::Software);
+            assert!(args.skip_target_boot);
+            assert_eq!(args.install_timeout, 3600);
+            let defaults = Cli::try_parse_from(["tilo-vm", "scenario", "install"]).unwrap();
+            let Some(Command::Scenario(ScenarioCommand::Install(args))) = defaults.command else {
+                panic!("not the install scenario");
+            };
+            assert_eq!(args.layout, crate::scenario::Layout::Erase);
+            assert_eq!(args.encrypt, crate::scenario::Unlock::Passphrase);
+            assert!(!args.skip_target_boot);
+            assert!(
+                Cli::try_parse_from(["tilo-vm", "scenario", "install", "--layout", "shrink"])
+                    .is_err()
+            );
+            let retained = Cli::try_parse_from([
                 "tilo-vm",
                 "scenario",
                 "install",
                 "--username",
                 "bob",
                 "--credentials-stdin",
-                "--dry-run",
-            ],
-        ] {
-            assert!(Cli::try_parse_from(invalid).is_err());
-        }
-    }
-
-    #[test]
-    fn upgrade_takes_one_source_and_base_options_only_with_local() {
-        let cli = Cli::try_parse_from([
-            "tilo-vm",
-            "vm",
-            "upgrade",
-            "--from",
-            "local",
-            "--rebuild-base",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Vm(VmCommand::Upgrade(UpgradeArgs { ref from, rebuild_base: true, no_reboot: false, .. }))) if from.as_deref() == Some("local")
-        ));
-        assert!(
-            Cli::try_parse_from([
-                "tilo-vm", "vm", "upgrade", "--from", "local", "--image", "x"
             ])
-            .is_err()
-        );
-        assert!(Cli::try_parse_from(["tilo-vm", "vm", "upgrade", "--rebuild-base"]).is_err());
-        assert!(
-            Cli::try_parse_from([
+            .unwrap();
+            let Some(Command::Scenario(ScenarioCommand::Install(args))) = retained.command else {
+                panic!("not the install scenario");
+            };
+            assert_eq!(args.username.as_deref(), Some("bob"));
+            assert!(args.credentials_stdin);
+            for invalid in [
+                vec!["tilo-vm", "scenario", "install", "--username", "bob"],
+                vec!["tilo-vm", "scenario", "install", "--credentials-stdin"],
+                vec![
+                    "tilo-vm",
+                    "scenario",
+                    "install",
+                    "--username",
+                    "bob",
+                    "--credentials-stdin",
+                    "--dry-run",
+                ],
+            ] {
+                assert!(Cli::try_parse_from(invalid).is_err());
+            }
+        }
+
+        // Phase: upgrade_takes_one_source_and_base_options_only_with_local.
+        {
+            let cli = Cli::try_parse_from([
                 "tilo-vm",
                 "vm",
                 "upgrade",
                 "--from",
                 "local",
-                "--base",
-                "b",
-                "--rebuild-base"
+                "--rebuild-base",
             ])
-            .is_err()
-        );
-        let cli =
-            Cli::try_parse_from(["tilo-vm", "vm", "rollback-image", "dev", "--no-reboot"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Vm(VmCommand::RollbackImage { ref name, no_reboot: true })) if name.as_deref() == Some("dev")
-        ));
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("vm")
-            .and_then(|vm| vm.find_subcommand_mut("upgrade"))
-            .unwrap()
-            .render_long_help()
-            .to_string();
-        assert!(help.contains("tilo-vm guide images"), "{help}");
-        assert!(help.contains("--from sha:1a2b3c4"), "{help}");
-        let cli =
-            Cli::try_parse_from(["tilo-vm", "vm", "upgrade", "--from", "ci:main-1a2b3c4"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Some(Command::Vm(VmCommand::Upgrade(UpgradeArgs { ref from, .. }))) if from.as_deref() == Some("ci:main-1a2b3c4")
-        ));
+            .unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Vm(VmCommand::Upgrade(UpgradeArgs { ref from, rebuild_base: true, no_reboot: false, .. }))) if from.as_deref() == Some("local")
+            ));
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-vm", "vm", "upgrade", "--from", "local", "--image", "x"
+                ])
+                .is_err()
+            );
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "upgrade", "--rebuild-base"]).is_err());
+            assert!(
+                Cli::try_parse_from([
+                    "tilo-vm",
+                    "vm",
+                    "upgrade",
+                    "--from",
+                    "local",
+                    "--base",
+                    "b",
+                    "--rebuild-base"
+                ])
+                .is_err()
+            );
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "rollback-image", "dev", "--no-reboot"])
+                    .unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Vm(VmCommand::RollbackImage { ref name, no_reboot: true })) if name.as_deref() == Some("dev")
+            ));
+            let mut command = Cli::command();
+            let help = command
+                .find_subcommand_mut("vm")
+                .and_then(|vm| vm.find_subcommand_mut("upgrade"))
+                .unwrap()
+                .render_long_help()
+                .to_string();
+            assert!(help.contains("tilo-vm guide images"), "{help}");
+            assert!(help.contains("--from sha:1a2b3c4"), "{help}");
+            let cli =
+                Cli::try_parse_from(["tilo-vm", "vm", "upgrade", "--from", "ci:main-1a2b3c4"])
+                    .unwrap();
+            assert!(matches!(
+                cli.command,
+                Some(Command::Vm(VmCommand::Upgrade(UpgradeArgs { ref from, .. }))) if from.as_deref() == Some("ci:main-1a2b3c4")
+            ));
+        }
+
+        // Phase: vm_ssh_takes_the_vm_like_every_other_vm_command.
+        {
+            let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+            assert_eq!(
+                vm_ssh(&["probe", "--", "true"]),
+                (Some("probe".into()), None, words(&["true"]))
+            );
+            assert_eq!(
+                vm_ssh(&["--", "journalctl", "-b"]),
+                (None, None, words(&["journalctl", "-b"]))
+            );
+            assert_eq!(vm_ssh(&[]), (None, None, vec![]));
+            assert_eq!(
+                vm_ssh(&["--vm", "ci", "--", "true"]),
+                (None, Some("ci".into()), words(&["true"]))
+            );
+            // A command needs `--`, so a VM name is never run as one.
+            assert!(Cli::try_parse_from(["tilo-vm", "vm", "ssh", "probe", "true"]).is_err());
+        }
     }
 
     fn vm_ssh(words: &[&str]) -> (Option<String>, Option<String>, Vec<String>) {
@@ -1253,25 +1335,5 @@ mod tests {
             })) => (name, vm, command),
             other => panic!("{other:?}"),
         }
-    }
-
-    #[test]
-    fn vm_ssh_takes_the_vm_like_every_other_vm_command() {
-        let words = |w: &[&str]| w.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-        assert_eq!(
-            vm_ssh(&["probe", "--", "true"]),
-            (Some("probe".into()), None, words(&["true"]))
-        );
-        assert_eq!(
-            vm_ssh(&["--", "journalctl", "-b"]),
-            (None, None, words(&["journalctl", "-b"]))
-        );
-        assert_eq!(vm_ssh(&[]), (None, None, vec![]));
-        assert_eq!(
-            vm_ssh(&["--vm", "ci", "--", "true"]),
-            (None, Some("ci".into()), words(&["true"]))
-        );
-        // A command needs `--`, so a VM name is never run as one.
-        assert!(Cli::try_parse_from(["tilo-vm", "vm", "ssh", "probe", "true"]).is_err());
     }
 }

@@ -307,93 +307,101 @@ fn draw_button(
 mod tests {
     use super::*;
 
+    /// Scaled zoom labels fit their measured hit targets and scaled targets keep out/reset/in behaviour.
     #[test]
-    fn scaled_zoom_labels_fit_their_measured_hit_targets() {
-        for scale in [1.0, 2.0] {
-            for factor in [0.55, 1.0, 3.0] {
+    fn zoom_labels_and_targets_fit_their_measured_hit_areas() {
+        // Phase: scaled_zoom_labels_fit_their_measured_hit_targets.
+        {
+            for scale in [1.0, 2.0] {
+                for factor in [0.55, 1.0, 3.0] {
+                    let mut zoom = ZoomControl::new();
+                    zoom.set(factor);
+                    let mut text = TextRenderer::new();
+                    text.set_text_scale(scale);
+                    let row = Rect::new(0.0, 0.0, 480.0, 64.0);
+                    zoom.draw(
+                        &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
+                        row,
+                        Color::BLACK,
+                        Color::WHITE,
+                    );
+                    let percent = format!("{}%", num::i32_of_f64((factor * 100.0).round()));
+                    for ((_, rect), (label, size)) in
+                        zoom.hits
+                            .iter()
+                            .zip([("−", 13.0), (percent.as_str(), 12.5), ("+", 13.0)])
+                    {
+                        let (width, height) = text.measure(label, size, None);
+                        assert!(
+                            rect.width() >= f64::from(width),
+                            "{label} at {scale}× needs width {width}, got {rect:?}"
+                        );
+                        assert!(
+                            rect.height() >= f64::from(height),
+                            "{label} at {scale}× needs height {height}, got {rect:?}"
+                        );
+                        assert_eq!(rect.intersect(row), *rect);
+                    }
+                    for pair in zoom.hits.windows(2) {
+                        assert!(
+                            pair[0].1.x1 < pair[1].1.x0,
+                            "adjacent targets must not overlap"
+                        );
+                    }
+                }
+            }
+        }
+
+        // Phase: scaled_zoom_targets_keep_out_reset_in_behavior.
+        {
+            for scale in [1.0, 2.0] {
                 let mut zoom = ZoomControl::new();
-                zoom.set(factor);
+                zoom.set(1.2);
                 let mut text = TextRenderer::new();
                 text.set_text_scale(scale);
-                let row = Rect::new(0.0, 0.0, 480.0, 64.0);
                 zoom.draw(
                     &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
-                    row,
+                    Rect::new(0.0, 0.0, 480.0, 64.0),
                     Color::BLACK,
                     Color::WHITE,
                 );
-                let percent = format!("{}%", num::i32_of_f64((factor * 100.0).round()));
-                for ((_, rect), (label, size)) in
-                    zoom.hits
-                        .iter()
-                        .zip([("−", 13.0), (percent.as_str(), 12.5), ("+", 13.0)])
-                {
-                    let (width, height) = text.measure(label, size, None);
-                    assert!(
-                        rect.width() >= f64::from(width),
-                        "{label} at {scale}× needs width {width}, got {rect:?}"
-                    );
-                    assert!(
-                        rect.height() >= f64::from(height),
-                        "{label} at {scale}× needs height {height}, got {rect:?}"
-                    );
-                    assert_eq!(rect.intersect(row), *rect);
-                }
-                for pair in zoom.hits.windows(2) {
-                    assert!(
-                        pair[0].1.x1 < pair[1].1.x0,
-                        "adjacent targets must not overlap"
-                    );
-                }
+                let hits = zoom.hit_rects();
+                assert!(zoom.click(hits[0].center()));
+                assert!((zoom.factor() - 1.1).abs() < 1e-9);
+                assert!(zoom.click(hits[2].center()));
+                assert!((zoom.factor() - 1.2).abs() < 1e-9);
+                assert!(zoom.click(hits[1].center()));
+                assert_eq!(zoom.factor(), 1.0);
+                assert!(!zoom.click(Point::new(0.0, 0.0)));
             }
         }
     }
 
+    /// The scale is clamped with the anchor fixed, and coordinate conversion round-trips.
     #[test]
-    fn scaled_zoom_targets_keep_out_reset_in_behavior() {
-        for scale in [1.0, 2.0] {
+    fn zoom_scale_is_clamped_about_a_fixed_anchor_and_converts_back() {
+        // Phase: scale_is_clamped_and_anchor_is_fixed.
+        {
             let mut zoom = ZoomControl::new();
-            zoom.set(1.2);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(scale);
-            zoom.draw(
-                &mut PaintContext::new(&mut Scene::new(), Affine::IDENTITY, &mut text),
-                Rect::new(0.0, 0.0, 480.0, 64.0),
-                Color::BLACK,
-                Color::WHITE,
+            zoom.set_anchor(Point::new(50.0, 20.0));
+            zoom.set(99.0);
+            assert_eq!(zoom.factor(), MAX);
+            assert_eq!(
+                zoom.transform(Affine::IDENTITY) * zoom.anchor(),
+                zoom.anchor()
             );
-            let hits = zoom.hit_rects();
-            assert!(zoom.click(hits[0].center()));
-            assert!((zoom.factor() - 1.1).abs() < 1e-9);
-            assert!(zoom.click(hits[2].center()));
-            assert!((zoom.factor() - 1.2).abs() < 1e-9);
-            assert!(zoom.click(hits[1].center()));
-            assert_eq!(zoom.factor(), 1.0);
-            assert!(!zoom.click(Point::new(0.0, 0.0)));
+            zoom.set(0.0);
+            assert_eq!(zoom.factor(), MIN);
         }
-    }
 
-    #[test]
-    fn scale_is_clamped_and_anchor_is_fixed() {
-        let mut zoom = ZoomControl::new();
-        zoom.set_anchor(Point::new(50.0, 20.0));
-        zoom.set(99.0);
-        assert_eq!(zoom.factor(), MAX);
-        assert_eq!(
-            zoom.transform(Affine::IDENTITY) * zoom.anchor(),
-            zoom.anchor()
-        );
-        zoom.set(0.0);
-        assert_eq!(zoom.factor(), MIN);
-    }
-
-    #[test]
-    fn coordinate_conversion_round_trips() {
-        let mut zoom = ZoomControl::new();
-        zoom.set_anchor(Point::new(100.0, 0.0));
-        zoom.set(1.7);
-        let content = 240.0;
-        let screen = zoom.content_x_to_screen(content);
-        assert!((zoom.screen_x_to_content(screen) - content).abs() < 1e-9);
+        // Phase: coordinate_conversion_round_trips.
+        {
+            let mut zoom = ZoomControl::new();
+            zoom.set_anchor(Point::new(100.0, 0.0));
+            zoom.set(1.7);
+            let content = 240.0;
+            let screen = zoom.content_x_to_screen(content);
+            assert!((zoom.screen_x_to_content(screen) - content).abs() < 1e-9);
+        }
     }
 }

@@ -609,55 +609,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn recents_dedupe_and_cap() {
-        let mut m = MapModel::default();
-        for i in 0..12 {
-            m.push_recent(&format!("q{i}"));
+    fn recents_and_saved_places_dedupe_cap_and_keep_flags() {
+        // Phase `recents_dedupe_and_cap`.
+        {
+            let mut m = MapModel::default();
+            for i in 0..12 {
+                m.push_recent(&format!("q{i}"));
+            }
+            assert_eq!(m.recents.len(), 8);
+            assert_eq!(m.recents[0], "q11");
+            // Re-pushing an existing term moves it to front, not duplicates.
+            m.push_recent("Q7");
+            assert_eq!(m.recents[0], "Q7");
+            assert_eq!(
+                m.recents
+                    .iter()
+                    .filter(|r| r.eq_ignore_ascii_case("q7"))
+                    .count(),
+                1
+            );
         }
-        assert_eq!(m.recents.len(), 8);
-        assert_eq!(m.recents[0], "q11");
-        // Re-pushing an existing term moves it to front, not duplicates.
-        m.push_recent("Q7");
-        assert_eq!(m.recents[0], "Q7");
-        assert_eq!(
-            m.recents
-                .iter()
-                .filter(|r| r.eq_ignore_ascii_case("q7"))
-                .count(),
-            1
-        );
-    }
 
-    #[test]
-    fn toggle_saved_flips() {
-        let mut m = MapModel::default();
-        m.places.push(Place::new(
-            "a",
-            "A",
-            Category::Cafe,
-            "",
-            LatLon::new(0.0, 0.0),
-        ));
-        assert!(m.toggle_saved("a"));
-        assert!(!m.toggle_saved("a"));
-        assert!(!m.toggle_saved("missing"));
-    }
+        // Phase `toggle_saved_flips`.
+        {
+            let mut m = MapModel::default();
+            m.places.push(Place::new(
+                "a",
+                "A",
+                Category::Cafe,
+                "",
+                LatLon::new(0.0, 0.0),
+            ));
+            assert!(m.toggle_saved("a"));
+            assert!(!m.toggle_saved("a"));
+            assert!(!m.toggle_saved("missing"));
+        }
 
-    #[test]
-    fn upsert_preserves_saved_flag() {
-        let mut m = MapModel::default();
-        let mut p = Place::new("x", "X", Category::Shop, "addr", LatLon::new(1.0, 2.0));
-        p.saved = true;
-        m.upsert_place(p);
-        // Re-fetch (unsaved) must not clobber the saved flag.
-        m.upsert_place(Place::new(
-            "x",
-            "X2",
-            Category::Shop,
-            "addr2",
-            LatLon::new(1.0, 2.0),
-        ));
-        assert!(m.place("x").unwrap().saved);
-        assert_eq!(m.place("x").unwrap().name, "X2");
+        // Phase `upsert_preserves_saved_flag`.
+        {
+            let mut m = MapModel::default();
+            let mut p = Place::new("x", "X", Category::Shop, "addr", LatLon::new(1.0, 2.0));
+            p.saved = true;
+            m.upsert_place(p);
+            // Re-fetch (unsaved) must not clobber the saved flag.
+            m.upsert_place(Place::new(
+                "x",
+                "X2",
+                Category::Shop,
+                "addr2",
+                LatLon::new(1.0, 2.0),
+            ));
+            assert!(m.place("x").unwrap().saved);
+            assert_eq!(m.place("x").unwrap().name, "X2");
+        }
     }
 }

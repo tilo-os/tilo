@@ -490,173 +490,176 @@ mod tests {
         doc.text(&obj).ok()
     }
 
-    /// A populated doc + a non-default View (scrolled, a caret, an open
-    /// resource, a view mode) freezes and thaws into a *fresh* app with BOTH
-    /// the document content AND every view field intact — asserted on the
-    /// real freeze/thaw path, and on the bytes in between so no field is
-    /// silently dropped by capture.
     #[test]
-    fn freeze_thaw_round_trips_doc_and_view() {
-        #[cfg(windows)]
-        let file_record = r"file:C:\report.md";
-        #[cfg(not(windows))]
-        let file_record = "file:/report.md";
-        // App 1: a document with real text, and a root carrying a non-default
-        // presentation (scroll / caret / mode / open resource).
-        let mut root = DocRoot::new();
-        root.caret = "caret=42".into();
-        root.scroll = vec![10.0, 20.0];
-        root.mode = Some("grid".into());
-        root.resource = file_record.into();
+    fn freeze_and_thaw_round_trip_doc_and_view_and_reject_bad_bytes() {
+        // Case `freeze_thaw_round_trips_doc_and_view`:
+        // A populated doc + a non-default View (scrolled, a caret, an open
+        // resource, a view mode) freezes and thaws into a *fresh* app with BOTH
+        // the document content AND every view field intact — asserted on the
+        // real freeze/thaw path, and on the bytes in between so no field is
+        // silently dropped by capture.
+        {
+            #[cfg(windows)]
+            let file_record = r"file:C:\report.md";
+            #[cfg(not(windows))]
+            let file_record = "file:/report.md";
+            // App 1: a document with real text, and a root carrying a non-default
+            // presentation (scroll / caret / mode / open resource).
+            let mut root = DocRoot::new();
+            root.caret = "caret=42".into();
+            root.scroll = vec![10.0, 20.0];
+            root.mode = Some("grid".into());
+            root.resource = file_record.into();
 
-        let mut state = State::new();
-        let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
-        state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
-        // Stamp the document with the record identity it holds, so reopening
-        // it after thaw is readable from the restored document.
-        crate::record::init(
-            &mut state.doc,
-            &RecordId::parse(file_record).unwrap(),
-            &RecordKind::new("document"),
-            "home-room",
-        );
+            let mut state = State::new();
+            let body = state.doc.put_object(&ROOT, "body", ObjType::Text).unwrap();
+            state.doc.splice_text(&body, 0, 0, "Hello, world").unwrap();
+            // Stamp the document with the record identity it holds, so reopening
+            // it after thaw is readable from the restored document.
+            crate::record::init(
+                &mut state.doc,
+                &RecordId::parse(file_record).unwrap(),
+                &RecordKind::new("document"),
+                "home-room",
+            );
 
-        let mut app1 = App::new_with_controlled_inputs(state, Box::new(root));
-        app1.autofocus_first = true; // focus the single field so a caret exists
-        app1.init_layout();
+            let mut app1 = App::new_with_controlled_inputs(state, Box::new(root));
+            app1.autofocus_first = true; // focus the single field so a caret exists
+            app1.init_layout();
 
-        let v1 = app1.capture_view();
-        assert_eq!(v1.scroll, vec![10.0, 20.0]);
-        assert_eq!(v1.view_mode.as_deref(), Some("grid"));
-        assert_eq!(v1.open_resource.as_deref(), Some(file_record));
-        assert_eq!(v1.focus.as_ref().unwrap().ordinal, 0);
-        assert_eq!(v1.focus.as_ref().unwrap().ephemeral, "caret=42");
+            let v1 = app1.capture_view();
+            assert_eq!(v1.scroll, vec![10.0, 20.0]);
+            assert_eq!(v1.view_mode.as_deref(), Some("grid"));
+            assert_eq!(v1.open_resource.as_deref(), Some(file_record));
+            assert_eq!(v1.focus.as_ref().unwrap().ordinal, 0);
+            assert_eq!(v1.focus.as_ref().unwrap().ephemeral, "caret=42");
 
-        let frozen = app1.freeze();
+            let frozen = app1.freeze();
 
-        // The bytes in between carry every field — capture didn't drop any.
-        let env: FrozenApp = postcard::from_bytes(&frozen).unwrap();
-        assert_eq!(env.version, FROZEN_VERSION);
-        assert_eq!(env.view, v1);
+            // The bytes in between carry every field — capture didn't drop any.
+            let env: FrozenApp = postcard::from_bytes(&frozen).unwrap();
+            assert_eq!(env.version, FROZEN_VERSION);
+            assert_eq!(env.view, v1);
 
-        // App 2: a fresh app with an EMPTY doc and a default root.
-        let mut app2 = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
-        app2.init_layout();
-        assert_eq!(
-            text_at(&app2.state_mut_for_test().doc.clone(), "body"),
-            None
-        );
+            // App 2: a fresh app with an EMPTY doc and a default root.
+            let mut app2 = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
+            app2.init_layout();
+            assert_eq!(
+                text_at(&app2.state_mut_for_test().doc.clone(), "body"),
+                None
+            );
 
-        app2.thaw(&frozen).expect("thaw a well-formed envelope");
+            app2.thaw(&frozen).expect("thaw a well-formed envelope");
 
-        let doc2 = app2.state_mut_for_test().doc.clone();
-        assert_eq!(
-            text_at(&doc2, "body").as_deref(),
-            Some("Hello, world"),
-            "the CRDT document round-tripped through freeze/thaw"
-        );
-        // The restored document carries the record identity that
-        // `open_resource` named — the resource is reopened.
-        assert_eq!(
-            crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
-            Some(file_record.to_string()),
-            "thaw reopened the resource the View named — its document is live"
-        );
+            let doc2 = app2.state_mut_for_test().doc.clone();
+            assert_eq!(
+                text_at(&doc2, "body").as_deref(),
+                Some("Hello, world"),
+                "the CRDT document round-tripped through freeze/thaw"
+            );
+            // The restored document carries the record identity that
+            // `open_resource` named — the resource is reopened.
+            assert_eq!(
+                crate::record::identity(&doc2).map(|c| c.id.as_str().to_string()),
+                Some(file_record.to_string()),
+                "thaw reopened the resource the View named — its document is live"
+            );
 
-        // `scroll`/`view_mode` went back to the root widget; `focus`/caret via
-        // the ephemeral get_state/set_state mechanism. `open_resource` isn't
-        // re-checked here — it's proven above via the live document, since the
-        // document *is* the resource.
-        let v2 = app2.capture_view();
-        assert_eq!(v2.scroll, vec![10.0, 20.0], "scroll restored to the widget");
-        assert_eq!(v2.view_mode.as_deref(), Some("grid"), "view mode restored");
-        let f2 = v2.focus.as_ref().expect("focus restored");
-        assert_eq!(f2.ordinal, 0, "focus ordinal restored");
-        assert_eq!(f2.ephemeral, "caret=42", "caret restored via set_state");
-    }
-
-    /// Thawing truncated or garbage bytes returns an error, and an envelope
-    /// from an unknown version is rejected rather than mis-read — never a panic.
-    #[test]
-    fn thaw_rejects_bad_bytes_without_panicking() {
-        let mut app = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
-        app.init_layout();
-
-        assert!(matches!(
-            app.thaw(&[0xff, 0x00, 0x7e, 0x13]),
-            Err(ThawError::Envelope(_))
-        ));
-        assert!(matches!(app.thaw(&[]), Err(ThawError::Envelope(_))));
-
-        // A valid envelope truncated mid-way still fails cleanly.
-        let good = app.freeze();
-        let truncated = &good[..good.len() / 2];
-        assert!(
-            app.thaw(truncated).is_err(),
-            "truncated bytes error, not panic"
-        );
-
-        // A future version is refused, not silently mis-decoded.
-        let future = FrozenApp {
-            version: FROZEN_VERSION + 99,
-            state: AutoCommit::new().save(),
-            view: View::default(),
-        };
-        let bytes = postcard::to_stdvec(&future).unwrap();
-        assert!(matches!(
-            app.thaw(&bytes),
-            Err(ThawError::UnsupportedVersion { .. })
-        ));
-    }
-
-    /// A stub whose state is NOT a CRDT overrides only `serialize_state` /
-    /// `restore_state` and round-trips through the *same* `freeze`/`thaw`
-    /// default path — proving that view capture/restore default cleanly for it.
-    #[test]
-    fn custom_serialization_app_round_trips_via_override() {
-        /// A browser-like app: its "state" is an opaque session string, not a
-        /// CRDT. It carries a View too, to prove the defaults compose.
-        struct BrowserStub {
-            session: String,
+            // `scroll`/`view_mode` went back to the root widget; `focus`/caret via
+            // the ephemeral get_state/set_state mechanism. `open_resource` isn't
+            // re-checked here — it's proven above via the live document, since the
+            // document *is* the resource.
+            let v2 = app2.capture_view();
+            assert_eq!(v2.scroll, vec![10.0, 20.0], "scroll restored to the widget");
+            assert_eq!(v2.view_mode.as_deref(), Some("grid"), "view mode restored");
+            let f2 = v2.focus.as_ref().expect("focus restored");
+            assert_eq!(f2.ordinal, 0, "focus ordinal restored");
+            assert_eq!(f2.ephemeral, "caret=42", "caret restored via set_state");
         }
 
-        impl FreezeThaw for BrowserStub {
-            fn serialize_state(&self) -> Vec<u8> {
-                self.session.clone().into_bytes()
-            }
-            fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ThawError> {
-                self.session = String::from_utf8(bytes.to_vec())
-                    .map_err(|e| ThawError::State(e.to_string()))?;
-                Ok(())
-            }
-            // capture_view / restore_view intentionally left as the defaults.
+        // Case `thaw_rejects_bad_bytes_without_panicking`:
+        // Thawing truncated or garbage bytes returns an error, and an envelope
+        // from an unknown version is rejected rather than mis-read — never a panic.
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(DocRoot::new()));
+            app.init_layout();
+
+            assert!(matches!(
+                app.thaw(&[0xff, 0x00, 0x7e, 0x13]),
+                Err(ThawError::Envelope(_))
+            ));
+            assert!(matches!(app.thaw(&[]), Err(ThawError::Envelope(_))));
+
+            // A valid envelope truncated mid-way still fails cleanly.
+            let good = app.freeze();
+            let truncated = &good[..good.len() / 2];
+            assert!(
+                app.thaw(truncated).is_err(),
+                "truncated bytes error, not panic"
+            );
+
+            // A future version is refused, not silently mis-decoded.
+            let future = FrozenApp {
+                version: FROZEN_VERSION + 99,
+                state: AutoCommit::new().save(),
+                view: View::default(),
+            };
+            let bytes = postcard::to_stdvec(&future).unwrap();
+            assert!(matches!(
+                app.thaw(&bytes),
+                Err(ThawError::UnsupportedVersion { .. })
+            ));
         }
 
-        let src = BrowserStub {
-            session: "tabs=[example.com, tilo.so]; active=1".into(),
-        };
-        let frozen = src.freeze();
+        // Case `custom_serialization_app_round_trips_via_override`:
+        // A stub whose state is NOT a CRDT overrides only `serialize_state` /
+        // `restore_state` and round-trips through the *same* `freeze`/`thaw`
+        // default path — proving that view capture/restore default cleanly for it.
+        {
+            /// A browser-like app: its "state" is an opaque session string, not a
+            /// CRDT. It carries a View too, to prove the defaults compose.
+            struct BrowserStub {
+                session: String,
+            }
 
-        let mut dst = BrowserStub {
-            session: String::new(),
-        };
-        dst.thaw(&frozen).expect("thaw the browser stub");
-        assert_eq!(
-            dst.session, "tabs=[example.com, tilo.so]; active=1",
-            "the non-CRDT state round-tripped through the serialize_state hook"
-        );
+            impl FreezeThaw for BrowserStub {
+                fn serialize_state(&self) -> Vec<u8> {
+                    self.session.clone().into_bytes()
+                }
+                fn restore_state(&mut self, bytes: &[u8]) -> Result<(), ThawError> {
+                    self.session = String::from_utf8(bytes.to_vec())
+                        .map_err(|e| ThawError::State(e.to_string()))?;
+                    Ok(())
+                }
+                // capture_view / restore_view intentionally left as the defaults.
+            }
 
-        // The default view capture is an empty View, and it survives the frame.
-        let env: FrozenApp = postcard::from_bytes(&frozen).unwrap();
-        assert_eq!(env.view, View::default());
+            let src = BrowserStub {
+                session: "tabs=[example.com, tilo.so]; active=1".into(),
+            };
+            let frozen = src.freeze();
 
-        // A malformed state payload surfaces as a State error, not a panic.
-        let bad = FrozenApp {
-            version: FROZEN_VERSION,
-            state: vec![0xff, 0xfe, 0xfd],
-            view: View::default(),
-        };
-        let bad_bytes = postcard::to_stdvec(&bad).unwrap();
-        assert!(matches!(dst.thaw(&bad_bytes), Err(ThawError::State(_))));
+            let mut dst = BrowserStub {
+                session: String::new(),
+            };
+            dst.thaw(&frozen).expect("thaw the browser stub");
+            assert_eq!(
+                dst.session, "tabs=[example.com, tilo.so]; active=1",
+                "the non-CRDT state round-tripped through the serialize_state hook"
+            );
+
+            // The default view capture is an empty View, and it survives the frame.
+            let env: FrozenApp = postcard::from_bytes(&frozen).unwrap();
+            assert_eq!(env.view, View::default());
+
+            // A malformed state payload surfaces as a State error, not a panic.
+            let bad = FrozenApp {
+                version: FROZEN_VERSION,
+                state: vec![0xff, 0xfe, 0xfd],
+                view: View::default(),
+            };
+            let bad_bytes = postcard::to_stdvec(&bad).unwrap();
+            assert!(matches!(dst.thaw(&bad_bytes), Err(ThawError::State(_))));
+        }
     }
 }

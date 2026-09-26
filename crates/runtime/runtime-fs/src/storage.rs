@@ -159,98 +159,99 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
 
-    /// The storage socket's bytes: a little-endian `u32` length, then postcard.
-    /// The filesystem daemon on the other end is built separately, so any
-    /// change here must fail.
     #[test]
-    fn storage_wire_bytes_are_pinned() {
-        const REQUEST: [u8; 11] = [7, 0, 0, 0, 1, 1, 1, b'n', 7, 1, b'v'];
-        const RESPONSE: [u8; 12] = [8, 0, 0, 0, 1, 1, 2, 0xac, 0x02, 1, 1, b'x'];
-        let (client_end, mut daemon) = UnixStream::pair().unwrap();
-        daemon
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-            .unwrap();
-        let daemon = std::thread::spawn(move || {
-            let mut request = [0_u8; REQUEST.len()];
-            daemon.read_exact(&mut request).unwrap();
-            daemon.write_all(&RESPONSE).unwrap();
-            request
-        });
-        let mut client = StorageClient { stream: client_end };
-        let report = client
-            .evict(vec![EvictionSelection {
-                identity: "n".into(),
-                inode: 7,
-                version: "v".into(),
-            }])
-            .unwrap();
-        assert_eq!(daemon.join().unwrap(), REQUEST);
-        assert_eq!(
-            report,
-            EvictionReport {
-                queued_files: 1,
-                evicted_files: 2,
-                freed_bytes: 300,
-                skipped: vec!["x".into()],
-            }
-        );
-    }
-
-    #[test]
-    fn selection_carries_all_revalidation_identity() {
-        let file = SyncedFileState {
-            workspace: "work".into(),
-            app: None,
-            logical_path: "/notes.txt".into(),
-            identity: "node-1".into(),
-            inode: 7,
-            version: "abc".into(),
-            logical_bytes: 4,
-            hydrated_bytes: 4,
-            remote_only: false,
-            dirty: false,
-            pinned: false,
-            in_flight: false,
-            remotely_durable: true,
-            reclaimable_bytes: 4,
-        };
-        assert_eq!(
-            EvictionSelection::from(&file),
-            EvictionSelection {
+    fn storage_wire_bytes_and_protocol_carry_revalidation_identity() {
+        // phase: storage_wire_bytes_are_pinned
+        // The storage socket's bytes: a little-endian `u32` length, then postcard.
+        // The filesystem daemon on the other end is built separately, so any
+        // change here must fail.
+        {
+            const REQUEST: [u8; 11] = [7, 0, 0, 0, 1, 1, 1, b'n', 7, 1, b'v'];
+            const RESPONSE: [u8; 12] = [8, 0, 0, 0, 1, 1, 2, 0xac, 0x02, 1, 1, b'x'];
+            let (client_end, mut daemon) = UnixStream::pair().unwrap();
+            daemon
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let daemon = std::thread::spawn(move || {
+                let mut request = [0_u8; REQUEST.len()];
+                daemon.read_exact(&mut request).unwrap();
+                daemon.write_all(&RESPONSE).unwrap();
+                request
+            });
+            let mut client = StorageClient { stream: client_end };
+            let report = client
+                .evict(vec![EvictionSelection {
+                    identity: "n".into(),
+                    inode: 7,
+                    version: "v".into(),
+                }])
+                .unwrap();
+            assert_eq!(daemon.join().unwrap(), REQUEST);
+            assert_eq!(
+                report,
+                EvictionReport {
+                    queued_files: 1,
+                    evicted_files: 2,
+                    freed_bytes: 300,
+                    skipped: vec!["x".into()],
+                }
+            );
+        }
+        // phase: selection_carries_all_revalidation_identity
+        {
+            let file = SyncedFileState {
+                workspace: "work".into(),
+                app: None,
+                logical_path: "/notes.txt".into(),
                 identity: "node-1".into(),
                 inode: 7,
                 version: "abc".into(),
+                logical_bytes: 4,
+                hydrated_bytes: 4,
+                remote_only: false,
+                dirty: false,
+                pinned: false,
+                in_flight: false,
+                remotely_durable: true,
+                reclaimable_bytes: 4,
+            };
+            assert_eq!(
+                EvictionSelection::from(&file),
+                EvictionSelection {
+                    identity: "node-1".into(),
+                    inode: 7,
+                    version: "abc".into(),
+                }
+            );
+        }
+        // phase: protocol_roundtrips_typed_snapshot
+        {
+            let expected = StorageResponse::Snapshot(SyncStorageSnapshot {
+                online: false,
+                files: Vec::new(),
+                workspaces: vec![StorageAggregate {
+                    owner: "work".into(),
+                    logical_bytes: 8,
+                    local_bytes: 3,
+                    remote_only_bytes: 5,
+                    reclaimable_bytes: 0,
+                    files: 1,
+                }],
+                apps: Vec::new(),
+            });
+            let mut wire = Vec::new();
+            STORAGE_FRAMING.write_value(&mut wire, &expected).unwrap();
+            let decoded: StorageResponse = STORAGE_FRAMING
+                .read_value(&mut std::io::Cursor::new(wire))
+                .unwrap()
+                .unwrap();
+            match decoded {
+                StorageResponse::Snapshot(snapshot) => {
+                    assert!(!snapshot.online);
+                    assert_eq!(snapshot.workspaces[0].remote_only_bytes, 5);
+                }
+                _ => panic!("wrong response variant"),
             }
-        );
-    }
-
-    #[test]
-    fn protocol_roundtrips_typed_snapshot() {
-        let expected = StorageResponse::Snapshot(SyncStorageSnapshot {
-            online: false,
-            files: Vec::new(),
-            workspaces: vec![StorageAggregate {
-                owner: "work".into(),
-                logical_bytes: 8,
-                local_bytes: 3,
-                remote_only_bytes: 5,
-                reclaimable_bytes: 0,
-                files: 1,
-            }],
-            apps: Vec::new(),
-        });
-        let mut wire = Vec::new();
-        STORAGE_FRAMING.write_value(&mut wire, &expected).unwrap();
-        let decoded: StorageResponse = STORAGE_FRAMING
-            .read_value(&mut std::io::Cursor::new(wire))
-            .unwrap()
-            .unwrap();
-        match decoded {
-            StorageResponse::Snapshot(snapshot) => {
-                assert!(!snapshot.online);
-                assert_eq!(snapshot.workspaces[0].remote_only_bytes, 5);
-            }
-            _ => panic!("wrong response variant"),
         }
     }
 }

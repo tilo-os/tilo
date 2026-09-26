@@ -258,33 +258,41 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn contract_is_addressable_and_empty_state_is_truthful() {
+    fn resource_contract_addresses_the_exact_timer_and_rejects_foreign_payloads() {
+        // Case: the contract is addressable and the empty state is truthful.
         let root = provide_resources(&ClockState::default()).remove(0);
-        assert_eq!(root.id.0, "clocks");
-        assert_eq!(root.children.len(), 4);
-        assert!(root.children.iter().any(|r| r.id.0 == "clocks.timers"));
-    }
+        assert_eq!(root.id.0, "clocks", "case empty: root id");
+        assert_eq!(root.children.len(), 4, "case empty: four collections");
+        assert!(
+            root.children.iter().any(|r| r.id.0 == "clocks.timers"),
+            "case empty: timers collection"
+        );
 
-    #[test]
-    fn timer_operations_address_the_exact_timer() {
+        // Case: timer operations address the exact timer.
         let mut state = ClockState::default();
         let timer = crate::Timer::new("Pasta", Duration::from_secs(600));
         let id = timer.id;
         state.timers.push(timer);
         let root = provide_resources(&state).remove(0);
         let timer = root.children[2].children.first().expect("timer resource");
-        assert_eq!(timer.id.0, format!("clocks.timer:{id}"));
+        assert_eq!(
+            timer.id.0,
+            format!("clocks.timer:{id}"),
+            "case exact-timer: resource id"
+        );
         let encoded = &timer.actions[0];
         let tilo_actions::ActionInput::Immediate(encoded) = &encoded.input else {
             panic!("timer action should be immediate");
         };
         let operation = decode(&encoded.type_id, &encoded.payload).expect("valid operation");
-        assert_eq!(operation, Some(ClockOperation::ToggleTimer { id }));
-    }
+        assert_eq!(
+            operation,
+            Some(ClockOperation::ToggleTimer { id }),
+            "case exact-timer: operation"
+        );
 
-    #[test]
-    fn rejects_foreign_payloads() {
-        assert_eq!(decode("other", b"{}"), Ok(None));
+        // Case: foreign payloads are rejected.
+        assert_eq!(decode("other", b"{}"), Ok(None), "case foreign-payload");
     }
 
     /// A clock state with one of every entity, so each resource kind and its

@@ -1002,6 +1002,14 @@ mod tests {
     }
 
     #[test]
+    fn ellipsizing_fits_the_width_and_keeps_the_actionable_end() {
+        // Each phase uses a fresh text renderer.
+        a_short_string_is_left_alone();
+        a_long_path_keeps_its_file_and_line();
+        a_long_preview_keeps_its_beginning();
+        zero_width_yields_nothing_rather_than_an_ellipsis();
+    }
+
     fn a_short_string_is_left_alone() {
         let mut t = tr();
         assert_eq!(
@@ -1014,7 +1022,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_long_path_keeps_its_file_and_line() {
         // Front trimming must preserve the actionable file and line suffix.
         let mut t = tr();
@@ -1028,7 +1035,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn a_long_preview_keeps_its_beginning() {
         let mut t = tr();
         let long = "a".repeat(400);
@@ -1038,7 +1044,6 @@ mod tests {
         assert!(f64::from(t.measure(&out, 12.0, None).0) <= 100.0);
     }
 
-    #[test]
     fn zero_width_yields_nothing_rather_than_an_ellipsis() {
         let mut t = tr();
         assert_eq!(ellipsize_front(&mut t, "x", 12.0, 0.0), "");
@@ -1046,6 +1051,13 @@ mod tests {
     }
 
     #[test]
+    fn search_tab_summary_activation_and_scroll_follow_the_query() {
+        // Each phase builds a fresh panel.
+        the_search_summary_says_what_is_true();
+        the_search_tab_reports_the_row_the_user_clicked();
+        a_new_query_resets_the_scroll_but_streaming_does_not();
+    }
+
     fn the_search_summary_says_what_is_true() {
         let mut p = BottomPanel::new();
         p.set_tab(PanelTab::Search);
@@ -1099,7 +1111,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn the_search_tab_reports_the_row_the_user_clicked() {
         let mut p = BottomPanel::new();
         assert_eq!(p.take_activated_hit(), None);
@@ -1108,9 +1119,16 @@ mod tests {
         assert_eq!(p.take_activated_hit(), None, "cleared on read");
     }
 
+    #[test]
+    fn panel_layout_centres_tab_labels_and_budgets_search_rows() {
+        // Each phase builds a fresh panel.
+        tab_labels_share_one_centre_line_inside_the_strip();
+        the_search_tab_is_taller_than_the_others();
+        the_row_budget_reserves_room_for_the_summary_and_the_more_hint();
+    }
+
     /// Every tab label is placed from its measured line height, so the three
     /// labels share one glyph top inside the strip and none escapes it.
-    #[test]
     fn tab_labels_share_one_centre_line_inside_the_strip() {
         let mut panel = BottomPanel::new();
         panel.rect = Rect::new(0.0, 100.0, 900.0, 100.0 + PANEL_HEIGHT);
@@ -1140,7 +1158,6 @@ mod tests {
         assert!(f64::from(tops[0]) + f64::from(line_h) <= 100.0 + TAB_H);
     }
 
-    #[test]
     fn the_search_tab_is_taller_than_the_others() {
         let mut p = BottomPanel::new();
         assert_eq!(p.height(), PANEL_HEIGHT);
@@ -1148,7 +1165,6 @@ mod tests {
         assert_eq!(p.height(), PANEL_HEIGHT_SEARCH);
     }
 
-    #[test]
     fn a_new_query_resets_the_scroll_but_streaming_does_not() {
         let mut p = BottomPanel::new();
         p.set_search(SearchState {
@@ -1179,7 +1195,6 @@ mod tests {
         assert_eq!(p.search_scroll, 0);
     }
 
-    #[test]
     fn the_row_budget_reserves_room_for_the_summary_and_the_more_hint() {
         // A row count that ignored those two strips would draw the last row on
         // top of the "N more" line.

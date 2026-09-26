@@ -1929,701 +1929,731 @@ mod tests {
         ],
     }
 
-    /// Ctrl+K on Music yields the tree: the library with a "New playlist"
-    /// action, a `music.playlist` child per playlist exporting rename + delete,
-    /// and a `music.track` child per track in a playlist exporting
-    /// remove + toggle-like. Drives the real resource hook.
     #[test]
-    fn ctrl_k_publishes_the_library_tree() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one library root");
-        let lib = &resources[0];
-        assert_eq!(lib.kind, "music.library");
-        let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(lib_actions.contains(&"new-playlist"), "{lib_actions:?}");
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn library_resources_publish_bounded_safe_canonical_views() {
+        // Phase `ctrl_k_publishes_the_library_tree`.
+        // Ctrl+K on Music yields the tree: the library with a "New playlist"
+        // action, a `music.playlist` child per playlist exporting rename + delete,
+        // and a `music.track` child per track in a playlist exporting
+        // remove + toggle-like. Drives the real resource hook.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one library root");
+            let lib = &resources[0];
+            assert_eq!(lib.kind, "music.library");
+            let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(lib_actions.contains(&"new-playlist"), "{lib_actions:?}");
 
-        let playlist = lib
-            .children
-            .iter()
-            .find(|r| r.kind == "music.playlist")
-            .expect("a playlist resource");
-        let pl_actions: Vec<&str> = playlist.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(pl_actions.contains(&"rename"), "{pl_actions:?}");
-        assert!(pl_actions.contains(&"delete"), "{pl_actions:?}");
-        assert_eq!(
-            playlist
-                .actions
+            let playlist = lib
+                .children
                 .iter()
-                .find(|a| a.id == "delete")
-                .unwrap()
-                .contract
-                .risk,
-            tilo_actions::RiskLevel::Destructive
-        );
-
-        let player = lib
-            .children
-            .iter()
-            .find(|r| r.kind == "music.player")
-            .expect("a stable player resource");
-        assert!(player.actions.iter().any(|action| action.id == "queue-add"));
-        assert!(
-            player
-                .actions
-                .iter()
-                .any(|action| action.id == "toggle-shuffle")
-        );
-
-        // A playlist with tracks nests a membership resource with remove,
-        // reorder and like. It is not a duplicate of the catalog track entity.
-        let with_tracks = lib
-            .children
-            .iter()
-            .find(|r| !r.children.is_empty())
-            .expect("a playlist with tracks");
-        let track = &with_tracks.children[0];
-        assert_eq!(track.kind, "music.playlist-track");
-        let tk_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(tk_actions.contains(&"remove"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"toggle-like"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"move-up"), "{tk_actions:?}");
-        assert!(tk_actions.contains(&"move-down"), "{tk_actions:?}");
-
-        let album = lib
-            .children
-            .iter()
-            .find(|r| r.kind == "music.album")
-            .expect("album resource");
-        assert!(
-            album
-                .actions
-                .iter()
-                .any(|action| action.id == "toggle-save")
-        );
-        let artist = lib
-            .children
-            .iter()
-            .find(|r| r.kind == "music.artist")
-            .expect("artist resource");
-        assert!(
-            artist
-                .actions
-                .iter()
-                .any(|action| action.id == "toggle-follow")
-        );
-
-        // The full flattened tree exports every action, including the nested
-        // track ops that sort after the playlists.
-        let flat: Vec<&str> = tilo_actions::flatten(&resources)
-            .iter()
-            .map(|f| f.action.label.as_str())
-            .collect();
-        assert!(flat.contains(&"New playlist"), "{flat:?}");
-        assert!(flat.contains(&"Delete playlist"), "{flat:?}");
-        assert!(flat.contains(&"Remove from playlist"), "{flat:?}");
-    }
-
-    #[test]
-    fn portable_playlist_cover_replays_to_a_peer_without_a_local_path() {
-        let (_app, seeded_doc) = seeded();
-        let mut a = seeded_doc;
-        a.commit();
-        let mut b = AutoCommit::load(&a.save()).unwrap();
-        let playlist = crate::doc::load_library(&a).playlists[0].id.clone();
-        // A tiny valid PNG, representative of the normalized portal output.
-        let cover = tiny_portable_png();
-        assert!(portable_cover_value(&cover));
-        assert!(!cover.contains("file:"));
-        assert!(!cover.contains("/tmp/"));
-
-        let action = set_cover_action(&playlist, &cover);
-        let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
-        tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
-
-        assert_eq!(
-            a.get_heads(),
-            b.get_heads(),
-            "cover replay converges exactly"
-        );
-        assert_eq!(
-            crate::doc::load_library(&b)
-                .playlist(&playlist)
-                .unwrap()
-                .cover,
-            cover,
-            "the peer receives a portable value, not the picker's local path"
-        );
-    }
-
-    #[test]
-    fn playlist_cover_action_refuses_local_unsafe_and_malformed_values() {
-        let (_app, mut doc) = seeded();
-        let playlist = crate::doc::load_library(&doc).playlists[0].id.clone();
-        let oversized = format!(
-            "data:image/png;base64,{}",
-            "A".repeat(MAX_PORTABLE_COVER_BYTES.saturating_mul(2))
-        );
-        for cover in [
-            "file:///tmp/cover.png",
-            "/tmp/cover.png",
-            "http://example.test/cover.png",
-            "data:image/png;base64,not-valid-base64",
-            "data:image/png;base64,iVBORw0KGgo=",
-            "data:image/jpeg;base64,iVBORw0KGgo=",
-            oversized.as_str(),
-        ] {
-            let action = set_cover_action(&playlist, cover);
-            assert!(
-                matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
-                "must refuse hostile/nonportable cover {cover:?}"
-            );
-        }
-    }
-
-    /// Dispatching the "New playlist" prompted action creates a playlist with the
-    /// committed name (the id is minted at authoring time, so this asserts the
-    /// effect, not byte-equality against a second freshly-minted id).
-    #[test]
-    fn new_playlist_action_creates_a_playlist() {
-        let (app, mut doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let spec = resources[0]
-            .actions
-            .iter()
-            .find(|a| a.id == "new-playlist")
-            .unwrap();
-        let before = crate::doc::load_library(&doc).playlists.len();
-
-        let encoded = prompted_encode(spec, "Late Night");
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-
-        let lib = crate::doc::load_library(&doc);
-        assert_eq!(
-            lib.playlists.len(),
-            before + 1,
-            "the action added a playlist"
-        );
-        assert!(
-            lib.playlists.iter().any(|p| p.name == "Late Night"),
-            "the created playlist carries the committed name"
-        );
-    }
-
-    #[test]
-    fn playback_and_queue_are_local_effects_with_typed_arguments() {
-        let mut ctx = MusicResourceCtx::default();
-        ctx.playback.current = Some("track-1".into());
-        ctx.playback.queue.push("track-1".into());
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        let root = resources[0]
-            .children
-            .iter()
-            .find(|resource| resource.kind == "music.player")
-            .unwrap();
-        for id in [
-            "play-pause",
-            "seek",
-            "set-volume",
-            "queue-add",
-            "queue-remove",
-        ] {
-            let action = root.actions.iter().find(|action| action.id == id).unwrap();
-            assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
+                .find(|r| r.kind == "music.playlist")
+                .expect("a playlist resource");
+            let pl_actions: Vec<&str> = playlist.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(pl_actions.contains(&"rename"), "{pl_actions:?}");
+            assert!(pl_actions.contains(&"delete"), "{pl_actions:?}");
             assert_eq!(
-                action.contract.permission,
-                PermissionRequirement::Write,
-                "{id}"
+                playlist
+                    .actions
+                    .iter()
+                    .find(|a| a.id == "delete")
+                    .unwrap()
+                    .contract
+                    .risk,
+                tilo_actions::RiskLevel::Destructive
             );
-            assert!(
-                !action.contract.reversible,
-                "local device effects cannot claim an executable undo: {id}"
-            );
-        }
-        assert_eq!(
-            root.actions
-                .iter()
-                .find(|a| a.id == "seek")
-                .unwrap()
-                .params()[0]
-                .ty,
-            ParamType::Integer
-        );
-        let track = CatalogTrackResource {
-            id: "track-2".into(),
-            label: "Track 2".into(),
-            album_id: String::new(),
-            artist_id: String::new(),
-            offline: false,
-            liked: false,
-        };
-        let play = catalog_track_resource(&track, &ctx.playback)
-            .actions
-            .into_iter()
-            .find(|action| action.id == "play")
-            .unwrap();
-        assert_eq!(
-            play.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        );
-        assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
-        let offline = catalog_track_resource(&track, &ctx.playback)
-            .actions
-            .into_iter()
-            .find(|action| action.id == "keep-offline")
-            .unwrap();
-        assert_eq!(
-            offline.contract.execution,
-            ExecutionMode::Background { cancellable: true },
-            "offline transfer is a bounded cancellable device effect"
-        );
-    }
 
-    #[test]
-    fn queue_occurrences_are_canonical_and_duplicate_safe() {
-        let mut ctx = MusicResourceCtx::default();
-        ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
-        ctx.playback.current = Some("track-1".into());
-        ctx.queue = vec![
-            QueueItemResource {
-                index: 0,
-                track: "track-1".into(),
-                label: "First track".into(),
-                current: true,
-            },
-            QueueItemResource {
-                index: 1,
-                track: "track-1".into(),
-                label: "Second occurrence".into(),
-                current: false,
-            },
-            QueueItemResource {
-                index: 2,
-                track: "track-2".into(),
-                label: "Third track".into(),
-                current: false,
-            },
-        ];
-        let root = provide_resources(&ctx, &AutoCommit::new()).pop().unwrap();
-        let queue = root
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == QUEUE_RESOURCE_ID)
-            .expect("local queue has a canonical resource");
-        assert_eq!(queue.kind, "music.queue");
-        assert_eq!(queue.children.len(), 3);
-        assert_ne!(queue.children[0].id, queue.children[1].id);
-        assert_eq!(
-            parse_queue_item_resource_id(queue.children[1].id.as_str()),
-            Some((1, "track-1".into())),
-            "a duplicate track retains an occurrence-specific address"
-        );
-        let remove = queue.children[1]
-            .actions
-            .iter()
-            .find(|action| action.id == "remove")
-            .expect("queue rows are actionable without pixels");
-        let operation = decode_operation(
-            &spec_encoding_of(remove).type_id,
-            &spec_encoding_of(remove).payload,
-        )
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            operation,
-            MusicOperation::RemoveQueueItem {
-                index: 1,
-                track: "track-1".into(),
+            let player = lib
+                .children
+                .iter()
+                .find(|r| r.kind == "music.player")
+                .expect("a stable player resource");
+            assert!(player.actions.iter().any(|action| action.id == "queue-add"));
+            assert!(
+                player
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "toggle-shuffle")
+            );
+
+            // A playlist with tracks nests a membership resource with remove,
+            // reorder and like. It is not a duplicate of the catalog track entity.
+            let with_tracks = lib
+                .children
+                .iter()
+                .find(|r| !r.children.is_empty())
+                .expect("a playlist with tracks");
+            let track = &with_tracks.children[0];
+            assert_eq!(track.kind, "music.playlist-track");
+            let tk_actions: Vec<&str> = track.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(tk_actions.contains(&"remove"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"toggle-like"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"move-up"), "{tk_actions:?}");
+            assert!(tk_actions.contains(&"move-down"), "{tk_actions:?}");
+
+            let album = lib
+                .children
+                .iter()
+                .find(|r| r.kind == "music.album")
+                .expect("album resource");
+            assert!(
+                album
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "toggle-save")
+            );
+            let artist = lib
+                .children
+                .iter()
+                .find(|r| r.kind == "music.artist")
+                .expect("artist resource");
+            assert!(
+                artist
+                    .actions
+                    .iter()
+                    .any(|action| action.id == "toggle-follow")
+            );
+
+            // The full flattened tree exports every action, including the nested
+            // track ops that sort after the playlists.
+            let flat: Vec<&str> = tilo_actions::flatten(&resources)
+                .iter()
+                .map(|f| f.action.label.as_str())
+                .collect();
+            assert!(flat.contains(&"New playlist"), "{flat:?}");
+            assert!(flat.contains(&"Delete playlist"), "{flat:?}");
+            assert!(flat.contains(&"Remove from playlist"), "{flat:?}");
+        }
+
+        // Phase `contextual_resources_are_bounded_but_late_catalog_items_resolve_lazily`.
+        {
+            let mut ctx = MusicResourceCtx::default();
+            for number in 0..(OPEN_RESOURCE_CATEGORY_LIMIT + 9) {
+                let id = format!("track-{number:03}");
+                ctx.tracks.push(CatalogTrackResource {
+                    label: format!("Track {number}"),
+                    id,
+                    album_id: String::new(),
+                    artist_id: String::new(),
+                    offline: false,
+                    liked: false,
+                });
             }
-        );
-        assert!(
-            parse_queue_item_resource_id("music.queue-item:v1:not-an-index:dHJhY2stMQ").is_none(),
-            "malformed occurrence ids cannot acquire queue authority"
-        );
-    }
-
-    #[test]
-    fn resource_arguments_refuse_wrong_kind_and_stale_tracks() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let library = &resources[0];
-        let player = library
-            .children
-            .iter()
-            .find(|resource| resource.kind == "music.player")
-            .unwrap();
-        let queue_add = player
-            .actions
-            .iter()
-            .find(|action| action.id == "queue-add")
-            .unwrap();
-
-        for address in ["music.album:not-a-track", "music.track:removed"] {
-            let encoded = queue_add
-                .build_args([(String::from("track"), ArgValue::Resource(address.into()))])
-                .expect("generic resource shape binds before Music validates its kind/state");
+            let resources = provide_resources(&ctx, &AutoCommit::new());
+            let root = &resources[0];
             assert_eq!(
-                encoded.type_id,
-                tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
-                "{address}"
+                root.children
+                    .iter()
+                    .filter(|resource| resource.kind == "music.track")
+                    .count(),
+                OPEN_RESOURCE_CATEGORY_LIMIT,
+                "opening Ctrl+K never clones every catalog track"
+            );
+
+            let late_id = track_resource_id("track-024");
+            assert!(
+                !root
+                    .children
+                    .iter()
+                    .any(|resource| resource.id.as_str() == late_id),
+                "the late track is intentionally absent from the contextual page"
+            );
+            let late = resource_by_id(&ctx, &late_id).expect("late track resolves by stable id");
+            assert_eq!(late.id.as_str(), late_id);
+            assert!(late.actions.iter().any(|action| action.id == "play"));
+            assert!(
+                resource_by_id(&ctx, "music.track:deleted").is_none(),
+                "a stale address never resolves into new authority"
             );
         }
 
-        let playlist = library
-            .children
-            .iter()
-            .find(|resource| resource.kind == "music.playlist")
-            .unwrap();
-        let add_track = playlist
-            .actions
-            .iter()
-            .find(|action| action.id == "add-track")
-            .unwrap();
-        let encoded = add_track
-            .build_args([(
-                String::from("track"),
-                ArgValue::Resource("music.track:removed".into()),
-            )])
-            .unwrap();
-        assert_eq!(
-            encoded.type_id,
-            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
-        );
+        // Phase `track_resource_exposes_exact_parent_navigation_targets`.
+        {
+            let track = CatalogTrackResource {
+                id: "track-1".into(),
+                label: "Song — Artist".into(),
+                album_id: "album-9".into(),
+                artist_id: "artist-2".into(),
+                offline: false,
+                liked: false,
+            };
+            let resource = catalog_track_resource(&track, &crate::model::Playback::default());
+            let album = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "open-album")
+                .expect("track has an exact album action");
+            let artist = resource
+                .actions
+                .iter()
+                .find(|action| action.id == "open-artist")
+                .expect("track has an exact artist action");
+            for (action, wanted) in [(album, "album-9"), (artist, "artist-2")] {
+                let encoded = spec_encoding_of(action);
+                let operation = decode_operation(&encoded.type_id, &encoded.payload)
+                    .expect("operation decodes")
+                    .expect("music operation");
+                match operation {
+                    MusicOperation::OpenAlbum { id } | MusicOperation::OpenArtist { id } => {
+                        assert_eq!(id, wanted);
+                    }
+                    other => panic!("unexpected parent action: {other:?}"),
+                }
+            }
+        }
+
+        // Phase `document_mutations_advertise_write_permission_and_views_advertise_read`.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            for flat in tilo_actions::flatten(&resources) {
+                let permission = flat.action.contract.permission;
+                match flat.action.kind {
+                    OperationKind::Document => assert_eq!(
+                        permission,
+                        PermissionRequirement::Write,
+                        "{} must require write permission",
+                        flat.key
+                    ),
+                    OperationKind::View => assert_eq!(
+                        permission,
+                        PermissionRequirement::Read,
+                        "{} must require read permission",
+                        flat.key
+                    ),
+                    OperationKind::Effect => {}
+                }
+            }
+        }
+
+        // Phase `every_top_level_destination_is_a_safe_canonical_view_resource`.
+        {
+            let ctx = MusicResourceCtx::default();
+            let root = provide_resources(&ctx, &AutoCommit::new())
+                .into_iter()
+                .next()
+                .expect("library root");
+            for &(id, label) in NAVIGATION_VIEWS {
+                let resource_id = view_resource_id(id);
+                let resource = root
+                    .children
+                    .iter()
+                    .find(|resource| resource.id.as_str() == resource_id)
+                    .expect("published top-level destination");
+                assert_eq!(resource.kind, "music.view");
+                assert_eq!(resource.label, label);
+                let open = resource
+                    .actions
+                    .iter()
+                    .find(|action| action.id == "open")
+                    .expect("canonical open action");
+                assert_eq!(open.kind, OperationKind::View);
+                assert_eq!(open.contract.permission, PermissionRequirement::Read);
+                let encoded = spec_encoding_of(open);
+                assert_eq!(
+                    decode_operation(&encoded.type_id, &encoded.payload)
+                        .expect("operation decodes"),
+                    Some(MusicOperation::OpenView { id: id.to_string() })
+                );
+                assert_eq!(
+                    open_view_address(id).expect("known view address").resource,
+                    resource_id
+                );
+                assert_eq!(
+                    resource_by_id(&ctx, &resource_id).map(|r| r.id.as_str().to_string()),
+                    Some(resource_id)
+                );
+            }
+            assert!(parse_view_resource_id("music.view:../../etc/passwd").is_none());
+            assert!(open_view_address("../../etc/passwd").is_none());
+        }
+
+        // Phase `published_resource_action_surface_validates_with_music_handlers`.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let operation_handlers =
+                std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
+            let violations =
+                tilo_actions::validate_surface(&resources, &registry(), &operation_handlers);
+            assert!(violations.is_empty(), "{violations:#?}");
+        }
     }
 
     #[test]
-    fn stale_replayed_library_actions_are_refused() {
-        let (_app, mut doc) = seeded();
-        let stale = MusicAction::AddTrackToPlaylist {
-            playlist: "gone".into(),
-            track: "gone".into(),
-        };
-        assert!(matches!(
-            stale.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn playlist_creation_and_covers_are_portable_and_validated() {
+        // Phase `portable_playlist_cover_replays_to_a_peer_without_a_local_path`.
+        {
+            let (_app, seeded_doc) = seeded();
+            let mut a = seeded_doc;
+            a.commit();
+            let mut b = AutoCommit::load(&a.save()).unwrap();
+            let playlist = crate::doc::load_library(&a).playlists[0].id.clone();
+            // A tiny valid PNG, representative of the normalized portal output.
+            let cover = tiny_portable_png();
+            assert!(portable_cover_value(&cover));
+            assert!(!cover.contains("file:"));
+            assert!(!cover.contains("/tmp/"));
+
+            let action = set_cover_action(&playlist, &cover);
+            let envelope = tilo_actions::apply_local(&mut a, &action, encode(&action)).unwrap();
+            tilo_actions::replay(&mut b, &envelope, &registry()).unwrap();
+
+            assert_eq!(
+                a.get_heads(),
+                b.get_heads(),
+                "cover replay converges exactly"
+            );
+            assert_eq!(
+                crate::doc::load_library(&b)
+                    .playlist(&playlist)
+                    .unwrap()
+                    .cover,
+                cover,
+                "the peer receives a portable value, not the picker's local path"
+            );
+        }
+
+        // Phase `playlist_cover_action_refuses_local_unsafe_and_malformed_values`.
+        {
+            let (_app, mut doc) = seeded();
+            let playlist = crate::doc::load_library(&doc).playlists[0].id.clone();
+            let oversized = format!(
+                "data:image/png;base64,{}",
+                "A".repeat(MAX_PORTABLE_COVER_BYTES.saturating_mul(2))
+            );
+            for cover in [
+                "file:///tmp/cover.png",
+                "/tmp/cover.png",
+                "http://example.test/cover.png",
+                "data:image/png;base64,not-valid-base64",
+                "data:image/png;base64,iVBORw0KGgo=",
+                "data:image/jpeg;base64,iVBORw0KGgo=",
+                oversized.as_str(),
+            ] {
+                let action = set_cover_action(&playlist, cover);
+                assert!(
+                    matches!(action.apply(&mut doc), Err(ActionError::Refused(_))),
+                    "must refuse hostile/nonportable cover {cover:?}"
+                );
+            }
+        }
+
+        // Phase `new_playlist_action_creates_a_playlist`.
+        // Dispatching the "New playlist" prompted action creates a playlist with the
+        // committed name (the id is minted at authoring time, so this asserts the
+        // effect, not byte-equality against a second freshly-minted id).
+        {
+            let (app, mut doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let spec = resources[0]
+                .actions
+                .iter()
+                .find(|a| a.id == "new-playlist")
+                .unwrap();
+            let before = crate::doc::load_library(&doc).playlists.len();
+
+            let encoded = prompted_encode(spec, "Late Night");
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+
+            let lib = crate::doc::load_library(&doc);
+            assert_eq!(
+                lib.playlists.len(),
+                before + 1,
+                "the action added a playlist"
+            );
+            assert!(
+                lib.playlists.iter().any(|p| p.name == "Late Night"),
+                "the created playlist carries the committed name"
+            );
+        }
     }
 
     #[test]
-    fn contextual_resources_are_bounded_but_late_catalog_items_resolve_lazily() {
-        let mut ctx = MusicResourceCtx::default();
-        for number in 0..(OPEN_RESOURCE_CATEGORY_LIMIT + 9) {
-            let id = format!("track-{number:03}");
-            ctx.tracks.push(CatalogTrackResource {
-                label: format!("Track {number}"),
-                id,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn playback_and_queue_arguments_are_typed_canonical_and_fresh() {
+        // Phase `playback_and_queue_are_local_effects_with_typed_arguments`.
+        {
+            let mut ctx = MusicResourceCtx::default();
+            ctx.playback.current = Some("track-1".into());
+            ctx.playback.queue.push("track-1".into());
+            let resources = provide_resources(&ctx, &AutoCommit::new());
+            let root = resources[0]
+                .children
+                .iter()
+                .find(|resource| resource.kind == "music.player")
+                .unwrap();
+            for id in [
+                "play-pause",
+                "seek",
+                "set-volume",
+                "queue-add",
+                "queue-remove",
+            ] {
+                let action = root.actions.iter().find(|action| action.id == id).unwrap();
+                assert_eq!(action.kind, tilo_actions::OperationKind::Effect, "{id}");
+                assert_eq!(
+                    action.contract.permission,
+                    PermissionRequirement::Write,
+                    "{id}"
+                );
+                assert!(
+                    !action.contract.reversible,
+                    "local device effects cannot claim an executable undo: {id}"
+                );
+            }
+            assert_eq!(
+                root.actions
+                    .iter()
+                    .find(|a| a.id == "seek")
+                    .unwrap()
+                    .params()[0]
+                    .ty,
+                ParamType::Integer
+            );
+            let track = CatalogTrackResource {
+                id: "track-2".into(),
+                label: "Track 2".into(),
                 album_id: String::new(),
                 artist_id: String::new(),
                 offline: false,
                 liked: false,
-            });
+            };
+            let play = catalog_track_resource(&track, &ctx.playback)
+                .actions
+                .into_iter()
+                .find(|action| action.id == "play")
+                .unwrap();
+            assert_eq!(
+                play.contract.execution,
+                ExecutionMode::Background { cancellable: false }
+            );
+            assert!(matches!(play.contract.result, ResultSpec::Json { .. }));
+            let offline = catalog_track_resource(&track, &ctx.playback)
+                .actions
+                .into_iter()
+                .find(|action| action.id == "keep-offline")
+                .unwrap();
+            assert_eq!(
+                offline.contract.execution,
+                ExecutionMode::Background { cancellable: true },
+                "offline transfer is a bounded cancellable device effect"
+            );
         }
-        let resources = provide_resources(&ctx, &AutoCommit::new());
-        let root = &resources[0];
-        assert_eq!(
-            root.children
-                .iter()
-                .filter(|resource| resource.kind == "music.track")
-                .count(),
-            OPEN_RESOURCE_CATEGORY_LIMIT,
-            "opening Ctrl+K never clones every catalog track"
-        );
 
-        let late_id = track_resource_id("track-024");
-        assert!(
-            !root
+        // Phase `queue_occurrences_are_canonical_and_duplicate_safe`.
+        {
+            let mut ctx = MusicResourceCtx::default();
+            ctx.playback.queue = vec!["track-1".into(), "track-1".into(), "track-2".into()];
+            ctx.playback.current = Some("track-1".into());
+            ctx.queue = vec![
+                QueueItemResource {
+                    index: 0,
+                    track: "track-1".into(),
+                    label: "First track".into(),
+                    current: true,
+                },
+                QueueItemResource {
+                    index: 1,
+                    track: "track-1".into(),
+                    label: "Second occurrence".into(),
+                    current: false,
+                },
+                QueueItemResource {
+                    index: 2,
+                    track: "track-2".into(),
+                    label: "Third track".into(),
+                    current: false,
+                },
+            ];
+            let root = provide_resources(&ctx, &AutoCommit::new()).pop().unwrap();
+            let queue = root
                 .children
                 .iter()
-                .any(|resource| resource.id.as_str() == late_id),
-            "the late track is intentionally absent from the contextual page"
-        );
-        let late = resource_by_id(&ctx, &late_id).expect("late track resolves by stable id");
-        assert_eq!(late.id.as_str(), late_id);
-        assert!(late.actions.iter().any(|action| action.id == "play"));
-        assert!(
-            resource_by_id(&ctx, "music.track:deleted").is_none(),
-            "a stale address never resolves into new authority"
-        );
-    }
-
-    #[test]
-    fn track_resource_exposes_exact_parent_navigation_targets() {
-        let track = CatalogTrackResource {
-            id: "track-1".into(),
-            label: "Song — Artist".into(),
-            album_id: "album-9".into(),
-            artist_id: "artist-2".into(),
-            offline: false,
-            liked: false,
-        };
-        let resource = catalog_track_resource(&track, &crate::model::Playback::default());
-        let album = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "open-album")
-            .expect("track has an exact album action");
-        let artist = resource
-            .actions
-            .iter()
-            .find(|action| action.id == "open-artist")
-            .expect("track has an exact artist action");
-        for (action, wanted) in [(album, "album-9"), (artist, "artist-2")] {
-            let encoded = spec_encoding_of(action);
-            let operation = decode_operation(&encoded.type_id, &encoded.payload)
-                .expect("operation decodes")
-                .expect("music operation");
-            match operation {
-                MusicOperation::OpenAlbum { id } | MusicOperation::OpenArtist { id } => {
-                    assert_eq!(id, wanted);
-                }
-                other => panic!("unexpected parent action: {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn document_mutations_advertise_write_permission_and_views_advertise_read() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        for flat in tilo_actions::flatten(&resources) {
-            let permission = flat.action.contract.permission;
-            match flat.action.kind {
-                OperationKind::Document => assert_eq!(
-                    permission,
-                    PermissionRequirement::Write,
-                    "{} must require write permission",
-                    flat.key
-                ),
-                OperationKind::View => assert_eq!(
-                    permission,
-                    PermissionRequirement::Read,
-                    "{} must require read permission",
-                    flat.key
-                ),
-                OperationKind::Effect => {}
-            }
-        }
-    }
-
-    #[test]
-    fn every_top_level_destination_is_a_safe_canonical_view_resource() {
-        let ctx = MusicResourceCtx::default();
-        let root = provide_resources(&ctx, &AutoCommit::new())
-            .into_iter()
-            .next()
-            .expect("library root");
-        for &(id, label) in NAVIGATION_VIEWS {
-            let resource_id = view_resource_id(id);
-            let resource = root
-                .children
-                .iter()
-                .find(|resource| resource.id.as_str() == resource_id)
-                .expect("published top-level destination");
-            assert_eq!(resource.kind, "music.view");
-            assert_eq!(resource.label, label);
-            let open = resource
+                .find(|resource| resource.id.as_str() == QUEUE_RESOURCE_ID)
+                .expect("local queue has a canonical resource");
+            assert_eq!(queue.kind, "music.queue");
+            assert_eq!(queue.children.len(), 3);
+            assert_ne!(queue.children[0].id, queue.children[1].id);
+            assert_eq!(
+                parse_queue_item_resource_id(queue.children[1].id.as_str()),
+                Some((1, "track-1".into())),
+                "a duplicate track retains an occurrence-specific address"
+            );
+            let remove = queue.children[1]
                 .actions
                 .iter()
-                .find(|action| action.id == "open")
-                .expect("canonical open action");
-            assert_eq!(open.kind, OperationKind::View);
-            assert_eq!(open.contract.permission, PermissionRequirement::Read);
-            let encoded = spec_encoding_of(open);
+                .find(|action| action.id == "remove")
+                .expect("queue rows are actionable without pixels");
+            let operation = decode_operation(
+                &spec_encoding_of(remove).type_id,
+                &spec_encoding_of(remove).payload,
+            )
+            .unwrap()
+            .unwrap();
             assert_eq!(
-                decode_operation(&encoded.type_id, &encoded.payload).expect("operation decodes"),
-                Some(MusicOperation::OpenView { id: id.to_string() })
+                operation,
+                MusicOperation::RemoveQueueItem {
+                    index: 1,
+                    track: "track-1".into(),
+                }
             );
-            assert_eq!(
-                open_view_address(id).expect("known view address").resource,
-                resource_id
-            );
-            assert_eq!(
-                resource_by_id(&ctx, &resource_id).map(|r| r.id.as_str().to_string()),
-                Some(resource_id)
+            assert!(
+                parse_queue_item_resource_id("music.queue-item:v1:not-an-index:dHJhY2stMQ")
+                    .is_none(),
+                "malformed occurrence ids cannot acquire queue authority"
             );
         }
-        assert!(parse_view_resource_id("music.view:../../etc/passwd").is_none());
-        assert!(open_view_address("../../etc/passwd").is_none());
-    }
 
-    #[test]
-    fn published_resource_action_surface_validates_with_music_handlers() {
-        let (app, doc) = seeded();
-        let resources = Widget::resources(&app, &doc);
-        let operation_handlers =
-            std::collections::HashSet::from([MUSIC_OPERATION_TYPE.to_string()]);
-        let violations =
-            tilo_actions::validate_surface(&resources, &registry(), &operation_handlers);
-        assert!(violations.is_empty(), "{violations:#?}");
-    }
+        // Phase `resource_arguments_refuse_wrong_kind_and_stale_tracks`.
+        {
+            let (app, doc) = seeded();
+            let resources = Widget::resources(&app, &doc);
+            let library = &resources[0];
+            let player = library
+                .children
+                .iter()
+                .find(|resource| resource.kind == "music.player")
+                .unwrap();
+            let queue_add = player
+                .actions
+                .iter()
+                .find(|action| action.id == "queue-add")
+                .unwrap();
 
-    #[test]
-    fn late_playlist_membership_resolves_lazily_with_canonical_actions() {
-        let playlist = PlaylistResource {
-            id: "playlist:日本語".into(),
-            name: "Long playlist".into(),
-            tracks: (0..(OPEN_PLAYLIST_TRACK_LIMIT + 8))
-                .map(|number| TrackRef {
-                    id: format!("track:{number}:🎧"),
-                    label: format!("Track {number}"),
-                    liked: false,
-                    rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
-                })
-                .collect(),
-        };
-        let target = playlist.tracks.last().cloned().expect("late membership");
-        let index = playlist.tracks.len() - 1;
-        let ctx = MusicResourceCtx {
-            playlists: vec![playlist.clone()],
-            membership: Some(PlaylistMembershipResource {
-                playlist: playlist.id.clone(),
-                track: target.clone(),
-                index,
-                total: playlist.tracks.len(),
-                up_rank: playlist.move_rank(index, index.saturating_sub(1)),
-                down_rank: playlist.move_rank(index, index.saturating_add(1)),
-            }),
-            ..Default::default()
-        };
-        let snapshot = provide_resources(&ctx, &AutoCommit::new());
-        let playlist_snapshot = snapshot[0]
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == playlist_resource_id(&playlist.id))
-            .expect("playlist remains present after the fixed navigation resources");
-        assert_eq!(
-            playlist_snapshot.children.len(),
-            OPEN_PLAYLIST_TRACK_LIMIT,
-            "the contextual page does not materialize every membership"
-        );
-        let id = playlist_track_resource_id(&playlist.id, &target.id);
-        assert_eq!(
-            parse_playlist_track_resource_id(&id),
-            Some((playlist.id.clone(), target.id.clone())),
-            "membership identity is Unicode-safe and reversible"
-        );
-        let direct = resource_by_id(&ctx, &id).expect("late membership resolves directly");
-        let remove = direct
-            .actions
-            .iter()
-            .find(|action| action.id == "remove")
-            .unwrap();
-        assert_eq!(
-            spec_encoding_of(remove),
-            encode(&remove_track_action(&playlist.id, &target.id)),
-            "the lazy resource uses the exact same canonical remove action"
-        );
-        let up = direct
-            .actions
-            .iter()
-            .find(|action| action.id == "move-up")
-            .unwrap();
-        assert_eq!(
-            spec_encoding_of(up),
-            encode(&move_track_action(
-                &playlist.id,
-                &target.id,
-                ctx.membership.as_ref().unwrap().up_rank
-            )),
-            "the lazy resource preserves the original membership index"
-        );
-    }
-
-    #[test]
-    fn stale_membership_remove_is_refused_and_absolute_reorder_is_idempotent() {
-        let (_app, mut doc) = seeded();
-        let playlist = crate::doc::load_library(&doc).playlists[0].clone();
-        let track = playlist.track_ids[0].clone();
-        let remove = remove_track_action(&playlist.id, &track);
-        remove.apply(&mut doc).expect("live membership removes");
-        assert!(matches!(
-            remove.apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-
-        let playlist = crate::doc::load_library(&doc).playlists[0].clone();
-        let track = playlist.track_ids[0].clone();
-        let rank = playlist.rank_for_move(&track, 1).unwrap();
-        let move_action = move_track_action(&playlist.id, &track, rank);
-        move_action.apply(&mut doc).expect("live membership moves");
-        move_action
-            .apply(&mut doc)
-            .expect("absolute membership move safely replays");
-    }
-
-    #[test]
-    fn encoded_divergent_playlist_edits_converge_by_stable_membership() {
-        let (_app, mut base) = seeded();
-        base.commit();
-        let bytes = base.save();
-        let mut a = AutoCommit::load(&bytes).unwrap();
-        let mut b = AutoCommit::load(&bytes).unwrap();
-        let playlist = crate::doc::load_library(&a).playlists[0].clone();
-        let moved = playlist.track_ids[0].clone();
-        let removed = playlist.track_ids[1].clone();
-        let rank = playlist
-            .rank_for_move(&moved, playlist.track_ids.len() - 1)
-            .unwrap();
-
-        let move_action = move_track_action(&playlist.id, &moved, rank);
-        let remove_action = remove_track_action(&playlist.id, &removed);
-        tilo_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
-        tilo_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
-
-        let a_bytes = a.save();
-        let b_bytes = b.save();
-        let mut left = AutoCommit::load(&a_bytes).unwrap();
-        let mut right_for_left = AutoCommit::load(&b_bytes).unwrap();
-        left.merge_incoming(&mut right_for_left).unwrap();
-        let mut right = AutoCommit::load(&b_bytes).unwrap();
-        let mut left_for_right = AutoCommit::load(&a_bytes).unwrap();
-        right.merge_incoming(&mut left_for_right).unwrap();
-
-        assert_eq!(left.get_heads(), right.get_heads());
-        let left_playlist = crate::doc::load_library(&left)
-            .playlist(&playlist.id)
-            .unwrap()
-            .clone();
-        let right_playlist = crate::doc::load_library(&right)
-            .playlist(&playlist.id)
-            .unwrap()
-            .clone();
-        assert_eq!(left_playlist.track_ids, right_playlist.track_ids);
-        assert!(!left_playlist.track_ids.contains(&removed));
-        assert_eq!(left_playlist.track_ids.last(), Some(&moved));
-    }
-
-    #[test]
-    fn legacy_positional_membership_actions_remain_decodable() {
-        let (_app, mut doc) = seeded();
-        let append: MusicAction = serde_json::from_value(serde_json::json!({
-            "AddTrackToPlaylist": {
-                "playlist": "pl_focus",
-                "track": "tk_g1"
+            for address in ["music.album:not-a-track", "music.track:removed"] {
+                let encoded = queue_add
+                    .build_args([(String::from("track"), ArgValue::Resource(address.into()))])
+                    .expect("generic resource shape binds before Music validates its kind/state");
+                assert_eq!(
+                    encoded.type_id,
+                    tilo_actions::resource::INVALID_ARGUMENTS_TYPE,
+                    "{address}"
+                );
             }
-        }))
-        .unwrap();
-        append.apply(&mut doc).unwrap();
-        assert!(crate::doc::playlist_contains_track(
-            &doc, "pl_focus", "tk_g1"
-        ));
 
-        let moved = crate::doc::playlist_track_at(&doc, "pl_focus", 0).unwrap();
-        let reorder: MusicAction = serde_json::from_value(serde_json::json!({
-            "MoveTrackInPlaylist": {
-                "playlist": "pl_focus",
-                "track": moved,
-                "from": 0,
-                "to": 1
-            }
-        }))
-        .unwrap();
-        reorder.apply(&mut doc).unwrap();
-        assert_eq!(
-            crate::doc::playlist_track_at(&doc, "pl_focus", 1),
-            Some(moved)
-        );
+            let playlist = library
+                .children
+                .iter()
+                .find(|resource| resource.kind == "music.playlist")
+                .unwrap();
+            let add_track = playlist
+                .actions
+                .iter()
+                .find(|action| action.id == "add-track")
+                .unwrap();
+            let encoded = add_track
+                .build_args([(
+                    String::from("track"),
+                    ArgValue::Resource("music.track:removed".into()),
+                )])
+                .unwrap();
+            assert_eq!(
+                encoded.type_id,
+                tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+            );
+        }
+
+        // Phase `stale_replayed_library_actions_are_refused`.
+        {
+            let (_app, mut doc) = seeded();
+            let stale = MusicAction::AddTrackToPlaylist {
+                playlist: "gone".into(),
+                track: "gone".into(),
+            };
+            assert!(matches!(
+                stale.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn playlist_membership_actions_resolve_lazily_and_converge() {
+        // Phase `late_playlist_membership_resolves_lazily_with_canonical_actions`.
+        {
+            let playlist = PlaylistResource {
+                id: "playlist:日本語".into(),
+                name: "Long playlist".into(),
+                tracks: (0..(OPEN_PLAYLIST_TRACK_LIMIT + 8))
+                    .map(|number| TrackRef {
+                        id: format!("track:{number}:🎧"),
+                        label: format!("Track {number}"),
+                        liked: false,
+                        rank: i64::try_from(number).unwrap_or(i64::MAX / 1_048_576) * 1_048_576,
+                    })
+                    .collect(),
+            };
+            let target = playlist.tracks.last().cloned().expect("late membership");
+            let index = playlist.tracks.len() - 1;
+            let ctx = MusicResourceCtx {
+                playlists: vec![playlist.clone()],
+                membership: Some(PlaylistMembershipResource {
+                    playlist: playlist.id.clone(),
+                    track: target.clone(),
+                    index,
+                    total: playlist.tracks.len(),
+                    up_rank: playlist.move_rank(index, index.saturating_sub(1)),
+                    down_rank: playlist.move_rank(index, index.saturating_add(1)),
+                }),
+                ..Default::default()
+            };
+            let snapshot = provide_resources(&ctx, &AutoCommit::new());
+            let playlist_snapshot = snapshot[0]
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == playlist_resource_id(&playlist.id))
+                .expect("playlist remains present after the fixed navigation resources");
+            assert_eq!(
+                playlist_snapshot.children.len(),
+                OPEN_PLAYLIST_TRACK_LIMIT,
+                "the contextual page does not materialize every membership"
+            );
+            let id = playlist_track_resource_id(&playlist.id, &target.id);
+            assert_eq!(
+                parse_playlist_track_resource_id(&id),
+                Some((playlist.id.clone(), target.id.clone())),
+                "membership identity is Unicode-safe and reversible"
+            );
+            let direct = resource_by_id(&ctx, &id).expect("late membership resolves directly");
+            let remove = direct
+                .actions
+                .iter()
+                .find(|action| action.id == "remove")
+                .unwrap();
+            assert_eq!(
+                spec_encoding_of(remove),
+                encode(&remove_track_action(&playlist.id, &target.id)),
+                "the lazy resource uses the exact same canonical remove action"
+            );
+            let up = direct
+                .actions
+                .iter()
+                .find(|action| action.id == "move-up")
+                .unwrap();
+            assert_eq!(
+                spec_encoding_of(up),
+                encode(&move_track_action(
+                    &playlist.id,
+                    &target.id,
+                    ctx.membership.as_ref().unwrap().up_rank
+                )),
+                "the lazy resource preserves the original membership index"
+            );
+        }
+
+        // Phase `stale_membership_remove_is_refused_and_absolute_reorder_is_idempotent`.
+        {
+            let (_app, mut doc) = seeded();
+            let playlist = crate::doc::load_library(&doc).playlists[0].clone();
+            let track = playlist.track_ids[0].clone();
+            let remove = remove_track_action(&playlist.id, &track);
+            remove.apply(&mut doc).expect("live membership removes");
+            assert!(matches!(
+                remove.apply(&mut doc),
+                Err(ActionError::Refused(_))
+            ));
+
+            let playlist = crate::doc::load_library(&doc).playlists[0].clone();
+            let track = playlist.track_ids[0].clone();
+            let rank = playlist.rank_for_move(&track, 1).unwrap();
+            let move_action = move_track_action(&playlist.id, &track, rank);
+            move_action.apply(&mut doc).expect("live membership moves");
+            move_action
+                .apply(&mut doc)
+                .expect("absolute membership move safely replays");
+        }
+
+        // Phase `encoded_divergent_playlist_edits_converge_by_stable_membership`.
+        {
+            let (_app, mut base) = seeded();
+            base.commit();
+            let bytes = base.save();
+            let mut a = AutoCommit::load(&bytes).unwrap();
+            let mut b = AutoCommit::load(&bytes).unwrap();
+            let playlist = crate::doc::load_library(&a).playlists[0].clone();
+            let moved = playlist.track_ids[0].clone();
+            let removed = playlist.track_ids[1].clone();
+            let rank = playlist
+                .rank_for_move(&moved, playlist.track_ids.len() - 1)
+                .unwrap();
+
+            let move_action = move_track_action(&playlist.id, &moved, rank);
+            let remove_action = remove_track_action(&playlist.id, &removed);
+            tilo_actions::apply_local(&mut a, &move_action, encode(&move_action)).unwrap();
+            tilo_actions::apply_local(&mut b, &remove_action, encode(&remove_action)).unwrap();
+
+            let a_bytes = a.save();
+            let b_bytes = b.save();
+            let mut left = AutoCommit::load(&a_bytes).unwrap();
+            let mut right_for_left = AutoCommit::load(&b_bytes).unwrap();
+            left.merge_incoming(&mut right_for_left).unwrap();
+            let mut right = AutoCommit::load(&b_bytes).unwrap();
+            let mut left_for_right = AutoCommit::load(&a_bytes).unwrap();
+            right.merge_incoming(&mut left_for_right).unwrap();
+
+            assert_eq!(left.get_heads(), right.get_heads());
+            let left_playlist = crate::doc::load_library(&left)
+                .playlist(&playlist.id)
+                .unwrap()
+                .clone();
+            let right_playlist = crate::doc::load_library(&right)
+                .playlist(&playlist.id)
+                .unwrap()
+                .clone();
+            assert_eq!(left_playlist.track_ids, right_playlist.track_ids);
+            assert!(!left_playlist.track_ids.contains(&removed));
+            assert_eq!(left_playlist.track_ids.last(), Some(&moved));
+        }
+
+        // Phase `legacy_positional_membership_actions_remain_decodable`.
+        {
+            let (_app, mut doc) = seeded();
+            let append: MusicAction = serde_json::from_value(serde_json::json!({
+                "AddTrackToPlaylist": {
+                    "playlist": "pl_focus",
+                    "track": "tk_g1"
+                }
+            }))
+            .unwrap();
+            append.apply(&mut doc).unwrap();
+            assert!(crate::doc::playlist_contains_track(
+                &doc, "pl_focus", "tk_g1"
+            ));
+
+            let moved = crate::doc::playlist_track_at(&doc, "pl_focus", 0).unwrap();
+            let reorder: MusicAction = serde_json::from_value(serde_json::json!({
+                "MoveTrackInPlaylist": {
+                    "playlist": "pl_focus",
+                    "track": moved,
+                    "from": 0,
+                    "to": 1
+                }
+            }))
+            .unwrap();
+            reorder.apply(&mut doc).unwrap();
+            assert_eq!(
+                crate::doc::playlist_track_at(&doc, "pl_focus", 1),
+                Some(moved)
+            );
+        }
     }
 }

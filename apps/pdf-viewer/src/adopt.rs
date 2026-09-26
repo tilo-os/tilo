@@ -506,14 +506,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pdf_dates_parse_to_unix_milliseconds() {
+    fn imported_dates_and_ids_are_deterministic() {
         assert_eq!(parse_pdf_date("D:19700101000000Z"), Some(0));
         assert_eq!(parse_pdf_date("D:20260924120000Z"), Some(1_790_251_200_000));
         assert_eq!(parse_pdf_date(""), None);
-    }
 
-    #[test]
-    fn imported_ids_are_stable_per_address() {
         let hash = "ab".repeat(32);
         assert_eq!(imported_id(&hash, 1, 3), imported_id(&hash, 1, 3));
         assert_ne!(imported_id(&hash, 1, 3), imported_id(&hash, 1, 4));

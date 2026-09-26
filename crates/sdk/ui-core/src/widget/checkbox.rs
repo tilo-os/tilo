@@ -741,404 +741,417 @@ mod tests {
     use crate::widget::Widget;
 
     #[test]
-    fn checkbox_test_id_default_is_checkbox() {
-        let c = Checkbox::new("any", "path");
-        assert_eq!(Widget::test_id(&c), Some("checkbox"));
-    }
+    fn checkbox_identity_face_and_scaled_label_geometry() {
+        fn checkbox_test_id_default_is_checkbox() {
+            let c = Checkbox::new("any", "path");
+            assert_eq!(Widget::test_id(&c), Some("checkbox"));
+        }
 
-    #[test]
-    fn checkbox_test_id_can_be_overridden() {
-        let c = Checkbox::new("any", "path").with_id("remember_me");
-        assert_eq!(Widget::test_id(&c), Some("remember_me"));
-    }
+        fn checkbox_test_id_can_be_overridden() {
+            let c = Checkbox::new("any", "path").with_id("remember_me");
+            assert_eq!(Widget::test_id(&c), Some("remember_me"));
+        }
 
-    #[test]
-    fn immediate_face_preserves_canvas_owned_state() {
-        let rect = Rect::new(2.0, 3.0, 18.0, 19.0);
-        let face = CheckboxFace::new(rect, true)
-            .hovered(true)
-            .focused(true)
-            .disabled(true)
-            .transparent_unchecked();
-        assert_eq!(face.rect, rect);
-        assert!(face.checked);
-        assert!(face.interact.hovered);
-        assert!(face.interact.focused);
-        assert!(face.interact.disabled);
-        assert!(!face.fill_unchecked);
-    }
+        fn immediate_face_preserves_canvas_owned_state() {
+            let rect = Rect::new(2.0, 3.0, 18.0, 19.0);
+            let face = CheckboxFace::new(rect, true)
+                .hovered(true)
+                .focused(true)
+                .disabled(true)
+                .transparent_unchecked();
+            assert_eq!(face.rect, rect);
+            assert!(face.checked);
+            assert!(face.interact.hovered);
+            assert!(face.interact.focused);
+            assert!(face.interact.disabled);
+            assert!(!face.fill_unchecked);
+        }
 
-    #[test]
-    fn with_enabled_false_is_reported_by_is_enabled() {
-        let c = Checkbox::new("any", "path").with_enabled(false);
-        assert!(!Widget::is_enabled(&c));
-        assert!(
-            Widget::is_enabled(&Checkbox::new("any", "path")),
-            "default is enabled"
-        );
-    }
+        fn visible_label_is_part_of_the_checkbox_click_target() {
+            use winit::event::DeviceId;
 
-    #[test]
-    fn accessibility_unchecked_default() {
-        use crate::a11y::Role;
-        let c = Checkbox::new("any", "path");
-        let node = Widget::accessibility(&c).unwrap();
-        assert_eq!(node.role, Role::Checkbox);
-        assert_eq!(node.state.checked, Some(false));
-        assert!(!node.state.disabled);
-        assert!(node.state.focusable);
-    }
-
-    #[test]
-    fn accessibility_uses_accessible_name_when_set() {
-        // No name by default (the label is usually a sibling); the explicit
-        // accessible name names a checkbox that stands alone.
-        let plain = Checkbox::new("any", "path");
-        assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
-
-        let named = Checkbox::new("any", "path").with_accessible_name("Remember me");
-        assert_eq!(
-            Widget::accessibility(&named).unwrap().name.as_deref(),
-            Some("Remember me"),
-        );
-    }
-
-    #[test]
-    fn visible_label_is_part_of_the_checkbox_click_target() {
-        use winit::event::DeviceId;
-
-        let mut checkbox = Checkbox::new("ack", "acknowledged")
-            .with_id("acknowledgement")
-            .with_label("I understand the consequence.");
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = checkbox.build_layout(&mut tree, &theme, &mut node_map);
-        let mut text = TextRenderer::new();
-        tree.compute_layout_with_measure(
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(360.0),
-                height: taffy::AvailableSpace::Definite(100.0),
-            },
-            |known, available, node_id, _, _| {
-                node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
-                    (*ptr).measure(known, available, &mut text)
-                })
-            },
-        )
-        .expect("labelled checkbox layout");
-        checkbox.apply_layout(&tree, node, Point::ZERO);
-        let row_rect = checkbox.rect;
-        assert!(row_rect.width() > 300.0, "row={row_rect:?}");
-
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let mut handled = false;
-        let mut focus = None;
-        checkbox.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (320.0, checkbox.rect.center().y).into(),
-            },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        checkbox.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-
-        assert!(checkbox.is_checked());
-        assert_eq!(focus, Some(node));
-        assert_eq!(
-            checkbox.accessibility().and_then(|node| node.name),
-            Some("I understand the consequence.".into())
-        );
-    }
-
-    #[test]
-    fn accessibility_disabled_checked_reports_checked_and_disabled() {
-        use crate::a11y::Role;
-        let mut c = Checkbox::new("any", "path").with_enabled(false);
-        c.is_checked = true; // same module → can set the synced state directly
-        let node = Widget::accessibility(&c).unwrap();
-        assert_eq!(node.role, Role::Checkbox);
-        assert_eq!(node.state.checked, Some(true), "checked state surfaces");
-        assert!(node.state.disabled, "disabled surfaces");
-    }
-
-    #[test]
-    fn perform_action_toggle_check_flips_state() {
-        use crate::a11y::Action;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut c = Checkbox::new("any", "checked");
-        assert!(!c.is_checked);
-        assert!(Widget::perform_action(
-            &mut c,
-            &Action::ToggleCheck,
-            &mut doc,
-            &root
-        ));
-        assert!(c.is_checked, "ToggleCheck flips to checked");
-        // Activate also toggles.
-        assert!(Widget::perform_action(
-            &mut c,
-            &Action::Activate,
-            &mut doc,
-            &root
-        ));
-        assert!(!c.is_checked, "Activate flips back");
-    }
-
-    #[test]
-    fn document_binding_resets_after_the_boolean_path_disappears() {
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut checkbox = Checkbox::new("any", "checked");
-        doc.put(&root, "checked", true).unwrap();
-        Widget::sync(&mut checkbox, &mut doc, &root);
-        assert!(checkbox.is_checked());
-
-        doc.delete(&root, "checked").unwrap();
-        Widget::sync(&mut checkbox, &mut doc, &root);
-        assert!(!checkbox.is_checked(), "a removed path means unchecked");
-
-        doc.put(&root, "checked", "not-a-boolean").unwrap();
-        Widget::sync(&mut checkbox, &mut doc, &root);
-        assert!(!checkbox.is_checked(), "a mistyped path cannot stay stale");
-    }
-
-    #[test]
-    fn local_state_binding_is_two_way_across_checkboxes() {
-        use crate::a11y::Action;
-
-        let state = crate::LocalState::new(false);
-        let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let captured = std::rc::Rc::clone(&changes);
-        let mut first = Checkbox::from_state(&state)
-            .on_change(move |checked| captured.borrow_mut().push(checked));
-        let mut second = Checkbox::from_state(&state);
-        let mut document = AutoCommit::new();
-
-        state.set(true);
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert!(first.is_checked());
-        assert!(second.is_checked());
-        assert!(changes.borrow().is_empty(), "model sync is not user intent");
-
-        assert!(Widget::perform_action(
-            &mut first,
-            &Action::ToggleCheck,
-            &mut document,
-            &automerge::ROOT,
-        ));
-        assert!(!state.get(), "user activation publishes typed state");
-        assert_eq!(&*changes.borrow(), &[false]);
-
-        Widget::sync(&mut second, &mut document, &automerge::ROOT);
-        assert!(!second.is_checked(), "sibling follows the shared model");
-
-        second.set_checked(true);
-        assert!(state.get(), "programmatic mutation publishes typed state");
-        Widget::sync(&mut first, &mut document, &automerge::ROOT);
-        assert!(first.is_checked());
-        assert_eq!(
-            &*changes.borrow(),
-            &[false],
-            "programmatic mutation does not invoke the user callback"
-        );
-    }
-
-    #[test]
-    fn disabled_checkbox_rejects_perform_action() {
-        use crate::a11y::Action;
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mut c = Checkbox::new("any", "checked").with_enabled(false);
-        assert!(!Widget::perform_action(
-            &mut c,
-            &Action::ToggleCheck,
-            &mut doc,
-            &root
-        ));
-        assert!(!c.is_checked, "a disabled checkbox must not toggle");
-    }
-
-    #[test]
-    fn disabled_checkbox_does_not_toggle() {
-        use winit::event::DeviceId;
-
-        let mut c = Checkbox::new("id", "checked").with_enabled(false);
-
-        let mut tree = TaffyTree::<()>::new();
-        let mut node_map = std::collections::HashMap::new();
-        let theme = Theme::dark();
-        let node = c.build_layout(&mut tree, &theme, &mut node_map);
-        tree.compute_layout(
-            node,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(50.0),
-                height: taffy::AvailableSpace::Definite(50.0),
-            },
-        )
-        .unwrap();
-        c.apply_layout(&tree, node, Point::ZERO);
-
-        let device: DeviceId = unsafe { std::mem::zeroed() };
-        let mut doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        let mods = winit::event::Modifiers::default();
-        let mut focus = None;
-        let mut handled = false;
-
-        c.handle_event(
-            &WindowEvent::CursorMoved {
-                device_id: device,
-                position: (10.0, 10.0).into(),
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-        c.handle_event(
-            &WindowEvent::MouseInput {
-                device_id: device,
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-            },
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
-
-        assert!(focus.is_none(), "disabled checkbox must not request focus");
-        assert!(!handled, "disabled checkbox must not swallow input");
-        assert!(
-            doc.get(&root, "checked").unwrap().is_none(),
-            "disabled checkbox must not write the CRDT path"
-        );
-    }
-
-    #[test]
-    fn action_binding_owns_accessibility_activation() {
-        let mut checkbox = Checkbox::new("native", "legacy")
-            .on_change(|_| panic!("legacy callback must be suppressed"))
-            .on_action(crate::widget::test_bool_action_binding());
-        let mut doc = AutoCommit::new();
-        Widget::refresh_control_action_availability(
-            &mut checkbox,
-            &std::collections::HashSet::new(),
-        );
-        assert!(!Widget::is_enabled(&checkbox));
-        assert!(!Widget::perform_action(
-            &mut checkbox,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        Widget::refresh_control_action_availability(
-            &mut checkbox,
-            &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
-                "test:control",
-                "set",
-            )]),
-        );
-        assert!(Widget::is_enabled(&checkbox));
-        assert!(Widget::perform_action(
-            &mut checkbox,
-            &crate::a11y::Action::Activate,
-            &mut doc,
-            &automerge::ROOT
-        ));
-        assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
-        let intent = Widget::take_control_invocation(&mut checkbox).unwrap();
-        assert_eq!(intent.arguments["value"], true);
-        assert!(matches!(
-            checkbox.control_action_bindings()[0].kind,
-            ControlBindingKind::Action(_)
-        ));
-        doc.put(&automerge::ROOT, "legacy", false).unwrap();
-        Widget::sync(&mut checkbox, &mut doc, &automerge::ROOT);
-        assert!(
-            !checkbox.is_checked(),
-            "the document path remains the read model"
-        );
-    }
-    #[test]
-    fn labelled_checkbox_applies_theme_text_scale_once_in_measure_and_draw() {
-        let mut checkbox = Checkbox::new("updates", "updates").with_label("Updates");
-        for (theme_scale, renderer_scale) in [(2.0, 1.0), (2.0, 2.0), (1.0, 2.0), (2.0, 1.0)] {
-            let theme = Theme::dark().with_text_scale(theme_scale);
-            let mut tree = TaffyTree::new();
-            let mut map = std::collections::HashMap::new();
-            checkbox.build_layout(&mut tree, &theme, &mut map);
-            let mut renderer = crate::font_catalog::fixture_renderer();
-            renderer.set_text_scale(renderer_scale);
-            let measured = checkbox.measure(
+            let mut checkbox = Checkbox::new("ack", "acknowledged")
+                .with_id("acknowledgement")
+                .with_label("I understand the consequence.");
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = checkbox.build_layout(&mut tree, &theme, &mut node_map);
+            let mut text = TextRenderer::new();
+            tree.compute_layout_with_measure(
+                node,
                 Size {
-                    width: None,
-                    height: None,
+                    width: taffy::AvailableSpace::Definite(360.0),
+                    height: taffy::AvailableSpace::Definite(100.0),
                 },
-                Size {
-                    width: taffy::AvailableSpace::MaxContent,
-                    height: taffy::AvailableSpace::MaxContent,
+                |known, available, node_id, _, _| {
+                    node_map.get(&node_id).map_or(Size::ZERO, |&ptr| unsafe {
+                        (*ptr).measure(known, available, &mut text)
+                    })
                 },
-                &mut renderer,
+            )
+            .expect("labelled checkbox layout");
+            checkbox.apply_layout(&tree, node, Point::ZERO);
+            let row_rect = checkbox.rect;
+            assert!(row_rect.width() > 300.0, "row={row_rect:?}");
+
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let mut doc = AutoCommit::new();
+            let mut handled = false;
+            let mut focus = None;
+            checkbox.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (320.0, checkbox.rect.center().y).into(),
+                },
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
             );
-            let expected =
-                (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
-            assert!(
-                (measured.height - expected).abs() < 0.1,
-                "theme{theme_scale} renderer{renderer_scale}: {measured:?}"
+            checkbox.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut doc,
+                &automerge::ROOT,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
             );
-            checkbox.rect = Rect::new(
-                0.0,
-                0.0,
-                f64::from(measured.width),
-                f64::from(measured.height),
+
+            assert!(checkbox.is_checked());
+            assert_eq!(focus, Some(node));
+            assert_eq!(
+                checkbox.accessibility().and_then(|node| node.name),
+                Some("I understand the consequence.".into())
             );
-            let mut scene = Scene::new();
-            checkbox.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut renderer,
-                &theme,
-                &crate::presence::PresenceCtx::default(),
-            );
-            assert!(!scene.encoding().resources.glyph_runs.is_empty());
-            for run in &scene.encoding().resources.glyph_runs {
-                assert!((run.font_size - 14.0 * theme_scale).abs() < 0.1);
+        }
+
+        fn labelled_checkbox_applies_theme_text_scale_once_in_measure_and_draw() {
+            let mut checkbox = Checkbox::new("updates", "updates").with_label("Updates");
+            for (theme_scale, renderer_scale) in [(2.0, 1.0), (2.0, 2.0), (1.0, 2.0), (2.0, 1.0)] {
+                let theme = Theme::dark().with_text_scale(theme_scale);
+                let mut tree = TaffyTree::new();
+                let mut map = std::collections::HashMap::new();
+                checkbox.build_layout(&mut tree, &theme, &mut map);
+                let mut renderer = crate::font_catalog::fixture_renderer();
+                renderer.set_text_scale(renderer_scale);
+                let measured = checkbox.measure(
+                    Size {
+                        width: None,
+                        height: None,
+                    },
+                    Size {
+                        width: taffy::AvailableSpace::MaxContent,
+                        height: taffy::AvailableSpace::MaxContent,
+                    },
+                    &mut renderer,
+                );
+                let expected =
+                    (14.0_f32 * 1.4 * theme_scale).max(checkbox.interaction.minimum_target());
+                assert!(
+                    (measured.height - expected).abs() < 0.1,
+                    "theme{theme_scale} renderer{renderer_scale}: {measured:?}"
+                );
+                checkbox.rect = Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(measured.width),
+                    f64::from(measured.height),
+                );
+                let mut scene = Scene::new();
+                checkbox.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut renderer,
+                    &theme,
+                    &crate::presence::PresenceCtx::default(),
+                );
+                assert!(!scene.encoding().resources.glyph_runs.is_empty());
+                for run in &scene.encoding().resources.glyph_runs {
+                    assert!((run.font_size - 14.0 * theme_scale).abs() < 0.1);
+                }
             }
         }
+
+        checkbox_test_id_default_is_checkbox();
+        checkbox_test_id_can_be_overridden();
+        immediate_face_preserves_canvas_owned_state();
+        visible_label_is_part_of_the_checkbox_click_target();
+        labelled_checkbox_applies_theme_text_scale_once_in_measure_and_draw();
+    }
+
+    #[test]
+    fn checkbox_accessibility_and_actions_respect_enabled_state() {
+        fn with_enabled_false_is_reported_by_is_enabled() {
+            let c = Checkbox::new("any", "path").with_enabled(false);
+            assert!(!Widget::is_enabled(&c));
+            assert!(
+                Widget::is_enabled(&Checkbox::new("any", "path")),
+                "default is enabled"
+            );
+        }
+
+        fn accessibility_unchecked_default() {
+            use crate::a11y::Role;
+            let c = Checkbox::new("any", "path");
+            let node = Widget::accessibility(&c).unwrap();
+            assert_eq!(node.role, Role::Checkbox);
+            assert_eq!(node.state.checked, Some(false));
+            assert!(!node.state.disabled);
+            assert!(node.state.focusable);
+        }
+
+        fn accessibility_uses_accessible_name_when_set() {
+            // No name by default (the label is usually a sibling); the explicit
+            // accessible name names a checkbox that stands alone.
+            let plain = Checkbox::new("any", "path");
+            assert_eq!(Widget::accessibility(&plain).unwrap().name, None);
+
+            let named = Checkbox::new("any", "path").with_accessible_name("Remember me");
+            assert_eq!(
+                Widget::accessibility(&named).unwrap().name.as_deref(),
+                Some("Remember me"),
+            );
+        }
+
+        fn accessibility_disabled_checked_reports_checked_and_disabled() {
+            use crate::a11y::Role;
+            let mut c = Checkbox::new("any", "path").with_enabled(false);
+            c.is_checked = true; // same module → can set the synced state directly
+            let node = Widget::accessibility(&c).unwrap();
+            assert_eq!(node.role, Role::Checkbox);
+            assert_eq!(node.state.checked, Some(true), "checked state surfaces");
+            assert!(node.state.disabled, "disabled surfaces");
+        }
+
+        fn perform_action_toggle_check_flips_state() {
+            use crate::a11y::Action;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut c = Checkbox::new("any", "checked");
+            assert!(!c.is_checked);
+            assert!(Widget::perform_action(
+                &mut c,
+                &Action::ToggleCheck,
+                &mut doc,
+                &root
+            ));
+            assert!(c.is_checked, "ToggleCheck flips to checked");
+            // Activate also toggles.
+            assert!(Widget::perform_action(
+                &mut c,
+                &Action::Activate,
+                &mut doc,
+                &root
+            ));
+            assert!(!c.is_checked, "Activate flips back");
+        }
+
+        fn disabled_checkbox_rejects_perform_action() {
+            use crate::a11y::Action;
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut c = Checkbox::new("any", "checked").with_enabled(false);
+            assert!(!Widget::perform_action(
+                &mut c,
+                &Action::ToggleCheck,
+                &mut doc,
+                &root
+            ));
+            assert!(!c.is_checked, "a disabled checkbox must not toggle");
+        }
+
+        fn disabled_checkbox_does_not_toggle() {
+            use winit::event::DeviceId;
+
+            let mut c = Checkbox::new("id", "checked").with_enabled(false);
+
+            let mut tree = TaffyTree::<()>::new();
+            let mut node_map = std::collections::HashMap::new();
+            let theme = Theme::dark();
+            let node = c.build_layout(&mut tree, &theme, &mut node_map);
+            tree.compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(50.0),
+                    height: taffy::AvailableSpace::Definite(50.0),
+                },
+            )
+            .unwrap();
+            c.apply_layout(&tree, node, Point::ZERO);
+
+            let device: DeviceId = unsafe { std::mem::zeroed() };
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mods = winit::event::Modifiers::default();
+            let mut focus = None;
+            let mut handled = false;
+
+            c.handle_event(
+                &WindowEvent::CursorMoved {
+                    device_id: device,
+                    position: (10.0, 10.0).into(),
+                },
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
+            c.handle_event(
+                &WindowEvent::MouseInput {
+                    device_id: device,
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                },
+                1.0,
+                &mods,
+                &mut doc,
+                &root,
+                &mut handled,
+                &mut focus,
+                node,
+                &tree,
+            );
+
+            assert!(focus.is_none(), "disabled checkbox must not request focus");
+            assert!(!handled, "disabled checkbox must not swallow input");
+            assert!(
+                doc.get(&root, "checked").unwrap().is_none(),
+                "disabled checkbox must not write the CRDT path"
+            );
+        }
+
+        fn action_binding_owns_accessibility_activation() {
+            let mut checkbox = Checkbox::new("native", "legacy")
+                .on_change(|_| panic!("legacy callback must be suppressed"))
+                .on_action(crate::widget::test_bool_action_binding());
+            let mut doc = AutoCommit::new();
+            Widget::refresh_control_action_availability(
+                &mut checkbox,
+                &std::collections::HashSet::new(),
+            );
+            assert!(!Widget::is_enabled(&checkbox));
+            assert!(!Widget::perform_action(
+                &mut checkbox,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            Widget::refresh_control_action_availability(
+                &mut checkbox,
+                &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
+                    "test:control",
+                    "set",
+                )]),
+            );
+            assert!(Widget::is_enabled(&checkbox));
+            assert!(Widget::perform_action(
+                &mut checkbox,
+                &crate::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT
+            ));
+            assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
+            let intent = Widget::take_control_invocation(&mut checkbox).unwrap();
+            assert_eq!(intent.arguments["value"], true);
+            assert!(matches!(
+                checkbox.control_action_bindings()[0].kind,
+                ControlBindingKind::Action(_)
+            ));
+            doc.put(&automerge::ROOT, "legacy", false).unwrap();
+            Widget::sync(&mut checkbox, &mut doc, &automerge::ROOT);
+            assert!(
+                !checkbox.is_checked(),
+                "the document path remains the read model"
+            );
+        }
+
+        with_enabled_false_is_reported_by_is_enabled();
+        accessibility_unchecked_default();
+        accessibility_uses_accessible_name_when_set();
+        accessibility_disabled_checked_reports_checked_and_disabled();
+        perform_action_toggle_check_flips_state();
+        disabled_checkbox_rejects_perform_action();
+        disabled_checkbox_does_not_toggle();
+        action_binding_owns_accessibility_activation();
+    }
+
+    #[test]
+    fn checkbox_bindings_follow_document_and_local_state() {
+        fn document_binding_resets_after_the_boolean_path_disappears() {
+            let mut doc = AutoCommit::new();
+            let root = automerge::ROOT;
+            let mut checkbox = Checkbox::new("any", "checked");
+            doc.put(&root, "checked", true).unwrap();
+            Widget::sync(&mut checkbox, &mut doc, &root);
+            assert!(checkbox.is_checked());
+
+            doc.delete(&root, "checked").unwrap();
+            Widget::sync(&mut checkbox, &mut doc, &root);
+            assert!(!checkbox.is_checked(), "a removed path means unchecked");
+
+            doc.put(&root, "checked", "not-a-boolean").unwrap();
+            Widget::sync(&mut checkbox, &mut doc, &root);
+            assert!(!checkbox.is_checked(), "a mistyped path cannot stay stale");
+        }
+
+        fn local_state_binding_is_two_way_across_checkboxes() {
+            use crate::a11y::Action;
+
+            let state = crate::LocalState::new(false);
+            let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let captured = std::rc::Rc::clone(&changes);
+            let mut first = Checkbox::from_state(&state)
+                .on_change(move |checked| captured.borrow_mut().push(checked));
+            let mut second = Checkbox::from_state(&state);
+            let mut document = AutoCommit::new();
+
+            state.set(true);
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert!(first.is_checked());
+            assert!(second.is_checked());
+            assert!(changes.borrow().is_empty(), "model sync is not user intent");
+
+            assert!(Widget::perform_action(
+                &mut first,
+                &Action::ToggleCheck,
+                &mut document,
+                &automerge::ROOT,
+            ));
+            assert!(!state.get(), "user activation publishes typed state");
+            assert_eq!(&*changes.borrow(), &[false]);
+
+            Widget::sync(&mut second, &mut document, &automerge::ROOT);
+            assert!(!second.is_checked(), "sibling follows the shared model");
+
+            second.set_checked(true);
+            assert!(state.get(), "programmatic mutation publishes typed state");
+            Widget::sync(&mut first, &mut document, &automerge::ROOT);
+            assert!(first.is_checked());
+            assert_eq!(
+                &*changes.borrow(),
+                &[false],
+                "programmatic mutation does not invoke the user callback"
+            );
+        }
+
+        document_binding_resets_after_the_boolean_path_disappears();
+        local_state_binding_is_two_way_across_checkboxes();
     }
 }

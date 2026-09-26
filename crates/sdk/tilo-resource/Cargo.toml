@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "tilo-resource"
 version = "0.1.0"
 edition = "2024"
@@ -20,6 +21,10 @@ tilo-automerge.workspace = true
 uuid.workspace = true
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource-macros = { path = "../tilo-resource-macros" }
+
+[[test]]
+name = "it"
+path = "tests/it.rs"
 
 [lints]
 workspace = true

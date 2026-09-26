@@ -188,85 +188,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operations_use_the_spec_encodings() {
-        assert_eq!(Operation::Eq as u16, 0x0000);
-        assert_eq!(Operation::UnsignedLe as u16, 0x0009);
-        assert_eq!(Operation::UnsignedLe.tool_name(), "ule");
-        assert_eq!(Operation::Eq.tool_name(), "eq");
+    fn policy_digests_bind_every_operation_operand_and_index() {
+        // Phase `operations_use_the_spec_encodings`.
+        {
+            assert_eq!(Operation::Eq as u16, 0x0000);
+            assert_eq!(Operation::UnsignedLe as u16, 0x0009);
+            assert_eq!(Operation::UnsignedLe.tool_name(), "ule");
+            assert_eq!(Operation::Eq.tool_name(), "eq");
+        }
+        // Phase `each_step_changes_the_digest`.
+        {
+            let a = command_code(ZERO, CC_NV_INCREMENT);
+            assert_ne!(a, ZERO);
+            let b = nv_counter(a, &[0u8; 34], 7, Operation::Eq);
+            assert_ne!(b, a);
+            let c = auth_value(b);
+            assert_ne!(c, b);
+        }
+        // Phase `the_operand_and_the_operation_both_matter`.
+        {
+            let name = [1u8; 34];
+            let a = nv_counter(ZERO, &name, 7, Operation::Eq);
+            let b = nv_counter(ZERO, &name, 8, Operation::Eq);
+            let c = nv_counter(ZERO, &name, 7, Operation::UnsignedLe);
+            assert_ne!(a, b, "a different target must give a different policy");
+            assert_ne!(a, c, "a different comparison must give a different policy");
+        }
+        // Phase `the_nv_name_binds_the_policy_to_one_index`.
+        {
+            assert_ne!(
+                nv_counter(ZERO, &[1u8; 34], 7, Operation::Eq),
+                nv_counter(ZERO, &[2u8; 34], 7, Operation::Eq)
+            );
+        }
+        // Phase `authorize_depends_on_both_the_key_and_the_reference`.
+        {
+            let k1 = [1u8; 34];
+            let k2 = [2u8; 34];
+            assert_ne!(authorize(&k1, b""), authorize(&k2, b""));
+            assert_ne!(authorize(&k1, b"a"), authorize(&k1, b"b"));
+            // And it does not depend on anything before it — the whole point, and why the generation
+            // lives in the reference.
+            assert_eq!(authorize(&k1, b"x"), authorize(&k1, b"x"));
+        }
+        // Phase `or_depends_on_branch_order`.
+        {
+            let a = [1u8; DIGEST_LEN];
+            let b = [2u8; DIGEST_LEN];
+            assert_ne!(or(&[a, b]), or(&[b, a]));
+        }
     }
 
     #[test]
-    fn each_step_changes_the_digest() {
-        let a = command_code(ZERO, CC_NV_INCREMENT);
-        assert_ne!(a, ZERO);
-        let b = nv_counter(a, &[0u8; 34], 7, Operation::Eq);
-        assert_ne!(b, a);
-        let c = auth_value(b);
-        assert_ne!(c, b);
-    }
-
-    #[test]
-    fn the_operand_and_the_operation_both_matter() {
-        let name = [1u8; 34];
-        let a = nv_counter(ZERO, &name, 7, Operation::Eq);
-        let b = nv_counter(ZERO, &name, 8, Operation::Eq);
-        let c = nv_counter(ZERO, &name, 7, Operation::UnsignedLe);
-        assert_ne!(a, b, "a different target must give a different policy");
-        assert_ne!(a, c, "a different comparison must give a different policy");
-    }
-
-    #[test]
-    fn the_nv_name_binds_the_policy_to_one_index() {
-        assert_ne!(
-            nv_counter(ZERO, &[1u8; 34], 7, Operation::Eq),
-            nv_counter(ZERO, &[2u8; 34], 7, Operation::Eq)
-        );
-    }
-
-    #[test]
-    fn authorize_depends_on_both_the_key_and_the_reference() {
-        let k1 = [1u8; 34];
-        let k2 = [2u8; 34];
-        assert_ne!(authorize(&k1, b""), authorize(&k2, b""));
-        assert_ne!(authorize(&k1, b"a"), authorize(&k1, b"b"));
-        // And it does not depend on anything before it — the whole point, and why the generation
-        // lives in the reference.
-        assert_eq!(authorize(&k1, b"x"), authorize(&k1, b"x"));
-    }
-
-    #[test]
-    fn or_depends_on_branch_order() {
-        let a = [1u8; DIGEST_LEN];
-        let b = [2u8; DIGEST_LEN];
-        assert_ne!(or(&[a, b]), or(&[b, a]));
-    }
-
-    #[test]
-    fn nv_attribute_bits_combine_to_the_values_tpm2_tools_reports() {
-        use nv_attr::*;
-        // `authread|authwrite|nt=counter` reads as 0x40014.
-        assert_eq!(AUTHREAD | AUTHWRITE | NT_COUNTER, 0x0004_0014);
-        // `authread|policywrite|nt=counter` reads as 0x40018.
-        assert_eq!(AUTHREAD | POLICYWRITE | NT_COUNTER, 0x0004_0018);
-    }
-
-    #[test]
-    fn the_written_bit_changes_the_name() {
-        use nv_attr::*;
-        let attrs = AUTHREAD | POLICYWRITE | NT_COUNTER;
-        let unwritten = nv_index_name(0x01D9_1100, attrs, &[0u8; 32], 8);
-        let written = nv_index_name(0x01D9_1100, attrs | WRITTEN, &[0u8; 32], 8);
-        assert_ne!(unwritten, written);
-        assert_eq!(unwritten.len(), 34);
-        assert_eq!(&written[..2], &ALG_SHA256.to_be_bytes());
-    }
-
-    #[test]
-    fn the_signed_message_is_the_policy_then_the_reference() {
-        let p = [7u8; DIGEST_LEN];
-        let m = authorize_signed_message(&p, b"ref");
-        assert_eq!(m.len(), DIGEST_LEN + 3);
-        assert_eq!(&m[..DIGEST_LEN], &p);
-        assert_eq!(&m[DIGEST_LEN..], b"ref");
+    fn nv_names_and_signed_messages_match_tpm2_tools() {
+        // Phase `nv_attribute_bits_combine_to_the_values_tpm2_tools_reports`.
+        {
+            use nv_attr::*;
+            // `authread|authwrite|nt=counter` reads as 0x40014.
+            assert_eq!(AUTHREAD | AUTHWRITE | NT_COUNTER, 0x0004_0014);
+            // `authread|policywrite|nt=counter` reads as 0x40018.
+            assert_eq!(AUTHREAD | POLICYWRITE | NT_COUNTER, 0x0004_0018);
+        }
+        // Phase `the_written_bit_changes_the_name`.
+        {
+            use nv_attr::*;
+            let attrs = AUTHREAD | POLICYWRITE | NT_COUNTER;
+            let unwritten = nv_index_name(0x01D9_1100, attrs, &[0u8; 32], 8);
+            let written = nv_index_name(0x01D9_1100, attrs | WRITTEN, &[0u8; 32], 8);
+            assert_ne!(unwritten, written);
+            assert_eq!(unwritten.len(), 34);
+            assert_eq!(&written[..2], &ALG_SHA256.to_be_bytes());
+        }
+        // Phase `the_signed_message_is_the_policy_then_the_reference`.
+        {
+            let p = [7u8; DIGEST_LEN];
+            let m = authorize_signed_message(&p, b"ref");
+            assert_eq!(m.len(), DIGEST_LEN + 3);
+            assert_eq!(&m[..DIGEST_LEN], &p);
+            assert_eq!(&m[DIGEST_LEN..], b"ref");
+        }
     }
 }

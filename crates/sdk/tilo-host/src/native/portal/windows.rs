@@ -207,64 +207,65 @@ mod tests {
     use super::*;
 
     #[test]
-    fn launch_handle_checks_type_and_prevents_replacement_during_dispatch() {
-        let temporary = tempfile::tempdir().unwrap();
-        let path = temporary.path().join("chosen.txt");
-        std::fs::write(&path, b"chosen").unwrap();
-        assert!(open_launch_target(&path, LaunchKind::Reveal).is_err());
-        assert!(open_launch_target(temporary.path(), LaunchKind::Open).is_err());
-        let handle = open_launch_target(&path, LaunchKind::Open).unwrap();
-        assert!(std::fs::rename(&path, path.with_extension("moved")).is_err());
-        assert_eq!(std::fs::read(&path).unwrap(), b"chosen");
-        drop(handle);
-        std::fs::rename(&path, path.with_extension("moved")).unwrap();
-    }
-
-    #[test]
-    fn filters_preserve_globs_and_expand_mime_types() {
-        let filter = crate::portal::FileFilter::new("PDF")
-            .glob("*.pdf")
-            .mimetype("application/pdf");
-        assert_eq!(filter_pattern(&filter), "*.pdf");
-        assert!(
-            filter_pattern(&crate::portal::FileFilter::new("PNG").mimetype("image/png"))
-                .split(';')
-                .any(|glob| glob == "*.png")
-        );
-    }
-
-    #[test]
-    fn native_dialog_configuration_roundtrips_without_showing_a_window() {
-        let _apartment = Apartment::new().unwrap();
-        for request in [
-            PickRequest::open("Open", "Open").all_files(),
-            PickRequest::open_multiple("Import", "Import"),
-            PickRequest::directory("Folder", "Choose"),
-            PickRequest::save("Save", "Save", "report.txt"),
-        ] {
-            // SAFETY: Same COM apartment/ownership contract as the live path.
-            unsafe {
-                let dialog: IFileDialog = CoCreateInstance(
-                    if matches!(request.kind, PickKind::Save { .. }) {
-                        &FileSaveDialog
-                    } else {
-                        &FileOpenDialog
-                    },
-                    None,
-                    CLSCTX_INPROC_SERVER,
-                )
-                .unwrap();
-                configure(&dialog, &request).unwrap();
-                let options = dialog.GetOptions().unwrap();
-                assert!(options.contains(FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR));
-                assert_eq!(
-                    options.contains(FOS_ALLOWMULTISELECT),
-                    request.is_multiple()
-                );
-                assert_eq!(
-                    options.contains(FOS_PICKFOLDERS),
-                    matches!(request.kind, PickKind::Directory)
-                );
+    fn windows_dialogs_check_handles_filters_and_configuration() {
+        // phase: launch_handle_checks_type_and_prevents_replacement_during_dispatch
+        {
+            let temporary = tempfile::tempdir().unwrap();
+            let path = temporary.path().join("chosen.txt");
+            std::fs::write(&path, b"chosen").unwrap();
+            assert!(open_launch_target(&path, LaunchKind::Reveal).is_err());
+            assert!(open_launch_target(temporary.path(), LaunchKind::Open).is_err());
+            let handle = open_launch_target(&path, LaunchKind::Open).unwrap();
+            assert!(std::fs::rename(&path, path.with_extension("moved")).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), b"chosen");
+            drop(handle);
+            std::fs::rename(&path, path.with_extension("moved")).unwrap();
+        }
+        // phase: filters_preserve_globs_and_expand_mime_types
+        {
+            let filter = crate::portal::FileFilter::new("PDF")
+                .glob("*.pdf")
+                .mimetype("application/pdf");
+            assert_eq!(filter_pattern(&filter), "*.pdf");
+            assert!(
+                filter_pattern(&crate::portal::FileFilter::new("PNG").mimetype("image/png"))
+                    .split(';')
+                    .any(|glob| glob == "*.png")
+            );
+        }
+        // phase: native_dialog_configuration_roundtrips_without_showing_a_window
+        {
+            let _apartment = Apartment::new().unwrap();
+            for request in [
+                PickRequest::open("Open", "Open").all_files(),
+                PickRequest::open_multiple("Import", "Import"),
+                PickRequest::directory("Folder", "Choose"),
+                PickRequest::save("Save", "Save", "report.txt"),
+            ] {
+                // SAFETY: Same COM apartment/ownership contract as the live path.
+                unsafe {
+                    let dialog: IFileDialog = CoCreateInstance(
+                        if matches!(request.kind, PickKind::Save { .. }) {
+                            &FileSaveDialog
+                        } else {
+                            &FileOpenDialog
+                        },
+                        None,
+                        CLSCTX_INPROC_SERVER,
+                    )
+                    .unwrap();
+                    configure(&dialog, &request).unwrap();
+                    let options = dialog.GetOptions().unwrap();
+                    assert!(options.contains(FOS_FORCEFILESYSTEM | FOS_NOCHANGEDIR));
+                    assert_eq!(
+                        options.contains(FOS_ALLOWMULTISELECT),
+                        request.is_multiple()
+                    );
+                    assert_eq!(
+                        options.contains(FOS_PICKFOLDERS),
+                        matches!(request.kind, PickKind::Directory)
+                    );
+                }
             }
         }
     }

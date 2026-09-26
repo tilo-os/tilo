@@ -687,45 +687,49 @@ mod tests {
         s
     }
 
+    /// The expand modal: one field per placeholder, preview substitution and IME/backspace editing.
     #[test]
-    fn modal_collects_one_field_per_placeholder() {
-        let m = ExpandModal::new(&templated());
-        assert_eq!(m.field_count_for_test(), 2);
-    }
+    fn expand_modal_collects_fields_and_previews_live() {
+        // Case `modal_collects_one_field_per_placeholder`.
+        {
+            let m = ExpandModal::new(&templated());
+            assert_eq!(m.field_count_for_test(), 2);
+        }
 
-    #[test]
-    fn preview_substitutes_filled_fields() {
-        let mut m = ExpandModal::new(&templated());
-        m.set_field_for_test("name", "ada");
-        m.set_field_for_test("host", "prod");
-        assert_eq!(m.preview_for_test(), "echo hi ada from prod");
-    }
+        // Case `preview_substitutes_filled_fields`.
+        {
+            let mut m = ExpandModal::new(&templated());
+            m.set_field_for_test("name", "ada");
+            m.set_field_for_test("host", "prod");
+            assert_eq!(m.preview_for_test(), "echo hi ada from prod");
+        }
 
-    #[test]
-    fn preview_keeps_unfilled_placeholders_visible() {
-        let mut m = ExpandModal::new(&templated());
-        m.set_field_for_test("name", "ada");
-        assert_eq!(m.preview_for_test(), "echo hi ada from ${host}");
-    }
+        // Case `preview_keeps_unfilled_placeholders_visible`.
+        {
+            let mut m = ExpandModal::new(&templated());
+            m.set_field_for_test("name", "ada");
+            assert_eq!(m.preview_for_test(), "echo hi ada from ${host}");
+        }
 
-    #[test]
-    fn shared_editor_ime_and_unicode_backspace_drive_live_preview_without_crdt_writes() {
-        let mut modal = ExpandModal::new(&templated());
-        let mut doc = AutoCommit::new();
-        let before = doc.get_heads();
+        // Case `shared_editor_ime_and_unicode_backspace_drive_live_preview_without_crdt_writes`.
+        {
+            let mut modal = ExpandModal::new(&templated());
+            let mut doc = AutoCommit::new();
+            let before = doc.get_heads();
 
-        assert!(matches!(
-            drive(
-                &mut modal,
-                &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
-                &mut doc,
-            ),
-            ExpandOutcome::Stay
-        ));
-        assert_eq!(modal.preview_for_test(), "echo hi 漢 from ${host}");
+            assert!(matches!(
+                drive(
+                    &mut modal,
+                    &WindowEvent::Ime(winit::event::Ime::Commit("漢".into())),
+                    &mut doc,
+                ),
+                ExpandOutcome::Stay
+            ));
+            assert_eq!(modal.preview_for_test(), "echo hi 漢 from ${host}");
 
-        let _ = drive(&mut modal, &key(NamedKey::Backspace), &mut doc);
-        assert_eq!(modal.preview_for_test(), "echo hi ${name} from ${host}");
-        assert_eq!(doc.get_heads(), before, "modal values must stay peer-local");
+            let _ = drive(&mut modal, &key(NamedKey::Backspace), &mut doc);
+            assert_eq!(modal.preview_for_test(), "echo hi ${name} from ${host}");
+            assert_eq!(doc.get_heads(), before, "modal values must stay peer-local");
+        }
     }
 }

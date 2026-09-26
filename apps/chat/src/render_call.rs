@@ -1903,118 +1903,137 @@ mod tests {
     use vello::kurbo::Rect;
 
     #[test]
-    fn overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint() {
-        let m = CallOverlayMetrics::default();
-        // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
-        assert!((m.header_h() - 76.0).abs() < 1e-6);
-        assert_eq!(m.button_h, CALL_CTL_MIN_H);
-        // An unmeasured label keeps the fixed-length estimate the 1× layout
-        // used, so the geometry tests (which never paint) still resolve.
-        assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+    fn overlay_metrics_size_header_buttons_and_lower_chrome() {
+        // Phase: overlay_metrics_fall_back_to_the_authored_rules_before_the_first_paint.
+        {
+            let m = CallOverlayMetrics::default();
+            // The 1× header: `s6` + a 20 px line + `s1` + a 12 px line + `s2`.
+            assert!((m.header_h() - 76.0).abs() < 1e-6);
+            assert_eq!(m.button_h, CALL_CTL_MIN_H);
+            // An unmeasured label keeps the fixed-length estimate the 1× layout
+            // used, so the geometry tests (which never paint) still resolve.
+            assert_eq!(m.button_width("Mute"), overlay_button_width("Mute"));
+        }
+        // Phase: measured_button_widths_replace_the_estimate_label_by_label.
+        {
+            let m = CallOverlayMetrics {
+                button_w: vec![("Mute".to_string(), 71.0), ("Leave".to_string(), 80.5)],
+                ..CallOverlayMetrics::default()
+            };
+            assert_eq!(m.button_width("Mute"), 71.0);
+            assert_eq!(m.button_width("Leave"), 80.5);
+            // A label that toggled since the measurement (Mute → Unmute) falls
+            // back rather than borrowing another label's width.
+            assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
+        }
+        // Phase: a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines.
+        {
+            // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
+            // tiles start under grows by exactly the 40 px the lines gained.
+            let m = CallOverlayMetrics {
+                title_h: 50.0,
+                subtitle_h: 30.0,
+                ..CallOverlayMetrics::default()
+            };
+            let grew = m.header_h() - CallOverlayMetrics::default().header_h();
+            assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
+        }
+        // Phase: participant_reveal_morphs_the_complete_lower_chrome_monotonically.
+        {
+            let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
+            assert_eq!(samples[0], 116.0);
+            assert_eq!(samples[2], 136.0);
+            assert_eq!(samples[4], 156.0);
+            assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
+        }
     }
 
     #[test]
-    fn measured_button_widths_replace_the_estimate_label_by_label() {
-        let m = CallOverlayMetrics {
-            button_w: vec![("Mute".to_string(), 71.0), ("Leave".to_string(), 80.5)],
-            ..CallOverlayMetrics::default()
-        };
-        assert_eq!(m.button_width("Mute"), 71.0);
-        assert_eq!(m.button_width("Leave"), 80.5);
-        // A label that toggled since the measurement (Mute → Unmute) falls
-        // back rather than borrowing another label's width.
-        assert_eq!(m.button_width("Unmute"), overlay_button_width("Unmute"));
-    }
-
-    #[test]
-    fn a_scaled_header_pushes_the_tile_band_down_by_its_extra_lines() {
-        // Title and subtitle boxes doubled (25 → 50, 15 → 30): the band the
-        // tiles start under grows by exactly the 40 px the lines gained.
-        let m = CallOverlayMetrics {
-            title_h: 50.0,
-            subtitle_h: 30.0,
-            ..CallOverlayMetrics::default()
-        };
-        let grew = m.header_h() - CallOverlayMetrics::default().header_h();
-        assert!((grew - 40.0).abs() < 1e-9, "grew {grew}");
-    }
-
-    #[test]
-    fn participant_reveal_morphs_the_complete_lower_chrome_monotonically() {
-        let samples = [0.0, 0.25, 0.5, 0.75, 1.0].map(huddle_lower_chrome_for_reveal);
-        assert_eq!(samples[0], 116.0);
-        assert_eq!(samples[2], 136.0);
-        assert_eq!(samples[4], 156.0);
-        assert!(samples.windows(2).all(|pair| pair[0] < pair[1]));
-    }
-
-    /// The presentation-stage filmstrip must lay every participant in a single
-    /// centred row that stays inside its region, at any headcount — the
-    /// invariant the screen-share stage leans on so the strip never spills.
-    #[test]
-    fn avatar_caption_block_clears_the_name_plate_by_the_token_gap() {
-        // A 1× filmstrip tile: 232×152, the disc radius the member tile
-        // derives from that height, a 14.4 px caption and a 23 px plate. The
-        // caption's bottom stays a full `s2` above the plate's reserve.
-        let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
-        let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
-        let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
-        let plate_top = tile.y1 - gap - plate_h;
-        assert!(
-            caption_y + caption_h <= plate_top - gap + 1e-9,
-            "caption bottom {} vs plate top {plate_top}",
-            caption_y + caption_h
-        );
-        assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
-        // Centred: equal air above the disc and below the caption, inside the band.
-        let above = (cy - radius) - (tile.y0 + gap);
-        let below = (plate_top - gap) - (caption_y + caption_h);
-        assert!((above - below).abs() < 1e-9, "above {above} below {below}");
-    }
-
-    #[test]
-    fn a_short_tile_reads_the_block_from_the_band_top() {
-        // Too short for the block: it starts at the band's top instead of
-        // poking above the tile.
-        let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
-        let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
-        assert!((cy - 33.44 - 8.0).abs() < 1e-9);
-        assert!(caption_y > cy);
-    }
-
-    #[test]
-    fn filmstrip_is_a_single_centred_row_inside_its_region() {
-        for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
-            let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
-            for n in 1..=8 {
-                let tiles = filmstrip_rects(region, n);
-                assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
-                for t in &tiles {
-                    assert!(
-                        t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5,
-                        "n={n} w={w}: tile escaped the strip horizontally"
-                    );
-                    // One row: every tile spans the full strip height.
-                    assert!(
-                        (t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
-                        "n={n}: strip tiles are not a single full-height row"
-                    );
-                    assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
-                }
-                // Centred: equal slack on both sides of the row.
-                let left = tiles.first().unwrap().x0 - region.x0;
-                let right = region.x1 - tiles.last().unwrap().x1;
+    fn member_tile_centres_an_honest_caption_clear_of_the_name_plate() {
+        // Phase: avatar_caption_block_clears_the_name_plate_by_the_token_gap.
+        // The presentation-stage filmstrip must lay every participant in a single
+        // centred row that stays inside its region, at any headcount — the
+        // invariant the screen-share stage leans on so the strip never spills.
+        {
+            // A 1× filmstrip tile: 232×152, the disc radius the member tile
+            // derives from that height, a 14.4 px caption and a 23 px plate. The
+            // caption's bottom stays a full `s2` above the plate's reserve.
+            let tile = Rect::new(0.0, 0.0, 232.0, 152.0);
+            let (radius, caption_h, plate_h, gap) = (33.44, 14.4, 23.0, 8.0);
+            let (cy, caption_y) = avatar_caption_block(tile, radius, caption_h, plate_h, gap);
+            let plate_top = tile.y1 - gap - plate_h;
+            assert!(
+                caption_y + caption_h <= plate_top - gap + 1e-9,
+                "caption bottom {} vs plate top {plate_top}",
+                caption_y + caption_h
+            );
+            assert!(cy - radius >= tile.y0 + gap, "disc inside the band");
+            // Centred: equal air above the disc and below the caption, inside the band.
+            let above = (cy - radius) - (tile.y0 + gap);
+            let below = (plate_top - gap) - (caption_y + caption_h);
+            assert!((above - below).abs() < 1e-9, "above {above} below {below}");
+        }
+        // Phase: a_short_tile_reads_the_block_from_the_band_top.
+        {
+            // Too short for the block: it starts at the band's top instead of
+            // poking above the tile.
+            let tile = Rect::new(0.0, 0.0, 200.0, 80.0);
+            let (cy, caption_y) = avatar_caption_block(tile, 33.44, 14.4, 23.0, 8.0);
+            assert!((cy - 33.44 - 8.0).abs() < 1e-9);
+            assert!(caption_y > cy);
+        }
+        // Phase: remote_tile_caption_is_honest_never_a_fabricated_feed.
+        // Defect regression: remote tiles must be honest — never present a
+        // fabricated video feed. Every caption is a truthful "camera state"
+        // string (matching the host tile), never a claim of live video.
+        {
+            assert_eq!(member_tile_caption(&participant(true)), "Camera off");
+            assert_eq!(member_tile_caption(&participant(false)), "No video");
+            for audio_only in [true, false] {
+                let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
                 assert!(
-                    (left - right).abs() < 1.0,
-                    "n={n} w={w}: strip is not centred"
+                    !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
+                    "caption must not imply a live feed: {cap:?}"
                 );
             }
         }
     }
 
     #[test]
-    fn filmstrip_is_empty_for_no_participants() {
-        assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+    fn filmstrip_is_a_single_centred_row_inside_its_region_or_empty() {
+        // Phase: filmstrip_is_a_single_centred_row_inside_its_region.
+        {
+            for &(w, h) in &[(1200.0_f64, 180.0_f64), (700.0, 150.0), (500.0, 120.0)] {
+                let region = Rect::new(40.0, 600.0, 40.0 + w, 600.0 + h);
+                for n in 1..=8 {
+                    let tiles = filmstrip_rects(region, n);
+                    assert_eq!(tiles.len(), n, "n={n}: wrong tile count");
+                    for t in &tiles {
+                        assert!(
+                            t.x0 >= region.x0 - 0.5 && t.x1 <= region.x1 + 0.5,
+                            "n={n} w={w}: tile escaped the strip horizontally"
+                        );
+                        // One row: every tile spans the full strip height.
+                        assert!(
+                            (t.y0 - region.y0).abs() < 0.5 && (t.y1 - region.y1).abs() < 0.5,
+                            "n={n}: strip tiles are not a single full-height row"
+                        );
+                        assert!(t.width() > 0.0, "n={n}: degenerate strip tile");
+                    }
+                    // Centred: equal slack on both sides of the row.
+                    let left = tiles.first().unwrap().x0 - region.x0;
+                    let right = region.x1 - tiles.last().unwrap().x1;
+                    assert!(
+                        (left - right).abs() < 1.0,
+                        "n={n} w={w}: strip is not centred"
+                    );
+                }
+            }
+        }
+        // Phase: filmstrip_is_empty_for_no_participants.
+        {
+            assert!(filmstrip_rects(Rect::new(0.0, 0.0, 400.0, 120.0), 0).is_empty());
+        }
     }
 
     fn participant(audio_only: bool) -> Participant {
@@ -2027,122 +2046,107 @@ mod tests {
         }
     }
 
-    /// Defect regression: remote tiles must be honest — never present a
-    /// fabricated video feed. Every caption is a truthful "camera state"
-    /// string (matching the host tile), never a claim of live video.
     #[test]
-    fn remote_tile_caption_is_honest_never_a_fabricated_feed() {
-        assert_eq!(member_tile_caption(&participant(true)), "Camera off");
-        assert_eq!(member_tile_caption(&participant(false)), "No video");
-        for audio_only in [true, false] {
-            let cap = member_tile_caption(&participant(audio_only)).to_lowercase();
-            assert!(
-                !cap.contains("live") && !cap.contains("streaming") && !cap.contains("feed"),
-                "caption must not imply a live feed: {cap:?}"
-            );
-        }
-    }
-
-    /// The packer must keep every tile inside the region it is handed, at any
-    /// headcount and width, with no degenerate tiles — the invariant the whole
-    /// expanded overlay leans on to stay within the window.
-    #[test]
-    fn grid_tiles_stay_inside_region_at_every_count_and_width() {
-        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
-            // A full-surface content band with symmetric side insets, matching
-            // what the overlay now hands the packer (host + remotes together).
-            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
-            for n in 1..=9 {
-                let rects = grid_rects(region, n);
-                assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
-                for r in &rects {
-                    assert!(
-                        r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
-                        "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
-                        r.x0,
-                        r.x1,
-                        region.x0,
-                        region.x1
-                    );
-                    assert!(
-                        r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
-                        "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
-                        r.y0,
-                        r.y1,
-                        region.y0,
-                        region.y1
-                    );
-                    assert!(
-                        r.width() > 0.0 && r.height() > 0.0,
-                        "n={n}: degenerate tile"
-                    );
+    fn grid_packs_every_count_inside_the_region_and_covers_it() {
+        // Phase: grid_tiles_stay_inside_region_at_every_count_and_width.
+        // The packer must keep every tile inside the region it is handed, at any
+        // headcount and width, with no degenerate tiles — the invariant the whole
+        // expanded overlay leans on to stay within the window.
+        {
+            for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+                // A full-surface content band with symmetric side insets, matching
+                // what the overlay now hands the packer (host + remotes together).
+                let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
+                for n in 1..=9 {
+                    let rects = grid_rects(region, n);
+                    assert_eq!(rects.len(), n, "n={n} produced the wrong tile count");
+                    for r in &rects {
+                        assert!(
+                            r.x0 >= region.x0 - 0.5 && r.x1 <= region.x1 + 0.5,
+                            "n={n} w={w}: tile x [{:.1},{:.1}] escaped region x [{:.1},{:.1}]",
+                            r.x0,
+                            r.x1,
+                            region.x0,
+                            region.x1
+                        );
+                        assert!(
+                            r.y0 >= region.y0 - 0.5 && r.y1 <= region.y1 + 0.5,
+                            "n={n} w={w}: tile y [{:.1},{:.1}] escaped region y [{:.1},{:.1}]",
+                            r.y0,
+                            r.y1,
+                            region.y0,
+                            region.y1
+                        );
+                        assert!(
+                            r.width() > 0.0 && r.height() > 0.0,
+                            "n={n}: degenerate tile"
+                        );
+                    }
                 }
             }
         }
-    }
-
-    #[test]
-    fn grid_is_empty_for_no_remotes() {
-        assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
-    }
-
-    /// The narrow-width void regression: with the host as the first cell of a
-    /// unified grid, the packed tiles must *cover* the content region — their
-    /// bounding box spans it in both axes (within one inter-tile gap) — so no
-    /// large dead band is left beneath or beside the host at any width. This is
-    /// the geometry that replaced the old "host pinned left, remotes to the
-    /// right" layout which left the whole bottom-left corner empty on a
-    /// portrait window.
-    #[test]
-    fn grid_fills_the_region_leaving_no_void() {
-        for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
-            let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
-            // A host + three remotes: the demo huddle, the exact case that
-            // exposed the void.
-            let tiles = grid_rects(region, 4);
-            let bbox =
-                tiles
-                    .iter()
-                    .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
-                        Rect::new(
-                            b.x0.min(r.x0),
-                            b.y0.min(r.y0),
-                            b.x1.max(r.x1),
-                            b.y1.max(r.y1),
-                        )
-                    });
-            // One inter-tile gap is the largest legitimate slack (a centred row
-            // or column can sit a gap in from an edge).
-            let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
-            let slack = gap + 1.0;
-            assert!(
-                bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
-                "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.x0,
-                bbox.x1,
-                region.x0,
-                region.x1
-            );
-            assert!(
-                bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
-                "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
-                bbox.y0,
-                bbox.y1,
-                region.y0,
-                region.y1
-            );
-            // And a tile actually occupies the lower-left quadrant — the exact
-            // corner the old layout left black.
-            let mid = (
-                region.x0 + region.width() * 0.5,
-                region.y0 + region.height() * 0.5,
-            );
-            assert!(
-                tiles
-                    .iter()
-                    .any(|r| r.center().x < mid.0 && r.center().y > mid.1),
-                "w={w}: nothing fills the lower-left of the call surface"
-            );
+        // Phase: grid_is_empty_for_no_remotes.
+        {
+            assert!(grid_rects(Rect::new(0.0, 0.0, 400.0, 300.0), 0).is_empty());
+        }
+        // Phase: grid_fills_the_region_leaving_no_void.
+        // The narrow-width void regression: with the host as the first cell of a
+        // unified grid, the packed tiles must *cover* the content region — their
+        // bounding box spans it in both axes (within one inter-tile gap) — so no
+        // large dead band is left beneath or beside the host at any width. This is
+        // the geometry that replaced the old "host pinned left, remotes to the
+        // right" layout which left the whole bottom-left corner empty on a
+        // portrait window.
+        {
+            for &(w, h) in &[(1280.0_f64, 720.0_f64), (800.0, 600.0), (560.0, 720.0)] {
+                let region = Rect::new(0.05 * w, 72.0, w - 0.05 * w, h - 128.0);
+                // A host + three remotes: the demo huddle, the exact case that
+                // exposed the void.
+                let tiles = grid_rects(region, 4);
+                let bbox =
+                    tiles
+                        .iter()
+                        .fold(Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, r| {
+                            Rect::new(
+                                b.x0.min(r.x0),
+                                b.y0.min(r.y0),
+                                b.x1.max(r.x1),
+                                b.y1.max(r.y1),
+                            )
+                        });
+                // One inter-tile gap is the largest legitimate slack (a centred row
+                // or column can sit a gap in from an edge).
+                let gap = (region.width().min(region.height()) * 0.05).clamp(6.0, 16.0);
+                let slack = gap + 1.0;
+                assert!(
+                    bbox.x0 - region.x0 <= slack && region.x1 - bbox.x1 <= slack,
+                    "w={w}: tiles leave a horizontal void (bbox x [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                    bbox.x0,
+                    bbox.x1,
+                    region.x0,
+                    region.x1
+                );
+                assert!(
+                    bbox.y0 - region.y0 <= slack && region.y1 - bbox.y1 <= slack,
+                    "w={w}: tiles leave a vertical void (bbox y [{:.1},{:.1}] vs region [{:.1},{:.1}])",
+                    bbox.y0,
+                    bbox.y1,
+                    region.y0,
+                    region.y1
+                );
+                // And a tile actually occupies the lower-left quadrant — the exact
+                // corner the old layout left black.
+                let mid = (
+                    region.x0 + region.width() * 0.5,
+                    region.y0 + region.height() * 0.5,
+                );
+                assert!(
+                    tiles
+                        .iter()
+                        .any(|r| r.center().x < mid.0 && r.center().y > mid.1),
+                    "w={w}: nothing fills the lower-left of the call surface"
+                );
+            }
         }
     }
 }

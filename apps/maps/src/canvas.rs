@@ -1337,317 +1337,331 @@ mod tests {
         }
     }
 
-    /// The declutter pass thins markers that would pile up within `min_px`,
-    /// keeps the more salient category when two collide, and always keeps the
-    /// selected POI — the same set the draw pass and the hit-test both consume.
     #[test]
-    fn declutter_thins_overlapping_keeps_priority_and_selected() {
-        let center = LatLon::new(48.1371, 11.5754);
-        let proj = Projection::new(center, 17.0, Point::new(640.0, 400.0));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn map_palette_markers_and_legs_follow_theme_and_priority() {
+        // Phase `declutter_thins_overlapping_keeps_priority_and_selected`.
+        // The declutter pass thins markers that would pile up within `min_px`,
+        // keeps the more salient category when two collide, and always keeps the
+        // selected POI — the same set the draw pass and the hit-test both consume.
+        {
+            let center = LatLon::new(48.1371, 11.5754);
+            let proj = Projection::new(center, 17.0, Point::new(640.0, 400.0));
 
-        // Two POIs at essentially the same coordinate (they project within a
-        // pixel of each other) — a Shop and a Transit stop — plus one clearly
-        // separate Cafe far to the east.
-        let far = LatLon::new(center.lat, center.lon + 0.01);
-        let pois = vec![
-            poi_at("shop", Category::Shop, center.lat, center.lon),
-            poi_at("transit", Category::Transit, center.lat, center.lon + 1e-6),
-            poi_at("cafe-far", Category::Cafe, far.lat, far.lon),
-        ];
+            // Two POIs at essentially the same coordinate (they project within a
+            // pixel of each other) — a Shop and a Transit stop — plus one clearly
+            // separate Cafe far to the east.
+            let far = LatLon::new(center.lat, center.lon + 0.01);
+            let pois = vec![
+                poi_at("shop", Category::Shop, center.lat, center.lon),
+                poi_at("transit", Category::Transit, center.lat, center.lon + 1e-6),
+                poi_at("cafe-far", Category::Cafe, far.lat, far.lon),
+            ];
 
-        // No selection: the overlapping pair collapses to the higher-priority
-        // Transit stop; the far Cafe always survives.
-        let kept = declutter_indices(&proj, &pois, 24.0, None);
-        let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
-        assert!(
-            ids.contains(&"transit"),
-            "salient category wins the contested cell: {ids:?}"
-        );
-        assert!(
-            !ids.contains(&"shop"),
-            "the overlapped lower-priority marker is dropped: {ids:?}"
-        );
-        assert!(
-            ids.contains(&"cafe-far"),
-            "a well-separated marker is always kept: {ids:?}"
-        );
-
-        // Returned indices stay in input order (stable draw order).
-        let mut sorted = kept.clone();
-        sorted.sort_unstable();
-        assert_eq!(kept, sorted, "kept indices preserve input order");
-
-        // Selecting the otherwise-dropped Shop forces it to be kept (its info
-        // card is open, so its marker must be on screen and clickable).
-        let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
-        let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
-        assert!(
-            ids_sel.contains(&"shop"),
-            "the selected POI is always kept: {ids_sel:?}"
-        );
-    }
-
-    /// The cartography follows the theme: a light map under a light theme, a
-    /// dark map under a dark theme — never a light map forced under dark chrome
-    /// (which read as a mixed light/dark view). This is the fix for the tile-tone
-    /// bug: the drawn colours agree with the CARTO style the raster layer fetches.
-    #[test]
-    fn map_palette_follows_theme() {
-        let lum = |c: Color| {
-            let c = c.to_rgba8();
-            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
-        };
-        let dark = MapPalette::from_theme(&Theme::dark());
-        assert!(
-            lum(dark.land) < 70.0,
-            "dark theme => a dark basemap land, got {}",
-            lum(dark.land)
-        );
-        let light = MapPalette::from_theme(&Theme::light());
-        assert!(
-            lum(light.land) > 220.0,
-            "light theme => near-white land, got {}",
-            lum(light.land)
-        );
-        // Roads stay legible against the land in either theme (real contrast):
-        // dark uses light ribbons on dark land; light uses coloured arterials.
-        assert!(
-            (lum(dark.road_res) - lum(dark.land)).abs() > 30.0,
-            "dark residential roads must read against the dark land"
-        );
-        assert!(
-            (lum(light.road_primary) - lum(light.land)).abs() > 15.0,
-            "light arterials must read against the paper land"
-        );
-    }
-
-    /// The pre-tiles loading substrate shares the land tone in *each* theme, so a
-    /// first-run or mid-load view is never a light centre with dark edges (or the
-    /// reverse) — the exact seam the user reported. It differs from the land only
-    /// faintly (for the reference grid), never by a light/dark jump.
-    #[test]
-    fn loading_substrate_matches_land_tone() {
-        let lum = |c: Color| {
-            let c = c.to_rgba8();
-            0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
-        };
-        for theme in [Theme::dark(), Theme::light()] {
-            let p = MapPalette::from_theme(&theme);
+            // No selection: the overlapping pair collapses to the higher-priority
+            // Transit stop; the far Cafe always survives.
+            let kept = declutter_indices(&proj, &pois, 24.0, None);
+            let ids: Vec<&str> = kept.iter().map(|&i| pois[i].id.as_str()).collect();
             assert!(
-                (lum(p.substrate) - lum(p.land)).abs() < 45.0,
-                "substrate ({}) must share the land tone ({}) — no light/dark seam",
-                lum(p.substrate),
-                lum(p.land)
+                ids.contains(&"transit"),
+                "salient category wins the contested cell: {ids:?}"
+            );
+            assert!(
+                !ids.contains(&"shop"),
+                "the overlapped lower-priority marker is dropped: {ids:?}"
+            );
+            assert!(
+                ids.contains(&"cafe-far"),
+                "a well-separated marker is always kept: {ids:?}"
+            );
+
+            // Returned indices stay in input order (stable draw order).
+            let mut sorted = kept.clone();
+            sorted.sort_unstable();
+            assert_eq!(kept, sorted, "kept indices preserve input order");
+
+            // Selecting the otherwise-dropped Shop forces it to be kept (its info
+            // card is open, so its marker must be on screen and clickable).
+            let kept_sel = declutter_indices(&proj, &pois, 24.0, Some("shop"));
+            let ids_sel: Vec<&str> = kept_sel.iter().map(|&i| pois[i].id.as_str()).collect();
+            assert!(
+                ids_sel.contains(&"shop"),
+                "the selected POI is always kept: {ids_sel:?}"
+            );
+        }
+
+        // Phase `map_palette_follows_theme`.
+        // The cartography follows the theme: a light map under a light theme, a
+        // dark map under a dark theme — never a light map forced under dark chrome
+        // (which read as a mixed light/dark view). This is the fix for the tile-tone
+        // bug: the drawn colours agree with the CARTO style the raster layer fetches.
+        {
+            let lum = |c: Color| {
+                let c = c.to_rgba8();
+                0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
+            };
+            let dark = MapPalette::from_theme(&Theme::dark());
+            assert!(
+                lum(dark.land) < 70.0,
+                "dark theme => a dark basemap land, got {}",
+                lum(dark.land)
+            );
+            let light = MapPalette::from_theme(&Theme::light());
+            assert!(
+                lum(light.land) > 220.0,
+                "light theme => near-white land, got {}",
+                lum(light.land)
+            );
+            // Roads stay legible against the land in either theme (real contrast):
+            // dark uses light ribbons on dark land; light uses coloured arterials.
+            assert!(
+                (lum(dark.road_res) - lum(dark.land)).abs() > 30.0,
+                "dark residential roads must read against the dark land"
+            );
+            assert!(
+                (lum(light.road_primary) - lum(light.land)).abs() > 15.0,
+                "light arterials must read against the paper land"
+            );
+        }
+
+        // Phase `loading_substrate_matches_land_tone`.
+        // The pre-tiles loading substrate shares the land tone in *each* theme, so a
+        // first-run or mid-load view is never a light centre with dark edges (or the
+        // reverse) — the exact seam the user reported. It differs from the land only
+        // faintly (for the reference grid), never by a light/dark jump.
+        {
+            let lum = |c: Color| {
+                let c = c.to_rgba8();
+                0.2126 * f64::from(c.r) + 0.7152 * f64::from(c.g) + 0.0722 * f64::from(c.b)
+            };
+            for theme in [Theme::dark(), Theme::light()] {
+                let p = MapPalette::from_theme(&theme);
+                assert!(
+                    (lum(p.substrate) - lum(p.land)).abs() < 45.0,
+                    "substrate ({}) must share the land tone ({}) — no light/dark seam",
+                    lum(p.substrate),
+                    lum(p.land)
+                );
+            }
+        }
+
+        // Phase `pin_path_is_anchored_and_encloses_head`.
+        // The redesigned pin is a single closed teardrop whose tip sits exactly on
+        // the anchor and whose head is a circle of radius `r` centred `h` above it —
+        // so it points at the right coordinate and encloses a proper head (not a
+        // disjoint circle + triangle).
+        {
+            use vello::kurbo::Shape as _;
+            let anchor = Point::new(100.0, 200.0);
+            let (r, h) = (8.0, 22.0);
+            let bb = pin_path(anchor, r, h).bounding_box();
+            // The tip is the lowest point, at the anchor.
+            assert!(
+                (bb.y1 - anchor.y).abs() < 0.5,
+                "pin tip on the anchor, got y1={}",
+                bb.y1
+            );
+            // The head reaches up to about anchor.y - h - r.
+            assert!(
+                (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
+                "head top near anchor.y-h-r, got y0={}",
+                bb.y0
+            );
+            // Width is about the head diameter, centred on the anchor x.
+            assert!(
+                (bb.width() - 2.0 * r).abs() < 2.0,
+                "width ~ head diameter, got {}",
+                bb.width()
+            );
+            assert!(
+                (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
+                "the pin is centred on the anchor x"
+            );
+        }
+
+        // Phase `leg_color_uses_feed_color_then_theme_fallback`.
+        // A transit leg is drawn in its authentic GTFS `routeColor` when the feed
+        // provides one, and falls back to the theme per-mode colour otherwise.
+        {
+            use crate::model::TransitLeg;
+            let theme = Theme::dark();
+            let base = TransitLeg {
+                mode: TransitMode::Subway,
+                line: "U3".into(),
+                headsign: String::new(),
+                from_name: String::new(),
+                to_name: String::new(),
+                dep: String::new(),
+                arr: String::new(),
+                duration_min: 5,
+                num_stops: 2,
+                geometry: vec![
+                    crate::model::LatLon::new(0.0, 0.0),
+                    crate::model::LatLon::new(0.1, 0.1),
+                ],
+                color: Some("eb690b".into()),
+                text_color: Some("ffffff".into()),
+                agency: "MVG".into(),
+                realtime: true,
+            };
+            // Feed colour wins.
+            assert_eq!(
+                leg_color(&theme, &base),
+                Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
+            );
+            // No feed colour → theme per-mode fallback (not the feed hex).
+            let no_color = TransitLeg {
+                color: None,
+                ..base.clone()
+            };
+            assert_eq!(
+                leg_color(&theme, &no_color),
+                transit_leg_color(&theme, TransitMode::Subway)
+            );
+            // A malformed hex also falls back rather than panicking.
+            let bad = TransitLeg {
+                color: Some("nothex".into()),
+                ..base
+            };
+            assert_eq!(
+                leg_color(&theme, &bad),
+                transit_leg_color(&theme, TransitMode::Subway)
             );
         }
     }
 
-    /// The redesigned pin is a single closed teardrop whose tip sits exactly on
-    /// the anchor and whose head is a circle of radius `r` centred `h` above it —
-    /// so it points at the right coordinate and encloses a proper head (not a
-    /// disjoint circle + triangle).
     #[test]
-    fn pin_path_is_anchored_and_encloses_head() {
-        use vello::kurbo::Shape as _;
-        let anchor = Point::new(100.0, 200.0);
-        let (r, h) = (8.0, 22.0);
-        let bb = pin_path(anchor, r, h).bounding_box();
-        // The tip is the lowest point, at the anchor.
-        assert!(
-            (bb.y1 - anchor.y).abs() < 0.5,
-            "pin tip on the anchor, got y1={}",
-            bb.y1
-        );
-        // The head reaches up to about anchor.y - h - r.
-        assert!(
-            (bb.y0 - (anchor.y - h - r)).abs() < 1.5,
-            "head top near anchor.y-h-r, got y0={}",
-            bb.y0
-        );
-        // Width is about the head diameter, centred on the anchor x.
-        assert!(
-            (bb.width() - 2.0 * r).abs() < 2.0,
-            "width ~ head diameter, got {}",
-            bb.width()
-        );
-        assert!(
-            (0.5 * (bb.x0 + bb.x1) - anchor.x).abs() < 0.5,
-            "the pin is centred on the anchor x"
-        );
-    }
-
-    /// The selected place marker renders through the real `draw_markers` path
-    /// (teardrop pin + halo + floating label) without panicking, under the theme
-    /// palette — the production render path the shots exercise.
-    #[test]
-    fn selected_marker_renders_via_draw_markers() {
-        use crate::model::Place;
-        let theme = Theme::dark();
-        let pal = MapPalette::from_theme(&theme);
-        let mut tr = TextRenderer::new();
-        let center = LatLon::new(48.14, 11.58);
-        let model = MapModel {
-            center,
-            zoom: 16.0,
-            places: vec![Place::new(
-                "a",
-                "Alpha",
-                Category::Cafe,
-                "1 Main St",
-                center,
-            )],
-            selected: Some("a".to_string()),
-            ..Default::default()
-        };
-        let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
-        let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let mut scene = Scene::new();
-        draw_markers(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &proj,
-            &model,
-            &theme,
-            &pal,
-            clip,
-        );
-        // The selected place projects into the clip, so the pin path was emitted.
-        assert!(
-            clip.contains(proj.project(model.center)),
-            "the marker is on screen"
-        );
-    }
-
-    /// `draw_tiles` must NOT fetch or decode synchronously: when given an
-    /// offline layer (no worker, empty cache), it draws placeholders, reports
-    /// "no exact tiles", and leaves the resident set empty — proving the draw
-    /// pass never blocks on the (slow) fetch/decode path.
-    #[test]
-    fn draw_tiles_does_not_fetch_synchronously() {
-        let theme = Theme::dark();
-        let pal = MapPalette::from_theme(&theme);
-        let mut layer = TileLayer::offline();
-        let model = MapModel::default();
-        let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let view_center = clip.center();
-
-        let mut scene = Scene::new();
-        let t0 = std::time::Instant::now();
-        let painted_exact = draw_tiles(
-            &mut scene,
-            Affine::IDENTITY,
-            clip,
-            &mut layer,
-            &model,
-            view_center,
-            &pal,
-        );
-
-        // Fast (no I/O), no real tile painted, and crucially nothing was
-        // synchronously fetched/decoded into the resident store.
-        assert!(t0.elapsed() < std::time::Duration::from_millis(50));
-        assert!(!painted_exact);
-        assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
-        // The offline layer must not even mark tiles in-flight.
-        assert!(!layer.has_inflight());
-    }
-
-    /// Zoom must never blank: with only z14 imagery cached, a zoom-*in* (to z15)
-    /// reuses the z14 tiles as scaled *ancestors*, and a zoom-*out* (to z13)
-    /// reuses them as *descendants* — both keep painting real imagery so the
-    /// caller never covers the viewport with the reference-grid substrate.
-    /// Guards the mid-zoom blank where `draw_tiles` reported "no imagery" during
-    /// a transition and the substrate was painted straight over the placeholders.
-    #[test]
-    fn zoom_reuses_cached_tiles_and_never_blanks() {
-        let theme = Theme::dark();
-        let pal = MapPalette::from_theme(&theme);
-        let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        let vc = clip.center();
-        let center = crate::model::LatLon::new(48.1371, 11.5754);
-
-        // Seed the z14 tiles covering the viewport — the resident set you'd have
-        // after sitting at z14 for a moment.
-        let mut layer = TileLayer::offline();
-        for (id, _) in TileLayer::visible_tiles(center, 14.0, vc, clip) {
-            layer.insert_solid_tile(id);
-        }
-        assert!(layer.mem_len() > 0, "seeded z14 imagery");
-
-        let paints = |layer: &mut TileLayer, zoom: f64| {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn drawing_markers_and_tiles_never_fetches_synchronously_or_blanks() {
+        // Phase `selected_marker_renders_via_draw_markers`.
+        // The selected place marker renders through the real `draw_markers` path
+        // (teardrop pin + halo + floating label) without panicking, under the theme
+        // palette — the production render path the shots exercise.
+        {
+            use crate::model::Place;
+            let theme = Theme::dark();
+            let pal = MapPalette::from_theme(&theme);
+            let mut tr = TextRenderer::new();
+            let center = LatLon::new(48.14, 11.58);
             let model = MapModel {
                 center,
-                zoom,
+                zoom: 16.0,
+                places: vec![Place::new(
+                    "a",
+                    "Alpha",
+                    Category::Cafe,
+                    "1 Main St",
+                    center,
+                )],
+                selected: Some("a".to_string()),
                 ..Default::default()
             };
+            let proj = Projection::new(model.center, model.zoom, Point::new(640.0, 400.0));
+            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
             let mut scene = Scene::new();
-            draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
-        };
+            draw_markers(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &proj,
+                &model,
+                &theme,
+                &pal,
+                clip,
+            );
+            // The selected place projects into the clip, so the pin path was emitted.
+            assert!(
+                clip.contains(proj.project(model.center)),
+                "the marker is on screen"
+            );
+        }
 
-        assert!(paints(&mut layer, 14.0), "exact-zoom tiles paint imagery");
-        assert!(
-            paints(&mut layer, 15.0),
-            "zoom-in reuses z14 as scaled ancestors — must not blank"
-        );
-        assert!(
-            paints(&mut layer, 13.0),
-            "zoom-out reuses z14 as descendants — must not blank"
-        );
+        // Phase `draw_tiles_does_not_fetch_synchronously`.
+        // `draw_tiles` must NOT fetch or decode synchronously: when given an
+        // offline layer (no worker, empty cache), it draws placeholders, reports
+        // "no exact tiles", and leaves the resident set empty — proving the draw
+        // pass never blocks on the (slow) fetch/decode path.
+        {
+            let theme = Theme::dark();
+            let pal = MapPalette::from_theme(&theme);
+            let mut layer = TileLayer::offline();
+            let model = MapModel::default();
+            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let view_center = clip.center();
 
-        // A genuinely empty cache paints no imagery, so the caller still falls
-        // back to the substrate/vector basemap on a true first frame.
-        let mut empty = TileLayer::offline();
-        assert!(!paints(&mut empty, 14.0), "empty cache paints no imagery");
-    }
+            let mut scene = Scene::new();
+            let t0 = std::time::Instant::now();
+            let painted_exact = draw_tiles(
+                &mut scene,
+                Affine::IDENTITY,
+                clip,
+                &mut layer,
+                &model,
+                view_center,
+                &pal,
+            );
 
-    /// A transit leg is drawn in its authentic GTFS `routeColor` when the feed
-    /// provides one, and falls back to the theme per-mode colour otherwise.
-    #[test]
-    fn leg_color_uses_feed_color_then_theme_fallback() {
-        use crate::model::TransitLeg;
-        let theme = Theme::dark();
-        let base = TransitLeg {
-            mode: TransitMode::Subway,
-            line: "U3".into(),
-            headsign: String::new(),
-            from_name: String::new(),
-            to_name: String::new(),
-            dep: String::new(),
-            arr: String::new(),
-            duration_min: 5,
-            num_stops: 2,
-            geometry: vec![
-                crate::model::LatLon::new(0.0, 0.0),
-                crate::model::LatLon::new(0.1, 0.1),
-            ],
-            color: Some("eb690b".into()),
-            text_color: Some("ffffff".into()),
-            agency: "MVG".into(),
-            realtime: true,
-        };
-        // Feed colour wins.
-        assert_eq!(
-            leg_color(&theme, &base),
-            Color::from_rgba8(0xeb, 0x69, 0x0b, 255)
-        );
-        // No feed colour → theme per-mode fallback (not the feed hex).
-        let no_color = TransitLeg {
-            color: None,
-            ..base.clone()
-        };
-        assert_eq!(
-            leg_color(&theme, &no_color),
-            transit_leg_color(&theme, TransitMode::Subway)
-        );
-        // A malformed hex also falls back rather than panicking.
-        let bad = TransitLeg {
-            color: Some("nothex".into()),
-            ..base
-        };
-        assert_eq!(
-            leg_color(&theme, &bad),
-            transit_leg_color(&theme, TransitMode::Subway)
-        );
+            // Fast (no I/O), no real tile painted, and crucially nothing was
+            // synchronously fetched/decoded into the resident store.
+            assert!(t0.elapsed() < std::time::Duration::from_millis(50));
+            assert!(!painted_exact);
+            assert_eq!(layer.mem_len(), 0, "draw must not decode tiles inline");
+            // The offline layer must not even mark tiles in-flight.
+            assert!(!layer.has_inflight());
+        }
+
+        // Phase `zoom_reuses_cached_tiles_and_never_blanks`.
+        // Zoom must never blank: with only z14 imagery cached, a zoom-*in* (to z15)
+        // reuses the z14 tiles as scaled *ancestors*, and a zoom-*out* (to z13)
+        // reuses them as *descendants* — both keep painting real imagery so the
+        // caller never covers the viewport with the reference-grid substrate.
+        // Guards the mid-zoom blank where `draw_tiles` reported "no imagery" during
+        // a transition and the substrate was painted straight over the placeholders.
+        {
+            let theme = Theme::dark();
+            let pal = MapPalette::from_theme(&theme);
+            let clip = Rect::new(0.0, 0.0, 1280.0, 800.0);
+            let vc = clip.center();
+            let center = crate::model::LatLon::new(48.1371, 11.5754);
+
+            // Seed the z14 tiles covering the viewport — the resident set you'd have
+            // after sitting at z14 for a moment.
+            let mut layer = TileLayer::offline();
+            for (id, _) in TileLayer::visible_tiles(center, 14.0, vc, clip) {
+                layer.insert_solid_tile(id);
+            }
+            assert!(layer.mem_len() > 0, "seeded z14 imagery");
+
+            let paints = |layer: &mut TileLayer, zoom: f64| {
+                let model = MapModel {
+                    center,
+                    zoom,
+                    ..Default::default()
+                };
+                let mut scene = Scene::new();
+                draw_tiles(&mut scene, Affine::IDENTITY, clip, layer, &model, vc, &pal)
+            };
+
+            assert!(paints(&mut layer, 14.0), "exact-zoom tiles paint imagery");
+            assert!(
+                paints(&mut layer, 15.0),
+                "zoom-in reuses z14 as scaled ancestors — must not blank"
+            );
+            assert!(
+                paints(&mut layer, 13.0),
+                "zoom-out reuses z14 as descendants — must not blank"
+            );
+
+            // A genuinely empty cache paints no imagery, so the caller still falls
+            // back to the substrate/vector basemap on a true first frame.
+            let mut empty = TileLayer::offline();
+            assert!(!paints(&mut empty, 14.0), "empty cache paints no imagery");
+        }
     }
 }

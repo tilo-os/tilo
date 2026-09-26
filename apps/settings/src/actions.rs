@@ -105,6 +105,9 @@ pub const AGENT_MODEL_OPERATION_TYPE: &str = "settings.agent-model-operation";
 /// machine's trust boundary. They are local effects, never CRDT preferences.
 pub const DEVICE_MESH_OPERATION_TYPE: &str = "settings.device-mesh-operation";
 pub const AGENT_PROVIDER_OPERATION_TYPE: &str = "settings.agent-provider-operation";
+/// Speaker groups across the person's devices. The compositor owns groups,
+/// consent and calibration; Settings only asks, so these never replicate.
+pub const SPEAKER_OPERATION_TYPE: &str = "settings.speaker-operation";
 
 /// Collaboration policy for every action exported by Settings. There is no
 /// implicit/default bucket: a new operation type must be added here before it
@@ -134,6 +137,7 @@ pub(crate) const DEVICE_LOCAL_OPERATION_TYPES: &[&str] = &[
     AGENT_MODEL_OPERATION_TYPE,
     DEVICE_MESH_OPERATION_TYPE,
     AGENT_PROVIDER_OPERATION_TYPE,
+    SPEAKER_OPERATION_TYPE,
 ];
 
 pub fn classify_action(spec: &ActionSpec) -> Option<SettingScope> {
@@ -218,6 +222,9 @@ pub enum InputOperation {
     SetMiddleEmulation { enabled: bool },
     SetLeftHanded { enabled: bool },
     SetTouchpadGestures { enabled: bool },
+    SetTouchpadClickMethod { method: String },
+    SetTouchpadScrollMethod { method: String },
+    SetScrollSpeed { value: f64 },
     SetAccelerationProfile { profile: String },
     SetComposeKey { key: String },
     SetActiveSource { label: String },
@@ -297,6 +304,24 @@ pub enum AudioOperation {
     SetMono {
         enabled: bool,
     },
+    SetEchoCancellation {
+        enabled: bool,
+    },
+    SetSystemSounds {
+        enabled: bool,
+    },
+    SetSystemSoundVolume {
+        value: f64,
+    },
+    /// A sound theme id from the installed themes.
+    SetSoundTheme {
+        theme: String,
+    },
+    /// Whether one system event makes a sound; `event` is its settings key.
+    SetEventSound {
+        event: String,
+        enabled: bool,
+    },
     SetDeviceProfile {
         device_id: u32,
         profile_index: u32,
@@ -346,6 +371,9 @@ pub enum DisplayOperation {
     SetNightLight {
         enabled: bool,
     },
+    SetNightLightSchedule {
+        enabled: bool,
+    },
     SetNightLightTemperature {
         label: String,
     },
@@ -379,6 +407,12 @@ pub enum DisplayOperation {
     SetColorProfileLabel {
         connector: String,
         label: String,
+    },
+    /// One monitor's brightness, `0.0..=1.0`: the external monitor on
+    /// `connector`, over DDC/CI.
+    SetOutputBrightness {
+        connector: String,
+        value: f64,
     },
     SetEnabled {
         connector: String,
@@ -416,6 +450,10 @@ pub enum DisplayOperation {
     Apply,
     Confirm,
     Revert,
+    /// Ask again before keeping display changes from this layout tool.
+    ForgetDisplayTool {
+        executable: String,
+    },
 }
 
 /// Process-local delivery envelope for device effects. This value is never
@@ -481,6 +519,62 @@ pub enum DeviceMeshOperation {
     SetReplication { replication: String },
     SetService { service: String, enabled: bool },
     SetWorkspace { id: u64, enabled: bool },
+}
+
+/// Typed speaker commands. Agents and the Speakers pane share this door;
+/// flow steps (which screen is showing) are presentation and are not here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpeakerOperation {
+    Create {
+        name: String,
+        members: Vec<ui::collaboration::SpeakerMemberSpec>,
+    },
+    Identify {
+        device: String,
+        output: String,
+    },
+    Calibrate {
+        group: String,
+        microphone_device: String,
+        microphone: String,
+    },
+    ApplyCalibration {
+        group: String,
+    },
+    RevertCalibration {
+        group: String,
+    },
+    DismissCalibration {
+        group: String,
+    },
+    Delete {
+        group: String,
+    },
+}
+
+impl SpeakerOperation {
+    /// The shell command this operation asks for.
+    #[must_use]
+    pub fn command(&self) -> ui::collaboration::SpeakerCommand {
+        use ui::collaboration::SpeakerCommand as Command;
+        match self.clone() {
+            Self::Create { name, members } => Command::Create { name, members },
+            Self::Identify { device, output } => Command::Identify { device, output },
+            Self::Calibrate {
+                group,
+                microphone_device,
+                microphone,
+            } => Command::StartCalibration {
+                group,
+                microphone_device,
+                microphone,
+            },
+            Self::ApplyCalibration { group } => Command::ApplyCalibration { group },
+            Self::RevertCalibration { group } => Command::RevertCalibration { group },
+            Self::DismissCalibration { group } => Command::DismissCalibration { group },
+            Self::Delete { group } => Command::Delete { group },
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -607,6 +701,11 @@ pub fn local_operation_token(type_id: &str, payload: &[u8]) -> Result<String, St
         }
         DEVICE_MESH_OPERATION_TYPE => {
             let operation: DeviceMeshOperation =
+                serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+            Ok(local_operation_token_for(type_id, &operation))
+        }
+        SPEAKER_OPERATION_TYPE => {
+            let operation: SpeakerOperation =
                 serde_json::from_slice(payload).map_err(|e| e.to_string())?;
             Ok(local_operation_token_for(type_id, &operation))
         }
@@ -772,6 +871,7 @@ fn input_number_operation(template: &InputOperation, value: f64) -> InputOperati
             InputOperation::SetMousePointerSpeed { value }
         }
         InputOperation::SetKeyRepeat { .. } => InputOperation::SetKeyRepeat { value },
+        InputOperation::SetScrollSpeed { .. } => InputOperation::SetScrollSpeed { value },
         _ => unreachable!("input number resources only contain numeric operations"),
     }
 }
@@ -834,6 +934,11 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         });
     let allowed = match key {
         "appearance.theme"
+        | "appearance.schedule"
+        | "appearance.sunrise"
+        | "appearance.sunset"
+        | "appearance.wallpaper_scope"
+        | "appearance.wallpaper_target"
         | "appearance.text_size"
         | "appearance.ui_scale"
         | "region.currency"
@@ -846,7 +951,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.cursor_size"
         | "a11y.color_filter"
         | "a11y.magnifier"
+        | "a11y.magnifier_view"
         | "a11y.switch_keys"
+        | "a11y.bounce_delay"
         | "a11y.switch_scan"
         | "a11y.reader_rate"
         | "a11y.reader_voice" => text(),
@@ -857,6 +964,9 @@ fn validate_setting_target(key: &str, value: &SettingValue) -> Result<(), Action
         | "a11y.large_cursor"
         | "a11y.sticky_keys"
         | "a11y.slow_keys"
+        | "a11y.bounce_keys"
+        | "a11y.bounce_keys_alert"
+        | "a11y.mouse_keys"
         | "a11y.on_screen_keyboard"
         | "a11y.visual_alerts"
         | "a11y.screen_reader"
@@ -1247,6 +1357,7 @@ fn section_resource(
         Category::TimeDate => time_date_section(doc, prefs),
         Category::KeyboardShortcuts => shortcuts_section(doc),
         Category::DeviceMesh => device_mesh_section(doc),
+        Category::Speakers => speakers_section(),
         Category::Updates => updates_section(),
         Category::ExternalAccounts => accounts_section(account_inventory),
         Category::AgentModels => agent_models_section(),
@@ -1293,6 +1404,7 @@ fn category_for_resource_id(id: &str) -> Option<Category> {
         ("settings.print-job:", Category::Printers),
         ("settings.user:", Category::Users),
         ("settings.device-mesh-workspace:", Category::DeviceMesh),
+        ("settings.speaker-group:", Category::Speakers),
         (
             "settings.agent-model-recommendation:",
             Category::AgentModels,
@@ -1747,6 +1859,44 @@ fn appearance_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         &["90%", "100%", "110%", "125%", "150%"],
         s(panes::appearance::UI_SCALE_KEY, "100%"),
     ));
+    sec = sec.with_action(choice_prompt_spec(
+        "schedule",
+        "Set day and night schedule",
+        panes::appearance::SCHEDULE_KEY,
+        "Sunset to sunrise, Custom times",
+        &panes::appearance::SCHEDULE_LABELS,
+        s(
+            panes::appearance::SCHEDULE_KEY,
+            panes::appearance::schedule_label(&d.appearance.schedule),
+        ),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunrise",
+        "Set when the day starts",
+        panes::appearance::SUNRISE_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNRISE_KEY, &d.appearance.sunrise),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "sunset",
+        "Set when the night starts",
+        panes::appearance::SUNSET_KEY,
+        "HH:MM, in half hours",
+        &panes::appearance::TIMES,
+        s(panes::appearance::SUNSET_KEY, &d.appearance.sunset),
+    ));
+    sec = sec.with_action(choice_prompt_spec(
+        "wallpaper_scope",
+        "Set which workspaces a new wallpaper covers",
+        panes::appearance::WALLPAPER_SCOPE_KEY,
+        "This workspace, Every workspace",
+        &panes::appearance::WALLPAPER_SCOPE_LABELS,
+        s(
+            panes::appearance::WALLPAPER_SCOPE_KEY,
+            panes::appearance::scope_label(&d.appearance.wallpaper_scope),
+        ),
+    ));
     sec
 }
 
@@ -1797,6 +1947,21 @@ fn sound_section(doc: &AutoCommit) -> Resource {
             encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
         },
     ));
+    sec = sec.with_action(echo_cancellation_spec());
+    sec = sec.with_action(system_sounds_spec());
+    sec = sec.with_action(system_sound_volume_spec());
+    for event in settings_store::system_sounds::SystemSoundEvent::ALL {
+        sec = sec.with_action(event_sound_spec(event));
+    }
+    let themes = media::event_sound::installed_themes();
+    if let Some(action) = sound_theme_spec(
+        themes
+            .into_iter()
+            .map(|theme| (theme.name, theme.id))
+            .collect(),
+    ) {
+        sec = sec.with_action(action);
+    }
     sec = sec.with_action(local_number_spec(
         "input-volume",
         "Set input volume",
@@ -2080,6 +2245,113 @@ fn audio_control_resource(action: ActionSpec) -> Resource {
     .with_action(action)
 }
 
+fn echo_cancellation_spec() -> ActionSpec {
+    local_bool_spec(
+        "echo-cancellation",
+        "Reduce echo in calls",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "session"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEchoCancellation { enabled },
+            )
+        },
+    )
+}
+
+fn system_sounds_spec() -> ActionSpec {
+    local_bool_spec(
+        "system-sounds",
+        "Turn system sounds on or off",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSounds { enabled },
+            )
+        },
+    )
+}
+
+fn system_sound_volume_spec() -> ActionSpec {
+    local_number_spec(
+        "system-sound-volume",
+        "Set system sound volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSoundVolume { value },
+            )
+        },
+    )
+}
+
+/// Action id of one event's sound toggle, e.g. `event-sound-low-battery`.
+#[must_use]
+pub fn event_sound_action_id(event: settings_store::system_sounds::SystemSoundEvent) -> String {
+    format!("event-sound-{}", event.key().replace('_', "-"))
+}
+
+fn event_sound_spec(event: settings_store::system_sounds::SystemSoundEvent) -> ActionSpec {
+    local_bool_spec(
+        event_sound_action_id(event),
+        format!("Play a sound for {}", event.label().to_lowercase()),
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        move |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEventSound {
+                    event: event.key().to_string(),
+                    enabled,
+                },
+            )
+        },
+    )
+}
+
+/// `themes` is `(display name, theme id)`.
+fn sound_theme_spec(themes: Vec<(String, String)>) -> Option<ActionSpec> {
+    if themes.is_empty() || themes.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = themes.iter().map(|(name, _)| name.clone()).collect();
+    Some(local_choice_spec(
+        "sound-theme",
+        "Set sound theme",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "sounds"],
+        move |choice| {
+            let theme = themes
+                .iter()
+                .find(|(name, _)| name == &choice)
+                .map(|(_, id)| id.clone())
+                .unwrap_or_default();
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSoundTheme { theme },
+            )
+        },
+    ))
+}
+
+/// The sound-theme picker's binding; `themes` is `(display name, theme id)`.
+pub fn audio_sound_theme_binding(
+    themes: Vec<(String, String)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = audio_control_resource(sound_theme_spec(themes)?);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
 pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let action = match action_id {
         "muted" => local_bool_spec(
@@ -2103,7 +2375,12 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetMono { enabled })
             },
         ),
-        _ => return None,
+        "echo-cancellation" => echo_cancellation_spec(),
+        "system-sounds" => system_sounds_spec(),
+        other => settings_store::system_sounds::SystemSoundEvent::ALL
+            .into_iter()
+            .find(|event| event_sound_action_id(*event) == other)
+            .map(event_sound_spec)?,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
 }
@@ -2147,6 +2424,7 @@ pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetBalance { value })
             },
         ),
+        "system-sound-volume" => system_sound_volume_spec(),
         _ => return None,
     };
     let resource = audio_control_resource(action);
@@ -2354,7 +2632,7 @@ pub fn audio_stream_bool_binding(
     clippy::too_many_lines,
     reason = "resource tree mirrors display capability hierarchy"
 )]
-fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
+pub(crate) fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
     let mut sec = Resource::new(
         pane_resource_id(Category::Displays),
         "settings.section",
@@ -2381,6 +2659,18 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             encode_local_operation(
                 DISPLAY_OPERATION_TYPE,
                 &DisplayOperation::SetNightLight { enabled },
+            )
+        },
+    ));
+    sec = sec.with_action(local_bool_spec(
+        "night_light_schedule",
+        "Set Night Light schedule",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        |enabled| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetNightLightSchedule { enabled },
             )
         },
     ));
@@ -2454,6 +2744,7 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
                 "settings.display-output",
                 descriptor.label().to_string(),
             );
+            resource = resource.with_action(output_brightness_spec(connector.clone()));
             let operation_connector = connector.clone();
             resource = resource.with_action(local_bool_spec(
                 "enabled",
@@ -2718,7 +3009,44 @@ fn displays_section(_doc: &AutoCommit, _d: &SystemPrefs) -> Resource {
             sec = sec.with_action(action);
         }
     }
+    for tool in settings_store::display_tools::TrustedDisplayTools::load()
+        .tools
+        .iter()
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        sec = sec.with_child(display_tool_resource(tool));
+    }
     sec
+}
+
+/// The resource for one trusted display tool, carrying its `forget` action.
+fn display_tool_resource(tool: &settings_store::display_tools::DisplayTool) -> Resource {
+    let resource = Resource::new(
+        format!("settings.display-tool:{}", tool.executable),
+        "settings.display-tool",
+        tool.name().to_string(),
+    );
+    match local_operation_spec(
+        "forget",
+        "Ask before keeping this tool's display changes",
+        OperationKind::Effect,
+        DISPLAY_OPERATION_TYPE,
+        &DisplayOperation::ForgetDisplayTool {
+            executable: tool.executable.clone(),
+        },
+        &["device-local", "display", "trusted-tool"],
+    ) {
+        Some(action) => resource.with_action(action),
+        None => resource,
+    }
+}
+
+/// Binding for a trusted tool's "Ask again" button: the same `forget`
+/// action an agent or script invokes.
+pub fn display_tool_forget_binding(
+    tool: &settings_store::display_tools::DisplayTool,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    tilo_actions::ActionBinding::unit_for(&display_tool_resource(tool), "forget").ok()
 }
 
 fn display_control_resource(action: ActionSpec) -> Resource {
@@ -2753,6 +3081,18 @@ pub fn display_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(
                     DISPLAY_OPERATION_TYPE,
                     &DisplayOperation::SetNightLight { enabled },
+                )
+            },
+        ),
+        "night_light_schedule" => local_bool_spec(
+            "night_light_schedule",
+            "Set Night Light schedule",
+            DISPLAY_OPERATION_TYPE,
+            &["device-local", "display", "hardware"],
+            |enabled| {
+                encode_local_operation(
+                    DISPLAY_OPERATION_TYPE,
+                    &DisplayOperation::SetNightLightSchedule { enabled },
                 )
             },
         ),
@@ -2958,6 +3298,37 @@ pub fn display_output_bool_binding(
     )
 }
 
+fn output_brightness_spec(connector: String) -> ActionSpec {
+    local_number_spec(
+        "brightness",
+        "Set monitor brightness",
+        DISPLAY_OPERATION_TYPE,
+        &["device-local", "display", "hardware"],
+        move |value| {
+            encode_local_operation(
+                DISPLAY_OPERATION_TYPE,
+                &DisplayOperation::SetOutputBrightness {
+                    connector: connector.clone(),
+                    value,
+                },
+            )
+        },
+    )
+}
+
+/// The brightness slider of one monitor's card.
+pub fn display_output_brightness_binding(
+    connector: String,
+) -> Option<tilo_actions::ActionBinding<f64>> {
+    let resource =
+        display_output_control_resource(&connector, output_brightness_spec(connector.clone()));
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |value| {
+        serde_json::Map::from_iter([("value".to_string(), serde_json::json!(value))])
+    })
+    .ok()
+}
+
 pub fn display_output_choice_binding(
     action_id: &'static str,
     connector: String,
@@ -3113,6 +3484,11 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set key-repeat rate",
             InputOperation::SetKeyRepeat { value: 0.0 },
         ),
+        (
+            "scroll-speed",
+            "Set scroll speed",
+            InputOperation::SetScrollSpeed { value: 0.0 },
+        ),
     ] {
         let operation = operation;
         sec = sec.with_action(
@@ -3139,6 +3515,24 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             .with_contract(local_operation_contract(&["device-local", "input"])),
         );
     }
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-click-method",
+        "Set touchpad click method",
+        &crate::panes::mouse_keyboard::CLICK_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadClickMethod { method: choice },
+    ));
+    sec = sec.with_action(input_choice_spec(
+        "touchpad-scroll-method",
+        "Set touchpad scroll method",
+        &crate::panes::mouse_keyboard::SCROLL_METHOD_CHOICES
+            .iter()
+            .map(|(label, _)| (*label).to_string())
+            .collect::<Vec<_>>(),
+        |choice| InputOperation::SetTouchpadScrollMethod { method: choice },
+    ));
     sec = sec.with_action(input_choice_spec(
         "acceleration-profile",
         "Set pointer acceleration profile",
@@ -3206,13 +3600,13 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
     }
     let mut add_choices: Vec<String> = catalog
         .iter()
-        .filter(|entry| !sources.contains(&entry.id))
+        .filter(|entry| {
+            !sources.contains(&entry.id) && crate::input_sources::has_room_for(&sources, &entry.id)
+        })
         .map(|entry| entry.label.clone())
         .collect();
     add_choices.sort();
-    if !add_choices.is_empty()
-        && sources.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-    {
+    if !add_choices.is_empty() {
         let Some(fallback) = add_choices.first().cloned() else {
             return sec;
         };
@@ -3221,7 +3615,7 @@ fn input_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             ActionSpec::typed_operation(
                 "add-source",
                 "Add keyboard input source",
-                "Choose an installed keyboard layout",
+                "Choose an installed keyboard layout or input method",
                 OperationKind::Effect,
                 KEYBOARD_SOURCE_OPERATION_TYPE,
                 vec![
@@ -3531,6 +3925,21 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
             "Set slow keys",
         ),
         (
+            "bounce-keys",
+            panes::accessibility::BOUNCE_KEYS_KEY,
+            "Set bounce keys",
+        ),
+        (
+            "bounce-keys-alert",
+            panes::accessibility::BOUNCE_ALERT_KEY,
+            "Set bounce keys alert",
+        ),
+        (
+            "mouse-keys",
+            panes::accessibility::MOUSE_KEYS_KEY,
+            "Set mouse keys",
+        ),
+        (
             "visual-alerts",
             panes::accessibility::VISUAL_ALERTS_KEY,
             "Set visual alerts",
@@ -3600,15 +4009,29 @@ fn accessibility_section(doc: &AutoCommit, d: &SystemPrefs) -> Resource {
         ),
         (
             "magnifier",
-            "Set magnifier lens",
+            "Set magnifier zoom",
             panes::accessibility::MAGNIFIER_KEY,
-            "Off, 2×, 3×",
-            &["Off", "2×", "3×"][..],
-            match d.accessibility.magnifier_zoom {
-                2 => "2×",
-                3 => "3×",
-                _ => "Off",
-            },
+            "Off, 2×, 3×, 4×, 5×, 6×",
+            &settings_store::magnifier::ZOOM_LABELS[..],
+            settings_store::magnifier::zoom_label(d.accessibility.magnifier_zoom),
+        ),
+        (
+            "magnifier-view",
+            "Set magnifier view",
+            panes::accessibility::MAGNIFIER_VIEW_KEY,
+            "Lens, Full screen",
+            &["Lens", "Full screen"][..],
+            d.accessibility.magnifier_view.label(),
+        ),
+        (
+            "bounce-delay",
+            "Set bounce keys delay",
+            panes::accessibility::BOUNCE_DELAY_KEY,
+            "100 ms, 200 ms, 300 ms, 500 ms, 800 ms",
+            &["100 ms", "200 ms", "300 ms", "500 ms", "800 ms"][..],
+            crate::prefs::AccessibilityPrefs::bounce_delay_label(
+                d.accessibility.bounce_keys_delay_ms,
+            ),
         ),
         (
             "switch-keys",
@@ -4978,6 +5401,155 @@ fn device_mesh_section(_doc: &AutoCommit) -> Resource {
     section
 }
 
+fn speaker_spec(
+    id: &str,
+    label: &str,
+    placeholder: &str,
+    params: Vec<ActionParam>,
+    encode: impl Fn(&tilo_actions::ActionArgs) -> SpeakerOperation + Send + Sync + 'static,
+) -> ActionSpec {
+    ActionSpec::typed_operation(
+        id,
+        label,
+        placeholder,
+        OperationKind::Effect,
+        SPEAKER_OPERATION_TYPE,
+        params,
+        move |args| encode_local_operation(SPEAKER_OPERATION_TYPE, &encode(args)),
+    )
+    .with_contract(local_operation_contract(&["device-local", "speakers"]))
+}
+
+/// Speaker sets: create one, and per set delete, calibrate, apply or revert
+/// a calibration. Sets come from the last snapshot the Speakers pane
+/// received, so building this tree never waits on the compositor.
+fn speakers_section() -> Resource {
+    let mut section = Resource::new(
+        pane_resource_id(Category::Speakers),
+        "settings.section",
+        "Speakers",
+    );
+    section = section.with_action(speaker_spec(
+        "create",
+        "Create a speaker set",
+        "Name and members",
+        vec![
+            ActionParam::required("name", ParamType::Text, "Name, such as Living room"),
+            ActionParam::required(
+                "members",
+                ParamType::Text,
+                "JSON list of {device, output, role}; role is {\"role\":\"left\"}, \"right\", \"center\", \"lfe\", \"surround-left\", \"surround-right\" or {\"role\":\"room\",\"x_mm\":…,\"y_mm\":…,\"z_mm\":…}",
+            ),
+        ],
+        |args| SpeakerOperation::Create {
+            name: args.text("name").unwrap_or_default().to_string(),
+            members: serde_json::from_str(args.text("members").unwrap_or_default())
+                .unwrap_or_default(),
+        },
+    ));
+    section = section.with_action(speaker_spec(
+        "identify",
+        "Play a sound on a speaker",
+        "Device and output",
+        vec![
+            ActionParam::required("device", ParamType::Text, "Device id"),
+            ActionParam::required("output", ParamType::Text, "Output selector"),
+        ],
+        |args| SpeakerOperation::Identify {
+            device: args.text("device").unwrap_or_default().to_string(),
+            output: args.text("output").unwrap_or_default().to_string(),
+        },
+    ));
+    let snapshot = crate::speaker_setup::cached_snapshot();
+    let microphones = snapshot
+        .devices
+        .iter()
+        .filter(|device| device.online)
+        .flat_map(|device| {
+            device
+                .microphones
+                .iter()
+                .map(move |microphone| format!("{}/{}", device.id, microphone.selector))
+        })
+        .take(MAX_DYNAMIC_CHOICES)
+        .collect::<Vec<_>>();
+    for group in snapshot
+        .groups
+        .iter()
+        .filter(|group| group.led_here)
+        .take(MAX_DYNAMIC_RESOURCES)
+    {
+        let id = group.id.clone();
+        let mut resource = Resource::new(
+            format!("settings.speaker-group:{id}"),
+            "settings.speaker-group",
+            group.name.clone(),
+        );
+        let delete_id = id.clone();
+        resource = resource.with_action(
+            speaker_spec(
+                "delete",
+                "Delete this speaker set",
+                "",
+                Vec::new(),
+                move |_| SpeakerOperation::Delete {
+                    group: delete_id.clone(),
+                },
+            )
+            .destructive(),
+        );
+        if !microphones.is_empty() {
+            let calibrate_id = id.clone();
+            resource = resource.with_action(speaker_spec(
+                "calibrate",
+                "Calibrate with a microphone",
+                "Microphone",
+                vec![
+                    ActionParam::required_owned(
+                        "microphone",
+                        ParamType::Text,
+                        "Microphone that listens at your seat",
+                    )
+                    .with_choices(microphones.clone()),
+                ],
+                move |args| {
+                    let (device, selector) = args
+                        .text("microphone")
+                        .unwrap_or_default()
+                        .split_once('/')
+                        .unwrap_or_default();
+                    SpeakerOperation::Calibrate {
+                        group: calibrate_id.clone(),
+                        microphone_device: device.to_string(),
+                        microphone: selector.to_string(),
+                    }
+                },
+            ));
+        }
+        for (action, label, make) in [
+            (
+                "apply-calibration",
+                "Apply the measured calibration",
+                (|group| SpeakerOperation::ApplyCalibration { group })
+                    as fn(String) -> SpeakerOperation,
+            ),
+            (
+                "revert-calibration",
+                "Revert to the previous calibration",
+                |group| SpeakerOperation::RevertCalibration { group },
+            ),
+        ] {
+            let group_id = id.clone();
+            resource =
+                resource.with_action(speaker_spec(action, label, "", Vec::new(), move |_| {
+                    make(group_id.clone())
+                }));
+        }
+        section = section.with_child(resource);
+    }
+    section
+}
+
 fn device_mesh_choice_spec(
     id: &'static str,
     label: &'static str,
@@ -5126,753 +5698,1007 @@ mod tests {
             .unwrap_or_else(|| panic!("section {id} present"))
     }
 
-    /// Ctrl+K on Settings yields the tree: one `settings.root` with exactly one
-    /// stable `settings.section` child per category. Every pane exports its
-    /// View operation; panes with mutable settings additionally export the
-    /// collaborative document actions they own. Drives the app's real hook.
+    /// Ctrl+K tree, stable pane addresses, lookups, bounded inventories and refused stale targets.
     #[test]
-    fn ctrl_k_publishes_the_settings_tree() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let doc = AutoCommit::new();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1, "one configuration root");
-        let root = &resources[0];
-        assert_eq!(root.kind, "settings.root");
-        assert_eq!(root.children.len(), Category::ALL.len());
-        for category in Category::ALL.iter().copied() {
-            let address = open_pane_address(category);
-            let pane = root
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn settings_tree_addresses_are_stable_shallow_and_bounded() {
+        // Case `ctrl_k_publishes_the_settings_tree`.
+        // Ctrl+K on Settings yields the tree: one `settings.root` with exactly one
+        // stable `settings.section` child per category. Every pane exports its
+        // View operation; panes with mutable settings additionally export the
+        // collaborative document actions they own. Drives the app's real hook.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let app = config.app();
+            let doc = AutoCommit::new();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1, "one configuration root");
+            let root = &resources[0];
+            assert_eq!(root.kind, "settings.root");
+            assert_eq!(root.children.len(), Category::ALL.len());
+            for category in Category::ALL.iter().copied() {
+                let address = open_pane_address(category);
+                let pane = root
+                    .children
+                    .iter()
+                    .find(|pane| pane.id.as_str() == address.resource)
+                    .unwrap_or_else(|| panic!("{} owns a resource", category.label()));
+                assert_eq!(pane.label, category.label());
+                let open = tilo_actions::door::resolve(&resources, &address)
+                    .unwrap_or_else(|| panic!("{} exports open", category.label()));
+                assert_eq!(open.kind, OperationKind::View);
+                assert_eq!(open.contract, ActionContract::view());
+            }
+
+            let notif = find(&resources, "settings.section:notifications");
+            let ids: Vec<&str> = notif.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(ids.contains(&"dnd"), "{ids:?}");
+            assert!(ids.contains(&"banners"), "{ids:?}");
+            assert!(ids.contains(&"lock_screen"), "{ids:?}");
+            let dnd = notif
+                .actions
+                .iter()
+                .find(|action| action.id == "dnd")
+                .unwrap();
+            assert_eq!(dnd.kind, OperationKind::Document);
+            assert!(dnd.contract.tags.iter().any(|tag| tag == "system-setting"));
+
+            let appearance = find(&resources, "settings.section:appearance");
+            let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
+            assert!(ids.contains(&"theme"), "{ids:?}");
+            assert!(ids.contains(&"ui_scale"), "{ids:?}");
+        }
+
+        // Case `pane_addresses_are_stable_and_unique`.
+        {
+            let mut addresses = std::collections::HashSet::new();
+            for category in Category::ALL.iter().copied() {
+                let address = open_pane_address(category);
+                assert_eq!(
+                    address.resource,
+                    format!("settings.section:{}", category.slug())
+                );
+                assert_eq!(address.action, OPEN_PANE_ACTION);
+                assert!(
+                    addresses.insert(address),
+                    "duplicate address for {category:?}"
+                );
+            }
+        }
+
+        // Case `exact_root_lookup_is_shallow_and_section_lookup_is_canonical`.
+        {
+            let config = crate::prefs::test_env::ScratchConfig::new();
+            let app = config.app();
+            let doc = AutoCommit::new();
+            let root = ResourceProvider::resource(&app, &doc, "settings.root")
+                .expect("root resolves exactly");
+            assert_eq!(root.children.len(), Category::ALL.len());
+            assert!(
+                root.children
+                    .iter()
+                    .all(|section| section.children.is_empty()),
+                "resolving the root must not enumerate live dynamic inventories"
+            );
+
+            let appearance =
+                ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
+                    .expect("one section resolves without rebuilding every other section");
+            assert_eq!(appearance.label, Category::Appearance.label());
+            assert!(appearance.actions.iter().any(|action| action.id == "theme"));
+        }
+
+        // Case `adversarial_account_inventory_is_hard_bounded`.
+        {
+            let accounts: Vec<_> = (0..100_001)
+                .map(|index| accounts::Account::new(format!("account-{index}"), "nextcloud"))
+                .collect();
+            let section = accounts_section(&accounts);
+            assert_eq!(section.children.len(), MAX_DYNAMIC_RESOURCES);
+            assert_eq!(
+                section.children[0].id.as_str(),
+                "settings.account:account-0"
+            );
+            assert_eq!(
+                section.children[MAX_DYNAMIC_RESOURCES - 1].id.as_str(),
+                "settings.account:account-255"
+            );
+        }
+
+        // Case `stale_or_presentation_targets_are_refused`.
+        {
+            let mut doc = AutoCommit::new();
+            for action in [
+                set_bool_action("appearance.high_contrast.edit", true),
+                set_text_action("settings.select.appearance", "true"),
+                set_text_action("shortcuts.no-longer-supported", "Super+Shift+K"),
+                set_text_action("unknown.preference", "value"),
+            ] {
+                assert!(matches!(
+                    action.apply(&mut doc),
+                    Err(ActionError::Refused(_))
+                ));
+            }
+        }
+    }
+
+    /// Account removal, storage reclamation and update operations need host confirmation.
+    #[test]
+    fn destructive_resources_require_host_confirmation() {
+        // Shared read-only fixture for every case below.
+        let resources = provide_resources(&AutoCommit::new());
+
+        // Case `account_removal_resource_requires_host_confirmation`.
+        {
+            let mut account = accounts::Account::new("stable-account", "nextcloud");
+            account.display_name = "Work cloud".into();
+            let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
+            let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
+            let account = accounts
                 .children
                 .iter()
-                .find(|pane| pane.id.as_str() == address.resource)
-                .unwrap_or_else(|| panic!("{} owns a resource", category.label()));
-            assert_eq!(pane.label, category.label());
-            let open = tilo_actions::door::resolve(&resources, &address)
-                .unwrap_or_else(|| panic!("{} exports open", category.label()));
-            assert_eq!(open.kind, OperationKind::View);
-            assert_eq!(open.contract, ActionContract::view());
-        }
-
-        let notif = find(&resources, "settings.section:notifications");
-        let ids: Vec<&str> = notif.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"dnd"), "{ids:?}");
-        assert!(ids.contains(&"banners"), "{ids:?}");
-        assert!(ids.contains(&"lock_screen"), "{ids:?}");
-        let dnd = notif
-            .actions
-            .iter()
-            .find(|action| action.id == "dnd")
-            .unwrap();
-        assert_eq!(dnd.kind, OperationKind::Document);
-        assert!(dnd.contract.tags.iter().any(|tag| tag == "system-setting"));
-
-        let appearance = find(&resources, "settings.section:appearance");
-        let ids: Vec<&str> = appearance.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"theme"), "{ids:?}");
-        assert!(ids.contains(&"ui_scale"), "{ids:?}");
-    }
-
-    #[test]
-    fn pane_addresses_are_stable_and_unique() {
-        let mut addresses = std::collections::HashSet::new();
-        for category in Category::ALL.iter().copied() {
-            let address = open_pane_address(category);
-            assert_eq!(
-                address.resource,
-                format!("settings.section:{}", category.slug())
-            );
-            assert_eq!(address.action, OPEN_PANE_ACTION);
-            assert!(
-                addresses.insert(address),
-                "duplicate address for {category:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn exact_root_lookup_is_shallow_and_section_lookup_is_canonical() {
-        let config = crate::prefs::test_env::ScratchConfig::new();
-        let app = config.app();
-        let doc = AutoCommit::new();
-        let root =
-            ResourceProvider::resource(&app, &doc, "settings.root").expect("root resolves exactly");
-        assert_eq!(root.children.len(), Category::ALL.len());
-        assert!(
-            root.children
-                .iter()
-                .all(|section| section.children.is_empty()),
-            "resolving the root must not enumerate live dynamic inventories"
-        );
-
-        let appearance =
-            ResourceProvider::resource(&app, &doc, &pane_resource_id(Category::Appearance))
-                .expect("one section resolves without rebuilding every other section");
-        assert_eq!(appearance.label, Category::Appearance.label());
-        assert!(appearance.actions.iter().any(|action| action.id == "theme"));
-    }
-
-    #[test]
-    fn adversarial_account_inventory_is_hard_bounded() {
-        let accounts: Vec<_> = (0..100_001)
-            .map(|index| accounts::Account::new(format!("account-{index}"), "nextcloud"))
-            .collect();
-        let section = accounts_section(&accounts);
-        assert_eq!(section.children.len(), MAX_DYNAMIC_RESOURCES);
-        assert_eq!(
-            section.children[0].id.as_str(),
-            "settings.account:account-0"
-        );
-        assert_eq!(
-            section.children[MAX_DYNAMIC_RESOURCES - 1].id.as_str(),
-            "settings.account:account-255"
-        );
-    }
-
-    #[test]
-    fn account_removal_resource_requires_host_confirmation() {
-        let mut account = accounts::Account::new("stable-account", "nextcloud");
-        account.display_name = "Work cloud".into();
-        let resources = provide_resources_with_accounts(&AutoCommit::new(), &[account]);
-        let accounts = find(&resources, &pane_resource_id(Category::ExternalAccounts));
-        let account = accounts
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "settings.account:stable-account")
-            .expect("account nested beneath External Accounts");
-        let remove = account
-            .actions
-            .iter()
-            .find(|action| action.id == "remove")
-            .expect("remove resource action");
-        assert_eq!(remove.kind, OperationKind::Effect);
-        assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
-        assert_eq!(
-            remove.contract.confirmation,
-            tilo_actions::ConfirmationPolicy::Confirm
-        );
-        let test = account
-            .actions
-            .iter()
-            .find(|action| action.id == "test")
-            .expect("account test resource action");
-        assert_eq!(
-            test.contract.execution,
-            ExecutionMode::Background { cancellable: false }
-        );
-        assert!(matches!(test.contract.result, ResultSpec::Json { .. }));
-    }
-
-    #[test]
-    fn storage_reclamation_requires_host_confirmation() {
-        let storage = storage_section();
-        for id in ["cleanup-caches", "free-synced-files"] {
-            let action = storage
+                .find(|resource| resource.id.as_str() == "settings.account:stable-account")
+                .expect("account nested beneath External Accounts");
+            let remove = account
                 .actions
                 .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("{id} action is published"));
-            assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+                .find(|action| action.id == "remove")
+                .expect("remove resource action");
+            assert_eq!(remove.kind, OperationKind::Effect);
+            assert_eq!(remove.contract.risk, tilo_actions::RiskLevel::Destructive);
             assert_eq!(
-                action.contract.execution,
+                remove.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            let test = account
+                .actions
+                .iter()
+                .find(|action| action.id == "test")
+                .expect("account test resource action");
+            assert_eq!(
+                test.contract.execution,
                 ExecutionMode::Background { cancellable: false }
             );
+            assert!(matches!(test.contract.result, ResultSpec::Json { .. }));
         }
-    }
 
-    #[test]
-    fn power_resource_covers_every_non_hardware_preference_control() {
-        let resources = provide_resources(&AutoCommit::new());
-        let power = find(&resources, &pane_resource_id(Category::Power));
-        let ids: std::collections::HashSet<&str> = power
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for id in [
-            "profile",
-            "auto_suspend",
-            "suspend-after",
-            "blank-after",
-            "lock-after",
-            "saver-suspend",
-            "balanced-suspend",
-            "performance-suspend",
-            "lid",
-            "power_key",
-            "critical",
-        ] {
-            assert!(ids.contains(id), "missing canonical Power action: {id}");
-        }
-        if let Some(action) = power
-            .actions
-            .iter()
-            .find(|action| action.id == "set-charge-cap")
+        // Case `storage_reclamation_requires_host_confirmation`.
         {
-            assert_eq!(action.kind, OperationKind::Effect);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            assert_eq!(action.operation_type.as_deref(), Some(POWER_OPERATION_TYPE));
-        }
-    }
-
-    #[test]
-    fn notification_and_input_resources_cover_their_durable_preferences() {
-        let resources = provide_resources(&AutoCommit::new());
-        let notifications = find(&resources, &pane_resource_id(Category::Notifications));
-        let notification_ids: std::collections::HashSet<&str> = notifications
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for id in [
-            "badges",
-            "focus-enabled",
-            "focus-start",
-            "focus-end",
-            "focus-days",
-        ] {
-            assert!(
-                notification_ids.contains(id),
-                "missing canonical Notifications action: {id}"
-            );
-        }
-        let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
-        let input_ids: std::collections::HashSet<&str> = input
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        for id in [
-            "touchpad-natural-scroll",
-            "mouse-natural-scroll",
-            "tap-to-click",
-            "touchpad-speed",
-            "mouse-speed",
-            "key-repeat",
-            "tap-drag",
-            "disable-while-typing",
-            "middle-emulation",
-            "left-handed",
-            "touchpad-gestures",
-            "spell-checking",
-            "auto-correct",
-            "acceleration-profile",
-            "compose-key",
-        ] {
-            assert!(
-                input_ids.contains(id),
-                "missing canonical input action: {id}"
-            );
-        }
-        assert!(
-            input.children.iter().all(|source| {
-                source.kind != "settings.input-source"
-                    || source.actions.iter().all(|action| {
-                        action.locus == ExecutionLocus::ClientLocal
-                            && action.operation_type.as_deref()
-                                == Some(KEYBOARD_SOURCE_OPERATION_TYPE)
-                    })
-            }),
-            "each input-source row exposes only local typed commands"
-        );
-    }
-
-    #[test]
-    fn every_visible_shortcut_has_a_canonical_resource_action() {
-        let resources = provide_resources(&AutoCommit::new());
-        let shortcuts = find(&resources, &pane_resource_id(Category::KeyboardShortcuts));
-        let action_ids: std::collections::HashSet<&str> = shortcuts
-            .actions
-            .iter()
-            .map(|action| action.id.as_str())
-            .collect();
-        assert!(
-            action_ids.contains("vim-mode"),
-            "missing canonical Vim navigation action"
-        );
-
-        for (key, label) in crate::panes::keyboard_shortcuts::resource_entries() {
-            let id = key
-                .strip_prefix("shortcuts.")
-                .unwrap_or(key)
-                .replace('_', "-");
-            assert!(
-                action_ids.contains(id.as_str()),
-                "missing canonical shortcut action for {label} ({key})"
-            );
-            let action = shortcuts
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .expect("action was just found");
-            assert_eq!(action.kind, OperationKind::Document);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-        }
-    }
-
-    #[test]
-    fn update_operations_are_typed_local_effects_with_destructive_guards() {
-        let resources = provide_resources(&AutoCommit::new());
-        let updates = find(&resources, &pane_resource_id(Category::Updates));
-        for id in [
-            "check",
-            "restart",
-            "rollback",
-            "refresh-firmware",
-            "install-firmware",
-            "install-codecs",
-            "remove-codecs",
-            "refresh-codecs",
-            "automatic",
-            "schedule",
-            "metered",
-        ] {
-            let action = updates
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("missing update operation: {id}"));
-            assert_eq!(action.kind, OperationKind::Effect);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            assert_eq!(
-                action.operation_type.as_deref(),
-                Some(UPDATE_OPERATION_TYPE)
-            );
-            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
-        }
-        for id in ["restart", "rollback", "install-firmware", "install-codecs"] {
-            assert!(
-                updates
+            let storage = storage_section();
+            for id in ["cleanup-caches", "free-synced-files"] {
+                let action = storage
                     .actions
                     .iter()
                     .find(|action| action.id == id)
-                    .is_some_and(|action| !matches!(
-                        action.contract.confirmation,
-                        tilo_actions::ConfirmationPolicy::None
-                    ))
-            );
+                    .unwrap_or_else(|| panic!("{id} action is published"));
+                assert_eq!(action.contract.risk, tilo_actions::RiskLevel::Destructive);
+                assert_eq!(
+                    action.contract.execution,
+                    ExecutionMode::Background { cancellable: false }
+                );
+            }
         }
-        let review = updates
-            .actions
-            .iter()
-            .find(|action| action.id == "review-rollback")
-            .expect("rollback review is discoverable");
-        assert_eq!(review.kind, OperationKind::View);
-        assert!(matches!(
-            review.contract.execution,
-            ExecutionMode::Immediate
-        ));
-    }
 
-    #[test]
-    fn hardware_network_controls_are_bounded_local_effects() {
-        let resources = provide_resources(&AutoCommit::new());
-        let network = find(&resources, &pane_resource_id(Category::Network));
-        for id in [
-            "refresh",
-            "run-diagnostics",
-            "enable-wired",
-            "disable-wired",
-            "enable-airplane-mode",
-            "disable-airplane-mode",
-            "enable-hotspot",
-            "disable-hotspot",
-            "enable-mobile-broadband",
-            "disable-mobile-broadband",
-        ] {
-            let action = network
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("missing network operation: {id}"));
-            assert_eq!(action.kind, OperationKind::Effect);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            assert_eq!(
-                action.operation_type.as_deref(),
-                Some(NETWORK_OPERATION_TYPE)
-            );
-            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
-        }
-    }
-
-    #[test]
-    fn bluetooth_discovery_controls_are_bounded_local_effects() {
-        let resources = provide_resources(&AutoCommit::new());
-        let bluetooth = find(&resources, &pane_resource_id(Category::Bluetooth));
-        for id in ["scan", "refresh"] {
-            let action = bluetooth
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("missing Bluetooth operation: {id}"));
-            assert_eq!(action.kind, OperationKind::Effect);
-            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-            assert_eq!(
-                action.operation_type.as_deref(),
-                Some(BLUETOOTH_OPERATION_TYPE)
-            );
-            assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
-        }
-    }
-
-    #[test]
-    fn display_operation_tokens_are_typed_and_stable() {
-        let operation = DisplayOperation::SetMode {
-            connector: "card0/HDMI-A-1".into(),
-            mode: settings_store::hardware::OutputMode {
-                width: 2560,
-                height: 1440,
-                refresh_mhz: 143_850,
-            },
-        };
-        let payload = serde_json::to_vec(&operation).expect("display operation serializes");
-        assert_eq!(
-            local_operation_token(DISPLAY_OPERATION_TYPE, &payload),
-            Ok(local_operation_token_for(
-                DISPLAY_OPERATION_TYPE,
-                &operation
-            ))
-        );
-        assert!(local_operation_token(DISPLAY_OPERATION_TYPE, br#"{\"set_mode\":{}}"#).is_err());
-    }
-
-    #[test]
-    fn input_and_time_controls_cannot_enter_settings_action_replay() {
-        let mut doc = AutoCommit::new();
-        for (key, value) in [
-            (
-                panes::mouse_keyboard::TAP_CLICK_KEY,
-                SettingValue::Bool(true),
-            ),
-            (
-                panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
-                SettingValue::Float(0.8),
-            ),
-            (
-                panes::mouse_keyboard::ACCEL_PROFILE_KEY,
-                SettingValue::Text("Flat".into()),
-            ),
-            (
-                panes::mouse_keyboard::LAYOUT_KEY,
-                SettingValue::Text("English (US)".into()),
-            ),
-            (panes::time_date::AUTO_TIME_KEY, SettingValue::Bool(false)),
-            (panes::time_date::H24_KEY, SettingValue::Bool(false)),
-            (
-                panes::time_date::TIMEZONE_KEY,
-                SettingValue::Text("Europe/Amsterdam".into()),
-            ),
-        ] {
-            assert!(
-                SettingsAction::SetSetting {
-                    key: key.into(),
-                    value
-                }
-                .apply(&mut doc)
-                .is_err()
-            );
-        }
-        assert!(
-            doc.get(&ROOT, panes::mouse_keyboard::TAP_CLICK_KEY)
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            doc.get(&ROOT, panes::time_date::TIMEZONE_KEY)
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn input_and_time_resources_and_controls_share_local_effect_protocols() {
-        let resources = provide_resources(&AutoCommit::new());
-        let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
-        let time = find(&resources, &pane_resource_id(Category::TimeDate));
-        for (resource, ids, operation_type) in [
-            (
-                &input,
-                &[
-                    "tap-to-click",
-                    "touchpad-speed",
-                    "active-source",
-                    "compose-key",
-                ][..],
-                INPUT_OPERATION_TYPE,
-            ),
-            (
-                &time,
-                &["automatic-time", "24-hour", "timezone"][..],
-                TIME_DATE_OPERATION_TYPE,
-            ),
-        ] {
-            for id in ids {
-                let action = resource
+        // Case `update_operations_are_typed_local_effects_with_destructive_guards`.
+        {
+            let updates = find(&resources, &pane_resource_id(Category::Updates));
+            for id in [
+                "check",
+                "restart",
+                "rollback",
+                "refresh-firmware",
+                "install-firmware",
+                "install-codecs",
+                "remove-codecs",
+                "refresh-codecs",
+                "automatic",
+                "schedule",
+                "metered",
+            ] {
+                let action = updates
                     .actions
                     .iter()
-                    .find(|action| action.id == *id)
-                    .unwrap_or_else(|| panic!("missing local action {id}"));
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("missing update operation: {id}"));
                 assert_eq!(action.kind, OperationKind::Effect);
-                assert_eq!(action.operation_type.as_deref(), Some(operation_type));
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(UPDATE_OPERATION_TYPE)
+                );
+                assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+            }
+            for id in ["restart", "rollback", "install-firmware", "install-codecs"] {
+                assert!(
+                    updates
+                        .actions
+                        .iter()
+                        .find(|action| action.id == id)
+                        .is_some_and(|action| !matches!(
+                            action.contract.confirmation,
+                            tilo_actions::ConfirmationPolicy::None
+                        ))
+                );
+            }
+            let review = updates
+                .actions
+                .iter()
+                .find(|action| action.id == "review-rollback")
+                .expect("rollback review is discoverable");
+            assert_eq!(review.kind, OperationKind::View);
+            assert!(matches!(
+                review.contract.execution,
+                ExecutionMode::Immediate
+            ));
+        }
+    }
+
+    /// Power, notification/input, shortcut, accessibility and default-app resources cover their controls.
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn preference_resources_cover_every_visible_control() {
+        // Shared read-only fixture for every case below.
+        let resources = provide_resources(&AutoCommit::new());
+
+        // Case `power_resource_covers_every_non_hardware_preference_control`.
+        {
+            let power = find(&resources, &pane_resource_id(Category::Power));
+            let ids: std::collections::HashSet<&str> = power
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in [
+                "profile",
+                "auto_suspend",
+                "suspend-after",
+                "blank-after",
+                "lock-after",
+                "saver-suspend",
+                "balanced-suspend",
+                "performance-suspend",
+                "lid",
+                "power_key",
+                "critical",
+            ] {
+                assert!(ids.contains(id), "missing canonical Power action: {id}");
+            }
+            if let Some(action) = power
+                .actions
+                .iter()
+                .find(|action| action.id == "set-charge-cap")
+            {
+                assert_eq!(action.kind, OperationKind::Effect);
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                assert_eq!(action.operation_type.as_deref(), Some(POWER_OPERATION_TYPE));
+            }
+        }
+
+        // Case `notification_and_input_resources_cover_their_durable_preferences`.
+        {
+            let notifications = find(&resources, &pane_resource_id(Category::Notifications));
+            let notification_ids: std::collections::HashSet<&str> = notifications
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in [
+                "badges",
+                "focus-enabled",
+                "focus-start",
+                "focus-end",
+                "focus-days",
+            ] {
+                assert!(
+                    notification_ids.contains(id),
+                    "missing canonical Notifications action: {id}"
+                );
+            }
+            let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
+            let input_ids: std::collections::HashSet<&str> = input
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            for id in [
+                "touchpad-natural-scroll",
+                "mouse-natural-scroll",
+                "tap-to-click",
+                "touchpad-speed",
+                "mouse-speed",
+                "key-repeat",
+                "tap-drag",
+                "disable-while-typing",
+                "middle-emulation",
+                "left-handed",
+                "touchpad-gestures",
+                "spell-checking",
+                "auto-correct",
+                "acceleration-profile",
+                "compose-key",
+            ] {
+                assert!(
+                    input_ids.contains(id),
+                    "missing canonical input action: {id}"
+                );
+            }
+            assert!(
+                input.children.iter().all(|source| {
+                    source.kind != "settings.input-source"
+                        || source.actions.iter().all(|action| {
+                            action.locus == ExecutionLocus::ClientLocal
+                                && action.operation_type.as_deref()
+                                    == Some(KEYBOARD_SOURCE_OPERATION_TYPE)
+                        })
+                }),
+                "each input-source row exposes only local typed commands"
+            );
+        }
+
+        // Case `every_visible_shortcut_has_a_canonical_resource_action`.
+        {
+            let shortcuts = find(&resources, &pane_resource_id(Category::KeyboardShortcuts));
+            let action_ids: std::collections::HashSet<&str> = shortcuts
+                .actions
+                .iter()
+                .map(|action| action.id.as_str())
+                .collect();
+            assert!(
+                action_ids.contains("vim-mode"),
+                "missing canonical Vim navigation action"
+            );
+
+            for (key, label) in crate::panes::keyboard_shortcuts::resource_entries() {
+                let id = key
+                    .strip_prefix("shortcuts.")
+                    .unwrap_or(key)
+                    .replace('_', "-");
+                assert!(
+                    action_ids.contains(id.as_str()),
+                    "missing canonical shortcut action for {label} ({key})"
+                );
+                let action = shortcuts
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .expect("action was just found");
+                assert_eq!(action.kind, OperationKind::Document);
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+            }
+        }
+
+        // Case `accessibility_controls_bind_to_their_exported_typed_actions`.
+        {
+            let accessibility = find(&resources, &pane_resource_id(Category::Accessibility));
+            let high_contrast = accessibility
+                .actions
+                .iter()
+                .find(|action| action.id == "high-contrast")
+                .expect("Accessibility exports the high-contrast control action");
+            assert_eq!(high_contrast.params().len(), 1);
+            assert_eq!(high_contrast.params()[0].ty, ParamType::Boolean);
+
+            let binding = accessibility_bool_binding("high-contrast")
+                .expect("the displayed switch has a matching exported action");
+            let invocation = binding.invoke(true).expect("true is a valid switch value");
+            assert_eq!(
+                invocation.address,
+                ActionAddress::new(pane_resource_id(Category::Accessibility), "high-contrast")
+            );
+            assert_eq!(
+                invocation.arguments.get("value"),
+                Some(&serde_json::Value::Bool(true))
+            );
+            let encoded = high_contrast
+                .build_json(&invocation.arguments)
+                .expect("the resource accepts the control invocation");
+            let action = registry()
+                .decode(&encoded)
+                .expect("settings action decodes");
+            let mut doc = AutoCommit::new();
+            action
+                .apply(&mut doc)
+                .expect("the setting target is accepted");
+            assert_eq!(
+                read_bool(&doc, &ROOT, panes::accessibility::HIGH_CONTRAST_KEY),
+                Some(true)
+            );
+
+            let text = accessibility_text_binding("text-size")
+                .expect("the displayed chooser has a matching exported action");
+            assert!(text.invoke("not a size".to_string()).is_err());
+        }
+
+        // Case `default_app_handlers_are_bounded_canonical_child_resources`.
+        {
+            use desktop_policy::{AppCandidate, ResourceKind};
+
+            let pdf = ResourceKind::extension("pdf").expect("valid extension");
+            let browser = AppCandidate {
+                package_id: "org.tilo.Reader".into(),
+                display_name: "Reader".into(),
+                resources: [pdf.clone()].into(),
+            };
+            let alternate = AppCandidate {
+                package_id: "org.tilo.Archive".into(),
+                display_name: "Archive".into(),
+                resources: [pdf].into(),
+            };
+            let section =
+                default_apps_section_with_candidates(&AutoCommit::new(), &[browser, alternate]);
+            let handler = section
+                .children
+                .iter()
+                .find(|resource| resource.id.as_str() == "settings.default-app:ext:pdf")
+                .expect("a resource for each declared file type");
+            let action = handler
+                .actions
+                .iter()
+                .find(|action| action.id == "set-handler")
+                .expect("handler resource has one canonical mutation");
+            assert_eq!(action.params().len(), 1);
+            assert_eq!(action.params()[0].choices.len(), 2);
+            let args = serde_json::Map::from_iter([(
+                "choice".to_owned(),
+                serde_json::Value::String("Reader — org.tilo.Reader".to_owned()),
+            )]);
+            let encoded = action
+                .build_json(&args)
+                .expect("declared handler is accepted");
+            let mut doc = AutoCommit::new();
+            registry()
+                .decode(&encoded)
+                .expect("settings action decodes")
+                .apply(&mut doc)
+                .expect("handler selection is a valid setting target");
+            assert_eq!(
+                read_str_or_text(&doc, &ROOT, "default_apps.ext.pdf").as_deref(),
+                Some("Reader — org.tilo.Reader")
+            );
+            let invalid = serde_json::Map::from_iter([(
+                "choice".to_owned(),
+                serde_json::Value::String("Unknown — org.tilo.Unknown".to_owned()),
+            )]);
+            assert!(
+                action.build_json(&invalid).is_err(),
+                "a stale or undiscovered handler is refused before dispatch"
+            );
+        }
+    }
+
+    /// Network, Bluetooth, display tokens and display scale are bounded device-local effects.
+    #[test]
+    fn hardware_controls_are_bounded_typed_local_effects() {
+        // Shared read-only fixture for every case below.
+        let resources = provide_resources(&AutoCommit::new());
+
+        // Case `hardware_network_controls_are_bounded_local_effects`.
+        {
+            let network = find(&resources, &pane_resource_id(Category::Network));
+            for id in [
+                "refresh",
+                "run-diagnostics",
+                "enable-wired",
+                "disable-wired",
+                "enable-airplane-mode",
+                "disable-airplane-mode",
+                "enable-hotspot",
+                "disable-hotspot",
+                "enable-mobile-broadband",
+                "disable-mobile-broadband",
+            ] {
+                let action = network
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("missing network operation: {id}"));
+                assert_eq!(action.kind, OperationKind::Effect);
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(NETWORK_OPERATION_TYPE)
+                );
                 assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
             }
         }
-        let input = input_bool_binding("tap-to-click").expect("visible toggle binding");
-        let invocation = input.invoke(true).expect("boolean input is valid");
-        assert_eq!(
-            invocation.address,
-            ActionAddress::new(pane_resource_id(Category::MouseKeyboard), "tap-to-click")
-        );
-        let time = time_date_bool_binding("automatic-time").expect("visible time binding");
-        assert_eq!(
-            time.invoke(false).unwrap().arguments.get("value"),
-            Some(&serde_json::Value::Bool(false))
-        );
-    }
 
-    #[test]
-    fn accepted_local_operations_advertise_background_string_results() {
-        fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
-            out.extend(
-                resource
+        // Case `bluetooth_discovery_controls_are_bounded_local_effects`.
+        {
+            let bluetooth = find(&resources, &pane_resource_id(Category::Bluetooth));
+            for id in ["scan", "refresh"] {
+                let action = bluetooth
                     .actions
                     .iter()
-                    .filter(|action| {
-                        matches!(
-                            action.operation_type.as_deref(),
-                            Some(
-                                UPDATE_OPERATION_TYPE
-                                    | KEYBOARD_SOURCE_OPERATION_TYPE
-                                    | INPUT_OPERATION_TYPE
-                                    | TIME_DATE_OPERATION_TYPE
-                                    | POWER_OPERATION_TYPE
-                                    | NETWORK_OPERATION_TYPE
-                                    | BLUETOOTH_OPERATION_TYPE
-                                    | STORAGE_OPERATION_TYPE
-                                    | AUDIO_OPERATION_TYPE
-                                    | DISPLAY_OPERATION_TYPE
-                            )
-                        ) && action.kind == OperationKind::Effect
-                    })
-                    .cloned(),
-            );
-            for child in &resource.children {
-                walk(child, out);
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("missing Bluetooth operation: {id}"));
+                assert_eq!(action.kind, OperationKind::Effect);
+                assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                assert_eq!(
+                    action.operation_type.as_deref(),
+                    Some(BLUETOOTH_OPERATION_TYPE)
+                );
+                assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
             }
         }
 
-        let mut actions = Vec::new();
-        for root in provide_resources(&AutoCommit::new()) {
-            walk(&root, &mut actions);
-        }
-        assert!(!actions.is_empty());
-        for action in actions {
-            assert!(matches!(
-                action.contract.execution,
-                ExecutionMode::Background { cancellable: false }
-            ));
-            assert!(action.contract.validate_declaration().is_empty());
+        // Case `display_operation_tokens_are_typed_and_stable`.
+        {
+            let operation = DisplayOperation::SetMode {
+                connector: "card0/HDMI-A-1".into(),
+                mode: settings_store::hardware::OutputMode {
+                    width: 2560,
+                    height: 1440,
+                    refresh_mhz: 143_850,
+                },
+            };
+            let payload = serde_json::to_vec(&operation).expect("display operation serializes");
+            assert_eq!(
+                local_operation_token(DISPLAY_OPERATION_TYPE, &payload),
+                Ok(local_operation_token_for(
+                    DISPLAY_OPERATION_TYPE,
+                    &operation
+                ))
+            );
             assert!(
-                action
-                    .contract
-                    .result
-                    .validate(&tilo_actions::ActionOutput {
-                        value: Some(serde_json::Value::String("done".into())),
-                        resources: Vec::new(),
-                    })
-                    .is_ok()
+                local_operation_token(DISPLAY_OPERATION_TYPE, br#"{\"set_mode\":{}}"#).is_err()
             );
         }
-    }
 
-    #[test]
-    fn accessibility_controls_bind_to_their_exported_typed_actions() {
-        let resources = provide_resources(&AutoCommit::new());
-        let accessibility = find(&resources, &pane_resource_id(Category::Accessibility));
-        let high_contrast = accessibility
-            .actions
-            .iter()
-            .find(|action| action.id == "high-contrast")
-            .expect("Accessibility exports the high-contrast control action");
-        assert_eq!(high_contrast.params().len(), 1);
-        assert_eq!(high_contrast.params()[0].ty, ParamType::Boolean);
-
-        let binding = accessibility_bool_binding("high-contrast")
-            .expect("the displayed switch has a matching exported action");
-        let invocation = binding.invoke(true).expect("true is a valid switch value");
-        assert_eq!(
-            invocation.address,
-            ActionAddress::new(pane_resource_id(Category::Accessibility), "high-contrast")
-        );
-        assert_eq!(
-            invocation.arguments.get("value"),
-            Some(&serde_json::Value::Bool(true))
-        );
-        let encoded = high_contrast
-            .build_json(&invocation.arguments)
-            .expect("the resource accepts the control invocation");
-        let action = registry()
-            .decode(&encoded)
-            .expect("settings action decodes");
-        let mut doc = AutoCommit::new();
-        action
-            .apply(&mut doc)
-            .expect("the setting target is accepted");
-        assert_eq!(
-            read_bool(&doc, &ROOT, panes::accessibility::HIGH_CONTRAST_KEY),
-            Some(true)
-        );
-
-        let text = accessibility_text_binding("text-size")
-            .expect("the displayed chooser has a matching exported action");
-        assert!(text.invoke("not a size".to_string()).is_err());
-    }
-
-    #[test]
-    fn stale_or_presentation_targets_are_refused() {
-        let mut doc = AutoCommit::new();
-        for action in [
-            set_bool_action("appearance.high_contrast.edit", true),
-            set_text_action("settings.select.appearance", "true"),
-            set_text_action("shortcuts.no-longer-supported", "Super+Shift+K"),
-            set_text_action("unknown.preference", "value"),
-        ] {
+        // Case `display_scale_resource_uses_the_dropdowns_durable_label`.
+        // Display scale is a device-local typed effect rather than a replicated
+        // document write. The operation still carries the exact picker label so
+        // agents and the visible control share one validated contract.
+        {
+            let displays = find(&resources, &pane_resource_id(Category::Displays));
+            let scale = displays
+                .actions
+                .iter()
+                .find(|action| action.id == "scale")
+                .expect("Displays exports a canonical scale action");
+            let args = serde_json::Map::from_iter([(
+                "choice".to_owned(),
+                serde_json::Value::String("150%".to_owned()),
+            )]);
+            let encoded = scale
+                .build_json(&args)
+                .expect("the visible display scale is accepted");
+            assert_eq!(encoded.type_id, DISPLAY_OPERATION_TYPE);
+            assert_eq!(
+                serde_json::from_slice::<DisplayOperation>(&encoded.payload)
+                    .expect("display operation decodes"),
+                DisplayOperation::SetScale {
+                    label: "150%".into()
+                }
+            );
+            let mut doc = AutoCommit::new();
             assert!(matches!(
-                action.apply(&mut doc),
+                set_text_action(panes::display::DISPLAY_SCALE_KEY, "300%").apply(&mut doc),
                 Err(ActionError::Refused(_))
             ));
         }
     }
 
+    /// Input/time and hardware preferences are never replayable document targets.
     #[test]
-    fn continuity_actions_are_typed_device_local_effects() {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn device_local_controls_never_enter_action_replay() {
+        // Shared read-only fixture for every case below.
         let resources = provide_resources(&AutoCommit::new());
-        let devices = find(&resources, &pane_resource_id(Category::DeviceMesh));
-        let targets = [
-            ("continuity-enabled", "continuity.enabled"),
-            ("continuity-clipboard", "continuity.clipboard"),
-            ("continuity-notifications", "continuity.notifications"),
-            ("continuity-wifi-settings", "continuity.wifi_settings"),
-            ("continuity-media", "continuity.media"),
-            ("continuity-display-input", "continuity.display_input"),
-            ("continuity-file-transfer", "continuity.file_transfer"),
-            (
-                "continuity-realtime-sessions",
-                "continuity.realtime_sessions",
-            ),
-            ("continuity-typed-gamepad", "continuity.typed_gamepad"),
-            (
-                "continuity-app-continuations",
-                "continuity.app_continuations",
-            ),
-        ];
 
-        for (id, service) in targets {
-            let spec = devices
-                .actions
-                .iter()
-                .find(|action| action.id == id)
-                .unwrap_or_else(|| panic!("missing Continuity action {id}"));
-            assert_eq!(spec.kind, OperationKind::Effect);
-            assert_eq!(
-                spec.operation_type.as_deref(),
-                Some(DEVICE_MESH_OPERATION_TYPE)
+        // Case `input_and_time_controls_cannot_enter_settings_action_replay`.
+        {
+            let mut doc = AutoCommit::new();
+            for (key, value) in [
+                (
+                    panes::mouse_keyboard::TAP_CLICK_KEY,
+                    SettingValue::Bool(true),
+                ),
+                (
+                    panes::mouse_keyboard::TOUCHPAD_POINTER_SPEED_KEY,
+                    SettingValue::Float(0.8),
+                ),
+                (
+                    panes::mouse_keyboard::ACCEL_PROFILE_KEY,
+                    SettingValue::Text("Flat".into()),
+                ),
+                (
+                    panes::mouse_keyboard::LAYOUT_KEY,
+                    SettingValue::Text("English (US)".into()),
+                ),
+                (panes::time_date::AUTO_TIME_KEY, SettingValue::Bool(false)),
+                (panes::time_date::H24_KEY, SettingValue::Bool(false)),
+                (
+                    panes::time_date::TIMEZONE_KEY,
+                    SettingValue::Text("Europe/Amsterdam".into()),
+                ),
+            ] {
+                assert!(
+                    SettingsAction::SetSetting {
+                        key: key.into(),
+                        value
+                    }
+                    .apply(&mut doc)
+                    .is_err()
+                );
+            }
+            assert!(
+                doc.get(&ROOT, panes::mouse_keyboard::TAP_CLICK_KEY)
+                    .unwrap()
+                    .is_none()
             );
-            let args =
-                serde_json::Map::from_iter([("value".to_string(), serde_json::Value::Bool(true))]);
-            let encoded = spec.build_json(&args).expect("typed boolean value");
-            let decoded: DeviceMeshOperation =
-                serde_json::from_slice(&encoded.payload).expect("device-local payload");
-            assert_eq!(
-                decoded,
-                DeviceMeshOperation::SetService {
-                    service: service.into(),
-                    enabled: true,
-                }
+            assert!(
+                doc.get(&ROOT, panes::time_date::TIMEZONE_KEY)
+                    .unwrap()
+                    .is_none()
             );
         }
 
-        let mut doc = AutoCommit::new();
-        assert!(
-            set_text_action("device_mesh.role", "Always-on server")
-                .apply(&mut doc)
-                .is_err(),
-            "device trust policy must not enter the replayable document action namespace"
-        );
-        let role = devices
-            .actions
-            .iter()
-            .find(|action| action.id == "role")
-            .unwrap();
-        assert_eq!(role.contract.risk, tilo_actions::RiskLevel::Destructive);
-    }
+        // Case `input_and_time_resources_and_controls_share_local_effect_protocols`.
+        {
+            let input = find(&resources, &pane_resource_id(Category::MouseKeyboard));
+            let time = find(&resources, &pane_resource_id(Category::TimeDate));
+            for (resource, ids, operation_type) in [
+                (
+                    &input,
+                    &[
+                        "tap-to-click",
+                        "touchpad-speed",
+                        "active-source",
+                        "compose-key",
+                    ][..],
+                    INPUT_OPERATION_TYPE,
+                ),
+                (
+                    &time,
+                    &["automatic-time", "24-hour", "timezone"][..],
+                    TIME_DATE_OPERATION_TYPE,
+                ),
+            ] {
+                for id in ids {
+                    let action = resource
+                        .actions
+                        .iter()
+                        .find(|action| action.id == *id)
+                        .unwrap_or_else(|| panic!("missing local action {id}"));
+                    assert_eq!(action.kind, OperationKind::Effect);
+                    assert_eq!(action.operation_type.as_deref(), Some(operation_type));
+                    assert!(action.contract.tags.iter().any(|tag| tag == "device-local"));
+                }
+            }
+            let input = input_bool_binding("tap-to-click").expect("visible toggle binding");
+            let invocation = input.invoke(true).expect("boolean input is valid");
+            assert_eq!(
+                invocation.address,
+                ActionAddress::new(pane_resource_id(Category::MouseKeyboard), "tap-to-click")
+            );
+            let time = time_date_bool_binding("automatic-time").expect("visible time binding");
+            assert_eq!(
+                time.invoke(false).unwrap().arguments.get("value"),
+                Some(&serde_json::Value::Bool(false))
+            );
+        }
 
-    #[test]
-    fn agent_provider_configuration_is_a_typed_immediate_local_effect() {
-        let resources = provide_resources(&AutoCommit::new());
-        let models = find(&resources, &pane_resource_id(Category::AgentModels));
-        let add = models
-            .actions
-            .iter()
-            .find(|action| action.id == "add-openai-compatible")
-            .expect("provider creation is agent-addressable");
-        assert_eq!(add.kind, OperationKind::Effect);
-        assert_eq!(add.locus, ExecutionLocus::ClientLocal);
-        assert_eq!(
-            add.operation_type.as_deref(),
-            Some(AGENT_PROVIDER_OPERATION_TYPE)
-        );
-        assert!(matches!(add.contract.execution, ExecutionMode::Immediate));
-        assert!(matches!(add.contract.result, ResultSpec::None));
-        assert!(add.contract.tags.iter().any(|tag| tag == "device-local"));
-    }
-
-    #[test]
-    fn per_device_natural_scroll_actions_are_refused_from_replay() {
-        let mut a = AutoCommit::new();
-        a.put(
-            &ROOT,
-            panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
-            ScalarValue::Boolean(false),
-        )
-        .expect("seed touchpad preference");
-        a.commit();
-        let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
-        assert!(action.apply(&mut a).is_err());
-
-        assert_eq!(
-            read_bool(
-                &a,
+        // Case `per_device_natural_scroll_actions_are_refused_from_replay`.
+        {
+            let mut a = AutoCommit::new();
+            a.put(
                 &ROOT,
-                panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY
-            ),
-            Some(false),
-            "the prior document value is not overwritten by a local hardware action"
-        );
+                panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY,
+                ScalarValue::Boolean(false),
+            )
+            .expect("seed touchpad preference");
+            a.commit();
+            let action = set_bool_action(panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY, true);
+            assert!(action.apply(&mut a).is_err());
+
+            assert_eq!(
+                read_bool(
+                    &a,
+                    &ROOT,
+                    panes::mouse_keyboard::TOUCHPAD_NATURAL_SCROLL_KEY
+                ),
+                Some(false),
+                "the prior document value is not overwritten by a local hardware action"
+            );
+        }
+
+        // Case `hardware_preference_keys_are_never_replayable_document_targets`.
+        {
+            let local_keys = [
+                "network.wifi_enabled",
+                "bluetooth.enabled",
+                "audio.volume",
+                "audio.muted",
+                "audio.input_volume",
+                "audio.balance",
+                "audio.mono",
+                "audio.echo_cancellation",
+                "display.brightness",
+                "display.auto_brightness",
+                "display.scale",
+                "power.profile",
+                "power.auto_suspend",
+                "power.blank",
+                "power.suspend",
+                "power.lid",
+                "power.power_key",
+                "power.critical",
+                "updates.auto",
+                "time.auto",
+                "time.timezone",
+                "time.h24",
+                "input.touchpad_natural_scroll",
+                "input.mouse_natural_scroll",
+                "input.tap_to_click",
+                "input.touchpad_pointer_speed",
+                "input.mouse_pointer_speed",
+                "input.key_repeat",
+                "input.accel_profile",
+                "input.compose_key",
+                "input.keyboard_layout",
+            ];
+            for key in local_keys {
+                for value in [
+                    SettingValue::Bool(true),
+                    SettingValue::Float(0.5),
+                    SettingValue::Text("value".into()),
+                ] {
+                    assert!(
+                        matches!(
+                            SettingsAction::SetSetting {
+                                key: key.into(),
+                                value,
+                            }
+                            .apply(&mut AutoCommit::new()),
+                            Err(ActionError::Refused(_))
+                        ),
+                        "device-local key {key} accepted a replayable SettingsAction"
+                    );
+                }
+            }
+        }
     }
 
-    /// Writing the value a key already holds is a no-op: the document's heads are
-    /// unchanged (so a replayed / stale envelope can't churn a peer).
+    /// Accepted local operations, continuity actions and agent provider configuration.
     #[test]
-    fn setting_to_current_value_is_a_no_op() {
-        let mut doc = AutoCommit::new();
-        let _ = doc.put(
-            &ROOT,
-            panes::notifications::DND_KEY,
-            ScalarValue::Boolean(true),
-        );
-        doc.commit();
-        let before = doc.get_heads();
-        let action = set_bool_action(panes::notifications::DND_KEY, true);
-        let encoded = encode(&action);
-        let decoded = registry().decode(&encoded).unwrap();
-        let mut tx = LocalTransport::new();
-        tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            before,
-            "setting the value it already holds changed nothing"
-        );
+    #[expect(
+        clippy::too_many_lines,
+        reason = "cases merged from separate tests; each case stays self-contained"
+    )]
+    fn local_operations_and_continuity_are_typed_effects() {
+        // Shared read-only fixture for every case below.
+        let resources = provide_resources(&AutoCommit::new());
+
+        // Case `accepted_local_operations_advertise_background_string_results`.
+        {
+            fn walk(resource: &Resource, out: &mut Vec<ActionSpec>) {
+                out.extend(
+                    resource
+                        .actions
+                        .iter()
+                        .filter(|action| {
+                            matches!(
+                                action.operation_type.as_deref(),
+                                Some(
+                                    UPDATE_OPERATION_TYPE
+                                        | KEYBOARD_SOURCE_OPERATION_TYPE
+                                        | INPUT_OPERATION_TYPE
+                                        | TIME_DATE_OPERATION_TYPE
+                                        | POWER_OPERATION_TYPE
+                                        | NETWORK_OPERATION_TYPE
+                                        | BLUETOOTH_OPERATION_TYPE
+                                        | STORAGE_OPERATION_TYPE
+                                        | AUDIO_OPERATION_TYPE
+                                        | DISPLAY_OPERATION_TYPE
+                                )
+                            ) && action.kind == OperationKind::Effect
+                        })
+                        .cloned(),
+                );
+                for child in &resource.children {
+                    walk(child, out);
+                }
+            }
+
+            let mut actions = Vec::new();
+            for root in provide_resources(&AutoCommit::new()) {
+                walk(&root, &mut actions);
+            }
+            assert!(!actions.is_empty());
+            for action in actions {
+                assert!(matches!(
+                    action.contract.execution,
+                    ExecutionMode::Background { cancellable: false }
+                ));
+                assert!(action.contract.validate_declaration().is_empty());
+                assert!(
+                    action
+                        .contract
+                        .result
+                        .validate(&tilo_actions::ActionOutput {
+                            value: Some(serde_json::Value::String("done".into())),
+                            resources: Vec::new(),
+                        })
+                        .is_ok()
+                );
+            }
+        }
+
+        // Case `continuity_actions_are_typed_device_local_effects`.
+        {
+            let devices = find(&resources, &pane_resource_id(Category::DeviceMesh));
+            let targets = [
+                ("continuity-enabled", "continuity.enabled"),
+                ("continuity-clipboard", "continuity.clipboard"),
+                ("continuity-notifications", "continuity.notifications"),
+                ("continuity-wifi-settings", "continuity.wifi_settings"),
+                ("continuity-media", "continuity.media"),
+                ("continuity-display-input", "continuity.display_input"),
+                ("continuity-file-transfer", "continuity.file_transfer"),
+                (
+                    "continuity-realtime-sessions",
+                    "continuity.realtime_sessions",
+                ),
+                ("continuity-typed-gamepad", "continuity.typed_gamepad"),
+                (
+                    "continuity-app-continuations",
+                    "continuity.app_continuations",
+                ),
+            ];
+
+            for (id, service) in targets {
+                let spec = devices
+                    .actions
+                    .iter()
+                    .find(|action| action.id == id)
+                    .unwrap_or_else(|| panic!("missing Continuity action {id}"));
+                assert_eq!(spec.kind, OperationKind::Effect);
+                assert_eq!(
+                    spec.operation_type.as_deref(),
+                    Some(DEVICE_MESH_OPERATION_TYPE)
+                );
+                let args = serde_json::Map::from_iter([(
+                    "value".to_string(),
+                    serde_json::Value::Bool(true),
+                )]);
+                let encoded = spec.build_json(&args).expect("typed boolean value");
+                let decoded: DeviceMeshOperation =
+                    serde_json::from_slice(&encoded.payload).expect("device-local payload");
+                assert_eq!(
+                    decoded,
+                    DeviceMeshOperation::SetService {
+                        service: service.into(),
+                        enabled: true,
+                    }
+                );
+            }
+
+            let mut doc = AutoCommit::new();
+            assert!(
+                set_text_action("device_mesh.role", "Always-on server")
+                    .apply(&mut doc)
+                    .is_err(),
+                "device trust policy must not enter the replayable document action namespace"
+            );
+            let role = devices
+                .actions
+                .iter()
+                .find(|action| action.id == "role")
+                .unwrap();
+            assert_eq!(role.contract.risk, tilo_actions::RiskLevel::Destructive);
+        }
+
+        // Case `agent_provider_configuration_is_a_typed_immediate_local_effect`.
+        {
+            let models = find(&resources, &pane_resource_id(Category::AgentModels));
+            let add = models
+                .actions
+                .iter()
+                .find(|action| action.id == "add-openai-compatible")
+                .expect("provider creation is agent-addressable");
+            assert_eq!(add.kind, OperationKind::Effect);
+            assert_eq!(add.locus, ExecutionLocus::ClientLocal);
+            assert_eq!(
+                add.operation_type.as_deref(),
+                Some(AGENT_PROVIDER_OPERATION_TYPE)
+            );
+            assert!(matches!(add.contract.execution, ExecutionMode::Immediate));
+            assert!(matches!(add.contract.result, ResultSpec::None));
+            assert!(add.contract.tags.iter().any(|tag| tag == "device-local"));
+        }
+    }
+
+    /// No-op writes, rejected theme choices and explicit collaboration scopes.
+    #[test]
+    fn shared_writes_are_scoped_idempotent_and_validated() {
+        // Case `setting_to_current_value_is_a_no_op`.
+        // Writing the value a key already holds is a no-op: the document's heads are
+        // unchanged (so a replayed / stale envelope can't churn a peer).
+        {
+            let mut doc = AutoCommit::new();
+            let _ = doc.put(
+                &ROOT,
+                panes::notifications::DND_KEY,
+                ScalarValue::Boolean(true),
+            );
+            doc.commit();
+            let before = doc.get_heads();
+            let action = set_bool_action(panes::notifications::DND_KEY, true);
+            let encoded = encode(&action);
+            let decoded = registry().decode(&encoded).unwrap();
+            let mut tx = LocalTransport::new();
+            tilo_actions::dispatch(&mut doc, decoded.as_ref(), encoded, &mut tx).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                before,
+                "setting the value it already holds changed nothing"
+            );
+        }
+
+        // Case `theme_choice_rejects_an_unknown_value`.
+        // The shared typed door rejects an unrecognised theme choice before the
+        // application's builder can write junk or silently reinterpret it.
+        {
+            let res = provide_resources(&AutoCommit::new());
+            let appearance = find(&res, "settings.section:appearance");
+            let theme = appearance.actions.iter().find(|a| a.id == "theme").unwrap();
+            let typo = serde_json::Map::from_iter([(
+                "choice".to_owned(),
+                serde_json::Value::String("not-a-theme".to_owned()),
+            )]);
+            let error = theme
+                .build_json(&typo)
+                .expect_err("unknown theme is invalid");
+            assert!(error.to_string().contains("must be one of"), "{error}");
+        }
+
+        // Case `every_published_action_has_an_explicit_collaboration_scope`.
+        {
+            fn visit(resource: &Resource) {
+                for action in &resource.actions {
+                    let scope = classify_action(action).unwrap_or_else(|| {
+                        panic!(
+                            "{:?}#{} has no explicit collaboration scope",
+                            resource.id, action.id
+                        )
+                    });
+                    match scope {
+                        SettingScope::PortableDocument => {
+                            assert_eq!(action.kind, OperationKind::Document);
+                            assert_eq!(action.locus, ExecutionLocus::ClientLocal);
+                        }
+                        SettingScope::DeviceLocalEffect => {
+                            assert_eq!(action.kind, OperationKind::Effect);
+                            assert!(
+                                action.contract.tags.iter().any(|tag| tag == "device-local"),
+                                "{:?}#{} must state its device-local policy",
+                                resource.id,
+                                action.id
+                            );
+                        }
+                        SettingScope::Presentation => {
+                            assert_eq!(action.kind, OperationKind::View);
+                        }
+                    }
+                }
+                for child in &resource.children {
+                    visit(child);
+                }
+            }
+
+            for resource in &provide_resources(&AutoCommit::new()) {
+                visit(resource);
+            }
+        }
     }
 
     /// A seed written through the executor, as the panes write: Do Not Disturb
@@ -5908,206 +6734,5 @@ mod tests {
                 encode(&set_text_action(panes::appearance::THEME_KEY, "Gruvbox"))
             }),
         ],
-    }
-
-    /// The shared typed door rejects an unrecognised theme choice before the
-    /// application's builder can write junk or silently reinterpret it.
-    #[test]
-    fn theme_choice_rejects_an_unknown_value() {
-        let res = provide_resources(&AutoCommit::new());
-        let appearance = find(&res, "settings.section:appearance");
-        let theme = appearance.actions.iter().find(|a| a.id == "theme").unwrap();
-        let typo = serde_json::Map::from_iter([(
-            "choice".to_owned(),
-            serde_json::Value::String("not-a-theme".to_owned()),
-        )]);
-        let error = theme
-            .build_json(&typo)
-            .expect_err("unknown theme is invalid");
-        assert!(error.to_string().contains("must be one of"), "{error}");
-    }
-
-    /// Display scale is a device-local typed effect rather than a replicated
-    /// document write. The operation still carries the exact picker label so
-    /// agents and the visible control share one validated contract.
-    #[test]
-    fn display_scale_resource_uses_the_dropdowns_durable_label() {
-        let resources = provide_resources(&AutoCommit::new());
-        let displays = find(&resources, &pane_resource_id(Category::Displays));
-        let scale = displays
-            .actions
-            .iter()
-            .find(|action| action.id == "scale")
-            .expect("Displays exports a canonical scale action");
-        let args = serde_json::Map::from_iter([(
-            "choice".to_owned(),
-            serde_json::Value::String("150%".to_owned()),
-        )]);
-        let encoded = scale
-            .build_json(&args)
-            .expect("the visible display scale is accepted");
-        assert_eq!(encoded.type_id, DISPLAY_OPERATION_TYPE);
-        assert_eq!(
-            serde_json::from_slice::<DisplayOperation>(&encoded.payload)
-                .expect("display operation decodes"),
-            DisplayOperation::SetScale {
-                label: "150%".into()
-            }
-        );
-        let mut doc = AutoCommit::new();
-        assert!(matches!(
-            set_text_action(panes::display::DISPLAY_SCALE_KEY, "300%").apply(&mut doc),
-            Err(ActionError::Refused(_))
-        ));
-    }
-
-    #[test]
-    fn default_app_handlers_are_bounded_canonical_child_resources() {
-        use desktop_policy::{AppCandidate, ResourceKind};
-
-        let pdf = ResourceKind::extension("pdf").expect("valid extension");
-        let browser = AppCandidate {
-            package_id: "org.tilo.Reader".into(),
-            display_name: "Reader".into(),
-            resources: [pdf.clone()].into(),
-        };
-        let alternate = AppCandidate {
-            package_id: "org.tilo.Archive".into(),
-            display_name: "Archive".into(),
-            resources: [pdf].into(),
-        };
-        let section =
-            default_apps_section_with_candidates(&AutoCommit::new(), &[browser, alternate]);
-        let handler = section
-            .children
-            .iter()
-            .find(|resource| resource.id.as_str() == "settings.default-app:ext:pdf")
-            .expect("a resource for each declared file type");
-        let action = handler
-            .actions
-            .iter()
-            .find(|action| action.id == "set-handler")
-            .expect("handler resource has one canonical mutation");
-        assert_eq!(action.params().len(), 1);
-        assert_eq!(action.params()[0].choices.len(), 2);
-        let args = serde_json::Map::from_iter([(
-            "choice".to_owned(),
-            serde_json::Value::String("Reader — org.tilo.Reader".to_owned()),
-        )]);
-        let encoded = action
-            .build_json(&args)
-            .expect("declared handler is accepted");
-        let mut doc = AutoCommit::new();
-        registry()
-            .decode(&encoded)
-            .expect("settings action decodes")
-            .apply(&mut doc)
-            .expect("handler selection is a valid setting target");
-        assert_eq!(
-            read_str_or_text(&doc, &ROOT, "default_apps.ext.pdf").as_deref(),
-            Some("Reader — org.tilo.Reader")
-        );
-        let invalid = serde_json::Map::from_iter([(
-            "choice".to_owned(),
-            serde_json::Value::String("Unknown — org.tilo.Unknown".to_owned()),
-        )]);
-        assert!(
-            action.build_json(&invalid).is_err(),
-            "a stale or undiscovered handler is refused before dispatch"
-        );
-    }
-
-    #[test]
-    fn every_published_action_has_an_explicit_collaboration_scope() {
-        fn visit(resource: &Resource) {
-            for action in &resource.actions {
-                let scope = classify_action(action).unwrap_or_else(|| {
-                    panic!(
-                        "{:?}#{} has no explicit collaboration scope",
-                        resource.id, action.id
-                    )
-                });
-                match scope {
-                    SettingScope::PortableDocument => {
-                        assert_eq!(action.kind, OperationKind::Document);
-                        assert_eq!(action.locus, ExecutionLocus::ClientLocal);
-                    }
-                    SettingScope::DeviceLocalEffect => {
-                        assert_eq!(action.kind, OperationKind::Effect);
-                        assert!(
-                            action.contract.tags.iter().any(|tag| tag == "device-local"),
-                            "{:?}#{} must state its device-local policy",
-                            resource.id,
-                            action.id
-                        );
-                    }
-                    SettingScope::Presentation => {
-                        assert_eq!(action.kind, OperationKind::View);
-                    }
-                }
-            }
-            for child in &resource.children {
-                visit(child);
-            }
-        }
-
-        for resource in &provide_resources(&AutoCommit::new()) {
-            visit(resource);
-        }
-    }
-
-    #[test]
-    fn hardware_preference_keys_are_never_replayable_document_targets() {
-        let local_keys = [
-            "network.wifi_enabled",
-            "bluetooth.enabled",
-            "audio.volume",
-            "audio.muted",
-            "audio.input_volume",
-            "audio.balance",
-            "audio.mono",
-            "display.brightness",
-            "display.auto_brightness",
-            "display.scale",
-            "power.profile",
-            "power.auto_suspend",
-            "power.blank",
-            "power.suspend",
-            "power.lid",
-            "power.power_key",
-            "power.critical",
-            "updates.auto",
-            "time.auto",
-            "time.timezone",
-            "time.h24",
-            "input.touchpad_natural_scroll",
-            "input.mouse_natural_scroll",
-            "input.tap_to_click",
-            "input.touchpad_pointer_speed",
-            "input.mouse_pointer_speed",
-            "input.key_repeat",
-            "input.accel_profile",
-            "input.compose_key",
-            "input.keyboard_layout",
-        ];
-        for key in local_keys {
-            for value in [
-                SettingValue::Bool(true),
-                SettingValue::Float(0.5),
-                SettingValue::Text("value".into()),
-            ] {
-                assert!(
-                    matches!(
-                        SettingsAction::SetSetting {
-                            key: key.into(),
-                            value,
-                        }
-                        .apply(&mut AutoCommit::new()),
-                        Err(ActionError::Refused(_))
-                    ),
-                    "device-local key {key} accepted a replayable SettingsAction"
-                );
-            }
-        }
     }
 }

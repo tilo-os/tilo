@@ -745,40 +745,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_named_heading_and_text_styles() {
-        let xml = br#"<office:document-styles>
-        <office:styles>
-        <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"><style:paragraph-properties fo:text-align="center"/><style:text-properties fo:font-weight="bold"/></style:style>
-        <style:style style:name="MySub" style:family="paragraph" style:parent-style-name="Heading_20_1"/>
-        <style:style style:name="Strong" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
-        </office:styles>
-        </office:document-styles>"#;
-        let mut reg = StyleRegistry::default();
-        parse_styles(xml, &mut reg, true);
-        assert_eq!(reg.heading_level("Heading_20_1"), Some(1));
-        assert_eq!(
-            reg.heading_level("MySub"),
-            Some(1),
-            "inherits heading via parent"
-        );
-        assert_eq!(reg.para_align("Heading_20_1").as_deref(), Some("center"));
-        assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
-        assert!(
-            reg.para_text_marks("Heading_20_1")
-                .iter()
-                .any(|(n, _)| n == "strong")
-        );
-    }
-
-    #[test]
-    fn detects_ordered_list_style() {
-        let xml = br#"<office:automatic-styles>
-        <text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>
-        <text:list-style style:name="L2"><text:list-level-style-bullet text:level="1"/></text:list-style>
-        </office:automatic-styles>"#;
-        let mut reg = StyleRegistry::default();
-        parse_styles(xml, &mut reg, false);
-        assert_eq!(reg.list_ordered.get("L1"), Some(&true));
-        assert_eq!(reg.list_ordered.get("L2"), Some(&false));
+    fn styles_and_list_styles_resolve() {
+        // Phase `resolves_named_heading_and_text_styles`.
+        {
+            let xml = br#"<office:document-styles>
+            <office:styles>
+            <style:style style:name="Heading_20_1" style:display-name="Heading 1" style:family="paragraph" style:default-outline-level="1"><style:paragraph-properties fo:text-align="center"/><style:text-properties fo:font-weight="bold"/></style:style>
+            <style:style style:name="MySub" style:family="paragraph" style:parent-style-name="Heading_20_1"/>
+            <style:style style:name="Strong" style:family="text"><style:text-properties fo:font-weight="bold"/></style:style>
+            </office:styles>
+            </office:document-styles>"#;
+            let mut reg = StyleRegistry::default();
+            parse_styles(xml, &mut reg, true);
+            assert_eq!(reg.heading_level("Heading_20_1"), Some(1));
+            assert_eq!(
+                reg.heading_level("MySub"),
+                Some(1),
+                "inherits heading via parent"
+            );
+            assert_eq!(reg.para_align("Heading_20_1").as_deref(), Some("center"));
+            assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
+            assert!(
+                reg.para_text_marks("Heading_20_1")
+                    .iter()
+                    .any(|(n, _)| n == "strong")
+            );
+        }
+        // Phase `detects_ordered_list_style`.
+        {
+            let xml = br#"<office:automatic-styles>
+            <text:list-style style:name="L1"><text:list-level-style-number text:level="1"/></text:list-style>
+            <text:list-style style:name="L2"><text:list-level-style-bullet text:level="1"/></text:list-style>
+            </office:automatic-styles>"#;
+            let mut reg = StyleRegistry::default();
+            parse_styles(xml, &mut reg, false);
+            assert_eq!(reg.list_ordered.get("L1"), Some(&true));
+            assert_eq!(reg.list_ordered.get("L2"), Some(&false));
+        }
     }
 }

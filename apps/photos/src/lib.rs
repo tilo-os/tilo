@@ -583,43 +583,46 @@ mod camera_import_tests {
     use crate::doc::PhotosDoc;
 
     #[test]
-    fn camera_import_verifies_bytes_and_selects_one_content_addressed_photo() {
-        let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
-        let bytes = pixels::encode_png(&rgba).expect("fixture png");
-        let store = ContentStore::memory();
-        let hash = store.put(&bytes).expect("fixture content");
-        let media_id = format!("media:blake3:{hash}");
-        let mut doc = AutoCommit::new();
+    fn camera_import_and_gallery_fixtures_verify_real_content() {
+        eprintln!("phase camera_import_verifies_bytes_and_selects_one_content_addressed_photo");
+        {
+            let rgba = pixels::Rgba::new(1, 1, vec![12, 34, 56, 255]).expect("fixture rgba");
+            let bytes = pixels::encode_png(&rgba).expect("fixture png");
+            let store = ContentStore::memory();
+            let hash = store.put(&bytes).expect("fixture content");
+            let media_id = format!("media:blake3:{hash}");
+            let mut doc = AutoCommit::new();
 
-        let id = import_camera_media(&mut doc, &media_id, "Camera photo.png", &store)
-            .expect("verified import");
-        let again = import_camera_media(&mut doc, &media_id, "renamed.png", &store)
-            .expect("idempotent import");
+            let id = import_camera_media(&mut doc, &media_id, "Camera photo.png", &store)
+                .expect("verified import");
+            let again = import_camera_media(&mut doc, &media_id, "renamed.png", &store)
+                .expect("idempotent import");
 
-        assert_eq!(id, again);
-        let library = PhotosDoc::library(&doc);
-        assert_eq!(library.photos.len(), 1);
-        assert_eq!(
-            PhotosDoc::image(&doc).map(|image| image.content),
-            Some(Some(hash))
-        );
-    }
+            assert_eq!(id, again);
+            let library = PhotosDoc::library(&doc);
+            assert_eq!(library.photos.len(), 1);
+            assert_eq!(
+                PhotosDoc::image(&doc).map(|image| image.content),
+                Some(Some(hash))
+            );
+        }
 
-    #[test]
-    fn camera_import_refuses_missing_or_invalid_portable_bytes() {
-        let store = ContentStore::memory();
-        assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
-        let missing = format!("media:blake3:{}", "0".repeat(64));
-        assert!(camera_import_photo(&missing, "x.png", &store).is_err());
-    }
+        eprintln!("phase camera_import_refuses_missing_or_invalid_portable_bytes");
+        {
+            let store = ContentStore::memory();
+            assert!(camera_import_photo("media:blake3:not-a-hash", "x.png", &store).is_err());
+            let missing = format!("media:blake3:{}", "0".repeat(64));
+            assert!(camera_import_photo(&missing, "x.png", &store).is_err());
+        }
 
-    #[test]
-    fn gallery_fixtures_are_distinct_but_deterministic() {
-        let harbour = shots_pattern_variant(32, 20, 0);
-        let trail = shots_pattern_variant(32, 20, 1);
-        assert_eq!(harbour.w, 32);
-        assert_eq!(harbour.h, 20);
-        assert_ne!(harbour.bytes, trail.bytes);
-        assert_eq!(trail, shots_pattern_variant(32, 20, 1));
+        eprintln!("phase gallery_fixtures_are_distinct_but_deterministic");
+        {
+            let harbour = shots_pattern_variant(32, 20, 0);
+            let trail = shots_pattern_variant(32, 20, 1);
+            assert_eq!(harbour.w, 32);
+            assert_eq!(harbour.h, 20);
+            assert_ne!(harbour.bytes, trail.bytes);
+            assert_eq!(trail, shots_pattern_variant(32, 20, 1));
+        }
     }
 }

@@ -273,49 +273,51 @@ mod tests {
     use automerge::{ObjType, ROOT, ReadDoc};
 
     #[test]
-    fn a_splice_touches_the_path_to_its_text_and_nothing_else() {
-        let mut doc = Doc::new();
-        let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
-        let mut texts = Vec::new();
-        for id in ["a", "b", "c"] {
-            let block = doc.put_object(&blocks, id, ObjType::Map).unwrap();
-            texts.push(doc.put_object(&block, "text", ObjType::Text).unwrap());
+    fn deltas_touch_only_the_spliced_path_or_degrade_to_everything() {
+        // phase: a_splice_touches_the_path_to_its_text_and_nothing_else
+        {
+            let mut doc = Doc::new();
+            let blocks = doc.put_object(ROOT, "blocks", ObjType::Map).unwrap();
+            let mut texts = Vec::new();
+            for id in ["a", "b", "c"] {
+                let block = doc.put_object(&blocks, id, ObjType::Map).unwrap();
+                texts.push(doc.put_object(&block, "text", ObjType::Text).unwrap());
+            }
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+
+            doc.splice_text(&texts[1], 0, 0, "hello").unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert_eq!(delta.key(&ROOT, "blocks"), Touch::Below);
+            let under = delta.under(&blocks);
+            assert_eq!(under.keys().collect::<Vec<_>>(), ["b"]);
+            assert_eq!(under.key("b"), Touch::Below);
+            assert_eq!(under.key("a"), Touch::Untouched);
+            assert!(delta.under(&texts[1]).is_all());
+            assert!(!delta.touches(&texts[0]));
+
+            assert!(tracker.delta(&mut doc).is_empty());
+
+            doc.delete(&blocks, "c").unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert_eq!(delta.under(&blocks).key("c"), Touch::Written);
+            assert_eq!(doc.text(&texts[1]).unwrap(), "hello");
         }
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
-
-        doc.splice_text(&texts[1], 0, 0, "hello").unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.key(&ROOT, "blocks"), Touch::Below);
-        let under = delta.under(&blocks);
-        assert_eq!(under.keys().collect::<Vec<_>>(), ["b"]);
-        assert_eq!(under.key("b"), Touch::Below);
-        assert_eq!(under.key("a"), Touch::Untouched);
-        assert!(delta.under(&texts[1]).is_all());
-        assert!(!delta.touches(&texts[0]));
-
-        assert!(tracker.delta(&mut doc).is_empty());
-
-        doc.delete(&blocks, "c").unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.under(&blocks).key("c"), Touch::Written);
-        assert_eq!(doc.text(&texts[1]).unwrap(), "hello");
-    }
-
-    #[test]
-    fn a_moved_cursor_degrades_to_everything() {
-        let mut doc = Doc::new();
-        doc.put(ROOT, "x", 1).unwrap();
-        doc.commit();
-        let mut tracker = Tracker::new();
-        tracker.start(&mut doc);
-        doc.put(ROOT, "x", 2).unwrap();
-        doc.commit();
-        doc.reset_diff_cursor();
-        assert!(tracker.delta(&mut doc).is_everything());
-        doc.put(ROOT, "x", 3).unwrap();
-        let delta = tracker.delta(&mut doc);
-        assert_eq!(delta.key(&ROOT, "x"), Touch::Written);
+        // phase: a_moved_cursor_degrades_to_everything
+        {
+            let mut doc = Doc::new();
+            doc.put(ROOT, "x", 1).unwrap();
+            doc.commit();
+            let mut tracker = Tracker::new();
+            tracker.start(&mut doc);
+            doc.put(ROOT, "x", 2).unwrap();
+            doc.commit();
+            doc.reset_diff_cursor();
+            assert!(tracker.delta(&mut doc).is_everything());
+            doc.put(ROOT, "x", 3).unwrap();
+            let delta = tracker.delta(&mut doc);
+            assert_eq!(delta.key(&ROOT, "x"), Touch::Written);
+        }
     }
 }

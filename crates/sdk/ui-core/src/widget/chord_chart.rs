@@ -771,16 +771,21 @@ fn format_value(v: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn ribbon_is_closed_and_hit_testable() {
-        let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
-        assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
-    }
-    #[test]
-    fn invalid_links_do_not_panic() {
-        let mut chart = ChordChart::new(
-            vec![ChordNode::new("a", "A")],
-            vec![ChordLink::new("x", "missing", "a", 1.0)],
-        );
-        assert!(chart.take_activated().is_none());
+    fn chord_ribbons_hit_test_and_invalid_links_are_safe() {
+        fn ribbon_is_closed_and_hit_testable() {
+            let path = ribbon(Point::ZERO, 100.0, 0.0, 0.2, 2.0, 2.2);
+            assert!(path.winding(Point::new(20.0, 20.0)) != 0 || path.elements().last().is_some());
+        }
+
+        fn invalid_links_do_not_panic() {
+            let mut chart = ChordChart::new(
+                vec![ChordNode::new("a", "A")],
+                vec![ChordLink::new("x", "missing", "a", 1.0)],
+            );
+            assert!(chart.take_activated().is_none());
+        }
+
+        ribbon_is_closed_and_hit_testable();
+        invalid_links_do_not_panic();
     }
 }

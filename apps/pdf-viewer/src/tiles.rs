@@ -359,35 +359,17 @@ mod tests {
     }
 
     #[test]
-    fn levels_match_the_engine_snap() {
+    fn tile_grid_levels_regions_and_visible_order_match_the_engine() {
         for scale in [0.3_f64, 1.0, 1.7, 2.0, 5.5, 16.0] {
             let snapped = tilo_pdf::TileGrid::snap_scale(scale as f32);
             assert!((level_scale(level_for(scale)) - snapped).abs() < 1e-4);
         }
-    }
 
-    #[test]
-    fn eviction_prefers_other_levels_and_keeps_the_budget() {
-        // Room for three 16×16 tiles.
-        let mut cache = TileCache::new(3 * 16 * 16 * 4);
-        cache.insert(Key(4, 0), image(16));
-        cache.insert(Key(8, 0), image(16));
-        cache.insert(Key(8, 1), image(16));
-        // Filling level 8 evicts the level-4 tile even though a level-8 tile
-        // is older in LRU order after this touch.
-        assert!(cache.get(&Key(4, 0)).is_some());
-        cache.insert(Key(8, 2), image(16));
-        assert!(!cache.contains(&Key(4, 0)));
-        assert!(cache.contains(&Key(8, 0)) && cache.contains(&Key(8, 1)));
-        assert!(cache.bytes() <= 3 * 16 * 16 * 4);
-        // With only its own level left, plain LRU applies.
-        cache.insert(Key(8, 3), image(16));
-        assert!(!cache.contains(&Key(8, 0)));
-        assert_eq!(cache.len(), 3);
-    }
+        let region = tile_region((612.0, 792.0), 12, 9, 0).expect("edge tile");
+        let (pw, _) = page_pixels((612.0, 792.0), 12);
+        assert_eq!(region.x + region.width, pw);
+        assert!(tile_region((612.0, 792.0), 12, 10, 0).is_none());
 
-    #[test]
-    fn visible_tiles_come_first_nearest_the_centre() {
         // A US-letter page at level 12 (8 px/pt): 4896 × 6336 px, drawn 1:1.
         let placement = PagePlacement {
             page: 0,
@@ -422,10 +404,22 @@ mod tests {
     }
 
     #[test]
-    fn tile_regions_agree_with_the_grid() {
-        let region = tile_region((612.0, 792.0), 12, 9, 0).expect("edge tile");
-        let (pw, _) = page_pixels((612.0, 792.0), 12);
-        assert_eq!(region.x + region.width, pw);
-        assert!(tile_region((612.0, 792.0), 12, 10, 0).is_none());
+    fn eviction_prefers_other_levels_and_keeps_the_budget() {
+        // Room for three 16×16 tiles.
+        let mut cache = TileCache::new(3 * 16 * 16 * 4);
+        cache.insert(Key(4, 0), image(16));
+        cache.insert(Key(8, 0), image(16));
+        cache.insert(Key(8, 1), image(16));
+        // Filling level 8 evicts the level-4 tile even though a level-8 tile
+        // is older in LRU order after this touch.
+        assert!(cache.get(&Key(4, 0)).is_some());
+        cache.insert(Key(8, 2), image(16));
+        assert!(!cache.contains(&Key(4, 0)));
+        assert!(cache.contains(&Key(8, 0)) && cache.contains(&Key(8, 1)));
+        assert!(cache.bytes() <= 3 * 16 * 16 * 4);
+        // With only its own level left, plain LRU applies.
+        cache.insert(Key(8, 3), image(16));
+        assert!(!cache.contains(&Key(8, 0)));
+        assert_eq!(cache.len(), 3);
     }
 }
