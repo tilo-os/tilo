@@ -85,6 +85,10 @@ pub enum CenterWidget {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "layout tests assert exact token-derived pixel values"
+)]
 mod clock_overlay_geometry_tests {
     use super::*;
 
@@ -4279,6 +4283,10 @@ mod calendar_strip_tests {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::float_cmp,
+    reason = "layout tests assert exact token-derived pixel values"
+)]
 mod tests {
     use super::*;
     use crate::{

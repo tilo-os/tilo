@@ -502,7 +502,7 @@ async fn native_client_observes_one_publisher_replacement_and_recovers_other_sco
     let mut next = 0u64;
     tokio::time::timeout(Duration::from_secs(5), async {
         while received.len() != 2 {
-            if next % 10 == 0 {
+            if next.is_multiple_of(10) {
                 let step = next / 10;
                 let _ = replacement.try_send(frame(10 + step));
                 let _ = unaffected.try_send(frame(1000 + step));

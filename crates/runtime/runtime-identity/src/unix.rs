@@ -110,7 +110,7 @@ pub fn is_secret_service_unavailable_io(error: &io::Error) -> bool {
     {
         error
             .get_ref()
-            .is_some_and(|source| source.is::<SecretServiceUnavailable>())
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<SecretServiceUnavailable>)
     }
 }
 

@@ -227,7 +227,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
             seq += 1;
             assert!(client.publish_presence(&frame(seq)));
             // An invalid frame is dropped at the relay, never forwarded.
-            assert!(client.publish_presence(&vec![0xff; 40]));
+            assert!(client.publish_presence(&[0xff; 40]));
             if let Ok(Ok(Some(datagram))) =
                 timeout(Duration::from_millis(50), presence.recv_datagram()).await
             {
