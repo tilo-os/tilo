@@ -3093,7 +3093,7 @@ impl ShellOverlayHost {
         let session_action_policy = crate::shell::search::providers::SessionActionPolicy::default();
         let (search_registry, room_records, qs_action_slot) =
             Self::build_search_registry(qs_actions.clone(), session_action_policy.clone());
-        Self::from_inputs(
+        let mut host = Self::from_inputs(
             content,
             OverlayInputs {
                 search_registry,
@@ -3123,7 +3123,11 @@ impl ShellOverlayHost {
                 status_narrator: crate::shell::history_narrative::LocalHistoryNarrator::default(),
                 session_action_policy,
             },
-        )
+        );
+        // Offer Switch user only where the display manager can open a greeter
+        // beside this session; greetd cannot.
+        host.power_menu = PowerMenu::for_session(os_actions::user_switching_supported());
+        host
     }
 
     pub(crate) fn with_fixture_content(content: Box<dyn Widget>) -> Self {
