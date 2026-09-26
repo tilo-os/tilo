@@ -314,6 +314,29 @@ async fn handle(app_id: &str, request: Request, http: &reqwest::Client) -> Respo
         .await
         .map(output),
         Request::Plan { .. } => Err("only tilo-agent may plan through the model gateway".into()),
+        Request::Transform {
+            profile_id,
+            model_id,
+            instructions,
+            input,
+            max_output_tokens,
+            timeout_ms,
+        } if app_id == AGENT_APP => transform(
+            http,
+            profile_id,
+            model_id,
+            TransformAsk {
+                instructions,
+                input,
+                max_output_tokens,
+                timeout: Duration::from_millis(timeout_ms),
+            },
+        )
+        .await
+        .map(output),
+        Request::Transform { .. } => {
+            Err("only tilo-agent may run transforms through the model gateway".into())
+        }
         Request::AnalyzeImage {
             profile_id,
             model_id,
@@ -495,6 +518,147 @@ async fn plan(
     .await;
     secret.zeroize();
     result
+}
+
+/// One single-shot transformation, as tilo-agent asked for it.
+struct TransformAsk {
+    instructions: String,
+    input: String,
+    max_output_tokens: u32,
+    timeout: Duration,
+}
+
+/// Refuse a transformation past any of the published bounds. Refused, not
+/// truncated: a silently shortened input would be answered as if it were
+/// whole.
+fn validate_transform(ask: &TransformAsk) -> Result<(), String> {
+    if ask.instructions.trim().is_empty() || ask.input.trim().is_empty() {
+        return Err("a transform needs instructions and an input".into());
+    }
+    if ask.instructions.len() > tilo_model_gateway::MAX_TRANSFORM_INSTRUCTIONS_BYTES {
+        return Err("transform instructions exceed the 16 KiB limit".into());
+    }
+    if ask.input.len() > tilo_model_gateway::MAX_TRANSFORM_INPUT_BYTES {
+        return Err("transform input exceeds the 256 KiB limit".into());
+    }
+    if ask.max_output_tokens == 0
+        || ask.max_output_tokens > tilo_model_gateway::MAX_TRANSFORM_OUTPUT_TOKENS
+    {
+        return Err("transform output must be between 1 and 4096 tokens".into());
+    }
+    if ask.timeout.is_zero() {
+        return Err("a transform needs a deadline".into());
+    }
+    Ok(())
+}
+
+/// The provider request for one transformation. Deterministic sampling, one
+/// system instruction, one user turn, and no tools in either dialect.
+fn transform_body(
+    protocol: ProviderProtocol,
+    model_id: &str,
+    ask: &TransformAsk,
+) -> serde_json::Value {
+    match protocol {
+        ProviderProtocol::Anthropic => serde_json::json!({
+            "model": model_id,
+            "max_tokens": ask.max_output_tokens,
+            "temperature": 0,
+            "system": ask.instructions,
+            "messages": [{ "role": "user", "content": ask.input }]
+        }),
+        ProviderProtocol::OpenAiCompatible => serde_json::json!({
+            "model": model_id,
+            "max_tokens": ask.max_output_tokens,
+            "temperature": 0,
+            "response_format": { "type": "json_object" },
+            "messages": [
+                { "role": "system", "content": ask.instructions },
+                { "role": "user", "content": ask.input }
+            ]
+        }),
+    }
+}
+
+/// The answer text out of a provider response. A refusal or a cut-off answer
+/// is an error rather than text: the caller would otherwise validate half an
+/// answer.
+fn transform_answer(protocol: ProviderProtocol, body: &str) -> Result<String, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(body).map_err(|_| "provider response was unreadable".to_string())?;
+    let text = match protocol {
+        ProviderProtocol::Anthropic => {
+            match value.get("stop_reason").and_then(serde_json::Value::as_str) {
+                Some("refusal") => return Err("the model declined the transform".into()),
+                Some("max_tokens") => return Err("the model's answer was cut off".into()),
+                _ => {}
+            }
+            value
+                .get("content")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|blocks| {
+                    blocks.iter().find(|block| {
+                        block.get("type").and_then(serde_json::Value::as_str) == Some("text")
+                    })
+                })
+                .and_then(|block| block.get("text"))
+                .and_then(serde_json::Value::as_str)
+        }
+        ProviderProtocol::OpenAiCompatible => {
+            let choice = value
+                .get("choices")
+                .and_then(serde_json::Value::as_array)
+                .and_then(|choices| choices.first());
+            if choice
+                .and_then(|choice| choice.get("finish_reason"))
+                .and_then(serde_json::Value::as_str)
+                == Some("length")
+            {
+                return Err("the model's answer was cut off".into());
+            }
+            choice
+                .and_then(|choice| choice.get("message"))
+                .and_then(|message| message.get("content"))
+                .and_then(serde_json::Value::as_str)
+        }
+    }
+    .ok_or_else(|| "provider response carried no answer text".to_string())?;
+    if text.len() > tilo_model_gateway::MAX_TRANSFORM_OUTPUT_BYTES {
+        return Err("the model's answer exceeds the 256 KiB limit".into());
+    }
+    Ok(text.to_string())
+}
+
+async fn transform(
+    http: &reqwest::Client,
+    profile_id: String,
+    model_id: String,
+    ask: TransformAsk,
+) -> Result<String, String> {
+    validate_transform(&ask)?;
+    let model = model_id.clone();
+    let (profile, mut secret) = blocking(move || plan_profile(&profile_id, &model)).await?;
+    let body = transform_body(profile.protocol, &model_id, &ask);
+    let endpoint = provider_url(&profile);
+    let timeout = ask.timeout.min(tilo_model_gateway::MAX_TRANSFORM_TIMEOUT);
+    let began = Instant::now();
+    let result = while_busy(
+        || timeout.checked_sub(began.elapsed()),
+        tokio::time::sleep,
+        |budget| {
+            provider_attempt(
+                http,
+                &profile,
+                &endpoint,
+                Some(secret.as_str()),
+                &body,
+                budget,
+            )
+        },
+    )
+    .await;
+    secret.zeroize();
+    transform_answer(profile.protocol, &result?)
 }
 
 /// Validate Photos' one fixed local-only visual-analysis operation and
@@ -972,6 +1136,85 @@ mod tests {
         assert!(encoded.contains("face detection and clustering"));
         assert!(encoded.contains("Never output a person's name"));
         assert!(!encoded.contains("identify the person"));
+    }
+
+    fn ask(input: &str) -> TransformAsk {
+        TransformAsk {
+            instructions: "Answer with JSON.".into(),
+            input: input.into(),
+            max_output_tokens: 512,
+            timeout: Duration::from_secs(5),
+        }
+    }
+
+    #[test]
+    fn transform_requests_are_bounded_before_any_provider_is_asked() {
+        assert!(validate_transform(&ask("text")).is_ok());
+        let huge = "x".repeat(tilo_model_gateway::MAX_TRANSFORM_INPUT_BYTES + 1);
+        assert!(validate_transform(&ask(&huge)).is_err());
+        assert!(validate_transform(&ask("  ")).is_err());
+        let mut greedy = ask("text");
+        greedy.max_output_tokens = tilo_model_gateway::MAX_TRANSFORM_OUTPUT_TOKENS + 1;
+        assert!(validate_transform(&greedy).is_err());
+        let mut rushed = ask("text");
+        rushed.timeout = Duration::ZERO;
+        assert!(validate_transform(&rushed).is_err());
+    }
+
+    #[test]
+    fn transform_bodies_carry_no_tools_in_either_dialect() {
+        for protocol in [
+            ProviderProtocol::Anthropic,
+            ProviderProtocol::OpenAiCompatible,
+        ] {
+            let body = transform_body(protocol, "model-x", &ask("the input"));
+            assert_eq!(body["model"], "model-x");
+            assert_eq!(body["max_tokens"], 512);
+            assert!(body.get("tools").is_none());
+            assert!(body.to_string().contains("the input"));
+        }
+    }
+
+    #[test]
+    fn transform_answers_are_the_text_and_never_a_refusal_or_a_fragment() {
+        let anthropic =
+            r#"{"stop_reason":"end_turn","content":[{"type":"text","text":"{\"result\":1}"}]}"#;
+        assert_eq!(
+            transform_answer(ProviderProtocol::Anthropic, anthropic).unwrap(),
+            r#"{"result":1}"#
+        );
+        let refused = r#"{"stop_reason":"refusal","content":[]}"#;
+        assert!(transform_answer(ProviderProtocol::Anthropic, refused).is_err());
+        let cut = r#"{"stop_reason":"max_tokens","content":[{"type":"text","text":"{"}]}"#;
+        assert!(transform_answer(ProviderProtocol::Anthropic, cut).is_err());
+        let openai = r#"{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}"#;
+        assert_eq!(
+            transform_answer(ProviderProtocol::OpenAiCompatible, openai).unwrap(),
+            "{}"
+        );
+        let truncated = r#"{"choices":[{"finish_reason":"length","message":{"content":"{"}}]}"#;
+        assert!(transform_answer(ProviderProtocol::OpenAiCompatible, truncated).is_err());
+    }
+
+    #[test]
+    fn only_the_agent_may_transform() {
+        let http = provider_client().unwrap();
+        let request = || Request::Transform {
+            profile_id: "hosted".into(),
+            model_id: "model".into(),
+            instructions: "Answer.".into(),
+            input: "text".into(),
+            max_output_tokens: 16,
+            timeout_ms: 1000,
+        };
+        for caller in [PHOTOS_APP, SETTINGS_APP] {
+            let response = tilo_rt::block_on(handle(caller, request(), &http)).unwrap();
+            assert!(!response.ok, "{caller}");
+            assert_eq!(
+                response.error.as_deref(),
+                Some("only tilo-agent may run transforms through the model gateway")
+            );
+        }
     }
 
     struct Fake {

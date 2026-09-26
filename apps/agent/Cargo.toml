@@ -32,6 +32,8 @@ chat = { path = "../chat", default-features = false }
 # Image editor types and actions, including cross-app image references.
 photos = { path = "../photos" }
 tilo-actions = { path = "../../crates/collab/actions" }
+# The transform action names shortcuts lower their `Ai` steps to.
+tilo-automation = { path = "../../crates/collab/automation" }
 # The selected-resource address carried by chat messages.
 tilo-reference = { path = "../../crates/collab/reference" }
 # The runner reads the same provider profile Settings writes. Resolving the
