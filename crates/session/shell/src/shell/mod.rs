@@ -1644,7 +1644,7 @@ fn build_overlay_host_from_chrome(
 pub fn sync_tab_presence_from_tree(tree: &WorkspaceTree, ctx: &mut ui::presence::PresenceCtx) {
     use ui::permissions::UserId;
     use ui::presence::PresenceKey;
-    if let Some(ws) = tree.desktop.active_workspace() {
+    if let Some(ws) = tree.desktop.active_workspace().filter(|w| w.is_shown()) {
         for c in &ws.collaborators {
             // Colour overrides first: later write wins for the same user
             // id, but ordering doesn't matter since this only walks the

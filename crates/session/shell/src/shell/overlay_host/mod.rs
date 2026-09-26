@@ -13339,6 +13339,7 @@ impl ShellOverlayHost {
             let room = tree
                 .desktop
                 .active_workspace()
+                .filter(|workspace| workspace.is_shown())
                 .map(|workspace| workspace.room);
             drop(tree);
             drop(state);

@@ -421,15 +421,11 @@ impl PeerPresence {
                 return false;
             };
             let tree = replica.tree.read();
-            let Some(ws) = tree
-                .desktop
-                .workspaces
-                .iter()
-                .find(|w| w.id == tree.desktop.active)
-            else {
+            let Some(ws) = tree.desktop.active_workspace() else {
                 return false;
             };
-            if ws.room.is_nil() {
+            // Nobody is shown a hidden room, so nobody is listed there.
+            if ws.room.is_nil() || !ws.is_shown() {
                 return false;
             }
             let labels = tree.room_peer_labels(ws.room);
@@ -541,7 +537,9 @@ impl LocalParticipantRoster {
         {
             let read = tree.read();
             for ws in &read.desktop.workspaces {
-                if ws.room.is_nil() {
+                // A hidden room's participants (a replay checked out of
+                // sight) are nobody's company.
+                if ws.room.is_nil() || !ws.is_shown() {
                     continue;
                 }
                 let participants = self.fanout.local_participants_in(&ws.room.to_string());

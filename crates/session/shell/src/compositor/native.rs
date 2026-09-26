@@ -7573,19 +7573,21 @@ pub fn run() {
                 // locking the tree — nothing here needs the RefCell guard itself.
                 let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
                 let tree = tree_handle.read();
+                // A room nobody is shown has no pointer in it and no
+                // presence to paint.
                 let rooms = tree
                     .desktop
                     .workspaces
                     .iter()
+                    .filter(|w| w.is_shown())
                     .map(|w| w.room.to_string())
                     .collect::<Vec<_>>();
                 // The room the user is looking at (where their pointer is), distinct from
                 // the set above (every room the session listens to).
                 let here = tree
                     .desktop
-                    .workspaces
-                    .iter()
-                    .find(|w| w.id == tree.desktop.active)
+                    .active_workspace()
+                    .filter(|w| w.is_shown())
                     .map(|w| w.room.to_string());
                 (rooms, here)
             };
