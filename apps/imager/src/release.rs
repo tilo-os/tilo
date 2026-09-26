@@ -1573,7 +1573,8 @@ mod internal_catalog_tests {
             ("layout", json!("whole-disk-image")),
             // Schema-1 manifests are retired; so are the catalog tags naming them.
             ("layout", json!("internal-bundle-v1")),
-            ("purpose", json!("tilo-internal-installer")),
+            // Only the exact purpose names an internal installer.
+            ("purpose", json!("internal-installer")),
             ("manifest_size", json!(65537)),
             ("manifest_sha256", json!("A".repeat(64))),
             ("purpose", json!("removable-media")),
