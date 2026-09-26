@@ -2454,17 +2454,10 @@ pub(crate) fn workspace_rail_clearance_for_viewport(viewport_h: f64) -> f64 {
 /// the whole shadow with room to spare.
 const STRIP_TRAILING_GUTTER_PX: f64 = WHEEL_TO_STRIP_GAP_PX;
 
-/// One display the compositor is painting across, in its combined
-/// coordinate space. The compositor renders one scene spanning every
-/// output's bounding box, so a window group's width must be resolved
-/// against its own display, not the combined desktop.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OutputGeometry {
-    /// Left edge in combined coordinates.
-    pub x: f64,
-    pub width: f64,
-    pub height: f64,
-}
+/// One display the shell lays out across, in the logical desktop. A window
+/// group's width is resolved against its own display, not the combined
+/// desktop.
+pub use crate::shell::output_scene::OutputGeometry;
 
 /// Duration of the quick-settings popover entry animation: short enough
 /// to feel snappy, long enough to register as motion.
@@ -4562,11 +4555,12 @@ impl ShellOverlayHost {
             if self.rect.width() <= 1.0 {
                 return Vec::new();
             }
-            vec![OutputGeometry {
-                x: 0.0,
-                width: self.rect.width(),
-                height: self.rect.height(),
-            }]
+            vec![OutputGeometry::unscaled(
+                0.0,
+                0.0,
+                self.rect.width(),
+                self.rect.height(),
+            )]
         } else {
             self.outputs.clone()
         };
@@ -26149,11 +26143,7 @@ mod overview_transition_tests {
         }
         assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
         let mut h = host().with_sidebar(Box::new(Container::new()));
-        h.set_output_geometry(&[OutputGeometry {
-            x: 0.0,
-            width: 1600.0,
-            height: 900.0,
-        }]);
+        h.set_output_geometry(&[OutputGeometry::unscaled(0.0, 0.0, 1600.0, 900.0)]);
 
         let spans = h.strip_output_spans();
         assert_eq!(spans.len(), 1, "one output in, one span out");
