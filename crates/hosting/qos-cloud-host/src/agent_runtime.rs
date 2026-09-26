@@ -510,6 +510,15 @@ fn start_workers(
     workers.set_transport_ready(true);
     Ok((workers, documents))
 }
+/// A Spawn is offered only where it can launch: a managed launcher and the
+/// installed Store Source every launch is checked against. Plain `serve` has
+/// no Source, so it serves agent reads but offers no Spawn it could never run.
+fn launch_ready(
+    owner: &RuntimeOwner,
+    launcher: Option<&launcher::managed::ManagedLauncher>,
+) -> bool {
+    launcher.is_some() && owner.policy_context().launch_ready()
+}
 fn worker_retry_delay(attempt: u32) -> Duration {
     WORKER_RETRY_MIN
         .saturating_mul(1u32 << attempt.min(8))
@@ -618,7 +627,7 @@ async fn run(
         workers.as_ref(),
         &mut offer,
         false,
-        launcher.is_some(),
+        launch_ready(&owner, launcher.as_ref()),
     ) {
         let _ = ready.send(Err(error.clone()));
         if let Some(launcher) = &mut launcher {
@@ -740,7 +749,7 @@ async fn run(
                         && let Err(error)=workers.sync_agent_participants(&owner.active_agent_tasks()) {
                             tracing::warn!(%error,"agent participant views not synchronized");
                         }
-                    publish_runtime_state(&owner,workers.as_ref(),&mut offer,plan_configured,launcher.is_some())?;
+                    publish_runtime_state(&owner,workers.as_ref(),&mut offer,plan_configured,launch_ready(&owner,launcher.as_ref()))?;
                     published = 1;
                     published_at = Instant::now();
                     published_generation = generation;

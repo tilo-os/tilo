@@ -49,6 +49,13 @@ impl RuntimePolicyClock {
         }
         self.capture()
     }
+    /// Whether agents may launch: only with an installed Store Source and
+    /// policy time, the one door every Spawn passes before its launch.
+    pub(crate) fn launch_ready(&self) -> bool {
+        !self.closed.load(Ordering::Acquire)
+            && self.source.get().is_some()
+            && self.installed.get().is_some()
+    }
     pub(crate) fn validate(&self, time: &PolicyTime) -> Result<(), String> {
         if !time.belongs_to(&self.clock) || !self.capture()?.same_origin(time) {
             return Err("runtime policy clock or source origin differs".into());
@@ -185,4 +192,5 @@ fn agent_prelaunch_recovery_policy_registration_alone_is_not_a_store_source() {
     runtime.bind_source(origin.capture().unwrap()).unwrap();
     assert!(runtime.capture().is_ok());
     assert!(runtime.capture_installed().is_err());
+    assert!(!runtime.launch_ready());
 }

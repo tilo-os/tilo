@@ -129,7 +129,7 @@ fn gateway(root: &std::path::Path) -> (Reap, PathBuf) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "requires explicit signed fixture config and actual retained Linux gateway binary; run with --ignored"]
-async fn agent_runtime_genuine_queued_started_shutdown_releases_exact_seat() {
+async fn agent_runtime_genuine_plain_serve_withholds_spawn_it_cannot_launch() {
     genuine_spawn_scenario(None).await;
 }
 
@@ -346,7 +346,12 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
     client.enable_broker_client(room).unwrap();
     let mut last_catalogue = String::from("no reply");
     let mut last_capabilities = String::from("no reply");
-    let readiness = tokio::time::timeout(Duration::from_secs(30), async {
+    // Only a host with an installed Store Source launches agents (every Spawn,
+    // fresh or recovered, passes that one door). Plain `serve` has none, so it
+    // must never offer a Spawn: it reads agents only.
+    let plain = stage.is_none();
+    let mut plain_reads = 0usize;
+    let readiness = tokio::time::timeout(Duration::from_secs(if plain { 10 } else { 30 }), async {
         loop {
             let reply = query(
                 &client,
@@ -396,6 +401,13 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
                                             .take(16)
                                             .collect::<Vec<_>>()
                                     );
+                                    if plain {
+                                        assert!(
+                                            binding.spawn.is_none() && !capabilities.spawn,
+                                            "plain serve offered a Spawn it can never launch"
+                                        );
+                                        plain_reads += 1;
+                                    }
                                     if binding.spawn.is_some()
                                         && capabilities.spawn
                                         && capabilities.grant_offers.len() == 1
@@ -433,6 +445,23 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
         }
     })
     .await;
+    if plain {
+        assert!(readiness.is_err(), "plain serve became spawn-ready");
+        assert!(
+            plain_reads > 0,
+            "plain serve never answered an agent read: {last_catalogue}; {last_capabilities}"
+        );
+        let _ = stop_tx.send(());
+        tokio::time::timeout(Duration::from_secs(15), daemon)
+            .await
+            .expect("normal runtime shutdown deadline")
+            .unwrap()
+            .unwrap();
+        client.close().await;
+        drain.await.unwrap();
+        assert!(!gate.with_extension("observed").exists());
+        return;
+    }
     let (binding, offer) = match readiness {
         Ok(value) => value,
         Err(error) => {
