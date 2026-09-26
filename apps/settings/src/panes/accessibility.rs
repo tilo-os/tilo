@@ -19,6 +19,7 @@
 //! Each control is bound to a CRDT key; `sync` folds the change into the
 //! loaded prefs and persists the shared store, preserving every other section.
 
+use settings_store::magnifier;
 use std::collections::HashMap;
 use ui::doc::{read_bool, read_str_or_text};
 
@@ -57,6 +58,7 @@ pub const VISUAL_ALERTS_KEY: &str = "a11y.visual_alerts";
 pub const SCREEN_READER_KEY: &str = "a11y.screen_reader";
 pub const COLOR_FILTER_KEY: &str = "a11y.color_filter";
 pub const MAGNIFIER_KEY: &str = "a11y.magnifier";
+pub const MAGNIFIER_VIEW_KEY: &str = "a11y.magnifier_view";
 pub const CURSOR_CROSSHAIR_KEY: &str = "a11y.cursor_crosshair";
 pub const THICK_CARET_KEY: &str = "a11y.thick_text_caret";
 pub const SWITCH_CONTROL_KEY: &str = "a11y.switch_control";
@@ -213,21 +215,33 @@ impl AccessibilityPane {
                     ),
                 ),
                 choice_row(
-                    "Magnifier lens",
+                    "Magnifier",
                     Box::new(
                         Self::choice(
-                            vec!["Off".into(), "2×".into(), "3×".into()],
+                            magnifier::ZOOM_LABELS
+                                .iter()
+                                .map(|s| (*s).to_string())
+                                .collect(),
                             MAGNIFIER_KEY,
                             "magnifier",
                         )
                         .with_id("a11y.magnifier")
-                        .with_placeholder(
-                            match self.access.magnifier_zoom {
-                                2 => "2×",
-                                3 => "3×",
-                                _ => "Off",
-                            },
-                        ),
+                        .with_placeholder(magnifier::zoom_label(self.access.magnifier_zoom)),
+                    ),
+                ),
+                choice_row(
+                    "Magnifier view",
+                    Box::new(
+                        Self::choice(
+                            magnifier::MagnifierView::ALL
+                                .iter()
+                                .map(|view| view.label().to_string())
+                                .collect(),
+                            MAGNIFIER_VIEW_KEY,
+                            "magnifier-view",
+                        )
+                        .with_id("a11y.magnifier_view")
+                        .with_placeholder(self.access.magnifier_view.label()),
                     ),
                 ),
             ]),
@@ -544,12 +558,9 @@ impl AccessibilityPane {
             (COLOR_FILTER_KEY, self.access.color_filter.label()),
             (
                 MAGNIFIER_KEY,
-                match self.access.magnifier_zoom {
-                    2 => "2×",
-                    3 => "3×",
-                    _ => "Off",
-                },
+                magnifier::zoom_label(self.access.magnifier_zoom),
             ),
+            (MAGNIFIER_VIEW_KEY, self.access.magnifier_view.label()),
             (SWITCH_KEYS_KEY, self.access.switch_key_pair.label()),
             (
                 BOUNCE_DELAY_KEY,
@@ -697,12 +708,15 @@ impl AccessibilityPane {
             self.access.color_filter = filter;
             changed = true;
         }
+        if let Some(label) = read_str_or_text(state, root, MAGNIFIER_VIEW_KEY)
+            && let Some(view) = magnifier::MagnifierView::from_label(&label)
+            && view != self.access.magnifier_view
+        {
+            self.access.magnifier_view = view;
+            changed = true;
+        }
         if let Some(label) = read_str_or_text(state, root, MAGNIFIER_KEY) {
-            let zoom = match label.as_str() {
-                "2×" => 2,
-                "3×" => 3,
-                _ => 1,
-            };
+            let zoom = magnifier::zoom_from_label(&label).unwrap_or(magnifier::OFF);
             if zoom != self.access.magnifier_zoom {
                 self.access.magnifier_zoom = zoom;
                 changed = true;
@@ -1077,6 +1091,41 @@ mod tests {
         assert!(loaded.bounce_keys_alert);
         assert!(loaded.mouse_keys);
         assert_eq!(loaded.bounce_keys_delay_ms, 500);
+    }
+
+    #[test]
+    fn magnifier_zoom_and_view_persist_where_the_compositor_reads_them() {
+        let _cfg = crate::prefs::test_env::ConfigGuard::new();
+        let mut pane = AccessibilityPane::with_prefs(
+            AppearancePrefs::default(),
+            AccessibilityPrefs {
+                magnifier_zoom: 5,
+                ..AccessibilityPrefs::default()
+            },
+        );
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert_eq!(
+            read_str_or_text(&doc, &root, MAGNIFIER_KEY).as_deref(),
+            Some("5×"),
+            "a zoom set by shortcut is shown, not reset to off"
+        );
+        let _ = doc.put(&root, MAGNIFIER_KEY, "4×");
+        let _ = doc.put(&root, MAGNIFIER_VIEW_KEY, "Full screen");
+        pane.sync(&mut doc, &root);
+        let path = settings_store::settings_path().expect("test config dir");
+        let shown = magnifier::MagnifierState::from_section(&settings_store::load_section_at(
+            &path,
+            magnifier::SECTION,
+        ));
+        assert_eq!(
+            shown,
+            magnifier::MagnifierState {
+                zoom: 4,
+                view: magnifier::MagnifierView::FullScreen,
+            }
+        );
     }
 
     #[test]

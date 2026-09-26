@@ -50,6 +50,7 @@ pub mod day_schedule;
 pub mod display_identify;
 pub mod display_mode;
 pub mod hardware;
+pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
 pub mod system_sounds;
