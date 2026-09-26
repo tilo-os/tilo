@@ -83,6 +83,11 @@ pub struct BrokerChannels {
     /// Registered per-route MLS journals. Their persisted gate is consulted
     /// on every local and peer document ingress; the broker holds no MLS key.
     pub governance: HashMap<ChannelId, channel_crypto::GovernanceJournal>,
+    /// Ingress gates of the channels this device's channel encryption
+    /// service stewards or takes part in. Registered before the first op of
+    /// a channel is accepted and refreshed on every membership change; the
+    /// broker holds the gate, never a key.
+    pub gates: HashMap<ChannelId, channel_crypto::ChannelGate>,
     /// Production Secret Service provider installed by shell startup. Kept
     /// behind the broker boundary; applications see only opaque receipts.
     pub mls_vault: Option<Arc<super::collab_mls_authority::SecretServiceMlsVault>>,
@@ -117,9 +122,16 @@ impl BrokerChannels {
         self.governance.insert(channel, journal);
     }
 
-    /// A route without a registered journal remains in explicit migration /
-    /// legacy mode. Once its durable journal flips `encryption_required`, no
-    /// plaintext envelope can pass either ingress path, including after restart.
+    /// Install or refresh a channel's ingress gate.
+    pub fn register_channel_gate(&mut self, channel: ChannelId, gate: channel_crypto::ChannelGate) {
+        self.gates.insert(channel, gate);
+    }
+
+    /// A route with neither a registered journal nor a gate has not been
+    /// opened encrypted on this device yet. Once either closes its plaintext
+    /// gate, no plaintext envelope (and no content sealed before the latest
+    /// membership change) can pass either ingress path, including after a
+    /// restart.
     pub fn document_encryption_allowed(
         &self,
         channel: ChannelId,
@@ -128,6 +140,10 @@ impl BrokerChannels {
         self.governance
             .get(&channel)
             .is_none_or(|journal| journal.accepts_document_encryption(encryption, channel))
+            && self
+                .gates
+                .get(&channel)
+                .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
     /// Append a validated op to durable history when it belongs there.
