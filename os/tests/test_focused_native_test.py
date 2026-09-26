@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise the focused workflow helper against real Cargo/libtest processes."""
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -10,6 +11,9 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
+spec = importlib.util.spec_from_file_location('focused_test', ROOT / 'tools/ci/focused_test.py')
+focused = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(focused)
 
 
 def isolated_temp_parent():
@@ -17,10 +21,10 @@ def isolated_temp_parent():
     if os.environ.get('SystemRoot'):
         candidates.append(Path(os.environ['SystemRoot']) / 'Temp')
     for candidate in candidates:
-        if candidate.is_dir() and os.access(candidate, os.W_OK) and not any(
-                (parent / '.cargo' / name).exists()
-                for parent in (candidate.resolve(), *candidate.resolve().parents)
-                for name in ('config', 'config.toml')):
+        # The same rule as the helper: only the builder image's root linker
+        # configuration may sit above the fixture checkout.
+        if candidate.is_dir() and os.access(candidate, os.W_OK) and \
+                focused.inherited_cargo_config(candidate / 'focused-native') is None:
             return candidate
     raise RuntimeError('focused native regression needs a temp path without ancestor Cargo configuration')
 
