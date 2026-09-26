@@ -3,8 +3,11 @@ name: CI / fast quality
 # Compilation-heavy warnings, Clippy, docs, and release-size gates run weekly.
 # This path runs on every change.
 on:
-  # Run on every branch before it opens or updates a PR.
-  push: {}
+  # Main keeps a result for every commit. Task branches get theirs from the
+  # pull_request event, which fires when a PR opens and on every update; a
+  # branch push would repeat the same job on the same commit.
+  push:
+    branches: ["main"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
