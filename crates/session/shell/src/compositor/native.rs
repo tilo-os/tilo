@@ -184,6 +184,8 @@ struct NativeRedrawReasons {
     keepalive: bool,
     lock_clock: bool,
     lock_animation: bool,
+    /// A media-key readout drawn over the lock surface is fading or due to clear.
+    lock_osd: bool,
 }
 
 impl NativeRedrawReasons {
@@ -201,7 +203,7 @@ impl NativeRedrawReasons {
                     || self.presentation
                     || self.capture))
             || (!session_locked && self.keepalive)
-            || (session_locked && (self.lock_clock || self.lock_animation))
+            || (session_locked && (self.lock_clock || self.lock_animation || self.lock_osd))
     }
 }
 
@@ -3690,6 +3692,57 @@ fn vt_switch_chord(event: &WindowEvent, modifiers: Modifiers) -> Option<i32> {
     Some(n)
 }
 
+/// Where the compositor sends an input event before any client or shell
+/// chrome is offered it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PriorityRoute {
+    /// The session lock captures the event for its password field.
+    LockScreen,
+    /// A hardware media/brightness key acts on the machine itself.
+    MediaKey(crate::shell::media_keys::MediaKey),
+    PowerKey,
+    VtSwitch(i32),
+    RemoteInputKillSwitch,
+    LockSession,
+    /// Nothing claims the event ahead of spatial forwarding, input capture
+    /// and ordinary client/chrome routing.
+    Continue,
+}
+
+/// The compositor's fixed input priority order, pure so it can be checked
+/// without a seat.
+///
+/// Media keys are the one exception to the lock capturing everything:
+/// volume, mute, brightness and playback belong to the machine, not the
+/// session, so they keep working on the lock screen. They reveal nothing
+/// behind it and their feedback is drawn on the lock surface itself.
+fn priority_route(
+    event: &WindowEvent,
+    modifiers: Modifiers,
+    locked: bool,
+    shortcuts: &settings_store::hardware::ShortcutConfig,
+) -> PriorityRoute {
+    let media_key = crate::shell::media_keys::classify(event);
+    if locked {
+        return media_key
+            .filter(|key| key.acts_while_locked())
+            .map_or(PriorityRoute::LockScreen, PriorityRoute::MediaKey);
+    }
+    if is_power_key(event) {
+        PriorityRoute::PowerKey
+    } else if let Some(vt) = vt_switch_chord(event, modifiers) {
+        PriorityRoute::VtSwitch(vt)
+    } else if is_remote_input_kill_switch(event, modifiers) {
+        PriorityRoute::RemoteInputKillSwitch
+    } else if is_lock_chord(event, modifiers, shortcuts) {
+        PriorityRoute::LockSession
+    } else if let Some(key) = media_key {
+        PriorityRoute::MediaKey(key)
+    } else {
+        PriorityRoute::Continue
+    }
+}
+
 /// How long an invite minted from the palette stays valid.
 const INVITE_EXPIRY_SECONDS: u64 = 3600;
 
@@ -6319,14 +6372,19 @@ pub fn run() {
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
 
-                    if session.is_locked() {
+                    let locked = session.is_locked();
+                    let route = priority_route(
+                        wev,
+                        test_control_ctx.modifiers,
+                        locked,
+                        frame_builder.host().shortcut_config(),
+                    );
+                    if locked {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                        // Locked: every input is captured by the lock surface, into the password
-                        // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
                         if let WindowEvent::KeyboardInput { event: key_ev, .. } = wev {
                             // Keep both chord routing and Smithay's XKB state in step even
                             // while the lock owns the visible key.  Dropping a release here
@@ -6337,11 +6395,15 @@ pub fn run() {
                             );
                             client_input::consume_keyboard_while_captured(&mut state, wev);
                         }
+                    }
+                    if route == PriorityRoute::LockScreen {
+                        // Locked: every input is captured by the lock surface, into the password
+                        // field, never apps/chrome; unlocks only when `lock.poll_verification()` observes success.
                         let key = winit_event_to_lock_key(wev);
                         lock.handle_key(key);
                         // Any keystroke changes the masked field / error, so force a repaint this tick.
                         session_changed = true;
-                    } else if is_power_key(wev) {
+                    } else if route == PriorityRoute::PowerKey {
                         // Hardware power key resolves per the power policy (logind delegates via
                         // the service's block inhibitor); a deliberate press bypasses the idle inhibitor.
                         match power_policy.on_power_key() {
@@ -6362,11 +6424,11 @@ pub fn run() {
                             }
                             Some(tilo_power_mgmt::PowerAction::Ignore) | None => {}
                         }
-                    } else if let Some(vt) = vt_switch_chord(wev, test_control_ctx.modifiers) {
+                    } else if let PriorityRoute::VtSwitch(vt) = route {
                         // Ahead of every other chord, never offered to a client: leaving the
                         // terminal must work even with a grabbed keyboard, or a client can strand the user.
                         backend.switch_vt(vt);
-                    } else if is_remote_input_kill_switch(wev, test_control_ctx.modifiers) {
+                    } else if route == PriorityRoute::RemoteInputKillSwitch {
                         // Super+Esc: every peer's input stops and stays stopped. Ahead of the
                         // client router and shell's Escape handling — a panic key a client can swallow isn't one.
                         client_input::stop_remote_input(&mut state, &mut frame_builder);
@@ -6376,18 +6438,16 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
-                    } else if is_lock_chord(
-                        wev,
-                        test_control_ctx.modifiers,
-                        frame_builder.host().shortcut_config(),
-                    ) {
+                    } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
                             apply_session_transition(t, backend.as_mut(), present_pipe.as_ref());
                         }
-                    } else if let Some(mk) = crate::shell::media_keys::classify(wev) {
+                    } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
-                        // whichever client holds focus — handled before client routing for that reason.
+                        // whichever client holds focus — handled before client routing for that
+                        // reason. While locked only `MediaKey::acts_while_locked` keys get
+                        // here, and the lock paint draws their OSD.
                         let airplane_mode =
                             frame_builder.chrome().quick_settings.radios.airplane_mode;
                         let settings = settings_store::settings_path();
@@ -7769,6 +7829,7 @@ pub fn run() {
                 last_lock_animation_frame,
             )
             .is_some_and(|deadline| iter_t0 >= deadline),
+            lock_osd: lock_screen::lock_osd_frame_due(frame_builder.chrome().osd, iter_t0),
         }
         .content_changed(session.is_locked());
         // May a frame be shown yet? Off-cadence wakeups (protocol traffic,
@@ -7976,7 +8037,7 @@ pub fn run() {
                 };
                 lock_has_wallpaper = wallpaper.is_some();
                 last_lock_animation_frame = iter_t0;
-                FramePaint::full(lock_screen::draw_lock_scene_at_time(
+                let mut lock_scene = lock_screen::draw_lock_scene_at_time(
                     &lock_outputs,
                     &theme,
                     frame_builder.text_renderer_mut(),
@@ -7985,7 +8046,26 @@ pub fn run() {
                     iter_t0
                         .saturating_duration_since(lock_animation_epoch)
                         .as_secs_f64(),
-                ))
+                );
+                // Media keys stay live while locked; their readout is drawn
+                // here because the desktop chrome that normally paints it is
+                // hidden. Expiring on paint mirrors the unlocked host.
+                let mut lock_osd = None;
+                frame_builder.with_chrome(|chrome| {
+                    chrome.expire_osd(iter_t0);
+                    lock_osd = chrome.osd;
+                });
+                if let Some(osd) = lock_osd {
+                    lock_screen::draw_lock_osd(
+                        &mut lock_scene,
+                        &lock_outputs,
+                        &theme,
+                        frame_builder.text_renderer_mut(),
+                        osd,
+                        iter_t0,
+                    );
+                }
+                FramePaint::full(lock_scene)
             } else {
                 let mut frame_paint = if retained_damage_supported {
                     frame_builder.paint_with_damage()
@@ -8979,6 +9059,19 @@ mod tests {
                 [lock_animation_park_deadline(now, future)]
             ),
             Some(Duration::from_millis(42))
+        );
+    }
+
+    #[test]
+    fn lock_osd_fade_repaints_only_while_the_lock_is_visible() {
+        let fading = NativeRedrawReasons {
+            lock_osd: true,
+            ..NativeRedrawReasons::default()
+        };
+        assert!(fading.content_changed(true));
+        assert!(
+            !fading.content_changed(false),
+            "the unlocked host drives its own OSD frames"
         );
     }
 
@@ -11044,7 +11137,8 @@ fn input_capture_zones(
 
 #[cfg(test)]
 mod vt_chord_tests {
-    use super::vt_switch_chord;
+    use super::{PriorityRoute, priority_route, vt_switch_chord};
+    use crate::shell::media_keys::MediaKey;
     use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
     use winit::keyboard::{Key, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey};
 
@@ -11132,6 +11226,106 @@ mod vt_chord_tests {
             vt_switch_chord(&key(NamedKey::Tab, ElementState::Pressed), m),
             None
         );
+    }
+
+    fn character(c: &str) -> WindowEvent {
+        let mut event = key(NamedKey::F1, ElementState::Pressed);
+        if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+            event.logical_key = Key::Character(c.into());
+        }
+        event
+    }
+
+    fn route(event: &WindowEvent, state: ModifiersState, locked: bool) -> PriorityRoute {
+        priority_route(
+            event,
+            mods(state),
+            locked,
+            &settings_store::hardware::ShortcutConfig::default(),
+        )
+    }
+
+    #[test]
+    fn media_keys_act_while_the_lock_captures_everything_else() {
+        let none = ModifiersState::empty();
+        for (named, media) in [
+            (NamedKey::AudioVolumeUp, MediaKey::VolumeUp),
+            (NamedKey::AudioVolumeDown, MediaKey::VolumeDown),
+            (NamedKey::AudioVolumeMute, MediaKey::VolumeMute),
+            (NamedKey::BrightnessUp, MediaKey::BrightnessUp),
+            (NamedKey::BrightnessDown, MediaKey::BrightnessDown),
+            (NamedKey::MediaPlayPause, MediaKey::PlayPause),
+        ] {
+            let press = key(named, ElementState::Pressed);
+            assert_eq!(route(&press, none, true), PriorityRoute::MediaKey(media));
+            assert_eq!(route(&press, none, false), PriorityRoute::MediaKey(media));
+            assert_eq!(
+                route(&key(named, ElementState::Released), none, true),
+                PriorityRoute::LockScreen,
+                "a media key release is inert and stays with the lock"
+            );
+        }
+
+        for captured in [NamedKey::LaunchApplication2, NamedKey::Standby] {
+            assert_eq!(
+                route(&key(captured, ElementState::Pressed), none, true),
+                PriorityRoute::LockScreen,
+                "{captured:?} opens UI or suspends, so the lock keeps it"
+            );
+            assert!(matches!(
+                route(&key(captured, ElementState::Pressed), none, false),
+                PriorityRoute::MediaKey(_)
+            ));
+        }
+
+        assert_eq!(
+            route(&character("a"), none, true),
+            PriorityRoute::LockScreen
+        );
+        assert_eq!(
+            route(&character("l"), ModifiersState::SUPER, true),
+            PriorityRoute::LockScreen,
+            "the lock chord is inert while already locked"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::F2, ElementState::Pressed),
+                ModifiersState::CONTROL | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "a VT switch cannot bypass the lock"
+        );
+    }
+
+    #[test]
+    fn unlocked_priority_order_is_power_vt_panic_lock_media_then_clients() {
+        let none = ModifiersState::empty();
+        assert_eq!(
+            route(&key(NamedKey::Power, ElementState::Pressed), none, false),
+            PriorityRoute::PowerKey
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::F3, ElementState::Pressed),
+                ModifiersState::CONTROL | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::VtSwitch(3)
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::Escape, ElementState::Pressed),
+                ModifiersState::SUPER,
+                false
+            ),
+            PriorityRoute::RemoteInputKillSwitch
+        );
+        assert_eq!(
+            route(&character("l"), ModifiersState::SUPER, false),
+            PriorityRoute::LockSession
+        );
+        assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }
 }
 

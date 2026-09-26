@@ -56,6 +56,36 @@ pub enum MediaKey {
     TouchpadToggle,
 }
 
+impl MediaKey {
+    /// Whether this key keeps working on the lock screen. Volume,
+    /// brightness, backlight and playback adjust the machine and reveal
+    /// nothing behind the lock. Keys that open UI or launch apps
+    /// (display modes, calculator), change connectivity or input devices,
+    /// or suspend stay captured by the lock.
+    pub fn acts_while_locked(self) -> bool {
+        match self {
+            Self::VolumeUp
+            | Self::VolumeDown
+            | Self::VolumeMute
+            | Self::MicMute
+            | Self::BrightnessUp
+            | Self::BrightnessDown
+            | Self::PlayPause
+            | Self::NextTrack
+            | Self::PreviousTrack
+            | Self::Stop
+            | Self::KeyboardBacklightUp
+            | Self::KeyboardBacklightDown
+            | Self::KeyboardBacklightToggle => true,
+            Self::Sleep
+            | Self::Wireless
+            | Self::DisplayMode
+            | Self::Calculator
+            | Self::TouchpadToggle => false,
+        }
+    }
+}
+
 /// What one press asks of the session beyond what [`apply`] actuated
 /// itself.
 #[derive(Clone, Copy, Debug, PartialEq)]
