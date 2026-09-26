@@ -1000,4 +1000,91 @@ pub(crate) mod tests {
             assert!(ready_epoch(&restarted.service.access(room_id, channel, now)).is_some());
         }
     }
+
+    /// Key loss: a laptop is lost with all its channel state. Restoring the
+    /// person's identity backup on a replacement machine brings back the
+    /// root identity, not the lost device key; onboarding certifies a new
+    /// device key. Once the room's governor knows that certificate, the
+    /// policy allows the new device, the steward admits it, and its key
+    /// history opens everything written before the loss. The lost device is
+    /// removed, so it cannot read what is written afterwards.
+    #[test]
+    fn a_restored_identity_regains_the_whole_channel_on_its_new_device() {
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(8));
+        let (owner_dir, lost_dir, new_dir) = (
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+            tempfile::tempdir().unwrap(),
+        );
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (7, 7), &policy, owner_dir.path());
+        let mut lost = device(&room, room_id, 1, (8, 7), &policy, lost_dir.path());
+        owner.service.access(room_id, channel, now);
+        lost.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut lost], &mut now, 5);
+        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+            panic!("owner keys");
+        };
+        let before = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Delta,
+                b"before the loss",
+            )
+            .unwrap();
+        let ChannelAccess::Ready(lost_keys) = lost.service.access(room_id, channel, now) else {
+            panic!("the laptop was a member");
+        };
+        drop(lost);
+
+        // The replacement machine's new device key replaces the lost one in
+        // the person's certified device set.
+        {
+            let mut allowed = policy.allowed.lock().unwrap();
+            allowed.remove(&public(8));
+            allowed.insert(public(9));
+        }
+        let mut restored = device(&room, room_id, 2, (9, 7), &policy, new_dir.path());
+        assert!(matches!(
+            restored.service.access(room_id, channel, now),
+            ChannelAccess::Waiting
+        ));
+        run(&mut [&mut owner, &mut restored], &mut now, 5);
+        let ChannelAccess::Ready(restored_keys) = restored.service.access(room_id, channel, now)
+        else {
+            panic!("the restored identity's new device is admitted");
+        };
+        assert!(
+            restored_keys
+                .open_content(artifact, &before.0, &before.1)
+                .is_ok(),
+            "its key history opens everything written before the loss"
+        );
+        let ChannelAccess::Ready(keys) = owner.service.access(room_id, channel, now) else {
+            panic!("owner keys");
+        };
+        let after = keys
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Delta,
+                b"after the loss",
+            )
+            .unwrap();
+        assert!(
+            restored_keys
+                .open_content(artifact, &after.0, &after.1)
+                .is_ok()
+        );
+        assert!(
+            lost_keys
+                .open_content(artifact, &after.0, &after.1)
+                .is_err(),
+            "the lost device was removed and cannot read what follows"
+        );
+    }
 }
