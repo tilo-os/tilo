@@ -3765,11 +3765,9 @@ mod tests {
             clear_pending_placements();
         }
 
-        // First: it asserts on the process-wide launch-metrics snapshot, which
-        // the other phases leave entries in and which has no reset.
-        launch_latency_tracks_fifo_surface_until_first_frame_once();
         restored_launch_keeps_the_source_crdt_record_identity();
         same_app_launch_placements_are_claimed_fifo();
+        launch_latency_tracks_fifo_surface_until_first_frame_once();
         failed_newest_same_app_launch_keeps_older_destination();
         clean_parent_exit_keeps_delayed_window_placement_until_deadline();
         windowless_clean_launch_expires_without_sleeping();
