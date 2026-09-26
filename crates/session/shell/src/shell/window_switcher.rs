@@ -31,6 +31,7 @@ use ui::widget::AppKind as UiAppKind;
 
 use crate::shell::i18n::{t, t_args};
 use crate::shell::state::{GroupId, StripId, TileContent, WorkspaceId, WorkspaceTree};
+use crate::shell::window_previews::{PreviewRequest, PreviewSource, PreviewState, WindowPreviews};
 
 /// How long Alt has to stay down after Tab before the switcher appears.
 /// Shorter than a deliberate look, longer than a practised Alt+Tab, so the
@@ -95,6 +96,8 @@ pub struct SwitcherWindow {
     pub address: WindowAddress,
     pub title: String,
     pub app: WindowApp,
+    /// Where its live preview comes from, if it may have one.
+    pub preview: PreviewSource,
 }
 
 /// Which windows a session walks.
@@ -158,6 +161,12 @@ fn workspace_windows(tree: &WorkspaceTree) -> (Vec<SwitcherWindow>, Option<usize
                     },
                     title,
                     app: WindowApp::of(&tab.tile),
+                    preview: PreviewSource::for_tab(
+                        &tab.tile,
+                        group.id,
+                        tab.id,
+                        tab.id == group.active_tab,
+                    ),
                 });
             }
         }
@@ -265,9 +274,17 @@ struct Session {
 /// Sizes of the panel, all read off the theme's tokens.
 #[derive(Clone, Copy, Debug)]
 struct Metrics {
+    /// The app mark standing in for a window without a preview.
     icon: f64,
+    /// The app mark beside a previewed window's title.
+    mark: f64,
+    /// The height of the 16:10 well a window's preview sits in; the
+    /// card is the well plus an inset on each side.
+    well_h: f64,
+    well_radius: f64,
     card_w: f64,
     card_h: f64,
+    inset: f64,
     gap: f64,
     pad: f64,
     margin: f64,
@@ -282,15 +299,20 @@ impl Metrics {
     fn from_tokens(tokens: &ui::tokens::Tokens) -> Self {
         let spacing = &tokens.spacing;
         let scale = &tokens.typography.scale;
-        let icon = f64::from(spacing.s12);
         let title_size = scale.sm;
         let caption_size = scale.base;
-        let pad_in = f64::from(spacing.s3);
+        let inset = f64::from(spacing.s2);
         let title_h = f64::from(title_size) * 1.4;
+        let well_w = f64::from(spacing.s16) * 2.5;
+        let well_h = well_w * 10.0 / 16.0;
         Self {
-            icon,
-            card_w: icon + f64::from(spacing.s16) + f64::from(spacing.s4),
-            card_h: pad_in + icon + f64::from(spacing.s2) + title_h + pad_in,
+            icon: f64::from(spacing.s12),
+            mark: f64::from(tokens.metrics.icon_sm),
+            well_h,
+            well_radius: f64::from(tokens.radii.md),
+            card_w: well_w + 2.0 * inset,
+            card_h: inset + well_h + inset + title_h + inset,
+            inset,
             gap: f64::from(spacing.s2),
             pad: f64::from(spacing.s4),
             margin: f64::from(spacing.s8),
@@ -743,6 +765,10 @@ impl WindowSwitcher {
     }
 
     /// Paint the panel once it is revealed.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a paint step taking the caller's scene, theme, host rect, clock and previews"
+    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -751,6 +777,7 @@ impl WindowSwitcher {
         theme: &Theme,
         host: Rect,
         now: Instant,
+        previews: &mut WindowPreviews,
     ) {
         self.host_rect = host;
         self.metrics = Metrics::from_tokens(&theme.tokens);
@@ -760,8 +787,73 @@ impl WindowSwitcher {
         // Theme type tokens already carry the user's text scale (HIG §7a).
         let renderer_scale = text_renderer.text_scale();
         text_renderer.set_text_scale(1.0);
-        self.draw_panel(scene, transform, text_renderer, theme);
+        self.draw_panel(scene, transform, text_renderer, theme, previews);
         text_renderer.set_text_scale(renderer_scale);
+    }
+
+    /// The windows of the open session that may have a live preview, the
+    /// page on screen first.
+    pub fn preview_requests(&self) -> Vec<PreviewRequest> {
+        let Some(session) = self.session.as_ref() else {
+            return Vec::new();
+        };
+        let on_screen: Vec<usize> = self
+            .geometry()
+            .cards
+            .iter()
+            .map(|(index, _)| *index)
+            .collect();
+        let rest = (0..session.windows.len()).filter(|index| !on_screen.contains(index));
+        on_screen
+            .iter()
+            .copied()
+            .chain(rest)
+            .filter_map(|index| session.windows.get(index))
+            .filter(|window| window.preview.renderable())
+            .map(|window| PreviewRequest {
+                tab: window.address.tab,
+                source: window.preview.clone(),
+            })
+            .collect()
+    }
+
+    /// What a card can show for `window` right now.
+    pub fn preview_state(window: &SwitcherWindow, previews: &WindowPreviews) -> PreviewState {
+        match window.preview {
+            PreviewSource::Withheld => PreviewState::Withheld,
+            _ if previews.has(window.address.tab) => PreviewState::Live,
+            _ => PreviewState::None,
+        }
+    }
+
+    /// The open session as data: each window, whether it is selected, and
+    /// whether its card shows a live preview. Never the pixels themselves.
+    pub fn state_json(&self, previews: &WindowPreviews, now: Instant) -> serde_json::Value {
+        let Some(session) = self.session.as_ref() else {
+            return serde_json::json!({ "open": false });
+        };
+        let windows: Vec<serde_json::Value> = session
+            .windows
+            .iter()
+            .enumerate()
+            .map(|(index, window)| {
+                serde_json::json!({
+                    "tab": window.address.tab,
+                    "title": window.title,
+                    "selected": index == session.selected,
+                    "preview": Self::preview_state(window, previews).as_str(),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "open": true,
+            "revealed": self.is_revealed(now),
+            "scope": match session.scope {
+                SwitcherScope::Workspace => "workspace",
+                SwitcherScope::FocusedApp => "app",
+            },
+            "windows": windows,
+        })
     }
 
     fn draw_panel(
@@ -770,6 +862,7 @@ impl WindowSwitcher {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
+        previews: &mut WindowPreviews,
     ) {
         let Some(session) = self.session.as_ref() else {
             return;
@@ -805,7 +898,16 @@ impl WindowSwitcher {
                     self.hover == Some(*index) && *index != session.selected,
                     false,
                 );
-                self.draw_card(scene, transform, text_renderer, theme, *card, window, state);
+                self.draw_card(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    *card,
+                    window,
+                    state,
+                    previews,
+                );
             }
         }
 
@@ -855,11 +957,11 @@ impl WindowSwitcher {
         }
     }
 
-    /// One window's card: its app mark over its elided title, lifted by
-    /// the shared selection tier when selected or hovered.
+    /// One window's card: its live preview (or app mark) over its elided
+    /// title, lifted by the shared selection tier when selected or hovered.
     #[expect(
         clippy::too_many_arguments,
-        reason = "a paint step taking the caller's scene, theme and laid-out card"
+        reason = "a paint step taking the caller's scene, theme, laid-out card and previews"
     )]
     fn draw_card(
         &self,
@@ -870,6 +972,7 @@ impl WindowSwitcher {
         card: Rect,
         window: &SwitcherWindow,
         state: ui::chrome::SelectionState,
+        previews: &mut WindowPreviews,
     ) {
         let tokens = &theme.tokens;
         let colors = &tokens.colors;
@@ -897,24 +1000,46 @@ impl WindowSwitcher {
                 &RoundedRect::from_rect(card.inset(-1.0), (m.card_radius - 1.0).max(0.0)),
             );
         }
-        let inner_top = card.y0 + f64::from(tokens.spacing.s3);
-        let icon = Rect::new(
-            card.center().x - m.icon / 2.0,
-            inner_top,
-            card.center().x + m.icon / 2.0,
-            inner_top + m.icon,
+        let well = Rect::new(
+            card.x0 + m.inset,
+            card.y0 + m.inset,
+            card.x1 - m.inset,
+            card.y0 + m.inset + m.well_h,
         );
-        ui::widget::draw_app_mark(
+        let live = draw_preview_well(
             scene,
             transform,
-            icon,
-            window.app.icon.as_ref(),
-            window.app.kind,
-            colors.text_primary,
+            theme,
+            PreviewWell {
+                rect: well,
+                radius: m.well_radius,
+                icon: m.icon,
+            },
+            window,
+            previews,
         );
-        let title_w = card.width() - 2.0 * f64::from(tokens.spacing.s2);
+
+        // The title line, led by the app mark when the well shows the
+        // window instead of the mark.
+        let gap = f64::from(tokens.spacing.s1);
+        let lead = if live { m.mark + gap } else { 0.0 };
+        let title_w = (card.width() - 2.0 * m.inset - lead).max(0.0);
         let title = text_renderer.elide_to_width(&window.title, m.title_size, f32_of(title_w));
-        let (w, _) = text_renderer.measure(&title, m.title_size, None);
+        let (w, h) = text_renderer.measure(&title, m.title_size, None);
+        let line_top = well.y1 + m.inset;
+        let line_w = lead + f64::from(w);
+        let x0 = card.center().x - line_w * 0.5;
+        if live {
+            let mark_top = line_top + (f64::from(h) - m.mark) / 2.0;
+            ui::widget::draw_app_mark(
+                scene,
+                transform,
+                Rect::new(x0, mark_top, x0 + m.mark, mark_top + m.mark),
+                window.app.icon.as_ref(),
+                window.app.kind,
+                colors.text_primary,
+            );
+        }
         text_renderer.draw_text(
             scene,
             &title,
@@ -924,16 +1049,81 @@ impl WindowSwitcher {
             } else {
                 colors.text_dim
             },
-            transform.pre_translate(
-                (
-                    card.center().x - f64::from(w) / 2.0,
-                    icon.y1 + f64::from(tokens.spacing.s2),
-                )
-                    .into(),
-            ),
+            transform.pre_translate((x0 + lead, line_top).into()),
             None,
         );
     }
+}
+
+/// Where a window's preview well sits and how its stand-in mark is sized.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PreviewWell {
+    pub rect: Rect,
+    pub radius: f64,
+    /// Edge of the app mark shown when there is no live preview.
+    pub icon: f64,
+}
+
+/// A 16:10 well on the window-card surface holding `window`'s live
+/// preview, or its app mark when it has none (not rendered yet, or an app
+/// that holds secrets). Shared by the switcher and the overview so a
+/// window looks the same in both. Returns whether a preview was painted.
+pub(crate) fn draw_preview_well(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    well: PreviewWell,
+    window: &SwitcherWindow,
+    previews: &mut WindowPreviews,
+) -> bool {
+    let colors = &theme.tokens.colors;
+    let well_rr = RoundedRect::from_rect(well.rect, well.radius);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        colors.surfaces.window_card,
+        None,
+        &well_rr,
+    );
+    let live = WindowSwitcher::preview_state(window, previews) == PreviewState::Live && {
+        scene.push_layer(
+            Fill::NonZero,
+            vello::peniko::BlendMode::default(),
+            1.0,
+            transform,
+            &well_rr,
+        );
+        let painted = previews
+            .paint(window.address.tab, scene, transform, well.rect, theme)
+            .is_some();
+        scene.pop_layer();
+        painted
+    };
+    scene.stroke(
+        &vello::kurbo::Stroke::new(1.0),
+        transform,
+        colors.surfaces.window_card_border,
+        None,
+        &well_rr,
+    );
+    if !live {
+        let center = well.rect.center();
+        let half = well.icon / 2.0;
+        ui::widget::draw_app_mark(
+            scene,
+            transform,
+            Rect::new(
+                center.x - half,
+                center.y - half,
+                center.x + half,
+                center.y + half,
+            ),
+            window.app.icon.as_ref(),
+            window.app.kind,
+            colors.on_card().ink,
+        );
+    }
+    live
 }
 
 #[cfg(test)]
