@@ -28,18 +28,22 @@ use std::time::Duration;
 
 use automerge::AutoCommit;
 use serde_json::{Map, Value};
+use settings_store::hardware::{ActionChord, ActionChordTarget, KeyChord, ShortcutConfig};
 use tilo_actions::context::ActionContext;
 use tilo_actions::contract::{ActionContract, PermissionRequirement, ResultSpec, RiskLevel};
 use tilo_actions::door::{ActionAddress, ActionDescriptor, InputSpec};
 use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_actions::params::{ARGUMENTS_JSON_PREFIX, ActionArgs, ActionParam, ParamType};
+use tilo_actions::remote::workspace_provider;
 use tilo_actions::remote::{Confirmation, Pending, pending};
 use tilo_actions::{ExecutionLocus, OperationKind};
 use tilo_automation::{
     ActionCatalog, AskRequest, ConfirmationRequest, RunHooks, RunId, RunMode, RunOutcome,
-    RunReport, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Shortcut,
-    shortcut_id_of, shortcut_resource_id,
+    RunReport, RunTrigger, SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule,
+    Shortcut, TriggerSpec, shortcut_id_of, shortcut_resource_id,
 };
+
+use crate::shell::automation_triggers::{Armed, validate_trigger};
 
 use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
 
@@ -162,12 +166,7 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         resource_kind: SHORTCUT_RESOURCE_KIND.into(),
         resource_label: shortcut.name.clone(),
         action_label: format!("Run {}", shortcut.name),
-        description: Some(format!(
-            "Run the shortcut “{}”: {} step{}",
-            shortcut.name,
-            shortcut.steps.len(),
-            if shortcut.steps.len() == 1 { "" } else { "s" }
-        )),
+        description: Some(run_description(shortcut)),
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
@@ -185,6 +184,168 @@ pub fn run_descriptor(shortcut: &Shortcut) -> ActionDescriptor {
         params: shortcut.inputs.clone(),
         view: None,
     }
+}
+
+/// What `run` on `shortcut` says about itself: its steps, what starts it
+/// on its own, and which confirmations its saver gave in advance.
+#[must_use]
+pub fn run_description(shortcut: &Shortcut) -> String {
+    let mut description = format!(
+        "Run the shortcut “{}”: {} step{}",
+        shortcut.name,
+        shortcut.steps.len(),
+        if shortcut.steps.len() == 1 { "" } else { "s" }
+    );
+    let triggers: Vec<String> = shortcut.triggers.iter().map(trigger_summary).collect();
+    if !triggers.is_empty() {
+        description.push_str(". Runs by itself ");
+        description.push_str(&triggers.join(" and "));
+    }
+    if !shortcut.consents.is_empty() {
+        let consents: Vec<String> = shortcut
+            .consents
+            .iter()
+            .map(|consent| format!("`{}` on {}", consent.action, consent.resource))
+            .collect();
+        description.push_str(". Confirmed in advance: ");
+        description.push_str(&consents.join(", "));
+    }
+    description
+}
+
+/// A trigger in words, e.g. "on Super+Shift+N" or "every day at 09:00".
+#[must_use]
+pub fn trigger_summary(trigger: &TriggerSpec) -> String {
+    match trigger {
+        TriggerSpec::Keyboard { chord } => format!(
+            "on {}",
+            KeyChord::parse(chord).map_or_else(|_| chord.clone(), |chord| chord.display())
+        ),
+        TriggerSpec::Schedule { schedule, .. } => match schedule {
+            Schedule::Interval { seconds } if seconds % 3600 == 0 => {
+                format!("every {} h", seconds / 3600)
+            }
+            Schedule::Interval { seconds } if seconds % 60 == 0 => {
+                format!("every {} min", seconds / 60)
+            }
+            Schedule::Interval { seconds } => format!("every {seconds} s"),
+            Schedule::Calendar { at, weekdays } => {
+                let days = if weekdays.is_empty() {
+                    "every day".to_string()
+                } else {
+                    let names: Vec<String> =
+                        weekdays.iter().map(|day| format!("{day:?}")).collect();
+                    format!("on {}", names.join(", "))
+                };
+                format!("{days} at {:02}:{:02}", at.hour, at.minute)
+            }
+        },
+        other => format!("on {}", other.kind()),
+    }
+}
+
+/// The action-door address a chord runs `shortcut_id` in `room` through.
+#[must_use]
+pub fn chord_target(room: &str, shortcut_id: &str) -> ActionChordTarget {
+    ActionChordTarget {
+        provider: workspace_provider(room),
+        resource: shortcut_resource_id(shortcut_id),
+        action: SHORTCUT_RUN_ACTION.into(),
+    }
+}
+
+/// Whether `target` runs a saved shortcut.
+#[must_use]
+pub fn is_shortcut_target(target: &ActionChordTarget) -> bool {
+    target.action == SHORTCUT_RUN_ACTION && shortcut_id_of(&target.resource).is_some()
+}
+
+/// The chords the keyboard triggers of `armed` bind, as the keymap lists
+/// them.
+#[must_use]
+pub fn trigger_chords(armed: &[Armed<'_>]) -> Vec<ActionChord> {
+    armed
+        .iter()
+        .flat_map(|armed| {
+            armed.shortcut.triggers.iter().filter_map(move |trigger| {
+                let TriggerSpec::Keyboard { chord } = trigger else {
+                    return None;
+                };
+                Some(ActionChord {
+                    chord: KeyChord::parse(chord).ok()?,
+                    target: chord_target(&armed.room, &armed.shortcut.id),
+                    label: format!("Run {}", armed.shortcut.name),
+                })
+            })
+        })
+        .collect()
+}
+
+/// Replace the shortcut chords in `keymap` with `chords`, keeping every
+/// other binding. A chord that has meanwhile become taken (the person bound
+/// it to a desktop action on this device) is left out rather than taking
+/// it back. Whether anything changed.
+pub fn replace_trigger_chords(keymap: &mut ShortcutConfig, chords: Vec<ActionChord>) -> bool {
+    let before = keymap.actions.clone();
+    keymap
+        .actions
+        .retain(|bound| !is_shortcut_target(&bound.target));
+    for bound in chords {
+        let _ = keymap.set_action(bound.chord, bound.target, bound.label);
+    }
+    keymap.actions != before
+}
+
+/// Why `shortcut`'s triggers cannot be saved in `room` beside `others`,
+/// the workspace's saved shortcuts, with `keymap` the chords already taken
+/// on this device.
+///
+/// # Errors
+///
+/// The first problem, for the person saving it.
+pub fn check_triggers(
+    shortcut: &Shortcut,
+    others: &[Shortcut],
+    room: &str,
+    keymap: &ShortcutConfig,
+) -> Result<(), String> {
+    if shortcut.triggers.is_empty() {
+        return Ok(());
+    }
+    if shortcut.inputs.iter().any(|input| input.required) {
+        return Err(
+            "a shortcut with triggers cannot require inputs: nobody is there to give them".into(),
+        );
+    }
+    let target = chord_target(room, &shortcut.id);
+    let mut keyboard = None;
+    for trigger in &shortcut.triggers {
+        validate_trigger(trigger)?;
+        let TriggerSpec::Keyboard { chord: text } = trigger else {
+            continue;
+        };
+        let chord = KeyChord::parse(text).map_err(|reason| format!("`{text}`: {reason}"))?;
+        if keyboard.replace(chord.clone()).is_some() {
+            return Err("a shortcut takes at most one keyboard trigger".into());
+        }
+        keymap
+            .check_action_chord(&chord, Some(&target))
+            .map_err(|error| format!("{} cannot run the shortcut: {error}", chord.display()))?;
+        if let Some(other) = others.iter().find(|other| {
+            other.id != shortcut.id
+                && other.triggers.iter().any(|trigger| {
+                    matches!(trigger, TriggerSpec::Keyboard { chord: bound }
+                        if KeyChord::parse(bound).as_ref() == Ok(&chord))
+                })
+        }) {
+            return Err(format!(
+                "{} already runs the shortcut “{}”",
+                chord.display(),
+                other.name
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The shortcut id `address` runs, when it is a shortcut's `run`.
@@ -248,8 +409,19 @@ pub fn decode_library(action: &str, argument: Option<&str>) -> Result<LibraryOpe
     })
 }
 
-/// Apply `operation` to workspace `workspace_id`, checking a saved shortcut
-/// against `catalog` — what the saving person is offered now — first.
+/// Who is saving a shortcut, and what it is checked against.
+pub struct SaveContext<'a> {
+    /// What the saving person is offered now.
+    pub catalog: &'a ActionCatalog,
+    /// The saving person's policy id; recorded as the shortcut's saver.
+    pub saver: &'a str,
+    /// The chords already taken on this device.
+    pub keymap: &'a ShortcutConfig,
+}
+
+/// Apply `operation` to workspace `workspace_id`. A saved shortcut is first
+/// checked against what the saving person is offered now, and its triggers
+/// against the chords already taken; it is stored as saved by them.
 ///
 /// # Errors
 ///
@@ -259,14 +431,14 @@ pub fn apply_library(
     tree: &mut WorkspaceTree,
     workspace_id: WorkspaceId,
     operation: LibraryOperation,
-    catalog: &ActionCatalog,
+    context: &SaveContext<'_>,
 ) -> Result<ActionOutput, String> {
-    let saved = tree
+    let (saved, room) = tree
         .desktop
         .workspaces
         .iter()
         .find(|workspace| workspace.id == workspace_id)
-        .map(|workspace| workspace.shortcuts.clone())
+        .map(|workspace| (workspace.shortcuts.clone(), workspace.room.to_string()))
         .ok_or("the workspace is no longer hosted here")?;
     let (shortcut, replacing) = match operation {
         LibraryOperation::List => {
@@ -284,6 +456,8 @@ pub fn apply_library(
         LibraryOperation::Create(shortcut) => (shortcut, false),
         LibraryOperation::Update(shortcut) => (shortcut, true),
     };
+    let mut shortcut = shortcut;
+    shortcut.saved_by = Some(context.saver.to_string());
     let exists = saved.iter().any(|other| other.id == shortcut.id);
     if exists && !replacing {
         return Err(format!(
@@ -294,11 +468,9 @@ pub fn apply_library(
     if !exists && replacing {
         return Err(format!("there is no shortcut `{}`", shortcut.id));
     }
-    if !shortcut.triggers.is_empty() {
-        return Err("shortcut triggers are not supported yet; save it without triggers".into());
-    }
+    check_triggers(&shortcut, &saved, &room, context.keymap)?;
     let resolver = |id: &str| saved.iter().find(|other| other.id == id).cloned();
-    tilo_automation::check(&shortcut, catalog, &resolver).map_err(|errors| {
+    tilo_automation::check(&shortcut, context.catalog, &resolver).map_err(|errors| {
         errors
             .iter()
             .map(ToString::to_string)
@@ -341,6 +513,16 @@ pub fn run_mode(confirmation: Option<&Confirmation>) -> RunMode {
     } else {
         RunMode::Unattended
     }
+}
+
+/// How one run starts.
+#[derive(Clone, Debug)]
+pub struct RunStart {
+    pub run: RunId,
+    pub trigger: RunTrigger,
+    pub mode: RunMode,
+    /// Values for the shortcut's inputs.
+    pub inputs: Map<String, Value>,
 }
 
 /// [`RunHooks`] for a run started through the door.
