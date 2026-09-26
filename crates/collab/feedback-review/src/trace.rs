@@ -99,9 +99,9 @@ pub struct ReviewBatch {
 pub struct TraceReview {
     pub steps: Vec<TraceStep>,
     pub batches: Vec<ReviewBatch>,
-    /// Timeline indices of inspect keyframes that could not be read. Nothing
-    /// in them was reviewed, so a redacted duplicate must leave them out.
-    pub unreadable_keyframes: Vec<usize>,
+    /// Timeline indices of inspect keyframes the app refused to answer. They
+    /// hold no reviewed text, so a redacted duplicate must leave them out.
+    pub refused_keyframes: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -182,7 +182,7 @@ struct Builder<'a> {
     announced: BTreeMap<Route, BTreeSet<String>>,
     /// The focused node's field name, per route, from its latest keyframe.
     focused: BTreeMap<Route, String>,
-    unreadable: Vec<usize>,
+    refused: Vec<usize>,
 }
 
 impl Builder<'_> {
@@ -259,7 +259,7 @@ impl Builder<'_> {
 
     fn keyframe(&mut self, at: Offset, index: usize, route: &Route, reply: &InspectReply) {
         if reply.refused.is_some() {
-            self.unreadable.push(index);
+            self.refused.push(index);
             return;
         }
         if self.drafts.is_empty() {
@@ -434,7 +434,7 @@ pub fn review_input(trace: &SessionTrace, app_name: &dyn Fn(&str) -> String) -> 
         invocations: HashMap::new(),
         announced: BTreeMap::new(),
         focused: BTreeMap::new(),
-        unreadable: Vec::new(),
+        refused: Vec::new(),
     };
     for (index, entry) in trace.timeline.iter().enumerate() {
         match &entry.event {
@@ -520,7 +520,7 @@ pub fn review_input(trace: &SessionTrace, app_name: &dyn Fn(&str) -> String) -> 
     TraceReview {
         steps,
         batches: batching.batches,
-        unreadable_keyframes: builder.unreadable,
+        refused_keyframes: builder.refused,
     }
 }
 
@@ -928,6 +928,6 @@ mod tests {
                 reply: InspectReply::refused("the app could not answer"),
             }),
         });
-        assert_eq!(review_input(&recorded, &app_name).unreadable_keyframes, [5]);
+        assert_eq!(review_input(&recorded, &app_name).refused_keyframes, [5]);
     }
 }
