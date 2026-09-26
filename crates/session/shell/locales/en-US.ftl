@@ -67,3 +67,11 @@ wireless-protocols = Miracast · Google Cast · AirPlay · FCast
 # Identify displays: the card painted on each display
 display-identify-builtin = Built-in display
 display-identify-unnamed = Display { $number }
+
+# The Alt+Tab window switcher.
+window-switcher-title = Switch windows
+window-switcher-description = Windows in this workspace, most recently used first. Hold Alt and press Tab or the arrow keys to move, release Alt to switch, or press Escape to stay.
+window-switcher-app-title = Switch windows of this app
+window-switcher-app-description = This app's windows in this workspace, most recently used first. Hold Alt and press ` to move, release Alt to switch, or press Escape to stay.
+window-switcher-untitled = Untitled window
+window-switcher-caption-paged = { $title } ({ $position } of { $count })

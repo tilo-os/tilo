@@ -1485,7 +1485,13 @@ fn route_keyboard_input(
         return false;
     }
     // Runs for shell-owned keys too: the seat's xkb state has to track every key, or its modifier view drifts (see `deliver_client_key`).
-    state.deliver_client_key(code, pressed, forward)
+    let delivered = state.deliver_client_key(code, pressed, forward);
+    // A held chord ends on its modifier's release: Alt+Tab commits when Alt
+    // comes up. The client that saw the press still gets its release, and
+    // the shell sees it too, whoever holds keyboard focus.
+    let ends_held_chord =
+        !pressed && is_modifier_key(&key.logical_key) && fb.host().window_switcher_active();
+    delivered && !ends_held_chord
 }
 
 /// Promote a file drag from the hosted file manager into a Wayland drag.

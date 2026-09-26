@@ -264,6 +264,9 @@ enum ShortcutGuideFocus {
 /// semantic path onto the wrong target.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AccessibleOverlay {
+    /// The Alt+Tab switcher, while Alt is held and it is on screen. First:
+    /// it is above everything and owns the keyboard until Alt comes up.
+    WindowSwitcher,
     /// The tab right-click menu. Published first while open: it is the
     /// topmost transient and its rows are what a reader should land on.
     TabContextMenu,
@@ -846,6 +849,9 @@ pub struct ShellOverlayHost {
     display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Keep or revert a display change a layout tool made, on every display.
     display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt,
+    /// Alt+Tab: which windows were used most recently, and the switcher
+    /// while Alt is held.
+    window_switcher: crate::shell::window_switcher::WindowSwitcher,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -1957,6 +1963,9 @@ impl ShellOverlayHost {
         if self.display_confirm.visible() {
             order.push(AccessibleOverlay::DisplayConfirmation);
         }
+        if self.window_switcher.is_revealed(Instant::now()) {
+            order.push(AccessibleOverlay::WindowSwitcher);
+        }
         // The display sheet is modal and drawn above every other overlay.
         if flags.projection {
             order.push(AccessibleOverlay::DisplayLayouts);
@@ -2395,6 +2404,7 @@ impl ShellOverlayHost {
             projection_overlay: inputs.projection_overlay,
             display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             display_confirm: crate::shell::display_confirm::DisplayConfirmPrompt::default(),
+            window_switcher: crate::shell::window_switcher::WindowSwitcher::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -6055,25 +6065,166 @@ impl ShellOverlayHost {
         self.focus_window_on_strip(strip, group, tab)
     }
 
-    /// Alt+Tab-style traversal of the active strip. Unlike spatial
-    /// Super+Arrow movement, a conventional switcher is a ring: continuing
-    /// past either end returns to the opposite end.
-    pub fn cycle_focus_along_strip(&mut self, direction: i32) -> bool {
-        if direction == 0 {
-            return false;
+    /// The Alt+Tab switcher, for input routing, state readers and tests.
+    pub fn window_switcher(&self) -> &crate::shell::window_switcher::WindowSwitcher {
+        &self.window_switcher
+    }
+
+    pub fn window_switcher_mut(&mut self) -> &mut crate::shell::window_switcher::WindowSwitcher {
+        &mut self.window_switcher
+    }
+
+    /// Alt is held after Alt+Tab: the shell owns the keyboard and pointer
+    /// until the switcher commits or cancels.
+    pub fn window_switcher_active(&self) -> bool {
+        self.window_switcher.is_active()
+    }
+
+    /// Record the focused window as the most recently used one.
+    fn observe_window_focus(&mut self) {
+        if let Some(chrome) = self.chrome.as_ref()
+            && let Ok(state) = chrome.try_borrow()
+        {
+            self.window_switcher.observe(&state.tree());
         }
+    }
+
+    /// Alt+Tab or Alt+Grave: open the switcher on its first step.
+    fn begin_window_switcher(
+        &mut self,
+        scope: crate::shell::window_switcher::SwitcherScope,
+        backwards: bool,
+    ) -> bool {
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        let target = {
-            let st = chrome.borrow();
-            let tree = st.tree();
-            crate::shell::input_policy::cycle_active_window(&tree, direction)
+        self.window_switcher.set_host_rect(self.rect);
+        let began = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            self.window_switcher
+                .begin(&tree, scope, backwards, Instant::now())
         };
-        let Some((strip, group, tab)) = target else {
+        if began {
+            chrome.borrow_mut().bump();
+        }
+        began
+    }
+
+    /// The modifier state changed with no key event to carry it (the
+    /// control socket's modifier command, a backend's `ModifiersChanged`).
+    /// A switcher held open by Alt commits once Alt is up.
+    pub fn note_modifiers(&mut self, modifiers: winit::keyboard::ModifiersState) -> bool {
+        let outcome = self.window_switcher.modifiers_changed(modifiers);
+        self.apply_window_switcher_outcome(outcome)
+    }
+
+    /// Input while the switcher is open. Keys all belong to it; the pointer
+    /// does once the panel is on screen.
+    fn route_window_switcher_event(
+        &mut self,
+        event: &WindowEvent,
+        modifiers: winit::event::Modifiers,
+        handled: &mut bool,
+    ) -> bool {
+        use crate::shell::window_switcher::SwitcherOutcome;
+        if !self.window_switcher.is_active() {
+            return false;
+        }
+        let now = Instant::now();
+        let outcome = match event {
+            WindowEvent::KeyboardInput { event: key, .. } => {
+                self.window_switcher
+                    .key(&key.logical_key, key.state, modifiers.state())
+            }
+            WindowEvent::ModifiersChanged(changed) => {
+                let outcome = self.window_switcher.modifiers_changed(changed.state());
+                self.apply_window_switcher_outcome(outcome);
+                return false;
+            }
+            WindowEvent::CursorMoved { .. } => {
+                self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                    self.window_switcher.pointer_moved(point, now)
+                })
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => self.last_cursor.map_or(SwitcherOutcome::Ignored, |point| {
+                self.window_switcher.pointer_pressed(point, now)
+            }),
+            WindowEvent::MouseInput { .. }
+            | WindowEvent::MouseWheel { .. }
+            | WindowEvent::Touch(_)
+                if self.window_switcher.is_revealed(now) =>
+            {
+                SwitcherOutcome::Consumed
+            }
+            _ => SwitcherOutcome::Ignored,
+        };
+        let taken = self.apply_window_switcher_outcome(outcome);
+        if taken {
+            *handled = true;
+        }
+        taken
+    }
+
+    fn apply_window_switcher_outcome(
+        &mut self,
+        outcome: crate::shell::window_switcher::SwitcherOutcome,
+    ) -> bool {
+        use crate::shell::window_switcher::SwitcherOutcome;
+        match outcome {
+            SwitcherOutcome::Ignored => false,
+            SwitcherOutcome::Consumed | SwitcherOutcome::Cancelled => {
+                if let Some(chrome) = self.chrome.as_ref() {
+                    chrome.borrow_mut().bump();
+                }
+                true
+            }
+            SwitcherOutcome::Commit(address) => {
+                let _ = self.focus_switcher_window(address);
+                true
+            }
+        }
+    }
+
+    /// Focus a window the switcher chose, on whichever strip of the active
+    /// workspace it lives. A window closed while Alt was held is skipped.
+    fn focus_switcher_window(
+        &mut self,
+        address: crate::shell::window_switcher::WindowAddress,
+    ) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
             return false;
         };
-        self.focus_window_on_strip(strip, group, tab)
+        let workspace = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let live = tree
+                .desktop
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().find(|strip| strip.id == address.strip))
+                .and_then(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .find(|group| group.id == address.group)
+                })
+                .is_some_and(|group| group.tabs.iter().any(|tab| tab.id == address.tab));
+            live.then_some(tree.desktop.active)
+        };
+        let Some(workspace) = workspace else {
+            chrome.borrow_mut().bump();
+            return false;
+        };
+        let _ = self.focus_window_widget(address.strip, address.group, address.tab);
+        chrome
+            .borrow_mut()
+            .focus_tab(workspace, address.strip, address.group, address.tab);
+        self.observe_window_focus();
+        true
     }
 
     /// Cycle tabs inside the focused window group. Unlike strip focus, this
@@ -6378,6 +6529,7 @@ impl ShellOverlayHost {
         if changed {
             chrome.borrow_mut().bump();
         }
+        self.observe_window_focus();
         changed
     }
 
@@ -11286,8 +11438,27 @@ impl ShellOverlayHost {
         // This also keeps first-run discoverability consistent with other
         // Linux desktops.
         if mstate.alt_key() && matches!(logical_key, Key::Named(NamedKey::Tab)) {
-            let direction = if shift_down { -1 } else { 1 };
-            let _ = self.cycle_focus_along_strip(direction);
+            if !repeat {
+                let _ = self.begin_window_switcher(
+                    crate::shell::window_switcher::SwitcherScope::Workspace,
+                    shift_down,
+                );
+            }
+            *handled = true;
+            return true;
+        }
+        // Alt+` walks the focused app's windows, with the key above Tab.
+        if mstate.alt_key()
+            && !mstate.control_key()
+            && !super_down
+            && matches!(logical_key, Key::Character(text) if matches!(text.as_str(), "`" | "~"))
+        {
+            if !repeat {
+                let _ = self.begin_window_switcher(
+                    crate::shell::window_switcher::SwitcherScope::FocusedApp,
+                    shift_down,
+                );
+            }
             *handled = true;
             return true;
         }
@@ -16358,6 +16529,7 @@ impl Widget for ShellOverlayHost {
         // below the onboarding return, making a real DRM pointer visibly move
         // while every onboarding click was evaluated without a position.
         self.track_cursor_position(event, scale_factor);
+        self.observe_window_focus();
         // Print Screen has an explicit arbitration policy. It must run before
         // OOBE, portal and consent gates so Capture Studio can temporarily
         // own input above those preserved workflows instead of being consumed
@@ -16598,6 +16770,10 @@ impl Widget for ShellOverlayHost {
             return;
         }
 
+        if self.route_window_switcher_event(event, *modifiers, handled) {
+            return;
+        }
+
         // A drag that began inside an app keeps pointer ownership until its
         // release, even after the surface has crossed outside the app/window.
         // Route this before shell overlays so the boundary frame cannot steal
@@ -16829,6 +17005,11 @@ impl Widget for ShellOverlayHost {
         let mut root = AccessNode::new(Role::Group).with_name("Tilo workspace");
         for overlay in self.accessible_overlay_order() {
             match overlay {
+                AccessibleOverlay::WindowSwitcher => {
+                    if let Some(switcher) = self.window_switcher.accessibility() {
+                        root.children.push(switcher);
+                    }
+                }
                 AccessibleOverlay::TabContextMenu => {
                     root.children.push(self.tab_context_menu_accessibility());
                 }
@@ -17708,6 +17889,11 @@ impl Widget for ShellOverlayHost {
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<Rect> {
         let (&overlay_index, child_path) = path.split_first()?;
         match self.accessible_overlay_order().get(overlay_index)? {
+            AccessibleOverlay::WindowSwitcher => match child_path {
+                [] | [0] => Some(self.window_switcher.panel_rect()),
+                [0, index] => self.window_switcher.card_rect(*index),
+                _ => None,
+            },
             AccessibleOverlay::TabContextMenu => match child_path {
                 [] => Some(self.tab_menu.menu.get_rect()),
                 [ordinal] => self.tab_menu_action_rect(*ordinal),
@@ -17848,6 +18034,16 @@ impl Widget for ShellOverlayHost {
             return false;
         };
         match overlay {
+            AccessibleOverlay::WindowSwitcher => match child_path {
+                [0, index] => {
+                    let focused = self.window_switcher.focus_index(*index);
+                    if focused && let Some(chrome) = self.chrome.as_ref() {
+                        chrome.borrow_mut().bump();
+                    }
+                    focused
+                }
+                _ => false,
+            },
             AccessibleOverlay::TabContextMenu => match child_path {
                 [ordinal] => self
                     .tab_menu
@@ -18089,6 +18285,7 @@ impl ShellOverlayHost {
             || markup_frame
             || notification_frame
             || osd_frame
+            || self.window_switcher.needs_frame(now)
     }
 }
 
@@ -20105,6 +20302,25 @@ impl ShellOverlayHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.draw_top_overlays_below_switcher(scene, transform, text_renderer, theme, presence);
+        self.window_switcher.draw(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            self.rect,
+            Instant::now(),
+        );
+    }
+
+    fn draw_top_overlays_below_switcher(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
         self.palette_was_visible = self.palette_visible;
         self.palette_transition.set_open(
             self.palette_visible,
@@ -20651,7 +20867,11 @@ impl ShellOverlayHost {
             &colors_for,
             ground,
         );
-        let text_w = (faces_left - f64::from(tokens.spacing.s3) - x0).max(40.0);
+        let s3 = f64::from(tokens.spacing.s3);
+        let anchor = (faces_left - s3, rect.center().y);
+        let marks_left =
+            Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
+        let text_w = (marks_left - s3 - x0).max(40.0);
 
         let name_size = tokens.typography.scale.lg;
         let name = text_renderer.elide_to_width_weighted(
@@ -20693,6 +20913,41 @@ impl ShellOverlayHost {
             transform.pre_translate((x0, top + f64::from(name_h) + line_gap).into()),
             None,
         );
+    }
+
+    /// Marks of the apps open in a room, ending at `right` and centred on
+    /// `center_y`, so a room is recognisable by what is in it. Returns the
+    /// left edge of what was drawn (`right` when the room is empty).
+    fn draw_overview_app_marks(
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        (right, center_y): (f64, f64),
+        apps: &[&crate::shell::window_switcher::WindowApp],
+    ) -> f64 {
+        /// More than this reads as a pile rather than a list of apps.
+        const MOST: usize = 5;
+        let edge = f64::from(theme.tokens.metrics.icon_md);
+        let gap = f64::from(theme.tokens.spacing.s1);
+        let mut left = right;
+        for app in apps.iter().take(MOST).rev() {
+            let mark = Rect::new(
+                left - edge,
+                center_y - edge / 2.0,
+                left,
+                center_y + edge / 2.0,
+            );
+            ui::widget::draw_app_mark(
+                scene,
+                transform,
+                mark,
+                app.icon.as_ref(),
+                app.kind,
+                theme.tokens.colors.text_dim,
+            );
+            left = mark.x0 - gap;
+        }
+        if left < right { left + gap } else { right }
     }
 
     /// The workspace overview: a switcher for rooms, so it's a floating
@@ -20903,7 +21158,10 @@ impl ShellOverlayHost {
         let chip_h = m.chip_h;
         let chip_w =
             Chip::natural_width_at("You are here", chip_h, ChipLead::None, theme, text_renderer);
-        let name_avail = (faces_left - s4 - content.x0 - chip_w - s3).max(60.0);
+        let anchor = (faces_left - s4, here_rect.y0 + m.name_lh / 2.0);
+        let marks_left =
+            Self::draw_overview_app_marks(scene, transform, theme, anchor, &card.apps());
+        let name_avail = (marks_left - s4 - content.x0 - chip_w - s3).max(60.0);
         let name = text_renderer.elide_to_width_weighted(
             &card.name,
             name_size,

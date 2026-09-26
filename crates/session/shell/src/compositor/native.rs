@@ -2751,6 +2751,11 @@ fn execute_planned_action(
             }
             // Mutate the modifier snapshot directly — the host reads it on the next chord dispatch, no event needed.
             apply_modifier_mask(ctx, mask);
+            // No key event carries this change, so a gesture held open by a
+            // modifier (Alt+Tab) hears the release here.
+            if fb.host_mut().note_modifiers(mask) {
+                fb.host_mut().flush_active_tab_writeback();
+            }
         }
         PlannedAction::Snapshot { path } => {
             // Re-render into a fresh OffscreenRenderer rather than tap a backend-cached
