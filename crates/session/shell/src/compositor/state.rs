@@ -552,9 +552,10 @@ pub struct State {
     /// [`Self::scale`] is one number for the whole session, only right on a
     /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
     pub output_layout: Vec<OutputPlacement>,
-    /// Configurable dimensions keyed by the stable backend output identity.
-    /// This is intentionally separate from `output_layout`, whose tuple is
-    /// consumed by scale/pointer code and predates targeted fullscreen.
+    /// Each output's logical size — its mode over its scale, rotated — keyed
+    /// by the stable backend output identity: what a fullscreen configure
+    /// asks a client for, in the same units as a tiled configure. Separate
+    /// from `output_layout`, which is in scene pixels for scale lookup.
     output_sizes: HashMap<crate::compositor::backend::OutputId, (i32, i32)>,
     output_rects: HashMap<crate::compositor::backend::OutputId, Rect>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
@@ -1167,8 +1168,9 @@ impl State {
         self.output_sizes = outputs
             .iter()
             .filter_map(|output| {
-                let width = i32::try_from(output.size.0).ok()?;
-                let height = i32::try_from(output.size.1).ok()?;
+                let (width, height) = output.logical_size();
+                let width = i32::try_from(width).ok()?;
+                let height = i32::try_from(height).ok()?;
                 (width > 0 && height > 0).then_some((output.id, (width, height)))
             })
             .collect();
@@ -4656,6 +4658,7 @@ mod tick_hook_tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: position,
         }
     }
 
@@ -4875,6 +4878,17 @@ mod tick_hook_tests {
             Some(crate::compositor::backend::OutputId(10)),
             "unplugging the target must rehome rather than retaining a dead output id"
         );
+        assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
+    }
+
+    #[test]
+    fn a_fullscreen_configure_is_logical_like_a_tiled_one() {
+        // A tile's configure is its pixels over its scale; a fullscreen one
+        // asking a 2x client for all 3840 pixels would make it render a
+        // buffer twice the output's size.
+        let mut state = make_state();
+        state.set_output_layout(&[out(0, (0, 0), (3840, 2160), 2.0)]);
+        state.fullscreen_output = Some(crate::compositor::backend::OutputId(0));
         assert_eq!(state.fullscreen_output_size(), Some((1920, 1080)));
     }
 

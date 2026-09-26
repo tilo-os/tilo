@@ -20,6 +20,41 @@ pub enum OutputTransform {
     Rotate270,
 }
 
+/// An output's extent in the logical desktop layout: its `mode` divided by
+/// its UI `scale`, then rotated. [`OutputConfig::x`]/[`OutputConfig::y`] are
+/// in these units, so outputs placed edge to edge use this extent — not the
+/// mode — or a 2x panel leaves a gap as wide as itself beside it.
+///
+/// Rounded the way `zxdg_output_v1.logical_size` is (nearest pixel per
+/// axis), so the stored layout and what clients are told agree exactly. A
+/// non-positive or non-finite scale counts as 1.
+pub fn logical_extent(mode: (u32, u32), scale: f64, transform: OutputTransform) -> (u32, u32) {
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale
+    } else {
+        1.0
+    };
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "rounded and clamped to [0, u32::MAX] first"
+    )]
+    let axis = |px: u32| {
+        (f64::from(px) / scale)
+            .round()
+            .clamp(0.0, f64::from(u32::MAX)) as u32
+    };
+    let (w, h) = (axis(mode.0), axis(mode.1));
+    if matches!(
+        transform,
+        OutputTransform::Rotate90 | OutputTransform::Rotate270
+    ) {
+        (h, w)
+    } else {
+        (w, h)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputMode {
     pub width: u32,
@@ -1011,6 +1046,32 @@ mod quick_settings_tests {
         assert_eq!(
             crate::load_at(&path)["appearance"]["theme"],
             serde_json::json!("dark")
+        );
+    }
+}
+
+#[cfg(test)]
+mod logical_extent_tests {
+    use super::{OutputTransform, logical_extent};
+
+    #[test]
+    fn the_logical_extent_is_the_mode_over_the_scale_rotated() {
+        assert_eq!(
+            logical_extent((2560, 1600), 2.0, OutputTransform::Normal),
+            (1280, 800)
+        );
+        assert_eq!(
+            logical_extent((1920, 1200), 1.25, OutputTransform::Rotate90),
+            (960, 1536)
+        );
+        // 2560 / 1.5 = 1706.67: nearest pixel, as zxdg_output_v1 reports.
+        assert_eq!(
+            logical_extent((2560, 1440), 1.5, OutputTransform::Rotate180),
+            (1707, 960)
+        );
+        assert_eq!(
+            logical_extent((1920, 1080), f64::NAN, OutputTransform::Normal),
+            (1920, 1080)
         );
     }
 }
