@@ -896,8 +896,28 @@ impl AudioPane {
         if let Some(hardware) = hardware {
             cards.push(hardware);
         }
-        cards.extend([apps, recording]);
+        cards.extend([apps, recording, Self::speakers_card()]);
         crate::widgets::cards(cards)
+    }
+
+    /// The way into Speakers: several of your devices as one set.
+    fn speakers_card() -> crate::widgets::El {
+        let open = ui::widget::Button::new("sound.speakers", "Set up speakers…", None);
+        let open = match tilo_actions::ActionBinding::unit_for(
+            &crate::actions::pane_navigation_resource(crate::categories::Category::Speakers),
+            crate::actions::OPEN_PANE_ACTION,
+        ) {
+            Ok(binding) => open.on_action(binding),
+            Err(_) => open.with_enabled(false),
+        };
+        crate::widgets::card(
+            "Speakers across your devices",
+            crate::widgets::setting_row_described(
+                "Stereo pair or room speakers",
+                "Play through speakers on several of your devices at once",
+                Box::new(open),
+            ),
+        )
     }
 
     /// The "Output" card: an optional device picker (only when more than one

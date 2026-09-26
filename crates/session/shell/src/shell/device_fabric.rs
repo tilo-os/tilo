@@ -551,6 +551,11 @@ pub enum PersonalFabricAction {
         session_id: [u8; 16],
         authorization: Option<[u8; 16]>,
     },
+    /// Play a short sound on one of the target's own outputs so the person
+    /// setting up speakers can tell which one it is. Rate-limited there.
+    SpeakerIdentify {
+        output: crate::shell::speaker_group::EndpointSelector,
+    },
 }
 
 /// Versioned, ephemeral control and data plane for a certified-device display.
@@ -895,6 +900,11 @@ impl PersonalFabricActionEnvelope {
                     || !output.valid()
                     || !role.valid()
                 {
+                    return Err(FabricError::InvalidAction);
+                }
+            }
+            PersonalFabricAction::SpeakerIdentify { output } => {
+                if !output.valid() {
                     return Err(FabricError::InvalidAction);
                 }
             }

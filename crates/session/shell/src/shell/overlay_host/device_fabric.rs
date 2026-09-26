@@ -256,6 +256,8 @@ pub(super) enum DeviceFabricPaneRow {
     SpeakerSession(crate::shell::speaker_group_runtime::SpeakerSessionView),
     SpeakerGroup(crate::shell::speaker_group_runtime::SpeakerGroupView),
     SpeakerMembership(crate::shell::speaker_group_runtime::SpeakerMembershipView),
+    /// Opens Settings → Speakers to make a new set.
+    SpeakerSetup,
     RemoteCaptureConsent(crate::shell::remote_capture::runtime::RemoteCaptureConsentView),
     RemoteCaptureSource(crate::shell::remote_capture::device::RemoteCaptureKind),
     RemoteCaptureSession(crate::shell::remote_capture::runtime::RemoteCaptureSessionView),
@@ -460,6 +462,15 @@ pub(super) fn device_fabric_pane_rows(
                 .iter()
                 .cloned()
                 .map(DeviceFabricPaneRow::SpeakerMembership),
+        )
+        .chain(
+            (view
+                .devices
+                .iter()
+                .filter(|device| device.online && device.audio_output)
+                .count()
+                >= 2)
+                .then_some(DeviceFabricPaneRow::SpeakerSetup),
         )
         .chain(
             view.devices
