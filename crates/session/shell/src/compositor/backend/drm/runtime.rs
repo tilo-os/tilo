@@ -1177,8 +1177,16 @@ impl DrmDispatchState {
                 .map(|(entry, &size)| (entry.position, size)),
         );
 
-        self.output_meta = self
-            .live
+        self.output_meta = self.output_meta_for(&config);
+        self.rebuild_cursor_routing();
+    }
+
+    /// The public output table for the current live set and `config`.
+    fn output_meta_for(
+        &self,
+        config: &settings_store::hardware::DisplayConfig,
+    ) -> HashMap<OutputId, Output> {
+        self.live
             .iter()
             .map(|l| {
                 (
@@ -1203,12 +1211,11 @@ impl DrmDispatchState {
                             .and_then(|output| output.color_profile.as_ref())
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
+                        refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
                     },
                 )
             })
-            .collect();
-
-        self.rebuild_cursor_routing();
+            .collect()
     }
 
     /// Point every cursor plane at its output's rectangle in the *new* layout — a stale rect routes the pointer onto the wrong monitor.
