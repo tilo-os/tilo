@@ -90,9 +90,10 @@ async fn clock_fixture() -> (
     let mut f = snapshot_fixture().await;
     let (clock, control) =
         OwnerPolicyClock::for_test(tilo_delivery_protocol::clock::now_ns() + 1_000_000_000);
+    // A real host restart: retire the running owner, then reopen from disk.
+    f.source.retire();
     let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
-    f.source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    f.source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let origin = f.session.binding().origin.clone();
     f.session = match f
         .source
@@ -135,9 +136,10 @@ async fn cloud_snapshot_renew_recovery_selects_live_committed_pending_over_expir
     // Crash window: the new actual owner pin committed, canonical rename did not.
     drop(committed);
     control.advance_monotonic(Duration::from_secs(240));
+    // A real host restart: retire the running owner, then reopen from disk.
+    f.source.retire();
     let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
-    f.source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    f.source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let origin = f.session.binding().origin.clone();
     f.session = match f
         .source
@@ -203,9 +205,10 @@ fn admit_large_original(f: &crate::https_owner::data::tests::Fixture) {
             crate::now_time(now),
         )
         .unwrap();
+    let host_key = store.key().verifying_key().to_bytes();
     store
         .receive(
-            qos_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+            qos_peer_state::TransportOrigin::RelayDelta(host_key),
             message,
             now,
         )
@@ -336,8 +339,7 @@ async fn cloud_snapshot_renew_uncertain_barrier_keeps_old_anchor_until_actual_re
         );
         assert!(matches!(f.source.with_current(|_| ()), Current::Denied));
         let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
-        f.source = CloudStoreSource::bind(&store).unwrap();
-        drop(store);
+        f.source = CloudStoreSource::bind(store).unwrap();
         let origin = f.session.binding().origin.clone();
         f.session = match f
             .source

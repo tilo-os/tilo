@@ -32,7 +32,8 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
                 )
                 .unwrap();
         }
-        let source = crate::https_owner::CloudStoreSource::bind(&store).unwrap();
+        let source = crate::https_owner::CloudStoreSource::bind(store).unwrap();
+        let mut store = crate::Store::open(dir.path(), "agent-admission").unwrap();
         let before = store.state.delivery.as_ref().unwrap().clone();
         let generation = store.state.generation;
         let root = SigningKey::from_bytes(&[7; 32]);
@@ -69,11 +70,13 @@ fn delivery_security_host_revocation_survives_without_revoked_signature_or_repla
         );
         let saved = std::fs::read(dir.path().join("state.json")).unwrap();
         drop(store);
-        assert!(Store::open(dir.path(), "agent-admission").is_err());
         assert!(matches!(
             source.with_current(|_| ()),
             crate::https_owner::Current::Denied
         ));
+        // With the owner retired, a fresh open validates the persisted host.
+        drop(source);
+        assert!(Store::open(dir.path(), "agent-admission").is_err());
         assert!(std::fs::read(dir.path().join("state.json")).unwrap() == saved);
     }
 }

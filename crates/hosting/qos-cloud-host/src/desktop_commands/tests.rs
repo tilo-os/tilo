@@ -40,7 +40,7 @@ fn notes_records(store: &Store) -> Vec<String> {
 }
 
 type Owner = std::sync::Arc<crate::agent_runtime_adapter::RuntimeOwner>;
-fn owner_store() -> (tempfile::TempDir, Owner, Store, DeviceCert) {
+fn owner_store() -> (tempfile::TempDir, Owner, crate::StoreGuard, DeviceCert) {
     let (directory, owner) = crate::agent_workers::tests::selected();
     let store = owner.store().unwrap();
     let caller = store
@@ -734,9 +734,8 @@ async fn fifty_open_close_cycles_keep_the_catalogue_bounded() {
 #[test]
 fn with_delivery_selected_opens_are_admitted_by_members() {
     let (_directory, _owner, mut store, caller) = owner_store();
-    store
-        .activate_delivery_storage(store.policy_now_ns().unwrap())
-        .unwrap();
+    let policy_now = store.policy_now_ns().unwrap();
+    store.activate_delivery_storage(policy_now).unwrap();
     let now = store.policy_now_ns().unwrap();
     let host = store.peer().unwrap();
     let authority = host.authority().clone();

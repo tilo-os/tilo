@@ -47,12 +47,13 @@ fn cursor(f: &Fixture, cut: CommitRef) -> CursorToken {
 }
 pub(super) fn edit(f: &Fixture, id: &str) {
     let mut store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
+    let room = store.state.room.clone();
     store
         .action(
             f.device,
             &crate::ActionRequest {
                 version: 1,
-                room: store.state.room.clone(),
+                room,
                 invocation_id: id.into(),
                 operation: crate::NativeOperation::WriterInsert {
                     text: "actual snapshot suffix".into(),
@@ -158,8 +159,7 @@ async fn cloud_snapshot_private_selection_cannot_cross_equal_rebound_source() {
     register(&f);
     let selected = baseline(&f);
     let store = crate::Store::open(f.root.path(), "agent-admission").unwrap();
-    let rebound = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let rebound = CloudStoreSource::bind(store).unwrap();
     match rebound.with_delivery_turn_unqualified_test(
         &f.pool,
         DeliveryOperation::SnapshotSelect,

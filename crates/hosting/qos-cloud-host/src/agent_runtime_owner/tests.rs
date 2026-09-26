@@ -5,7 +5,7 @@ pub(super) fn enrolled() -> (tempfile::TempDir, Store, [u8; 32]) {
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
-    let mut store = Store::open(dir.path(), "private-runtime").unwrap();
+    let mut store = Store::open_from_disk(dir.path(), "private-runtime").unwrap();
     let request = crate::tests::approved(store.inspect(10).unwrap(), &root, &device);
     store.apply(&request, 11).unwrap();
     (dir, store, device.verifying_key().to_bytes())

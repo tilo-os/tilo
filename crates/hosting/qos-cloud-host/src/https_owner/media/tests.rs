@@ -10,8 +10,7 @@ fn cloud_media_source_uses_one_actual_store_turn_and_only_real_contention_is_bus
     store
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
-    let source = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind(store).unwrap();
     let before = source.0.turns.load(Ordering::Relaxed);
     let Observed::Current((workspace, continuity)) = HostOwner::with_current(&source, |turn| {
         assert!(matches!(
@@ -35,7 +34,7 @@ fn cloud_media_source_uses_one_actual_store_turn_and_only_real_contention_is_bus
     assert!(
         matches!(HostOwner::with_current(&source,|turn|turn.continuity()),Observed::Current(current) if current==continuity)
     );
-    std::fs::write(dir.path().join("state.json"), b"{broken").unwrap();
+    source.retire();
     assert!(matches!(
         HostOwner::with_current(&source, |_| ()),
         Observed::Denied

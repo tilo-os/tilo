@@ -1,4 +1,4 @@
-//! Real loopback: the actual `serve-https` startup over an enrolled Cloud
+//! Real loopback: the actual HTTPS delivery startup over an enrolled Cloud
 //! Store, a Rust client speaking the frozen delivery-v3 wire over TLS, and an
 //! owner reopen after clean shutdown.
 use crate::delivery::admission::tests::{browser_delta, document_text};
@@ -1099,7 +1099,7 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
     server.await.unwrap().unwrap();
 }
 
-/// Production composition: `serve-https` with the actual Cloud agent runtime
+/// Production composition: HTTPS delivery with the actual Cloud agent runtime
 /// (not the broker-only test owner) over a Store with the V5 exact writer
 /// selected, so the real certified workers mount and publish their startup
 /// documents through the final scoped document evaluator. The runtime must
@@ -1147,7 +1147,7 @@ async fn cloud_https_serve_with_actual_agent_runtime_stays_ready() {
         tokio::time::sleep(Duration::from_millis(100)).await;
         assert!(
             !server.is_finished(),
-            "serve-https exited after Ready: {:?}",
+            "HTTPS delivery exited after Ready: {:?}",
             server.await
         );
         assert!(ready.exists(), "Ready record withdrawn while serving");
@@ -2009,12 +2009,13 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
         );
         state.bound.as_mut().unwrap().peer = peer.durable().unwrap();
         store.commit(state).unwrap();
+        let room = store.state.room.clone();
         let receipt = store
             .action(
                 device.verifying_key().to_bytes(),
                 &crate::ActionRequest {
                     version: 1,
-                    room: store.state.room.clone(),
+                    room,
                     invocation_id: "loopback-media-create".into(),
                     operation: crate::NativeOperation::MediaCreate(
                         qos_action_broker::collaboration_admin::MediaCreateInput {
@@ -2568,8 +2569,7 @@ async fn cloud_busy_store_turn_returns_quickly_and_is_deferrable() {
     store
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
-    let source = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind(store).unwrap();
     let held = crate::delivery::access::open(dir.path(), "agent-admission").unwrap();
     let started = std::time::Instant::now();
     let mut ran = false;

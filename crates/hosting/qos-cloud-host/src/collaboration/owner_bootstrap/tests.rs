@@ -5,7 +5,7 @@ use qos_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry
 
 struct Fixture {
     dir: tempfile::TempDir,
-    store: Store,
+    store: crate::StoreGuard,
     root: SigningKey,
     first: SigningKey,
     device: SigningKey,
@@ -42,13 +42,14 @@ impl Fixture {
         }
     }
     fn request(&mut self, id: u8) -> MembershipCompleteRequest {
+        let room = self.store.state.room.clone();
         let challenge = self
             .store
             .membership_challenge(
                 self.cert.device_public_key,
                 MembershipChallengeRequest {
-                    room: self.store.state.room.clone(),
-                    workspace_id: qos_relay::room_workspace_id(&self.store.state.room).unwrap(),
+                    room: room.clone(),
+                    workspace_id: qos_relay::room_workspace_id(&room).unwrap(),
                     device_cert: self.cert.clone(),
                     request_id: [id; 32],
                 },
@@ -312,12 +313,13 @@ fn cloud_owner_bootstrap_collaborator_refresh_roles_and_cached_results_stay_sepa
     .into_iter()
     .enumerate()
     {
+        let room = f.store.state.room.clone();
         f.store
             .action(
                 f.first.verifying_key().to_bytes(),
                 &crate::ActionRequest {
                     version: 1,
-                    room: f.store.state.room.clone(),
+                    room,
                     invocation_id: format!("owner-test-role-{i}"),
                     operation: crate::NativeOperation::CollaborationSetRole {
                         user_public_key: cert.user_public_key,
@@ -327,13 +329,14 @@ fn cloud_owner_bootstrap_collaborator_refresh_roles_and_cached_results_stay_sepa
                 50 + i as u64,
             )
             .unwrap();
+        let room = f.store.state.room.clone();
         let challenge = f
             .store
             .membership_challenge(
                 cert.device_public_key,
                 MembershipChallengeRequest {
-                    room: f.store.state.room.clone(),
-                    workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                    room: room.clone(),
+                    workspace_id: qos_relay::room_workspace_id(&room).unwrap(),
                     device_cert: cert.clone(),
                     request_id: [60 + i as u8; 32],
                 },
@@ -626,12 +629,13 @@ fn cloud_owner_bootstrap_membership_challenges_are_swept_and_bounded() {
     assert!(!super::super::issued_challenges(f.dir.path()).contains_key(&hex::encode([140; 32])));
     // Expired challenges are swept on the next issuance.
     let later = 30 + MEMBERSHIP_CHALLENGE_LIFETIME_NS;
+    let room = f.store.state.room.clone();
     f.store
         .membership_challenge(
             f.cert.device_public_key,
             MembershipChallengeRequest {
-                room: f.store.state.room.clone(),
-                workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                room: room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&room).unwrap(),
                 device_cert: f.cert.clone(),
                 request_id: [150; 32],
             },
@@ -640,13 +644,14 @@ fn cloud_owner_bootstrap_membership_challenges_are_swept_and_bounded() {
         .unwrap();
     assert_eq!(super::super::issued_challenges(f.dir.path()).len(), 1);
     // An expired challenge under a reused request ID is reissued, not replayed.
+    let room = f.store.state.room.clone();
     let reissued = f
         .store
         .membership_challenge(
             f.cert.device_public_key,
             MembershipChallengeRequest {
-                room: f.store.state.room.clone(),
-                workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                room: room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&room).unwrap(),
                 device_cert: f.cert.clone(),
                 request_id: [150; 32],
             },
@@ -852,13 +857,14 @@ fn cloud_owner_bootstrap_refresh_keeps_collaborators_on_member_reply() {
         [83; 32],
         40,
     );
+    let room = f.store.state.room.clone();
     let challenge = f
         .store
         .membership_challenge(
             cert.device_public_key,
             MembershipChallengeRequest {
-                room: f.store.state.room.clone(),
-                workspace_id: qos_relay::room_workspace_id(&f.store.state.room).unwrap(),
+                room: room.clone(),
+                workspace_id: qos_relay::room_workspace_id(&room).unwrap(),
                 device_cert: cert.clone(),
                 request_id: [84; 32],
             },

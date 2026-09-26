@@ -1,7 +1,7 @@
 //! Explicit operator selection of the private agent runtime for an enrolled owner.
 //! This is the host migration step that `Store::activate_private_agent_ledger`
 //! documents as never reachable from the network: a local filesystem operator
-//! runs it while `serve-https` is stopped. The named device must pass the same
+//! runs it through `qos-cloud-host agent select-private-runtime`. The named device must pass the same
 //! current structural-owner verification (`agent_caller`) as agent commands.
 use anyhow::{Result, anyhow, bail, ensure};
 use qos_peer_state::owner_commit::PrivateAgentState;
@@ -26,7 +26,7 @@ pub fn select_private_agent_runtime(
     let mut store = match crate::delivery::access::try_open(root, machine) {
         Ok(store) => store,
         Err(crate::delivery::access::AccessError::Busy) => {
-            bail!("operator Store busy; stop serve-https before selecting")
+            bail!("operator Store busy; retry once the current owner turn ends")
         }
         Err(crate::delivery::access::AccessError::Denied(error)) => {
             return Err(error.context("existing delivery Cloud Store required"));

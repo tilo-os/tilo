@@ -103,7 +103,7 @@ impl Fixture {
         let root = SigningKey::from_bytes(&[47; 32]);
         let first = SigningKey::from_bytes(&[48; 32]);
         let device = SigningKey::from_bytes(&[49; 32]);
-        let mut store = crate::Store::open(dir.path(), "hosted-machine").unwrap();
+        let mut store = crate::Store::open_from_disk(dir.path(), "hosted-machine").unwrap();
         let initial = crate::tests::approved(store.inspect(10).unwrap(), &root, &first);
         store.apply(&initial, 11).unwrap();
         let config = OperatorConfig::decode(
@@ -328,7 +328,7 @@ fn hosted_attempt_membership_checkpoints_replay_actual_store_once() {
     let generation = f.store.state.generation;
     drop(attempt);
     drop(f.store);
-    f.store = crate::Store::open(f._dir.path(), "hosted-machine").unwrap();
+    f.store = crate::Store::open_from_disk(f._dir.path(), "hosted-machine").unwrap();
     let replay_at = request.proof.challenge.expires_at_ns + 1;
     let mut attempt = f.restore(&complete, replay_at);
     assert_eq!(attempt.membership_complete_request().unwrap(), bytes);
@@ -535,7 +535,7 @@ fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
         );
         drop(attempt);
         drop(f.store);
-        f.store = crate::Store::open(f._dir.path(), "hosted-machine").unwrap();
+        f.store = crate::Store::open_from_disk(f._dir.path(), "hosted-machine").unwrap();
         let mut attempt = f.restore(&saved, 26);
         assert_eq!(
             attempt.membership_complete_request().unwrap(),
@@ -551,7 +551,7 @@ fn hosted_attempt_keeps_saved_proof_through_both_store_barriers_and_restart() {
             postcard::to_stdvec(&Response::OwnerMembershipComplete(response)).unwrap();
         let disk = std::fs::read(f._dir.path().join("state.json")).unwrap();
         drop(f.store);
-        f.store = crate::Store::open(f._dir.path(), "hosted-machine").unwrap();
+        f.store = crate::Store::open_from_disk(f._dir.path(), "hosted-machine").unwrap();
         let replay = f
             .store
             .owner_membership_complete(endpoint, request, 27)

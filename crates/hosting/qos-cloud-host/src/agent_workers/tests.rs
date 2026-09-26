@@ -1175,9 +1175,10 @@ fn cloud_policy_clock_worker_sampler_checks_current_governance_before_next_pump(
                 .collect(),
         };
         let now = store.policy_now_ns().unwrap();
+        let host_key = store.key().verifying_key().to_bytes();
         store
             .receive(
-                qos_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+                qos_peer_state::TransportOrigin::RelayDelta(host_key),
                 message,
                 now,
             )
@@ -1208,8 +1209,7 @@ async fn cloud_workers_source_root_alias_uses_held_directory_identity() {
         alias.canonicalize().unwrap().as_os_str()
     );
     let clock = OwnerPolicyClock::new().unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let Current::Current(time) = source.with_current(|turn| turn.policy_time().unwrap()) else {
         panic!("actual selected Source unavailable");
     };
@@ -1258,8 +1258,7 @@ fn registered_source_owner() -> (
     store
         .activate_delivery_storage(clock.now_ns().unwrap())
         .unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let Current::Current(time) = source.with_current(|turn| turn.policy_time().unwrap()) else {
         panic!("actual selected Source unavailable");
     };

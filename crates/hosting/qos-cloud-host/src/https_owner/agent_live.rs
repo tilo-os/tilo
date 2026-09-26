@@ -1,4 +1,4 @@
-//! Agent live publisher: a serve-https task that consumes
+//! Agent live publisher: an HTTPS delivery task that consumes
 //! the host agent live bus (`crate::agent_live`) and speaks for each agent in
 //! its own host-fed live namespace
 //! `agent_publisher(room, host, agent_id)`:

@@ -114,7 +114,7 @@ impl PreparedCloud {
         ensure!(store.state.bound.is_some(), "enrolled Cloud Store required");
         let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new()?;
         Ok((
-            CloudStoreSource::bind_with_clock(&store, clock.clone())?,
+            CloudStoreSource::bind_with_clock(store, clock.clone())?,
             clock,
         ))
     }
@@ -224,7 +224,7 @@ fn agent_live_publisher(
     ))
 }
 
-async fn shutdown_signal() {
+pub(crate) async fn shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{SignalKind, signal};
@@ -244,89 +244,103 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
-pub(crate) async fn serve(config_path: &Path, ready_path: &Path) -> Result<()> {
-    serve_until(config_path, ready_path, shutdown_signal()).await
-}
-
-pub(crate) async fn serve_until(
-    config_path: &Path,
-    ready_path: &Path,
-    shutdown: impl std::future::Future<Output = ()>,
-) -> Result<()> {
-    serve_inner(config_path, ready_path, shutdown, AgentOwner::Runtime).await
-}
-/// Component composition without the agent execution owner: private commands
-/// reach the Store-backed collaboration broker only and agent control answers
-/// unavailable. Production startup always uses the actual agent runtime.
-#[cfg(test)]
-pub(in crate::https_owner) async fn serve_broker_only_until(
-    config_path: &Path,
-    ready_path: &Path,
-    shutdown: impl std::future::Future<Output = ()>,
-) -> Result<()> {
-    serve_inner(config_path, ready_path, shutdown, AgentOwner::BrokerOnly).await
-}
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum AgentOwner {
-    Runtime,
+/// The agent lane the HTTPS private route answers through.
+pub(crate) enum AgentLane {
+    /// The host's one agent runtime, shared with the relay private lane.
+    Runtime(crate::CloudAgentCommands),
+    /// Private commands reach the Store-backed collaboration broker only and
+    /// agent control answers unavailable.
     #[cfg(test)]
     BrokerOnly,
 }
 
-async fn serve_inner(
-    config_path: &Path,
-    ready_path: &Path,
-    shutdown: impl std::future::Future<Output = ()>,
-    mode: AgentOwner,
-) -> Result<()> {
-    let prepared = PreparedCloud::prepare(config_path, ready_path).await?;
-    let root = prepared.config.state_root.clone();
-    let machine = prepared.config.machine_id.clone();
-    let pool = prepared.transport.host_bytes()?;
-    let work = prepared.transport.host_work()?;
-    let origin = prepared.transport.origin().to_owned();
-    let (source, clock) = prepared.open_source()?;
-    let PreparedCloud {
-        transport,
-        ready_directory,
-        ready_name,
-        ready_path,
-        ..
-    } = prepared;
-    let ready = ReadyRecord {
-        directory: ready_directory,
-        name: ready_name,
-        path: ready_path,
-    };
-    // The agent owner shares the actual source and its policy clock; it is
-    // the only execution owner for private agent commands and reads.
-    let source_time = current(&source, |turn| turn.policy_time())??;
-    let (mut agents, commands, policy) = match mode {
-        AgentOwner::Runtime => {
-            let agents = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
-                &root,
-                &machine,
-                true,
-                clock,
-                source_time,
-                source.clone(),
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
-            let commands = agents.certified_commands();
-            let policy = commands.policy_context();
-            (Some(agents), Some(commands), policy)
-        }
-        #[cfg(test)]
-        AgentOwner::BrokerOnly => {
-            let policy = Arc::new(crate::agent_owner::RuntimePolicyClock::new(clock));
-            policy
-                .bind_source_owner(source_time, source.clone())
-                .map_err(anyhow::Error::msg)?;
-            (None, None, policy)
-        }
-    };
-    let result = async {
+/// Cloud HTTPS delivery for one enrolled Store, prepared and bound to its
+/// long-lived owner before anything is served.
+pub(crate) struct Https {
+    prepared: PreparedCloud,
+    source: CloudStoreSource,
+    clock: qos_action_broker::peer_actions::OwnerPolicyClock,
+}
+
+impl Https {
+    /// Load the operator configuration for `root` and bind its Store. The
+    /// configuration must name the same state root and machine as the host.
+    pub(crate) async fn prepare(
+        config_path: &Path,
+        ready_path: &Path,
+        root: &Path,
+        machine: &str,
+    ) -> Result<Self> {
+        let prepared = PreparedCloud::prepare(config_path, ready_path).await?;
+        ensure!(
+            std::fs::canonicalize(&prepared.config.state_root)? == std::fs::canonicalize(root)?
+                && prepared.config.machine_id == machine,
+            "HTTPS configuration names another Cloud Store"
+        );
+        let (source, clock) = prepared.open_source()?;
+        Ok(Self {
+            prepared,
+            source,
+            clock,
+        })
+    }
+    pub(crate) fn source(&self) -> &CloudStoreSource {
+        &self.source
+    }
+    pub(crate) fn clock(&self) -> qos_action_broker::peer_actions::OwnerPolicyClock {
+        self.clock.clone()
+    }
+    /// The source's policy time, captured under one of its turns.
+    pub(crate) fn source_time(&self) -> Result<qos_action_broker::peer_actions::PolicyTime> {
+        current(&self.source, |turn| turn.policy_time())?
+    }
+
+    /// Serve until `stop` resolves or the service fails. Ready is published
+    /// only after every advertised route is installed.
+    pub(crate) async fn run(
+        self,
+        lane: AgentLane,
+        stop: impl std::future::Future<Output = ()>,
+    ) -> Result<()> {
+        let Self {
+            prepared,
+            source,
+            clock,
+        } = self;
+        let root = prepared.config.state_root.clone();
+        let machine = prepared.config.machine_id.clone();
+        let pool = prepared.transport.host_bytes()?;
+        let work = prepared.transport.host_work()?;
+        let origin = prepared.transport.origin().to_owned();
+        let PreparedCloud {
+            transport,
+            ready_directory,
+            ready_name,
+            ready_path,
+            ..
+        } = prepared;
+        let ready = ReadyRecord {
+            directory: ready_directory,
+            name: ready_name,
+            path: ready_path,
+        };
+        let (commands, policy) = match lane {
+            AgentLane::Runtime(commands) => {
+                let policy = commands.policy_context();
+                (Some(commands), policy)
+            }
+            #[cfg(test)]
+            AgentLane::BrokerOnly => {
+                let source_time = current(&source, |turn| turn.policy_time())??;
+                let policy = Arc::new(crate::agent_owner::RuntimePolicyClock::new(clock));
+                policy
+                    .bind_source_owner(source_time, source.clone())
+                    .map_err(anyhow::Error::msg)?;
+                (None, policy)
+            }
+        };
+        #[cfg(not(test))]
+        drop(clock);
         let (queue, broker, observer) =
             spawn_private_broker(root.clone(), machine.clone(), commands, policy);
         let private = PrivateLane::install(&source, &queue, broker, observer)
@@ -371,18 +385,12 @@ async fn serve_inner(
             capabilities = service.capabilities(),
             result = "ready",
         );
-        tokio::pin!(shutdown);
+        tokio::pin!(stop);
         // `QOS_HOST_PERF_BASELINE=1` keeps the previous polling-only loop.
         let wake = (!crate::storage::host_perf_baseline()).then(|| service.wake_handle());
         // A Store commit by any component (agent worker, retention) wakes held polls at once.
         let mut commits = crate::delivery::commit_wake::CommitWake::subscribe();
         let served: Result<()> = loop {
-            let outbound = async {
-                match agents.as_mut() {
-                    Some(agents) => agents.outbound.recv().await,
-                    None => std::future::pending().await,
-                }
-            };
             let woken = async {
                 match &wake {
                     Some(wake) => wake.notified().await,
@@ -391,16 +399,10 @@ async fn serve_inner(
             };
             tokio::select! {
                 biased;
-                _ = &mut shutdown => break Ok(()),
+                _ = &mut stop => break Ok(()),
                 request = transport.recv() => match request {
                     Some(request) => service.handle(request),
                     None => break Err(anyhow!("Cloud HTTPS transport stopped")),
-                },
-                outbound = outbound => match outbound {
-                    // Live presence has no HTTPS carrier; durable state is
-                    // delivered only through the Store replay ledger.
-                    Some(_) => {}
-                    None => break Err(anyhow!("agent runtime owner stopped")),
                 },
                 // Completed upload work / private replies (a wake raised
                 // while `maintain` ran is kept as the permit: no lost wake-up).
@@ -418,11 +420,6 @@ async fn serve_inner(
                 break Err(anyhow!("Cloud owner failed; restart with a fresh binding"));
             }
         };
-        // Stop the agent owner first: it winds down (withdrawing readiness,
-        // closing launches and workers) while the service and transport close.
-        if let Some(agents) = agents.as_mut() {
-            agents.request_stop();
-        }
         // Held requests get their idle/refusal answers; every admitted commit
         // already passed its Store barrier, so no owner state remains buffered.
         service.close();
@@ -431,49 +428,78 @@ async fn serve_inner(
         if let Err(error) = &served {
             tracing::warn!(%error, "Cloud HTTPS service stopped");
         }
-        let stopped = transport.shutdown().await;
-        served.and(stopped)
+        // The caller retires the source once the agent owner has stopped: the
+        // owner's final flush still needs the source's policy time.
+        transport.shutdown().await.and(served)
     }
-    .await;
-    let closed = match agents.as_mut() {
-        Some(agents) => agents
-            .close_within(AGENT_STOP_BOUND)
-            .await
-            .map_err(anyhow::Error::msg),
-        None => Ok(()),
+}
+
+/// Cloud HTTPS with its own agent runtime and no relay: the delivery half of
+/// `serve`, wired exactly as the host wires it, for component tests.
+#[cfg(test)]
+pub(crate) async fn serve_until(
+    config_path: &Path,
+    ready_path: &Path,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    let config = OperatorConfig::load(config_path)?;
+    let (root, machine) = (config.state_root.clone(), config.machine_id.clone());
+    let https = Https::prepare(config_path, ready_path, &root, &machine).await?;
+    let mut agents = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
+        &root,
+        &machine,
+        true,
+        https.clock(),
+        https.source_time()?,
+        https.source().clone(),
+    )
+    .await
+    .map_err(anyhow::Error::msg)?;
+    let commands = agents.certified_commands();
+    let source = https.source().clone();
+    let served = {
+        let outbound = &mut agents.outbound;
+        let run = https.run(AgentLane::Runtime(commands), shutdown);
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                result = &mut run => break result,
+                // Live presence has no HTTPS carrier; durable state is
+                // delivered only through the Store replay ledger.
+                message = outbound.recv() => if message.is_none() {
+                    break Err(anyhow!("agent runtime owner stopped"));
+                },
+            }
+        }
     };
+    let closed = agents
+        .close_within(AGENT_STOP_BOUND)
+        .await
+        .map_err(anyhow::Error::msg);
     source.retire();
-    // Orderly shutdown folds the Store journal into the checkpoint, bounded:
-    // an unfinished fold leaves the durable checkpoint plus journal, which the
-    // next open reads as ever.
-    match bounded_blocking(COMPACTION_BOUND, move || crate::storage::compact(&root)).await {
-        Some(Ok(_)) => {}
-        Some(Err(error)) => tracing::warn!(%error, "Cloud state journal compaction deferred"),
-        None => tracing::warn!(
-            bound_ms = COMPACTION_BOUND.as_millis() as u64,
-            "Cloud state journal compaction deferred: shutdown bound reached"
-        ),
-    }
-    result.and(closed)
+    served.and(closed)
+}
+/// Component composition without the agent execution owner.
+#[cfg(test)]
+pub(in crate::https_owner) async fn serve_broker_only_until(
+    config_path: &Path,
+    ready_path: &Path,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    let config = OperatorConfig::load(config_path)?;
+    let https = Https::prepare(
+        config_path,
+        ready_path,
+        &config.state_root,
+        &config.machine_id,
+    )
+    .await?;
+    let source = https.source().clone();
+    let served = https.run(AgentLane::BrokerOnly, shutdown).await;
+    source.retire();
+    served
 }
 /// Upper bound for the agent owner to stop during shutdown.
-const AGENT_STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(6);
-/// Upper bound for the orderly journal fold during shutdown.
-const COMPACTION_BOUND: std::time::Duration = std::time::Duration::from_secs(4);
-/// Run `work` on its own thread and wait at most `bound`. On expiry the thread
-/// is detached (no runtime waits for it at exit) and `None` is returned.
-async fn bounded_blocking<R: Send + 'static>(
-    bound: std::time::Duration,
-    work: impl FnOnce() -> R + Send + 'static,
-) -> Option<R> {
-    let (done, result) = tokio::sync::oneshot::channel();
-    std::thread::Builder::new()
-        .name("cloud-shutdown".into())
-        .spawn(move || {
-            let _ = done.send(work());
-        })
-        .ok()?;
-    tokio::time::timeout(bound, result).await.ok()?.ok()
-}
+pub(crate) const AGENT_STOP_BOUND: std::time::Duration = std::time::Duration::from_secs(6);
 #[cfg(test)]
 pub(in crate::https_owner) mod tests;

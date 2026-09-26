@@ -117,11 +117,7 @@ pub(crate) struct Tip {
     base: Base,
     current: Vec<u8>,
 }
-impl Tip {
-    pub(crate) fn len(&self) -> usize {
-        self.current.len()
-    }
-}
+impl Tip {}
 /// Reconstructed, reconciled aggregate bytes.
 pub(crate) struct Persisted {
     pub(crate) bytes: Vec<u8>,
@@ -178,35 +174,7 @@ impl Aggregate {
             clean: false,
         })
     }
-    /// Under the Store lock held since `tip` was read or written: the current
-    /// files, as a clean observation, when they are exactly the files `tip`
-    /// describes. Lets a Store holder retain its decode for a later turn.
-    pub(crate) fn observe_tip(
-        directory: &atomic_file::StorageDirectory,
-        tip: &Tip,
-    ) -> Option<Self> {
-        let mut aggregate = Self::open(directory).ok()?;
-        let base = &tip.base;
-        let journal = match (&aggregate.journal, &base.journal) {
-            (None, None) => true,
-            (Some((_, identity, len)), Some((expected, expected_len))) => {
-                identity == expected && len == expected_len && *len == base.valid_len
-            }
-            _ => false,
-        };
-        (journal
-            && aggregate.checkpoint_identity == base.checkpoint_identity
-            && aggregate.checkpoint_len == base.checkpoint_len)
-            .then(|| {
-                aggregate.clean = true;
-                aggregate
-            })
-    }
-    /// Persisted byte length (checkpoint plus journal): a sizing hint.
-    pub(crate) fn length(&self) -> u64 {
-        self.checkpoint_len
-            .saturating_add(self.journal.as_ref().map_or(0, |(_, _, len)| *len))
-    }
+    #[cfg(test)]
     pub(crate) fn clean(&self) -> bool {
         self.clean
     }
@@ -217,6 +185,7 @@ impl Aggregate {
     /// back to its valid prefix (never below a clean observation's length)
     /// before an append; retirement replaces it with a new empty file. The
     /// pinned inodes cannot be reused while held.
+    #[cfg(test)]
     pub(crate) fn same(&self, current: &Aggregate) -> bool {
         use atomic_file::FileIdentity;
         self.clean
@@ -235,6 +204,7 @@ impl Aggregate {
     }
     /// Cheap unlocked hint that the directory still names both retained
     /// files at their retained lengths. The next turn re-proves it locked.
+    #[cfg(test)]
     pub(crate) fn matches_unlocked(&self, directory: &std::fs::File) -> bool {
         #[allow(
             clippy::unnecessary_cast,

@@ -7,7 +7,7 @@ fn enrolled() -> (tempfile::TempDir, Store, SigningKey, EnrollmentRequest) {
     let dir = tempfile::tempdir().unwrap();
     let root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
-    let mut store = Store::open(dir.path(), "durability").unwrap();
+    let mut store = Store::open_from_disk(dir.path(), "durability").unwrap();
     let enrollment = crate::tests::approved(store.inspect(10).unwrap(), &root, &device);
     store.apply(&enrollment, 11).unwrap();
     (dir, store, device, enrollment)

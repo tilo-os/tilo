@@ -23,8 +23,7 @@ fn fixture(id: u128) -> Fixture {
     store
         .activate_delivery_storage(clock.now_ns().unwrap())
         .unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let Current::Current(time) = source.with_current(|turn| turn.policy_time().unwrap()) else {
         panic!("actual Source required");
     };

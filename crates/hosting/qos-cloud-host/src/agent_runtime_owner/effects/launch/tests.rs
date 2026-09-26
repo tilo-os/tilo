@@ -55,8 +55,7 @@ fn agent_launch_stage_plain_consumed_custody_stays_refused_after_source_reconcil
     store
         .activate_delivery_storage(clock.now_ns().unwrap())
         .unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let Current::Current(time) = source.with_current(|turn| turn.policy_time().unwrap()) else {
         panic!("actual Source required");
     };

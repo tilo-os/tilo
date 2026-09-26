@@ -259,12 +259,11 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             .activate_delivery_storage(clock.now_ns().unwrap())
             .unwrap();
         let source =
-            crate::https_owner::CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
+            crate::https_owner::CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
         Some((clock, source))
     } else {
         None
     };
-    drop(store);
     let selected_source = selected_source.map(|(clock, source)| {
         let crate::https_owner::Current::Current(time) =
             source.with_current(|turn| turn.policy_time().unwrap())
@@ -304,6 +303,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
                     RelayMode::Disabled,
                     shutdown,
                     Some(ready_tx),
+                    None,
                 )
                 .await
             }

@@ -307,11 +307,11 @@ impl RuntimeOwner {
         self.policy.validate(time)
     }
     #[track_caller]
-    pub(crate) fn store(&self) -> Result<Store, String> {
+    pub(crate) fn store(&self) -> Result<crate::StoreGuard, String> {
         self.store_for(&self.policy_time()?)
     }
     #[track_caller]
-    pub(crate) fn store_for(&self, time: &PolicyTime) -> Result<Store, String> {
+    pub(crate) fn store_for(&self, time: &PolicyTime) -> Result<crate::StoreGuard, String> {
         let site = std::panic::Location::caller();
         count_open(site);
         #[cfg(test)]
@@ -356,7 +356,7 @@ impl RuntimeOwner {
     /// time when present, else the installed registered owner time. Opening
     /// Store never implies authority; each step method rechecks custody.
     #[track_caller]
-    fn step_store(&self, id: Uuid) -> Result<Store, ParentFailure> {
+    fn step_store(&self, id: Uuid) -> Result<crate::StoreGuard, ParentFailure> {
         let time = match self.attempt(id) {
             Ok(attempt) => attempt.policy_time.clone(),
             Err(_) => self.policy_time().map_err(ParentFailure::Unavailable)?,

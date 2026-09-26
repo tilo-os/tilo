@@ -46,8 +46,7 @@ mod tests {
         store
             .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
             .unwrap();
-        let source = CloudStoreSource::bind(&store).unwrap();
-        drop(store);
+        let source = CloudStoreSource::bind(store).unwrap();
         assert!(matches!(
             source.with_current(|turn| {
                 let device = turn

@@ -6,8 +6,7 @@ fn fixture() -> (tempfile::TempDir, CloudStoreSource, [u8; 32]) {
     store
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
-    let source = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind(store).unwrap();
     (dir, source, device)
 }
 fn turn<R>(source: &CloudStoreSource, run: impl FnOnce(&CloudStoreTurn) -> R) -> R {
@@ -29,12 +28,13 @@ fn turn<R>(source: &CloudStoreSource, run: impl FnOnce(&CloudStoreTurn) -> R) ->
 }
 fn document(dir: &std::path::Path, device: [u8; 32], id: &str) {
     let mut store = Store::open(dir, "agent-admission").unwrap();
+    let room = store.state.room.clone();
     store
         .action(
             device,
             &ActionRequest {
                 version: 1,
-                room: store.state.room.clone(),
+                room,
                 invocation_id: id.into(),
                 operation: NativeOperation::WriterInsert {
                     text: "stable policy".into(),
@@ -252,11 +252,13 @@ fn policy(dir: &std::path::Path, cap: collab_types::caps::CapOverride) {
     )
     .unwrap();
     doc.commit();
+    let host_key = store.key().verifying_key().to_bytes();
+    let room = store.state.room.clone();
     store
         .receive(
-            qos_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+            qos_peer_state::TransportOrigin::RelayDelta(host_key),
             qos_peer_state::NeighbourMsg::SyncResp {
-                room: store.state.room.clone(),
+                room,
                 changes: doc
                     .get_changes(&[])
                     .into_iter()
@@ -458,8 +460,7 @@ fn cloud_private_actual_external_writer_aba_fences_equal_policy_and_keeps_progre
         );
     });
     let store = Store::open(dir.path(), "agent-admission").unwrap();
-    let another = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let another = CloudStoreSource::bind(store).unwrap();
     let fresh = turn(&source, |turn| {
         Disclosure::capture(&source, turn, u64::MAX).unwrap()
     });
@@ -708,25 +709,6 @@ fn cloud_private_at_unix_rechecked_within_same_actual_store_turn() {
         );
     });
 }
-#[test]
-fn cloud_private_corrupt_source_cannot_revive_after_file_restore() {
-    let (dir, source, _) = fixture();
-    let fence = turn(&source, |turn| {
-        Disclosure::capture(&source, turn, u64::MAX).unwrap()
-    });
-    let path = dir.path().join("state.json");
-    let original = std::fs::read(&path).unwrap();
-    std::fs::write(&path, b"broken").unwrap();
-    assert!(matches!(
-        source.with_current(|turn| fence.check(turn)),
-        Current::Denied
-    ));
-    std::fs::write(&path, &original).unwrap();
-    assert!(matches!(
-        source.with_current(|turn| fence.check(turn)),
-        Current::Denied
-    ));
-}
 
 #[tokio::test(flavor = "current_thread")]
 async fn cloud_private_actual_read_return_keeps_original_custody_through_http_handoff() {
@@ -745,8 +727,7 @@ async fn cloud_private_actual_read_return_keeps_original_custody_through_http_ha
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let source_time = turn(&source, |turn| turn.policy_time().unwrap());
     let mut runtime = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
         dir.path(),
@@ -1069,8 +1050,7 @@ async fn cloud_private_actual_agent_owner_observes_the_evidence_invocation_only(
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let clock = qos_action_broker::peer_actions::OwnerPolicyClock::new().unwrap();
-    let source = CloudStoreSource::bind_with_clock(&store, clock.clone()).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind_with_clock(store, clock.clone()).unwrap();
     let source_time = turn(&source, |turn| turn.policy_time().unwrap());
     let mut runtime = crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
         dir.path(),

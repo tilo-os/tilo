@@ -19,7 +19,7 @@ fn open_store(
     root: &std::path::Path,
     machine: &str,
     policy: Option<&RetainedPolicy>,
-) -> Result<Store> {
+) -> Result<crate::StoreGuard> {
     match policy {
         Some((owner, time)) => owner
             .open_store(root, machine, time)
@@ -321,7 +321,7 @@ impl CloudCollaborationAdmin {
         self.policy = policy;
         self
     }
-    fn open_store(&self) -> Result<Store> {
+    fn open_store(&self) -> Result<crate::StoreGuard> {
         open_store(&self.root, &self.machine, self.policy.as_ref())
     }
 
@@ -357,11 +357,12 @@ impl CloudCollaborationAdmin {
             }
             _ => None,
         };
+        let room = store.state.room.clone();
         let receipt = store.action(
             request.caller.device_public_key,
             &ActionRequest {
                 version: 1,
-                room: store.state.room.clone(),
+                room,
                 invocation_id: request.invocation.0.to_string(),
                 operation,
             },

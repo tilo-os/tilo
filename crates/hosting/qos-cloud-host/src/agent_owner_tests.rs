@@ -57,7 +57,7 @@ pub(super) fn enrolled_admitted() -> (tempfile::TempDir, Store, [u8; 32]) {
 fn enrolled_in(dir: tempfile::TempDir) -> (tempfile::TempDir, Store, [u8; 32]) {
     let root = SigningKey::from_bytes(&[7; 32]);
     let device = SigningKey::from_bytes(&[8; 32]);
-    let mut store = Store::open(dir.path(), "agent-admission").unwrap();
+    let mut store = Store::open_from_disk(dir.path(), "agent-admission").unwrap();
     let request = crate::tests::approved(store.inspect(10).unwrap(), &root, &device);
     store.apply(&request, 11).unwrap();
     (dir, store, device.verifying_key().to_bytes())
@@ -409,7 +409,7 @@ fn agent_owner_unknown_and_terminal_status_never_relaunch_or_regress() {
             )
             .unwrap();
         drop(store);
-        store = Store::open(dir.path(), "agent-admission").unwrap();
+        store = Store::open_from_disk(dir.path(), "agent-admission").unwrap();
         let fresh = store.agent_caller(device).unwrap();
         assert_eq!(
             store.agent_snapshot(&fresh).unwrap().ledger.records["uncertain"].phase,
@@ -634,7 +634,7 @@ fn agent_owner_replay_receipt_certifies_current_aggregate_and_retains_original_g
             before
         );
         drop(store);
-        store = Store::open(dir.path(), "agent-admission").unwrap();
+        store = Store::open_from_disk(dir.path(), "agent-admission").unwrap();
     }
 }
 

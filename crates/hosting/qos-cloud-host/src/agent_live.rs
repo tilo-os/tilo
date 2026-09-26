@@ -1,5 +1,5 @@
 //! Agent live streaming, host side: a process-global, bounded,
-//! non-blocking bus from the Store-owning agent paths to the serve-https live
+//! non-blocking bus from the Store-owning agent paths to the HTTPS delivery live
 //! publisher (`https_owner::agent_live`), plus a small registry of each agent's
 //! latest live state for owner-only reads.
 //!

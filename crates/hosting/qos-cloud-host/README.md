@@ -21,9 +21,10 @@ qos-cloud-host enrollment apply --request-file /run/tilo-cloud/request.json
 qos-cloud-host serve
 ```
 
-Untrusted Automerge bytes are applied in a re-executed worker process. Any binary
-that links this library must call `tilo_automerge_isolate::dispatch_early()` first
-thing in `main`, before starting threads, as `src/main.rs` does.
+Untrusted Automerge bytes are applied in a re-executed worker process. The deployed
+binary is this crate's own `qos-cloud-host` (`src/main.rs`), which serves those workers
+by calling `tilo_automerge_isolate::dispatch_early()` before starting any threads; no
+other binary links this library in production.
 
 Inspect creates only a local host device key and a five-minute public challenge.
 The browser owns its root/device keys and signs the native certificates and both
@@ -44,13 +45,18 @@ local key is readable by the state directory's owner and root, so this separates
 the secret from the state and authenticates it, but is not hardware binding.
 Moving a state directory means moving `host-secret/` with it. State written by
 builds that kept the secret inline is refused; reset such a directory.
-Run only one `serve` process per state directory; enrollment commands may run concurrently.
+Run only one `serve` process per state directory. It owns the Store for its whole
+life: HTTPS delivery (`serve --https-config PATH --ready-file PATH`), the relay,
+agents and every other component borrow that one in-memory Store. Operator commands
+(`enrollment`, `mesh`, `agent`) run as separate processes reach it through the
+owner-only `owner.sock` control socket while `serve` runs, and open the Store
+directly otherwise.
 
 On disk the aggregate is `state.json` (atomically replaced checkpoint) plus
 `state.journal` (self-validating delta records appended with one barrier per commit;
 bounded to 32 records or max(1 MiB, checkpoint), then checkpointed). Every reader
-reconstructs both under the state lock; never read `state.json` alone. `serve` and
-`serve-https` fold the journal into the checkpoint on orderly shutdown; do so (or run
+reconstructs both under the state lock; never read `state.json` alone. `serve` folds
+the journal into the checkpoint on orderly shutdown; do so (or run
 once with a commit under `QOS_HOST_PERF_BASELINE=1`) before starting an older binary.
 `QOS_HOST_PERF_BASELINE=1` restores whole-file commits and the 20 ms busy tick, for
 paired measurement only.

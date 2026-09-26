@@ -7,7 +7,7 @@ use qos_relay::{
     client::CertifiedActionEvent,
     coedit::{Inbound, RelayCoeditSession},
 };
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 use tilo_delivery_protocol::transport_v2::{ActionCapability, EnvelopeV2};
 const STARTUP_ACTION_BUFFER: usize = 32;
 mod delivery;
@@ -108,16 +108,18 @@ fn relay_config(root: &Path, bound: &Bound, room: &str, workspace: u64) -> Resul
     })
 }
 
-/// Prepare explicit Cloud HTTPS from trusted operator configuration. A missing
-/// bounded owner or mandatory handler fails before Store mutation or readiness.
-pub async fn serve_https(config: &Path, ready_file: &Path) -> Result<()> {
-    // Content-free Store stage timing for the long-running host only.
-    qos_action_broker::agent_timing::enable_store_spans();
-    crate::https_owner::serve::serve(config, ready_file).await
+/// Trusted operator configuration for the host's HTTPS delivery.
+pub struct HttpsLaunch {
+    pub config: PathBuf,
+    pub ready_file: PathBuf,
 }
 
-/// Serve one persistent workspace; enrollment transactions synchronize via the state lock.
-pub async fn serve(root: &Path, machine: &str) -> Result<()> {
+/// Serve one persistent workspace: its long-lived Store, the relay, agents
+/// and, when configured, HTTPS delivery, all in this one process. Operator
+/// commands reach the Store through the daemon's control socket.
+pub async fn serve(root: &Path, machine: &str, https: Option<HttpsLaunch>) -> Result<()> {
+    // Content-free Store stage timing for the long-running host only.
+    qos_action_broker::agent_timing::enable_store_spans();
     let packet: iroh_base::RelayUrl = std::env::var("QOS_CLOUD_PACKET_RELAY")
         .context("QOS_CLOUD_PACKET_RELAY required")?
         .parse()?;
@@ -129,10 +131,9 @@ pub async fn serve(root: &Path, machine: &str) -> Result<()> {
         root,
         machine,
         mode,
-        async {
-            let _ = tokio::signal::ctrl_c().await;
-        },
+        crate::https_owner::serve::shutdown_signal(),
         None,
+        https,
     )
     .await;
     // Orderly shutdown folds the Store journal into the checkpoint.
@@ -149,17 +150,18 @@ async fn serve_with_mode<F>(
     mode: RelayMode,
     shutdown: F,
     ready: Option<tokio::sync::oneshot::Sender<iroh_base::EndpointAddr>>,
+    https: Option<HttpsLaunch>,
 ) -> Result<()>
 where
     F: std::future::Future<Output = ()>,
 {
     #[cfg(test)]
     {
-        serve_with_mode_inner(root, machine, mode, shutdown, ready, None).await
+        serve_with_mode_inner(root, machine, mode, shutdown, ready, https, None).await
     }
     #[cfg(not(test))]
     {
-        serve_with_mode_inner(root, machine, mode, shutdown, ready).await
+        serve_with_mode_inner(root, machine, mode, shutdown, ready, https).await
     }
 }
 
@@ -185,7 +187,7 @@ async fn serve_with_test_source<F>(
 where
     F: std::future::Future<Output = ()>,
 {
-    serve_with_mode_inner(root, machine, mode, shutdown, ready, Some(source)).await
+    serve_with_mode_inner(root, machine, mode, shutdown, ready, None, Some(source)).await
 }
 
 async fn serve_with_mode_inner<F>(
@@ -194,6 +196,7 @@ async fn serve_with_mode_inner<F>(
     mode: RelayMode,
     shutdown: F,
     ready: Option<tokio::sync::oneshot::Sender<iroh_base::EndpointAddr>>,
+    https: Option<HttpsLaunch>,
     #[cfg(test)] test_source: Option<AgentTestSource>,
 ) -> Result<()>
 where
@@ -209,6 +212,10 @@ where
         .open(root.join("daemon.lock"))?;
     let _lease = advisory_lock::FileLock::try_exclusive(lease)
         .context("another cloud host is already serving this state directory")?;
+    // From here on every turn of this process, including operator commands
+    // arriving over the control socket, borrows one long-lived Store.
+    let _owner = crate::owner_cell::install(root, machine)?;
+    let _control = crate::control::serve(root, machine)?;
     let (bound, key, room) = loop {
         let store = Store::open(root, machine)?;
         if let Some(b) = &store.state.bound {
@@ -314,15 +321,45 @@ where
                     protocol = "tilo-relay/2",
                     result = "ready",
                 );
-                #[cfg(not(test))]
-                let mut agents = crate::agent_runtime::CloudAgentRuntime::start(root, machine, session.supports_agent_reads_v1()).await.map_err(anyhow::Error::msg)?;
+                // HTTPS delivery binds the long-lived Store as its source; the
+                // one agent runtime then serves both the relay and HTTPS lanes.
+                let https = match https {
+                    Some(launch) => Some(
+                        crate::https_owner::serve::Https::prepare(&launch.config, &launch.ready_file, root, machine).await?,
+                    ),
+                    None => None,
+                };
+                let reads = session.supports_agent_reads_v1();
                 #[cfg(test)]
-                let mut agents = match test_source {
-                    Some(source) => crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
-                        root, machine, session.supports_agent_reads_v1(), source.clock, source.time, source.source,
+                let test_source = test_source.map(|source| (source.clock, source.time, source.source));
+                #[cfg(not(test))]
+                let test_source: Option<(qos_action_broker::peer_actions::OwnerPolicyClock, qos_action_broker::peer_actions::PolicyTime, crate::https_owner::CloudStoreSource)> = None;
+                let bound_source = match (&https, test_source) {
+                    (Some(https), _) => Some((https.clock(), https.source_time()?, https.source().clone())),
+                    (None, source) => source,
+                };
+                let mut agents = match bound_source {
+                    Some((clock, time, source)) => crate::agent_runtime::CloudAgentRuntime::start_with_policy_time(
+                        root, machine, reads, clock, time, source,
                     ).await,
-                    None => crate::agent_runtime::CloudAgentRuntime::start(root, machine, session.supports_agent_reads_v1()).await,
+                    None => crate::agent_runtime::CloudAgentRuntime::start(root, machine, reads).await,
                 }.map_err(anyhow::Error::msg)?;
+                let (stop_https, mut https_stopped) = tokio::sync::watch::channel(false);
+                let https_commands = agents.certified_commands();
+                let https_source = https.as_ref().map(|https| https.source().clone());
+                let https_run = async move {
+                    let stop = async move { let _ = https_stopped.wait_for(|stop| *stop).await; };
+                    match https {
+                        Some(https) => {
+                            https.run(crate::https_owner::serve::AgentLane::Runtime(https_commands), stop).await
+                        }
+                        None => {
+                            stop.await;
+                            Ok(())
+                        }
+                    }
+                };
+                tokio::pin!(https_run);
                 let runtime_result: Result<()> = async {
                 if let Some(ready) = ready {
                     let _ = ready.send(relay.node_addr());
@@ -331,6 +368,10 @@ where
                 loop {
                     tokio::select! {
                      _=&mut shutdown=>break,
+                     served=&mut https_run=>{
+                        served?;
+                        bail!("Cloud HTTPS delivery stopped");
+                     },
                      outbound=agents.outbound.recv()=>match outbound {
                         Some(message @ (NeighbourMsg::AppPresenceV2 { .. } | NeighbourMsg::ScrollbackRequest { .. }))=>session.publish_presence(postcard::to_stdvec(&message)?)?,
                         Some(_)=>bail!("worker bypassed the durable document outbox"),
@@ -419,7 +460,18 @@ where
                 }
                 Ok(())
                 }.await;
-                let agent_close = agents.close().await.map_err(anyhow::Error::msg);
+                // Stop HTTPS first so held requests are answered while the
+                // agent owner winds down.
+                let _ = stop_https.send(true);
+                let https_result = if runtime_result.is_ok() { https_run.await } else { Ok(()) };
+                let agent_close = agents
+                    .close_within(crate::https_owner::serve::AGENT_STOP_BOUND)
+                    .await
+                    .map_err(anyhow::Error::msg);
+                if let Some(source) = https_source {
+                    source.retire();
+                }
+                let runtime_result = runtime_result.and(https_result);
                 runtime_result.and(agent_close)
             }.await;
             session.close().await;
@@ -593,6 +645,7 @@ mod publication_tests {
                     let _ = stop_rx.await;
                 },
                 Some(ready_tx),
+                None,
             )
             .await;
             if let Err(error) = &result {
@@ -863,12 +916,13 @@ mod publication_tests {
         .unwrap();
 
         let tail_start = store.state.outbox.len();
+        let room = store.state.room.clone();
         store
             .action(
                 enrollment.browser_certificate.device_public_key,
                 &ActionRequest {
                     version: 1,
-                    room: store.state.room.clone(),
+                    room,
                     invocation_id: "real-relay-writer".into(),
                     operation: NativeOperation::WriterInsert {
                         text: "through retained delta".into(),
@@ -1310,6 +1364,7 @@ mod durability_runtime_tests {
                         let _ = stop_rx.await;
                     },
                     Some(ready_tx),
+                    None,
                 )
                 .await
             });

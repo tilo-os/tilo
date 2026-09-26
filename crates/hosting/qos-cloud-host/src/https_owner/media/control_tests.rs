@@ -195,8 +195,7 @@ impl Fixture {
         let result: qos_peer_state::room::media::MediaCallResultV1 =
             serde_json::from_value(receipt.output.unwrap()).unwrap();
         let host_key = store.key();
-        let source = CloudStoreSource::bind(&store).unwrap();
-        drop(store);
+        let source = CloudStoreSource::bind(store).unwrap();
         let service =
             CloudMediaService::new_unqualified(source.clone(), &format!("{ORIGIN}/moq/voice"))
                 .unwrap();
@@ -377,9 +376,9 @@ fn verify(host: [u8; 32], digest: [u8; 32], signature: [[u8; 32]; 2]) {
 fn cloud_media_control_uses_exact_source_turn_and_current_signed_context() {
     let mut f = Fixture::new();
     let intent = f.intent(false);
-    let other = current(&f.source, |turn| {
-        CloudStoreSource::bind(&turn.store).unwrap()
-    });
+    // Another source over the same long-lived Store and directory.
+    let other =
+        CloudStoreSource::bind(Store::open(f.dir.path(), "agent-admission").unwrap()).unwrap();
     f.browser.request(
         &other,
         ControlCommand::GrantChallenge {
@@ -524,25 +523,4 @@ fn cloud_media_busy_preserves_verified_deadline_and_cannot_admit_new_relay() {
     drop(busy);
     assert!(matches!(permit.status_all(), AuthorizationStatus::Current));
     assert!(f.service.admit(&pending).is_ok());
-}
-
-#[test]
-fn cloud_media_corrupt_store_is_terminal_denial_even_after_file_restore() {
-    let mut f = Fixture::new();
-    let grant = f.join(false);
-    let proof = f.relay_proof(false, &grant);
-    let permit = f.service.admit(&proof).unwrap();
-    assert!(matches!(permit.status_all(), AuthorizationStatus::Current));
-    let pending = f.relay_proof(false, &grant);
-    let path = f.dir.path().join("state.json");
-    let original = std::fs::read(&path).unwrap();
-    std::fs::write(&path, b"{broken").unwrap();
-    assert!(matches!(permit.status_all(), AuthorizationStatus::Denied));
-    assert!(f.service.admit(&pending).is_err());
-    std::fs::write(&path, original).unwrap();
-    assert!(matches!(permit.status_all(), AuthorizationStatus::Denied));
-    assert!(
-        f.service.admit(&pending).is_err(),
-        "restoring bytes cannot revive a denied source lifetime"
-    );
 }

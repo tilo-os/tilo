@@ -67,8 +67,7 @@ pub(in crate::https_owner) async fn fixture() -> Fixture {
         .activate_delivery_storage(tilo_delivery_protocol::clock::now_ns())
         .unwrap();
     let host = store.key();
-    let source = CloudStoreSource::bind(&store).unwrap();
-    drop(store);
+    let source = CloudStoreSource::bind(store).unwrap();
     let session = match source.with_current(|turn| authenticate(turn, &host, transport.origin())) {
         Current::Current(session) => session,
         _ => panic!("actual fresh Store turn required"),
@@ -205,12 +204,13 @@ fn document(root: &Path, device: [u8; 32]) {
 }
 fn document_named(root: &Path, device: [u8; 32], invocation: &str) {
     let mut store = crate::Store::open(root, "agent-admission").unwrap();
+    let room = store.state.room.clone();
     store
         .action(
             device,
             &crate::ActionRequest {
                 version: 1,
-                room: store.state.room.clone(),
+                room,
                 invocation_id: invocation.into(),
                 operation: crate::NativeOperation::WriterInsert {
                     text: "actual indexed suffix".into(),
@@ -551,13 +551,8 @@ async fn cloud_data_closed_operations_and_capacity_refusal_cannot_mutate() {
         _ => panic!("actual Store turn required"),
     };
     assert!(observed < available, "turn retained a real reservation");
-    // Only the charged retained decode outlives the turn; releasing it
-    // restores the pool exactly.
-    assert!(
-        f.pool.available_bytes() < available,
-        "retained decode is charged"
-    );
-    f.source.release_retained();
+    // The long-lived Store is resident, not a pool charge: the turn's credit
+    // is the only reservation and ends with it.
     assert_eq!(
         f.pool.available_bytes(),
         available,
@@ -629,6 +624,10 @@ async fn cloud_data_persisted_history_gap_is_denied_before_callback_without_rewr
         ledger.validate().is_err(),
         "current schema forbids retained holes"
     );
+    // The gap is written while the host is stopped: the next open must
+    // refuse it before any replay, and never rewrite it.
+    f.source.retire();
+    crate::storage::compact(f.root.path()).unwrap();
     let path = f.root.path().join("state.json");
     let mut json: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -639,19 +638,7 @@ async fn cloud_data_persisted_history_gap_is_denied_before_callback_without_rewr
     let corrupt = serde_json::to_vec(&json).unwrap();
     std::fs::write(&path, &corrupt).unwrap();
     for _ in 0..2 {
-        assert!(matches!(
-            f.source.with_delivery_turn_unqualified_test(
-                &f.pool,
-                DeliveryOperation::Replay,
-                |turn| {
-                    let _ = turn.next_delivery_replay(&f.session, Some(&token));
-                    panic!("corrupt actual ledger must be denied before callback");
-                    #[allow(unreachable_code, reason = "test/stub closure keeps its declared return type after a diverging call")]
-                    Ok(())
-                }
-            ),
-            Current::Denied
-        ));
+        assert!(crate::delivery::access::open(f.root.path(), "agent-admission").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), corrupt);
     }
 }
@@ -659,69 +646,3 @@ async fn cloud_data_persisted_history_gap_is_denied_before_callback_without_rewr
 // Public localhost fixture identity, never production credentials.
 const TLS_CERT: &str = "3082017d30820123a00302010202147ac297cf4de83a0525b286d5c7a90672c8fac5da300a06082a8648ce3d04030230143112301006035504030c096c6f63616c686f7374301e170d3236303932323039333131355a170d3336303931393039333131355a30143112301006035504030c096c6f63616c686f73743059301306072a8648ce3d020106082a8648ce3d0301070342000457ce6d80dfc27f71bc5c546417cf92a1621aa614a707057f2447ea54ede7034f0976988f9774dd07fa000cc12de7f304af8f32cb0ca315166245077b1b314655a3533051301d0603551d0e04160414d967e7ab5d6613dd0e53a648ff9b5d90657566f8301f0603551d23041830168014d967e7ab5d6613dd0e53a648ff9b5d90657566f8300f0603551d130101ff040530030101ff300a06082a8648ce3d0403020348003045022100985d69619df31e351a28d29da6c86ef8fb7d33ad87da5302228479f1614b4cf502203285805ff0e92e18155aab56f0229536582cee0c38653fca44e50f61cf7959f5";
 const TLS_KEY: &str = "308187020100301306072a8648ce3d020106082a8648ce3d030107046d306b020101042058815db9251f1c7a1bbb3ccfd7ea7d5c0b0b680eac16f8bb2b09b60e06cc771da1440342000457ce6d80dfc27f71bc5c546417cf92a1621aa614a707057f2447ea54ede7034f0976988f9774dd07fa000cc12de7f304af8f32cb0ca315166245077b1b314655";
-
-/// Consecutive turns over an unchanged aggregate reuse the retained validated
-/// decode; any replacement of `state.json` (another component's commit or
-/// this owner's own) forces a full read, reconciliation and validation.
-#[tokio::test]
-async fn cloud_retained_decode_is_reused_only_for_the_identical_aggregate() {
-    let f = fixture().await;
-    let generation = |f: &Fixture| match f.source.with_delivery_turn(
-        &f.pool,
-        DeliveryOperation::Replay,
-        |turn| -> Result<u64> { Ok(turn.generation()) },
-    ) {
-        Current::Current(result) => result.unwrap(),
-        _ => panic!("actual Store turn required"),
-    };
-    let first = generation(&f);
-    let decodes = f.source.decode_count();
-    assert_eq!(generation(&f), first);
-    assert_eq!(generation(&f), first);
-    assert_eq!(
-        f.source.decode_count(),
-        decodes,
-        "unchanged aggregate reused"
-    );
-
-    // Another Cloud component commits through its own Store handle.
-    {
-        let mut store = crate::delivery::access::open(f.root.path(), "agent-admission").unwrap();
-        let next = store.state.clone();
-        store.commit(next).unwrap();
-    }
-    assert_eq!(generation(&f), first + 1, "external commit observed");
-    assert_eq!(
-        f.source.decode_count(),
-        decodes + 1,
-        "replaced aggregate decoded"
-    );
-    assert_eq!(generation(&f), first + 1);
-    assert_eq!(f.source.decode_count(), decodes + 1);
-
-    // This owner's own commit is never retained as an unvalidated decode.
-    match f
-        .source
-        .with_delivery_turn(&f.pool, DeliveryOperation::RegisterConsumer, |turn| {
-            turn.register_delivery_consumer(&f.session).map(|_| ())
-        }) {
-        Current::Current(result) => result.unwrap(),
-        _ => panic!("actual Store turn required"),
-    };
-    let after = generation(&f);
-    assert!(after > first + 1);
-    assert_eq!(
-        f.source.decode_count(),
-        decodes + 2,
-        "own commit re-read and validated"
-    );
-    // Nothing is retained across a denied source.
-    f.source.retire();
-    assert!(matches!(
-        f.source
-            .with_delivery_turn(&f.pool, DeliveryOperation::Replay, |_| -> Result<()> {
-                Ok(())
-            }),
-        Current::Denied
-    ));
-}

@@ -172,6 +172,7 @@ impl CloudAgentRuntime {
             Err(_) => Err(format!("agent owner did not stop within {bound:?}")),
         }
     }
+    #[cfg(test)]
     pub(crate) async fn close(&mut self) -> Result<(), String> {
         self.request_stop();
         let Some(thread) = self.thread.take() else {
@@ -849,7 +850,7 @@ async fn handle_command(
     evidence: &CertifiedAction,
     queued: &mut AgentWorkQueue,
     policy_time: &qos_action_broker::peer_actions::PolicyTime,
-    store: Store,
+    store: crate::StoreGuard,
     caller: VerifiedAgentCaller,
     reads: &mut read_attachment::ReadCache,
 ) -> Result<ActionMessage, String> {

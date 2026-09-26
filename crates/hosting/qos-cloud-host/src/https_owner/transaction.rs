@@ -37,33 +37,11 @@ pub(crate) enum DeliveryOperation {
     Onboarding,
 }
 impl DeliveryOperation {
-    /// Explicit serialized admission budget for one turn: the decoded aggregate,
-    /// its candidate clone, encoded output and transient copies. This is an
-    /// admission policy on the shared ingress pool, not a native heap measurement.
-    fn reserved_bytes(self, aggregate: usize, input: usize) -> Option<usize> {
-        let base = match self {
-            Self::Replay | Self::Cursor | Self::ReceiptLookup | Self::SnapshotSelect => {
-                aggregate.checked_mul(3)?
-            }
-            Self::RegisterConsumer | Self::Acknowledge | Self::Maintenance => {
-                aggregate.checked_mul(5)?.checked_add(128 * 1024)?
-            }
-            Self::SnapshotCommit | Self::SnapshotRenew | Self::SnapshotRelease => aggregate
-                .checked_mul(5)?
-                .checked_add(tilo_delivery_protocol::delivery_v3::commit::MAX_LEDGER_BYTES)?,
-            Self::Onboarding => aggregate.checked_mul(6)?.checked_add(2 * 1024 * 1024)?,
-            // The complete input itself is already paid by its carrier credit;
-            // this covers its decoded message and the candidate/outbox copies.
-            Self::State => aggregate
-                .checked_mul(4)?
-                .checked_add(input.checked_mul(2)?)?
-                .checked_add(512 * 1024)?,
-        };
-        base.checked_add(256 * 1024)
-    }
-    /// The same budget when the turn reuses the retained validated decode
-    /// (itself charged while retained): no file bytes, JSON tree or decoded
-    /// copy is created, only the candidate, encoded output and transients.
+    /// Explicit serialized admission budget for one turn over the long-lived
+    /// decoded Store: no file bytes, JSON tree or decoded copy is created,
+    /// only the candidate, encoded output and transient copies. This is an
+    /// admission policy on the shared ingress pool, not a native heap
+    /// measurement.
     fn retained_bytes(self, aggregate: usize, input: usize) -> Option<usize> {
         let base = match self {
             Self::Replay | Self::Cursor | Self::ReceiptLookup => 2 * 1024 * 1024,
@@ -172,17 +150,9 @@ impl CloudStoreSource {
             Some(length) => length,
             None => return self.deny(),
         };
-        self.bind_retained_pool(pool);
-        // A retained decode needs no decode budget. If the hint turns out stale
-        // under the lock, the decode difference is charged before any read,
-        // or the turn reports Busy and the caller retries with a full budget.
-        let full = operation.reserved_bytes(aggregate, input_len);
-        let reused = self.retains_current();
-        let reserved = if reused {
-            operation.retained_bytes(aggregate, input_len)
-        } else {
-            full
-        };
+        // The Store stays decoded in memory between turns, so a turn is
+        // charged only its candidate, encoded output and transient copies.
+        let reserved = operation.retained_bytes(aggregate, input_len);
         let Some(credit) = reserved.and_then(|bytes| pool.try_acquire_bulk(bytes)) else {
             // Turn budgets scale with the persisted aggregate; name the sizes
             // so a capacity refusal is attributable (rate-limited).
@@ -193,25 +163,13 @@ impl CloudStoreSource {
                     reserved = reserved.unwrap_or(usize::MAX),
                     available = pool.available_bytes(),
                     aggregate,
-                    reused,
                     suppressed,
                     "Cloud Store turn refused: host byte budget exhausted"
                 );
             }
             return Current::Current(Err(CloudDeliveryError::Capacity));
         };
-        let mut decode_credit = None;
-        let mut admit_decode = || {
-            if !reused {
-                return true;
-            }
-            decode_credit = full
-                .zip(reserved)
-                .and_then(|(full, reserved)| full.checked_sub(reserved))
-                .and_then(|bytes| pool.try_acquire_bulk(bytes));
-            decode_credit.is_some()
-        };
-        self.with_current_admitting(&mut admit_decode, |turn| {
+        self.with_current_mut(|turn| {
             turn.delivery_work = Some(DeliveryWork {
                 pool: pool.clone(),
                 operation,
@@ -1010,49 +968,14 @@ mod sizing_tests {
     const HEADROOM: usize = 16 * MIB;
 
     /// Pool demand while one maximal staged item is admitted: its read-back
-    /// buffer, the retained decode charge and the State turn reservation.
-    fn staged_item_demand(aggregate: usize, retained: bool) -> usize {
+    /// buffer and the State turn reservation, plus the resident decoded Store
+    /// counted against the same memory.
+    fn staged_item_demand(aggregate: usize) -> usize {
         let item = MAX_STAGED_ITEM_BYTES;
-        let turn = if retained {
-            DeliveryOperation::State.retained_bytes(aggregate, item)
-        } else {
-            DeliveryOperation::State.reserved_bytes(aggregate, item)
-        }
-        .unwrap();
-        let retained_charge = if retained { 2 * aggregate + MIB } else { 0 };
-        item + turn + retained_charge
-    }
-
-    #[test]
-    fn retained_turns_do_not_pay_for_a_decode_they_never_perform() {
-        let aggregate = 32 * MIB;
-        for operation in [
-            DeliveryOperation::Replay,
-            DeliveryOperation::Cursor,
-            DeliveryOperation::ReceiptLookup,
-            DeliveryOperation::SnapshotSelect,
-            DeliveryOperation::Acknowledge,
-            DeliveryOperation::RegisterConsumer,
-            DeliveryOperation::Maintenance,
-            DeliveryOperation::SnapshotCommit,
-            DeliveryOperation::Onboarding,
-        ] {
-            let full = operation.reserved_bytes(aggregate, 0).unwrap();
-            let retained = operation.retained_bytes(aggregate, 0).unwrap();
-            assert!(retained < full, "{operation:?}");
-        }
-        // Reads over a 64 MiB aggregate stay admissible with a retained decode
-        // (the full-decode budget alone would exceed most of the pool).
-        let read = DeliveryOperation::Replay
-            .retained_bytes(64 * MIB, 0)
+        let turn = DeliveryOperation::State
+            .retained_bytes(aggregate, item)
             .unwrap();
-        assert!(read + 2 * 64 * MIB + MIB <= POOL - HEADROOM);
-        assert!(
-            DeliveryOperation::Replay
-                .reserved_bytes(64 * MIB, 0)
-                .unwrap()
-                > POOL / 2
-        );
+        item + turn + 2 * aggregate + MIB
     }
 
     /// A maximal 64 MiB resumable item is admissible only while the aggregate
@@ -1062,15 +985,14 @@ mod sizing_tests {
     #[test]
     fn maximal_staged_item_fits_the_shared_pool_only_below_the_recorded_aggregate() {
         let budget = POOL - HEADROOM;
-        assert!(staged_item_demand(8 * MIB, true) <= budget);
-        assert!(staged_item_demand(8 * MIB, false) <= budget);
+        assert!(staged_item_demand(8 * MIB) <= budget);
         let largest = (0..=64)
             .map(|mib| mib * MIB)
-            .take_while(|aggregate| staged_item_demand(*aggregate, true) <= budget)
+            .take_while(|aggregate| staged_item_demand(*aggregate) <= budget)
             .last()
             .unwrap();
         assert!((8 * MIB..16 * MIB).contains(&largest), "{}", largest / MIB);
         // Beyond it the turn refuses with a retryable capacity answer.
-        assert!(staged_item_demand(32 * MIB, true) > budget);
+        assert!(staged_item_demand(32 * MIB) > budget);
     }
 }

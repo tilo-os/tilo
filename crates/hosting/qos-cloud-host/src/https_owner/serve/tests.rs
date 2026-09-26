@@ -57,7 +57,9 @@ async fn cloud_https_startup_prepares_original_transport_without_owner_or_ready(
 #[tokio::test]
 async fn cloud_https_startup_unqualified_owner_never_provisions_or_publishes_ready() {
     let (_transport_root, root, config, ready) = fixture().await;
-    let result = serve(&config, &ready).await.unwrap_err();
+    let result = serve_until(&config, &ready, std::future::pending())
+        .await
+        .unwrap_err();
     assert!(
         result
             .to_string()

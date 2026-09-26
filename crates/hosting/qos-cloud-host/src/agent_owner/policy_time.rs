@@ -92,7 +92,7 @@ impl RuntimePolicyClock {
         root: &std::path::Path,
         machine: &str,
         time: &PolicyTime,
-    ) -> Result<crate::Store, String> {
+    ) -> Result<crate::StoreGuard, String> {
         self.validate(time)?;
         let mut store = if let Some(source) = self.source.get() {
             let store = source

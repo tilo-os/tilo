@@ -82,7 +82,7 @@ impl CloudAgentAuthority {
         self.policy.clone()
     }
     #[track_caller]
-    fn store(&self) -> Result<Store, String> {
+    fn store(&self) -> Result<crate::StoreGuard, String> {
         let site = std::panic::Location::caller();
         crate::agent_runtime_adapter::count_open(site);
         let time = self.policy.capture()?;

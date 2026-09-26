@@ -32,6 +32,7 @@ mod agent_sender;
 pub(crate) mod agent_workers;
 pub mod broker;
 pub mod collaboration;
+pub mod control;
 mod delivery;
 mod desktop_commands;
 pub mod gateway;
@@ -40,6 +41,8 @@ mod https_owner;
 pub mod mesh;
 pub mod model;
 pub mod operator;
+mod owner_cell;
+pub use owner_cell::StoreGuard;
 mod peer_memo;
 pub mod runtime;
 mod storage;
@@ -387,8 +390,14 @@ impl Store {
         self._lock.2 = Some(site);
     }
 }
-impl Drop for HeldLock {
-    fn drop(&mut self) {
+impl HeldLock {
+    /// Start timing one owner turn.
+    fn restart(&mut self) {
+        self.1 = std::time::Instant::now();
+        self.2 = None;
+    }
+    /// Log one turn's hold when it was long.
+    fn report(&self) {
         let held = self.1.elapsed();
         if held >= std::time::Duration::from_millis(20)
             && qos_action_broker::agent_timing::store_spans_enabled()
@@ -406,6 +415,11 @@ impl Drop for HeldLock {
                 "agent timing"
             );
         }
+    }
+}
+impl Drop for HeldLock {
+    fn drop(&mut self) {
+        self.report();
     }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -559,8 +573,32 @@ pub(crate) fn take_test_audit_events() -> Vec<(String, serde_json::Value)> {
     TEST_AUDIT_EVENTS.with(|events| std::mem::take(&mut *events.borrow_mut()))
 }
 impl Store {
-    pub fn open(root: &Path, machine: &str) -> Result<Self> {
+    /// The Store for one turn: the daemon's long-lived Store when this
+    /// process owns `root`, otherwise one opened from disk for this turn.
+    pub fn open(root: &Path, machine: &str) -> Result<owner_cell::StoreGuard> {
+        match owner_cell::acquire(root, machine, true) {
+            Some(Ok(guard)) => Ok(guard),
+            Some(Err(delivery::access::AccessError::Busy)) => {
+                Err(anyhow!("cloud owner busy")).context(StoreUnavailable)
+            }
+            Some(Err(delivery::access::AccessError::Denied(error))) => {
+                Err(error).context(StoreUnavailable)
+            }
+            None => Self::open_from_disk(root, machine).map(owner_cell::StoreGuard::owned),
+        }
+    }
+    /// Open, reconcile and validate the persisted Store under its file lock.
+    pub(crate) fn open_from_disk(root: &Path, machine: &str) -> Result<Self> {
         Self::open_inner(root, machine).context(StoreUnavailable)
+    }
+    /// Reset per-turn custody when a long-lived Store is lent to a turn.
+    fn begin_turn(&mut self) {
+        self._lock.restart();
+    }
+    /// End one turn of a long-lived Store: its policy time belongs to the turn.
+    fn end_turn(&mut self) {
+        self._lock.report();
+        self.policy_time = None;
     }
     fn open_inner(root: &Path, machine: &str) -> Result<Self> {
         if machine.is_empty()
