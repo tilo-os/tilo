@@ -19,13 +19,18 @@
 
 use std::collections::HashMap;
 
-use crate::dict::Dictionary;
+use crate::dict::{Dictionary, weight_to_count};
+use crate::touch_model::NextKeyDistribution;
 
 /// Bound the local adaptation cache. Prediction is helpful only while it is
 /// cheap and private; it must never turn an unusually long typing session into
 /// an unbounded in-memory profile.
 const MAX_LEARNED_CONTEXTS: usize = 512;
 const MAX_LEARNED_WORDS_PER_CONTEXT: usize = 32;
+
+/// Weight of the previous word's bigram successors against the plain lexicon
+/// when estimating the next letter.
+const BIGRAM_NEXT_KEY_SHARE: f64 = 0.5;
 
 /// Embedded bigram table: `w1<TAB>w2<TAB>weight` per line. ~40k common pairs.
 const BIGRAMS_TXT: &str = include_str!("../data/bigrams.txt");
@@ -131,6 +136,28 @@ impl Predictor {
     /// bounded-resource tests. This intentionally reveals no typed content.
     pub fn learned_context_count(&self) -> usize {
         self.learned.len()
+    }
+
+    /// How likely each letter is to be typed next, given the in-progress
+    /// `prefix` and the previous committed word. The lexicon (every word
+    /// extending `prefix`, weighted by frequency) is blended with the bigram
+    /// successors of `prev_word` that extend `prefix`, when there are any.
+    pub fn next_key_distribution(
+        &self,
+        prev_word: Option<&str>,
+        prefix: &str,
+    ) -> NextKeyDistribution {
+        let prefix = prefix.to_lowercase();
+        let lexicon = NextKeyDistribution::from_weights(self.dict.next_char_weights(&prefix));
+        let Some(successors) = prev_word.and_then(|p| self.bigrams.get(&p.to_lowercase())) else {
+            return lexicon;
+        };
+        let context =
+            NextKeyDistribution::from_weights(successors.iter().filter_map(|(w, weight)| {
+                let next = w.strip_prefix(prefix.as_str())?.chars().next()?;
+                Some((next, weight_to_count(*weight)))
+            }));
+        lexicon.blend(&context, BIGRAM_NEXT_KEY_SHARE)
     }
 
     /// Predict the next/completion words, ranked best-first, as
@@ -311,6 +338,19 @@ mod tests {
         let words: Vec<&str> = preds.iter().map(|(w, _)| w.as_str()).collect();
         assert!(words.iter().all(|w| w.starts_with("ar")), "got {words:?}");
         assert!(words.contains(&"are"));
+    }
+
+    #[test]
+    fn next_key_distribution_blends_lexicon_with_bigram_context() {
+        let p = small();
+        // Lexicon alone: "mo" continues as "more" (r), "morning" (r), "mood" (o).
+        let plain = p.next_key_distribution(None, "mo");
+        assert!(plain.prob('r') > plain.prob('o'));
+        // After "good" only "morning" follows, reinforcing 'r' further.
+        let ctx = p.next_key_distribution(Some("good"), "mo");
+        assert!(ctx.prob('r') > plain.prob('r'));
+        // A prefix nothing extends carries no context at all.
+        assert!(p.next_key_distribution(None, "zzq").is_uniform());
     }
 
     #[test]

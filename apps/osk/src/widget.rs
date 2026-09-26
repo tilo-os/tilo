@@ -71,6 +71,7 @@ pub fn default_swipe_model() -> Box<dyn SwipeModel> {
     }
 }
 use crate::toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
+use crate::touch_model::{NextKeyCache, TouchKey, TouchModel};
 
 /// Default target height of a single key row, in logical px. Responsive
 /// sizing keeps the *width* filling the surface and uses this for height —
@@ -172,6 +173,12 @@ pub struct OskWidget {
     current_word_overflowed: bool,
     /// The previously committed word, for bigram next-word context.
     prev_word: Option<String>,
+    /// Where this user tends to hit each letter; adapts tap resolution.
+    touch_model: TouchModel,
+    /// Next-letter probabilities for the current typing context.
+    next_key: NextKeyCache,
+    /// Last pointer position over the widget (logical px).
+    pointer: Option<Point>,
     /// While the left button is down, the captured pointer path (logical px).
     /// `Some` between press and release; `None` otherwise.
     gesture_path: Option<Vec<Point>>,
@@ -259,6 +266,9 @@ impl OskWidget {
             current_word: String::new(),
             current_word_overflowed: false,
             prev_word: None,
+            touch_model: TouchModel::new(),
+            next_key: NextKeyCache::default(),
+            pointer: None,
             gesture_path: None,
             pending_text: String::new(),
             pending_text_dropped_bytes: 0,
@@ -425,6 +435,7 @@ impl OskWidget {
         self.personalization_enabled = enabled;
         if !enabled {
             self.predictor.clear_learned();
+            self.touch_model.clear();
         }
         self.refresh_next_word_suggestions();
         self.configuration_dirty = true;
@@ -434,6 +445,7 @@ impl OskWidget {
     /// preference. This has no effect on the bundled dictionary/bigram model.
     pub fn clear_personalization(&mut self) {
         self.predictor.clear_learned();
+        self.touch_model.clear();
     }
 
     // --- runtime configuration -----------------------------------------
@@ -662,6 +674,7 @@ impl OskWidget {
         self.personalization_enabled = enabled;
         if !enabled {
             self.predictor.clear_learned();
+            self.touch_model.clear();
         }
         self.refresh_next_word_suggestions();
     }
@@ -921,6 +934,39 @@ impl OskWidget {
             .map(|(_, r)| (r.width() + r.height()) * 0.5)
             .sum();
         sum / self.key_geom.len() as f64
+    }
+
+    /// Resolve a tap on letter key `hit` at `p` to the letter the user most
+    /// likely meant (see [`crate::touch_model`]). Non-letter keys, and letter
+    /// keys without a known pointer position, resolve to themselves.
+    fn resolve_letter_tap(&mut self, hit: KeyId, p: Option<Point>) -> KeyId {
+        let Some(p) = p else { return hit };
+        let layout = self.current_layout();
+        if !layout.key(hit).is_some_and(Key::is_letter) {
+            return hit;
+        }
+        let keys: Vec<TouchKey> = self
+            .key_geom
+            .iter()
+            .filter_map(|&(id, rect)| {
+                let key = layout.key(id).filter(|k| k.is_letter())?;
+                let ch = key.label.chars().next()?.to_lowercase().next()?;
+                Some(TouchKey { id, ch, rect })
+            })
+            .collect();
+        let predictor = &self.predictor;
+        let (prev, word) = (self.prev_word.as_deref(), self.current_word.as_str());
+        let p_next = self
+            .next_key
+            .get(prev, word, || predictor.next_key_distribution(prev, word));
+        let target =
+            crate::touch_model::resolve(p, &keys, p_next, &self.touch_model).unwrap_or(hit);
+        if self.personalization_enabled
+            && let Some(k) = keys.iter().find(|k| k.id == target)
+        {
+            self.touch_model.learn(k.ch, p, k.rect);
+        }
+        target
     }
 
     fn key_at(&self, p: Point) -> Option<KeyId> {
@@ -1546,6 +1592,7 @@ impl Widget for OskWidget {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.pointer = Some(p);
                 // While the button is held over the keys, accumulate the
                 // gesture path for swipe decoding.
                 if let Some(path) = self.gesture_path.as_mut() {
@@ -1624,8 +1671,10 @@ impl Widget for OskWidget {
                             self.activate_key(id);
                         }
                     } else if self.hovered_key == Some(id) {
-                        // A short tap stays a normal key press.
-                        self.activate_key(id);
+                        // A short tap is a key press; a letter tap resolves to
+                        // the letter most likely meant near that point.
+                        let target = self.resolve_letter_tap(id, self.pointer);
+                        self.activate_key(target);
                     }
                     *handled = true;
                 } else if let Some(i) = self.pressed_sugg.take() {

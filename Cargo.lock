@@ -9490,6 +9490,7 @@ dependencies = [
  "automerge",
  "libc",
  "runtime-dylib",
+ "serde",
  "serde_json",
  "swipe",
  "taffy",

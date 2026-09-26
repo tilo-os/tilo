@@ -57,7 +57,10 @@ impl Dictionary {
     /// Parse a `word<TAB>weight` table (one entry per line). Malformed lines
     /// are skipped. Exposed for tests and for hosts that want a custom list.
     /// (Infallible, so it intentionally does not implement `std::str::FromStr`.)
-    #[allow(clippy::should_implement_trait)]
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "infallible parse; a FromStr impl would force a pointless error type"
+    )]
     pub fn from_str(data: &str) -> Self {
         let mut entries: Vec<Entry> = Vec::new();
         for line in data.lines() {
@@ -176,6 +179,31 @@ impl Dictionary {
         v
     }
 
+    /// Mass of each letter that can follow `prefix` (case-insensitive): for
+    /// every word extending `prefix`, its estimated corpus count is credited
+    /// to the character right after the prefix. The count is recovered from
+    /// the log-scaled weight so frequent words dominate as they do in text.
+    /// Words equal to `prefix` end there and contribute nothing.
+    pub fn next_char_weights(&self, prefix: &str) -> Vec<(char, f64)> {
+        let prefix = prefix.to_lowercase();
+        let mut out: Vec<(char, f64)> = Vec::new();
+        for entry in self.iter_prefix(&prefix) {
+            let Some(next) = entry
+                .word
+                .get(prefix.len()..)
+                .and_then(|rest| rest.chars().next())
+            else {
+                continue;
+            };
+            let count = weight_to_count(entry.weight);
+            match out.iter_mut().find(|(c, _)| *c == next) {
+                Some((_, w)) => *w += count,
+                None => out.push((next, count)),
+            }
+        }
+        out
+    }
+
     // --- internals ------------------------------------------------------
 
     /// Index into `entries` for an exact (already-lowercased) word.
@@ -215,6 +243,12 @@ impl Dictionary {
         }) + lo;
         (lo, hi)
     }
+}
+
+/// Estimated corpus count behind a compact weight (`round(log10(count) *
+/// 1000)`, see `data/README.md`).
+pub fn weight_to_count(weight: u32) -> f64 {
+    10f64.powf(f64::from(weight) / 1000.0)
 }
 
 #[cfg(test)]
@@ -289,6 +323,16 @@ mod tests {
         // Frequency order: apple (100) > cherry (75) > banana (50).
         assert_eq!(d.words()[0].word, "apple");
         assert_eq!(d.words()[2].word, "banana");
+    }
+
+    #[test]
+    fn next_char_weights_credit_the_letter_after_the_prefix() {
+        let d = Dictionary::from_str("the\t3000\nthree\t2000\nthat\t2500\nth\t1000\n");
+        let w: std::collections::HashMap<char, f64> =
+            d.next_char_weights("th").into_iter().collect();
+        assert_eq!(w.len(), 3, "'th' itself ends there: {w:?}");
+        assert!(w[&'e'] > w[&'a'] && w[&'a'] > w[&'r']);
+        assert!((w[&'e'] - weight_to_count(3000)).abs() < 1e-6);
     }
 
     #[test]
