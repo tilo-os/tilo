@@ -1652,7 +1652,10 @@ fn join_with_token(
                 };
                 let ack = make_ack(&response_bytes, token.nonce, &device)?;
                 socket.set_read_timeout(Some(Duration::from_millis(300)))?;
-                let completion_deadline = deadline_after(Duration::from_secs(10))?;
+                // The approver commits (durable writes) before it sends
+                // Finalized, so its storage latency, not a fixed allowance,
+                // bounds this wait; the enrollment window is the budget.
+                let completion_deadline = deadline_after(socket_timeout(timeout))?;
                 while std::time::Instant::now() < completion_deadline {
                     validate_requester(requester_lease)?;
                     socket.send_to(&ack, sender)?;
@@ -2247,14 +2250,19 @@ fn prepare_approval(
     Ok(PreparedApproval { signed, encrypted })
 }
 
+/// Wait for the device to acknowledge its signed configuration. The device
+/// durably stages the whole enrollment before it acknowledges, so the wait
+/// is bounded by the enrollment window rather than a fixed allowance that a
+/// slow disk on the device side can exceed.
 fn await_approval_ack(
     socket: &UdpSocket,
     packet: &mut [u8],
     pending: &PendingApproval,
     prepared: &PreparedApproval,
+    window: Duration,
 ) -> anyhow::Result<()> {
     socket.set_read_timeout(Some(Duration::from_secs(1)))?;
-    let deadline = deadline_after(Duration::from_secs(10))?;
+    let deadline = deadline_after(window)?;
     while std::time::Instant::now() < deadline {
         socket.send_to(&prepared.encrypted, pending.sender)?;
         match socket.recv_from(packet) {
@@ -2350,7 +2358,13 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     let session = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
     session.set_read_timeout(Some(Duration::from_secs(1)))?;
     let prepared = prepare_approval(options, &identity, &pending)?;
-    await_approval_ack(&session, &mut packet, &pending, &prepared)?;
+    await_approval_ack(
+        &session,
+        &mut packet,
+        &pending,
+        &prepared,
+        socket_timeout(options.timeout),
+    )?;
     commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
@@ -3094,7 +3108,7 @@ mod tests {
             approve(&ApprovalOptions {
                 identity_root: &server_root,
                 identity_dir: Some(&server_identities),
-                timeout: 15,
+                timeout: 60,
                 workspace_cache: std::path::Path::new(""),
                 acl: std::path::Path::new(""),
                 relay_workspace_ids: &[],
@@ -3117,7 +3131,7 @@ mod tests {
         pair(
             new_root.path(),
             "New laptop",
-            15,
+            60,
             EnrollmentKind::PersonalDevice,
             None,
             Some(new_identities.path()),
