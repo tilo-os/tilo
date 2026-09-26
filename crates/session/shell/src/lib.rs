@@ -25,6 +25,7 @@ pub mod runtime_host;
 
 pub mod identity_registry;
 pub mod network;
+pub mod network_secrets;
 pub mod notifications;
 pub mod onboarding;
 pub mod onboarding_view;

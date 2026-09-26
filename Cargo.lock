@@ -12690,6 +12690,7 @@ dependencies = [
  "runtime-identity",
  "runtime-portal",
  "rustls",
+ "secret-vault",
  "serde",
  "serde_json",
  "serial_test",

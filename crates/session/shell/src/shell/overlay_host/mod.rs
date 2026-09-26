@@ -6620,6 +6620,12 @@ impl ShellOverlayHost {
         self.portal_dialogs.pump()
     }
 
+    /// The compositor-owned sheet on screen, for `state-dump`; masked
+    /// values appear only as their length.
+    pub fn portal_dialog_state_json(&self) -> serde_json::Value {
+        self.portal_dialogs.state_json()
+    }
+
     /// Moves buffered portal prompts onto the chrome's queue for
     /// `pump_permission_prompt`. Senders travel with them rather than being
     /// dropped — dropping one would answer deny before the user was asked.
@@ -11264,7 +11270,7 @@ impl ShellOverlayHost {
                         || state.alt_key()
                         || state.shift_key()
                         || state.super_key());
-                if self.portal_dialogs.is_authentication() {
+                if self.portal_dialogs.is_secret_entry() {
                     // Every key belongs to the authentication sheet while it
                     // is up; none reaches an application.
                     match logical_key {
@@ -20888,6 +20894,58 @@ impl ShellOverlayHost {
                 &secret,
                 theme.tokens.typography.scale.base,
                 ui::chrome::SelectionState::active(true),
+            );
+        }
+        // Network secrets: one row per field, the label inside it until
+        // something is typed; masked values only ever as bullets.
+        for (field, rect) in self
+            .portal_dialogs
+            .secret_field_displays()
+            .iter()
+            .zip(&layout.secret_fields)
+        {
+            let label = if field.shown.is_empty() {
+                field.label.clone()
+            } else {
+                format!("{}  {}", field.label, field.shown)
+            };
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                *rect,
+                &label,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(field.focused),
+            );
+        }
+        if let (Some(rect), Some((remember, focused))) =
+            (layout.remember, self.portal_dialogs.remember_display())
+        {
+            let label = format!(
+                "[{}] Remember on this device",
+                if remember { "✓" } else { " " }
+            );
+            draw_filter_chip(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                rect,
+                &label,
+                theme.tokens.typography.scale.base,
+                ui::chrome::SelectionState::active(focused),
+            );
+        }
+        if let Some(error) = self.portal_dialogs.entry_error() {
+            text_renderer.draw_text(
+                scene,
+                error,
+                12.0,
+                theme.tokens.colors.semantic.warning,
+                transform.pre_translate((layout.sheet.x0 + 24.0, layout.cancel.y0 - 22.0).into()),
+                None,
             );
         }
         for (index, (row, rect)) in view.shortcut_rows().iter().zip(&layout.choices).enumerate() {
