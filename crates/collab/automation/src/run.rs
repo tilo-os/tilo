@@ -415,6 +415,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.record(step, &path, done)
             }
             StepKind::Ai { transform, input } => {
+                // A secret handed to the agent would reach a model provider.
+                if self.is_secret(input) {
+                    let refused = StepFailure::Binding {
+                        reason: "an AI step may not read a secret".into(),
+                    };
+                    return self.record(step, &path, Done::local(Err(refused)));
+                }
                 let mut done = self
                     .invoke(
                         step,

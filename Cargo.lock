@@ -300,6 +300,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-automerge",
  "tilo-content",
  "tilo-model-gateway",
