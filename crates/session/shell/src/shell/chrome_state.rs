@@ -728,6 +728,10 @@ pub struct ChromeState {
     /// here lets the chrome remove its durable tab immediately without owning
     /// Wayland protocol handles.
     close_surface_requests: Vec<u64>,
+    /// The full-screen chord was pressed. The native compositor drains it
+    /// and toggles the focused client's `xdg_toplevel` fullscreen state,
+    /// which only it holds the protocol handles for.
+    fullscreen_toggle_requested: bool,
     /// Docked at the strip's left edge by default; `Some(point)`
     /// detaches the wheel to the pointer. Cleared on Escape or
     /// picking a workspace.
@@ -859,6 +863,7 @@ impl ChromeState {
             peer_sync_request_results: BTreeMap::new(),
             next_peer_sync_request_id: 1,
             close_surface_requests: Vec::new(),
+            fullscreen_toggle_requested: false,
             strip_viewport: None,
             viewport_size: None,
             continuity_suggestions:
@@ -1010,6 +1015,15 @@ impl ChromeState {
 
     pub fn take_surface_close_requests(&mut self) -> Vec<u64> {
         std::mem::take(&mut self.close_surface_requests)
+    }
+
+    pub fn request_fullscreen_toggle(&mut self) {
+        self.fullscreen_toggle_requested = true;
+        self.bump();
+    }
+
+    pub fn take_fullscreen_toggle_request(&mut self) -> bool {
+        std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
     pub fn fullscreen_group(&self) -> Option<u64> {

@@ -5971,6 +5971,7 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -6570,6 +6571,14 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
                     let locked = session.is_locked();
                     let route = priority_route(
@@ -7498,6 +7507,13 @@ pub fn run() {
                     toplevel.send_close();
                 }
                 state.close_sheets_over(surface_id);
+            }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -11556,6 +11572,37 @@ fn apply_shell_gesture(
 /// above the normal tiled scene.  The requested `wl_output` wins; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// The full-screen chord: the focused Wayland client enters or leaves
+/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
+/// protocol fullscreen, so its window group maximizes instead.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        let _ = frame.host_mut().toggle_focused_group_maximized();
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
