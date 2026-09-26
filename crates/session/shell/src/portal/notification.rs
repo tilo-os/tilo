@@ -254,6 +254,21 @@ impl NotificationBackend {
             .and_then(|value| String::try_from(value).ok())
     }
 
+    /// The portal's `sound` is `"default"`, `"silent"` or a sound the app
+    /// supplies; the shell plays its own theme cue for anything but silence,
+    /// chosen by the notification's `category`.
+    fn sound(
+        notification: &HashMap<String, OwnedValue>,
+    ) -> Option<settings_store::system_sounds::SystemSoundEvent> {
+        let silent = Self::string_field(notification, "sound").as_deref() == Some("silent");
+        let category = Self::string_field(notification, "category");
+        (!silent).then(|| {
+            settings_store::system_sounds::SystemSoundEvent::for_notification_category(
+                category.as_deref(),
+            )
+        })
+    }
+
     fn urgency(notification: &HashMap<String, OwnedValue>) -> u8 {
         match Self::string_field(notification, "priority").as_deref() {
             Some("low") => 0,
@@ -371,6 +386,7 @@ impl NotificationBackend {
             caller: Some(auth.caller),
             badge_count: None,
             contact_endpoint: None,
+            sound: Self::sound(&notification),
         });
     }
 

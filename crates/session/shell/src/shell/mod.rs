@@ -126,6 +126,7 @@ pub mod split_row;
 pub mod state;
 pub mod status;
 pub mod system_monitor;
+pub mod system_sounds;
 pub mod tab_binding;
 pub mod tab_documents;
 pub mod test_control;

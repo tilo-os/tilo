@@ -307,6 +307,21 @@ pub enum AudioOperation {
     SetEchoCancellation {
         enabled: bool,
     },
+    SetSystemSounds {
+        enabled: bool,
+    },
+    SetSystemSoundVolume {
+        value: f64,
+    },
+    /// A sound theme id from the installed themes.
+    SetSoundTheme {
+        theme: String,
+    },
+    /// Whether one system event makes a sound; `event` is its settings key.
+    SetEventSound {
+        event: String,
+        enabled: bool,
+    },
     SetDeviceProfile {
         device_id: u32,
         profile_index: u32,
@@ -1918,6 +1933,20 @@ fn sound_section(doc: &AutoCommit) -> Resource {
         },
     ));
     sec = sec.with_action(echo_cancellation_spec());
+    sec = sec.with_action(system_sounds_spec());
+    sec = sec.with_action(system_sound_volume_spec());
+    for event in settings_store::system_sounds::SystemSoundEvent::ALL {
+        sec = sec.with_action(event_sound_spec(event));
+    }
+    let themes = media::event_sound::installed_themes();
+    if let Some(action) = sound_theme_spec(
+        themes
+            .into_iter()
+            .map(|theme| (theme.name, theme.id))
+            .collect(),
+    ) {
+        sec = sec.with_action(action);
+    }
     sec = sec.with_action(local_number_spec(
         "input-volume",
         "Set input volume",
@@ -2216,6 +2245,98 @@ fn echo_cancellation_spec() -> ActionSpec {
     )
 }
 
+fn system_sounds_spec() -> ActionSpec {
+    local_bool_spec(
+        "system-sounds",
+        "Turn system sounds on or off",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSounds { enabled },
+            )
+        },
+    )
+}
+
+fn system_sound_volume_spec() -> ActionSpec {
+    local_number_spec(
+        "system-sound-volume",
+        "Set system sound volume",
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        |value| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSystemSoundVolume { value },
+            )
+        },
+    )
+}
+
+/// Action id of one event's sound toggle, e.g. `event-sound-low-battery`.
+#[must_use]
+pub fn event_sound_action_id(event: settings_store::system_sounds::SystemSoundEvent) -> String {
+    format!("event-sound-{}", event.key().replace('_', "-"))
+}
+
+fn event_sound_spec(event: settings_store::system_sounds::SystemSoundEvent) -> ActionSpec {
+    local_bool_spec(
+        event_sound_action_id(event),
+        format!("Play a sound for {}", event.label().to_lowercase()),
+        AUDIO_OPERATION_TYPE,
+        &["device-local", "audio", "sounds"],
+        move |enabled| {
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetEventSound {
+                    event: event.key().to_string(),
+                    enabled,
+                },
+            )
+        },
+    )
+}
+
+/// `themes` is `(display name, theme id)`.
+fn sound_theme_spec(themes: Vec<(String, String)>) -> Option<ActionSpec> {
+    if themes.is_empty() || themes.len() > MAX_DYNAMIC_CHOICES {
+        return None;
+    }
+    let choices = themes.iter().map(|(name, _)| name.clone()).collect();
+    Some(local_choice_spec(
+        "sound-theme",
+        "Set sound theme",
+        AUDIO_OPERATION_TYPE,
+        choices,
+        &["device-local", "audio", "sounds"],
+        move |choice| {
+            let theme = themes
+                .iter()
+                .find(|(name, _)| name == &choice)
+                .map(|(_, id)| id.clone())
+                .unwrap_or_default();
+            encode_local_operation(
+                AUDIO_OPERATION_TYPE,
+                &AudioOperation::SetSoundTheme { theme },
+            )
+        },
+    ))
+}
+
+/// The sound-theme picker's binding; `themes` is `(display name, theme id)`.
+pub fn audio_sound_theme_binding(
+    themes: Vec<(String, String)>,
+) -> Option<tilo_actions::ActionBinding<String>> {
+    let resource = audio_control_resource(sound_theme_spec(themes)?);
+    let spec = resource.actions.first()?;
+    tilo_actions::ActionBinding::new(&resource, spec, |choice| {
+        serde_json::Map::from_iter([("choice".to_string(), serde_json::Value::String(choice))])
+    })
+    .ok()
+}
+
 pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding<bool>> {
     let action = match action_id {
         "muted" => local_bool_spec(
@@ -2240,7 +2361,11 @@ pub fn audio_bool_binding(action_id: &str) -> Option<tilo_actions::ActionBinding
             },
         ),
         "echo-cancellation" => echo_cancellation_spec(),
-        _ => return None,
+        "system-sounds" => system_sounds_spec(),
+        other => settings_store::system_sounds::SystemSoundEvent::ALL
+            .into_iter()
+            .find(|event| event_sound_action_id(*event) == other)
+            .map(event_sound_spec)?,
     };
     bool_binding_for(&audio_control_resource(action), action_id)
 }
@@ -2284,6 +2409,7 @@ pub fn audio_number_binding(action_id: &str) -> Option<tilo_actions::ActionBindi
                 encode_local_operation(AUDIO_OPERATION_TYPE, &AudioOperation::SetBalance { value })
             },
         ),
+        "system-sound-volume" => system_sound_volume_spec(),
         _ => return None,
     };
     let resource = audio_control_resource(action);
