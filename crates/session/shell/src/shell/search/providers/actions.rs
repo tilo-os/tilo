@@ -339,6 +339,10 @@ fn apply_ownership_action(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one dispatcher over every workspace governance action; each arm validates and applies a single operation"
+)]
 fn apply_permission_profile_action(
     state: &ChromeState,
     action_id: &str,
@@ -431,6 +435,38 @@ fn apply_permission_profile_action(
             for capability in written {
                 tree.doc_insert_capability(workspace_id, &capability);
             }
+        }
+        crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID
+        | crate::shell::workspace_settings::APP_ACTION_REVOKE_ACTION_ID => {
+            use crate::shell::workspace_settings::PermissionProfileOperation;
+            let text = |name: &str| arguments.text(name).unwrap_or_default().to_string();
+            let operation =
+                if action_id == crate::shell::workspace_settings::APP_ACTION_GRANT_ACTION_ID {
+                    PermissionProfileOperation::GrantAppAction {
+                        app: text("app"),
+                        target_app: text("target_app"),
+                        action: text("action"),
+                        lifetime: text("lifetime"),
+                    }
+                } else {
+                    PermissionProfileOperation::RevokeAppAction {
+                        app: text("app"),
+                        target_app: text("target_app"),
+                        action: text("action"),
+                    }
+                };
+            let person = tree
+                .desktop
+                .active_workspace()
+                .ok_or_else(|| ActionError::Refused("no active workspace".into()))?
+                .actor_for_person(&actor);
+            crate::shell::workspace_settings::apply_app_action_operation(
+                &mut tree,
+                workspace_id,
+                &person,
+                &operation,
+            )
+            .map_err(ActionError::Refused)?;
         }
         _ => {
             return Err(ActionError::Refused(
