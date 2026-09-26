@@ -154,6 +154,7 @@ async fn bring_up_pair_with_spawners(
     let rd = RemoteDesktopBackend::new(ctx.clone());
     let pr = PrintBackend::new(ctx.clone());
     let no = NotificationBackend::new(ctx.clone());
+    let settings = shell::portal::SettingsBackend::new(ctx.clone());
 
     let server_builder = Builder::unix_stream(server_sock)
         .server(TEST_GUID)
@@ -170,7 +171,9 @@ async fn bring_up_pair_with_spawners(
         .serve_at(OBJECT_PATH, pr)
         .expect("serve_at pr")
         .serve_at(OBJECT_PATH, no)
-        .expect("serve_at notification");
+        .expect("serve_at notification")
+        .serve_at(OBJECT_PATH, settings)
+        .expect("serve_at settings");
     let client_builder = Builder::unix_stream(client_sock).p2p();
 
     let (server_conn, client_conn) =
@@ -1169,4 +1172,99 @@ async fn an_app_cannot_name_a_destination_that_does_not_exist() {
         "the app's chosen destination was ignored in favour of a real one"
     );
     drop(doc);
+}
+
+/// Legacy toolkits read the OS appearance through `ReadAll`/`Read` and follow
+/// it through `SettingChanged`; all three carry the GNOME interface keys the
+/// settings file resolves to.
+#[tokio::test]
+async fn settings_serve_the_gnome_interface_keys_and_signal_changes() {
+    use futures_util::StreamExt as _;
+    use shell::portal::appearance::{APPEARANCE, GNOME_INTERFACE, LegacyAppearance};
+
+    let (store, _ws_id) = GrantStoreHandle::test_with_workspace(empty_workspace(120, "ws"));
+    let (server, client, ctx) = bring_up_pair(
+        store,
+        PromptQueueHandle::new(PromptResolver::AutoAllow),
+        CallerMap::new(),
+    )
+    .await;
+    let settings = ctx.desktop_services.settings.clone();
+    shell::portal::settings::spawn_signal_emitter(server.clone(), settings.subscribe());
+    let light = LegacyAppearance::from_settings_text(
+        r#"{"appearance": {"theme": "Light", "text_scale": 1.5}}"#,
+        false,
+    );
+    for (namespace, key, value) in light.portal_settings() {
+        settings.set(namespace, key, value);
+    }
+    let proxy = portal_proxy(&client, "org.freedesktop.impl.portal.Settings").await;
+
+    let all: HashMap<String, HashMap<String, OwnedValue>> = proxy
+        .call("ReadAll", &(vec!["org.gnome.desktop.*"],))
+        .await
+        .expect("ReadAll");
+    assert!(
+        !all.contains_key(APPEARANCE),
+        "the namespace glob filters out org.freedesktop.appearance"
+    );
+    let interface = all.get(GNOME_INTERFACE).expect("GNOME interface namespace");
+    for key in [
+        "color-scheme",
+        "gtk-theme",
+        "accent-color",
+        "font-name",
+        "monospace-font-name",
+        "text-scaling-factor",
+        "cursor-theme",
+        "cursor-size",
+        "enable-animations",
+    ] {
+        assert!(interface.contains_key(key), "missing {key}");
+    }
+    assert_eq!(
+        String::try_from(interface["gtk-theme"].try_clone().unwrap()).unwrap(),
+        "Adwaita"
+    );
+    assert_eq!(
+        f64::try_from(interface["text-scaling-factor"].try_clone().unwrap()).unwrap(),
+        1.5
+    );
+
+    let reduced: OwnedValue = proxy
+        .call("Read", &(APPEARANCE, "reduced-motion"))
+        .await
+        .expect("Read reduced-motion");
+    assert_eq!(u32::try_from(reduced).unwrap(), 0);
+
+    let mut changes = proxy
+        .receive_signal("SettingChanged")
+        .await
+        .expect("subscribe SettingChanged");
+    let reduced_motion = LegacyAppearance::from_settings_text(
+        r#"{"appearance": {"theme": "Light", "text_scale": 1.5, "reduce_motion": true}}"#,
+        false,
+    );
+    for (namespace, key, value) in reduced_motion.portal_settings() {
+        settings.set(namespace, key, value);
+    }
+    let mut seen = Vec::new();
+    while seen.len() < 2 {
+        let message = timeout(Duration::from_secs(5), changes.next())
+            .await
+            .expect("SettingChanged arrives")
+            .expect("signal stream open");
+        let (namespace, key, _value): (String, String, OwnedValue) =
+            message.body().deserialize().expect("signal body");
+        seen.push((namespace, key));
+    }
+    seen.sort();
+    assert_eq!(
+        seen,
+        vec![
+            (APPEARANCE.to_string(), "reduced-motion".to_string()),
+            (GNOME_INTERFACE.to_string(), "enable-animations".to_string()),
+        ],
+        "only the values that changed are signalled"
+    );
 }

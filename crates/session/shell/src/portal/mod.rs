@@ -52,6 +52,7 @@
 pub mod account;
 #[cfg(any(test, target_os = "linux"))]
 pub mod app_chooser;
+pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
@@ -91,7 +92,6 @@ pub mod screencast_pipewire;
 pub mod screenshot;
 #[cfg(any(test, target_os = "linux"))]
 pub mod secret;
-#[cfg(any(test, target_os = "linux"))]
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
 pub mod usb;
