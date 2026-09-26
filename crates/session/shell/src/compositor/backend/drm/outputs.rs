@@ -123,6 +123,7 @@ impl OutputRegistry {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
                 refresh_mhz: None,
+                logical_position: (next_x, 0),
             };
             next_x = next_x.saturating_add(i32::from(mode.width));
             out.push((id, output));
