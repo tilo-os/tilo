@@ -9,33 +9,24 @@ use std::collections::BTreeMap;
 
 use crate::detect::scan;
 use crate::{
-    MASK, MAX_TITLE_CHARS, RedactionBasis, RedactionProposal, ReviewProposals, ReviewStep,
-    ReviewTraceRequest, Span, StepKind, StepOutcome, StepTitle, TitleBasis,
+    LabelTitle, MASK, RedactionBasis, RedactionProposal, ReviewProposals, ReviewStep,
+    ReviewTraceRequest, Span, StepKind, StepOutcome, StepTitle, TitleText,
 };
 
-/// The walk-through title of `step` built from its kind, outcome and label.
+/// The walk-through title of `step` built from its kind, outcome and label,
+/// for the caller to localize.
 #[must_use]
-pub fn label_title(step: &ReviewStep) -> String {
-    let action = step.action.trim();
-    let title = match (step.kind, step.outcome) {
-        (StepKind::Opened, _) => format!("You opened {}", step.app.trim()),
-        (StepKind::Invoked, StepOutcome::Done) => format!("You pressed {action}"),
-        (StepKind::Invoked, StepOutcome::Rejected) => {
-            format!("You pressed {action}; it was refused")
-        }
-        (StepKind::Invoked, StepOutcome::Failed) => format!("You pressed {action}; it failed"),
-        (StepKind::Edited, _) => format!("You edited \u{201C}{action}\u{201D}"),
-        (StepKind::Appeared, _) => format!("\u{201C}{action}\u{201D} appeared"),
-    };
-    if title.chars().nth(MAX_TITLE_CHARS).is_none() {
-        title
-    } else {
-        let mut short: String = title
-            .chars()
-            .take(MAX_TITLE_CHARS.saturating_sub(1))
-            .collect();
-        short.push('\u{2026}');
-        short
+pub fn label_title(step: &ReviewStep) -> LabelTitle {
+    let action = step.action.trim().to_owned();
+    match (step.kind, step.outcome) {
+        (StepKind::Opened, _) => LabelTitle::Opened {
+            app: step.app.trim().to_owned(),
+        },
+        (StepKind::Invoked, StepOutcome::Done) => LabelTitle::Invoked { action },
+        (StepKind::Invoked, StepOutcome::Rejected) => LabelTitle::Refused { action },
+        (StepKind::Invoked, StepOutcome::Failed) => LabelTitle::Failed { action },
+        (StepKind::Edited, _) => LabelTitle::Edited { field: action },
+        (StepKind::Appeared, _) => LabelTitle::Appeared { label: action },
     }
 }
 
@@ -131,10 +122,14 @@ pub fn merge(
     redacted.sort_unstable_by_key(|value| std::cmp::Reverse(value.len()));
     redacted.dedup();
 
+    // Only a model's own text replaces a step's title; a model cannot
+    // submit a label title.
     let mut written: BTreeMap<u32, String> = model_titles
         .into_iter()
-        .filter(|title| title.basis == TitleBasis::Model)
-        .map(|title| (title.step, title.title))
+        .filter_map(|title| match title.title {
+            TitleText::Model { text } => Some((title.step, text)),
+            TitleText::Label(_) => None,
+        })
         .collect();
     let titles = request
         .steps
@@ -142,15 +137,17 @@ pub fn merge(
         .enumerate()
         .filter_map(|(index, step)| {
             let index = u32::try_from(index).ok()?;
-            let (title, basis) = written.remove(&index).map_or_else(
-                || (label_title(step), TitleBasis::ActionLabel),
-                |title| (title, TitleBasis::Model),
-            );
-            Some(StepTitle {
-                step: index,
-                title: masked_title(&title, &redacted),
-                basis,
-            })
+            let title = if let Some(text) = written.remove(&index) {
+                TitleText::Model {
+                    text: masked_title(&text, &redacted),
+                }
+            } else {
+                let mut label = label_title(step);
+                let masked = masked_title(label.argument_mut(), &redacted);
+                *label.argument_mut() = masked;
+                TitleText::Label(label)
+            };
+            Some(StepTitle { step: index, title })
         })
         .collect();
 
@@ -205,25 +202,23 @@ mod tests {
     #[test]
     fn without_a_model_every_step_is_titled_from_its_label() {
         let review = review_without_model(&mail_trace());
-        let titles: Vec<&str> = review
+        let titles: Vec<TitleText> = review
             .titles
             .iter()
-            .map(|title| title.title.as_str())
+            .map(|title| title.title.clone())
             .collect();
         assert_eq!(
             titles,
             [
-                "You opened Mail",
-                "You edited \u{201C}To\u{201D}",
-                "You pressed Send; it failed",
-                "\u{201C}Couldn\u{2019}t send\u{201D} appeared",
+                TitleText::Label(LabelTitle::Opened { app: "Mail".into() }),
+                TitleText::Label(LabelTitle::Edited { field: "To".into() }),
+                TitleText::Label(LabelTitle::Failed {
+                    action: "Send".into()
+                }),
+                TitleText::Label(LabelTitle::Appeared {
+                    label: "Couldn\u{2019}t send".into()
+                }),
             ]
-        );
-        assert!(
-            review
-                .titles
-                .iter()
-                .all(|title| title.basis == TitleBasis::ActionLabel)
         );
         assert_eq!(review.redactions.len(), 2);
     }
@@ -283,25 +278,61 @@ mod tests {
             titles: vec![
                 StepTitle {
                     step: 1,
-                    title: "You wrote to Jana Novák and Petr".into(),
-                    basis: TitleBasis::Model,
+                    title: TitleText::Model {
+                        text: "You wrote to Jana Novák and Petr".into(),
+                    },
                 },
                 StepTitle {
                     step: 2,
-                    title: "You pressed Send (+49 30 1234 5678)".into(),
-                    basis: TitleBasis::Model,
+                    title: TitleText::Model {
+                        text: "You pressed Send (+49 30 1234 5678)".into(),
+                    },
+                },
+                // A model cannot pass its title off as a localized one.
+                StepTitle {
+                    step: 3,
+                    title: TitleText::Label(LabelTitle::Invoked {
+                        action: "Delete everything".into(),
+                    }),
                 },
             ],
         };
         let merged = merge(&trace, floor(&trace), Some(model));
         let title = |step: u32| merged.titles.iter().find(|t| t.step == step).unwrap();
+        let text = |step: u32| match &title(step).title {
+            TitleText::Model { text } => text.clone(),
+            TitleText::Label(label) => panic!("step {step} kept its label title {label:?}"),
+        };
         assert_eq!(
-            title(1).title,
+            text(1),
             "You wrote to \u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE}\u{25AE} and \u{25AE}\u{25AE}\u{25AE}\u{25AE}"
         );
-        assert_eq!(title(1).basis, TitleBasis::Model);
-        assert!(!title(2).title.contains("1234"));
-        assert_eq!(title(3).basis, TitleBasis::ActionLabel);
+        assert!(!text(2).contains("1234"));
+        assert_eq!(
+            title(3).title,
+            TitleText::Label(LabelTitle::Appeared {
+                label: "Couldn\u{2019}t send".into()
+            })
+        );
+    }
+
+    #[test]
+    fn a_label_title_argument_is_masked_too() {
+        let mut trace = mail_trace();
+        trace.steps[2].action = "Reply to jana@example.cz".into();
+        trace.steps[2].texts.push(text(
+            "r:subject",
+            DeclaredSensitivity::Public,
+            "jana@example.cz",
+        ));
+        let review = review_without_model(&trace);
+        let TitleText::Label(label) = &review.titles[2].title else {
+            panic!("label title");
+        };
+        assert_eq!(
+            label.args()[0].1,
+            format!("Reply to {}", "\u{25AE}".repeat(15))
+        );
     }
 
     #[test]

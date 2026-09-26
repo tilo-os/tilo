@@ -566,6 +566,16 @@ pub mod session {
                     "gateway reviewed without a model".into(),
                 ));
             }
+            if answer
+                .proposals
+                .titles
+                .iter()
+                .any(|title| !matches!(title.title, tilo_feedback_review::TitleText::Model { .. }))
+            {
+                return Err(ClientError::Protocol(
+                    "a model title must be marked as model text".into(),
+                ));
+            }
             answer
                 .proposals
                 .validate_against(trace)
@@ -668,7 +678,7 @@ mod session_tests {
     use tilo_feedback_review::{
         Confidence, DeclaredSensitivity, RedactionBasis, RedactionCategory, RedactionProposal,
         ReviewProposals, ReviewStep, ReviewText, ReviewTraceRequest, Span, StepKind, StepOutcome,
-        StepTitle, TextOrigin, TitleBasis,
+        StepTitle, TextOrigin, TitleText,
     };
 
     use super::session::{ModelContribution, review};
@@ -780,8 +790,9 @@ mod session_tests {
                 }],
                 titles: vec![StepTitle {
                     step: 0,
-                    title: "You wrote to Petr".into(),
-                    basis: TitleBasis::Model,
+                    title: TitleText::Model {
+                        text: "You wrote to Petr".into(),
+                    },
                 }],
             },
         }
@@ -818,7 +829,9 @@ mod session_tests {
         assert_eq!(bases, [RedactionBasis::Model, RedactionBasis::Pattern]);
         assert_eq!(
             outcome.proposals.titles[0].title,
-            "You wrote to \u{25AE}\u{25AE}\u{25AE}\u{25AE}"
+            TitleText::Model {
+                text: "You wrote to \u{25AE}\u{25AE}\u{25AE}\u{25AE}".into()
+            }
         );
     }
 
@@ -836,7 +849,10 @@ mod session_tests {
             outcome.proposals.redactions[0].basis,
             RedactionBasis::Pattern
         );
-        assert_eq!(outcome.proposals.titles[0].basis, TitleBasis::ActionLabel);
+        assert!(matches!(
+            outcome.proposals.titles[0].title,
+            TitleText::Label(_)
+        ));
     }
 
     #[test]

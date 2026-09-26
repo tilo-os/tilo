@@ -19,7 +19,7 @@ use serde::Deserialize;
 use tilo_feedback_review::{
     Confidence, Exposure, MAX_REDACTIONS, MAX_STEPS, MAX_TEXT_CHARS, MAX_TITLE_CHARS, ModelText,
     RedactionBasis, RedactionCategory, RedactionProposal, ReviewProposals, ReviewTraceRequest,
-    StepTitle, TitleBasis, model_view, valid_title,
+    StepTitle, TitleText, model_view, valid_title,
 };
 use tilo_model_gateway::{ReviewAnswer, review_model};
 
@@ -288,8 +288,9 @@ pub(crate) fn parse_review(
         }
         titles.push(StepTitle {
             step: title.step,
-            title: text.to_owned(),
-            basis: TitleBasis::Model,
+            title: TitleText::Model {
+                text: text.to_owned(),
+            },
         });
     }
     titles.sort_by_key(|title| title.step);
@@ -515,7 +516,12 @@ mod tests {
                     && p.basis == RedactionBasis::Model)
         );
         assert_eq!(proposals.titles.len(), 2);
-        assert_eq!(proposals.titles[0].title, "You wrote to a contact");
+        assert_eq!(
+            proposals.titles[0].title,
+            TitleText::Model {
+                text: "You wrote to a contact".into()
+            }
+        );
     }
 
     #[test]

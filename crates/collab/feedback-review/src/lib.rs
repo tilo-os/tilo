@@ -35,6 +35,32 @@ use thiserror::Error;
 
 pub use detect::floor;
 pub use merge::{label_title, merge};
+
+#[cfg(test)]
+mod locale_tests {
+    use super::*;
+
+    #[test]
+    fn every_label_title_has_an_english_message_with_its_argument() {
+        let titles = [
+            LabelTitle::Opened { app: "a".into() },
+            LabelTitle::Invoked { action: "a".into() },
+            LabelTitle::Refused { action: "a".into() },
+            LabelTitle::Failed { action: "a".into() },
+            LabelTitle::Edited { field: "a".into() },
+            LabelTitle::Appeared { label: "a".into() },
+        ];
+        for title in titles {
+            let line = FLUENT_EN_US
+                .lines()
+                .find(|line| line.starts_with(&format!("{} =", title.fluent_key())))
+                .unwrap_or_else(|| panic!("{} has no message", title.fluent_key()));
+            for (name, _) in title.args() {
+                assert!(line.contains(&format!("{{ ${name} }}")), "{line}");
+            }
+        }
+    }
+}
 pub use view::{Exposure, ModelText, model_view, placeholder};
 
 /// Steps in one review request. Longer recordings are reviewed as several
@@ -239,14 +265,76 @@ pub struct RedactionProposal {
     pub basis: RedactionBasis,
 }
 
-/// Where a step title came from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TitleBasis {
-    /// Built from the step's kind, outcome and action label.
-    ActionLabel,
-    /// Written by the device-local review model.
-    Model,
+/// A step title built from the step itself. The caller renders it through
+/// its own i18n: [`Self::fluent_key`] with [`Self::args`], from the messages
+/// in [`FLUENT_EN_US`] and its translations. The crate holds no display text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum LabelTitle {
+    /// The person opened `app`.
+    Opened { app: String },
+    /// The person invoked `action` and it happened.
+    Invoked { action: String },
+    /// The person invoked `action` and it was refused.
+    Refused { action: String },
+    /// The person invoked `action` and it failed.
+    Failed { action: String },
+    /// The person changed the content of `field`.
+    Edited { field: String },
+    /// An overlay named `label` appeared.
+    Appeared { label: String },
+}
+
+impl LabelTitle {
+    /// The Fluent message id.
+    #[must_use]
+    pub const fn fluent_key(&self) -> &'static str {
+        match self {
+            Self::Opened { .. } => "feedback-review-step-opened",
+            Self::Invoked { .. } => "feedback-review-step-invoked",
+            Self::Refused { .. } => "feedback-review-step-refused",
+            Self::Failed { .. } => "feedback-review-step-failed",
+            Self::Edited { .. } => "feedback-review-step-edited",
+            Self::Appeared { .. } => "feedback-review-step-appeared",
+        }
+    }
+
+    /// The message's one named argument and its value.
+    #[must_use]
+    pub fn args(&self) -> [(&'static str, &str); 1] {
+        match self {
+            Self::Opened { app } => [("app", app)],
+            Self::Invoked { action } | Self::Refused { action } | Self::Failed { action } => {
+                [("action", action)]
+            }
+            Self::Edited { field } => [("field", field)],
+            Self::Appeared { label } => [("label", label)],
+        }
+    }
+
+    pub(crate) fn argument_mut(&mut self) -> &mut String {
+        match self {
+            Self::Opened { app } => app,
+            Self::Invoked { action } | Self::Refused { action } | Self::Failed { action } => action,
+            Self::Edited { field } => field,
+            Self::Appeared { label } => label,
+        }
+    }
+}
+
+/// The English messages for every [`LabelTitle`]. Add them to the caller's
+/// Fluent bundle (for `ui`, `i18n::add_resource("en-US", ..)`).
+pub const FLUENT_EN_US: &str = include_str!("../locales/en-US.ftl");
+
+/// What a step title says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum TitleText {
+    /// Built from the step; localized by the caller.
+    Label(LabelTitle),
+    /// Written by the review model, in the model's words and language. Show
+    /// it as model text, not as a localized string.
+    Model { text: String },
 }
 
 /// The walk-through title of one step.
@@ -254,8 +342,7 @@ pub enum TitleBasis {
 #[serde(deny_unknown_fields)]
 pub struct StepTitle {
     pub step: u32,
-    pub title: String,
-    pub basis: TitleBasis,
+    pub title: TitleText,
 }
 
 /// Review's answer for one request.
@@ -405,7 +492,11 @@ impl ReviewProposals {
         let mut steps = BTreeSet::new();
         for title in &self.titles {
             let exists = usize::try_from(title.step).is_ok_and(|step| step < request.steps.len());
-            if !exists || !steps.insert(title.step) || !valid_title(&title.title) {
+            let valid = match &title.title {
+                TitleText::Model { text } => valid_title(text),
+                TitleText::Label(label) => label.args().iter().all(|(_, value)| valid_label(value)),
+            };
+            if !exists || !steps.insert(title.step) || !valid {
                 return Err(ContractError::BadTitle);
             }
         }
@@ -539,8 +630,9 @@ mod tests {
             redactions: Vec::new(),
             titles: vec![StepTitle {
                 step: 3,
-                title: "You typed".into(),
-                basis: TitleBasis::Model,
+                title: TitleText::Model {
+                    text: "You typed".into(),
+                },
             }],
         };
         assert_eq!(
