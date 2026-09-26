@@ -4612,6 +4612,21 @@ pub fn authorize_remote_audio(
     crate::shell::remote_audio::authorize(network, session_id, approved)
 }
 
+/// Choose which part of an inbound remote-audio route's stereo stream this
+/// device plays, e.g. one side of a stereo pair formed with another device.
+///
+/// # Errors
+///
+/// Returns an error for disabled policy, a stale route, or a playback stream
+/// that cannot restart.
+pub fn set_remote_audio_role(
+    session_id: [u8; 16],
+    role: media::sync_playout::ChannelRole,
+) -> Result<(), String> {
+    require_continuity(ContinuityCapability::Media)?;
+    crate::shell::remote_audio::set_role(session_id, role)
+}
+
 /// Stop an active remote-audio route and revoke its target-issued capability.
 ///
 /// # Errors
