@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
 
 pub(crate) mod owned_restore;
+mod sequence_replay;
+use sequence_replay::SequenceReplay;
 #[cfg(test)]
 pub(crate) mod owned_restore_tests;
 
@@ -1252,113 +1254,7 @@ pub fn write_revert_patches(
 ) {
     // Patches describing how to get from `from_heads` back to `to_heads`.
     let patches = doc.diff(from_heads, to_heads);
-    let restored = restore_untouched_plain_text(doc, &patches, from_heads, to_heads);
-    let patches = patches
-        .into_iter()
-        .filter(|patch| !restored.contains(&patch.obj))
-        .collect();
     write_patches(doc, patches, to_heads, from_heads);
-}
-
-/// Revert plain-text objects the reverted span edited and nobody has touched
-/// since, by splicing their live text back to its earlier value in one step.
-///
-/// Diff patches index each text edit against the sequence as the *previous*
-/// patches of the same diff left it, so replaying several of them through
-/// fixed-anchor position lookups lands later edits on the wrong characters,
-/// and a multi-character delete resolved from one anchor asks for an already
-/// deleted element. When the live text is still exactly what the reverted
-/// span produced, the earlier text is simply the target: restore it as one
-/// splice of the differing span. Text with formatting, or edited
-/// concurrently since, keeps the general patch replay.
-fn restore_untouched_plain_text(
-    doc: &mut AutoCommit,
-    patches: &[automerge::Patch],
-    from_heads: &[ChangeHash],
-    to_heads: &[ChangeHash],
-) -> std::collections::HashSet<ObjId> {
-    let mut candidates: Vec<ObjId> = Vec::new();
-    // Objects the revert recreates, or that carry formatting, stay on the
-    // general path.
-    let mut formatted = std::collections::HashSet::new();
-    for patch in patches {
-        match &patch.action {
-            PatchAction::PutMap { value, .. } | PatchAction::PutSeq { value, .. } => {
-                formatted.insert(value.1.clone());
-            }
-            PatchAction::Insert { values, .. } => {
-                formatted.extend(values.iter().map(|(_, id, _)| id.clone()));
-            }
-            _ => {}
-        }
-        match &patch.action {
-            PatchAction::SpliceText { marks: None, .. } | PatchAction::DeleteSeq { .. } => {
-                if !candidates.contains(&patch.obj) {
-                    candidates.push(patch.obj.clone());
-                }
-            }
-            _ => {
-                formatted.insert(patch.obj.clone());
-            }
-        }
-    }
-    let mut restored = std::collections::HashSet::new();
-    for obj in candidates {
-        if formatted.contains(&obj)
-            || !matches!(doc.object_type(&obj), Ok(automerge::ObjType::Text))
-            || doc.marks(&obj).is_ok_and(|marks| !marks.is_empty())
-        {
-            continue;
-        }
-        let (Ok(live), Ok(produced), Ok(target)) = (
-            doc.text(&obj),
-            doc.text_at(&obj, from_heads),
-            doc.text_at(&obj, to_heads),
-        ) else {
-            continue;
-        };
-        if live != produced {
-            continue;
-        }
-        let prefix = live
-            .char_indices()
-            .zip(target.chars())
-            .find(|((_, a), b)| a != b)
-            .map_or_else(|| live.len().min(target.len()), |((index, _), _)| index);
-        let live_rest = live.get(prefix..).unwrap_or("");
-        let target_rest = target.get(prefix..).unwrap_or("");
-        let suffix: usize = live_rest
-            .chars()
-            .rev()
-            .zip(target_rest.chars().rev())
-            .take_while(|(a, b)| a == b)
-            .map(|(a, _)| a.len_utf8())
-            .sum();
-        let removed = live_rest
-            .get(..live_rest.len().saturating_sub(suffix))
-            .unwrap_or("");
-        let inserted = target_rest
-            .get(..target_rest.len().saturating_sub(suffix))
-            .unwrap_or("");
-        let width = |part: &str| match doc.text_encoding() {
-            automerge::TextEncoding::UnicodeCodePoint => Some(part.chars().count()),
-            automerge::TextEncoding::Utf8CodeUnit => Some(part.len()),
-            automerge::TextEncoding::Utf16CodeUnit => Some(part.encode_utf16().count()),
-            automerge::TextEncoding::GraphemeCluster => None,
-        };
-        let (Some(position), Some(deleted)) =
-            (width(live.get(..prefix).unwrap_or("")), width(removed))
-        else {
-            continue;
-        };
-        let Ok(deleted) = isize::try_from(deleted) else {
-            continue;
-        };
-        if doc.splice_text(&obj, position, deleted, inserted).is_ok() {
-            restored.insert(obj);
-        }
-    }
-    restored
 }
 
 /// Write an already-derived patch set forward into `doc`'s open transaction.
@@ -1368,12 +1264,12 @@ fn restore_untouched_plain_text(
 /// Filtered history uses `write_selected_patches` to retain skipped structural
 /// steps in the logical index stream without changing their live content.
 ///
-/// The two anchors are the head sets the patch indices are expressed against.
-/// `insert_anchor` is the state in which a re-inserted element's boundary is
-/// meaningful (the element does not exist after the action being inverted);
-/// `index_anchor` is the state in which an element the patch deletes or
-/// overwrites still exists. Passing them the wrong way round silently moves
-/// edits to neighbouring positions, so both are named rather than positional.
+/// The two anchors bracket the change being inverted. `index_anchor` is the
+/// state the patches start from: the first patch into a sequence indexes it as
+/// of then, and each later one as the patches before it left it.
+/// `insert_anchor` is the state they lead to, whose formatting a recreated
+/// text object takes back. Passing them the wrong way round moves edits to
+/// the wrong elements, so both are named rather than positional.
 pub fn write_patches(
     doc: &mut AutoCommit,
     patches: Vec<automerge::Patch>,
@@ -1392,7 +1288,7 @@ pub fn write_patches(
 /// still include their logical effects, even though their live content survives.
 #[allow(
     clippy::too_many_lines,
-    reason = "the patch replay must share object remapping and list cursor state across every Automerge patch variant"
+    reason = "the patch replay must share object remapping and sequence state across every Automerge patch variant"
 )]
 pub(crate) fn write_selected_patches(
     doc: &mut AutoCommit,
@@ -1400,37 +1296,41 @@ pub(crate) fn write_selected_patches(
     insert_anchor: &[ChangeHash],
     index_anchor: &[ChangeHash],
 ) {
-    let entry_after = index_anchor;
-    let entry_before = insert_anchor;
     // Recreated objects get a fresh ExId; map the patch's (old) ObjId to it
     // so nested child patches target the new object.
     let mut remap: HashMap<ObjId, ObjId> = HashMap::new();
-    // Diff indices refer to the sequence as earlier patches transform it.
-    // Keep that order separately from the live list, which can also contain
-    // later collaborator edits and must never resolve deleted cursor anchors.
-    let mut list_orders: HashMap<ObjId, Vec<automerge::Cursor>> = HashMap::new();
+    // Diff indices refer to the sequence as earlier patches transform it,
+    // which the live document — holding later collaborator edits too — is
+    // not; each sequence object follows both.
+    let mut sequences = sequence_replay::prepare(doc, &patches, index_anchor);
     for (patch, apply) in patches {
-        let recreated = remap.contains_key(&patch.obj);
         let target = remap
             .get(&patch.obj)
             .cloned()
             .unwrap_or_else(|| patch.obj.clone());
-        let mut list_order = if matches!(doc.object_type(&target), Ok(automerge::ObjType::List)) {
-            Some(list_orders.entry(patch.obj.clone()).or_insert_with(|| {
-                (0..doc.length_at(&patch.obj, index_anchor))
-                    .filter_map(|index| doc.get_cursor(&patch.obj, index, Some(index_anchor)).ok())
-                    .collect()
-            }))
-        } else {
-            None
-        };
+        let is_text = matches!(doc.object_type(&target), Ok(automerge::ObjType::Text));
+        let sequence =
+            if is_text || matches!(doc.object_type(&target), Ok(automerge::ObjType::List)) {
+                Some(
+                    sequences
+                        .entry(patch.obj.clone())
+                        .or_insert_with(SequenceReplay::fresh),
+                )
+            } else {
+                None
+            };
         if !apply {
-            if let (Some(order), PatchAction::DeleteSeq { index, length }) =
-                (list_order.as_deref_mut(), &patch.action)
-            {
-                let end = index.saturating_add(*length).min(order.len());
-                if *index < end {
-                    order.drain(*index..end);
+            // A skipped list patch still moves the indices of the ones after
+            // it. (Filtered history keeps or skips a text object whole.)
+            if let Some(sequence) = sequence {
+                match &patch.action {
+                    PatchAction::DeleteSeq { index, length } => {
+                        sequence.skipped_delete(*index, *length);
+                    }
+                    PatchAction::Insert { index, values } => {
+                        sequence.skipped_insert(*index, values.len());
+                    }
+                    _ => {}
                 }
             }
             continue;
@@ -1447,54 +1347,43 @@ pub(crate) fn write_selected_patches(
                 }
             },
             PatchAction::PutSeq { index, value, .. } => {
-                // The element still exists post-action; anchor at `after`.
-                let li = if let Some(order) = list_order.as_deref() {
-                    let Some(position) = order
-                        .get(index)
-                        .and_then(|cursor| visible_list_index(doc, &target, cursor))
-                    else {
-                        continue;
-                    };
-                    position
-                } else {
-                    live_index_at(doc, &target, index, entry_after)
+                // The element still exists after the action; leave it be when
+                // a collaborator removed it since.
+                let Some(sequence) = sequence else { continue };
+                let Some(at) = sequence.element(index) else {
+                    continue;
                 };
                 match value.0 {
                     Value::Scalar(s) => {
-                        let _ = doc.put(&target, li, s.into_owned());
+                        let _ = doc.put(&target, at.unit, s.into_owned());
                     }
                     Value::Object(ot) => {
-                        if let Ok(new_id) = doc.put_object(&target, li, ot) {
+                        if let Ok(new_id) = doc.put_object(&target, at.unit, ot) {
                             remap.insert(value.1, new_id);
                         }
                     }
                 }
+                sequence.replaced(doc, &target, index, at);
             }
             PatchAction::Insert { index, values } => {
-                // Re-inserting elements the local action deleted; the
-                // boundary is expressed in `before` coordinates.
-                let start = list_order.as_deref().map_or_else(
-                    || live_insert_boundary(doc, &target, index, entry_before),
-                    |order| visible_list_boundary(doc, &target, order, index),
-                );
-                for (li, (val, old_id, _)) in (start..).zip(&values) {
-                    match val {
-                        Value::Scalar(s) => {
-                            let _ = doc.insert(&target, li, s.clone().into_owned());
-                        }
-                        Value::Object(ot) => {
-                            if let Ok(new_id) = doc.insert_object(&target, li, *ot) {
-                                remap.insert(old_id.clone(), new_id);
-                            }
-                        }
+                // Re-inserting elements the local action deleted.
+                let Some(sequence) = sequence else { continue };
+                let at = sequence.insertion(index);
+                let mut written = 0usize;
+                for (li, (val, old_id, _)) in (at.unit..).zip(&values) {
+                    let inserted = match val {
+                        Value::Scalar(s) => doc.insert(&target, li, s.clone().into_owned()).is_ok(),
+                        Value::Object(ot) => doc
+                            .insert_object(&target, li, *ot)
+                            .map(|new_id| remap.insert(old_id.clone(), new_id))
+                            .is_ok(),
+                    };
+                    if !inserted {
+                        break;
                     }
+                    written = written.saturating_add(1);
                 }
-                if let Some(order) = list_order.as_deref_mut() {
-                    let cursors = (start..start.saturating_add(values.len()))
-                        .filter_map(|position| doc.get_cursor(&target, position, None).ok())
-                        .collect::<Vec<_>>();
-                    order.splice(index.min(order.len())..index.min(order.len()), cursors);
-                }
+                sequence.inserted(doc, &target, index, at, written);
             }
             PatchAction::SpliceText {
                 index,
@@ -1503,18 +1392,17 @@ pub(crate) fn write_selected_patches(
             } => {
                 // Re-inserting text the local action deleted, including native
                 // formatting when a move/undo recreates its owning object.
-                let li = if recreated {
-                    index
-                } else {
-                    live_insert_boundary(doc, &target, index, entry_before)
-                };
+                let Some(sequence) = sequence else { continue };
+                let at = sequence.insertion(index);
+                let li = at.unit;
                 let previous_length = doc.length(&target);
                 if doc
                     .splice_text(&target, li, 0, &value.make_string())
                     .is_ok()
                 {
-                    let end =
-                        li.saturating_add(doc.length(&target).saturating_sub(previous_length));
+                    let written = doc.length(&target).saturating_sub(previous_length);
+                    sequence.inserted(doc, &target, index, at, written);
+                    let end = li.saturating_add(written);
                     // Insertion can inherit formatting from its new neighbors.
                     // The patch markset describes the complete restored span,
                     // so names absent from it must be removed, including when
@@ -1559,36 +1447,48 @@ pub(crate) fn write_selected_patches(
                 }
             }
             PatchAction::Increment { prop, value } => {
+                let prop = match (prop, sequence) {
+                    (automerge::Prop::Seq(index), Some(sequence)) => {
+                        let Some(at) = sequence.element(index) else {
+                            continue;
+                        };
+                        automerge::Prop::Seq(at.unit)
+                    }
+                    (prop, _) => prop,
+                };
                 let _ = doc.increment(&target, prop, value);
             }
             PatchAction::DeleteMap { key } => {
                 let _ = doc.delete(&target, key);
             }
             PatchAction::DeleteSeq { index, length } => {
-                // Removing elements the local action inserted; they exist
-                // post-action, so each position is anchored at `after`.
-                if let Some(order) = list_order {
-                    let end = index.saturating_add(length).min(order.len());
-                    if index < end {
-                        for cursor in order.drain(index..end) {
-                            if let Some(position) = visible_list_index(doc, &target, &cursor) {
-                                let _ = doc.delete(&target, position);
-                            }
-                        }
-                    }
-                } else {
-                    for _ in 0..length {
-                        let li = live_index_at(doc, &target, index, entry_after);
-                        let _ = doc.delete(&target, li);
-                    }
+                // Removing elements the local action inserted, except those
+                // a collaborator removed since.
+                let Some(sequence) = sequence else { continue };
+                for (at, units) in sequence.delete(index, length) {
+                    let Ok(units) = isize::try_from(units) else {
+                        continue;
+                    };
+                    let _ = if is_text {
+                        doc.splice_text(&target, at.unit, units, "")
+                    } else {
+                        doc.splice(
+                            &target,
+                            at.unit,
+                            units,
+                            std::iter::empty::<automerge::ScalarValue>(),
+                        )
+                    };
                 }
             }
             PatchAction::Mark { marks } => {
+                let Some(sequence) = sequence else { continue };
                 for mut mark in marks {
-                    if !recreated {
-                        mark.start = live_insert_boundary(doc, &target, mark.start, entry_before);
-                        mark.end = live_insert_boundary(doc, &target, mark.end, entry_before);
-                    }
+                    let Some((start, end)) = sequence.span(mark.start, mark.end) else {
+                        continue;
+                    };
+                    mark.start = start;
+                    mark.end = end;
                     let _ = doc.mark(&target, mark, automerge::marks::ExpandMark::After);
                 }
             }
@@ -1619,65 +1519,6 @@ pub(crate) fn write_selected_patches(
         for mark in restored {
             let _ = doc.mark(&fresh, mark, automerge::marks::ExpandMark::After);
         }
-    }
-}
-
-// Resolving only visible identities avoids Automerge's tombstoned-list cursor
-// fast path and never substitutes an unrelated numeric neighbor for a deletion.
-fn visible_list_index(doc: &AutoCommit, obj: &ObjId, cursor: &automerge::Cursor) -> Option<usize> {
-    (0..doc.length(obj))
-        .find(|&index| doc.get_cursor(obj, index, None).ok().as_ref() == Some(cursor))
-}
-
-fn visible_list_boundary(
-    doc: &AutoCommit,
-    obj: &ObjId,
-    order: &[automerge::Cursor],
-    index: usize,
-) -> usize {
-    order
-        .iter()
-        .take(index)
-        .rev()
-        .find_map(|cursor| visible_list_index(doc, obj, cursor))
-        .map_or(0, |position| position.saturating_add(1))
-}
-
-/// Translate a sequence index expressed as-of `anchor_heads` into its position
-/// in the live document, so concurrent inserts/deletes shift it correctly. Used
-/// when the referenced element still exists.
-fn live_index_at(
-    doc: &AutoCommit,
-    obj: &ObjId,
-    index: usize,
-    anchor_heads: &[ChangeHash],
-) -> usize {
-    match doc.get_cursor(obj, index, Some(anchor_heads)) {
-        Ok(cursor) => doc.get_cursor_position(obj, &cursor, None).unwrap_or(index),
-        Err(_) => index,
-    }
-}
-
-/// Translate an *insertion boundary* expressed as-of `anchor_heads` into the
-/// live document. The element originally at `index` may itself have been
-/// deleted by the action we are reverting (which would trip an automerge
-/// fast/slow cursor-seek consistency check), so anchor on the surviving element
-/// just before the boundary and insert after it.
-fn live_insert_boundary(
-    doc: &AutoCommit,
-    obj: &ObjId,
-    index: usize,
-    anchor_heads: &[ChangeHash],
-) -> usize {
-    if index == 0 {
-        return 0;
-    }
-    // `index >= 1` here (checked above), so this never underflows.
-    match doc.get_cursor(obj, index.saturating_sub(1), Some(anchor_heads)) {
-        Ok(cursor) => doc
-            .get_cursor_position(obj, &cursor, None)
-            .map_or(index, |p| p.saturating_add(1)),
-        Err(_) => index,
     }
 }
 
@@ -1766,6 +1607,128 @@ mod tests {
             state.redo(None, None).unwrap();
             assert_eq!(state.doc.text(&text).unwrap(), "ab");
             assert_eq!(state.doc.marks(&text).unwrap(), after);
+        }
+    }
+
+    #[test]
+    fn undo_of_several_splices_in_formatted_text_restores_text_and_marks() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut state = State::new();
+        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+        state
+            .doc
+            .splice_text(&text, 0, 0, "Project Falcon remains")
+            .unwrap();
+        state
+            .doc
+            .mark(
+                &text,
+                Mark::new("bold".into(), true, 0, 14),
+                ExpandMark::After,
+            )
+            .unwrap();
+        state.commit_action(None, None);
+        let before = state.doc.marks(&text).unwrap();
+        // One action: insert inside the bold run, then delete on both sides.
+        state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
+        state.doc.splice_text(&text, 8, 1, "").unwrap();
+        state.doc.splice_text(&text, 14, 5, "").unwrap();
+        state.commit_action(None, None);
+        assert_eq!(state.doc.text(&text).unwrap(), "Project Osprey remains");
+        let after = state.doc.marks(&text).unwrap();
+        for _ in 0..2 {
+            state.undo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), "Project Falcon remains");
+            assert_eq!(state.doc.marks(&text).unwrap(), before);
+            state.redo(None, None).unwrap();
+            assert_eq!(state.doc.text(&text).unwrap(), "Project Osprey remains");
+            assert_eq!(state.doc.marks(&text).unwrap(), after);
+        }
+    }
+
+    #[test]
+    fn undo_of_formatted_text_keeps_a_concurrent_edit_in_it() {
+        use automerge::marks::{ExpandMark, Mark};
+        let mut state = State::new();
+        let text = state.doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+        state
+            .doc
+            .splice_text(&text, 0, 0, "Project Falcon remains")
+            .unwrap();
+        state
+            .doc
+            .mark(
+                &text,
+                Mark::new("bold".into(), true, 0, 14),
+                ExpandMark::After,
+            )
+            .unwrap();
+        state.commit_action(None, None);
+        let before_local = state.doc.get_heads();
+        state.doc.splice_text(&text, 9, 0, "Osprey").unwrap();
+        state.doc.splice_text(&text, 8, 1, "").unwrap();
+        state.doc.splice_text(&text, 14, 5, "").unwrap();
+        state.commit_action(None, None);
+        // A collaborator, concurrently, prepends to the paragraph and appends
+        // to it.
+        let mut peer = state.doc.fork_at(&before_local).unwrap();
+        peer.splice_text(&text, 0, 0, "New: ").unwrap();
+        peer.splice_text(&text, 27, 0, " today").unwrap();
+        peer.commit();
+        state
+            .load_incremental(&peer.save_after(&before_local))
+            .unwrap();
+        assert_eq!(
+            state.doc.text(&text).unwrap(),
+            "New: Project Osprey remains today"
+        );
+        state.undo(None, None).unwrap();
+        assert_eq!(
+            state.doc.text(&text).unwrap(),
+            "New: Project Falcon remains today"
+        );
+        let bold: Vec<_> = state
+            .doc
+            .marks(&text)
+            .unwrap()
+            .into_iter()
+            .map(|mark| (mark.name.to_string(), mark.start, mark.end))
+            .collect();
+        assert_eq!(bold, [("bold".to_owned(), 5, 19)]);
+    }
+
+    #[test]
+    fn revert_beside_a_concurrent_edit_keeps_wide_characters_whole_in_every_encoding() {
+        use automerge::TextEncoding;
+        for encoding in [
+            TextEncoding::UnicodeCodePoint,
+            TextEncoding::Utf8CodeUnit,
+            TextEncoding::Utf16CodeUnit,
+            TextEncoding::GraphemeCluster,
+        ] {
+            let width = |s: &str| match encoding {
+                TextEncoding::Utf8CodeUnit => s.len(),
+                TextEncoding::Utf16CodeUnit => s.encode_utf16().count(),
+                // Every character here is its own grapheme.
+                TextEncoding::UnicodeCodePoint | TextEncoding::GraphemeCluster => s.chars().count(),
+            };
+            let mut doc = AutoCommit::new_with_encoding(encoding);
+            let text = doc.put_object(ROOT, "text", ObjType::Text).unwrap();
+            doc.splice_text(&text, 0, 0, "a🦀b").unwrap();
+            let before = doc.get_heads();
+            // Insert after the crab, then delete the character before it.
+            doc.splice_text(&text, width("a🦀"), 0, "XY").unwrap();
+            doc.splice_text(&text, 0, 1, "").unwrap();
+            let after = doc.get_heads();
+            assert_eq!(doc.text(&text).unwrap(), "🦀XYb", "{encoding:?}");
+            let mut peer = doc.fork_at(&before).unwrap();
+            peer.splice_text(&text, width("a🦀b"), 0, "!").unwrap();
+            peer.commit();
+            doc.load_incremental(&peer.save_after(&before)).unwrap();
+            assert_eq!(doc.text(&text).unwrap(), "🦀XYb!", "{encoding:?}");
+            write_revert_patches(&mut doc, &after, &before);
+            doc.commit();
+            assert_eq!(doc.text(&text).unwrap(), "a🦀b!", "{encoding:?}");
         }
     }
 
