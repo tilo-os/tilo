@@ -1403,7 +1403,10 @@ fn document_envelopes_never_enter_generic_widget_notification_before_custody() {
         0,
         "generic mutable widgets never receive unadmitted document traffic"
     );
-    app.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });
+    app.apply_collab_event_for_test(CollabEvent::FollowChanged {
+        peer_id: None,
+        mode: crate::view::FollowMode::Live,
+    });
     assert_eq!(
         probe.collab_events.get(),
         1,

@@ -1881,6 +1881,9 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
+    /// The replay transport's controls, rebuilt every paint while a replay
+    /// is shown in the active workspace.
+    replay_controls: Vec<(Rect, ReplayControl)>,
     /// Complete wireless projection picker, including controller, editor,
     /// animation, painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
@@ -3324,6 +3327,7 @@ impl ShellOverlayHost {
             follow_chip_rect: Rect::ZERO,
             follow_stop_rect: Rect::ZERO,
             follow_cursor_targets: Vec::new(),
+            replay_controls: Vec::new(),
             capture_studio: ui::widget::CaptureStudio::default(),
             capture_node: None,
             screenshot_markup: None,
@@ -13057,6 +13061,16 @@ impl ShellOverlayHost {
     }
 
     fn handle_workspace_navigation_click(&mut self, p: Point) -> bool {
+        if !self.cursor_over_open_overlay(p)
+            && let Some(control) = self
+                .replay_controls
+                .iter()
+                .find(|(rect, _)| rect.contains(p))
+                .map(|(_, control)| *control)
+        {
+            self.apply_replay_control(control);
+            return true;
+        }
         if !self.cursor_over_open_overlay(p) && self.follow_stop_rect.contains(p) {
             self.set_followed_peer(None);
             return true;
@@ -13462,6 +13476,7 @@ impl ShellOverlayHost {
     /// directory, and realtime continuity.
     pub fn attach_collab_broker(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
         self.attach_recorder(broker);
+        self.attach_replay(broker);
         let dispatcher = broker.follow_dispatcher();
         self.set_follow_bridge(std::rc::Rc::new(move |room, peer_id| {
             dispatcher.set(&room.to_string(), peer_id);
@@ -13497,6 +13512,92 @@ impl ShellOverlayHost {
         self.local_participants = Some(crate::shell::peer_presence::LocalParticipantRoster::new(
             broker.fanout(),
         ));
+    }
+
+    /// Attach the session's replay to `broker`: it plays records the
+    /// recorder holds for review and records in this device's stores.
+    pub fn attach_replay(&mut self, broker: &crate::shell::collab_broker::BrokerHandle) {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return;
+        };
+        let tree = chrome.borrow().tree_handle();
+        let replay = crate::shell::replay::ReplayController::attach(broker, tree);
+        replay.set_record_sources(
+            chrome.borrow().recorder().cloned(),
+            self.room_records.borrow().local_record_lookup(),
+        );
+        broker.install_replay(std::sync::Arc::clone(&replay));
+        chrome.borrow_mut().set_replay(replay);
+    }
+
+    /// Replay upkeep: publish what became due, start the recorded apps in a
+    /// replay room, and close what a room the replay left still shows.
+    fn pump_replay(&self) -> bool {
+        let Some((replay, tree)) = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            Some((chrome.replay().cloned()?, chrome.tree_handle()))
+        }) else {
+            return false;
+        };
+        let mut changed = replay.pump(std::time::Instant::now());
+        let launches = replay.take_launches();
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut chrome = chrome.borrow_mut();
+            for surface in &launches.close_surfaces {
+                chrome.request_surface_close(*surface);
+            }
+        }
+        if let Some(workspace) = launches.workspace.and_then(|id| {
+            tree.read()
+                .desktop
+                .workspaces
+                .iter()
+                .find(|w| w.id == id)
+                .cloned()
+        }) {
+            let installed = crate::shell::launcher::installed_apps().unwrap_or_default();
+            for app_id in &launches.apps {
+                let Some(app) = installed
+                    .iter()
+                    .find(|app| {
+                        crate::shell::launcher::app_id_matches_package(app_id, &app.package_id)
+                    })
+                    .cloned()
+                else {
+                    tracing::warn!(%app_id, "replay: the recorded app is not installed on this device");
+                    continue;
+                };
+                if let Some((_, tab)) = launches.into_tabs.iter().find(|(window, _)| {
+                    crate::shell::launcher::app_id_matches_package(window, &app.package_id)
+                }) {
+                    crate::shell::launcher::set_pending_placement(
+                        &app.package_id,
+                        crate::shell::tab_binding::Placement::IntoTab(*tab),
+                    );
+                }
+                if let Err(error) =
+                    crate::shell::launcher::queue_launch_in_workspace(app, &workspace)
+                {
+                    tracing::warn!(%app_id, %error, "replay: the recorded app could not be launched");
+                }
+            }
+            changed = true;
+        }
+        // A replay room's apps kept their state under it; nothing of it
+        // outlives the room.
+        if let Some(data_home) = launcher::appdir::host_data_home() {
+            for room in &launches.closed {
+                let directory = data_home
+                    .join(launcher::appdir::ROOMS_DIR)
+                    .join(launcher::appdir::room_slug(Some(&room.to_string())));
+                if let Err(error) = std::fs::remove_dir_all(&directory)
+                    && error.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(%room, %error, "replay: the replay room's app storage was not removed");
+                }
+            }
+        }
+        changed | !launches.closed.is_empty()
     }
 
     fn persist_collaboration_preferences(&self) {
@@ -16344,7 +16445,7 @@ impl Widget for ShellOverlayHost {
         self.sync_status_from_bridge();
         self.harvest_active_tab_writeback();
         let presence_dirty =
-            self.pump_presence_requests() | self.pump_recorder() | self.pump_remark();
+            self.pump_presence_requests() | self.pump_recorder() | self.pump_remark() | self.pump_replay();
         let follow_dirty = self.reconcile_followed_peer();
         // Both edge-triggered on `active_group`, so they run after the
         // writeback above reflects this frame's focus change.
@@ -19035,6 +19136,7 @@ impl ShellOverlayHost {
         }
 
         self.draw_follow_chip(scene, transform, text_renderer, theme);
+        self.draw_replay_transport(scene, transform, text_renderer, theme);
         // Below the overlay layer, so an open modal occludes it: act on
         // the modal first, then come back to the prompt.
         if let Some(prompt) = self.permission_prompt.as_mut() {
@@ -21660,6 +21762,193 @@ impl ShellOverlayHost {
                 &grad,
                 None,
                 &Rect::new(band.x0, fade_y0, band.x1, fade_y1),
+            );
+        }
+    }
+
+    /// Run a transport control through the shell action it stands for, so
+    /// a click and `tilo-control replay ...` are one operation.
+    fn apply_replay_control(&self, control: ReplayControl) {
+        use crate::shell::search::action_api::ArgValue;
+        let Some(chrome) = self.chrome.clone() else {
+            return;
+        };
+        let (id, args): (&str, Vec<(String, ArgValue)>) = match control {
+            ReplayControl::Previous => ("replay.step.previous", Vec::new()),
+            ReplayControl::Play => ("replay.play", Vec::new()),
+            ReplayControl::Pause => ("replay.pause", Vec::new()),
+            ReplayControl::Next => ("replay.step.next", Vec::new()),
+            ReplayControl::Speed(speed) => (
+                "replay.speed",
+                vec![("speed".into(), ArgValue::Number(speed))],
+            ),
+            ReplayControl::Step(step) => (
+                "replay.seek",
+                vec![(
+                    "step".into(),
+                    ArgValue::Integer(i64::try_from(step).unwrap_or(i64::MAX)),
+                )],
+            ),
+            ReplayControl::Close => ("replay.close", Vec::new()),
+        };
+        let result = crate::shell::search::providers::actions::apply_shell_action(
+            &mut chrome.borrow_mut(),
+            id,
+            args,
+        );
+        if let Err(error) = result {
+            tracing::debug!(%error, id, "replay: a transport control was refused");
+        }
+    }
+
+    /// The replay transport: previous step, play or pause, next step,
+    /// speed, the step list and close, along the bottom of a replay room.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one bar laid out left to right; splitting it scatters its geometry"
+    )]
+    fn draw_replay_transport(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+    ) {
+        self.replay_controls.clear();
+        let Some(status) = self.chrome.as_ref().and_then(|chrome| {
+            let chrome = chrome.borrow();
+            let replay = chrome.replay()?;
+            let room = replay.room()?;
+            let shown = chrome
+                .tree()
+                .desktop
+                .active_workspace()
+                .is_some_and(|workspace| workspace.room == room);
+            shown.then(|| replay.status_json())
+        }) else {
+            return;
+        };
+        let field = |key: &str| status.get(key).cloned().unwrap_or_default();
+        let playing = field("playing").as_bool().unwrap_or(false);
+        let speed = field("speed").as_f64().unwrap_or(1.0);
+        let current = field("step").as_u64();
+        let steps = field("steps").as_array().cloned().unwrap_or_default();
+        let followed = field("recorded").as_str().unwrap_or_default().to_string();
+        let height = 48.0;
+        let width = (self.rect.width() - 24.0).clamp(320.0, 760.0);
+        let center_x = self.rect.center().x;
+        let bar = Rect::new(
+            center_x - width / 2.0,
+            self.rect.y1 - height - 16.0,
+            center_x + width / 2.0,
+            self.rect.y1 - 16.0,
+        );
+        let radius = ui::chrome::shell::ChromeRole::Selector.radius(theme, bar.height());
+        let shape = RoundedRect::from_rect(bar, radius);
+        scene.fill(
+            Fill::NonZero,
+            transform,
+            theme.tokens.colors.surfaces.raised,
+            None,
+            &shape,
+        );
+        scene.stroke(
+            &Stroke::new(1.0),
+            transform,
+            theme.tokens.colors.border_standard,
+            None,
+            &shape,
+        );
+        let hovered = |rect: Rect| self.last_cursor.is_some_and(|p| rect.contains(p));
+        let mut x = bar.x0 + 8.0;
+        let button_y0 = bar.y0 + 8.0;
+        let button_y1 = bar.y1 - 8.0;
+        let next_speed = match speed {
+            s if s < 0.75 => 1.0,
+            s if s < 1.5 => 2.0,
+            s if s < 3.0 => 4.0,
+            _ => 0.5,
+        };
+        let speed_label = format!("{speed}×");
+        let fixed: [(&str, f64, ReplayControl); 4] = [
+            ("Previous", 84.0, ReplayControl::Previous),
+            (
+                if playing { "Pause" } else { "Play" },
+                64.0,
+                if playing {
+                    ReplayControl::Pause
+                } else {
+                    ReplayControl::Play
+                },
+            ),
+            ("Next", 56.0, ReplayControl::Next),
+            (speed_label.as_str(), 48.0, ReplayControl::Speed(next_speed)),
+        ];
+        for (label, w, control) in fixed {
+            let rect = Rect::new(x, button_y0, x + w, button_y1);
+            let mut face = ButtonFace::new(rect, label)
+                .radius(f64::from(theme.tokens.radii.sm))
+                .hovered(hovered(rect));
+            if matches!(control, ReplayControl::Play | ReplayControl::Pause) {
+                face = face.primary();
+            }
+            Button::paint(scene, transform, text_renderer, theme, &face);
+            self.replay_controls.push((rect, control));
+            x += w + 6.0;
+        }
+        let close = Rect::new(bar.x1 - 64.0, button_y0, bar.x1 - 8.0, button_y1);
+        Button::paint(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            &ButtonFace::new(close, "Close")
+                .radius(f64::from(theme.tokens.radii.sm))
+                .hovered(hovered(close)),
+        );
+        self.replay_controls.push((close, ReplayControl::Close));
+        // The step list: one mark per step, the current one filled, failed
+        // attempts in the danger colour. Each mark seeks there.
+        let list = Rect::new(x + 6.0, button_y0, close.x0 - 8.0, button_y1);
+        if !steps.is_empty() && list.width() > 24.0 {
+            #[allow(clippy::cast_precision_loss, reason = "a step count far below 2^52")]
+            let pitch = (list.width() / steps.len() as f64).clamp(6.0, 28.0);
+            let mark = (pitch - 3.0).clamp(4.0, 14.0);
+            for (index, step) in steps.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss, reason = "a step index far below 2^52")]
+                let x0 = list.x0 + pitch * index as f64;
+                if x0 + mark > list.x1 {
+                    break;
+                }
+                let cy = list.center().y;
+                let rect = Rect::new(x0, cy - mark / 2.0, x0 + mark, cy + mark / 2.0);
+                let failed = matches!(
+                    step.get("outcome").and_then(serde_json::Value::as_str),
+                    Some("failed" | "rejected")
+                );
+                let color = if failed {
+                    theme.tokens.colors.semantic.danger
+                } else {
+                    theme.tokens.colors.accent[ui::tokens::colors::ACCENT_PRIMARY_IDX]
+                };
+                let is_current = current == Some(index as u64);
+                let dot = RoundedRect::from_rect(rect, mark / 2.0);
+                if is_current || hovered(rect) {
+                    scene.fill(Fill::NonZero, transform, color, None, &dot);
+                } else {
+                    scene.stroke(&Stroke::new(1.5), transform, color, None, &dot);
+                }
+                self.replay_controls
+                    .push((rect, ReplayControl::Step(index)));
+            }
+        } else {
+            text_renderer.draw_text(
+                scene,
+                &format!("Replay of {followed}"),
+                theme.tokens.typography.scale.sm,
+                theme.tokens.colors.text_dim,
+                transform.pre_translate((list.x0, bar.y0 + 16.0).into()),
+                None,
             );
         }
     }
@@ -24644,6 +24933,7 @@ mod tab_context_menu_tests {
             strips: vec![strip],
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -34035,6 +34325,7 @@ mod maximize_harvest_tests {
             strips: vec![strip],
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -34289,6 +34580,7 @@ mod resync_strips_tests {
             strips: vec![strip],
             collaborators: vec![],
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         let mut active_strip = StdHashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -36033,4 +36325,16 @@ pub(crate) fn install_fixture_search_provider(
 )]
 fn logical_extent(extent: f64) -> u32 {
     extent.max(0.0).round() as u32
+}
+
+/// One control of the replay transport bar.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReplayControl {
+    Previous,
+    Play,
+    Pause,
+    Next,
+    Speed(f64),
+    Step(usize),
+    Close,
 }

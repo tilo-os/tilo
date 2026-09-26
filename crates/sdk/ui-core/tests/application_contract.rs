@@ -1545,6 +1545,7 @@ mod paired_local {
             Some(ViewContribution {
                 scroll: vec![self.0.borrow().scroll],
                 view_mode: None,
+                open_resource: None,
             })
         }
         fn restore_view_state(&mut self, view: &ViewContribution) {

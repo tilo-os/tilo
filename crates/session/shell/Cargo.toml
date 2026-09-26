@@ -251,6 +251,8 @@ tar.workspace = true
 tantivy = { version = "0.22", default-features = false, features = ["mmap"] }
 
 [dev-dependencies]
+# A real app for the replay integration test to record and follow.
+notes = { path = "../../../apps/notes" }
 # Network actor tests run an in-process relay to talk to.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }

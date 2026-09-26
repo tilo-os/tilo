@@ -269,6 +269,11 @@ impl CrdtRoute {
 /// API other modules call.
 pub type FanoutSink = Box<dyn Fn(&CollabEvent, &CrdtRoute) + Send + Sync>;
 
+/// How an in-process participant that holds a route's document answers the
+/// broker's late-joiner request for it: publish the snapshot on the route and
+/// return `true`, or return `false` when it does not hold that route.
+pub type SnapshotHolder = Box<dyn Fn(&CrdtRoute) -> bool + Send + Sync>;
+
 /// Shared fanout registry for typed RPC subscribers and in-process shell consumers.
 pub struct FanoutState {
     peer_id_counter: AtomicU64,
@@ -292,6 +297,10 @@ pub struct RoomSubscription {
     /// in-process agent (the session recorder) is, and belongs on the roster
     /// of every room it holds for as long as it holds it.
     participant: Option<LocalParticipant>,
+    /// Set when the participant holds documents on its rooms' routes (a
+    /// replay peer), so a late joiner's snapshot request can be answered by
+    /// it like by any connected holder.
+    holder: Option<SnapshotHolder>,
 }
 
 /// An agent principal taking part in a room from inside the shell process.
@@ -344,7 +353,7 @@ impl FanoutState {
         rooms: Vec<String>,
         sink: FanoutSink,
     ) -> Arc<RoomSubscription> {
-        self.subscribe(rooms, sink, None)
+        self.subscribe(rooms, sink, None, None)
     }
 
     /// Register an in-process subscriber that takes part in its rooms as the
@@ -357,7 +366,20 @@ impl FanoutState {
         rooms: Vec<String>,
         sink: FanoutSink,
     ) -> Arc<RoomSubscription> {
-        self.subscribe(rooms, sink, Some(participant))
+        self.subscribe(rooms, sink, Some(participant), None)
+    }
+
+    /// Register an in-process participant that also holds the documents of
+    /// its rooms' routes: the broker asks `holder` for a late joiner's
+    /// snapshot before it asks a connected holder.
+    pub(crate) fn subscribe_rooms_holding(
+        &self,
+        participant: LocalParticipant,
+        rooms: Vec<String>,
+        sink: FanoutSink,
+        holder: SnapshotHolder,
+    ) -> Arc<RoomSubscription> {
+        self.subscribe(rooms, sink, Some(participant), Some(holder))
     }
 
     fn subscribe(
@@ -365,11 +387,13 @@ impl FanoutState {
         rooms: Vec<String>,
         sink: FanoutSink,
         participant: Option<LocalParticipant>,
+        holder: Option<SnapshotHolder>,
     ) -> Arc<RoomSubscription> {
         let sub = Arc::new(RoomSubscription {
             rooms: Mutex::new(rooms),
             sink,
             participant,
+            holder,
         });
         if let Ok(mut g) = self.local_subs.lock() {
             g.push(Arc::clone(&sub));
@@ -410,6 +434,16 @@ impl FanoutState {
             }
         }
         out
+    }
+
+    /// Offer a late joiner's snapshot request for `route` to the in-process
+    /// holders of its room. Returns whether one answered.
+    pub(crate) fn offer_snapshot(&self, route: &CrdtRoute) -> bool {
+        self.local_subs().into_iter().any(|sub| {
+            sub.holder
+                .as_ref()
+                .is_some_and(|holder| sub.rooms().contains(&route.cluster_id) && holder(route))
+        })
     }
 
     /// Ask every document route in `room` for its late-joiner snapshot on
@@ -530,7 +564,10 @@ pub struct SessionFollowDispatcher {
 impl SessionFollowDispatcher {
     pub fn set(&self, room: &str, peer_id: Option<String>) {
         self.fanout.fanout_to_route(
-            &CollabEvent::FollowChanged { peer_id },
+            &CollabEvent::FollowChanged {
+                peer_id,
+                mode: ui::view::FollowMode::Live,
+            },
             u64::MAX,
             &CrdtRoute::cluster(room.to_string()),
         );
@@ -800,9 +837,14 @@ impl BrokerHandle {
     /// or release the binding. This is session-local and never enters the
     /// peer publisher; each app already receives that participant's normal
     /// view-presence frames and applies them through `ui::App::follow`.
-    pub fn set_follow_target(&self, room: &str, peer_id: Option<String>) {
+    pub fn set_follow_target(
+        &self,
+        room: &str,
+        peer_id: Option<String>,
+        mode: ui::view::FollowMode,
+    ) {
         self.fanout_event(
-            &CollabEvent::FollowChanged { peer_id },
+            &CollabEvent::FollowChanged { peer_id, mode },
             None,
             &CrdtRoute::cluster(room.to_string()),
         );
@@ -819,6 +861,13 @@ impl BrokerHandle {
     /// the reader thread that decoded the frame: keep it short.
     pub fn subscribe_rooms(&self, rooms: Vec<String>, sink: FanoutSink) -> Arc<RoomSubscription> {
         self.fanout.subscribe_rooms(rooms, sink)
+    }
+
+    /// Let apps' `session.replay` requests open the session's replay.
+    pub fn install_replay(&self, replay: Arc<crate::shell::replay::ReplayController>) {
+        if let Some(capnp) = self.fanout.capnp_state() {
+            capnp.install_replay(replay);
+        }
     }
 
     /// The shared fanout registry, for in-process participants that outlive
@@ -1320,6 +1369,7 @@ fn spawn_inner(
 ) -> std::io::Result<BrokerHandle> {
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
+
     #[cfg(not(test))]
     let mut mls_authority = None;
     #[cfg(test)]
@@ -1755,7 +1805,7 @@ mod tests {
         let _sub = table.subscribe_rooms(
             vec!["room-1".to_string()],
             Box::new(move |event, _route| {
-                if let CollabEvent::FollowChanged { peer_id } = event
+                if let CollabEvent::FollowChanged { peer_id, .. } = event
                     && let Ok(mut rows) = sink_seen.lock()
                 {
                     rows.push(peer_id.clone());

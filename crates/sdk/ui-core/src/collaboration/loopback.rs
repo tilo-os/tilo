@@ -266,12 +266,15 @@ mod tests {
         let (transport, peer) = LoopbackTransport::new();
         let mut manager = CollaborationManager::with_transport(Box::new(transport));
 
-        peer.deliver(CollabEvent::FollowChanged { peer_id: None });
+        peer.deliver(CollabEvent::FollowChanged {
+            peer_id: None,
+            mode: crate::view::FollowMode::Live,
+        });
         assert!(wakes.load(Ordering::SeqCst) >= 1);
         let events = manager.poll();
         assert!(matches!(
             events.as_slice(),
-            [CollabEvent::FollowChanged { peer_id: None }]
+            [CollabEvent::FollowChanged { peer_id: None, .. }]
         ));
         assert!(manager.poll().is_empty());
 

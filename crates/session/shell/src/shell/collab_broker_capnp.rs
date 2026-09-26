@@ -871,6 +871,7 @@ enum ContextEnvelope {
     },
     FollowChanged {
         peer_id: Option<String>,
+        mode: ui::view::FollowMode,
     },
     SnapshotRequested,
 }
@@ -1783,6 +1784,8 @@ pub struct CapnpBrokerState {
     /// certified join fails closed when they have no authority to consult.
     membership: Option<WorkspaceTreeHandle>,
     trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    /// The session's replay, which an app's `session.replay` request opens.
+    replay: std::sync::OnceLock<Arc<crate::shell::replay::ReplayController>>,
     /// Latest complete action surface per live connection.
     surfaces: Mutex<HashMap<u64, PublishedSurface>>,
     /// Monotonic generation for shell-side retained action projections.
@@ -2439,6 +2442,13 @@ impl CapnpBrokerState {
     /// the exact route. Lowest broker peer id makes selection deterministic;
     /// the requester is excluded so it never snapshots its own empty state.
     fn request_document_snapshot(&self, channel_id: &str, requester: u64) -> bool {
+        // A participant inside the shell that holds this route's document
+        // (a replay peer) answers first; it is where the room's state is.
+        if let Some(fanout) = self.fanout.upgrade()
+            && fanout.offer_snapshot(&CrdtRoute::from_channel_key(channel_id))
+        {
+            return true;
+        }
         let Ok(mut channels) = self.channels.lock() else {
             return false;
         };
@@ -2469,6 +2479,15 @@ impl CapnpBrokerState {
     /// Ask for the late-joiner snapshot of every document route in `room` on
     /// behalf of `requester`, returning the routes a holder was asked on.
     /// The answer arrives like any other snapshot: fanned out on the route.
+    /// Install the session's replay. Later calls are ignored.
+    pub(crate) fn install_replay(&self, replay: Arc<crate::shell::replay::ReplayController>) {
+        let _ = self.replay.set(replay);
+    }
+
+    pub(crate) fn replay(&self) -> Option<&Arc<crate::shell::replay::ReplayController>> {
+        self.replay.get()
+    }
+
     pub(crate) fn request_room_snapshots(&self, room: &str, requester: u64) -> Vec<CrdtRoute> {
         let channel_ids: Vec<String> = self
             .channels
@@ -2784,6 +2803,18 @@ impl CapnpBrokerState {
     ) {
         let (bridge_tx, bridge_rx) =
             std::sync::mpsc::sync_channel(ActionDirectoryRequestQueue::CAPACITY);
+        // An ephemeral room (a replay) is a room like any other on this
+        // device and nowhere else: the publisher and durable history both
+        // ask this one answer.
+        if let Some(tree) = membership.clone() {
+            publisher.keep_local(Box::new(move |room| {
+                tree.read()
+                    .desktop
+                    .workspaces
+                    .iter()
+                    .any(|workspace| workspace.ephemeral && workspace.room.to_string() == room)
+            }));
+        }
         (
             Arc::new(Self {
                 channels: Mutex::new(HashMap::new()),
@@ -2792,6 +2823,7 @@ impl CapnpBrokerState {
                 publisher,
                 membership,
                 trusted_devices,
+                replay: std::sync::OnceLock::new(),
                 surfaces: Mutex::new(HashMap::new()),
                 surface_generation: AtomicU64::new(0),
                 archived_surfaces: Mutex::new(HashMap::new()),
@@ -4552,8 +4584,8 @@ impl CapnpBrokerState {
                 collaborators,
                 permissions,
             } => Self::fanout_context(channels, except, collaborators, permissions),
-            CollabEvent::FollowChanged { peer_id } => {
-                Self::fanout_follow_changed(channels, except, peer_id.as_deref());
+            CollabEvent::FollowChanged { peer_id, mode } => {
+                Self::fanout_follow_changed(channels, except, peer_id.as_deref(), *mode);
             }
             CollabEvent::ActionArrived { type_id, .. } => {
                 // Unreachable today; said out loud, not silently dropped.
@@ -4695,9 +4727,11 @@ impl CapnpBrokerState {
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
         peer_id: Option<&str>,
+        mode: ui::view::FollowMode,
     ) {
         let env = ContextEnvelope::FollowChanged {
             peer_id: peer_id.map(str::to_owned),
+            mode,
         };
         for subs in channels {
             subs.context.retain(|sub| {
@@ -7946,7 +7980,10 @@ fn handle_signed_op_send_covering(
             let mut mls_vault = None;
             if let Ok(mut ch) = state.broker_channels.lock() {
                 mls_vault.clone_from(&ch.mls_vault);
-                ch.record_history(&envelope);
+                // A room that stays on this device keeps no durable history.
+                if !state.publisher().is_local_only(route) {
+                    ch.record_history(&envelope);
+                }
                 let ch_state = ch.state_for(artifact);
                 ch_state.record_validated_op(envelope.clone());
                 if envelope.op_class == collab_types::OpClass::Compaction
@@ -8612,9 +8649,10 @@ impl context_stream::Server for ContextStreamServer {
                     collaborators,
                     permissions,
                 } => (collaborators, permissions),
-                ContextEnvelope::FollowChanged { peer_id } => {
+                ContextEnvelope::FollowChanged { peer_id, mode } => {
                     ctx.set_follow_changed(true);
                     ctx.set_follow_target(peer_id.as_deref().unwrap_or(""));
+                    ctx.set_follow_replay(mode == ui::view::FollowMode::Replay);
                     return Ok(());
                 }
                 ContextEnvelope::SnapshotRequested => {
@@ -11148,6 +11186,66 @@ pub(crate) mod tests {
             DocumentMutation::decode(payload).expect("typed network payload"),
             DocumentMutation::Snapshot(b"automerge snapshot".to_vec()),
         );
+    }
+
+    /// An ephemeral room is a room like any other on this device: its
+    /// documents reach the local subscribers on the route, and nothing of it
+    /// is handed to the peer network.
+    #[test]
+    fn an_ephemeral_rooms_document_is_delivered_locally_and_never_published() {
+        let root = SigningKey::from_bytes(&[26; 32]);
+        let device = SigningKey::from_bytes(&[27; 32]);
+        let principal = principal_id_for_root(root.verifying_key().to_bytes());
+        let mut tree = WorkspaceTree::default();
+        let (_, room) = tree.open_ephemeral_room("Replay", &principal);
+        let route = CrdtRoute::record("so.tilo.notes", room.to_string(), "");
+        let membership = tree.shared();
+        let admitted = admit_verified_join(
+            &membership.read(),
+            &route,
+            VerifiedJoinIdentity {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+            },
+        )
+        .expect("the owner is admitted to an ephemeral room like any other");
+        let fanout = Arc::new(FanoutState::new());
+        let sink = Arc::new(RecordingSink::default());
+        let publisher = PeerPublisher::new(
+            sink.clone() as Arc<dyn crate::shell::collab_outbound::PeerPublishSink>
+        );
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            publisher,
+            Some(Arc::clone(&membership)),
+            None,
+        );
+        fanout.attach_capnp(Arc::clone(&state));
+        state.ensure_channel(&route.channel_key());
+        let mut received = state.subscribe_ops(&route.channel_key(), 2);
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(b"change".to_vec())
+                .encode()
+                .expect("typed change"),
+            document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id),
+            Ed25519PublicKey::from_bytes(device.verifying_key().to_bytes()),
+            document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id),
+            collab_types::OpClass::Splice,
+            SystemTime::now(),
+            1,
+        );
+        sign_op(&mut op, &device).expect("device signs document op");
+        handle_signed_op_send(&state, 1, &route, &admitted, op);
+        assert!(
+            received.try_recv().is_ok(),
+            "the local route still gets the op"
+        );
+        assert!(
+            sink.snapshot().is_empty(),
+            "nothing of an ephemeral room reaches the peer network"
+        );
+        assert!(state.publisher().is_local_only(&route));
     }
 
     #[allow(

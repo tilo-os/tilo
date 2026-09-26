@@ -92,6 +92,12 @@ pub struct Workspace {
     /// (hashed to `u64`) — a `HashSet` for multi-recipient streaming.
     #[serde(default)]
     pub shared_surfaces: SharedSurfaces,
+    /// A room that lives only while this device uses it, such as a replay
+    /// of a recorded session. It is a room like any other, except that it
+    /// is never written to disk, never synced to peers and never offered as
+    /// a place to put things. Closing it removes it and its app storage.
+    #[serde(skip)]
+    pub ephemeral: bool,
 }
 
 /// Stable identifier for a person. The compositor's collaborator table
@@ -792,6 +798,7 @@ impl Workspace {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         }
     }
 
@@ -861,6 +868,7 @@ impl Default for Workspace {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         }
     }
 }

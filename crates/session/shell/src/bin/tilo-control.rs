@@ -97,6 +97,8 @@ enum Command {
     },
     /// Show what the recorder holds and what waits for review.
     FeedbackStatus,
+    /// Show the open replay, its transport and its steps.
+    ReplayStatus,
     /// A `community …` or `public-room …` operation, already in wire form.
     Community {
         wire: serde_json::Value,
@@ -240,6 +242,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         }
         "actions" => parse_actions_command(&mut iter)?,
         "feedback" => parse_feedback_command(&mut iter)?,
+        "replay" => parse_replay_command(&mut iter)?,
         "community" => parse_community_command(&mut iter)?,
         "public-room" => parse_public_room_command(&mut iter)?,
         "inspect" => parse_inspect_command(&mut iter)?,
@@ -506,6 +509,66 @@ fn parse_feedback_command<'a>(
     }
 }
 
+const REPLAY_USAGE: &str = "replay open RECORD [--offscreen] | replay play | replay pause | \
+replay next | replay previous | replay seek STEP | replay speed FACTOR | replay close | \
+replay status";
+
+/// Parse `replay ...` into the shell actions it names: the same
+/// `shell.actions` operations Ctrl+K and agents invoke.
+fn parse_replay_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter
+        .next()
+        .ok_or_else(|| ParseError::Usage(format!("replay requires a verb: {REPLAY_USAGE}")))?;
+    let value = |iter: &mut dyn Iterator<Item = &'a String>, what: &str| {
+        iter.next()
+            .cloned()
+            .ok_or_else(|| ParseError::Usage(format!("replay {verb} requires {what}")))
+    };
+    Ok(match verb.as_str() {
+        "status" => Command::ReplayStatus,
+        "open" => {
+            let record = value(iter, "a session record id")?;
+            let offscreen = match iter.next().map(String::as_str) {
+                None => false,
+                Some("--offscreen") => true,
+                Some(other) => {
+                    return Err(ParseError::Usage(format!(
+                        "replay open: unknown option `{other}` (--offscreen)"
+                    )));
+                }
+            };
+            feedback_invoke(
+                "replay.open",
+                &serde_json::json!({"record": record, "offscreen": offscreen}),
+            )
+        }
+        "play" => feedback_invoke("replay.play", &serde_json::json!({})),
+        "pause" => feedback_invoke("replay.pause", &serde_json::json!({})),
+        "next" => feedback_invoke("replay.step.next", &serde_json::json!({})),
+        "previous" => feedback_invoke("replay.step.previous", &serde_json::json!({})),
+        "close" => feedback_invoke("replay.close", &serde_json::json!({})),
+        "seek" => {
+            let step: u64 = value(iter, "a step index")?
+                .parse()
+                .map_err(|_| ParseError::Usage("replay seek: STEP is a step index".into()))?;
+            feedback_invoke("replay.seek", &serde_json::json!({ "step": step }))
+        }
+        "speed" => {
+            let speed: f64 = value(iter, "a factor")?
+                .parse()
+                .map_err(|_| ParseError::Usage("replay speed: FACTOR is a number".into()))?;
+            feedback_invoke("replay.speed", &serde_json::json!({ "speed": speed }))
+        }
+        other => {
+            return Err(ParseError::Usage(format!(
+                "replay: unknown verb `{other}` (usage: {REPLAY_USAGE})"
+            )));
+        }
+    })
+}
+
 fn parse_feedback_start<'a>(
     iter: &mut impl Iterator<Item = &'a String>,
 ) -> Result<Command, ParseError> {
@@ -737,7 +800,9 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             "logo": logo,
         }),
         Command::Snapshot { path } => json!({ "op": "snapshot", "path": path }),
-        Command::StateDump { .. } | Command::FeedbackStatus => json!({ "op": "state_dump" }),
+        Command::StateDump { .. } | Command::FeedbackStatus | Command::ReplayStatus => {
+            json!({ "op": "state_dump" })
+        }
         Command::ActionsList { query, .. } => {
             json!({ "op": "actions_enumerate", "query": query })
         }
@@ -954,11 +1019,16 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             };
             println!("{out}");
         }
-        Command::FeedbackStatus => {
+        Command::FeedbackStatus | Command::ReplayStatus => {
+            let part = if matches!(cmd, Command::ReplayStatus) {
+                "replay"
+            } else {
+                "feedback"
+            };
             let feedback = response
                 .get("state")
                 .and_then(|state| state.get("chrome"))
-                .and_then(|chrome| chrome.get("feedback"))
+                .and_then(|chrome| chrome.get(part))
                 .cloned()
                 .unwrap_or(serde_json::Value::Null);
             println!(
@@ -1056,6 +1126,12 @@ fn print_usage() {
          \x20 feedback recent-buffer on|off keep (or forget) those two minutes; off by default\n\
          \x20 feedback status               rooms held, the recording, sessions awaiting review\n\
          \x20                               (the `chrome.feedback` part of state-dump)\n\
+         \x20 replay open RECORD [--offscreen]\n\
+         \x20                               follow a recorded session in a room of its own;\n\
+         \x20                               the room is never saved, synced or offered\n\
+         \x20 replay play | pause | next | previous | seek STEP | speed FACTOR | close\n\
+         \x20                               transport; steps are attempts and view changes\n\
+         \x20 replay status                 transport and step list (`chrome.replay`)\n\
          \x20 community join                join the Tilo community room from the OS's\n\
          \x20                               standing invitation; prints its class and your role\n\
          \x20 community status              the community room as this session knows it\n\
@@ -1355,6 +1431,48 @@ mod tests {
                 args_json: Some(r#"{"count":2,"force":true}"#.into()),
             }
         );
+    }
+
+    #[test]
+    fn replay_verbs_are_the_shell_replay_actions() {
+        let invoke = |id: &str, args: serde_json::Value| Command::ActionsInvoke {
+            provider: SHELL_ACTIONS.into(),
+            id: id.into(),
+            args_json: Some(args.to_string()),
+        };
+        assert_eq!(
+            parse(&["replay", "open", "uuid:1", "--offscreen"])
+                .unwrap()
+                .command,
+            invoke(
+                "replay.open",
+                serde_json::json!({"record": "uuid:1", "offscreen": true})
+            )
+        );
+        assert_eq!(
+            parse(&["replay", "seek", "3"]).unwrap().command,
+            invoke("replay.seek", serde_json::json!({"step": 3}))
+        );
+        assert_eq!(
+            parse(&["replay", "speed", "2"]).unwrap().command,
+            invoke("replay.speed", serde_json::json!({"speed": 2.0}))
+        );
+        assert_eq!(
+            parse(&["replay", "next"]).unwrap().command,
+            invoke("replay.step.next", serde_json::json!({}))
+        );
+        assert_eq!(
+            parse(&["replay", "status"]).unwrap().command,
+            Command::ReplayStatus
+        );
+        for bad in [
+            &["replay"][..],
+            &["replay", "seek", "x"],
+            &["replay", "open"],
+            &["replay", "rewind"],
+        ] {
+            assert!(matches!(parse(bad), Err(ParseError::Usage(_))), "{bad:?}");
+        }
     }
 
     #[test]

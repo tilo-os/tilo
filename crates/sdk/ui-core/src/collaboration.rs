@@ -410,6 +410,8 @@ pub enum CollabEvent {
     /// it is never published to collaboration peers.
     FollowChanged {
         peer_id: Option<String>,
+        /// How to follow: a live person, or a replay of a recorded session.
+        mode: crate::view::FollowMode,
     },
     /// The broker selected this connection as the sole snapshot responder for
     /// a late joiner on the same document route.

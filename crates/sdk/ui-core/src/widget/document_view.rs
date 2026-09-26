@@ -314,6 +314,10 @@ where
         self.child.restore_view_state(view);
     }
 
+    fn follow_open_resource(&mut self, resource: &str) {
+        self.child.follow_open_resource(resource);
+    }
+
     fn set_record_scope(&mut self, record: &crate::record::RecordId) {
         self.child.set_record_scope(record);
     }

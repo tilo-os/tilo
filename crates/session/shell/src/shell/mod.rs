@@ -98,6 +98,7 @@ pub mod remote_audio;
 pub mod remote_capture;
 pub mod remote_cursors;
 pub mod render;
+pub mod replay;
 pub mod room_activity;
 pub mod room_records;
 pub mod search;

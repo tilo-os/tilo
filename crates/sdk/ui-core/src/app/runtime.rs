@@ -328,6 +328,10 @@ pub(super) struct PresenceRuntime {
     pub(super) follow_mode: crate::view::FollowMode,
     /// Owners of the overlays open only because a live follow mirrored them.
     pub(super) mirrored_overlays: Vec<String>,
+    /// A document change arrived while following: the followed View names
+    /// things in the document (a menu for a page, a scroll into a list), so
+    /// it is applied again once the widgets have synced to that change.
+    pub(super) follow_after_sync: bool,
     pub(super) last_pointer_broadcast: Option<Instant>,
     pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
     pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
@@ -344,6 +348,7 @@ impl PresenceRuntime {
             followed_peer: None,
             follow_mode: crate::view::FollowMode::Live,
             mirrored_overlays: Vec::new(),
+            follow_after_sync: false,
             last_pointer_broadcast: None,
             last_focus: None,
             last_location: None,

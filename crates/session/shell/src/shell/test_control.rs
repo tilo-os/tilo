@@ -68,6 +68,18 @@ pub enum Command {
     },
     /// Re-paint the current scene into a fresh `OffscreenRenderer` and write the PNG to `path`. Only an empty `path` is pre-validated (`invalid_path`); other I/O errors are logged, not surfaced.
     Snapshot { path: String },
+    /// Capture every app surface of the open replay's room as the recording
+    /// captures one, into `dir`: one PNG per surface and `frames.json`
+    /// naming each by its recorded route, size, scale and offset. Written
+    /// on the next frame; `frames.json` is written last.
+    ReplayFrames {
+        dir: String,
+        /// Device pixels per surface unit to render at: the recorded
+        /// frame's scale, so sizes compare. Defaults to the recorded
+        /// surface's scale.
+        #[serde(default)]
+        scale: Option<f64>,
+    },
     /// Read-only snapshot of the live `shell::state::WorkspaceTree` plus [`ChromeState`](crate::shell::chrome_state::ChromeState), both as opaque `serde_json::Value` so future fields don't break the wire.
     StateDump,
     /// Grant a capability on the active workspace on behalf of the user at this session, through `Workspace::grant_as` — the production authority check, so a grantor without ownership or `Admin` is refused, not worked around.
@@ -474,6 +486,8 @@ pub enum PlannedAction {
     },
     /// Re-paint the current scene off-screen and write the RGBA buffer to `path` as a PNG. Failures are logged via `eprintln!`, not propagated to the wire response.
     Snapshot { path: PathBuf },
+    /// Capture the open replay room's app surfaces into `dir`.
+    ReplayFrames { dir: PathBuf, scale: Option<f64> },
     /// Give every live window group the same share of its strip, in permille. Applied to the widget tree, where the laid-out width lives.
     SetGroupWidth { permille: u16 },
     /// Publish paths through the hosted file manager's production external-drag slot.
@@ -627,6 +641,25 @@ pub fn dispatch_command<S: ControlState>(
             logo: *logo,
         }),
         Command::Snapshot { path } => snapshot(path),
+        Command::ReplayFrames { dir, scale } => {
+            if dir.is_empty() {
+                (
+                    Response::Err {
+                        code: "invalid_path".to_string(),
+                        message: "replay_frames needs a directory".to_string(),
+                    },
+                    Vec::new(),
+                )
+            } else {
+                (
+                    Response::Ok { frame: 0 },
+                    vec![PlannedAction::ReplayFrames {
+                        dir: PathBuf::from(dir),
+                        scale: *scale,
+                    }],
+                )
+            }
+        }
         Command::ForeignFrames => foreign_frames(state),
         Command::StateDump => state_dump(state),
         Command::Grant {

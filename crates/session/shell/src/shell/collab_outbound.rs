@@ -107,7 +107,13 @@ pub struct PeerPublisher {
     /// Set the first time a publish is dropped for no network — keeps
     /// the "collaboration is off" line to one per session.
     warned_no_network: AtomicBool,
+    /// Which rooms never leave this device (an ephemeral room, such as a
+    /// replay). Installed once, from the session's workspace tree.
+    local_only: std::sync::OnceLock<LocalOnlyRooms>,
 }
+
+/// Answers whether a room, by id, is one that never leaves this device.
+pub type LocalOnlyRooms = Box<dyn Fn(&str) -> bool + Send + Sync>;
 
 impl PeerPublisher {
     /// A publisher backed by a live peer network.
@@ -115,6 +121,7 @@ impl PeerPublisher {
         Arc::new(Self {
             sink: Some(sink),
             warned_no_network: AtomicBool::new(false),
+            local_only: std::sync::OnceLock::new(),
         })
     }
 
@@ -124,6 +131,7 @@ impl PeerPublisher {
         Arc::new(Self {
             sink: None,
             warned_no_network: AtomicBool::new(false),
+            local_only: std::sync::OnceLock::new(),
         })
     }
 
@@ -153,11 +161,27 @@ impl PeerPublisher {
         self.sink.is_some()
     }
 
+    /// Install the one answer to "does this room ever leave the device".
+    /// Later calls are ignored: the answer cannot be swapped under a
+    /// running broker.
+    pub fn keep_local(&self, rooms: LocalOnlyRooms) {
+        let _ = self.local_only.set(rooms);
+    }
+
+    /// Whether `route`'s room never leaves this device: nothing of it is
+    /// published, and nothing of it is kept past the session.
+    pub fn is_local_only(&self, route: &CrdtRoute) -> bool {
+        self.local_only
+            .get()
+            .is_some_and(|local_only| local_only(&route.cluster_id))
+    }
+
     /// Tell the network a local app holds `route`, so inbound documents
     /// addressed to the route's wire name reach it.
     pub fn local_route(&self, route: &CrdtRoute) {
         if let Some(sink) = self.sink.as_ref()
             && !route.record_id.is_empty()
+            && !self.is_local_only(route)
         {
             sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
         }
@@ -268,6 +292,15 @@ impl PeerPublisher {
             }
             return None;
         };
+        // A room that never leaves this device has no one to publish to.
+        if self.is_local_only(route) {
+            tracing::debug!(
+                app_id = %route.app_id,
+                cluster_id = %route.cluster_id,
+                "collab outbound: not publishing {what} from a room that stays on this device",
+            );
+            return None;
+        }
         // Fail closed on an unaddressable route: publishing an empty or
         // nil cluster would put a frame in a room no receiver can place.
         if !route.is_publishable() {
@@ -426,6 +459,30 @@ mod tests {
             }],
             "the wire must carry the same route the local fanout used, \
              record included",
+        );
+    }
+
+    #[test]
+    fn a_room_that_stays_on_this_device_publishes_nothing() {
+        let (pubr, sink) = wired();
+        let local = "22222222-2222-4222-8222-222222222222";
+        let shared = "11111111-1111-4111-8111-111111111111";
+        pubr.keep_local(Box::new(move |room| room == local));
+        let replay = CrdtRoute::record("notes", local, "doc-7");
+        assert!(!pubr.signed_document(&replay, document(vec![1])));
+        assert!(!pubr.presence(&replay, presence()));
+        assert!(!pubr.scrollback_request(&replay, ArtifactId::new(), 1, 1));
+        pubr.local_route(&replay);
+        assert!(
+            sink.drain().is_empty(),
+            "nothing of a local-only room reaches the wire"
+        );
+        assert!(
+            pubr.signed_document(
+                &CrdtRoute::record("notes", shared, "doc-7"),
+                document(vec![2])
+            ),
+            "other rooms still publish"
         );
     }
 

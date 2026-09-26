@@ -1527,6 +1527,13 @@ pub trait Widget {
 
     fn restore_view_state(&mut self, _view: &crate::view::ViewContribution) {}
 
+    /// A followed participant has `resource` open: the
+    /// [`ViewContribution::open_resource`](crate::view::ViewContribution::open_resource)
+    /// their app reported. Open the same one, when it is here, so the
+    /// follower sees what they see. Only following calls this; resuming a
+    /// frozen app restores its own view.
+    fn follow_open_resource(&mut self, _resource: &str) {}
+
     /// The toolkit-owned overlays this widget has open: the menus, popovers,
     /// dialogs, toasts and banners it owns. The App collects them into
     /// [`View::overlays`](crate::view::View::overlays) under this widget's
@@ -3022,7 +3029,10 @@ mod tests {
         assert_eq!(take_collab_requests(&mut root).len(), 2);
         handle_collab_event(
             &mut root,
-            &crate::collaboration::CollabEvent::FollowChanged { peer_id: None },
+            &crate::collaboration::CollabEvent::FollowChanged {
+                peer_id: None,
+                mode: crate::view::FollowMode::Live,
+            },
         );
         assert_eq!(events.get(), 2);
     }

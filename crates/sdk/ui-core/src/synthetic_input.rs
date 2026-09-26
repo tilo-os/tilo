@@ -45,7 +45,7 @@ impl From<NativeKey> for Key {
 }
 
 /// Build a deterministic `WindowEvent::KeyboardInput` for both input drivers.
-pub(crate) fn key_event(key: &Key, state: ElementState) -> WindowEvent {
+pub fn key_event(key: &Key, state: ElementState) -> WindowEvent {
     let text = match (key, state) {
         (Key::Character(value), ElementState::Pressed) => Some(value.clone()),
         _ => None,

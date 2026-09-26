@@ -675,6 +675,10 @@ pub trait Decorator {
         self.inner_mut().restore_view_state(view);
     }
 
+    fn follow_open_resource(&mut self, resource: &str) {
+        self.inner_mut().follow_open_resource(resource);
+    }
+
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {
         self.inner().open_overlays()
     }
@@ -1467,6 +1471,10 @@ impl<T: Decorator> Widget for T {
 
     fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
         Decorator::restore_view_state(self, view);
+    }
+
+    fn follow_open_resource(&mut self, resource: &str) {
+        Decorator::follow_open_resource(self, resource);
     }
 
     fn open_overlays(&self) -> Vec<crate::view::OverlayState> {

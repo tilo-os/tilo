@@ -129,7 +129,9 @@ pub fn save_tree_to(tree: &WorkspaceTree, path: &Path) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut durable = tree.clone();
+    // An ephemeral room is never written; reloading one would resurrect a
+    // replay as if it were a workspace.
+    let mut durable = tree.without_ephemeral_rooms();
     // A Wayland surface id belongs to this compositor process. Preserve the
     // user's open-app topology as symbolic local launch records, never as
     // dead protocol ids; startup rebinds the replacement surface into the
@@ -610,6 +612,49 @@ mod tests {
         tree.desktop.workspaces[0].owner = Some("alice".into());
         let _ = tree.adopt_ownerless_workspaces(&"quinten".to_string());
         tree
+    }
+
+    #[test]
+    fn an_ephemeral_room_is_never_written_offered_or_synced() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("state.json");
+        let mut tree = WorkspaceTree::default();
+        let home = tree.append_empty_workspace("Home");
+        let (replay, room) = tree.open_ephemeral_room("Replay", &"quinten".to_string());
+        tree.room_share_floor.insert(room, 3);
+        tree.desktop.active = replay;
+        assert!(
+            tree.desktop.workspaces.iter().any(|w| w.room == room),
+            "a room like any other while it is open"
+        );
+        assert!(!tree.rooms().contains(&room), "it is never synced");
+        assert!(
+            !crate::shell::room_records::known_rooms(&tree).contains(&room),
+            "it is never offered as a place for records"
+        );
+
+        save_tree_to(&tree, &path).expect("save");
+        let written = std::fs::read_to_string(&path).expect("read");
+        assert!(
+            !written.contains(&room.to_string()),
+            "nothing of the ephemeral room reaches disk"
+        );
+        let loaded = load_tree_from(&path).expect("load");
+        assert_eq!(loaded.desktop.workspaces.len(), 1);
+        assert_eq!(
+            loaded.desktop.active, home,
+            "focus falls back to a durable room"
+        );
+
+        assert!(tree.close_ephemeral_room(room));
+        assert!(!tree.desktop.workspaces.iter().any(|w| w.room == room));
+        assert!(!tree.room_share_floor.contains_key(&room));
+        assert_eq!(tree.desktop.active, home);
+        let home_room = tree.room_of(home).expect("home room");
+        assert!(
+            !tree.close_ephemeral_room(home_room),
+            "a durable room is never closed as ephemeral"
+        );
     }
 
     fn assert_demo_near_miss_is_preserved(tree: &WorkspaceTree, label: &str) {

@@ -1294,6 +1294,11 @@ impl Widget for TileHost {
             app.restore_view_state(view);
         }
     }
+    fn follow_open_resource(&mut self, resource: &str) {
+        if let TileContent::App(app) = &mut self.content {
+            app.follow_open_resource(resource);
+        }
+    }
     fn needs_idle_sync(&self) -> bool {
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),

@@ -83,6 +83,32 @@ pub struct ObservedRecord {
     pub package_id: String,
 }
 
+/// Loads a scanned record by id, from any thread. See
+/// [`RoomRecords::load_local_record`].
+#[derive(Clone)]
+pub struct LocalRecordLookup {
+    scan: Arc<Mutex<ScanState>>,
+}
+
+impl LocalRecordLookup {
+    pub fn load(&self, id: &RecordId) -> Option<AutoCommit> {
+        let scan = self.scan.lock().ok()?;
+        if scan.ambiguous.contains(id) {
+            tracing::warn!(record = %id, "refusing ambiguous cross-room record hydration");
+            return None;
+        }
+        let location = scan.locations.get(id).cloned()?;
+        drop(scan);
+        read_validated_record_document(id, &location)
+    }
+}
+
+impl std::fmt::Debug for LocalRecordLookup {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LocalRecordLookup").finish_non_exhaustive()
+    }
+}
+
 /// One room's index document plus its writer.
 struct Held {
     doc: AutoCommit,
@@ -676,14 +702,15 @@ impl RoomRecords {
     /// The canonical path and size bound are revalidated on every read so a
     /// stale or replaced scan result fails closed.
     pub fn load_local_record(&self, id: &RecordId) -> Option<AutoCommit> {
-        let scan = self.scan.as_ref()?.lock().ok()?;
-        if scan.ambiguous.contains(id) {
-            tracing::warn!(record = %id, "refusing ambiguous cross-room record hydration");
-            return None;
-        }
-        let location = scan.locations.get(id).cloned()?;
-        drop(scan);
-        read_validated_record_document(id, &location)
+        self.local_record_lookup()?.load(id)
+    }
+
+    /// The same lookup as [`Self::load_local_record`], as a handle other
+    /// threads can keep (the broker answering an app's request).
+    pub fn local_record_lookup(&self) -> Option<LocalRecordLookup> {
+        self.scan.as_ref().map(|scan| LocalRecordLookup {
+            scan: Arc::clone(scan),
+        })
     }
 
     /// Write out every pending index and wait for it to land.
@@ -1040,9 +1067,15 @@ pub fn room_label(tree: &crate::shell::state::WorkspaceTree, room: RoomId) -> Op
         .map(|w| w.name.clone())
 }
 
-/// Rooms in tree order (most-recently-active isn't knowable here).
+/// Rooms in tree order (most-recently-active isn't knowable here). An
+/// ephemeral room is not a place to put records, so it is not one of them.
 pub fn known_rooms(tree: &crate::shell::state::WorkspaceTree) -> BTreeSet<RoomId> {
-    tree.desktop.workspaces.iter().map(|w| w.room).collect()
+    tree.desktop
+        .workspaces
+        .iter()
+        .filter(|w| !w.ephemeral)
+        .map(|w| w.room)
+        .collect()
 }
 
 #[cfg(test)]

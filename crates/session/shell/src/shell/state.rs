@@ -1111,13 +1111,16 @@ impl WorkspaceTree {
     // forever). So the replication unit is a document per room,
     // projected from the cache.
 
-    /// Every room this machine is in, deduplicated, in workspace order.
-    /// A workspace whose room is still the unminted sentinel is skipped.
+    /// Every room this machine takes part in with others, deduplicated, in
+    /// workspace order. A workspace whose room is still the unminted
+    /// sentinel is skipped, and so is an ephemeral room: it has no one to
+    /// take part with.
     pub fn rooms(&self) -> Vec<RoomId> {
         let mut seen = std::collections::HashSet::new();
         self.desktop
             .workspaces
             .iter()
+            .filter(|w| !w.ephemeral)
             .map(|w| w.room)
             .filter(|r| !r.is_nil() && seen.insert(*r))
             .collect()
@@ -2550,7 +2553,8 @@ impl WorkspaceTree {
                 .ok()
                 .map(|key| key.verifying_key().to_bytes());
         let mut caps: Vec<CapOverride> = Vec::new();
-        for workspace in &self.desktop.workspaces {
+        // An ephemeral room's grants never leave the session.
+        for workspace in self.desktop.workspaces.iter().filter(|w| !w.ephemeral) {
             let profile =
                 crate::identity_registry::selected_identity_profile(&workspace.room.to_string())
                     .ok()
@@ -3455,6 +3459,7 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
 
         let mut active_strip = HashMap::new();
@@ -3555,6 +3560,7 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
 
         let mut tree = Self {
@@ -3637,6 +3643,7 @@ impl WorkspaceTree {
             effect_receipts: Vec::new(),
             channel_class,
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         self.desktop.active_strip.insert(ws_id, strip_id);
         self.desktop.workspaces.push(ws);
@@ -3658,6 +3665,147 @@ impl WorkspaceTree {
         // loses the room the person just created.
         self.flush_to_disk();
         ws_id
+    }
+
+    /// Open an ephemeral room owned by `owner`: a workspace like any other
+    /// with one empty strip, marked [`Workspace::ephemeral`] so it is never
+    /// written to disk, synced or offered as a destination. It is not
+    /// mirrored into the desktop document peers are served from, and focus
+    /// does not move to it; the caller decides that.
+    pub fn open_ephemeral_room(&mut self, name: &str, owner: &UserId) -> (WorkspaceId, RoomId) {
+        let ws_id = WorkspaceId::new();
+        let strip_id = StripId::new();
+        let room = RoomId::new();
+        let mut workspace = Workspace::new(ws_id, name);
+        workspace.room = room;
+        workspace.strips = vec![Strip {
+            id: strip_id,
+            name: "Main".into(),
+            window_groups: vec![],
+        }];
+        workspace.set_owner(owner.clone());
+        workspace.ephemeral = true;
+        self.desktop.active_strip.insert(ws_id, strip_id);
+        self.desktop.workspaces.push(workspace);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        (ws_id, room)
+    }
+
+    /// Remove the ephemeral room `room` and everything this tree held for
+    /// it. A durable room is never removed this way. When it was the active
+    /// workspace, focus returns to the first durable one.
+    pub fn close_ephemeral_room(&mut self, room: RoomId) -> bool {
+        let Some(index) = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.room == room && workspace.ephemeral)
+        else {
+            return false;
+        };
+        let workspace = self.desktop.workspaces.remove(index);
+        self.forget_workspace_state(&workspace);
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        true
+    }
+
+    /// Give the ephemeral workspace `workspace` a fresh room, keeping its
+    /// strips and windows: what ran in the old room stays there and is
+    /// forgotten with it. Returns `(old, new)`.
+    pub fn rekey_ephemeral_room(&mut self, workspace: WorkspaceId) -> Option<(RoomId, RoomId)> {
+        let index = self
+            .desktop
+            .workspaces
+            .iter()
+            .position(|candidate| candidate.id == workspace && candidate.ephemeral)?;
+        let fresh = RoomId::new();
+        let old = self.desktop.workspaces.get(index)?.room;
+        self.desktop.room_records_held.remove(&old);
+        self.room_docs.remove(&old);
+        self.room_authority.remove(&old);
+        self.room_peer_names.remove(&old);
+        self.room_peer_identities.remove(&old);
+        self.room_share_floor.remove(&old);
+        let entry = self.desktop.workspaces.get_mut(index)?;
+        entry.room = fresh;
+        // Room membership names its room; carry every grant to the new one.
+        let old_name = old.to_string();
+        for capability in &mut entry.capabilities {
+            if let Scope::Room(scope) = &mut capability.scope
+                && *scope == old_name
+            {
+                *scope = fresh.to_string();
+            }
+        }
+        entry.collaborators.clear();
+        self.desktop.external_revision = self.desktop.external_revision.wrapping_add(1);
+        Some((old, fresh))
+    }
+
+    /// Drop every per-workspace and per-room entry `workspace` owned.
+    fn forget_workspace_state(&mut self, workspace: &Workspace) {
+        let room = workspace.room;
+        let tabs: BTreeSet<TabId> = workspace
+            .strips
+            .iter()
+            .flat_map(|strip| strip.window_groups.iter())
+            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
+            .collect();
+        for strip in &workspace.strips {
+            self.desktop.active_group.remove(&strip.id);
+        }
+        self.desktop.active_strip.remove(&workspace.id);
+        self.desktop.room_records_held.remove(&room);
+        self.desktop
+            .room_records_inbound
+            .retain(|(inbound, _, _)| *inbound != room);
+        self.room_docs.remove(&room);
+        self.room_authority.remove(&room);
+        self.room_peer_names.remove(&room);
+        self.room_peer_identities.remove(&room);
+        self.room_share_floor.remove(&room);
+        self.continuation_rooms.remove(&room);
+        self.continuation_tabs.retain(|tab| !tabs.contains(tab));
+        self.continuation_owned_tabs
+            .retain(|tab, owned| !tabs.contains(tab) && *owned != room);
+        self.continuation_closed_tabs
+            .retain(|tab, closed| !tabs.contains(tab) && *closed != room);
+        self.continuation_file_references
+            .retain(|tab, _| !tabs.contains(tab));
+        self.native_document_tabs
+            .retain(|tab, _| !tabs.contains(tab));
+        self.local_app_records.retain(|tab, _| !tabs.contains(tab));
+        if self.desktop.active == workspace.id
+            && let Some(first) = self
+                .desktop
+                .workspaces
+                .iter()
+                .find(|workspace| !workspace.ephemeral)
+        {
+            self.desktop.active = first.id;
+        }
+    }
+
+    /// This tree as it may leave the running session: every ephemeral room
+    /// and what was kept for it removed.
+    #[must_use]
+    pub fn without_ephemeral_rooms(&self) -> Self {
+        let mut durable = self.clone();
+        let ephemeral: Vec<Workspace> = durable
+            .desktop
+            .workspaces
+            .iter()
+            .filter(|workspace| workspace.ephemeral)
+            .cloned()
+            .collect();
+        durable
+            .desktop
+            .workspaces
+            .retain(|workspace| !workspace.ephemeral);
+        for workspace in &ephemeral {
+            durable.forget_workspace_state(workspace);
+        }
+        durable
     }
 
     /// Add a dormant local entry for a room discovered through the private
@@ -6811,6 +6959,7 @@ mod active_group_tests {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);
@@ -7285,6 +7434,7 @@ mod active_workspace_peer_count_tests {
             effect_receipts: Vec::new(),
             channel_class: collab_types::ChannelClass::default(),
             shared_surfaces: SharedSurfaces::default(),
+            ephemeral: false,
         };
         let mut active_strip = HashMap::new();
         active_strip.insert(ws_id, strip_id);

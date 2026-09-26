@@ -12898,6 +12898,7 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
+ "notes",
  "os-actions",
  "package-store",
  "parking_lot",

@@ -3860,7 +3860,33 @@ impl NotesApp {
     }
 }
 
+/// How a View names the page a notebook has open.
+const NOTE_PAGE_PREFIX: &str = "notes.page:";
+
 impl Widget for NotesApp {
+    /// The page open here is what a follower opens.
+    fn view_state(&self) -> Option<ui::view::ViewContribution> {
+        Some(ui::view::ViewContribution {
+            open_resource: self
+                .workspace
+                .selected()
+                .map(|page| format!("{NOTE_PAGE_PREFIX}{page}")),
+            ..ui::view::ViewContribution::default()
+        })
+    }
+
+    fn follow_open_resource(&mut self, resource: &str) {
+        let Some(page) = resource
+            .strip_prefix(NOTE_PAGE_PREFIX)
+            .and_then(|page| PageId::parse_str(page).ok())
+        else {
+            return;
+        };
+        if self.workspace.selected() != Some(page) && self.workspace.get(page).is_some() {
+            self.navigate_to(page);
+        }
+    }
+
     fn open_overlays(&self) -> Vec<ui::view::OverlayState> {
         let mut overlays: Vec<ui::view::OverlayState> = self.menu_overlay().into_iter().collect();
         if self.shortcuts.is_visible() {

@@ -586,7 +586,8 @@ impl DeviceContinuationSnapshot {
         for workspace in &tree.desktop.workspaces {
             // A local id is not usable on another device. Until a workspace
             // has its durable room id, keeping it local is the safe outcome.
-            if workspace.room.is_nil() {
+            // An ephemeral room exists only on this device, by definition.
+            if workspace.room.is_nil() || workspace.ephemeral {
                 continue;
             }
             let mut apps = Vec::new();

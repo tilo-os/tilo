@@ -1495,6 +1495,9 @@ impl AppHandler {
             return;
         };
         mark_first_frame("first-frame-layout-done");
+        // A followed View waiting on this frame's sync resolves its overlay
+        // owners against the layout just computed.
+        app.follow_after_sync();
         full_redraw_required |= structure_rebuilt || t_relayout_branch;
         // Read before `draw_frame_content` drains widget dirty flags via
         // `mark_drawn`. Clean compositor/exposure redraws do not invalidate
@@ -3329,6 +3332,98 @@ impl AppHandler {
 }
 
 impl App {
+    /// One frame of this app without a window, in the order the event loop
+    /// runs it: collaboration (documents, presence, follow), invocations,
+    /// the undo commit, published presence and document changes, then
+    /// update, sync, layout and draw into `scene` at `width`×`height` device
+    /// pixels. A host that drives an app it does not display (a headless
+    /// replay, an integration test) calls this where a window would redraw.
+    #[doc(hidden)]
+    pub fn render_frame_headless(
+        &mut self,
+        scene: &mut Scene,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) {
+        let _entry = self.enter_wake_scope();
+        if self.layout.root_node.is_none() {
+            self.init_layout();
+        }
+        self.pump_collab_presence();
+        if self.poll_directed_invocations() {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+        if self.dispatch_control_invocations() != 0 {
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+        if self.root_widget.needs_commit() {
+            self.commit_action();
+            self.root_widget.on_commit();
+            self.needs_sync = true;
+        }
+        if let Err(error) = self.autosave_tick() {
+            crate::diag!("[app] component autosave tick refused: {error:?}");
+        }
+        self.record_tick();
+        if self
+            .root_widget
+            .update(&mut self.state.doc, &self.state.root)
+        {
+            self.invalidate_widget_resource_cache();
+            self.needs_sync = true;
+            self.layout.layout_dirty = true;
+        }
+        if self.collaboration.manager.is_connected() && self.root_widget.needs_idle_sync() {
+            self.needs_sync = true;
+        }
+        if self.needs_sync {
+            self.root_widget.sync(&mut self.state.doc, &self.state.root);
+            self.invalidate_widget_resource_cache();
+            self.needs_sync = false;
+        }
+        self.layout.structure_dirty |= self.root_widget.take_structure_dirty();
+        let structure_rebuilt = self.layout.structure_dirty;
+        if structure_rebuilt {
+            self.rebuild_structure();
+        }
+        if let Some(root_node) = self.layout.root_node {
+            let _ = run_layout_pass(
+                self,
+                root_node,
+                width,
+                height,
+                scale_factor,
+                structure_rebuilt,
+                None,
+            );
+            self.follow_after_sync();
+            draw_frame_content(self, scene, width, height, scale_factor, None);
+        }
+        self.broadcast_location_presence();
+        self.broadcast_view_presence();
+        self.broadcast_doc_delta();
+    }
+
+    /// Deliver one input event to this app without a window, through the
+    /// same presentation dispatch a window's input takes. Pairs with
+    /// [`Self::render_frame_headless`], which lays out what it hits.
+    #[doc(hidden)]
+    pub fn handle_event_headless(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
+        let _entry = self.enter_wake_scope();
+        let mut handled = false;
+        let mut focus = None;
+        self.presentation_handle_event(event, scale_factor, &mut handled, &mut focus);
+        self.invalidate_widget_resource_cache();
+        if let Some(target) = focus {
+            self.set_focused_node(Some(target));
+            handled = true;
+        }
+        handled
+    }
+
     /// Run this application on the platform event loop.
     pub fn run(self) {
         self.run_with_setup(|_| {});

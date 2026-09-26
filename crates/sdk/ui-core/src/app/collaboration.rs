@@ -352,6 +352,10 @@ impl App {
         self.presence.followed_peer = Some(peer_id.into());
         self.presence.follow_mode = mode;
         self.apply_follow();
+        // What the View names may only exist once the widgets sync to the
+        // document that arrived with it.
+        self.presence.follow_after_sync = true;
+        self.needs_sync = true;
     }
 
     /// Stop following. Overlays shown only because the followed participant
@@ -406,6 +410,14 @@ impl App {
         }
     }
 
+    /// Re-apply the followed View after the widgets synced to a document
+    /// change that arrived while following.
+    pub(super) fn follow_after_sync(&mut self) {
+        if std::mem::take(&mut self.presence.follow_after_sync) {
+            self.apply_follow();
+        }
+    }
+
     fn apply_follow(&mut self) {
         let Some(id) = self.presence.followed_peer.clone() else {
             return;
@@ -421,13 +433,26 @@ impl App {
             .restore_view_state(&crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
                 view_mode: view.view_mode,
+                open_resource: None,
             });
+        if let Some(resource) = view.open_resource.as_deref() {
+            self.root_widget.follow_open_resource(resource);
+        }
         // A follower sees what the followed participant sees, including the
         // menu or dialog they have open; a replay is this same path. The mode
         // decides whether those overlays take control (see `FollowMode`).
         // Toasts arrive without their text and never replace the follower's.
         let presentation = self.presence.follow_mode.overlay_presentation();
         self.restore_overlays(&view.overlays, presentation);
+        // An overlay can name what only exists once the widgets have synced
+        // to what was just opened (a menu for the page the follower is now
+        // on); try again after the next sync until it is shown.
+        self.refresh_semantic_tree();
+        let shown = self.accessibility.semantic_tree.open_overlays().len();
+        if shown < view.overlays.len() {
+            self.presence.follow_after_sync = true;
+            self.needs_sync = true;
+        }
         self.presence.mirrored_overlays =
             if presentation == crate::view::OverlayPresentation::Mirrored {
                 view.overlays
@@ -746,8 +771,8 @@ impl App {
             CollabEvent::Context { collaborators, .. } => {
                 self.apply_collab_context(collaborators);
             }
-            CollabEvent::FollowChanged { peer_id } => match peer_id {
-                Some(peer_id) => self.follow(peer_id),
+            CollabEvent::FollowChanged { peer_id, mode } => match peer_id {
+                Some(peer_id) => self.follow_with(peer_id, mode),
                 None => self.unfollow(),
             },
             CollabEvent::DocumentSnapshotRequested { .. } => {
@@ -1163,8 +1188,8 @@ impl App {
                 self.continue_document_history(artifact, oldest_seq, exhausted);
                 self.apply_document_scrollback(ops, &decrypted_payloads);
             }
-            CollabEvent::FollowChanged { peer_id } => match peer_id {
-                Some(peer_id) => self.follow(peer_id),
+            CollabEvent::FollowChanged { peer_id, mode } => match peer_id {
+                Some(peer_id) => self.follow_with(peer_id, mode),
                 None => self.unfollow(),
             },
             CollabEvent::DocumentSnapshotRequested { .. } => {

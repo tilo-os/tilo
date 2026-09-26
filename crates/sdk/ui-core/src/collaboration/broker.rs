@@ -735,7 +735,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             permissions.capacity(),
             &mut meter,
         ),
-        CollabEvent::FollowChanged { peer_id } => {
+        CollabEvent::FollowChanged { peer_id, .. } => {
             if let Some(peer_id) = peer_id {
                 meter.string_capacity(peer_id);
             }
@@ -2884,8 +2884,16 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
-                if let Some(peer_id) = context.follow_changed {
-                    if !tx.send_durable(CollabEvent::FollowChanged { peer_id }) {
+                if let Some(follow) = context.follow_changed {
+                    let mode = if follow.replay {
+                        crate::view::FollowMode::Replay
+                    } else {
+                        crate::view::FollowMode::Live
+                    };
+                    if !tx.send_durable(CollabEvent::FollowChanged {
+                        peer_id: follow.target,
+                        mode,
+                    }) {
                         break;
                     }
                     continue;

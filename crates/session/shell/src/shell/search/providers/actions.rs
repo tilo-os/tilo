@@ -78,6 +78,69 @@ const FEEDBACK_RECENT_BUFFER_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Keep the last two minutes of this device's rooms in memory for capture-recent.",
 )];
 
+const REPLAY_OPEN_PARAMS: &[ActionParam] = &[
+    ActionParam::required(
+        "record",
+        ParamType::Text,
+        "Id of the session record to replay (for example one waiting for review).",
+    ),
+    ActionParam::optional(
+        "offscreen",
+        ParamType::Boolean,
+        "Replay out of sight, for checks; the person's workspaces are not touched.",
+    ),
+];
+
+const REPLAY_STEP_PARAMS: &[ActionParam] = &[
+    ActionParam::optional(
+        "step",
+        ParamType::Integer,
+        "Index of the step to stop at, as `replay.steps` in state-dump lists them.",
+    ),
+    ActionParam::optional(
+        "at_ms",
+        ParamType::Integer,
+        "Or a point in recorded time, in milliseconds from the start.",
+    ),
+];
+
+const REPLAY_SPEED_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "speed",
+    ParamType::Number,
+    "Multiple of recorded time, from 0.125 to 16.",
+)];
+
+fn replay(
+    st: &ChromeState,
+) -> Result<std::sync::Arc<crate::shell::replay::ReplayController>, ActionError> {
+    st.replay().cloned().ok_or_else(|| {
+        ActionError::Refused("this session has no collaboration broker to replay through".into())
+    })
+}
+
+fn refused(error: impl std::fmt::Display) -> ActionError {
+    ActionError::Refused(error.to_string())
+}
+
+/// Apply the shell action `id` with `values`, bound against its declared
+/// parameters: the path chrome controls share with the catalogue.
+///
+/// # Errors
+///
+/// When there is no such action, the arguments do not bind, or it refuses.
+pub(crate) fn apply_shell_action(
+    st: &mut ChromeState,
+    id: &str,
+    values: Vec<(String, crate::shell::search::action_api::ArgValue)>,
+) -> Result<(), String> {
+    let action = Action::ALL
+        .iter()
+        .find(|action| action.id == id)
+        .ok_or_else(|| format!("no shell action {id}"))?;
+    let args = ActionArgs::bind(action.params, values).map_err(|error| error.to_string())?;
+    (action.apply)(st, &args).map_err(|error| format!("{error:?}"))
+}
+
 fn comma_list(value: Option<&str>) -> Vec<String> {
     value
         .unwrap_or_default()
@@ -219,7 +282,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         | "feedback.recent-buffer.set"
         | "remark.record.stop"
         | "remark.record.recent"
-        | "remark.send" => {
+        | "remark.send"
+        | "replay.open" => {
             contract.retry = RetryPolicy::AtMostOnce;
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
@@ -1634,6 +1698,102 @@ impl Action {
             "Deliver it; replies arrive in Chat",
             crate::shell::remark::act::send,
         ),
+        // Replay is following a past session in an ephemeral room. Every
+        // transport control is an action, so agents and tests drive it
+        // semantically; `replay` in state-dump lists the steps.
+        Action {
+            id: "replay.open",
+            label: "Replay a recorded session",
+            subtitle: "Open the recording in a room of its own and follow what happened",
+            params: REPLAY_OPEN_PARAMS,
+            apply: |st, args| {
+                let record = args
+                    .text("record")
+                    .and_then(|id| ui::record::RecordId::parse(id.trim()))
+                    .ok_or_else(|| {
+                        ActionError::Refused("name a session record to replay".into())
+                    })?;
+                let presentation = if args.boolean("offscreen").unwrap_or(false) {
+                    crate::shell::replay::Presentation::Offscreen
+                } else {
+                    crate::shell::replay::Presentation::Shown
+                };
+                let user = st.active_local_user();
+                replay(st)?
+                    .open_record(&record, &user, presentation)
+                    .map(|_| ())
+                    .map_err(refused)
+            },
+        },
+        chrome(
+            "replay.close",
+            "Close the replay",
+            "Leave the replay; its room and everything in it are removed",
+            |st, _| {
+                if replay(st)?.close() {
+                    Ok(())
+                } else {
+                    Err(ActionError::Refused("nothing is being replayed".into()))
+                }
+            },
+        ),
+        chrome(
+            "replay.play",
+            "Play the replay",
+            "Continue at the recorded pace",
+            |st, _| replay(st)?.play().map_err(refused),
+        ),
+        chrome(
+            "replay.pause",
+            "Pause the replay",
+            "Stop where the replay is",
+            |st, _| replay(st)?.pause().map_err(refused),
+        ),
+        chrome(
+            "replay.step.next",
+            "Next step",
+            "Replay up to the end of the next attempt or view change",
+            |st, _| replay(st)?.step_next().map(|_| ()).map_err(refused),
+        ),
+        chrome(
+            "replay.step.previous",
+            "Previous step",
+            "Go back to the end of the step before this one",
+            |st, _| replay(st)?.step_previous().map(|_| ()).map_err(refused),
+        ),
+        Action {
+            id: "replay.seek",
+            label: "Go to a replay step",
+            subtitle: "Reload the recording and fast-forward to the end of that step",
+            params: REPLAY_STEP_PARAMS,
+            apply: |st, args| {
+                let replay = replay(st)?;
+                if let Some(at) = args.integer("at_ms").and_then(|at| u64::try_from(at).ok()) {
+                    return replay
+                        .seek_offset(session_trace::Offset(at.saturating_mul(1_000)))
+                        .map_err(refused);
+                }
+                let step = args
+                    .integer("step")
+                    .and_then(|step| usize::try_from(step).ok())
+                    .ok_or_else(|| {
+                        ActionError::Refused("name the step by its index, or a time".into())
+                    })?;
+                replay.seek_step(step).map_err(refused)
+            },
+        },
+        Action {
+            id: "replay.speed",
+            label: "Replay speed",
+            subtitle: "Play faster or slower than it was recorded",
+            params: REPLAY_SPEED_PARAMS,
+            apply: |st, args| {
+                let speed = args
+                    .number("speed")
+                    .ok_or_else(|| ActionError::Refused("say how fast to replay".into()))?;
+                replay(st)?.set_speed(speed).map(|_| ()).map_err(refused)
+            },
+        },
         chrome(
             "tab.new.terminal.here",
             "New terminal tab here",

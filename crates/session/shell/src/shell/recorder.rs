@@ -667,6 +667,15 @@ impl Recorder {
             .map(read)
     }
 
+    /// A copy of the session record `id` waiting for review, if it is one.
+    pub fn session_document(&self, id: &RecordId) -> Option<AutoCommit> {
+        lock(&self.control)
+            .awaiting_review
+            .iter()
+            .find(|pending| &pending.checkout.id == id)
+            .map(|pending| pending.doc.clone())
+    }
+
     /// Hand a reviewed-or-discarded session over, removing it from memory.
     pub fn take_session(&self, id: &RecordId) -> Option<PendingSession> {
         let mut control = lock(&self.control);
@@ -1365,8 +1374,13 @@ fn resolve_op(
     page.into_iter().find(|op| reference.names(op))
 }
 
-fn presence_change(payload: &PresencePayload) -> PresenceChange {
+fn presence_change(key: &PresenceKey, payload: &PresencePayload) -> PresenceChange {
     let wide = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+    // A View subset rides inside its key with an inert payload; the trace
+    // names it so a reader finds view changes without decoding every scope.
+    if matches!(key, PresenceKey::View { .. }) {
+        return PresenceChange::View;
+    }
     match payload {
         PresencePayload::Pointer { x, y } => PresenceChange::Pointer { x: *x, y: *y },
         PresencePayload::Caret { pos } => PresenceChange::Caret { pos: wide(*pos) },
@@ -1401,7 +1415,7 @@ fn presence_update(
         participant: participant.to_string(),
         room: route.cluster_id.clone(),
         scope: postcard::to_allocvec(key).ok()?,
-        change: presence_change(payload),
+        change: presence_change(key, payload),
     })
 }
 
@@ -1581,6 +1595,20 @@ mod tests {
                 "the scope is the SDK key's own wire encoding"
             );
         }
+        let view = PresenceKey::view(&ui::view::ViewSubset::default());
+        let update =
+            presence_update("alice", &route, &view, &PresencePayload::Arrived).expect("update");
+        assert_eq!(
+            update.change,
+            PresenceChange::View,
+            "a View subset is recorded as a view change, its subset in the scope"
+        );
+        assert!(
+            postcard::from_bytes::<PresenceKey>(&update.scope)
+                .expect("scope")
+                .as_view()
+                .is_some()
+        );
     }
 
     #[test]

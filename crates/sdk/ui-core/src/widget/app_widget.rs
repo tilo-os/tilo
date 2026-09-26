@@ -1102,6 +1102,15 @@ mod component_adapter {
             };
             root.restore_view_state(view);
         }
+        fn follow_open_resource(&mut self, resource: &str) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            if let Some(root) = self.component.root.as_deref_mut() {
+                root.follow_open_resource(resource);
+            }
+        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {

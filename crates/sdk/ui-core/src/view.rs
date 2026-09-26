@@ -55,6 +55,11 @@ pub struct ViewContribution {
     pub scroll: Vec<f64>,
     /// The app's current view mode (e.g. `"grid"` / `"list"`), if it has one.
     pub view_mode: Option<String>,
+    /// What the widget has open when that is not a record of its own: the
+    /// page of a notebook, the message of a mailbox. A follower opens the
+    /// same one; a resumed app reopens it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_resource: Option<String>,
 }
 
 /// Where a menu or popover was opened from.
@@ -361,8 +366,11 @@ pub(crate) fn capture_widget_view_bound(
             ..View::default()
         };
     };
-    let open_resource = root.record_intent().map(|c| c.id.as_str().to_string());
     let contribution = root.view_state().unwrap_or_default();
+    let open_resource = root
+        .record_intent()
+        .map(|c| c.id.as_str().to_string())
+        .or(contribution.open_resource);
     View {
         scroll: contribution.scroll,
         focus,
@@ -404,6 +412,7 @@ pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, vi
     root.restore_view_state(&ViewContribution {
         scroll: view.scroll.clone(),
         view_mode: view.view_mode.clone(),
+        open_resource: None,
     });
 }
 
@@ -717,6 +726,7 @@ mod tests {
             Some(ViewContribution {
                 scroll: self.scroll.clone(),
                 view_mode: self.mode.clone(),
+                open_resource: None,
             })
         }
         fn restore_view_state(&mut self, view: &ViewContribution) {

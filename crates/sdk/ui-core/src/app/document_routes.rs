@@ -261,6 +261,7 @@ impl App {
             self.invalidate_widget_resource_cache();
             self.needs_sync = true;
             self.layout.layout_dirty = true;
+            self.presence.follow_after_sync |= self.presence.followed_peer.is_some();
         }
     }
     /// A change on a route a widget follows: somebody else's record, merged

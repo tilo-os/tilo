@@ -918,6 +918,11 @@ impl CapnpBrokerState {
                 &request.argument,
             );
         }
+        if address.resource == tilo_actions::remote::SESSION_REPLAY_RESOURCE
+            && address.action == tilo_actions::remote::SESSION_REPLAY_ACTION
+        {
+            return self.replay_session(caller, actor, room, &request.argument);
+        }
         if address.resource == tilo_actions::remote::PEOPLE_RESOURCE {
             return self.request_person(caller, actor, room, &address.action, argument);
         }
@@ -1090,6 +1095,69 @@ impl CapnpBrokerState {
             tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: tilo_actions::ActionOutput::default(),
+            },
+        );
+        Ok(job)
+    }
+
+    /// Replay a `session` record for the person asking: the shell opens an
+    /// ephemeral replay room and follows the recording there. Reading the
+    /// room is enough, as for anything else posted in it.
+    fn replay_session(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        argument: &tilo_actions::remote::InvokeArgument,
+    ) -> Result<u64, ActionHostError> {
+        let tilo_actions::remote::InvokeArgument::Text(id) = argument else {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "name the session record to replay".into(),
+            });
+        };
+        let record = ui::record::RecordId::parse(id.trim()).ok_or_else(|| {
+            ActionHostError::InvalidRequest {
+                reason: "the record id is not one this build can read".into(),
+            }
+        })?;
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if workspace.decide(&policy, &ResourceRef::Workspace, Verb::Read) != CapDecision::Allow {
+            return Err(ActionHostError::NotPermitted);
+        }
+        if actor.is_agent {
+            return Err(ActionHostError::Refused {
+                reason: "a replay is opened for a person watching it".into(),
+            });
+        }
+        let replay = self.replay().ok_or_else(|| ActionHostError::Unavailable {
+            reason: "this session cannot replay recordings".into(),
+        })?;
+        let replay_room = replay
+            .open_record(
+                &record,
+                &actor.id,
+                crate::shell::replay::Presentation::Shown,
+            )
+            .map_err(|error| ActionHostError::Refused {
+                reason: error.to_string(),
+            })?;
+        let job = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
+        self.record_completion(
+            job,
+            actor.id.clone(),
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({ "room": replay_room.to_string() })),
+                    resources: Vec::new(),
+                },
             },
         );
         Ok(job)

@@ -731,6 +731,10 @@ struct ChannelContext {
   # Directed control frame for one selected document holder. Ordinary context
   # snapshots and follow controls leave this false.
   snapshotRequested @4 :Bool;
+  # With `followChanged`: the followed participant is a replay of a recorded
+  # session, so its overlays are restored as the app's own and the viewer's
+  # input does not end the follow. False is a live follow.
+  followReplay @5 :Bool;
 }
 
 # A single collaborator in a `ChannelContext`. `color` is packed as

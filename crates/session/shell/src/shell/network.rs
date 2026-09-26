@@ -1890,6 +1890,7 @@ impl ShellNetwork {
     }
 
     /// Workspace topic for session traffic associated with the active room.
+    /// An ephemeral room has no topic: nothing of it goes on the network.
     pub fn active_ws_for_publish(&self) -> u64 {
         let Ok(replica) = self.replica.lock() else {
             return DEFAULT_WS_TOPIC;
@@ -1899,6 +1900,7 @@ impl ShellNetwork {
             .read()
             .desktop
             .active_workspace()
+            .filter(|workspace| !workspace.ephemeral)
             .map_or(DEFAULT_WS_TOPIC, |workspace| room_topic_id(workspace.room))
     }
 
@@ -3343,6 +3345,12 @@ impl ShellNetwork {
             drop(tree);
             return Err(format!("no workspace {} to invite into", local.raw()));
         };
+        if ws.ephemeral {
+            drop(tree);
+            return Err(
+                "this room exists only on this device, so no one can be invited to it".into(),
+            );
+        }
         let actor = crate::shell::state::local_user_id_for_room(&ws.room);
         if !tree.governs_room(ws.room)
             || !ws.allows(

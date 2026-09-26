@@ -1879,6 +1879,9 @@ impl ControlState for FrameBuilderControlState<'_> {
             // The remark being written, pick mode's scene and selection,
             // review's steps, and how the last one sent ended.
             "remark": crate::shell::remark::status_json(&chrome),
+            // The open replay, its transport and step list; `null` when
+            // nothing is replayed.
+            "replay": chrome.replay().map(|replay| replay.status_json()),
             "ws_settings_tab": format!("{:?}", chrome.ws_settings_tab),
             "revision": chrome.revision,
             // What is actually on screen — without it a harness can only see that *a*
@@ -2600,11 +2603,68 @@ fn execute_planned_action(
             });
             write_snapshot_png(fb, path, drag);
         }
+        PlannedAction::ReplayFrames { dir, scale } => {
+            if let Err(error) = write_replay_frames(fb, dir, *scale) {
+                eprintln!("replay_frames: {error}");
+            }
+        }
         PlannedAction::InvokeAction { provider, id, args } => {
             return Some(execute_invoke_action(provider, id, args, fb, ctx));
         }
     }
     None
+}
+
+/// Capture the open replay room's surfaces the way a recording captures
+/// them, named by the routes they were recorded under.
+fn write_replay_frames(
+    fb: &mut FrameBuilder,
+    dir: &std::path::Path,
+    scale: Option<f64>,
+) -> Result<(), String> {
+    let replay = fb
+        .chrome()
+        .replay()
+        .cloned()
+        .ok_or("this session has no replay")?;
+    let room = replay.room().ok_or("nothing is being replayed")?;
+    let at = replay.at().unwrap_or_default();
+    let scale = scale
+        .filter(|scale| scale.is_finite() && *scale > 0.0)
+        .or_else(|| replay.recorded_scale())
+        .unwrap_or(1.0);
+    std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
+    let mut manifest = Vec::new();
+    for (index, frame) in crate::compositor::capture::CaptureExecutor::room_surface_frames(
+        fb,
+        &room.to_string(),
+        at,
+        scale,
+    )
+    .into_iter()
+    .enumerate()
+    {
+        let mut frame = frame?;
+        if let Some(recorded) = replay.recorded_room_of(&frame.route.app_id) {
+            frame.route.room = recorded;
+        }
+        let file = format!("{index}.png");
+        let png = session_trace::frames::encode_png(&frame.rgba, frame.width, frame.height)
+            .map_err(|error| error.to_string())?;
+        std::fs::write(dir.join(&file), png).map_err(|error| error.to_string())?;
+        manifest.push(serde_json::json!({
+            "file": file,
+            "app_id": frame.route.app_id,
+            "room": frame.route.room,
+            "record_id": frame.route.record_id,
+            "width": frame.width,
+            "height": frame.height,
+            "scale": frame.scale,
+            "at_us": frame.at.0,
+        }));
+    }
+    let bytes = serde_json::to_vec_pretty(&manifest).map_err(|error| error.to_string())?;
+    std::fs::write(dir.join("frames.json"), bytes).map_err(|error| error.to_string())
 }
 
 /// Why a planned invocation did not happen. Carries the action layer's own
@@ -2647,6 +2707,7 @@ fn execute_locked_action(
         | PlannedAction::MouseWheel { .. }
         | PlannedAction::SetModifiers { .. }
         | PlannedAction::Snapshot { .. }
+        | PlannedAction::ReplayFrames { .. }
         | PlannedAction::SetGroupWidth { .. }
         | PlannedAction::SeedFilesDrag { .. }
         | PlannedAction::InvokeAction { .. } => {}

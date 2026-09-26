@@ -689,6 +689,8 @@ pub struct ChromeState {
     /// composer closed: what `state-dump` reports and the conversation a
     /// notification opens.
     pub last_remark: Option<crate::shell::remark::Sending>,
+    /// The session's replay and its transport, once the broker is up.
+    replay: Option<std::sync::Arc<crate::shell::replay::ReplayController>>,
     /// Compatibility queue for callers of the original active-room API.
     legacy_record_requests: Vec<(String, String)>,
     /// Tracked record actions retain the exact authorized destination until
@@ -823,6 +825,7 @@ impl ChromeState {
             remark_directory: crate::shell::remark::Directory::default(),
             remark_requests: Vec::new(),
             last_remark: None,
+            replay: None,
             wheel_summon: None,
             legacy_record_requests: Vec::new(),
             tracked_record_requests: Vec::new(),
@@ -937,6 +940,14 @@ impl ChromeState {
 
     pub fn take_remark_requests(&mut self) -> Vec<crate::shell::remark::Request> {
         std::mem::take(&mut self.remark_requests)
+    }
+
+    pub fn set_replay(&mut self, replay: std::sync::Arc<crate::shell::replay::ReplayController>) {
+        self.replay = Some(replay);
+    }
+
+    pub fn replay(&self) -> Option<&std::sync::Arc<crate::shell::replay::ReplayController>> {
+        self.replay.as_ref()
     }
 
     pub fn push_presence_request(&mut self, request: PresenceRequest) {

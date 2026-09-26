@@ -3210,6 +3210,7 @@ mod view_presence_tests {
             Some(ViewContribution {
                 scroll: self.scroll.clone(),
                 view_mode: self.mode.clone(),
+                open_resource: None,
             })
         }
         fn restore_view_state(&mut self, view: &ViewContribution) {
@@ -3826,7 +3827,10 @@ mod view_presence_tests {
         );
         // The shell releases follow on that same input and tells every app of
         // the room through the one follow control.
-        live.apply_collab_event_for_test(CollabEvent::FollowChanged { peer_id: None });
+        live.apply_collab_event_for_test(CollabEvent::FollowChanged {
+            peer_id: None,
+            mode: crate::view::FollowMode::Live,
+        });
         assert_eq!(live.followed_peer(), None);
         live.apply_collab_event_for_test(CollabEvent::RemotePresenceUpdate {
             user_id: "alice".into(),

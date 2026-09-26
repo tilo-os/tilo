@@ -2714,13 +2714,23 @@ pub struct Collaborator {
 pub struct ChannelContext {
     pub collaborators: Vec<Collaborator>,
     pub permissions: Vec<String>,
-    /// `Some` only for a session-local Follow control frame. The inner
-    /// `None` means stop following; ordinary context snapshots keep this
-    /// field at `None` and replace roster/permissions as before.
-    pub follow_changed: Option<Option<String>>,
+    /// `Some` only for a session-local Follow control frame; ordinary
+    /// context snapshots keep this field at `None` and replace
+    /// roster/permissions as before.
+    pub follow_changed: Option<FollowControl>,
     /// True only on a directed broker request to publish current document
     /// state. It is not a roster update and must not replace local context.
     pub snapshot_requested: bool,
+}
+
+/// A session-local Follow control frame.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FollowControl {
+    /// The participant to follow; `None` stops following.
+    pub target: Option<String>,
+    /// The participant is a replay of a recorded session rather than a
+    /// live person.
+    pub replay: bool,
 }
 
 /// Client-pulled channel-context stream.
@@ -2777,12 +2787,14 @@ impl ContextStream {
                     .to_owned(),
             );
         }
-        let follow_changed = ctx.get_follow_changed().then(|| {
-            ctx.get_follow_target()
+        let follow_changed = ctx.get_follow_changed().then(|| FollowControl {
+            target: ctx
+                .get_follow_target()
                 .ok()
                 .and_then(|target| target.to_str().ok())
                 .filter(|target| !target.is_empty())
-                .map(str::to_owned)
+                .map(str::to_owned),
+            replay: ctx.get_follow_replay(),
         });
         Ok(ChannelContext {
             collaborators,

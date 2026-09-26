@@ -137,6 +137,8 @@ mod recorder_test;
 mod recording_frames_test;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
+#[path = "replay_test.rs"]
+mod replay_test;
 #[path = "sandbox_check.rs"]
 mod sandbox_check;
 #[path = "server_side_decorations.rs"]

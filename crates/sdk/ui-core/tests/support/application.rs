@@ -811,6 +811,7 @@ impl Widget for ProbeRoot {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
             view_mode: None,
+            open_resource: None,
         })
     }
     fn restore_view_state(&mut self, view: &ViewContribution) {
