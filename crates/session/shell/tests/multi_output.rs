@@ -453,3 +453,86 @@ fn unplugging_an_output_leaves_it_before_its_global_goes() {
         vec![SurfaceEvent::Leave(external_name)]
     );
 }
+
+/// Each output's `(x, y, width, height)` in the logical space, as
+/// xwayland-satellite and wlroots-style clients compute it from xdg-output.
+fn logical_rects(h: &Harness) -> Vec<(i32, i32, i32, i32)> {
+    h.seen()
+        .iter()
+        .map(|s| {
+            let (x, y) = s.logical_position.expect("xdg_output logical_position");
+            let (w, h) = s.logical_size.expect("xdg_output logical_size");
+            (x, y, w, h)
+        })
+        .collect()
+}
+
+#[test]
+fn xdg_output_rects_tile_the_logical_desktop_without_gaps() {
+    // Mixed scales used to report physical positions beside logical sizes,
+    // leaving a dead band after every HiDPI output that X11 clients under
+    // xwayland-satellite placed windows into.
+    for (fixture, expected) in [
+        (
+            "docked-laptop",
+            vec![(0, 0, 1280, 800), (1280, 0, 2560, 1440)],
+        ),
+        (
+            "vertical-stack",
+            vec![(0, 0, 2560, 1440), (512, 1440, 1536, 960)],
+        ),
+        (
+            "portrait-plus-4k",
+            vec![(0, 0, 1080, 1920), (1080, 0, 1920, 1080)],
+        ),
+        (
+            "mixed-scale-offset",
+            vec![(0, 0, 1280, 800), (1280, 200, 1920, 1080)],
+        ),
+    ] {
+        let h = Harness::with_fixture(fixture);
+        let rects = logical_rects(&h);
+        assert_eq!(rects, expected, "{fixture}");
+        // Every output shares an edge with another: nothing floats apart.
+        for (i, a) in rects.iter().enumerate() {
+            let touches = rects.iter().enumerate().any(|(j, b)| {
+                i != j
+                    && (a.0.saturating_add(a.2) == b.0
+                        || b.0.saturating_add(b.2) == a.0
+                        || a.1.saturating_add(a.3) == b.1
+                        || b.1.saturating_add(b.3) == a.1)
+            });
+            assert!(touches, "{fixture}: output {i} {a:?} leaves a gap");
+        }
+    }
+}
+
+#[test]
+fn the_pointer_crosses_a_2x_to_1x_seam_at_an_offset_on_the_matching_logical_row() {
+    use shell::compositor::backend::layout::{logical_to_scene, move_pointer, placements};
+    let outputs = output_fixture("mixed-scale-offset").expect("fixture");
+    let p = placements(&outputs);
+    // Logical row 400 on the 2x panel: scene row 800.
+    let start = (1275.0, 400.0);
+    assert_eq!(logical_to_scene(&p, start), (2550.0, 800.0));
+    // Ten logical pixels right: across the seam onto the 1x monitor, whose
+    // top edge is 200 logical rows lower. The pointer keeps logical row 400
+    // — 200 rows into the monitor — rather than landing on its row 800 or
+    // being pushed off its top edge.
+    let crossed = move_pointer(&p, start, (10.0, 0.0));
+    assert_eq!(crossed, (1285.0, 400.0));
+    let monitor = output(&outputs, 1);
+    assert_eq!(
+        logical_to_scene(&p, crossed),
+        (
+            f64::from(monitor.position.0) + 5.0,
+            f64::from(monitor.position.1) + 200.0
+        )
+    );
+    // Above the monitor's top edge there is nothing to the right of the
+    // panel, so the same motion at row 100 stops at the panel's edge.
+    assert_eq!(
+        move_pointer(&p, (1275.0, 100.0), (10.0, 0.0)),
+        (1279.0, 100.0)
+    );
+}

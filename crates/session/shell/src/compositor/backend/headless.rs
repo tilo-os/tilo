@@ -16,7 +16,7 @@ use ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::peniko::Color;
 
-use super::{Backend, BackendEvent, Output, OutputId, combined_geometry};
+use super::{Backend, BackendEvent, Output, OutputId, combined_geometry, layout};
 
 /// Env-var that overrides the synthetic output's dimensions. Format is
 /// `WxH` (e.g. `1280x720`). Anything malformed or absent falls back to
@@ -35,16 +35,16 @@ pub const HEADLESS_OUTPUTS_ENV: &str = "TILO_HEADLESS_OUTPUTS";
 /// --outputs` and the integration tests, so a layout bug reproduces with a
 /// name rather than a hand-typed spec.
 ///
-/// Positions are in the compositor's combined coordinate space.
+/// Positions are logical: each output is its mode over its scale wide.
 pub const OUTPUT_FIXTURES: &[(&str, &str)] = &[
     // A HiDPI laptop panel with a high-refresh desktop monitor to its right.
     ("docked-laptop", "2560x1600@2~60,2560x1440@1~144"),
     // A monitor with the laptop centred underneath it.
-    ("vertical-stack", "2560x1440@1,1920x1200@1.25+320+1440"),
+    ("vertical-stack", "2560x1440@1,1920x1200@1.25+512+1440"),
     // A 1080p panel rotated to portrait beside a 2x 4K monitor.
     ("portrait-plus-4k", "1920x1080@1r90,3840x2160@2"),
     // Mixed scales whose top edges do not line up.
-    ("mixed-scale-offset", "2560x1600@2,1920x1080@1+2560+400"),
+    ("mixed-scale-offset", "2560x1600@2,1920x1080@1+1280+200"),
 ];
 
 /// The outputs of a named fixture from [`OUTPUT_FIXTURES`].
@@ -70,7 +70,7 @@ pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
         let fixtures: Vec<&str> = OUTPUT_FIXTURES.iter().map(|(name, _)| *name).collect();
         format!(
             "{error}; expected a fixture ({}) or a spec like \
-             `2560x1600@2,1920x1080@1+2560+0,1920x1080@1r90` \
+             `2560x1600@2,1920x1080@1+1280+0,1920x1080@1r90` \
              (WxH mode, then optional @SCALE, ~HZ, rDEGREES, +X+Y)",
             fixtures.join(", ")
         )
@@ -86,11 +86,13 @@ pub fn resolve_output_arrangement(value: &str) -> Result<Vec<Output>, String> {
 /// - `~HZ` — refresh rate in hertz, fractional allowed (default: none, so
 ///   `wl_output` advertises the compositor's pacing rate)
 /// - `rDEGREES` — rotation, one of `0`, `90`, `180`, `270`
-/// - `+X+Y` — position in the combined coordinate space; either sign may be
-///   `-`. An entry without one sits to the right of everything before it.
+/// - `+X+Y` — position in the logical layout, where an output is its mode
+///   over its scale wide (a 2560-pixel 2x panel spans 1280); either sign may
+///   be `-`. An entry without one sits to the right of everything before it.
 ///
 /// The arrangement is translated so its top-left is the origin, as the DRM
-/// backend does, and outputs may not overlap.
+/// backend does, outputs may not overlap, and scene positions are derived
+/// with [`layout::scene_positions`] exactly as the DRM backend derives them.
 ///
 /// # Errors
 ///
@@ -109,16 +111,24 @@ pub fn parse_output_spec(spec: &str) -> Result<Vec<Output>, String> {
         output.transform = parsed.transform;
         // `size` is the arranged extent; `physical_size` swaps it back.
         output.size = output.physical_size();
-        output.position = parsed.position.unwrap_or_else(|| (right_edge(&outputs), 0));
+        output.logical_position = parsed.position.unwrap_or_else(|| (right_edge(&outputs), 0));
         output.refresh_mhz = parsed.refresh_mhz;
         outputs.push(output);
     }
-    let min_x = outputs.iter().map(|o| o.position.0).min().unwrap_or(0);
-    let min_y = outputs.iter().map(|o| o.position.1).min().unwrap_or(0);
+    let min_x = outputs
+        .iter()
+        .map(|o| o.logical_position.0)
+        .min()
+        .unwrap_or(0);
+    let min_y = outputs
+        .iter()
+        .map(|o| o.logical_position.1)
+        .min()
+        .unwrap_or(0);
     for o in &mut outputs {
-        o.position = (
-            o.position.0.saturating_sub(min_x),
-            o.position.1.saturating_sub(min_y),
+        o.logical_position = (
+            o.logical_position.0.saturating_sub(min_x),
+            o.logical_position.1.saturating_sub(min_y),
         );
     }
     for (i, a) in outputs.iter().enumerate() {
@@ -131,15 +141,24 @@ pub fn parse_output_spec(spec: &str) -> Result<Vec<Output>, String> {
             }
         }
     }
+    let scene = layout::scene_positions(
+        &outputs
+            .iter()
+            .map(|o| (o.logical_position, o.logical_size(), o.size))
+            .collect::<Vec<_>>(),
+    );
+    for (o, position) in outputs.iter_mut().zip(scene) {
+        o.position = position;
+    }
     Ok(outputs)
 }
 
-/// The right edge of everything placed so far: where an entry without a
+/// The logical right edge of everything placed so far: where an entry without a
 /// position goes.
 fn right_edge(outputs: &[Output]) -> i32 {
     let right = outputs
         .iter()
-        .map(|o| i64::from(o.position.0).saturating_add(i64::from(o.size.0)))
+        .map(|o| i64::from(o.logical_position.0).saturating_add(i64::from(o.logical_size().0)))
         .max()
         .unwrap_or(0);
     i32::try_from(right).unwrap_or(i32::MAX)
@@ -231,20 +250,25 @@ fn parse_output_entry(entry: &str) -> Result<OutputEntry, String> {
     Ok(parsed)
 }
 
-fn rects_overlap(a: &Output, b: &Output) -> bool {
-    let span = |o: &Output| {
-        let x = i64::from(o.position.0);
-        let y = i64::from(o.position.1);
-        (
-            x,
-            y,
-            x.saturating_add(i64::from(o.size.0)),
-            y.saturating_add(i64::from(o.size.1)),
-        )
+fn rects_overlap(first: &Output, second: &Output) -> bool {
+    // `[start, end)` of an output's logical rect along one axis.
+    let span = |start: i32, len: u32| {
+        let start = i64::from(start);
+        (start, start.saturating_add(i64::from(len)))
     };
-    let (ax0, ay0, ax1, ay1) = span(a);
-    let (bx0, by0, bx1, by1) = span(b);
-    ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1
+    let axes_overlap = |axis: fn(&Output) -> (i32, u32)| {
+        let (first_start, first_end) = {
+            let (start, len) = axis(first);
+            span(start, len)
+        };
+        let (second_start, second_end) = {
+            let (start, len) = axis(second);
+            span(start, len)
+        };
+        first_start < second_end && second_start < first_end
+    };
+    axes_overlap(|o| (o.logical_position.0, o.logical_size().0))
+        && axes_overlap(|o| (o.logical_position.1, o.logical_size().1))
 }
 
 /// Default size when `TILO_HEADLESS_SIZE` is unset. Matches the
@@ -552,18 +576,23 @@ mod tests {
     #[test]
     fn output_spec_reads_mode_scale_position_rotation_and_refresh() {
         use settings_store::hardware::OutputTransform;
-        let outs = parse_output_spec("2560x1600@2,1920x1080@1+2560+0~143.912,1080x1920r90")
+        let outs = parse_output_spec("2560x1600@2,1920x1080@1+1280+0~143.912,1080x1920r90")
             .expect("valid spec");
         assert_eq!(outs.len(), 3);
         assert_eq!(outs[0].id, OutputId(0));
-        assert_eq!((outs[0].position, outs[0].size), ((0, 0), (2560, 1600)));
+        assert_eq!(outs[0].size, (2560, 1600));
+        assert_eq!(outs[0].logical_size(), (1280, 800));
         assert_eq!(outs[0].scale, 2.0);
         assert_eq!(outs[0].refresh_mhz, None);
-        assert_eq!((outs[1].position, outs[1].size), ((2560, 0), (1920, 1080)));
+        // Positions are logical: the 1x monitor sits at the 2x panel's
+        // logical right edge, and past its 2560 pixels in the scene.
+        assert_eq!(outs[1].logical_position, (1280, 0));
+        assert_eq!(outs[1].position, (2560, 0));
         assert_eq!(outs[1].refresh_mhz, Some(143_912));
         // No position: right of everything before it. Rotated: the mode
         // stays 1080x1920, the arranged extent swaps.
         assert_eq!(outs[2].transform, OutputTransform::Rotate90);
+        assert_eq!(outs[2].logical_position, (3200, 0));
         assert_eq!((outs[2].position, outs[2].size), ((4480, 0), (1920, 1080)));
         assert_eq!(outs[2].physical_size(), (1080, 1920));
     }
@@ -571,8 +600,19 @@ mod tests {
     #[test]
     fn output_spec_translates_negative_positions_to_the_origin() {
         let outs = parse_output_spec("1920x1080,1280x1024-1280+56").expect("valid spec");
+        assert_eq!(outs[0].logical_position, (1280, 0));
+        assert_eq!(outs[1].logical_position, (0, 56));
+        // At scale 1 the scene is the logical layout.
         assert_eq!(outs[0].position, (1280, 0));
         assert_eq!(outs[1].position, (0, 56));
+    }
+
+    #[test]
+    fn output_spec_overlap_is_judged_in_logical_pixels() {
+        // Physically the panel is 2560 wide, but at 2x it ends at logical
+        // 1280, so a monitor there is beside it, not on top of it.
+        assert!(parse_output_spec("2560x1600@2,1920x1080+1280+0").is_ok());
+        assert!(parse_output_spec("2560x1600@2,1920x1080+1279+0").is_err());
     }
 
     #[test]

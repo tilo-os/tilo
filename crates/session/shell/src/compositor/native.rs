@@ -8973,6 +8973,7 @@ mod tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: (0, 0),
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -9028,6 +9029,7 @@ mod tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: (x, 0),
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -10794,7 +10796,9 @@ fn reconcile_fullscreen_overlay(
         frame.set_fullscreen_surface(None);
         return;
     };
-    let size = size_to_signed(output.size);
+    // Logical, like every other configure: a 2x output's fullscreen client
+    // is asked for half its pixels and renders them at scale 2.
+    let size = size_to_signed(output.logical_size());
     if target.configured_size != Some(size) {
         target.surface.with_pending_state(|pending| {
             pending.states.set(
@@ -11115,6 +11119,7 @@ mod output_geometry_tests {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
                 refresh_mhz: None,
+                logical_position: (1600, 0),
             },
         ];
         let geo = output_geometry(&outs);
@@ -11145,6 +11150,7 @@ mod output_geometry_tests {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
                 refresh_mhz: None,
+                logical_position: (1600, 0),
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11189,6 +11195,7 @@ mod external_floating_security_tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: position,
         }
     }
 

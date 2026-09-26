@@ -57,6 +57,7 @@ use super::scanout::{
     resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
+use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, TouchEvent as TiloTouchEvent,
 };
@@ -255,8 +256,15 @@ pub struct DrmDispatchState {
     pub outputs_changed: bool,
     /// Per-device output metadata, keyed by the public `OutputId`.
     pub output_meta: HashMap<OutputId, Output>,
-    /// Current pointer position in output coords, updated from libinput motion; the scanout composites a software cursor here when no hardware cursor is available.
+    /// Current pointer position in scene coordinates (physical pixels of
+    /// the combined texture): where the cursor is drawn and what the shell
+    /// hit-tests. Always derived from [`Self::logical_pointer`].
     pub pointer: (f64, f64),
+    /// Current pointer position in the logical layout, where motion
+    /// happens: one unit of relative motion is one logical pixel on every
+    /// output, and crossing between outputs of different scales keeps the
+    /// logical row.
+    pub logical_pointer: (f64, f64),
     /// Primary output size (px) — needed to transform libinput's absolute (0..1) coordinates and to clamp relative motion.
     pub output_size: (i32, i32),
     /// Hardware-cursor multiplexer across all outputs — one plane per
@@ -465,7 +473,10 @@ pub struct LiveEntry {
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
+    /// Top-left in the scene the presenter paints (physical pixels).
     pub position: (i32, i32),
+    /// Top-left in the logical layout the pointer moves in.
+    pub logical_position: (i32, i32),
     pub scale: f64,
     pub transform: settings_store::hardware::OutputTransform,
     /// This output's presentation interval, captured when brought up — kept here rather than read from the scanout, since scanouts move to the render thread and would start returning `None`.
@@ -790,6 +801,7 @@ impl DrmDispatchState {
             outputs_changed: false,
             output_meta: HashMap::new(),
             pointer: (0.0, 0.0),
+            logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
             hw_cursor: CursorPlanes::default(),
             keyboard,
@@ -827,10 +839,22 @@ impl DrmDispatchState {
             entry.set_color_profile(profile);
         }
         scanouts.sort_by_key(|e| e.id.0);
-        // Start the pointer in the middle of the combined space.
-        let (ow, oh) = self.output_size;
-        self.pointer = (f64::from(ow) / 2.0, f64::from(oh) / 2.0);
-        self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
+        // Start the pointer in the middle of the logical desktop.
+        let placements = self.placements();
+        let (lw, lh) = hotplug::combined_extent(
+            &placements
+                .iter()
+                .map(|p| p.logical_position)
+                .collect::<Vec<_>>(),
+            &placements
+                .iter()
+                .map(|p| p.logical_size)
+                .collect::<Vec<_>>(),
+        );
+        self.set_pointer_logical(layout::clamp_to_outputs(
+            &placements,
+            (f64::from(lw) / 2.0, f64::from(lh) / 2.0),
+        ));
         self.publish_display_snapshot();
         scanouts
     }
@@ -1072,6 +1096,7 @@ impl DrmDispatchState {
                 physical_mm: build.physical_mm,
                 crtc: build.crtc,
                 position: (0, 0),
+                logical_position: (0, 0),
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 refresh: build.scanout.refresh_interval(),
@@ -1111,12 +1136,55 @@ impl DrmDispatchState {
                     c.transform
                 });
         }
-        let sizes: Vec<(u32, u32)> = self
+        // Scale first: an output's logical extent — what the arrangement
+        // is made of — is its mode over its scale.
+        for entry in &mut self.live {
+            entry.scale = config.outputs.get(&entry.config_key).map_or_else(
+                || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
+                |c| c.scale,
+            );
+        }
+        let logical_sizes: Vec<(u32, u32)> = self
+            .live
+            .iter()
+            .map(|entry| layout::logical_extent(entry.size, entry.scale, entry.transform))
+            .collect();
+        let positions = self.logical_positions(&config, &logical_sizes);
+        let scene_sizes: Vec<(u32, u32)> = self
             .live
             .iter()
             .map(|entry| logical_output_size(entry.size, entry.transform))
             .collect();
-        let fallback = hotplug::layout(&sizes);
+        let scene_positions = layout::scene_positions(
+            &positions
+                .iter()
+                .zip(&logical_sizes)
+                .zip(&scene_sizes)
+                .map(|((&p, &l), &s)| (p, l, s))
+                .collect::<Vec<_>>(),
+        );
+        for ((entry, logical), scene) in self.live.iter_mut().zip(&positions).zip(&scene_positions)
+        {
+            entry.logical_position = *logical;
+            entry.position = *scene;
+        }
+        self.output_size = hotplug::combined_extent(&scene_positions, &scene_sizes);
+        let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
+        self.set_pointer_logical(logical_pointer);
+
+        self.output_meta = self.output_meta_for(&config);
+        self.rebuild_cursor_routing();
+    }
+
+    /// Where each live output sits in the logical layout: its configured
+    /// position (a mirror takes its target's), else packed side by side at
+    /// its logical size, translated so the island starts at the origin.
+    fn logical_positions(
+        &self,
+        config: &settings_store::hardware::DisplayConfig,
+        logical_sizes: &[(u32, u32)],
+    ) -> Vec<(i32, i32)> {
+        let fallback = hotplug::layout(logical_sizes);
         let mut positions: Vec<(i32, i32)> = self
             .live
             .iter()
@@ -1147,9 +1215,9 @@ impl DrmDispatchState {
                 *position = target_position;
             }
         }
-        // KMS accepts negative logical coordinates, but the renderer's
-        // combined texture starts at zero. Preserve relative arrangement and
-        // translate the whole monitor island into that texture.
+        // Logical coordinates may be negative, but the renderer's combined
+        // texture starts at zero. Preserve relative arrangement and
+        // translate the whole monitor island to the origin.
         let min_x = positions.iter().map(|p| p.0).min().unwrap_or(0);
         let min_y = positions.iter().map(|p| p.1).min().unwrap_or(0);
         for p in &mut positions {
@@ -1160,25 +1228,7 @@ impl DrmDispatchState {
             p.0 = p.0.saturating_sub(min_x);
             p.1 = p.1.saturating_sub(min_y);
         }
-        for (entry, position) in self.live.iter_mut().zip(&positions) {
-            entry.position = *position;
-            entry.scale = config.outputs.get(&entry.config_key).map_or_else(
-                || resolve_scale(entry.size, entry.physical_mm, self.scale_override),
-                |c| c.scale,
-            );
-        }
-        let extent = hotplug::combined_extent(&positions, &sizes);
-        self.output_size = extent;
-        self.pointer = hotplug::clamp_pointer_to_outputs(
-            self.pointer,
-            self.live
-                .iter()
-                .zip(&sizes)
-                .map(|(entry, &size)| (entry.position, size)),
-        );
-
-        self.output_meta = self.output_meta_for(&config);
-        self.rebuild_cursor_routing();
+        positions
     }
 
     /// The public output table for the current live set and `config`.
@@ -1194,6 +1244,7 @@ impl DrmDispatchState {
                     Output {
                         id: l.id,
                         position: l.position,
+                        logical_position: l.logical_position,
                         size: logical_output_size(l.size, l.transform),
                         // `l.scale` is a UI scale factor bounded to
                         // `[MIN_SCALE, MAX_SCALE]` (see `scale.rs`) or a
@@ -1220,6 +1271,49 @@ impl DrmDispatchState {
 
     /// Point every cursor plane at its output's rectangle in the *new* layout — a stale rect routes the pointer onto the wrong monitor.
     fn rebuild_cursor_routing(&mut self) {
+        self.rebuild_cursor_planes();
+        self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
+    }
+
+    /// Every live output in both the logical layout and the scene.
+    pub(crate) fn placements(&self) -> Vec<layout::Placement> {
+        self.live
+            .iter()
+            .map(|l| layout::Placement {
+                logical_position: l.logical_position,
+                logical_size: layout::logical_extent(l.size, l.scale, l.transform),
+                scene_position: l.position,
+                scene_size: logical_output_size(l.size, l.transform),
+            })
+            .collect()
+    }
+
+    /// Put the pointer at a logical point (already on an output) and derive
+    /// its scene position and the hardware cursor from it.
+    fn set_pointer_logical(&mut self, logical: (f64, f64)) {
+        self.logical_pointer = logical;
+        self.pointer = layout::logical_to_scene(&self.placements(), logical);
+        self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
+    }
+
+    /// Relative pointer motion, in logical pixels. Returns the new scene
+    /// position.
+    fn move_pointer_by(&mut self, delta: (f64, f64)) -> (f64, f64) {
+        let logical = layout::move_pointer(&self.placements(), self.logical_pointer, delta);
+        self.set_pointer_logical(logical);
+        self.pointer
+    }
+
+    /// Put the pointer at a scene point — for input calibrated to a panel's
+    /// scene rectangle, such as a touchscreen — keeping the logical pointer
+    /// in step so the next relative motion continues from there.
+    fn set_pointer_scene(&mut self, scene: (f64, f64)) {
+        self.pointer = scene;
+        self.logical_pointer = layout::scene_to_logical(&self.placements(), scene);
+        self.hw_cursor.move_to(scene.0, scene.1);
+    }
+
+    fn rebuild_cursor_planes(&mut self) {
         for entry in &self.live {
             let logical = logical_output_size(entry.size, entry.transform);
             self.hw_cursor.set_rect(
@@ -1228,7 +1322,6 @@ impl DrmDispatchState {
             );
             self.hw_cursor.set_transform(entry.id, entry.transform);
         }
-        self.hw_cursor.move_to(self.pointer.0, self.pointer.1);
     }
 
     /// The public output table, in `OutputId` order.
@@ -1953,39 +2046,29 @@ impl DrmDispatchState {
     fn handle_libinput_pointer_event(&mut self, event: InputEvent<LibinputInputBackend>) {
         match event {
             InputEvent::PointerMotionAbsolute { event } => {
-                let (w, h) = self.output_size;
-                let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
-                let (x, y) = hotplug::clamp_pointer_to_outputs(
-                    requested,
-                    self.live.iter().map(|output| {
-                        (
-                            output.position,
-                            logical_output_size(output.size, output.transform),
-                        )
-                    }),
+                // An absolute device (tablet, VM pointer) spans the logical
+                // desktop, so equal travel covers equal logical distance on
+                // every output.
+                let placements = self.placements();
+                let (w, h) = hotplug::combined_extent(
+                    &placements
+                        .iter()
+                        .map(|p| p.logical_position)
+                        .collect::<Vec<_>>(),
+                    &placements
+                        .iter()
+                        .map(|p| p.logical_size)
+                        .collect::<Vec<_>>(),
                 );
-                self.pointer = (x, y);
-                // Reposition the hardware cursor plane immediately — no framebuffer redraw needed; `CursorPlanes` routes the global position to the plane under the pointer.
-                self.hw_cursor.move_to(x, y);
+                let requested = (event.x_transformed(w.max(1)), event.y_transformed(h.max(1)));
+                self.set_pointer_logical(layout::clamp_to_outputs(&placements, requested));
+                let (x, y) = self.pointer;
                 self.push(BackendEvent::Input(cursor_moved_event(x, y)));
             }
-            // Relative motion (mouse): accumulate + clamp to output.
+            // Relative motion (mouse): accumulate in logical pixels, clamp to
+            // the logical outputs, then present in the scene.
             InputEvent::PointerMotion { event } => {
-                let requested = (
-                    self.pointer.0 + event.delta_x(),
-                    self.pointer.1 + event.delta_y(),
-                );
-                let (x, y) = hotplug::clamp_pointer_to_outputs(
-                    requested,
-                    self.live.iter().map(|output| {
-                        (
-                            output.position,
-                            logical_output_size(output.size, output.transform),
-                        )
-                    }),
-                );
-                self.pointer = (x, y);
-                self.hw_cursor.move_to(x, y);
+                let (x, y) = self.move_pointer_by((event.delta_x(), event.delta_y()));
                 self.push(BackendEvent::RelativePointerMotion {
                     dx: event.delta_x(),
                     dy: event.delta_y(),
@@ -2117,8 +2200,7 @@ impl DrmDispatchState {
     /// from libinput extraction so unit tests can cover the ownership wire
     /// without a real touch device or seat.
     fn handle_direct_touch_down(&mut self, key: TouchContactKey, x: f64, y: f64) {
-        self.pointer = (x, y);
-        self.hw_cursor.move_to(x, y);
+        self.set_pointer_scene((x, y));
         match self.direct_touch.down(key, (x, y)) {
             DirectTouchDown::ForwardToClient(id) => {
                 self.push(BackendEvent::Input(touch_input_event(
@@ -2157,8 +2239,7 @@ impl DrmDispatchState {
     }
 
     fn handle_direct_touch_motion(&mut self, key: &TouchContactKey, x: f64, y: f64) {
-        self.pointer = (x, y);
-        self.hw_cursor.move_to(x, y);
+        self.set_pointer_scene((x, y));
         if let Some((id, forward_to_client)) = self.direct_touch.motion(key, (x, y)) {
             self.push(BackendEvent::Input(touch_input_event(
                 id,
@@ -2181,8 +2262,7 @@ impl DrmDispatchState {
         else {
             return;
         };
-        self.pointer = (x, y);
-        self.hw_cursor.move_to(x, y);
+        self.set_pointer_scene((x, y));
         self.push(BackendEvent::Input(touch_input_event(
             id,
             x,
@@ -4218,6 +4298,7 @@ mod tests {
             // avoids a raw `+` clippy can't see is bounded.
             crtc: crtc(id.saturating_add(1)),
             position: (0, 0),
+            logical_position: (0, 0),
             scale: 1.0,
             transform: settings_store::hardware::OutputTransform::Normal,
             refresh: None,
@@ -4488,7 +4569,7 @@ mod tests {
             entry(1, 11, (1920, 1080), None),
         ];
         state.relayout_outputs();
-        state.pointer = (3000.0, 500.0);
+        state.set_pointer_scene((3000.0, 500.0));
 
         state.live.retain(|l| l.id == OutputId(0));
         state.relayout_outputs();
@@ -4544,7 +4625,7 @@ mod tests {
         // cursor/touch routing.  A secondary-card unplug must leave no gap
         // and clamp an input position that was on the dock back onto the
         // laptop panel.
-        state.pointer = (3300.0, 900.0);
+        state.set_pointer_scene((3300.0, 900.0));
         state.live.retain(|output| output.key.device == 41);
         state.relayout_outputs();
         assert_eq!(
@@ -4556,7 +4637,63 @@ mod tests {
             [OutputId(0)]
         );
         assert_eq!(state.output_size, (1920, 1080));
-        assert_eq!(state.pointer, (1919.0, 900.0));
+        // The 1.5x panel is 1280x720 logical; the pointer lands on its
+        // nearest logical pixel and is drawn at that pixel's scene position.
+        assert_eq!(state.logical_pointer, (1279.0, 719.0));
+        assert_eq!(state.pointer, (1918.5, 1078.5));
+    }
+
+    /// A 13.3" 2560x1600 panel (scale 2) docked beside a 24" 1080p monitor.
+    fn docked_hidpi_laptop() -> DrmDispatchState {
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            entry(0, 10, (2560, 1600), Some((286, 179))),
+            entry(1, 11, (1920, 1080), Some((527, 296))),
+        ];
+        state.relayout_outputs();
+        state
+    }
+
+    #[test]
+    fn outputs_are_arranged_at_their_logical_size() {
+        let state = docked_hidpi_laptop();
+        assert_eq!(state.live[0].scale, 2.0);
+        assert_eq!(state.live[1].scale, 1.0);
+        let table = state.output_table();
+        // Logically the monitor starts where the 1280-wide panel ends ...
+        assert_eq!(table[0].logical_position, (0, 0));
+        assert_eq!(table[1].logical_position, (1280, 0));
+        // ... while in the painted scene it sits past the panel's pixels.
+        assert_eq!(table[0].position, (0, 0));
+        assert_eq!(table[1].position, (2560, 0));
+        assert_eq!(state.output_size, (4480, 1600));
+    }
+
+    #[test]
+    fn relative_motion_is_logical_and_crosses_a_mixed_scale_seam_on_the_same_row() {
+        let mut state = docked_hidpi_laptop();
+        state.set_pointer_logical((1270.0, 400.0));
+        // Logical row 400 on the 2x panel is scene row 800.
+        assert_eq!(state.pointer, (2540.0, 800.0));
+        // Five logical pixels on the panel are ten of its physical ones.
+        assert_eq!(state.move_pointer_by((5.0, 0.0)), (2550.0, 800.0));
+        // Crossing the seam keeps logical row 400: scene row 400 on the 1x
+        // monitor, not row 800 — and not a jump by the panel's density.
+        assert_eq!(state.move_pointer_by((10.0, 0.0)), (2565.0, 400.0));
+        assert_eq!(state.logical_pointer, (1285.0, 400.0));
+        // And back again.
+        assert_eq!(state.move_pointer_by((-10.0, 0.0)), (2550.0, 800.0));
+    }
+
+    #[test]
+    fn motion_off_the_panel_s_bottom_edge_stops_at_its_last_row() {
+        // Nothing lies below the panel; the monitor beside it is taller, but
+        // motion straight down on the panel stops at the panel's last row
+        // rather than jumping sideways onto the monitor.
+        let mut state = docked_hidpi_laptop();
+        state.set_pointer_logical((600.0, 790.0));
+        state.move_pointer_by((0.0, 50.0));
+        assert_eq!(state.logical_pointer, (600.0, 799.0));
     }
 
     #[test]

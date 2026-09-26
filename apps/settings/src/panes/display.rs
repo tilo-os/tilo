@@ -57,7 +57,7 @@ use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 use settings_store::hardware::{
     DisplayConfig, DisplayHardwareSnapshot, DisplayTransaction, DisplayTransactionState,
-    OutputConfig, OutputDescriptor, OutputMode, OutputTransform,
+    OutputConfig, OutputDescriptor, OutputMode, OutputTransform, logical_extent,
 };
 
 /// CRDT key the brightness slider writes into.
@@ -241,6 +241,20 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         color_profiles: Vec::new(),
         color_profile_labels: BTreeMap::new(),
     }
+}
+
+/// An output's extent in the logical layout its `x`/`y` are stored in: the
+/// staged mode (else the current one) over the staged scale, rotated.
+fn logical_extent_of(output: &DisplayOutput, cfg: &OutputConfig) -> (i32, i32) {
+    let mode = cfg
+        .mode
+        .or(output.current_mode)
+        .map_or((1920, 1080), |mode| (mode.width, mode.height));
+    let (width, height) = logical_extent(mode, cfg.scale, cfg.transform);
+    (
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
+    )
 }
 
 /// Whether a DRM connector directory name is a *virtual* connector rather
@@ -1898,26 +1912,22 @@ impl DisplayPane {
                     .get(&reference.connector)
                     .cloned()
                     .unwrap_or_default();
+                // Positions are logical, so neighbours are placed by their
+                // logical extent (mode over scale, rotated), not their mode:
+                // a 2x panel's right-hand neighbour starts 1280 in, not 2560.
+                let (width, height) = logical_extent_of(output, cfg);
+                let (reference_width, reference_height) =
+                    logical_extent_of(reference, &reference_cfg);
                 let point = match side {
-                    "Left" => Some((
-                        reference_cfg.x
-                            - output.current_mode.map_or(1920, |mode| mode.width) as i32,
-                        reference_cfg.y,
-                    )),
+                    "Left" => Some((reference_cfg.x.saturating_sub(width), reference_cfg.y)),
                     "Right" => Some((
-                        reference_cfg.x
-                            + reference.current_mode.map_or(1920, |mode| mode.width) as i32,
+                        reference_cfg.x.saturating_add(reference_width),
                         reference_cfg.y,
                     )),
-                    "Above" => Some((
-                        reference_cfg.x,
-                        reference_cfg.y
-                            - output.current_mode.map_or(1080, |mode| mode.height) as i32,
-                    )),
+                    "Above" => Some((reference_cfg.x, reference_cfg.y.saturating_sub(height))),
                     "Below" => Some((
                         reference_cfg.x,
-                        reference_cfg.y
-                            + reference.current_mode.map_or(1080, |mode| mode.height) as i32,
+                        reference_cfg.y.saturating_add(reference_height),
                     )),
                     _ => None,
                 };
@@ -2140,6 +2150,63 @@ impl DisplayPane {
 mod tests {
     use super::*;
     use crate::dispatcher::testing::RecordingDispatcher;
+
+    #[test]
+    fn relative_positions_use_the_neighbour_s_logical_extent() {
+        let mode = |width, height| {
+            Some(OutputMode {
+                width,
+                height,
+                refresh_mhz: 60_000,
+            })
+        };
+        let panel = || DisplayOutput {
+            current_mode: mode(2560, 1600),
+            ..classify_connector("card0-eDP-1", "connected")
+        };
+        let monitor = || DisplayOutput {
+            current_mode: mode(1920, 1080),
+            ..classify_connector("card0-HDMI-A-1", "connected")
+        };
+        let connected = [panel(), monitor()];
+        let mut next = DisplayConfig::default();
+        next.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        let place = |label: &str, cfg: &mut OutputConfig| {
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, output_key("HDMI-A-1", "position"), label)
+                .expect("put");
+            DisplayPane::apply_output_placement_overrides(
+                &doc,
+                &automerge::ROOT,
+                &monitor(),
+                &connected,
+                &next,
+                cfg,
+            )
+        };
+
+        // The 2x panel is 1280 logical pixels wide, so its right-hand
+        // neighbour starts there — not at its 2560-pixel mode width.
+        let mut cfg = OutputConfig::default();
+        assert!(place("Right of Built-in display", &mut cfg));
+        assert_eq!((cfg.x, cfg.y), (1280, 0));
+        assert!(place("Below of Built-in display", &mut cfg));
+        assert_eq!((cfg.x, cfg.y), (0, 800));
+
+        // A monitor rotated to portrait is 1080 wide on the left.
+        let mut portrait = OutputConfig {
+            transform: OutputTransform::Rotate90,
+            ..Default::default()
+        };
+        assert!(place("Left of Built-in display", &mut portrait));
+        assert_eq!((portrait.x, portrait.y), (-1080, 0));
+    }
 
     #[test]
     fn classify_builtin_and_external_connectors() {
