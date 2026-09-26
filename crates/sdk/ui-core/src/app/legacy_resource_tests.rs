@@ -534,7 +534,7 @@ fn native_legacy_effect_control_keeps_existing_confirmation_gate() {
 }
 
 #[test]
-fn round1_native_drain_keeps_independent_document_and_disposable_view_controls() {
+fn native_drain_keeps_independent_document_and_disposable_view_controls() {
     for case in ["closed", "unavailable", "busy"] {
         for failed_first in [false, true] {
             for view in [false, true] {
@@ -581,7 +581,7 @@ fn round1_native_drain_keeps_independent_document_and_disposable_view_controls()
     }
 }
 
-fn round1_unique_component_bare(lazy: bool, duplicate: bool) {
+fn component_bare_address(lazy: bool, duplicate: bool) {
     use crate::application::{AppComponent, LaunchTarget};
     use crate::application_test_support::{ProbeHost, probe_definition};
     use crate::bound_dispatch::legacy_document_tests::Probe;
@@ -665,19 +665,19 @@ fn round1_unique_component_bare(lazy: bool, duplicate: bool) {
     assert_eq!(probe.acks.get(), expected);
 }
 #[test]
-fn round1_native_unique_component_eager_bare_address_executes_once() {
-    round1_unique_component_bare(false, false);
+fn native_unique_component_eager_bare_address_executes_once() {
+    component_bare_address(false, false);
 }
 #[test]
-fn round1_native_unique_component_lazy_bare_address_executes_once() {
-    round1_unique_component_bare(true, false);
+fn native_unique_component_lazy_bare_address_executes_once() {
+    component_bare_address(true, false);
 }
 
 #[test]
-fn round1_native_actual_component_duplicate_eager_bare_address_refuses() {
-    round1_unique_component_bare(false, true);
+fn native_actual_component_duplicate_eager_bare_address_refuses() {
+    component_bare_address(false, true);
 }
 #[test]
-fn round1_native_actual_component_duplicate_lazy_bare_address_refuses() {
-    round1_unique_component_bare(true, true);
+fn native_actual_component_duplicate_lazy_bare_address_refuses() {
+    component_bare_address(true, true);
 }

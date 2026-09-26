@@ -1966,7 +1966,7 @@ fn native_hidden_resource_at_action_cannot_bypass_history_presentation() {
 }
 
 #[test]
-fn round3_native_history_entry_pointer_captures_before_discard() {
+fn native_history_entry_pointer_captures_before_discard() {
     let probe =
         crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
     let mut app = app();
@@ -1985,7 +1985,7 @@ fn round3_native_history_entry_pointer_captures_before_discard() {
 }
 
 #[test]
-fn round3_native_history_focus_does_not_drain_live_controls() {
+fn native_history_focus_does_not_drain_live_controls() {
     let probe =
         crate::history_mode::isolation_tests::native_effect_probe_parts("live", "fixture.export");
     let mut app = app();
@@ -2945,6 +2945,152 @@ impl ComponentControlOwner {
     }
 }
 
+impl ComponentControlOwner {
+    fn new(
+        id: &str,
+        operation: impl Into<String>,
+        label: &str,
+        confirmation: tilo_actions::ConfirmationPolicy,
+    ) -> Self {
+        Self {
+            entered: None,
+            emitter: None,
+            identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
+            duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
+            id: id.into(),
+            operation: operation.into(),
+            confirmation,
+            starts: std::rc::Rc::default(),
+            payloads: std::rc::Rc::default(),
+            text: crate::widget::Text::new(label),
+        }
+    }
+}
+
+/// Reserves a `note` record in `store` whose body reads `live`.
+fn live_note(store: &crate::RecordStore, tab: u64) -> crate::RecordCheckout {
+    let checkout = crate::RecordCheckout::new(
+        crate::RecordId::for_tab(tab),
+        crate::RecordKind::new("note"),
+    );
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "body", "live").unwrap();
+            Ok(())
+        })
+        .unwrap();
+    checkout
+}
+
+type ControlEmitter = std::rc::Rc<
+    std::cell::RefCell<crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>>,
+>;
+
+static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
+    app_id: crate::application_test_support::APP,
+    scopes: &[HistoryScopeDefinition {
+        key: "document",
+        title: "Bridge document",
+        presentation: HistoryPresentation::Domain {
+            create: crate::history_mode::test_preview,
+        },
+        content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
+    }],
+};
+
+fn bridge_registration(binding: &crate::bound_dispatch::CallbackBinding) -> HistoryRegistration {
+    HistoryRegistration::new(
+        &BRIDGE_HISTORY,
+        vec![
+            HistorySourceRegistration::owned(
+                "document",
+                crate::application_test_support::APP,
+                HistoryOwner::component(binding.clone()),
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap()
+}
+
+fn runner_component(
+    host: &crate::application_test_support::ProbeHost,
+    instance: u64,
+) -> crate::application::AppComponent {
+    use crate::application::{LaunchTarget, RestoreInput};
+    use crate::application_test_support::{runner_permissions, runner_probe_definition};
+    let definition = runner_probe_definition();
+    let context = host
+        .prepare_with_permissions(
+            definition,
+            instance,
+            &LaunchTarget::New,
+            runner_permissions(),
+        )
+        .unwrap();
+    definition
+        .instantiate(context, LaunchTarget::New, RestoreInput::None)
+        .unwrap()
+}
+
+/// A mounted runner component whose root is the `actual-bridge` control owner.
+struct BridgeComponent {
+    component: crate::application::AppComponent,
+    binding: crate::bound_dispatch::CallbackBinding,
+    registration: HistoryRegistration,
+    emitter: ControlEmitter,
+    starts: std::rc::Rc<std::cell::Cell<usize>>,
+    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    // Keeps the record and view stores alive for the whole test.
+    host: crate::application_test_support::ProbeHost,
+}
+
+/// `in_domain` binds the emitter to the component's control domain; otherwise
+/// the emitter is plain and relies on the widget bridge to forward intents.
+fn bridge_component(entered: Option<CustodyEnteredOperation>, in_domain: bool) -> BridgeComponent {
+    let host = crate::application_test_support::ProbeHost::new();
+    let mut component = runner_component(&host, 1971);
+    let mut live = ComponentControlOwner::new(
+        "actual-bridge",
+        "fixture.actual-bridge",
+        "Actual bridge",
+        tilo_actions::ConfirmationPolicy::None,
+    );
+    live.entered = entered;
+    let (starts, payloads) = (live.starts.clone(), live.payloads.clone());
+    let resource = live.resource();
+    let binding =
+        tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| arguments)
+            .unwrap();
+    let emitter = std::rc::Rc::new(std::cell::RefCell::new(if in_domain {
+        crate::widget::ActionEmitter::new_in(
+            binding,
+            &component
+                .callback_binding()
+                .control_domain
+                .upgrade()
+                .unwrap(),
+        )
+    } else {
+        crate::widget::ActionEmitter::new(binding)
+    }));
+    live.emitter = Some(emitter.clone());
+    component.root = Some(Box::new(live));
+    component.mount(|_| {}).unwrap();
+    let binding = component.callback_binding();
+    BridgeComponent {
+        component,
+        registration: bridge_registration(&binding),
+        binding,
+        emitter,
+        starts,
+        payloads,
+        host,
+    }
+}
+
 impl crate::widget::AppWidget for ComponentControlOwner {
     fn app_kind(&self) -> crate::widget::AppKind {
         crate::widget::AppKind::Editor
@@ -3320,8 +3466,6 @@ fn component_control_root(
             .unwrap();
         let scope = crate::WakeScope::new();
         let registry_owner = std::rc::Rc::new(());
-        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
-        let payloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let binding = crate::bound_dispatch::CallbackBinding {
             lifetime: scope.handle(),
             closing: std::rc::Rc::new(std::cell::Cell::new(false)),
@@ -3341,29 +3485,22 @@ fn component_control_root(
             author: crate::permissions::UserId("component-control-author".into()),
             operation_context: tilo_actions::ActionContext::default(),
         };
-        let identity_supported = std::rc::Rc::new(std::cell::Cell::new(true));
-        let duplicate_depth = std::rc::Rc::new(std::cell::Cell::new(0));
+        let live = ComponentControlOwner::new(
+            id,
+            format!("fixture.component.{id}"),
+            id,
+            confirmation.clone(),
+        );
         handles.push(ComponentControlHandle {
-            identity_supported: identity_supported.clone(),
-            duplicate_depth: duplicate_depth.clone(),
+            identity_supported: live.identity_supported.clone(),
+            duplicate_depth: live.duplicate_depth.clone(),
             binding: binding.clone(),
-            starts: starts.clone(),
-            payloads: payloads.clone(),
+            starts: live.starts.clone(),
+            payloads: live.payloads.clone(),
         });
         slots.push(ComponentControlSlot {
             binding,
-            live: ComponentControlOwner {
-                entered: None,
-                emitter: None,
-                identity_supported,
-                duplicate_depth,
-                id: (*id).into(),
-                operation: format!("fixture.component.{id}"),
-                confirmation: confirmation.clone(),
-                starts,
-                payloads,
-                text: crate::widget::Text::new(id),
-            },
+            live,
             registry: tilo_actions::ActionRegistry::new(),
             _scope: scope,
             _registry_owner: registry_owner,
@@ -3724,18 +3861,7 @@ fn live_legacy_callback_first_emits_after_return_and_preview_remains_inert() {
     let store = owners
         .open(HISTORY.app_id, "legacy-live-after-return")
         .unwrap();
-    let checkout = crate::record::RecordCheckout::new(
-        crate::RecordId::for_tab(944),
-        crate::record::RecordKind::new("note"),
-    );
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(ROOT, "body", "live").unwrap();
-            Ok(())
-        })
-        .unwrap();
+    let checkout = live_note(&store, 944);
     let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
         "legacy-live",
         "fixture.legacy-live",
@@ -3773,18 +3899,7 @@ fn history_preview_keeps_session_notifications_on_the_live_owner_exactly_once() 
     let store = owners
         .open(HISTORY.app_id, "history-collaboration")
         .unwrap();
-    let checkout = crate::record::RecordCheckout::new(
-        crate::RecordId::for_tab(945),
-        crate::record::RecordKind::new("note"),
-    );
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(ROOT, "body", "live").unwrap();
-            Ok(())
-        })
-        .unwrap();
+    let checkout = live_note(&store, 945);
     let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
         "history-live-session",
         "fixture.history-live-session",
@@ -5198,7 +5313,7 @@ fn round2_deferred_recovery_overflow_requires_new_snapshot_on_both_routes() {
 }
 
 #[test]
-fn round4_palette_two_round_trips_preserve_original_exact_witness() {
+fn palette_two_round_trips_preserve_original_exact_witness() {
     for changed in ["target", "handler", "unsupported"] {
         let state = PaletteContinuationState::stable();
         if changed == "unsupported" {
@@ -5246,7 +5361,7 @@ fn round4_palette_two_round_trips_preserve_original_exact_witness() {
 }
 
 #[test]
-fn round4_palette_named_text_parameter_survives_history_and_confirmation() {
+fn palette_named_text_parameter_survives_history_and_confirmation() {
     let state = PaletteContinuationState::stable();
     let mut app = palette_history_app(state.clone());
     palette_activate(&mut app, "named", "  original target  ");
@@ -5276,7 +5391,7 @@ fn round4_palette_named_text_parameter_survives_history_and_confirmation() {
 }
 
 #[test]
-fn round4_palette_missing_or_unavailable_draft_preserves_editor_and_reason() {
+fn palette_missing_or_unavailable_draft_preserves_editor_and_reason() {
     for action in ["text", "json"] {
         for authority in [1, 2] {
             let state = PaletteContinuationState::stable();
@@ -5340,7 +5455,7 @@ fn activate_component_palette(
 }
 
 #[test]
-fn round4_fresh_component_palette_does_not_require_history_identity_even_after_cancel() {
+fn fresh_component_palette_does_not_require_history_identity_even_after_cancel() {
     let (root, handles, _) =
         component_control_root(&[("ordinary", tilo_actions::ConfirmationPolicy::None)]);
     handles[0].identity_supported.set(false);
@@ -5372,7 +5487,7 @@ fn round4_fresh_component_palette_does_not_require_history_identity_even_after_c
 }
 
 #[test]
-fn round4_palette_reentry_cannot_replace_exact_component_owner() {
+fn palette_reentry_cannot_replace_exact_component_owner() {
     let confirmation = tilo_actions::ConfirmationPolicy::Phrase {
         phrase: PALETTE_CONFIRMATION.into(),
     };
@@ -5414,7 +5529,7 @@ fn round4_palette_reentry_cannot_replace_exact_component_owner() {
 }
 
 #[test]
-fn round4_component_empty_duplicate_resource_refuses_saved_continuation() {
+fn component_empty_duplicate_resource_refuses_saved_continuation() {
     for depth in [1, 2] {
         let (root, handles, _) =
             component_control_root(&[("duplicate", tilo_actions::ConfirmationPolicy::None)]);
@@ -5447,7 +5562,7 @@ fn round4_component_empty_duplicate_resource_refuses_saved_continuation() {
 }
 
 #[test]
-fn round4_partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
+fn partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
     let (root, handles, failed) = component_control_root(&[
         ("sealed-a", tilo_actions::ConfirmationPolicy::None),
         ("sealed-b", tilo_actions::ConfirmationPolicy::None),
@@ -5506,7 +5621,7 @@ fn round4_partial_capture_seals_reachable_and_unvisited_queues_at_entry() {
 }
 
 #[test]
-fn round5_partial_capture_failed_through_return_never_automatically_dispatches_old_queues() {
+fn partial_capture_failed_through_return_never_automatically_dispatches_old_queues() {
     let (root, handles, failed) = component_control_root(&[
         ("sealed-a", tilo_actions::ConfirmationPolicy::None),
         ("sealed-b", tilo_actions::ConfirmationPolicy::None),
@@ -5595,7 +5710,7 @@ fn round5_partial_capture_failed_through_return_never_automatically_dispatches_o
 }
 
 #[test]
-fn round5_driver_partial_capture_failed_through_return_discards_initially_empty_owner_queue() {
+fn driver_partial_capture_failed_through_return_discards_initially_empty_owner_queue() {
     let (root, handles, failed) = component_control_root(&[
         ("sealed-a", tilo_actions::ConfirmationPolicy::None),
         ("sealed-b", tilo_actions::ConfirmationPolicy::None),
@@ -5668,84 +5783,16 @@ fn round5_driver_partial_capture_failed_through_return_discards_initially_empty_
 }
 
 #[test]
-fn round4_actual_mounted_component_bridge_first_emits_after_return_and_discards_suspended_output() {
-    use crate::application::{HostContext, LaunchTarget, RestoreInput};
-    use crate::application_test_support::{
-        APP, author, provenance, runner_permissions, runner_probe_definition,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-    let records = owners.open(APP, "bridge-workspace").unwrap();
-    let views = std::rc::Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            directory.path().join("records"),
-            "fixture-device",
-            "bridge-workspace",
-        )
-        .unwrap(),
-    );
-    let definition = runner_probe_definition();
-    let context = HostContext::prepare(
-        definition,
-        records,
-        views,
-        "fixture-device".into(),
-        1971,
-        runner_permissions(),
-        author(),
-        provenance(),
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let starts = std::rc::Rc::new(std::cell::Cell::new(0));
-    let payloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut live = ComponentControlOwner {
-        entered: None,
-        emitter: None,
-        identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
-        duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
-        id: "actual-bridge".into(),
-        operation: "fixture.actual-bridge".into(),
-        confirmation: tilo_actions::ConfirmationPolicy::None,
-        starts: starts.clone(),
-        payloads: payloads.clone(),
-        text: crate::widget::Text::new("Actual bridge"),
-    };
-    let resource = live.resource();
-    let emitter = std::rc::Rc::new(std::cell::RefCell::new(crate::widget::ActionEmitter::new(
-        tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| arguments)
-            .unwrap(),
-    )));
-    live.emitter = Some(emitter.clone());
-    component.root = Some(Box::new(live));
-    component.mount(|_| {}).unwrap();
-    let binding = component.callback_binding();
-    static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: crate::application_test_support::APP,
-        scopes: &[HistoryScopeDefinition {
-            key: "document",
-            title: "Bridge document",
-            presentation: HistoryPresentation::Domain {
-                create: crate::history_mode::test_preview,
-            },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
-        }],
-    };
-    let registration = HistoryRegistration::new(
-        &BRIDGE_HISTORY,
-        vec![
-            HistorySourceRegistration::owned(
-                "document",
-                APP,
-                HistoryOwner::component(binding.clone()),
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
+fn mounted_component_bridge_first_emits_after_return_and_discards_suspended_output() {
+    let BridgeComponent {
+        component,
+        binding,
+        registration,
+        emitter,
+        starts,
+        payloads,
+        host: _host,
+    } = bridge_component(None, false);
     let root = Box::new(
         crate::widget::Column::new().push(Box::new(crate::widget::BoundAppWidget { component })),
     );
@@ -5830,7 +5877,7 @@ fn round4_actual_mounted_component_bridge_first_emits_after_return_and_discards_
 }
 
 #[test]
-fn round4_managed_constructor_rejects_invalid_owner_before_constructing_inputs() {
+fn managed_constructor_rejects_invalid_owner_before_constructing_inputs() {
     let (_root, handles, _) =
         component_control_root(&[("invalid-owner", tilo_actions::ConfirmationPolicy::None)]);
     let registration = HistoryRegistration::new(
@@ -5868,7 +5915,7 @@ fn round4_managed_constructor_rejects_invalid_owner_before_constructing_inputs()
 }
 
 #[test]
-fn round4_controlled_managed_constructor_installs_real_history_composition() {
+fn controlled_managed_constructor_installs_real_history_composition() {
     let mut app = app();
     assert!(app.validate_history_registration().is_ok());
     layout(&mut app);
@@ -5986,94 +6033,30 @@ impl crate::widget::Widget for CustodyDeniedRoot {
     }
 }
 
-#[test]
-fn control_custody_core_native_seals_and_discards_through_unreachable_private_routes() {
-    use crate::application::{HostContext, LaunchTarget, RestoreInput};
-    use crate::application_test_support::{
-        APP, author, provenance, runner_permissions, runner_probe_definition,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-    let records = owners.open(APP, "bridge-workspace").unwrap();
-    let views = std::rc::Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            directory.path().join("records"),
-            "fixture-device",
-            "bridge-workspace",
-        )
-        .unwrap(),
-    );
-    let definition = runner_probe_definition();
-    let context = HostContext::prepare(
-        definition,
-        records,
-        views,
-        "fixture-device".into(),
-        1971,
-        runner_permissions(),
-        author(),
-        provenance(),
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let starts = std::rc::Rc::new(std::cell::Cell::new(0));
-    let payloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let mut live = ComponentControlOwner {
-        entered: None,
-        emitter: None,
-        identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
-        duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
-        id: "actual-bridge".into(),
-        operation: "fixture.actual-bridge".into(),
-        confirmation: tilo_actions::ConfirmationPolicy::None,
-        starts: starts.clone(),
-        payloads: payloads.clone(),
-        text: crate::widget::Text::new("Actual bridge"),
-    };
-    let resource = live.resource();
-    let emitter = std::rc::Rc::new(std::cell::RefCell::new(
-        crate::widget::ActionEmitter::new_in(
-            tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| {
-                arguments
-            })
-            .unwrap(),
-            &component
-                .callback_binding()
-                .control_domain
-                .upgrade()
-                .unwrap(),
-        ),
-    ));
-    live.emitter = Some(emitter.clone());
-    component.root = Some(Box::new(live));
-    component.mount(|_| {}).unwrap();
-    let binding = component.callback_binding();
-    static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: crate::application_test_support::APP,
-        scopes: &[HistoryScopeDefinition {
-            key: "document",
-            title: "Bridge document",
-            presentation: HistoryPresentation::Domain {
-                create: crate::history_mode::test_preview,
-            },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
-        }],
-    };
-    let registration = HistoryRegistration::new(
-        &BRIDGE_HISTORY,
-        vec![
-            HistorySourceRegistration::owned(
-                "document",
-                APP,
-                HistoryOwner::component(binding.clone()),
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
+/// The bridge component behind a custody-denying root whose armed exit
+/// callback emits once from inside the return layout pass.
+struct DeniedBridge {
+    root: Box<CustodyDeniedRoot>,
+    registration: HistoryRegistration,
+    emitter: ControlEmitter,
+    denied: std::rc::Rc<std::cell::Cell<bool>>,
+    exit_armed: std::rc::Rc<std::cell::Cell<bool>>,
+    exit_calls: std::rc::Rc<std::cell::Cell<usize>>,
+    starts: std::rc::Rc<std::cell::Cell<usize>>,
+    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    host: crate::application_test_support::ProbeHost,
+}
+
+fn denied_bridge_with_exit_emission() -> DeniedBridge {
+    let BridgeComponent {
+        component,
+        binding: _,
+        registration,
+        emitter,
+        starts,
+        payloads,
+        host,
+    } = bridge_component(None, true);
     let denied = std::rc::Rc::new(std::cell::Cell::new(false));
     let exit_armed = std::rc::Rc::new(std::cell::Cell::new(false));
     let exit_calls = std::rc::Rc::new(std::cell::Cell::new(0));
@@ -6102,180 +6085,103 @@ fn control_custody_core_native_seals_and_discards_through_unreachable_private_ro
         denied: denied.clone(),
         exit_callback: Some(callback),
     });
-    let mut app = App::from_managed_root_with_controlled_inputs(
-        State::new(),
-        ManagedRoot::new(root, registration),
-    )
-    .unwrap();
-    assert!(app.validate_history_registration().is_ok());
-    layout(&mut app);
-    // The callback retains only the ordinary live emitter across History.
-    let emit_later = |alias: &str| {
-        emitter
-            .borrow_mut()
-            .emit(nested_control("actual-bridge", alias, 7).arguments)
-            .unwrap()
-    };
-    emit_later("entry");
-    denied.set(true);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    emit_later("hidden");
-    exit_armed.set(true);
-    let named_action_target = named(&mut app, "History");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    layout(&mut app);
-    assert!(!app.history.as_ref().unwrap().captures_input());
-    assert_eq!(
-        exit_calls.get(),
-        1,
-        "real live layout callback runs during return"
-    );
-    denied.set(false);
-    let named_action_target = named(&mut app, "Live pulse");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(
-        starts.get(),
-        0,
-        "hidden private output must never enter an ordinary action door after return"
-    );
-    assert_eq!(app.pending_history_controls().len(), 1);
-    assert_eq!(
-        app.pending_history_controls()[0].invocation,
-        nested_control("actual-bridge", "entry", 7)
-    );
-    let named_action_target = named(&mut app, "Continue");
-    app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
-    assert_eq!(starts.get(), 1);
-    assert_eq!(payloads.borrow()[0]["alias"], "entry");
+    DeniedBridge {
+        root,
+        registration,
+        emitter,
+        denied,
+        exit_armed,
+        exit_calls,
+        starts,
+        payloads,
+        host,
+    }
 }
 
 #[test]
-fn control_custody_core_driver_seals_and_discards_through_unreachable_private_routes() {
-    for entries in [0, 3] {
-        use crate::application::{HostContext, LaunchTarget, RestoreInput};
-        use crate::application_test_support::{
-            APP, author, provenance, runner_permissions, runner_probe_definition,
+fn control_custody_core_seals_and_discards_through_unreachable_private_routes() {
+    // Native App: output queued before entry is sealed, hidden and exit
+    // output is discarded, and only the sealed entry continues.
+    {
+        let DeniedBridge {
+            root,
+            registration,
+            emitter,
+            denied,
+            exit_armed,
+            exit_calls,
+            starts,
+            payloads,
+            host: _host,
+        } = denied_bridge_with_exit_emission();
+        let mut app = App::from_managed_root_with_controlled_inputs(
+            State::new(),
+            ManagedRoot::new(root, registration),
+        )
+        .unwrap();
+        assert!(app.validate_history_registration().is_ok());
+        layout(&mut app);
+        // The callback retains only the ordinary live emitter across History.
+        let emit_later = |alias: &str| {
+            emitter
+                .borrow_mut()
+                .emit(nested_control("actual-bridge", alias, 7).arguments)
+                .unwrap()
         };
-        let directory = tempfile::tempdir().unwrap();
-        let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-        let records = owners.open(APP, "bridge-workspace").unwrap();
-        let views = std::rc::Rc::new(
-            crate::application_view::InstanceViewStore::new(
-                directory.path().join("records"),
-                "fixture-device",
-                "bridge-workspace",
-            )
-            .unwrap(),
+        emit_later("entry");
+        denied.set(true);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        emit_later("hidden");
+        exit_armed.set(true);
+        let named_action_target = named(&mut app, "History");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        layout(&mut app);
+        assert!(!app.history.as_ref().unwrap().captures_input());
+        assert_eq!(
+            exit_calls.get(),
+            1,
+            "real live layout callback runs during return"
         );
-        let definition = runner_probe_definition();
-        let context = HostContext::prepare(
-            definition,
-            records,
-            views,
-            "fixture-device".into(),
-            1971,
-            runner_permissions(),
-            author(),
-            provenance(),
-            &LaunchTarget::New,
-        )
-        .unwrap();
-        let mut component = definition
-            .instantiate(context, LaunchTarget::New, RestoreInput::None)
-            .unwrap();
-        let starts = std::rc::Rc::new(std::cell::Cell::new(0));
-        let payloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let mut live = ComponentControlOwner {
-            entered: None,
-            emitter: None,
-            identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
-            duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
-            id: "actual-bridge".into(),
-            operation: "fixture.actual-bridge".into(),
-            confirmation: tilo_actions::ConfirmationPolicy::None,
-            starts: starts.clone(),
-            payloads: payloads.clone(),
-            text: crate::widget::Text::new("Actual bridge"),
-        };
-        let resource = live.resource();
-        let emitter = std::rc::Rc::new(std::cell::RefCell::new(
-            crate::widget::ActionEmitter::new_in(
-                tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| {
-                    arguments
-                })
-                .unwrap(),
-                &component
-                    .callback_binding()
-                    .control_domain
-                    .upgrade()
-                    .unwrap(),
-            ),
-        ));
-        live.emitter = Some(emitter.clone());
-        component.root = Some(Box::new(live));
-        component.mount(|_| {}).unwrap();
-        let binding = component.callback_binding();
-        static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
-            app_id: crate::application_test_support::APP,
-            scopes: &[HistoryScopeDefinition {
-                key: "document",
-                title: "Bridge document",
-                presentation: HistoryPresentation::Domain {
-                    create: crate::history_mode::test_preview,
-                },
-                content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
-            }],
-        };
-        let registration = HistoryRegistration::new(
-            &BRIDGE_HISTORY,
-            vec![
-                HistorySourceRegistration::owned(
-                    "document",
-                    APP,
-                    HistoryOwner::component(binding.clone()),
-                )
-                .unwrap(),
-            ],
-        )
-        .unwrap();
-        let denied = std::rc::Rc::new(std::cell::Cell::new(false));
-        let exit_armed = std::rc::Rc::new(std::cell::Cell::new(false));
-        let exit_calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let callback = {
-            let armed = exit_armed.clone();
-            let calls = exit_calls.clone();
-            let emitter = emitter.clone();
-            Box::new(move || {
-                if armed.replace(false) {
-                    calls.set(calls.get() + 1);
-                    emitter
-                        .borrow_mut()
-                        .emit(nested_control("actual-bridge", "exit", 7).arguments)
-                        .unwrap();
-                }
-            })
-        };
-        let root = Box::new(CustodyDeniedRoot {
-            child: Box::new(
-                crate::widget::Column::new()
-                    .push(Box::new(crate::widget::BoundAppWidget { component }))
-                    .push(Box::new(
-                        crate::widget::Button::new("live-pulse", "Live pulse", None)
-                            .on_click(|| {}),
-                    )),
-            ),
-            denied: denied.clone(),
-            exit_callback: Some(callback),
-        });
+        denied.set(false);
+        let named_action_target = named(&mut app, "Live pulse");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(
+            starts.get(),
+            0,
+            "hidden private output must never enter an ordinary action door after return"
+        );
+        assert_eq!(app.pending_history_controls().len(), 1);
+        assert_eq!(
+            app.pending_history_controls()[0].invocation,
+            nested_control("actual-bridge", "entry", 7)
+        );
+        let named_action_target = named(&mut app, "Continue");
+        app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
+        assert_eq!(starts.get(), 1);
+        assert_eq!(payloads.borrow()[0]["alias"], "entry");
+    }
+    // Headless Driver: the same routes with an empty and a multi-entry queue.
+    for entries in [0, 3] {
+        let DeniedBridge {
+            root,
+            registration,
+            emitter,
+            denied,
+            exit_armed,
+            exit_calls,
+            starts,
+            payloads,
+            host: _host,
+        } = denied_bridge_with_exit_emission();
         let mut driver = crate::headless::Driver::from_managed_root_with_controlled_inputs(
             State::new(),
             ManagedRoot::new(root, registration),
             (900, 650),
             crate::Theme::dark(),
             crate::font_catalog::fixture_renderer(),
-            author(),
+            crate::application_test_support::author(),
         )
         .unwrap();
         for i in 0..entries {
@@ -6836,98 +6742,24 @@ fn control_custody_core_shared_controls_seal_exact_pending_values() {
 
 #[test]
 fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
-    use crate::application::{HostContext, LaunchTarget, RestoreInput};
-    use crate::application_test_support::{
-        APP, author, provenance, runner_permissions, runner_probe_definition,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-    let records = owners.open(APP, "bridge-workspace").unwrap();
-    let views = std::rc::Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            directory.path().join("records"),
-            "fixture-device",
-            "bridge-workspace",
-        )
-        .unwrap(),
-    );
-    let definition = runner_probe_definition();
-    let context = HostContext::prepare(
-        definition,
-        records,
-        views,
-        "fixture-device".into(),
-        1971,
-        runner_permissions(),
-        author(),
-        provenance(),
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
-    let starts = std::rc::Rc::new(std::cell::Cell::new(0));
-    let payloads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let (complete_tx, complete_rx) = std::sync::mpsc::channel();
     let completions = std::rc::Rc::new(std::cell::Cell::new(0));
-    let mut live = ComponentControlOwner {
-        entered: Some(CustodyEnteredOperation {
+    let BridgeComponent {
+        component,
+        binding,
+        registration,
+        emitter,
+        starts,
+        payloads,
+        host: _host,
+    } = bridge_component(
+        Some(CustodyEnteredOperation {
             receiver: complete_rx,
             active: None,
             completions: completions.clone(),
         }),
-        emitter: None,
-        identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
-        duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
-        id: "actual-bridge".into(),
-        operation: "fixture.actual-bridge".into(),
-        confirmation: tilo_actions::ConfirmationPolicy::None,
-        starts: starts.clone(),
-        payloads: payloads.clone(),
-        text: crate::widget::Text::new("Actual bridge"),
-    };
-    let resource = live.resource();
-    let emitter = std::rc::Rc::new(std::cell::RefCell::new(
-        crate::widget::ActionEmitter::new_in(
-            tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| {
-                arguments
-            })
-            .unwrap(),
-            &component
-                .callback_binding()
-                .control_domain
-                .upgrade()
-                .unwrap(),
-        ),
-    ));
-    live.emitter = Some(emitter.clone());
-    component.root = Some(Box::new(live));
-    component.mount(|_| {}).unwrap();
-    let binding = component.callback_binding();
-    static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
-        app_id: crate::application_test_support::APP,
-        scopes: &[HistoryScopeDefinition {
-            key: "document",
-            title: "Bridge document",
-            presentation: HistoryPresentation::Domain {
-                create: crate::history_mode::test_preview,
-            },
-            content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
-        }],
-    };
-    let registration = HistoryRegistration::new(
-        &BRIDGE_HISTORY,
-        vec![
-            HistorySourceRegistration::owned(
-                "document",
-                APP,
-                HistoryOwner::component(binding.clone()),
-            )
-            .unwrap(),
-        ],
-    )
-    .unwrap();
+        true,
+    );
     let denied = std::rc::Rc::new(std::cell::Cell::new(false));
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
@@ -7052,28 +6884,12 @@ fn custody_owned_button(
 }
 #[test]
 fn control_custody_core_outer_component_legacy_owners_and_sibling() {
-    use crate::application::{HostContext, LaunchTarget, RestoreInput};
-    use crate::application_test_support::{
-        APP, author, provenance, runner_permissions, runner_probe_definition,
-    };
-    let directory = tempfile::tempdir().unwrap();
-    let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
+    let mut host = crate::application_test_support::ProbeHost::new();
     let a_ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let b_ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let outer_ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let store = owners.open(HISTORY.app_id, "legacy").unwrap();
-    let checkout = crate::RecordCheckout::new(
-        crate::RecordId::for_tab(734),
-        crate::RecordKind::new("note"),
-    );
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(ROOT, "body", "live").unwrap();
-            Ok(())
-        })
-        .unwrap();
+    let store = host.owners.open(HISTORY.app_id, "legacy").unwrap();
+    let checkout = live_note(&store, 734);
     let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
         custody_owned_button("A", a_ledger.clone()),
     )));
@@ -7085,30 +6901,7 @@ fn control_custody_core_outer_component_legacy_owners_and_sibling() {
     };
     let a_domain = lifetime.upgrade().unwrap().control_domain.clone();
     let a_output = a_domain.producer(crate::control_custody::ControlProducerDiscipline::ReplaceOne);
-    let views = std::rc::Rc::new(
-        crate::application_view::InstanceViewStore::new(
-            directory.path().join("records"),
-            "fixture-device",
-            "component",
-        )
-        .unwrap(),
-    );
-    let definition = runner_probe_definition();
-    let context = HostContext::prepare(
-        definition,
-        owners.open(APP, "component").unwrap(),
-        views,
-        "fixture-device".into(),
-        735,
-        runner_permissions(),
-        author(),
-        provenance(),
-        &LaunchTarget::New,
-    )
-    .unwrap();
-    let mut component = definition
-        .instantiate(context, LaunchTarget::New, RestoreInput::None)
-        .unwrap();
+    let mut component = runner_component(&host, 735);
     component.root = Some(Box::new(custody_owned_button("B", b_ledger.clone())));
     component.mount(|_| {}).unwrap();
     let b_binding = component.callback_binding();
@@ -7224,18 +7017,7 @@ fn control_custody_core_actual_nested_surfaces_finish_in_both_orders() {
         let directory = tempfile::tempdir().unwrap();
         let mut records = crate::record::RecordOwners::new(directory.path().join("records"));
         let store = records.open(HISTORY.app_id, "nested").unwrap();
-        let checkout = crate::RecordCheckout::new(
-            crate::RecordId::for_tab(884),
-            crate::RecordKind::new("note"),
-        );
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|doc| {
-                doc.put(ROOT, "body", "live").unwrap();
-                Ok(())
-            })
-            .unwrap();
+        let checkout = live_note(&store, 884);
         let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let mut tile = crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(
             custody_owned_button("A", ledger.clone()),
@@ -7561,18 +7343,7 @@ fn control_custody_core_driver_embedded_return_covers_final_draw_callback() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
     let store = owners.open(HISTORY.app_id, "draw-exit").unwrap();
-    let checkout = crate::RecordCheckout::new(
-        crate::RecordId::for_tab(891),
-        crate::RecordKind::new("note"),
-    );
-    store
-        .reserve_record(&checkout)
-        .unwrap()
-        .initialize(|doc| {
-            doc.put(ROOT, "body", "live").unwrap();
-            Ok(())
-        })
-        .unwrap();
+    let checkout = live_note(&store, 891);
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let output: std::rc::Rc<std::cell::RefCell<Option<crate::ControlOutbox>>> =
         std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -7653,7 +7424,7 @@ fn control_custody_core_driver_embedded_return_covers_final_draw_callback() {
     );
 }
 
-fn custody_round1_native_return(embedded: bool) {
+fn custody_native_return_covers_final_draw_callbacks(embedded: bool) {
     let directory = tempfile::tempdir().unwrap();
     let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let output = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::ControlOutbox>));
@@ -7693,19 +7464,8 @@ fn custody_round1_native_return(embedded: bool) {
     }
     let mut app = if embedded {
         let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
-        let store = owners.open(HISTORY.app_id, "round1-native").unwrap();
-        let checkout = crate::RecordCheckout::new(
-            crate::RecordId::for_tab(892),
-            crate::RecordKind::new("note"),
-        );
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|doc| {
-                doc.put(ROOT, "body", "live").unwrap();
-                Ok(())
-            })
-            .unwrap();
+        let store = owners.open(HISTORY.app_id, "native-return").unwrap();
+        let checkout = live_note(&store, 892);
         let mut tile =
             crate::widget::TileHost::new(crate::widget::TileContent::App(Box::new(live)));
         tile.bind_record(store, checkout);
@@ -7718,7 +7478,7 @@ fn custody_round1_native_return(embedded: bool) {
                 scope: "document",
                 resource: HistoryResource::new(
                     "fixture",
-                    "round1-native",
+                    "native-return",
                     HISTORY.app_id,
                     crate::RecordId::for_tab(893),
                 ),
@@ -7853,11 +7613,11 @@ fn custody_round1_native_return(embedded: bool) {
 }
 #[test]
 fn control_custody_core_native_return_covers_final_draw_callbacks() {
-    custody_round1_native_return(false);
+    custody_native_return_covers_final_draw_callbacks(false);
 }
 #[test]
 fn control_custody_core_native_embedded_return_covers_final_draw_callbacks() {
-    custody_round1_native_return(true);
+    custody_native_return_covers_final_draw_callbacks(true);
 }
 
 #[test]
