@@ -12,8 +12,10 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".forgejo/workflows"
+# A pinned sccache release tarball (sccache-vX.Y.Z-...) is a build input, not a
+# use of the shared cache.
 USES_CACHE = re.compile(
-    r"sccache|SCCACHE_|AWS_ACCESS_KEY_ID|prepare-rust-build|setup-windows-arm64-cross")
+    r"sccache(?!-v\d)|SCCACHE_|AWS_ACCESS_KEY_ID|prepare-rust-build|setup-windows-arm64-cross")
 BINDING = {
     "SCCACHE_BUCKET": "tilo-ci-sccache-125650147312-us-west-2",
     "SCCACHE_REGION": "us-west-2",
