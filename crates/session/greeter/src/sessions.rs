@@ -22,13 +22,13 @@ use std::path::Path;
 pub struct Session {
     /// Human-readable label shown on the session-cycle button.
     pub name: String,
-    /// `Exec=` split on whitespace — argv[0] is the program.
+    /// `Exec=` split on whitespace — argv`0` is the program.
     pub argv: Vec<String>,
 }
 
 /// Parse a single `.desktop` file's contents into a [`Session`]. Returns
 /// `None` if it lacks a usable `Exec=` line (a session with no command is
-/// meaningless). A missing `Name=` falls back to argv[0]'s basename.
+/// meaningless). A missing `Name=` falls back to argv`0`'s basename.
 pub fn parse_desktop_entry(contents: &str) -> Option<Session> {
     let mut name: Option<String> = None;
     let mut exec: Option<String> = None;

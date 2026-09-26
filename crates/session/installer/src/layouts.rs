@@ -4,7 +4,7 @@
 //!
 //!   * The **apply** data — the xkb layout/variant the installed system
 //!     should use (`xkb_layout`, `xkb_variant`) plus a human
-//!     `display_name` shown in the picker [`Dropdown`].
+//!     `display_name` shown in the picker `Dropdown`.
 //!   * The **visual** data — the glyphs each physical key produces under
 //!     this layout, so [`crate::keyboard_view::KeyboardView`] can draw a
 //!     live preview of exactly what the selected layout types.
@@ -19,7 +19,7 @@
 //!
 //! For every layout the entries are the *output* glyphs at those physical
 //! positions (so AZERTY's top row reads `a z e r t y …`, QWERTZ swaps
-//! y/z and adds `ü ö ä`, Dvorak reorders entirely, …). [`number_shift`]
+//! y/z and adds `ü ö ä`, Dvorak reorders entirely, …). `number_shift`
 //! carries the shifted glyphs for the number row, where they aren't simply
 //! the uppercase of the base (e.g. `1`→`!`, AZERTY `&`→`1`); the preview
 //! shows those in a corner of each number key.
@@ -271,7 +271,7 @@ pub static LAYOUTS: &[Layout] = &[
     },
 ];
 
-/// All display names, in picker order — fed to the layout [`Dropdown`].
+/// All display names, in picker order — fed to the layout `Dropdown`.
 pub fn display_names() -> Vec<String> {
     LAYOUTS.iter().map(|l| l.display_name.to_string()).collect()
 }

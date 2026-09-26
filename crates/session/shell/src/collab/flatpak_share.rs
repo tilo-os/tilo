@@ -211,7 +211,7 @@ pub struct SharedFlatpakSession {
 impl SharedFlatpakSession {
     /// Construct + activate a new share session. `width`/`height` must match
     /// the captured surface's `wl_shm` buffer or the encoder rejects the
-    /// first frame with [`EncodeError::BufferSizeMismatch`].
+    /// first frame with `EncodeError::BufferSizeMismatch`.
     ///
     /// # Errors
     ///
@@ -531,7 +531,7 @@ impl SharedFlatpakSession {
     /// undrained deposit is replaced, not queued. Bytes must be
     /// `width × height × 4` RGBA, unvalidated here to keep the hot path
     /// allocation-free; a mismatch surfaces as
-    /// [`EncodeError::BufferSizeMismatch`] on the next pump.
+    /// `EncodeError::BufferSizeMismatch` on the next pump.
     pub fn deposit_captured_rgba(&self, rgba: Vec<u8>) {
         let capture_ts_ns = self.monotonic_ns_now();
         let mut slot = self

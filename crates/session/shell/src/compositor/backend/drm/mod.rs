@@ -124,7 +124,7 @@ impl DrmBackend {
 ///
 /// The scanouts are the *only* part of the DRM runtime the frame path touches; input-path state
 /// (libseat/udev/libinput, the runtime's inner calloop) stays on the loop thread, and the
-/// hardware cursor ([`CursorPlanes`](super::scanout::CursorPlanes)) owns its own dup of the card
+/// hardware cursor (`CursorPlanes`) owns its own dup of the card
 /// fd, so pointer motion moves the KMS plane at input rate, decoupled from paint. Card fds are
 /// plain fds usable from any thread; page-flip completions are read only here.
 #[allow(

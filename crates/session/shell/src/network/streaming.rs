@@ -93,7 +93,7 @@ pub enum RemoteAction {
 }
 
 /// Sink the owner's compositor exposes to receive remote-input events;
-/// `State::apply_remote_input` in production and [`RecordingSink`] in tests.
+/// `State::apply_remote_input` in production and `RecordingSink` in tests.
 pub trait RemoteInputSink {
     /// Apply a remote-input event to the owner's seat, scoped to `surface` on
     /// behalf of `peer` — implementations own keymap translation and ignoring surfaces they no longer own.

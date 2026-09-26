@@ -1377,7 +1377,7 @@ pub fn role_label(role: CapRole) -> &'static str {
 
 /// Plain-language consequences shown before changing a person's workspace
 /// role. Keeping this next to the role vocabulary makes the chooser describe
-/// the same authority that [`role_verb`] ultimately writes.
+/// the same authority that `role_verb` ultimately writes.
 pub fn role_capability_preview(role: CapRole) -> &'static str {
     match role {
         CapRole::Owner => "Can manage people, permissions, and workspace settings.",

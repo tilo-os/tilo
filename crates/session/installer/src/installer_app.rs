@@ -1,14 +1,14 @@
 //! [`InstallerApp`] — the root installer widget + wizard state machine.
 //!
 //! Structured like the greeter: a root widget owning a single composed child (a
-//! [`Card`]) and delegating the five `Widget` passes into it.
+//! `Card`) and delegating the five `Widget` passes into it.
 //!
 //! Focus handling: the App discovers focusable widgets by walking the
 //! widget tree (`Widget::children`) in lock-step with the taffy tree.
 //! Any intermediate taffy node MUST have a matching widget in
 //! `children()`, or the recursion derails and inputs never enter
 //! `focusable_order` — breaking Tab / arrow navigation. The card is a
-//! [`Card`] widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
+//! `Card` widget and the two-button rows are `ui::Row`s, so the widget tree mirrors the
 //! taffy tree exactly.
 //!
 //! Keyboard-focus continuity across the per-step rebuild is handled by
@@ -455,7 +455,7 @@ pub enum InstallState {
 /// The step reached by pressing Next from `step`, if any. `Review` →
 /// `Install` is intentionally gated behind the explicit Begin button, so
 /// callers must not auto-advance into `Install` via Next (see
-/// [`InstallerApp::go_next`]).
+/// `InstallerApp::go_next`).
 pub fn next_step(step: Step) -> Option<Step> {
     match step {
         Step::Keyboard => Some(Step::Network),
@@ -1642,7 +1642,7 @@ impl InstallerApp {
     /// Seed a non-default keyboard layout (by display name) for a
     /// `--shots --step keyboard` render, so the visual preview clearly
     /// shows remapped keys. The value is seeded into the CRDT on the first
-    /// `sync` via [`Self::bootstrap_crdt`].
+    /// `sync` via `Self::bootstrap_crdt`.
     pub fn shot_keymap(&mut self, display_name: &str) {
         self.step = Step::Keyboard;
         self.keymap = display_name.to_string();

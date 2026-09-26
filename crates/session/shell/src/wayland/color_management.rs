@@ -507,8 +507,8 @@ impl ImageDescriptionData {
 ///
 /// Sits in `SurfaceData::data_map`. The client attaches an image
 /// description via `set_image_description`; the value goes into
-/// [`Self::pending`]. On `wl_surface.commit` the compositor flips
-/// [`Self::pending`] → [`Self::current`].
+/// `Self::pending`. On `wl_surface.commit` the compositor flips
+/// `Self::pending` → [`Self::current`].
 ///
 /// **Simplification vs the spec**: the protocol makes this
 /// double-buffered state. In practice we snap the value straight to

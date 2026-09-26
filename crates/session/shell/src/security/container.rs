@@ -48,7 +48,7 @@ pub fn app_log_dir() -> io::Result<PathBuf> {
 /// `dir` is created 0700 if missing and must be a real directory owned by
 /// this user; the file is created 0600 with `O_EXCL | O_NOFOLLOW`, so a link
 /// or file planted at either path is refused rather than followed or reused.
-/// Older logs are pruned so at most [`MAX_APP_LOGS`] remain.
+/// Older logs are pruned so at most `MAX_APP_LOGS` remain.
 ///
 /// # Errors
 ///

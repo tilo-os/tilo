@@ -4,7 +4,7 @@
 //! layout (`compute_layout_with_measure` → `apply_layout`), and draw
 //! into a fresh `vello::Scene`.
 //!
-//! `bin/shots`'s [`ShellDriver`] wraps a [`FrameBuilder`] and adds a
+//! `bin/shots`'s `ShellDriver` wraps a [`FrameBuilder`] and adds a
 //! winit `Modifiers` snapshot, a focus cursor, the cached last-cursor
 //! point, and click/drag/key synthesis. The native compositor only needs
 //! the layout-and-paint core, so both paths render through the same
@@ -528,7 +528,7 @@ impl FrameBuilder {
         })
     }
 
-    /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`], with
+    /// Build a frame builder over a *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle), with
     /// the peer-sync palette rows on or off.
     ///
     /// The compositor needs this rather than [`Self::with_tree`] because

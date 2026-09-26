@@ -210,7 +210,7 @@ impl SurfaceTracker {
     }
 
     /// Identical to [`Self::forget`]; named separately so the wire-up from
-    /// [`crate::compositor::state::State::toplevel_destroyed`] reads as "drop this surface's tracker buffer entirely" rather than the ambiguous "forget".
+    /// `crate::compositor::state::State::toplevel_destroyed` reads as "drop this surface's tracker buffer entirely" rather than the ambiguous "forget".
     ///
     /// Without this call, a client destroying its toplevel without a prior `attach NULL` leaves its
     /// `width*height*4`-byte `Vec<u8>` slot allocated forever — a per-surface leak that compounds across long sessions.

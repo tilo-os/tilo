@@ -1165,7 +1165,7 @@ impl ForeignFrameStore {
     /// Record that the last capture failed and drop the stale frame.
     ///
     /// Two things read it: the window stops waiting (shown at once rather
-    /// than held back for a frame that isn't coming), and [`ForeignSurfaceWidget::unshowable_text`] chooses the words shown, leaving `reason` here for debugging.
+    /// than held back for a frame that isn't coming), and `ForeignSurfaceWidget::unshowable_text` chooses the words shown, leaving `reason` here for debugging.
     pub fn note_failure(&self, id: SurfaceId, reason: String) {
         self.with_entry(id, |e| {
             e.rgba.clear();
@@ -1342,7 +1342,7 @@ impl ForeignFrameStore {
     }
 
     /// Whether the tile standing in for `id` should say its app is on its
-    /// way: nothing presented, waited longer than [`OPENING_DELAY`]. Read
+    /// way: nothing presented, waited longer than `OPENING_DELAY`. Read
     /// by [`ForeignSurfaceWidget::opening`] before painting the
     /// placeholder card; `presented` wins, so this goes false and stays false — a watched-away placeholder must not return.
     pub fn is_opening(&self, id: SurfaceId) -> bool {
@@ -1371,7 +1371,7 @@ impl ForeignFrameStore {
     }
 
     /// Open this surface's entry at the moment its toplevel is adopted, so
-    /// [`ForeignEntry::first_seen`] dates from being asked for, not its first buffer.
+    /// `ForeignEntry::first_seen` dates from being asked for, not its first buffer.
     ///
     /// Both waits this store bounds — the opening configure in
     /// [`flush_configures`] and the presentation grace in
@@ -1381,7 +1381,7 @@ impl ForeignFrameStore {
     }
 
     /// Whether this surface has waited longer than
-    /// [`OPENING_CONFIGURE_GRACE`] since adopted. Read only by
+    /// `OPENING_CONFIGURE_GRACE` since adopted. Read only by
     /// [`flush_configures`], to decide when to configure anyway; no entry means not adopted, not waiting on anything.
     pub fn opening_wait_expired(&self, id: SurfaceId) -> bool {
         let guard = self
@@ -1477,9 +1477,9 @@ impl ForeignFrameStore {
     /// [`ForeignSurfaceWidget::presented`], the predicate deciding when a launched window turns up.
     ///
     /// Presentable when: a **capture failed** (must say so, not be
-    /// invisible); a **frame answers the tab** per [`fills`] (else the
+    /// invisible); a **frame answers the tab** per `fills` (else the
     /// unasked-for buffer size scales via `fit_rect`, snapping to 1:1
-    /// later); or **[`PRESENT_GRACE`] passes** (backstop against an unclosable window). `tile` degenerate means not laid out, unjudgeable.
+    /// later); or **`PRESENT_GRACE` passes** (backstop against an unclosable window). `tile` degenerate means not laid out, unjudgeable.
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,

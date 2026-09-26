@@ -577,7 +577,7 @@ pub fn fold_inbound(
 /// named, including an invitee who never moved their mouse), `arrived`
 /// is who actually turned up (presence plus CRDT participants).
 ///
-/// A named peer that hasn't arrived is marked [`Collaborator::invited`],
+/// A named peer that hasn't arrived is marked `Collaborator::invited`,
 /// keyed off the transport-authenticated identity so a peer cannot
 /// promote its own row. `local` is dropped — the roster is who *else*
 /// is here.

@@ -162,7 +162,7 @@ pub trait MarkerSource {
 pub struct XdgConfigMarkerSource;
 
 impl XdgConfigMarkerSource {
-    /// Resolve the marker file path using the same rules [`peer_sync_marker_exists`] uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
+    /// Resolve the marker file path using the same rules `peer_sync_marker_exists` uses; exposed for diagnostics and for tests asserting resolution without touching the filesystem.
     pub fn marker_path() -> Option<std::path::PathBuf> {
         peer_sync_marker_path_from_env(
             std::env::var_os("XDG_CONFIG_HOME").as_deref(),
