@@ -31,6 +31,7 @@
 mod builder;
 mod recent;
 mod record;
+pub mod redact;
 
 pub use builder::{Limits, Pushed, TraceBuilder};
 pub use recent::{OpReference, RecentBuffer, RecentEntry, RecentItem};
