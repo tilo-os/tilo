@@ -829,6 +829,89 @@ impl KeyboardInputSource {
     }
 }
 
+/// An input-method engine the user can pick as an input source, next to the
+/// XKB layouts. Engines compose text (Chinese, Japanese, Korean) instead of
+/// mapping one key to one character; the session's trusted input method
+/// provides them. Only one engine owns the seat at a time, and it types on
+/// the primary (first) keyboard layout of the source list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum InputMethodEngine {
+    /// Simplified Chinese, Pinyin.
+    Pinyin,
+    /// Japanese, Mozc.
+    Mozc,
+    /// Korean, Hangul.
+    Hangul,
+}
+
+/// Source ids naming an input-method engine start with this prefix. `/` is
+/// never part of an XKB name, so an engine id cannot be mistaken for a layout.
+pub const INPUT_METHOD_SOURCE_PREFIX: &str = "ime/";
+
+impl InputMethodEngine {
+    pub const ALL: [Self; 3] = [Self::Pinyin, Self::Mozc, Self::Hangul];
+
+    /// The engine's name in the input-method framework (and in its source id).
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Pinyin => "pinyin",
+            Self::Mozc => "mozc",
+            Self::Hangul => "hangul",
+        }
+    }
+
+    /// The durable source id, e.g. `ime/pinyin`.
+    pub fn source_id(self) -> String {
+        format!("{INPUT_METHOD_SOURCE_PREFIX}{}", self.name())
+    }
+
+    /// Human-readable source name for choosers and the switcher readout.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Pinyin => "Chinese (Simplified) — Pinyin",
+            Self::Mozc => "Japanese — Mozc",
+            Self::Hangul => "Korean — Hangul",
+        }
+    }
+
+    /// Whether this image ships the engine, so Settings offers and the
+    /// compositor starts only engines that can actually run.
+    pub fn is_installed(self) -> bool {
+        std::path::Path::new("/usr/share/fcitx5/inputmethod")
+            .join(format!("{}.conf", self.name()))
+            .is_file()
+    }
+
+    pub fn from_source_id(id: &str) -> Option<Self> {
+        let name = id.trim().strip_prefix(INPUT_METHOD_SOURCE_PREFIX)?;
+        Self::ALL.into_iter().find(|engine| engine.name() == name)
+    }
+}
+
+/// One entry of the ordered input-source list: an XKB layout or an
+/// input-method engine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputSource {
+    Layout(KeyboardInputSource),
+    InputMethod(InputMethodEngine),
+}
+
+impl InputSource {
+    pub fn parse(value: &str) -> Option<Self> {
+        if let Some(engine) = InputMethodEngine::from_source_id(value) {
+            return Some(Self::InputMethod(engine));
+        }
+        KeyboardInputSource::parse(value).map(Self::Layout)
+    }
+
+    pub fn id(&self) -> String {
+        match self {
+            Self::Layout(source) => source.id.clone(),
+            Self::InputMethod(engine) => engine.source_id(),
+        }
+    }
+}
+
 fn valid_xkb_name(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -906,47 +989,68 @@ impl RichInputConfig {
     }
 
     pub fn normalise_sources(&mut self) {
-        // The fallback is `KeyboardInputSource::parse("us")`'s output written out by hand,
-        // rather than re-parsing a literal we already know is valid XKB.
-        let active = KeyboardInputSource::parse(&self.keyboard_layout).unwrap_or_else(|| {
-            KeyboardInputSource {
-                id: "us".to_string(),
-                layout: "us".to_string(),
-                variant: None,
-            }
-        });
+        let active = InputSource::parse(&self.keyboard_layout).or_else(|| InputSource::parse("us"));
         let mut sources = Vec::<String>::new();
+        let mut layouts = 0_usize;
         for source in &self.keyboard_layouts {
-            let Some(source) = KeyboardInputSource::parse(source) else {
+            let Some(source) = InputSource::parse(source) else {
                 continue;
             };
-            if !sources.contains(&source.id) {
-                sources.push(source.id);
+            let id = source.id();
+            if sources.contains(&id) {
+                continue;
             }
-            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
-                break;
+            if matches!(source, InputSource::Layout(_)) {
+                if layouts == MAX_KEYBOARD_INPUT_SOURCES {
+                    continue;
+                }
+                layouts = layouts.saturating_add(1);
             }
+            sources.push(id);
         }
-        if !sources.contains(&active.id) {
-            if sources.len() == MAX_KEYBOARD_INPUT_SOURCES {
-                sources.pop();
+        let active = match active {
+            Some(source) if sources.contains(&source.id()) => source.id(),
+            Some(InputSource::Layout(source)) => {
+                if layouts == MAX_KEYBOARD_INPUT_SOURCES
+                    && let Some(last) = sources
+                        .iter()
+                        .rposition(|id| InputMethodEngine::from_source_id(id).is_none())
+                {
+                    sources.remove(last);
+                }
+                sources.insert(0, source.id.clone());
+                source.id
             }
-            sources.insert(0, active.id.clone());
+            Some(InputSource::InputMethod(engine)) => {
+                sources.push(engine.source_id());
+                engine.source_id()
+            }
+            None => "us".into(),
+        };
+        // An engine types on a layout, so the list always keeps one.
+        if !sources
+            .iter()
+            .any(|id| InputMethodEngine::from_source_id(id).is_none())
+        {
+            sources.insert(0, "us".into());
         }
-        if sources.is_empty() {
-            sources.push("us".into());
-        }
-        self.keyboard_layout = active.id;
+        self.keyboard_layout = active;
         self.keyboard_layouts = sources;
     }
 
+    /// The XKB layouts of the source list, in order: the groups the keymap
+    /// is compiled from. Input-method engines are not XKB groups.
     pub fn sources(&self) -> Vec<KeyboardInputSource> {
         self.keyboard_layouts
             .iter()
-            .filter_map(|value| KeyboardInputSource::parse(value))
+            .filter_map(|value| match InputSource::parse(value)? {
+                InputSource::Layout(source) => Some(source),
+                InputSource::InputMethod(_) => None,
+            })
             .collect()
     }
 
+    /// Position of the active source in the full source list.
     pub fn active_source_index(&self) -> usize {
         self.keyboard_layouts
             .iter()
@@ -954,12 +1058,38 @@ impl RichInputConfig {
             .unwrap_or(0)
     }
 
+    /// The XKB group to select: the active layout's position among the
+    /// layouts, or the primary layout (group 0) while an input-method engine
+    /// is active, since the engine types on it.
+    pub fn active_layout_index(&self) -> usize {
+        self.sources()
+            .iter()
+            .position(|source| source.id == self.keyboard_layout)
+            .unwrap_or(0)
+    }
+
+    /// The input-method engine that owns typing, if the active source is one.
+    pub fn active_input_method(&self) -> Option<InputMethodEngine> {
+        InputMethodEngine::from_source_id(&self.keyboard_layout)
+    }
+
+    /// Whether `id` may join the list: layouts are bounded by the XKB group
+    /// limit, engines only by being distinct.
+    pub fn can_add_source(&self, id: &str) -> bool {
+        match InputSource::parse(id) {
+            None => false,
+            Some(source) if self.keyboard_layouts.contains(&source.id()) => false,
+            Some(InputSource::InputMethod(_)) => true,
+            Some(InputSource::Layout(_)) => self.sources().len() < MAX_KEYBOARD_INPUT_SOURCES,
+        }
+    }
+
     /// XKB option fragments owned by this preference section. Layout
     /// switching is Alt+Shift because Super+Space is Tilo global search;
     /// Compose remains independently configurable.
     pub fn xkb_options(&self) -> Vec<String> {
         let mut options = Vec::new();
-        if self.keyboard_layouts.len() > 1 {
+        if self.sources().len() > 1 {
             options.push("grp:alt_shift_toggle".into());
         }
         if let Some(option) = match self.compose_key.as_deref() {
@@ -2454,5 +2584,97 @@ mod tests {
             assert!((back - position).abs() < 1e-9, "{position} -> {back}");
         }
         assert!((clamp_scroll_speed(f64::NAN) - 1.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn input_method_engines_share_the_source_list_without_taking_xkb_groups() {
+        let section = serde_json::json!({
+            "keyboard_layout": "ime/pinyin",
+            "keyboard_layouts": [
+                "us", "ime/pinyin", "de", "ime/pinyin", "ime/unknown", "fr", "es", "gb", "ime/mozc"
+            ]
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(
+            cfg.keyboard_layouts,
+            ["us", "ime/pinyin", "de", "fr", "es", "ime/mozc"],
+            "engines do not count against the four XKB groups; unknown engines are dropped"
+        );
+        assert_eq!(
+            cfg.sources()
+                .iter()
+                .map(|s| s.id.as_str())
+                .collect::<Vec<_>>(),
+            ["us", "de", "fr", "es"]
+        );
+        assert_eq!(cfg.active_source_index(), 1);
+        assert_eq!(cfg.active_input_method(), Some(InputMethodEngine::Pinyin));
+        assert_eq!(
+            cfg.active_layout_index(),
+            0,
+            "an engine types on the primary layout"
+        );
+        assert_eq!(cfg.xkb_options(), ["grp:alt_shift_toggle"]);
+    }
+
+    #[test]
+    fn an_active_layout_maps_to_its_group_past_interleaved_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "de".into(),
+            keyboard_layouts: vec!["us".into(), "ime/hangul".into(), "de".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert_eq!(cfg.active_source_index(), 2);
+        assert_eq!(cfg.active_layout_index(), 1);
+        assert_eq!(cfg.active_input_method(), None);
+    }
+
+    #[test]
+    fn an_engine_only_list_keeps_a_layout_to_type_on() {
+        let mut cfg = RichInputConfig {
+            keyboard_layout: "ime/mozc".into(),
+            keyboard_layouts: vec!["ime/mozc".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert_eq!(cfg.keyboard_layouts, ["us", "ime/mozc"]);
+        assert_eq!(cfg.keyboard_layout, "ime/mozc");
+        assert!(
+            cfg.xkb_options().is_empty(),
+            "one layout needs no group toggle"
+        );
+    }
+
+    #[test]
+    fn engine_ids_never_parse_as_xkb_layouts() {
+        assert!(KeyboardInputSource::parse("ime/pinyin").is_none());
+        assert_eq!(
+            InputSource::parse("ime/hangul"),
+            Some(InputSource::InputMethod(InputMethodEngine::Hangul))
+        );
+        assert!(InputSource::parse("ime/../pinyin").is_none());
+        for engine in InputMethodEngine::ALL {
+            assert_eq!(
+                InputMethodEngine::from_source_id(&engine.source_id()),
+                Some(engine)
+            );
+        }
+    }
+
+    #[test]
+    fn adding_sources_bounds_layouts_but_not_engines() {
+        let mut cfg = RichInputConfig {
+            keyboard_layouts: vec!["us".into(), "de".into(), "fr".into(), "es".into()],
+            ..Default::default()
+        };
+        cfg.normalise_sources();
+        assert!(!cfg.can_add_source("gb"));
+        assert!(cfg.can_add_source("ime/pinyin"));
+        assert!(!cfg.can_add_source("de"), "already present");
+        assert!(!cfg.can_add_source("ime/nope"));
     }
 }

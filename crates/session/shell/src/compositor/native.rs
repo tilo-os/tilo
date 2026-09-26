@@ -1327,20 +1327,6 @@ fn bind_privileged_socket() -> Result<(ListeningSocketSource, std::ffi::OsString
     Ok((socket, socket_name))
 }
 
-/// Bind the private display used only by the compositor-launched OSK. The
-/// random suffix keeps it out of well-known socket-name guesses; unlike the
-/// clipboard socket it is never exported in the session environment.
-fn bind_osk_socket() -> Result<(ListeningSocketSource, PathBuf), String> {
-    let name = format!(
-        "tilo-osk-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    );
-    let socket = ListeningSocketSource::with_name(&name).map_err(|e| e.to_string())?;
-    let path = crate::shell::launcher::runtime_dir().join(socket.socket_name());
-    Ok((socket, path))
-}
-
 /// Per-connection state for the test-control protocol: a buffered reader
 /// over a non-blocking `UnixStream`, so partial lines accumulate across ticks.
 struct TestControlConn {
@@ -5813,45 +5799,15 @@ pub fn run() {
         }
     };
 
-    // A third display is the input-method trust boundary. The OSK package is
-    // sandboxed exactly like any other app, but receives this one socket as
-    // its display; public clients cannot see the input-method/virtual-keyboard
-    // globals at all. The preference controls both accepting connections and
-    // the supervised service process.
-    let mut osk_socket_path = None;
-    let mut osk_service = match bind_osk_socket() {
-        Ok((osk_socket, path)) => {
-            osk_socket_path = Some(path.clone());
-            let mut service = crate::compositor::osk_service::OskService::new(path.clone());
-            let authorization = service.socket_authorization();
-            if let Err(error) = event_loop.handle().insert_source(
-                osk_socket,
-                move |client_stream, (), state| {
-                    if !authorization.allows(&client_stream) {
-                        tracing::warn!(target: "tilo::osk", "rejected connection to private OSK display");
-                        return;
-                    }
-                    if let Err(error) = state
-                        .display_handle
-                        .insert_client(client_stream, ClientState::osk_arc())
-                    {
-                        tracing::warn!(target: "tilo::osk", %error, "could not accept OSK Wayland connection");
-                    }
-                },
-            ) {
-                tracing::warn!(target: "tilo::osk", %error, "private OSK socket source rejected");
-                None
-            } else {
-                tracing::info!(target: "tilo::osk", socket = %path.display(), "private OSK display ready");
-                service.reload_preference();
-                Some(service)
-            }
-        }
-        Err(error) => {
-            tracing::warn!(target: "tilo::osk", %error, "private OSK display unavailable");
-            None
-        }
-    };
+    // Private displays are the input-method trust boundary. The OSK package
+    // is sandboxed exactly like any other app and the composer is the image's
+    // own executable; each receives only its own socket as its display, and
+    // public clients cannot see the input-method/virtual-keyboard globals at
+    // all. The input-source and OSK preferences decide which one owns the
+    // seat and runs (see `compositor::input_method`).
+    let mut input_methods =
+        crate::compositor::input_method_service::InputMethodServices::start(&event_loop.handle());
+    input_methods.reload(&mut state);
 
     // A second Wayland socket for clients the session trusts with
     // authority-bearing protocols — clipboard-manager access and session
@@ -7136,13 +7092,9 @@ pub fn run() {
             session.set_suspend_timeout(policy.idle_suspend);
             power_bridge.update_policy(policy);
             outputs_dirty = true;
-            if let Some(service) = osk_service.as_mut() {
-                service.reload_preference();
-            }
+            input_methods.reload(&mut state);
         }
-        if let Some(service) = osk_service.as_mut() {
-            service.tick();
-        }
+        input_methods.tick();
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
         }
@@ -9129,10 +9081,11 @@ pub fn run() {
     drop(windows_compat);
     drop(identity_broker);
     drop(floating_surface_service);
-    drop(osk_service);
+    let input_method_sockets = input_methods.sockets().to_vec();
+    drop(input_methods);
     drop(display_file);
     unlink_wayland_endpoint(&public_socket_path);
-    if let Some(path) = osk_socket_path.as_deref() {
+    for path in &input_method_sockets {
         unlink_wayland_endpoint(path);
     }
     if let Some(path) = privileged_socket_path.as_deref() {
