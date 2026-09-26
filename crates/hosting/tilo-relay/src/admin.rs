@@ -389,9 +389,14 @@ fn cmd_community_host(
         );
     }
     let owner = tilo_user_identity::persist::read_owned_signing_key(&owner_paths.user_privkey)?;
-    let not_after = expires_in_days.map(|days| {
-        std::time::SystemTime::now() + std::time::Duration::from_secs(days.saturating_mul(86_400))
-    });
+    let not_after = match expires_in_days {
+        Some(days) => Some(
+            std::time::SystemTime::now()
+                .checked_add(std::time::Duration::from_secs(days.saturating_mul(86_400)))
+                .context("--expires-in-days is too far in the future")?,
+        ),
+        None => None,
+    };
     let delegation = collab_types::mint_root(
         collab_types::InviteSpec {
             subject: collab_types::Ed25519PublicKey::from_bytes(relay_cert.device_public_key),

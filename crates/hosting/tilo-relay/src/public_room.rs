@@ -323,7 +323,7 @@ impl DirectRoomHosting {
 }
 
 /// The retained `Delta` that carries `admission` into the room, authored by
-/// this relay's device.
+/// this relay's device, with the delta bytes it carries.
 ///
 /// # Errors
 ///
@@ -332,7 +332,7 @@ pub fn admission_envelope(
     workspace_id: u64,
     relay_device: [u8; 32],
     admission: HostAdmissionV1,
-) -> Result<crate::transport::Envelope, postcard::Error> {
+) -> Result<(crate::transport::Envelope, Vec<u8>), postcard::Error> {
     let message = neighbour_wire::NeighbourMsg::RoomAdmission {
         room: admission.room.clone(),
         admission: Box::new(admission),
@@ -341,13 +341,14 @@ pub fn admission_envelope(
     let channel =
         neighbour_wire::retention(&message, false).map_or([0; 32], |(channel, _)| channel);
     let payload = crate::coedit::CoeditPayload::Checkpoint { channel, body }.encode()?;
-    Ok(crate::transport::Envelope::Delta {
+    let envelope = crate::transport::Envelope::Delta {
         workspace_id,
         author_device_public_key: relay_device,
         authored_at_ns: tilo_clock::unix_now_ns(),
-        delta: payload,
+        delta: payload.clone(),
         signature: [0; 64],
-    })
+    };
+    Ok((envelope, payload))
 }
 
 #[cfg(test)]

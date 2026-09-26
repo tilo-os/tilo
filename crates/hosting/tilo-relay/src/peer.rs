@@ -432,7 +432,7 @@ async fn handle_redeem(
     let relay_device = *session.own_device_public_key;
     let outcome = tokio::task::spawn_blocking(move || {
         let mut wr = wr;
-        let result = (|| {
+        (|| {
             let hosting = crate::public_room::PublicRoomHosting::load(wr.store.root())?
                 .ok_or(crate::public_room::PublicRoomError::NotHosted)?;
             // Already admitted: its admission is retained in the room, so a
@@ -447,17 +447,13 @@ async fn handle_redeem(
                 &relay_sk,
                 std::time::SystemTime::now(),
             )?;
-            let envelope =
+            let (envelope, raw) =
                 crate::public_room::admission_envelope(workspace_id, relay_device, admission)
                     .map_err(|error| {
                         crate::public_room::PublicRoomError::Store(StoreError::Io(
                             std::io::Error::other(error),
                         ))
                     })?;
-            let crate::transport::Envelope::Delta { delta, .. } = &envelope else {
-                unreachable!("an admission is carried by a delta")
-            };
-            let raw = delta.clone();
             // Published before the device is recorded as a member, so a
             // crash in between leaves a device that simply redeems again.
             wr.fanout_delta(
@@ -470,8 +466,7 @@ async fn handle_redeem(
             .map_err(crate::public_room::PublicRoomError::Store)?;
             wr.admit_device(member_device)?;
             Ok::<(), crate::public_room::PublicRoomError>(())
-        })();
-        result
+        })()
     })
     .await;
     match outcome {
@@ -1096,6 +1091,7 @@ async fn bind_direct_room(
     runtime.admitted_users.extend(members);
     let workspace = Arc::new(AsyncMutex::new(runtime));
     map.insert(workspace_id, workspace.clone());
+    drop(map);
     tracing::info!(
         workspace_id,
         "bound a direct room with a hosted room's owner"
@@ -1133,6 +1129,7 @@ pub(crate) async fn get_or_autobind_workspace(
     runtime.admit_authenticated = true;
     let workspace = Arc::new(AsyncMutex::new(runtime));
     map.insert(workspace_id, workspace.clone());
+    drop(map);
     tracing::info!(workspace_id, "auto-bound same-owner workspace");
     Ok(Some(workspace))
 }
