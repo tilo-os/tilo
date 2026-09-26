@@ -20114,7 +20114,7 @@ impl ShellOverlayHost {
             transform,
             text_renderer,
             theme,
-            &ButtonFace::new(layout.cancel, "Cancel")
+            &ButtonFace::new(layout.cancel, view.cancel_label())
                 .radius(button_radius)
                 .hovered(self.last_cursor.is_some_and(|p| layout.cancel.contains(p))),
         );

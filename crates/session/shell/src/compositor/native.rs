@@ -4597,6 +4597,11 @@ fn attach_collab_broker_bridges(
             dispatcher.set(&room.to_string(), peer_id);
         }));
     if let Some(action_broker) = broker.app_action_broker() {
+        // An app reaching for another app's action is asked about on this
+        // session's own sheet, which the overlay host draws and answers.
+        action_broker.set_app_action_consent(std::sync::Arc::new(
+            crate::shell::app_action_consent::SheetPrompter::session(),
+        ));
         frame_builder
             .host_mut()
             .attach_app_action_broker(action_broker);
@@ -7486,6 +7491,7 @@ pub fn run() {
 
         // Pump the D-Bus notification bridge into the toast stack and mirror lock
         // state into the chrome so it can suppress content while locked; cheap no-ops when unchanged.
+        crate::shell::app_action_consent::set_session_attended(!session.is_locked());
         let device_sounds = frame_builder.host().drain_audio_device_sounds();
         frame_builder.with_chrome(|st| {
             for event in device_sounds {

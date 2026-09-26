@@ -29,6 +29,7 @@ use winit::keyboard::PhysicalKey;
 use crate::portal::desktop_services::{
     AppChooserService, ApplicationChoice, ApplicationChoiceRequest, PortalResult,
 };
+use crate::shell::app_action_consent::{AppActionConsent, AppActionConsentRequest};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReviewRequest {
@@ -264,6 +265,10 @@ enum PendingDialog {
     NetworkSecrets {
         request: NetworkSecretsRequest,
         reply: oneshot::Sender<NetworkSecretsDecision>,
+    },
+    ActionGrant {
+        request: AppActionConsentRequest,
+        reply: oneshot::Sender<AppActionConsent>,
     },
 }
 
@@ -524,6 +529,50 @@ impl PortalDialogQueue {
         Ok(receiver)
     }
 
+    /// Queue the sheet asking whether one application may use another's
+    /// action. The answer is the person's alone: the asking application
+    /// never sees the sheet, only whether its call went ahead.
+    pub fn enqueue_action_grant(
+        &self,
+        request: AppActionConsentRequest,
+    ) -> Result<oneshot::Receiver<AppActionConsent>, String> {
+        let (reply, receiver) = oneshot::channel();
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "portal dialog controller is unavailable".to_string())?;
+        if inner.pending.contains_key(&request.handle) {
+            return Err("duplicate live portal request".into());
+        }
+        inner.order.push_back(request.handle.clone());
+        inner.pending.insert(
+            request.handle.clone(),
+            PendingDialog::ActionGrant { request, reply },
+        );
+        Ok(receiver)
+    }
+
+    fn finish_action_grant(&self, handle: &str, answer: AppActionConsent) -> bool {
+        let pending = self
+            .inner
+            .lock()
+            .ok()
+            .and_then(|mut inner| inner.pending.remove(handle));
+        match pending {
+            Some(PendingDialog::ActionGrant { reply, .. }) => {
+                let _ = reply.send(answer);
+                true
+            }
+            Some(other) => {
+                if let Ok(mut inner) = self.inner.lock() {
+                    inner.pending.insert(handle.into(), other);
+                }
+                false
+            }
+            None => false,
+        }
+    }
+
     fn next_handle(&self) -> Option<String> {
         let mut inner = self.inner.lock().ok()?;
         while let Some(handle) = inner.order.pop_front() {
@@ -602,6 +651,20 @@ impl PortalDialogQueue {
                     .collect(),
                 remember_offered: request.remember.is_some(),
             }),
+            PendingDialog::ActionGrant { request, .. } => Some(DialogView::ActionGrant {
+                handle: request.handle.clone(),
+                title: format!(
+                    "{} wants to use {}",
+                    friendly_app_name(&request.app_id),
+                    friendly_app_name(&request.target_app)
+                ),
+                action: request.action_label.clone(),
+                detail: action_grant_detail(request),
+                choices: AppActionConsent::ALLOWING
+                    .iter()
+                    .map(|answer| answer.label().to_string())
+                    .collect(),
+            }),
             PendingDialog::UsbDevices {
                 request, selected, ..
             } => Some(DialogView::UsbDevices {
@@ -674,6 +737,10 @@ impl PortalDialogQueue {
                 true
             }
             Some(PendingDialog::ShortcutBindings { .. }) => true,
+            Some(PendingDialog::ActionGrant { reply, .. }) => {
+                let _ = reply.send(AppActionConsent::Deny);
+                true
+            }
             Some(PendingDialog::Authentication { reply, .. }) => {
                 let _ = reply.send(AuthenticationDecision::Cancelled);
                 true
@@ -966,6 +1033,16 @@ pub enum DialogView {
         confirm_label: String,
         devices: Vec<UsbDeviceViewRow>,
     },
+    /// Whether one application may use another's action, and for how
+    /// long. The allowing answers are the choices; Cancel denies.
+    ActionGrant {
+        handle: String,
+        title: String,
+        /// The action, as its publisher labels it.
+        action: String,
+        detail: String,
+        choices: Vec<String>,
+    },
     /// Administrator authentication for polkit. Drawn only by the
     /// compositor, so no application can imitate it or read the secret.
     Authentication {
@@ -1003,6 +1080,7 @@ impl DialogView {
             | Self::ShortcutBindings { handle, .. }
             | Self::LauncherReview { handle, .. }
             | Self::UsbDevices { handle, .. }
+            | Self::ActionGrant { handle, .. }
             | Self::Authentication { handle, .. }
             | Self::NetworkSecrets { handle, .. } => handle,
         }
@@ -1014,6 +1092,7 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Set global shortcuts".into(),
             Self::LauncherReview { title, .. } => title.clone(),
             Self::UsbDevices { title, .. } => title.clone(),
+            Self::ActionGrant { title, .. } => title.clone(),
             Self::Authentication { title, .. } => title.clone(),
             Self::NetworkSecrets { title, .. } => title.clone(),
         }
@@ -1025,6 +1104,7 @@ impl DialogView {
             | Self::ShortcutBindings { app_name, .. }
             | Self::LauncherReview { app_name, .. }
             | Self::UsbDevices { app_name, .. } => app_name,
+            Self::ActionGrant { action, .. } => action,
             Self::Authentication { .. } => "Administrator access",
             Self::NetworkSecrets { .. } => "Network",
         }
@@ -1037,13 +1117,14 @@ impl DialogView {
             }
             Self::LauncherReview { detail, .. } => detail,
             Self::UsbDevices { detail, .. } => detail,
+            Self::ActionGrant { detail, .. } => detail,
             Self::Authentication { detail, .. } => detail,
             Self::NetworkSecrets { detail, .. } => detail,
         }
     }
     pub fn choices(&self) -> &[String] {
         match self {
-            Self::AppChoice { choices, .. } => choices,
+            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices,
             Self::Authentication { identities, .. } => identities,
             Self::Review { .. }
             | Self::ShortcutBindings { .. }
@@ -1059,6 +1140,7 @@ impl DialogView {
             | Self::Review { .. }
             | Self::LauncherReview { .. }
             | Self::UsbDevices { .. }
+            | Self::ActionGrant { .. }
             | Self::Authentication { .. }
             | Self::NetworkSecrets { .. } => &[],
         }
@@ -1079,12 +1161,13 @@ impl DialogView {
             Self::UsbDevices { .. } => "usb_devices",
             Self::Authentication { .. } => "authentication",
             Self::NetworkSecrets { .. } => "network_secrets",
+            Self::ActionGrant { .. } => "action_grant",
         }
     }
     pub fn selectable_count(&self) -> usize {
         match self {
             Self::ShortcutBindings { rows, .. } => rows.len(),
-            Self::AppChoice { choices, .. } => choices.len(),
+            Self::AppChoice { choices, .. } | Self::ActionGrant { choices, .. } => choices.len(),
             Self::UsbDevices { devices, .. } => devices.len(),
             Self::Authentication { identities, .. } => identities.len(),
             Self::Review { .. } | Self::LauncherReview { .. } | Self::NetworkSecrets { .. } => 0,
@@ -1097,8 +1180,17 @@ impl DialogView {
             Self::ShortcutBindings { .. } => "Save shortcuts",
             Self::LauncherReview { confirm_label, .. } => confirm_label,
             Self::UsbDevices { confirm_label, .. } => confirm_label,
+            Self::ActionGrant { .. } => "Allow",
             Self::Authentication { .. } => "Authenticate",
             Self::NetworkSecrets { .. } => "Connect",
+        }
+    }
+
+    /// The label of the button that answers no.
+    pub fn cancel_label(&self) -> &'static str {
+        match self {
+            Self::ActionGrant { .. } => AppActionConsent::Deny.label(),
+            _ => "Cancel",
         }
     }
 
@@ -1319,6 +1411,9 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Confirmed),
+            DialogView::ActionGrant { .. } => AppActionConsent::ALLOWING
+                .get(self.selected)
+                .is_some_and(|answer| self.queue.finish_action_grant(view.handle(), *answer)),
             DialogView::Authentication {
                 identities,
                 identity,
@@ -1394,6 +1489,9 @@ impl PortalDialogController {
             DialogView::UsbDevices { .. } => self
                 .queue
                 .finish_usb_devices(view.handle(), ReviewDecision::Cancelled),
+            DialogView::ActionGrant { .. } => self
+                .queue
+                .finish_action_grant(view.handle(), AppActionConsent::Deny),
             DialogView::Authentication { .. } => {
                 self.forget_secret();
                 self.queue
@@ -1878,6 +1976,16 @@ fn chooser_detail(request: &ApplicationChoiceRequest) -> String {
         subject
     )
 }
+/// The action's consequences, as the grant sheet states them.
+fn action_grant_detail(request: &AppActionConsentRequest) -> String {
+    let risk = crate::shell::app_action_consent::risk_label(request.risk);
+    if request.needs_confirmation {
+        format!("{risk}\nIt still asks you to confirm each time it runs.")
+    } else {
+        format!("{risk}\nIt runs without asking you again.")
+    }
+}
+
 fn friendly_app_name(app_id: &str) -> String {
     crate::shell::launcher::display_name_for_app_id(app_id).unwrap_or_else(|| {
         app_id
