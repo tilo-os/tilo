@@ -6794,6 +6794,10 @@ mod tests {
         clippy::float_cmp,
         reason = "the segment width is computed by the same expression from the same measurement, so it must match exactly; the stage geometry pins authored whole-pixel constants, which are exact in binary floating point"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn viewfinder_layout_holds_its_controls_at_every_size_and_text_scale() {
         // Phase `mode_switcher_segments_hold_their_measured_labels_at_2x`.
         // 2026-09-17 review: the Photo / Video / Scan capsule split its authored
@@ -7392,6 +7396,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn photo_shutter_captures_admitted_frames_and_replaces_the_recent_handoff() {
         // Phase `self_timer_is_a_local_cancellable_countdown_before_capture`.
         {
@@ -7646,6 +7654,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn capture_invocations_publish_only_completed_results() {
         // Phase `cancelled_capture_invocation_cannot_publish_or_leave_a_local_projection`.
         {
@@ -7771,6 +7783,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn document_scanning_captures_edits_and_recognizes_real_pages() {
         // Phase `document_route_captures_real_session_pages_in_sample_mode`.
         {
@@ -7909,6 +7925,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn document_choices_update_worker_settings_on_touch_release() {
         // Phase `document_controls_update_the_typed_worker_settings`.
         {
@@ -8096,6 +8116,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn scanned_codes_record_history_and_scanner_actions_are_searchable() {
         // Phase `scan_action_records_history`.
         {

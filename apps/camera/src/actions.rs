@@ -929,6 +929,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn published_resources_hand_captures_to_their_owners_and_refuse_library_management() {
         // Phase `published_resources_respect_camera_ownership`.
         // Camera publishes capture/scanner/settings operations plus at most one
@@ -1063,6 +1067,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn provided_resources_are_honest_about_devices_and_expose_every_preference() {
         // Phase `camera_root_is_a_local_reveal_operation_and_discoverable_resource`.
         {

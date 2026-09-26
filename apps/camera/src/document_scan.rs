@@ -301,6 +301,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn page_edits_invalidate_stale_ocr_and_export_a_searchable_pdf() {
         // Phase `editing_a_page_invalidates_only_its_ocr`.
         {

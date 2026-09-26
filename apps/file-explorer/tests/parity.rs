@@ -361,7 +361,7 @@ fn sidebar_highlights_active_shortcut() {
     // Root at the end of the list.
     assert_eq!(
         active_shortcut_index(&shortcuts, &PathBuf::from("/")),
-        Some(shortcuts.len() - 1)
+        shortcuts.len().checked_sub(1)
     );
 }
 
