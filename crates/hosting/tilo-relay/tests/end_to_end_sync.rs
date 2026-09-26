@@ -44,6 +44,36 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint, spawn_relay};
 
+/// How long a device waits for an answer the host owes it. Every wait below
+/// is for a reply the protocol guarantees, so this only turns a hang into a
+/// named failure before the test runner's own timeout. It is not a latency
+/// budget: each offline fan-out fsyncs the pending queue, and on a busy disk
+/// one fsync has been measured at 30 s.
+const REPLY: Duration = Duration::from_secs(180);
+
+/// Receive the next envelope, failing with `what` on a hang or a closed
+/// connection.
+async fn recv_reply(client: &RelayClient, what: &str) -> Envelope {
+    tokio::time::timeout(REPLY, client.recv())
+        .await
+        .unwrap_or_else(|_| panic!("{what}: no reply from the host"))
+        .unwrap_or_else(|| panic!("{what}: channel closed"))
+}
+
+/// Round-trip a Ping/Pong on `client`. The host handles a peer's stream in
+/// order and answers Ping only after the preceding envelope's handling has
+/// completed, so Pong proves everything sent before it has been applied.
+async fn round_trip(client: &RelayClient, what: &str) {
+    client.send(Envelope::Ping).unwrap();
+    loop {
+        match recv_reply(client, what).await {
+            Envelope::Pong => return,
+            Envelope::Ready { .. } => {}
+            other => panic!("{what}: unexpected envelope {other:?}"),
+        }
+    }
+}
+
 /// Read a string value at `key` under the document root.
 fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
     match doc.get(ROOT, key) {
@@ -59,11 +89,7 @@ fn read_str(doc: &AutoCommit, key: &str) -> Option<String> {
 /// `Ready`/`Pong`), returning its delta bytes. Panics on timeout.
 async fn recv_delta(client: &RelayClient, what: &str) -> Vec<u8> {
     loop {
-        let env = tokio::time::timeout(Duration::from_secs(3), client.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{what}: timed out waiting for delta"))
-            .unwrap_or_else(|| panic!("{what}: channel closed"));
-        match env {
+        match recv_reply(client, what).await {
             Envelope::Delta { delta, .. } => return delta,
             Envelope::Ready { .. } | Envelope::Pong => {}
             other => panic!("{what}: unexpected envelope {other:?}"),
@@ -111,10 +137,7 @@ async fn connect_and_subscribe(
         .unwrap();
     // Drain both Ready(ws, 0) acks (nothing queued yet).
     for (cli, who) in [(&a_client, "A"), (&b_client, "B")] {
-        let env = tokio::time::timeout(Duration::from_secs(2), cli.recv())
-            .await
-            .unwrap_or_else(|_| panic!("{who} Ready timeout"))
-            .expect("Ready channel closed");
+        let env = recv_reply(cli, &format!("{who} Ready")).await;
         assert!(
             matches!(
                 env,
@@ -129,8 +152,7 @@ async fn connect_and_subscribe(
     (a_client, b_client)
 }
 
-/// Unsubscribe B, then round-trip a Ping/Pong. The host processes a
-/// peer's stream in order, so receiving Pong proves the preceding
+/// Unsubscribe B, then round-trip a Ping/Pong: Pong proves the
 /// Unsubscribe was fully applied — B is no longer a subscriber, so
 /// the next delta is guaranteed to be store-and-forwarded rather
 /// than racing a half-torn-down live channel.
@@ -138,19 +160,7 @@ async fn take_b_offline(b_client: &RelayClient, ws: u64) {
     b_client
         .send(Envelope::Unsubscribe { workspace_id: ws })
         .unwrap();
-    b_client.send(Envelope::Ping).unwrap();
-    let mut saw_pong = false;
-    for _ in 0..10 {
-        match tokio::time::timeout(Duration::from_secs(2), b_client.recv()).await {
-            Ok(Some(Envelope::Pong)) => {
-                saw_pong = true;
-                break;
-            }
-            Ok(Some(_)) => {}
-            _ => break,
-        }
-    }
-    assert!(saw_pong, "expected Pong confirming Unsubscribe was applied");
+    round_trip(b_client, "B unsubscribe").await;
 }
 
 /// Reconnect B, subscribe, and let the flushed queued delta bring it back
@@ -180,6 +190,21 @@ async fn reconnect_b_and_catch_up(
     let got2 = recv_delta(&b2, "B catch-up delta").await;
     doc_b.load_incoming(&got2).expect("B applies d2");
 
+    // The host writes the replay, then removes the replayed queue files, and
+    // only then acknowledges the subscription. Ready is therefore the point
+    // after which the queue is observably drained.
+    let ready = recv_reply(&b2, "B catch-up Ready").await;
+    assert!(
+        matches!(
+            ready,
+            Envelope::Ready {
+                workspace_id: w,
+                pending_deltas,
+            } if w == ws && pending_deltas >= 1
+        ),
+        "B expected Ready(WS) counting its catch-up replay, got {ready:?}"
+    );
+
     assert_eq!(read_str(doc_b, "title").as_deref(), Some("hello from A"));
     assert_eq!(read_str(doc_b, "body").as_deref(), Some("second edit"));
     assert_eq!(
@@ -196,20 +221,6 @@ fn count_delta_files(dir: &std::path::Path) -> usize {
             .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
             .count()
     })
-}
-
-/// Poll `pending_dir` until at least one `.delta` file is queued (or the
-/// retry budget runs out — the caller's own assertion reports that).
-async fn wait_for_queued_delta(pending_dir: &std::path::Path) -> usize {
-    let mut queued = 0;
-    for _ in 0..40 {
-        queued = count_delta_files(pending_dir);
-        if queued >= 1 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    queued
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -282,7 +293,9 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         })
         .unwrap();
 
-    // The delta lands on disk in B's pending queue.
+    // The host persists the fan-out, B's pending queue included, before it
+    // handles A's next envelope; A's round trip is that barrier.
+    round_trip(&a_client, "A offline edit").await;
     let b_hex = hex::encode(b.device_pubkey());
     let pending_dir = host
         .state_root
@@ -290,9 +303,9 @@ async fn two_devices_converge_through_host_with_offline_store_forward() {
         .join(WS.to_string())
         .join("pending")
         .join(&b_hex);
-    let queued = wait_for_queued_delta(&pending_dir).await;
     assert_eq!(
-        queued, 1,
+        count_delta_files(&pending_dir),
+        1,
         "A's offline edit must be store-and-forwarded to disk for B"
     );
 

@@ -2340,9 +2340,18 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     }
     let mut packet = vec![0_u8; MAX_PACKET];
     let pending = receive_approval_request(&socket, &mut packet, options, &identity)?;
+    // The listener shares the well-known port with every other nearby-pairing
+    // surface, and the kernel delivers a unicast datagram to only one socket
+    // of a reuse-port group. The device acknowledges to the address the
+    // signed configuration came from, so the rest of the exchange runs on a
+    // socket of this approver's own: another listener on the port can never
+    // receive the acknowledgement in its place.
+    drop(socket);
+    let session = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))?;
+    session.set_read_timeout(Some(Duration::from_secs(1)))?;
     let prepared = prepare_approval(options, &identity, &pending)?;
-    await_approval_ack(&socket, &mut packet, &pending, &prepared)?;
-    commit_approval(&socket, options, &identity, &pending, &prepared)
+    await_approval_ack(&session, &mut packet, &pending, &prepared)?;
+    commit_approval(&session, options, &identity, &pending, &prepared)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -3065,6 +3074,19 @@ mod tests {
         )
         .unwrap();
 
+        // Seed the new device's key so the approval pins exactly this device:
+        // every nearby pairing on the host shares one broadcast port, and an
+        // unpinned approver answers whichever device solicits first.
+        let new_root = tempfile::tempdir().unwrap();
+        let new_identities = tempfile::tempdir().unwrap();
+        let new_device = ed25519_dalek::SigningKey::from_bytes(&[44; 32]);
+        let new_paths = IdentityPaths::under(new_root.path());
+        new_paths.ensure_directories().unwrap();
+        tilo_user_identity::persist::write_device_key(&new_paths.device_privkey, &new_device)
+            .unwrap();
+        let expected_device = hex::encode(new_device.verifying_key().to_bytes());
+        let expected_service = hex::encode(tilo_relay::daemon::relay_service_node_id(&new_device));
+
         let server_root = approver_root.path().to_path_buf();
         let server_identities = approver_identities.path().to_path_buf();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -3076,8 +3098,8 @@ mod tests {
                 workspace_cache: std::path::Path::new(""),
                 acl: std::path::Path::new(""),
                 relay_workspace_ids: &[],
-                expected_device: None,
-                expected_service: None,
+                expected_device: Some(&expected_device),
+                expected_service: Some(&expected_service),
                 kind: EnrollmentKind::PersonalDevice,
                 ready: Some(&ready_tx),
             })
@@ -3085,8 +3107,12 @@ mod tests {
         ready_rx
             .recv_timeout(Duration::from_secs(5))
             .expect("approval listener became ready");
-        let new_root = tempfile::tempdir().unwrap();
-        let new_identities = tempfile::tempdir().unwrap();
+        // Other nearby-pairing surfaces on this host (an open discovery
+        // view, another approval sheet) share the well-known port. Which of
+        // them the kernel hands a unicast datagram must not decide whether
+        // the enrollment completes.
+        let _other_surfaces: Vec<UdpSocket> =
+            (0..3).map(|_| bind_pair_listener().unwrap()).collect();
         let requester = tilo_relay::ProcessLease::capture(std::process::id()).unwrap();
         pair(
             new_root.path(),
