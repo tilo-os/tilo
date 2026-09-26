@@ -536,6 +536,27 @@ impl AppActionBroker {
         self.state.take_finished_shortcut_runs()
     }
 
+    /// Start saved shortcut `shortcut` in `room` because its `trigger`
+    /// fired, on behalf of `caller`, the person who saved it. Answers with
+    /// the broker job the run reports on.
+    ///
+    /// # Errors
+    ///
+    /// Why the trigger may not start it: the shortcut is gone or lost the
+    /// trigger, `caller` did not save it, or it now reaches past what
+    /// `caller` may do.
+    pub fn start_triggered_shortcut_run(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+        shortcut: &str,
+        trigger: &tilo_automation::TriggerSpec,
+        run: tilo_automation::RunId,
+    ) -> Result<u64, tilo_actions::remote::ActionHostError> {
+        self.state
+            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run)
+    }
+
     pub fn statuses_generation(&self) -> u64 {
         self.state.invocations_generation()
     }
