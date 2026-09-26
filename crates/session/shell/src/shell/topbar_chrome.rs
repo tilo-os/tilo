@@ -485,9 +485,26 @@ struct StatusKey {
 /// `WorkspaceTree`, not `TopBar`, lets `build_tilo_root` stay a pure
 /// function of the tree and avoids a circular borrow against the
 /// shell's owned logical `TopBar`.
+/// Which top bar a display carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BarVariant {
+    /// The primary display's bar: navigation, centre widget and session.
+    Full,
+    /// Another display's bar: navigation and the centre widget.
+    Compact,
+}
+
 pub struct TopBarChrome {
     explicit_local_user: Option<String>,
     rect: Rect,
+    /// The compact bar a display other than the primary carries: workspace
+    /// navigation and the centre widget only. Session controls, the tray
+    /// and collaborators live on the primary display's full bar.
+    variant: BarVariant,
+    /// Where the bar sits when that is not where layout put it: the
+    /// primary display's top edge for the full bar, or its own display's
+    /// top edge for a compact one. Height still comes from layout.
+    placement: Option<Rect>,
     workspace_name: String,
     workspace_index: usize,
     workspace_total: usize,
@@ -812,6 +829,8 @@ impl TopBarChrome {
         let mut this = Self {
             explicit_local_user,
             rect: Rect::ZERO,
+            variant: BarVariant::Full,
+            placement: None,
             workspace_name: String::new(),
             workspace_index: 0,
             workspace_total: 1,
@@ -951,6 +970,106 @@ impl TopBarChrome {
             Some(c) => c.borrow().status.clone(),
             None => self.status.clone(),
         }
+    }
+
+    /// The full bar's session side: the tray, application tray, media and
+    /// sharing indicators, collaborators and the continuity offer. A compact
+    /// bar on another display carries none of these.
+    fn draw_session_clusters(
+        &mut self,
+        scene: &mut Scene,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        continuity: Option<&str>,
+    ) {
+        let transform = Affine::IDENTITY;
+        let layout = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
+        self.draw_tray_icons(scene, transform, theme, text_renderer, &layout);
+        // s3/s4 match the pad_x/gap used when this pill was sized and
+        // placed in `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar
+        // radius).
+        let stack_right_x = self.rect.x1
+            - f64::from(theme.tokens.spacing.s3)
+            - layout.tray_w
+            - f64::from(theme.tokens.spacing.s4);
+        let stack_right_x = self.draw_app_tray(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        // Snapshotted before drawing, so `avatar_stack_rect` can be
+        // populated once the drawn circle count (incl. overflow) is known.
+        let stack_right_x = self.draw_media_indicator(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+
+        let stack_right_x = self.draw_sharing_indicator(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        let slot_count = self.draw_avatar_chips(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
+        self.draw_avatar_stack_bounds(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            (center_y, stack_right_x),
+            slot_count,
+        );
+        self.draw_continuity_chip(scene, transform, theme, text_renderer, center_y, continuity);
+    }
+
+    /// The compact variant a display other than the primary carries.
+    #[must_use]
+    pub fn compact(mut self) -> Self {
+        self.variant = BarVariant::Compact;
+        self
+    }
+
+    pub fn is_compact(&self) -> bool {
+        self.variant == BarVariant::Compact
+    }
+
+    /// Sit the bar at `rect`'s top edge, `rect`'s width across, instead of
+    /// where layout places it; `None` returns it to layout.
+    pub fn set_placement(&mut self, rect: Option<Rect>) {
+        if self.placement != rect {
+            self.placement = rect;
+            if let Some(rect) = rect {
+                let height = if self.rect.height() > 0.0 {
+                    self.rect.height()
+                } else {
+                    f64::from(TOPBAR_HEIGHT_PX)
+                };
+                self.rect = Rect::new(rect.x0, rect.y0, rect.x1, rect.y0 + height);
+            }
+            self.cache_fp = CacheFingerprint::default();
+        }
+    }
+
+    /// Where the bar is drawn.
+    pub fn bar_rect(&self) -> Rect {
+        self.rect
     }
 
     #[must_use]
@@ -1446,6 +1565,9 @@ impl TopBarChrome {
                 .copied()
                 .map(Self::center_control),
         );
+        if self.is_compact() {
+            return controls;
+        }
         controls.push(Self::CONTROL_QUICK_SETTINGS);
         if self.widget_editing {
             controls.extend(TopBarWidget::ALL.into_iter().filter_map(|widget| {
@@ -4815,6 +4937,9 @@ impl Widget for TopBarChrome {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
+        if let Some(at) = self.placement {
+            self.rect = Rect::new(at.x0, at.y0, at.x1, at.y0 + self.rect.height());
+        }
     }
 
     fn draw(
@@ -4862,67 +4987,15 @@ impl Widget for TopBarChrome {
         );
 
         self.draw_center_widget(scene, transform, theme, text_renderer, center_y);
-
-        let layout = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        self.draw_tray_icons(scene, transform, theme, text_renderer, &layout);
-        // s3/s4 match the pad_x/gap used when this pill was sized and
-        // placed in `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar
-        // radius).
-        let stack_right_x = self.rect.x1
-            - f64::from(theme.tokens.spacing.s3)
-            - layout.tray_w
-            - f64::from(theme.tokens.spacing.s4);
-        let stack_right_x = self.draw_app_tray(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        // Snapshotted before drawing, so `avatar_stack_rect` can be
-        // populated once the drawn circle count (incl. overflow) is known.
-        let stack_right_x = self.draw_media_indicator(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-
-        let stack_right_x = self.draw_sharing_indicator(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        let slot_count = self.draw_avatar_chips(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            stack_right_x,
-        );
-        self.draw_avatar_stack_bounds(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            (center_y, stack_right_x),
-            slot_count,
-        );
-        self.draw_continuity_chip(
-            scene,
-            transform,
-            theme,
-            text_renderer,
-            center_y,
-            fp.continuity.as_deref(),
-        );
+        if !self.is_compact() {
+            self.draw_session_clusters(
+                scene,
+                theme,
+                text_renderer,
+                center_y,
+                fp.continuity.as_deref(),
+            );
+        }
         self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
         self.draw_widget_editor(scene, transform, text_renderer, theme);
@@ -4952,6 +5025,20 @@ impl Widget for TopBarChrome {
         node_id: NodeId,
         _taffy: &TaffyTree<()>,
     ) {
+        if self.is_compact() {
+            if let WindowEvent::CursorMoved { position, .. } = event {
+                self.last_cursor = Some(Point::new(
+                    position.x / scale_factor,
+                    position.y / scale_factor,
+                ));
+                return;
+            }
+            if self.handle_left_release(event, handled) {
+                return;
+            }
+            self.handle_left_press(event, *modifiers, handled);
+            return;
+        }
         if self.handle_widget_or_clock_event(event, scale_factor, *modifiers, handled)
             || self.handle_center_pointer_event(event, scale_factor, handled)
         {
@@ -5138,8 +5225,16 @@ impl Widget for TopBarChrome {
         }
         Some(
             AccessNode::new(Role::Toolbar)
-                .with_semantic_key("topbar")
-                .with_name("Desktop navigation")
+                .with_semantic_key(if self.is_compact() {
+                    "topbar-compact"
+                } else {
+                    "topbar"
+                })
+                .with_name(if self.is_compact() {
+                    "Display navigation"
+                } else {
+                    "Desktop navigation"
+                })
                 .with_state(
                     AccessState::new()
                         .focusable(self.is_focusable())
@@ -5223,7 +5318,9 @@ impl Widget for TopBarChrome {
     }
 
     fn is_focusable(&self) -> bool {
-        true
+        // Keyboard traversal reaches the primary display's full bar; a
+        // compact bar repeats a subset of it.
+        !self.is_compact()
     }
 
     fn set_focus(&mut self, focused: bool) {

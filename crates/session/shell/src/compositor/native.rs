@@ -1456,6 +1456,35 @@ struct FrameBuilderControlState<'a> {
     lock: Option<&'a LockController>,
 }
 
+impl FrameBuilderControlState<'_> {
+    /// Which windows each display holds, in the order they are laid out,
+    /// and which display has focus: the per-device partition as the person
+    /// sees it. Empty on a single display.
+    fn displays_json(&self) -> Vec<serde_json::Value> {
+        if !self.fb.host().is_partitioned() {
+            return Vec::new();
+        }
+        let summary = self.fb.host().display_partition_summary();
+        let chrome = self.fb.chrome();
+        let tree = chrome.tree();
+        let partition = &tree.desktop.outputs;
+        let displays = summary
+            .into_iter()
+            .map(|(id, groups)| {
+                serde_json::json!({
+                    "id": id,
+                    "primary": partition.primary() == Some(id),
+                    "focused": partition.focused_display() == Some(id),
+                    "groups": groups,
+                })
+            })
+            .collect();
+        drop(tree);
+        drop(chrome);
+        displays
+    }
+}
+
 impl ControlState for FrameBuilderControlState<'_> {
     fn widget_registry(&self) -> HashMap<String, Rect> {
         self.fb.widget_registry()
@@ -1863,6 +1892,7 @@ impl ControlState for FrameBuilderControlState<'_> {
             // own surface, or nothing because the client hid it.
             "pointer": self.fb.pointer_image().describe(),
             "search_scope": format!("{:?}", chrome.search_scope),
+            "displays": self.displays_json(),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
             // Nested resource search is a visible place in the palette, not

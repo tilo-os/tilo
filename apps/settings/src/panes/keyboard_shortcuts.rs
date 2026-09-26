@@ -146,6 +146,18 @@ fn entries() -> Vec<(ShortcutAction, &'static str, &'static str, &'static str)> 
             "Reorder the focused window group",
         ),
         (
+            ShortcutAction::MoveGroupToPreviousDisplay,
+            "shortcuts.move_group_to_previous_display",
+            "Move group to display on left",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
+            ShortcutAction::MoveGroupToNextDisplay,
+            "shortcuts.move_group_to_next_display",
+            "Move group to display on right",
+            "Show the focused window group on the neighbouring display",
+        ),
+        (
             ShortcutAction::ResizeNarrower,
             "shortcuts.resize_narrower",
             "Make window narrower",

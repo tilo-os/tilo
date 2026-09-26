@@ -7,7 +7,10 @@
 use crate::time::{Duration, Instant};
 use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
-use taffy::{Dimension, Display, FlexDirection, NodeId, Size, Style, TaffyTree};
+use taffy::{
+    Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
+    TaffyTree,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
@@ -200,22 +203,20 @@ pub struct GroupRow {
     /// different strip. Kept separate so the shell can clear cross-strip
     /// routing without disturbing compositor-owned content drag feedback.
     cross_strip_drop_target: Option<TabDropTarget>,
-    /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
-    /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active direct
-    /// gesture may hold a resisted transient value just outside either end.
-    scroll_x: f64,
-    /// Scroll offset at the start of the current direct-manipulation gesture.
-    /// Gesture updates carry total travel, so this remains fixed until End.
-    strip_pan_origin: Option<f64>,
-    /// Total content width incl. gaps; cached so the wheel handler can
-    /// clamp `scroll_x` without re-summing children.
-    content_w: f64,
-    /// Per-group local x from the last layout — the strip's snap targets.
-    group_left_edges: Vec<f64>,
-    /// Timestamp of the last wheel event; `tick_snap` waits `SNAP_IDLE_MS`
-    /// of quiet here before starting the snap animation.
-    last_wheel_at: Option<Instant>,
-    snap_anim: Option<SnapAnim>,
+    /// Pan state of the whole row, or of the lane being worked on while
+    /// [`Self::lanes`] is populated (see [`Pan`]).
+    pan: Pan,
+    /// One per display the strip is partitioned across, left to right.
+    /// Empty when the strip is one continuous row (a single display).
+    lanes: Vec<Lane>,
+    /// Which lane each group sits in, by group id. Pushed by the shell from
+    /// its per-device partition; a group the row itself creates is entered
+    /// here with the lane it was dropped into.
+    group_lanes: HashMap<u64, usize>,
+    /// The lane keyboard focus and direct strip pans act on.
+    focus_lane: usize,
+    /// Lane a tab release resolved to, consumed by the split it triggers.
+    pending_split_lane: Option<usize>,
     /// Set by the post-dispatch detach sweep when a release lands outside
     /// this row's band; drained via [`Self::take_pending_cross_strip_detach`].
     pending_cross_strip_detach: Option<CrossStripDetach>,
@@ -227,11 +228,6 @@ pub struct GroupRow {
     /// width so it pans with the strip). `apply_layout` offsets every
     /// child's screen-space origin by `rect.x0 + leading_inset - scroll_x`.
     leading_inset: f64,
-    /// Each group's `(id, left, right)` canvas-x extent as last laid out.
-    /// Measured off taffy rather than re-derived from stored widths: a
-    /// group taffy shrank to fit is that width on screen regardless of
-    /// its stored fraction.
-    laid_spans: Vec<(u64, f64, f64)>,
     /// Transient fullscreen override (not persisted), set by the shell
     /// each frame from compositor state. Collapses the row to this one
     /// group; if it belongs to another strip, [`Self::hidden`] is set
@@ -285,6 +281,422 @@ pub struct OutputSpan {
     /// wheel-disc slot). The denominator every [`WindowWidth`] fraction
     /// is taken of.
     pub usable: f64,
+}
+
+/// One display's share of a strip that is partitioned across displays.
+///
+/// Each display holds its own window groups: they are laid out, panned and
+/// clipped inside that display's lane only, so a group never straddles a
+/// seam and panning one display never reveals another display's windows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StripLane {
+    /// The display this lane belongs to (the compositor's output id).
+    pub output: u32,
+    /// Where the lane's windows may sit, in the row's coordinate space: the
+    /// display's rectangle less any chrome drawn along its top edge. The
+    /// lane's viewport is this intersected with the row's own band.
+    pub area: Rect,
+    /// Width window groups in this lane resolve their fractions against.
+    pub usable: f64,
+    /// Whether this lane begins with the wheel-disc gutter.
+    pub leading: bool,
+}
+
+/// Horizontal pan of one run of groups: the whole row, or one lane.
+///
+/// Canvas-x is the unscrolled coordinate groups are laid out in, starting at
+/// the viewport's left edge; `scroll_x` is how far that canvas is panned
+/// past it.
+#[derive(Clone, Debug, Default)]
+pub struct Pan {
+    /// What this run is clipped to and framed against.
+    viewport: Rect,
+    /// Canvas-x gutter before the first group (the wheel-disc slot).
+    inset: f64,
+    /// Horizontal scroll offset (px): each child renders at `-scroll_x`.
+    /// At rest it is bounded by [`Self::pan_max_scroll_x`]; an active
+    /// direct gesture may hold a resisted transient value just outside
+    /// either end.
+    scroll_x: f64,
+    /// Scroll offset at the start of the current direct-manipulation
+    /// gesture. Gesture updates carry total travel, so this remains fixed
+    /// until End.
+    strip_pan_origin: Option<f64>,
+    /// Total content width incl. gaps; cached so the wheel handler can
+    /// clamp `scroll_x` without re-summing children.
+    content_w: f64,
+    /// Per-group canvas-x from the last layout — the snap targets.
+    group_left_edges: Vec<f64>,
+    /// Timestamp of the last wheel event; `tick_snap` waits
+    /// `SNAP_IDLE_MS` of quiet here before starting the snap animation.
+    last_wheel_at: Option<Instant>,
+    snap_anim: Option<SnapAnim>,
+    /// Each group's `(id, left, right)` canvas-x extent as last laid out.
+    /// Measured off taffy rather than re-derived from stored widths: a
+    /// group taffy shrank to fit is that width on screen regardless of its
+    /// stored fraction.
+    laid_spans: Vec<(u64, f64, f64)>,
+}
+
+impl Pan {
+    pub fn scroll_x(&self) -> f64 {
+        self.scroll_x
+    }
+
+    pub fn viewport(&self) -> Rect {
+        self.viewport
+    }
+
+    fn max_scroll_x(&self) -> f64 {
+        (self.content_w - self.viewport.width()).max(0.0)
+    }
+
+    fn pan_max_scroll_x(&self) -> f64 {
+        let viewport = self.viewport.width().max(1.0);
+        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+    }
+
+    fn begin_strip_pan(&mut self) {
+        self.strip_pan_origin = Some(self.scroll_x);
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+    }
+
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
+                  f64 values are safely representable at sub-pixel precision and the result is \
+                  immediately widened back into the row's f64 geometry"
+    )]
+    fn update_strip_pan(&mut self, travel: f64) -> bool {
+        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
+        let requested = origin + travel;
+        let max = self.pan_max_scroll_x();
+        let reach = self.viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
+        let next = if requested < 0.0 {
+            -f64::from(crate::tokens::rubber_band(
+                (-requested) as f32,
+                reach as f32,
+            ))
+        } else if requested > max {
+            max + f64::from(crate::tokens::rubber_band(
+                (requested - max) as f32,
+                reach as f32,
+            ))
+        } else {
+            requested
+        };
+        if (next - self.scroll_x).abs() <= f64::EPSILON {
+            return false;
+        }
+        self.scroll_x = next;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+        true
+    }
+
+    fn end_strip_pan(&mut self, now: Instant) -> bool {
+        self.strip_pan_origin = None;
+        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
+        if (target - self.scroll_x).abs() <= 0.5 {
+            self.scroll_x = target;
+            return false;
+        }
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: target,
+            started: now,
+        });
+        self.last_wheel_at = None;
+        true
+    }
+
+    /// The offset that brings a group laid out at `gr` fully inside the
+    /// viewport, or `None` when it already is.
+    fn scroll_target_for(&self, gr: Rect) -> Option<f64> {
+        // Degenerate rect → layout hasn't run for this group yet.
+        if gr.width() <= 0.0 {
+            return None;
+        }
+        // Groups must clear the leading wheel-disc gutter on the left and
+        // the viewport's right edge on the right.
+        let left_bound = self.viewport.x0 + self.inset;
+        let right_bound = self.viewport.x1;
+        let mut sx = self.scroll_x;
+        // Reveal the right edge first, then the left — so for a group wider
+        // than the clear viewport the left (start) edge wins and the user
+        // sees the group's beginning.
+        if gr.x1 > right_bound {
+            sx += gr.x1 - right_bound;
+        }
+        if gr.x0 < left_bound {
+            sx -= left_bound - gr.x0;
+        }
+        let viewport = self.viewport.width().max(1.0);
+        let upper = self.max_scroll_x().max(viewport * 3.0);
+        sx = sx.clamp(0.0, upper);
+        ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
+    }
+
+    fn jump_to(&mut self, sx: f64) {
+        self.scroll_x = sx;
+        self.snap_anim = None;
+        self.last_wheel_at = None;
+    }
+
+    fn ease_to(&mut self, sx: f64, now: Instant) {
+        self.snap_anim = Some(SnapAnim {
+            from: self.scroll_x,
+            to: sx,
+            started: now,
+        });
+        self.last_wheel_at = None;
+    }
+
+    fn groups_cut_by_edges(&self) -> Vec<u64> {
+        let row_w = self.viewport.width().max(1.0);
+        let sx = self.scroll_x;
+        self.laid_spans
+            .iter()
+            .filter(|&&(_, x0, x1)| {
+                x1 - x0 > 0.0
+                    // On screen at all, and crossing one of the ends.
+                    && x1 > sx + 0.5
+                    && x0 < sx + row_w - 0.5
+                    && (x0 < sx - 0.5 || x1 > sx + row_w + 0.5)
+            })
+            .map(|&(id, _, _)| id)
+            .collect()
+    }
+
+    /// Whether one group is severed by the viewport's left edge while a
+    /// *different* one is severed by its right edge, at a hypothetical
+    /// `sx` — never allowed in the same frame, though cutting only one is
+    /// fine. A group wider than the viewport is excluded: it's cut on both
+    /// sides at every offset, so counting it would make the strip yank
+    /// around a window it can never frame.
+    fn cut_on_both_edges_at(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
+        let row_w = self.viewport.width().max(1.0);
+        let (mut left, mut right) = (false, false);
+        for &(_, x0, x1) in spans {
+            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
+                continue;
+            }
+            // Scrolled wholly past an end is not a cut — that is the
+            // strip doing its job. Only a group with part of itself on
+            // screen and part of itself past an edge has been severed.
+            if x1 <= sx + 0.5 || x0 >= sx + row_w - 0.5 {
+                continue;
+            }
+            if x0 < sx - 0.5 {
+                left = true;
+            }
+            if x1 > sx + row_w + 0.5 {
+                right = true;
+            }
+        }
+        left && right
+    }
+
+    /// Where the strip should rest, given what was just laid out; `None`
+    /// (the common case) means it already is. Two rules, in order: (1) if
+    /// all groups could be on screen together, none may be cut — move to
+    /// the nearest edge of the window that shows them all; (2) otherwise
+    /// move to the nearest offset that flushes some group's edge with the
+    /// viewport's edge. Nearest in both cases so the smallest move
+    /// preserves what's already framed.
+    fn strip_frame_target(&self, spans: &[(u64, f64, f64)]) -> Option<f64> {
+        let row_w = self.viewport.width().max(1.0);
+        let max = self.max_scroll_x();
+        let first = spans.first()?;
+        let leftmost = spans.iter().fold(first.1, |a, s| a.min(s.1));
+        let rightmost = spans.iter().fold(first.2, |a, s| a.max(s.2));
+
+        if rightmost - leftmost <= row_w {
+            // Everything fits at once, so nothing is allowed to be cut.
+            // Any offset in `[rightmost - row_w, leftmost]` shows the
+            // lot; clamped into the strip's legal range, the nearest
+            // point of it is where the strip belongs.
+            let lo = (rightmost - row_w).clamp(0.0, max);
+            let hi = leftmost.clamp(0.0, max).max(lo);
+            let target = self.scroll_x.clamp(lo, hi);
+            return ((target - self.scroll_x).abs() > 0.5).then_some(target);
+        }
+
+        if !self.cut_on_both_edges_at(spans, self.scroll_x) {
+            return None;
+        }
+        let mut best: Option<f64> = None;
+        for &(_, x0, x1) in spans {
+            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
+                continue;
+            }
+            for candidate in [x0, x1 - row_w] {
+                let candidate = candidate.clamp(0.0, max);
+                if self.cut_on_both_edges_at(spans, candidate) {
+                    continue;
+                }
+                let nearer = best.is_none_or(|b: f64| {
+                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
+                });
+                if nearer {
+                    best = Some(candidate);
+                }
+            }
+        }
+        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
+    }
+
+    /// True while a snap is in flight, or the user just wheeled (within
+    /// the idle threshold); keeps the shell's redraw chain pumping.
+    fn snap_in_flight(&self) -> bool {
+        if self.snap_anim.is_some() {
+            return true;
+        }
+        // Pending snap: idle gate hasn't fired yet. Keep redraws pumping
+        // so `tick_snap` runs the moment it clears.
+        if let Some(t) = self.last_wheel_at
+            && t.elapsed() < Duration::from_millis(u64::from(SNAP_IDLE_MS + SNAP_ANIM_MS))
+            && !self.is_aligned_to_group()
+        {
+            return true;
+        }
+        false
+    }
+
+    fn is_aligned_to_group(&self) -> bool {
+        if self.group_left_edges.is_empty() {
+            return true;
+        }
+        self.group_left_edges
+            .iter()
+            .any(|&e| (e - self.scroll_x).abs() < 0.5)
+    }
+
+    /// Snap target nearest the current `scroll_x`. Candidates include
+    /// canvas-x = 0 (the wheel-visible home) when the run has a gutter —
+    /// without it, a small flick away from 0 would snap forward to the
+    /// first group instead of relaxing back home.
+    fn nearest_group_edge(&self) -> Option<f64> {
+        if self.group_left_edges.is_empty() {
+            return None;
+        }
+        let max = self.max_scroll_x();
+        if max <= 0.0 {
+            return None;
+        }
+        let mut best: Option<f64> = None;
+        let mut best_dist = f64::MAX;
+        let home_targets: &[f64] = if self.inset > 0.0 { &[0.0] } else { &[] };
+        for &edge in self.group_left_edges.iter().chain(home_targets.iter()) {
+            let candidate = edge.clamp(0.0, max);
+            let d = (candidate - self.scroll_x).abs();
+            if d < best_dist {
+                best_dist = d;
+                best = Some(candidate);
+            }
+        }
+        best
+    }
+
+    /// Advance the snap state to `now`. Returns whether `scroll_x` moved.
+    fn tick_snap_at(&mut self, now: Instant) -> bool {
+        let before = self.scroll_x;
+        // Kicking a fresh snap off here, before the curve-advance branch
+        // below, lets this same call both start it and apply its first
+        // eased frame.
+        if self.snap_anim.is_none()
+            && let Some(last_wheel) = self.last_wheel_at
+        {
+            let idle = now.saturating_duration_since(last_wheel);
+            if idle >= Duration::from_millis(u64::from(SNAP_IDLE_MS)) {
+                if self.is_aligned_to_group() {
+                    self.last_wheel_at = None;
+                } else if let Some(target) = self.nearest_group_edge() {
+                    if (target - self.scroll_x).abs() < 0.5 {
+                        self.scroll_x = target;
+                        self.last_wheel_at = None;
+                    } else {
+                        // Anchor `started` at the moment the idle
+                        // gate was met, not `now` — so the very tick
+                        // that detects idle already applies the
+                        // curve's first eased frame. Falls back to
+                        // `last_wheel` (skipping the idle delay) rather
+                        // than panicking in the astronomically unlikely
+                        // case this addition would overflow `Instant`.
+                        let started = last_wheel
+                            .checked_add(Duration::from_millis(u64::from(SNAP_IDLE_MS)))
+                            .unwrap_or(last_wheel);
+                        self.snap_anim = Some(SnapAnim {
+                            from: self.scroll_x,
+                            to: target,
+                            started,
+                        });
+                    }
+                } else {
+                    self.last_wheel_at = None;
+                }
+            }
+        }
+        if let Some(anim) = self.snap_anim {
+            let elapsed = now.saturating_duration_since(anim.started);
+            let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
+            if elapsed >= total {
+                self.scroll_x = anim.to;
+                self.snap_anim = None;
+                self.last_wheel_at = None;
+            } else {
+                let raw =
+                    (elapsed.as_secs_f64() / (f64::from(SNAP_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
+                let eased = crate::ease_out(raw);
+                self.scroll_x = anim.from + (anim.to - anim.from) * eased;
+            }
+        }
+        (self.scroll_x - before).abs() > f64::EPSILON
+    }
+
+    /// Re-frame when the run's geometry moved under the pan (resize,
+    /// open/close, output change): the shell's into-view pan only triggers
+    /// on focus change, so an offset chosen for a layout that no longer
+    /// exists would otherwise persist. Held off (`steady == false`) while
+    /// dragging so the strip doesn't snap out from under the hand;
+    /// corrected on release. Returns whether `scroll_x` moved.
+    fn reframe_on_geometry_change(&mut self, spans: Vec<(u64, f64, f64)>, steady: bool) -> bool {
+        let geometry_moved = spans != self.laid_spans;
+        self.laid_spans = spans;
+        if geometry_moved
+            && steady
+            && self.snap_anim.is_none()
+            && let Some(target) = self.strip_frame_target(&self.laid_spans)
+        {
+            self.scroll_x = target;
+            self.last_wheel_at = None;
+            return true;
+        }
+        false
+    }
+}
+
+/// A lane plus the pan it was last laid out with.
+#[derive(Clone, Debug)]
+struct Lane {
+    spec: StripLane,
+    pan: Pan,
+    /// The viewport the lane's taffy node was built against, so layout can
+    /// tell when the row moved under it and a rebuild is due.
+    built_viewport: Rect,
+}
+
+impl Lane {
+    /// The lane's viewport inside a row laid out at `row`: its area, cut
+    /// to the row's vertical band. Degenerate when the display is outside
+    /// the band altogether.
+    fn viewport_in(&self, row: Rect) -> Rect {
+        let area = self.spec.area;
+        let y0 = area.y0.max(row.y0);
+        let y1 = area.y1.min(row.y1).max(y0);
+        Rect::new(area.x0, y0, area.x1, y1)
+    }
 }
 
 impl GroupRow {
@@ -353,16 +765,14 @@ impl GroupRow {
             structure_dirty: false,
             tab_drop_target: None,
             cross_strip_drop_target: None,
-            scroll_x: 0.0,
-            strip_pan_origin: None,
-            content_w: 0.0,
-            group_left_edges: Vec::new(),
-            last_wheel_at: None,
-            snap_anim: None,
+            pan: Pan::default(),
+            lanes: Vec::new(),
+            group_lanes: HashMap::new(),
+            focus_lane: 0,
+            pending_split_lane: None,
             pending_cross_strip_detach: None,
             scroll_dirty: false,
             leading_inset: 0.0,
-            laid_spans: Vec::new(),
             fullscreen_group: None,
             hidden: false,
             group_drag: None,
@@ -400,10 +810,12 @@ impl GroupRow {
     }
 
     /// Reserve a canvas-x gutter before the first group so it pans with
-    /// `scroll_x` too (set to the wheel-disc width).
+    /// `scroll_x` too (set to the wheel-disc width). On a strip partitioned
+    /// across displays only the leading lane carries it.
     #[must_use]
     pub fn with_leading_inset(mut self, px: f64) -> Self {
         self.leading_inset = px;
+        self.pan.inset = px;
         self
     }
 
@@ -414,6 +826,12 @@ impl GroupRow {
     pub fn set_leading_inset(&mut self, px: f64) {
         if (self.leading_inset - px).abs() > f64::EPSILON {
             self.leading_inset = px;
+            if self.lanes.is_empty() {
+                self.pan.inset = px;
+            }
+            for lane in &mut self.lanes {
+                lane.pan.inset = if lane.spec.leading { px } else { 0.0 };
+            }
             self.scroll_dirty = true;
         }
     }
@@ -428,6 +846,242 @@ impl GroupRow {
 
     pub fn output_spans(&self) -> &[OutputSpan] {
         &self.output_spans
+    }
+
+    /// Partition this strip across displays: one lane per display, left to
+    /// right, and the display each group belongs to (`assignment`, by group
+    /// id → [`StripLane::output`]). Fewer than two lanes restores the one
+    /// continuous row. A lane keeps its pan across calls as long as its
+    /// display stays, so re-pushing the same partition every frame is free.
+    ///
+    /// The groups must already be ordered lane by lane (every group of the
+    /// first lane, then every group of the second, …); the shell's
+    /// reconciliation keeps them so.
+    pub fn set_lanes(&mut self, lanes: &[StripLane], assignment: &HashMap<u64, u32>) {
+        if lanes.len() < 2 {
+            if !self.lanes.is_empty() {
+                let keep = self
+                    .lanes
+                    .iter()
+                    .position(|lane| lane.spec.leading)
+                    .unwrap_or(0);
+                let mut pan = std::mem::take(&mut self.lanes)
+                    .into_iter()
+                    .nth(keep)
+                    .map(|lane| lane.pan)
+                    .unwrap_or_default();
+                pan.inset = self.leading_inset;
+                self.pan = pan;
+                self.group_lanes.clear();
+                self.focus_lane = 0;
+                self.structure_dirty = true;
+            }
+            return;
+        }
+        let specs_changed = self.lanes.len() != lanes.len()
+            || self
+                .lanes
+                .iter()
+                .zip(lanes.iter())
+                .any(|(have, want)| have.spec != *want);
+        if specs_changed {
+            let mut previous = std::mem::take(&mut self.lanes);
+            self.lanes = lanes
+                .iter()
+                .map(|spec| {
+                    let pan = previous
+                        .iter()
+                        .position(|lane| lane.spec.output == spec.output)
+                        .map(|i| previous.swap_remove(i).pan)
+                        .unwrap_or_default();
+                    Lane {
+                        spec: *spec,
+                        pan: Pan {
+                            inset: if spec.leading {
+                                self.leading_inset
+                            } else {
+                                0.0
+                            },
+                            ..pan
+                        },
+                        built_viewport: Rect::ZERO,
+                    }
+                })
+                .collect();
+            self.structure_dirty = true;
+        }
+        let group_lanes: HashMap<u64, usize> = assignment
+            .iter()
+            .filter_map(|(&group, &output)| {
+                lanes
+                    .iter()
+                    .position(|lane| lane.output == output)
+                    .map(|lane| (group, lane))
+            })
+            .collect();
+        // Keep lanes the row assigned itself to groups the shell hasn't
+        // placed yet (a tab dropped into a new group this frame).
+        let mut merged = group_lanes;
+        for (&group, &lane) in &self.group_lanes {
+            if !assignment.contains_key(&group) && self.groups.iter().any(|g| g.id == group) {
+                merged.entry(group).or_insert(lane);
+            }
+        }
+        if merged != self.group_lanes {
+            self.group_lanes = merged;
+            self.structure_dirty = true;
+        }
+        self.focus_lane = self.focus_lane.min(self.lanes.len().saturating_sub(1));
+    }
+
+    /// The lanes this strip is partitioned into; empty for one continuous
+    /// row.
+    pub fn lanes(&self) -> Vec<StripLane> {
+        self.lanes.iter().map(|lane| lane.spec).collect()
+    }
+
+    /// Whether the strip is partitioned across displays.
+    pub fn is_partitioned(&self) -> bool {
+        !self.lanes.is_empty()
+    }
+
+    /// Lane of the group at vector index `idx`: its assigned lane, else the
+    /// lane of the nearest assigned group before it, else the first lane.
+    fn lane_index_of(&self, idx: usize) -> usize {
+        if self.lanes.is_empty() {
+            return 0;
+        }
+        let assigned = |i: usize| {
+            self.groups
+                .get(i)
+                .and_then(|g| self.group_lanes.get(&g.id).copied())
+        };
+        (0..=idx)
+            .rev()
+            .find_map(assigned)
+            .or_else(|| (idx..self.groups.len()).find_map(assigned))
+            .unwrap_or(0)
+            .min(self.lanes.len().saturating_sub(1))
+    }
+
+    /// The lane `group_id` is laid out in; `None` when the strip is one
+    /// continuous row or the group isn't in it.
+    pub fn lane_of_group(&self, group_id: u64) -> Option<usize> {
+        if self.lanes.is_empty() {
+            return None;
+        }
+        let idx = self.groups.iter().position(|g| g.id == group_id)?;
+        Some(self.lane_index_of(idx))
+    }
+
+    /// The display `group_id` is laid out on, when the strip is partitioned.
+    pub fn output_of_group(&self, group_id: u64) -> Option<u32> {
+        let lane = self.lane_of_group(group_id)?;
+        self.lanes.get(lane).map(|lane| lane.spec.output)
+    }
+
+    /// The display a group was explicitly placed on in this row: by the
+    /// shell's partition, or by a tab dropped onto that display.
+    pub fn assigned_output_of_group(&self, group_id: u64) -> Option<u32> {
+        let lane = *self.group_lanes.get(&group_id)?;
+        self.lanes.get(lane).map(|l| l.spec.output)
+    }
+
+    /// Vector indices of the groups in lane `lane`. Groups are kept lane by
+    /// lane, so this is one run; for an empty lane it is the empty run where
+    /// its groups would go.
+    fn lane_range(&self, lane: usize) -> std::ops::Range<usize> {
+        if self.lanes.is_empty() {
+            return 0..self.groups.len();
+        }
+        let lanes: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        let start = lanes.iter().position(|&l| l >= lane).unwrap_or(lanes.len());
+        let end = lanes.iter().position(|&l| l > lane).unwrap_or(lanes.len());
+        start..end.max(start)
+    }
+
+    /// The lane under logical point `p`, else the lane nearest to it
+    /// horizontally. `None` for one continuous row.
+    pub fn lane_at(&self, p: Point) -> Option<usize> {
+        if self.lanes.is_empty() {
+            return None;
+        }
+        let row = self.rect;
+        self.lanes
+            .iter()
+            .position(|lane| lane.viewport_in(row).contains(p))
+            .or_else(|| {
+                self.lanes
+                    .iter()
+                    .position(|lane| p.x >= lane.spec.area.x0 && p.x < lane.spec.area.x1)
+            })
+            .or_else(|| {
+                self.lanes
+                    .iter()
+                    .enumerate()
+                    .min_by(|(_, a), (_, b)| {
+                        let da = (a.spec.area.center().x - p.x).abs();
+                        let db = (b.spec.area.center().x - p.x).abs();
+                        da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i)
+            })
+    }
+
+    /// Point keyboard-driven panning (direct strip pans, the visible span
+    /// launches consult) at the lane of display `output`.
+    pub fn set_focus_output(&mut self, output: u32) {
+        if let Some(lane) = self
+            .lanes
+            .iter()
+            .position(|lane| lane.spec.output == output)
+        {
+            self.focus_lane = lane;
+        }
+    }
+
+    fn pan_of_lane(&self, lane: usize) -> &Pan {
+        self.lanes.get(lane).map_or(&self.pan, |l| &l.pan)
+    }
+
+    fn pan_of_lane_mut(&mut self, lane: usize) -> &mut Pan {
+        match self.lanes.get_mut(lane) {
+            Some(l) => &mut l.pan,
+            None => &mut self.pan,
+        }
+    }
+
+    /// Every pan of the row: the row's own, or one per lane.
+    fn pans(&self) -> Vec<&Pan> {
+        if self.lanes.is_empty() {
+            vec![&self.pan]
+        } else {
+            self.lanes.iter().map(|lane| &lane.pan).collect()
+        }
+    }
+
+    /// The pan of display `output`'s lane, when the strip is partitioned.
+    pub fn output_pan(&self, output: u32) -> Option<&Pan> {
+        self.lanes
+            .iter()
+            .find(|lane| lane.spec.output == output)
+            .map(|lane| &lane.pan)
+    }
+
+    /// The pan the wheel disc rides along with: the row's, or the leading
+    /// lane's.
+    fn leading_pan(&self) -> &Pan {
+        self.lanes
+            .iter()
+            .find(|lane| lane.spec.leading)
+            .map_or(&self.pan, |lane| &lane.pan)
+    }
+
+    fn pan_of_group_mut(&mut self, group_id: u64) -> &mut Pan {
+        let lane = self.lane_of_group(group_id).unwrap_or(0);
+        self.pan_of_lane_mut(lane)
     }
 
     /// Usable width a group at canvas-x `x` should resolve its
@@ -457,9 +1111,18 @@ impl GroupRow {
     }
 
     /// Per-group usable width, in strip order. Depends only on the groups'
-    /// own stored widths and the pushed output spans, never on a previous
-    /// frame's layout, so it's stable on the very first frame.
+    /// own stored widths and the pushed output spans or lanes, never on a
+    /// previous frame's layout, so it's stable on the very first frame.
     pub fn usable_per_group(&self) -> Vec<f64> {
+        if !self.lanes.is_empty() {
+            return (0..self.groups.len())
+                .map(|i| {
+                    self.lanes
+                        .get(self.lane_index_of(i))
+                        .map_or(DEFAULT_STRIP_USABLE_PX, |lane| lane.spec.usable.max(1.0))
+                })
+                .collect();
+        }
         let mut canvas_x = self.rect.x0 + self.leading_inset;
         self.groups
             .iter()
@@ -474,7 +1137,33 @@ impl GroupRow {
     /// Each group's `(id, left, right)` extent in unscrolled canvas space.
     /// Derived the same way as [`Self::usable_per_group`], so a group
     /// spliced in this frame already has a span without waiting for taffy.
+    /// On a partitioned strip each lane's canvas starts at its own
+    /// display's left edge.
     pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
+        if !self.lanes.is_empty() {
+            let usable = self.usable_per_group();
+            let mut cursor: Vec<f64> = self
+                .lanes
+                .iter()
+                .map(|lane| lane.spec.area.x0 + lane.pan.inset)
+                .collect();
+            return self
+                .groups
+                .iter()
+                .enumerate()
+                .map(|(i, g)| {
+                    let lane = self.lane_index_of(i);
+                    let width = g
+                        .width()
+                        .resolve(usable.get(i).copied().unwrap_or(DEFAULT_STRIP_USABLE_PX));
+                    let x0 = cursor.get(lane).copied().unwrap_or(0.0);
+                    if let Some(c) = cursor.get_mut(lane) {
+                        *c = x0 + width + HANDLE_SLOT_PX;
+                    }
+                    (g.id, x0, x0 + width)
+                })
+                .collect();
+        }
         let mut canvas_x = self.rect.x0 + self.leading_inset;
         self.groups
             .iter()
@@ -494,18 +1183,53 @@ impl GroupRow {
     pub fn onscreen_group_ids(&self) -> Vec<u64> {
         self.groups
             .iter()
-            .filter(|g| {
+            .enumerate()
+            .filter(|(i, g)| {
                 let r = g.get_rect();
-                r.width() > 0.0 && r.x1 > self.rect.x0 && r.x0 < self.rect.x1
+                let view = if self.lanes.is_empty() {
+                    self.rect
+                } else {
+                    self.pan_of_lane(self.lane_index_of(*i)).viewport
+                };
+                r.width() > 0.0 && r.x1 > view.x0 && r.x0 < view.x1
             })
-            .map(|g| g.id)
+            .map(|(_, g)| g.id)
             .collect()
     }
 
-    /// `rect` shifted by the pan, in the same space as
-    /// [`Self::group_canvas_spans`].
+    /// The visible viewport shifted by the pan, in the same space as
+    /// [`Self::group_canvas_spans`]. On a partitioned strip, the focused
+    /// display's lane.
     pub fn visible_canvas_span(&self) -> (f64, f64) {
-        (self.rect.x0 + self.scroll_x, self.rect.x1 + self.scroll_x)
+        if self.lanes.is_empty() {
+            return (
+                self.rect.x0 + self.pan.scroll_x,
+                self.rect.x1 + self.pan.scroll_x,
+            );
+        }
+        let pan = self.pan_of_lane(self.focus_lane);
+        (
+            pan.viewport.x0 + pan.scroll_x,
+            pan.viewport.x1 + pan.scroll_x,
+        )
+    }
+
+    /// Ids of the groups laid out on display `output`, in order. Every
+    /// group when the strip is one continuous row.
+    pub fn group_ids_on(&self, output: u32) -> Vec<u64> {
+        let Some(lane) = self
+            .lanes
+            .iter()
+            .position(|lane| lane.spec.output == output)
+        else {
+            return self.group_ids();
+        };
+        self.groups
+            .get(self.lane_range(lane))
+            .unwrap_or(&[])
+            .iter()
+            .map(|g| g.id)
+            .collect()
     }
 
     /// Used by the shell's `resync_strips_from_tree` to diff against the
@@ -603,8 +1327,11 @@ impl GroupRow {
         removed
     }
 
+    /// How far the row is panned. On a partitioned strip, the leading
+    /// lane's pan — the one the wheel disc rides along with; see
+    /// [`Self::output_pan`] for any other display.
     pub fn scroll_x(&self) -> f64 {
-        self.scroll_x
+        self.leading_pan().scroll_x
     }
 
     pub fn handle_count(&self) -> usize {
@@ -622,87 +1349,53 @@ impl GroupRow {
         self.groups.get(idx)
     }
 
-    /// `0.0` before the first layout pass.
+    /// `0.0` before the first layout pass. On a partitioned strip, the
+    /// focused lane's.
     pub fn content_width(&self) -> f64 {
-        self.content_w
+        self.pan_of_lane(self.focus_lane).content_w
     }
 
     pub fn max_scroll_x(&self) -> f64 {
-        (self.content_w - self.rect.width()).max(0.0)
+        self.pan_of_lane(self.focus_lane).max_scroll_x()
     }
 
     /// Furthest legal resting offset for direct strip panning. Unlike the
     /// content-tight focus bound, this leaves a deliberate glimpse of canvas
     /// after the final app. Content which already fits stays pinned at home.
     pub fn pan_max_scroll_x(&self) -> f64 {
-        let viewport = self.rect.width().max(1.0);
-        (self.content_w + viewport * TRAILING_REVEAL_FRAC - viewport).max(0.0)
+        self.pan_of_lane(self.focus_lane).pan_max_scroll_x()
     }
 
     /// Rebase total-travel updates onto the strip's current visual position.
     /// A fresh axis lock calls this even if a prior stream lost its End at a
     /// lock/session boundary, preventing stale gesture state from jumping.
+    /// On a partitioned strip only the focused display's lane pans.
     pub fn begin_strip_pan(&mut self) {
-        self.strip_pan_origin = Some(self.scroll_x);
-        self.snap_anim = None;
-        self.last_wheel_at = None;
+        self.pan_of_lane_mut(self.focus_lane).begin_strip_pan();
     }
 
     /// Track a three-finger horizontal gesture in direct-manipulation space.
     /// `travel` is total signed scroll travel since Begin (positive moves
     /// toward later groups). Legal canvas tracks 1:1; beyond either end the
     /// shared iOS-style curve supplies continuously increasing resistance.
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "the shared rubber-band token accepts f32 screen-pixel distances; viewport-sized \
-                  f64 values are safely representable at sub-pixel precision and the result is \
-                  immediately widened back into the row's f64 geometry"
-    )]
     pub fn update_strip_pan(&mut self, travel: f64) -> bool {
-        let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
-        let requested = origin + travel;
-        let max = self.pan_max_scroll_x();
-        let reach = self.rect.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
-        let next = if requested < 0.0 {
-            -f64::from(crate::tokens::rubber_band(
-                (-requested) as f32,
-                reach as f32,
-            ))
-        } else if requested > max {
-            max + f64::from(crate::tokens::rubber_band(
-                (requested - max) as f32,
-                reach as f32,
-            ))
-        } else {
-            requested
-        };
-        if (next - self.scroll_x).abs() <= f64::EPSILON {
-            return false;
+        let moved = self
+            .pan_of_lane_mut(self.focus_lane)
+            .update_strip_pan(travel);
+        if moved {
+            self.scroll_dirty = true;
         }
-        self.scroll_x = next;
-        self.scroll_dirty = true;
-        self.snap_anim = None;
-        self.last_wheel_at = None;
-        true
+        moved
     }
 
     /// Release/cancel direct manipulation. In-range positions remain exactly
     /// where the fingers left them; only elastic overpull settles to an end.
     pub fn end_strip_pan(&mut self, now: Instant) -> bool {
-        self.strip_pan_origin = None;
-        let target = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
-        if (target - self.scroll_x).abs() <= 0.5 {
-            self.scroll_x = target;
-            return false;
+        let settling = self.pan_of_lane_mut(self.focus_lane).end_strip_pan(now);
+        if settling {
+            self.scroll_dirty = true;
         }
-        self.snap_anim = Some(SnapAnim {
-            from: self.scroll_x,
-            to: target,
-            started: now,
-        });
-        self.last_wheel_at = None;
-        self.scroll_dirty = true;
-        true
+        settling
     }
 
     /// A group focused the same frame it was spliced in hasn't been
@@ -715,18 +1408,17 @@ impl GroupRow {
             .is_some_and(|g| g.get_rect().width() > 0.0)
     }
 
-    /// Pan `scroll_x` so `group_id` is fully inside the viewport (Niri's
-    /// "focused column follows into view"). Must be called after a layout
-    /// pass (uses the group's live rect). Cancels any in-flight wheel-snap
-    /// so this isn't immediately overridden by a snap-back.
+    /// Pan `group_id`'s run (the row, or its display's lane) so the group
+    /// is fully inside the viewport (Niri's "focused column follows into
+    /// view"). Must be called after a layout pass (uses the group's live
+    /// rect). Cancels any in-flight wheel-snap so this isn't immediately
+    /// overridden by a snap-back.
     pub fn scroll_group_into_view(&mut self, group_id: u64) -> bool {
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
-        self.scroll_x = sx;
+        self.pan_of_group_mut(group_id).jump_to(sx);
         self.scroll_dirty = true;
-        self.snap_anim = None;
-        self.last_wheel_at = None;
         true
     }
 
@@ -737,200 +1429,34 @@ impl GroupRow {
         let Some(sx) = self.scroll_target_for(group_id) else {
             return false;
         };
-        self.snap_anim = Some(SnapAnim {
-            from: self.scroll_x,
-            to: sx,
-            started: now,
-        });
-        self.last_wheel_at = None;
+        self.pan_of_group_mut(group_id).ease_to(sx, now);
         self.scroll_dirty = true;
         true
     }
 
     fn scroll_target_for(&self, group_id: u64) -> Option<f64> {
         let g = self.groups.iter().find(|g| g.id == group_id)?;
-        let gr = g.get_rect();
-        // Degenerate rect → layout hasn't run for this group yet.
-        if gr.width() <= 0.0 {
-            return None;
-        }
-        // Groups must clear the leading wheel-disc gutter on the left and
-        // the row's right edge on the right.
-        let left_bound = self.rect.x0 + self.leading_inset;
-        let right_bound = self.rect.x1;
-        let mut sx = self.scroll_x;
-        // Reveal the right edge first, then the left — so for a group wider
-        // than the clear viewport the left (start) edge wins and the user
-        // sees the group's beginning.
-        if gr.x1 > right_bound {
-            sx += gr.x1 - right_bound;
-        }
-        if gr.x0 < left_bound {
-            sx -= left_bound - gr.x0;
-        }
-        let viewport = self.rect.width().max(1.0);
-        let upper = self.max_scroll_x().max(viewport * 3.0);
-        sx = sx.clamp(0.0, upper);
-        ((sx - self.scroll_x).abs() > f64::EPSILON).then_some(sx)
+        let lane = self.lane_of_group(group_id).unwrap_or(0);
+        self.pan_of_lane(lane).scroll_target_for(g.get_rect())
     }
 
-    /// Whether one group is severed by the row's left edge while a
-    /// *different* one is severed by its right edge — never allowed in
-    /// the same frame, though cutting only one is fine. A group wider
-    /// than the row is excluded: it's cut on both sides at every offset,
-    /// so counting it would make the strip yank around a window it can
-    /// never frame.
+    /// Whether, in any run, one group is severed by the viewport's left
+    /// edge while a *different* one is severed by its right edge — never
+    /// allowed in the same frame, though cutting only one is fine.
     pub fn cut_on_both_edges(&self) -> bool {
-        self.cut_on_both_edges_at(&self.laid_spans, self.scroll_x)
+        self.pans()
+            .iter()
+            .any(|pan| pan.cut_on_both_edges_at(&pan.laid_spans, pan.scroll_x))
     }
 
-    /// Ids of groups the row's edges are cutting through right now.
+    /// Ids of groups the viewport edges are cutting through right now.
     /// Empty when everything fits; otherwise the ones hanging off the
     /// ends, which is normal.
     pub fn groups_cut_by_row_edges(&self) -> Vec<u64> {
-        let row_w = self.rect.width().max(1.0);
-        let sx = self.scroll_x;
-        self.laid_spans
+        self.pans()
             .iter()
-            .filter(|&&(_, x0, x1)| {
-                x1 - x0 > 0.0
-                    // On screen at all, and crossing one of the ends.
-                    && x1 > sx + 0.5
-                    && x0 < sx + row_w - 0.5
-                    && (x0 < sx - 0.5 || x1 > sx + row_w + 0.5)
-            })
-            .map(|&(id, _, _)| id)
+            .flat_map(|pan| pan.groups_cut_by_edges())
             .collect()
-    }
-
-    /// [`Self::cut_on_both_edges`] evaluated against a hypothetical `sx`,
-    /// so a candidate offset can be tested before the strip moves to it.
-    fn cut_on_both_edges_at(&self, spans: &[(u64, f64, f64)], sx: f64) -> bool {
-        let row_w = self.rect.width().max(1.0);
-        let (mut left, mut right) = (false, false);
-        for &(_, x0, x1) in spans {
-            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
-                continue;
-            }
-            // Scrolled wholly past an end is not a cut — that is the
-            // strip doing its job. Only a group with part of itself on
-            // screen and part of itself past an edge has been severed.
-            if x1 <= sx + 0.5 || x0 >= sx + row_w - 0.5 {
-                continue;
-            }
-            if x0 < sx - 0.5 {
-                left = true;
-            }
-            if x1 > sx + row_w + 0.5 {
-                right = true;
-            }
-        }
-        left && right
-    }
-
-    /// Where the strip should rest, given what was just laid out; `None`
-    /// (the common case) means it already is. Two rules, in order: (1) if
-    /// all groups could be on screen together, none may be cut — move to
-    /// the nearest edge of the window that shows them all; (2) otherwise
-    /// move to the nearest offset that flushes some group's edge with the
-    /// row's edge. Nearest in both cases so the smallest move preserves
-    /// what's already framed.
-    fn strip_frame_target(&self, spans: &[(u64, f64, f64)]) -> Option<f64> {
-        let row_w = self.rect.width().max(1.0);
-        let max = self.max_scroll_x();
-        let first = spans.first()?;
-        let leftmost = spans.iter().fold(first.1, |a, s| a.min(s.1));
-        let rightmost = spans.iter().fold(first.2, |a, s| a.max(s.2));
-
-        if rightmost - leftmost <= row_w {
-            // Everything fits at once, so nothing is allowed to be cut.
-            // Any offset in `[rightmost - row_w, leftmost]` shows the
-            // lot; clamped into the strip's legal range, the nearest
-            // point of it is where the strip belongs.
-            let lo = (rightmost - row_w).clamp(0.0, max);
-            let hi = leftmost.clamp(0.0, max).max(lo);
-            let target = self.scroll_x.clamp(lo, hi);
-            return ((target - self.scroll_x).abs() > 0.5).then_some(target);
-        }
-
-        if !self.cut_on_both_edges_at(spans, self.scroll_x) {
-            return None;
-        }
-        let mut best: Option<f64> = None;
-        for &(_, x0, x1) in spans {
-            if x1 - x0 <= 0.0 || x1 - x0 > row_w {
-                continue;
-            }
-            for candidate in [x0, x1 - row_w] {
-                let candidate = candidate.clamp(0.0, max);
-                if self.cut_on_both_edges_at(spans, candidate) {
-                    continue;
-                }
-                let nearer = best.is_none_or(|b: f64| {
-                    (candidate - self.scroll_x).abs() < (b - self.scroll_x).abs()
-                });
-                if nearer {
-                    best = Some(candidate);
-                }
-            }
-        }
-        best.filter(|t| (t - self.scroll_x).abs() > 0.5)
-    }
-
-    /// True while a snap is in flight, or the user just wheeled (within
-    /// the idle threshold); keeps the shell's redraw chain pumping.
-    fn snap_in_flight(&self) -> bool {
-        if self.snap_anim.is_some() {
-            return true;
-        }
-        // Pending snap: idle gate hasn't fired yet. Keep redraws pumping
-        // so `tick_snap` runs the moment it clears.
-        if let Some(t) = self.last_wheel_at
-            && t.elapsed() < Duration::from_millis(u64::from(SNAP_IDLE_MS + SNAP_ANIM_MS))
-            && !self.is_aligned_to_group()
-        {
-            return true;
-        }
-        false
-    }
-
-    fn is_aligned_to_group(&self) -> bool {
-        if self.group_left_edges.is_empty() {
-            return true;
-        }
-        self.group_left_edges
-            .iter()
-            .any(|&e| (e - self.scroll_x).abs() < 0.5)
-    }
-
-    /// Snap target nearest the current `scroll_x`. Candidates include
-    /// canvas-x = 0 (the wheel-visible home) when `leading_inset > 0` —
-    /// without it, a small flick away from 0 would snap forward to the
-    /// first group instead of relaxing back home.
-    fn nearest_group_edge(&self) -> Option<f64> {
-        if self.group_left_edges.is_empty() {
-            return None;
-        }
-        let max = self.max_scroll_x();
-        if max <= 0.0 {
-            return None;
-        }
-        let mut best: Option<f64> = None;
-        let mut best_dist = f64::MAX;
-        let home_targets: &[f64] = if self.leading_inset > 0.0 {
-            &[0.0]
-        } else {
-            &[]
-        };
-        for &edge in self.group_left_edges.iter().chain(home_targets.iter()) {
-            let candidate = edge.clamp(0.0, max);
-            let d = (candidate - self.scroll_x).abs();
-            if d < best_dist {
-                best_dist = d;
-                best = Some(candidate);
-            }
-        }
-        best
     }
 
     /// Select `tab_id` inside `group_id` widget-side. The bar's
@@ -963,94 +1489,55 @@ impl GroupRow {
 
     /// Split out from `apply_layout` so headless tests can advance
     /// simulated time deterministically without staging a full taffy
-    /// tree.
+    /// tree. Advances every run's snap.
     pub fn tick_snap_at(&mut self, now: Instant) {
-        let before = self.scroll_x;
-        // Kicking a fresh snap off here, before the curve-advance branch
-        // below, lets this same call both start it and apply its first
-        // eased frame.
-        if self.snap_anim.is_none()
-            && let Some(last_wheel) = self.last_wheel_at
-        {
-            let idle = now.saturating_duration_since(last_wheel);
-            if idle >= Duration::from_millis(u64::from(SNAP_IDLE_MS)) {
-                if self.is_aligned_to_group() {
-                    self.last_wheel_at = None;
-                } else if let Some(target) = self.nearest_group_edge() {
-                    if (target - self.scroll_x).abs() < 0.5 {
-                        self.scroll_x = target;
-                        self.last_wheel_at = None;
-                    } else {
-                        // Anchor `started` at the moment the idle
-                        // gate was met, not `now` — so the very tick
-                        // that detects idle already applies the
-                        // curve's first eased frame. Falls back to
-                        // `last_wheel` (skipping the idle delay) rather
-                        // than panicking in the astronomically unlikely
-                        // case this addition would overflow `Instant`.
-                        let started = last_wheel
-                            .checked_add(Duration::from_millis(u64::from(SNAP_IDLE_MS)))
-                            .unwrap_or(last_wheel);
-                        self.snap_anim = Some(SnapAnim {
-                            from: self.scroll_x,
-                            to: target,
-                            started,
-                        });
-                    }
-                } else {
-                    self.last_wheel_at = None;
-                }
-            }
+        let mut moved = false;
+        if self.lanes.is_empty() {
+            moved = self.pan.tick_snap_at(now);
         }
-        if let Some(anim) = self.snap_anim {
-            let elapsed = now.saturating_duration_since(anim.started);
-            let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
-            if elapsed >= total {
-                self.scroll_x = anim.to;
-                self.snap_anim = None;
-                self.last_wheel_at = None;
-            } else {
-                let raw =
-                    (elapsed.as_secs_f64() / (f64::from(SNAP_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
-                let eased = crate::ease_out(raw);
-                self.scroll_x = anim.from + (anim.to - anim.from) * eased;
-            }
+        for lane in &mut self.lanes {
+            moved |= lane.pan.tick_snap_at(now);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
-        if (self.scroll_x - before).abs() > f64::EPSILON {
+        if moved {
             self.scroll_dirty = true;
         }
     }
 
+    fn snap_in_flight(&self) -> bool {
+        self.pans().iter().any(|pan| pan.snap_in_flight())
+    }
+
     #[cfg(any(test, debug_assertions))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
-        self.scroll_x = x;
+        self.pan.scroll_x = x;
     }
 
     #[cfg(test)]
     pub(crate) fn group_left_edges_for_test(&self) -> &[f64] {
-        &self.group_left_edges
+        &self.pan.group_left_edges
     }
 
     #[cfg(test)]
     pub(crate) fn set_last_wheel_at_for_test(&mut self, t: Instant) {
-        self.last_wheel_at = Some(t);
+        self.pan.last_wheel_at = Some(t);
     }
 
     #[cfg(test)]
     pub(crate) fn set_group_left_edges_for_test(&mut self, edges: Vec<f64>) {
-        self.group_left_edges = edges;
+        self.pan.group_left_edges = edges;
     }
 
     #[cfg(test)]
     pub(crate) fn set_content_w_for_test(&mut self, w: f64) {
-        self.content_w = w;
+        self.pan.content_w = w;
     }
 
     #[cfg(test)]
     pub(crate) fn set_rect_for_test(&mut self, r: Rect) {
         self.rect = r;
+        self.pan.viewport = r;
     }
 
     /// Exposed separately from `handle_event` so tests can drive a
@@ -1098,7 +1585,10 @@ impl GroupRow {
         } else {
             src.checked_add(1).filter(|idx| *idx < self.groups.len())
         };
-        let Some(dst) = dst else { return false };
+        let Some(dst) = dst.filter(|&dst| self.lane_index_of(dst) == self.lane_index_of(src))
+        else {
+            return false;
+        };
         let tab = self.groups[src].active_tab_id();
         let target = self.groups[dst].tabs().len();
         self.transfer_tab(src, dst, tab, target)
@@ -1132,6 +1622,25 @@ impl GroupRow {
             if g.get_rect().contains(release_point) {
                 return None;
             }
+        }
+        if let Some(lane) = self.lane_at(release_point) {
+            let run = self.lane_range(lane);
+            let Some(first) = self.groups.get(run.start).filter(|_| !run.is_empty()) else {
+                return Some(run.start);
+            };
+            if release_point.x < first.get_rect().x0 {
+                return Some(run.start);
+            }
+            for j in run.start..run.end.saturating_sub(1) {
+                let (Some(a), Some(b)) = (self.groups.get(j), self.groups.get(j.saturating_add(1)))
+                else {
+                    continue;
+                };
+                if release_point.x >= a.get_rect().x1 && release_point.x <= b.get_rect().x0 {
+                    return Some(j.saturating_add(1));
+                }
+            }
+            return Some(run.end);
         }
         let first = self.groups.first()?;
         if release_point.x < first.get_rect().x0 {
@@ -1178,6 +1687,15 @@ impl GroupRow {
         let mut new_group = WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
         new_group.start_spawn_animation();
         let clamped = gap_idx.min(self.groups.len());
+        if !self.lanes.is_empty() {
+            // The display the tab was dropped on, else its source's.
+            let lane = self
+                .pending_split_lane
+                .take()
+                .unwrap_or_else(|| self.lane_index_of(src));
+            self.group_lanes.insert(new_id, lane);
+        }
+        self.pending_split_lane = None;
         self.groups.insert(clamped, new_group);
         // Without this, `apply_layout` iterates stale `node_ids` and
         // skips the newly inserted group.
@@ -1412,12 +1930,23 @@ impl GroupRow {
     /// cursor. Centre-based so nudging past a neighbour's midpoint
     /// commits the swap, matching tab-reorder feel.
     fn group_insertion_index_for(&self, p: Point) -> usize {
-        for (i, g) in self.groups.iter().enumerate() {
-            if p.x < g.get_rect().center().x {
+        // A partitioned strip reorders within the dragged group's display.
+        let run = match self.group_drag {
+            Some(drag) if !self.lanes.is_empty() => {
+                self.lane_range(self.lane_index_of(drag.src_idx))
+            }
+            _ => 0..self.groups.len(),
+        };
+        for i in run.clone() {
+            if self
+                .groups
+                .get(i)
+                .is_some_and(|g| p.x < g.get_rect().center().x)
+            {
                 return i;
             }
         }
-        self.groups.len()
+        run.end
     }
 
     /// `insert_at` is a pre-removal gap index; converted here to the
@@ -1558,6 +2087,9 @@ impl GroupRow {
                 let mut new_group =
                     WindowGroup::from_detached(new_id, desc, host, WindowWidth::Normal);
                 new_group.start_spawn_animation();
+                if let Some(lane) = self.lane_at(self.last_cursor) {
+                    self.group_lanes.insert(new_id, lane);
+                }
                 self.groups
                     .insert(gap_index.min(self.groups.len()), new_group);
             }
@@ -1684,6 +2216,10 @@ impl Widget for GroupRow {
         any
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered build of the row: group nodes, handles, then either the single run or one run per lane"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1705,14 +2241,33 @@ impl Widget for GroupRow {
             .map(|g| g.build_layout(taffy, theme, node_map))
             .collect();
         self.node_ids.clone_from(&group_nodes);
-        // The moment any child group is maximized, the row collapses to
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        // The moment any child group is maximized, its run collapses to
         // that single group via `display: None` on siblings; handles are
         // skipped since there are no visible gaps. Multiple simultaneous
-        // `maximized` flags: first one wins. A transient fullscreen
-        // promotion drives the same collapse and wins over `maximized`.
-        let maximized_idx = self
-            .fullscreen_idx()
-            .or_else(|| self.groups.iter().position(|g| g.maximized));
+        // `maximized` flags in one run: first one wins. A transient
+        // fullscreen promotion drives the same collapse and wins over
+        // `maximized`. A partitioned strip collapses per lane, so a window
+        // maximized on one display leaves the others as they were.
+        let runs = self.lanes.len().max(1);
+        let mut maximized_in: Vec<Option<usize>> = vec![None; runs];
+        if let Some(fs) = self.fullscreen_idx()
+            && let Some(slot) = maximized_in.get_mut(lane_of.get(fs).copied().unwrap_or(0))
+        {
+            *slot = Some(fs);
+        }
+        for (i, g) in self.groups.iter().enumerate() {
+            if !g.maximized {
+                continue;
+            }
+            if let Some(slot) = maximized_in.get_mut(lane_of.get(i).copied().unwrap_or(0))
+                && slot.is_none()
+            {
+                *slot = Some(i);
+            }
+        }
         // Grow/truncate the handle pool to `max(0, N-1)`; truncating from
         // the tail is fine since an active drag's handle would have had
         // its neighbours change structurally anyway.
@@ -1730,38 +2285,16 @@ impl Widget for GroupRow {
                 h.set_strip_usable_px(usable);
             }
         }
-        // Interleave handle nodes between group nodes:
-        // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any group
-        // is maximized (no visible gaps to mark).
-        self.handle_node_ids.clear();
-        let mut children: Vec<NodeId> =
-            Vec::with_capacity(group_nodes.len().saturating_add(desired_handles));
-        if maximized_idx.is_some() {
-            for gn in &group_nodes {
-                children.push(*gn);
-            }
-        } else {
-            for (i, gn) in group_nodes.iter().enumerate() {
-                children.push(*gn);
-                if i.saturating_add(1) < group_nodes.len() {
-                    let Some(h) = self.handles.get_mut(i) else {
-                        continue;
-                    };
-                    let hn = h.build_layout(taffy, theme, node_map);
-                    self.handle_node_ids.push(hn);
-                    children.push(hn);
-                }
-            }
-        }
         // `flex_shrink: 0.0` on every group: Niri-style, placing a new
-        // tile never resizes siblings; `content_width` grows past
-        // `rect.width()` and `draw` clips to `self.rect`. `flex_shrink:
-        // 1.0` was tried and rejected — it silently shrinks siblings on
-        // every spawn, violating the infinite-strip invariant.
+        // tile never resizes siblings; `content_width` grows past the
+        // viewport and `draw` clips to it. `flex_shrink: 1.0` was tried
+        // and rejected — it silently shrinks siblings on every spawn,
+        // violating the infinite-strip invariant.
         for (i, &node) in group_nodes.iter().enumerate() {
             let mut style = taffy.style(node).cloned().unwrap_or_default();
             style.flex_shrink = 0.0;
-            if let Some(max_i) = maximized_idx {
+            let lane = lane_of.get(i).copied().unwrap_or(0);
+            if let Some(max_i) = maximized_in.get(lane).copied().flatten() {
                 if i == max_i {
                     // `maximized` already carries this grow style from
                     // `WindowGroup::build_layout`; a fullscreen-promoted
@@ -1775,37 +2308,125 @@ impl Widget for GroupRow {
             }
             let _ = taffy.set_style(node, style);
         }
+        self.handle_node_ids.clear();
+        let run_style = |display: Display| Style {
+            display,
+            flex_direction: FlexDirection::Row,
+            // Zero here: the inter-group `ResizeHandle` widgets supply the
+            // visible 8-px footprint per gap, so a non-zero gap on top of
+            // that would double the inter-group distance.
+            gap: Size {
+                width: taffy::LengthPercentage::length(0.0),
+                height: taffy::LengthPercentage::length(0.0),
+            },
+            ..Default::default()
+        };
+        // A strip owning no part of the current fullscreen surface
+        // collapses away entirely, so the promoted group in another strip
+        // is the only thing painted.
+        let row_display = if self.hidden {
+            Display::None
+        } else {
+            Display::Flex
+        };
+        let children: Vec<NodeId> = if self.lanes.is_empty() {
+            // Interleave handle nodes between group nodes:
+            // `[g0, h0, g1, h1, …, g_{N-1}]`. Omitted entirely while any
+            // group is maximized (no visible gaps to mark).
+            let maximized_idx = maximized_in.first().copied().flatten();
+            let mut children: Vec<NodeId> =
+                Vec::with_capacity(group_nodes.len().saturating_add(desired_handles));
+            if maximized_idx.is_some() {
+                children.extend(group_nodes.iter().copied());
+            } else {
+                for (i, gn) in group_nodes.iter().enumerate() {
+                    children.push(*gn);
+                    if i.saturating_add(1) < group_nodes.len() {
+                        let Some(h) = self.handles.get_mut(i) else {
+                            continue;
+                        };
+                        let hn = h.build_layout(taffy, theme, node_map);
+                        self.handle_node_ids.push(hn);
+                        children.push(hn);
+                    }
+                }
+            }
+            children
+        } else {
+            // One absolutely placed run per lane, over its display. Every
+            // handle still gets a node so `handle_node_ids` stays aligned
+            // with the pool; one between two lanes (or in a collapsed lane)
+            // is parked out of layout.
+            let row = self.rect;
+            let mut lane_children: Vec<Vec<NodeId>> = vec![Vec::new(); self.lanes.len()];
+            let mut parked: Vec<NodeId> = Vec::new();
+            for (i, gn) in group_nodes.iter().enumerate() {
+                let lane = lane_of.get(i).copied().unwrap_or(0);
+                if let Some(run) = lane_children.get_mut(lane) {
+                    run.push(*gn);
+                }
+                if i.saturating_add(1) >= group_nodes.len() {
+                    continue;
+                }
+                let Some(h) = self.handles.get_mut(i) else {
+                    continue;
+                };
+                let hn = h.build_layout(taffy, theme, node_map);
+                self.handle_node_ids.push(hn);
+                let same_lane = lane_of.get(i.saturating_add(1)).copied() == Some(lane);
+                let collapsed = maximized_in.get(lane).copied().flatten().is_some();
+                if same_lane && !collapsed {
+                    if let Some(run) = lane_children.get_mut(lane) {
+                        run.push(hn);
+                    }
+                } else {
+                    let mut style = taffy.style(hn).cloned().unwrap_or_default();
+                    style.display = Display::None;
+                    let _ = taffy.set_style(hn, style);
+                    parked.push(hn);
+                }
+            }
+            let mut children = Vec::with_capacity(self.lanes.len().saturating_add(parked.len()));
+            for (lane, run) in self.lanes.iter_mut().zip(lane_children) {
+                let viewport = if row.height() > 0.0 {
+                    lane.viewport_in(row)
+                } else {
+                    lane.spec.area
+                };
+                lane.built_viewport = viewport;
+                let style = Style {
+                    position: Position::Absolute,
+                    inset: taffy::Rect {
+                        left: LengthPercentageAuto::length(f64_to_f32(viewport.x0 - row.x0)),
+                        right: LengthPercentageAuto::auto(),
+                        top: LengthPercentageAuto::length(f64_to_f32(viewport.y0 - row.y0)),
+                        bottom: LengthPercentageAuto::auto(),
+                    },
+                    size: Size {
+                        width: Dimension::length(f64_to_f32(viewport.width())),
+                        height: Dimension::length(f64_to_f32(viewport.height())),
+                    },
+                    ..run_style(Display::Flex)
+                };
+                children.push(taffy.parent_node(style, &run));
+            }
+            children.extend(parked);
+            children
+        };
         // Row must fill remaining vertical space so each child's
         // `height: percent(1.0)` resolves — otherwise the row measures
         // only as tall as the TabBar and `TileHost` collapses to zero.
-        // Children beyond `rect.x1` are still walked and shifted into
-        // screen-space by `scroll_x`; still hit-testable since
+        // Children beyond the viewport are still walked and shifted into
+        // screen-space by the pan; still hit-testable since
         // `gap_index_for` uses each group's stored post-shift `Rect`.
         let node = taffy.parent_node(
             Style {
-                // A strip owning no part of the current fullscreen
-                // surface collapses away entirely, so the promoted
-                // group in another strip is the only thing painted.
-                display: if self.hidden {
-                    Display::None
-                } else {
-                    Display::Flex
-                },
-                flex_direction: FlexDirection::Row,
                 size: Size {
                     width: Dimension::percent(1.0),
                     height: Dimension::auto(),
                 },
                 flex_grow: 1.0,
-                // Zero here: the inter-group `ResizeHandle` widgets
-                // supply the visible 8-px footprint per gap, so a
-                // non-zero gap on top of that would double the
-                // inter-group distance.
-                gap: Size {
-                    width: taffy::LengthPercentage::length(0.0),
-                    height: taffy::LengthPercentage::length(0.0),
-                },
-                ..Default::default()
+                ..run_style(row_display)
             },
             &children,
         );
@@ -1821,33 +2442,70 @@ impl Widget for GroupRow {
             origin.x + f64::from(l.location.x) + f64::from(l.size.width),
             origin.y + f64::from(l.location.y) + f64::from(l.size.height),
         );
-        // `group_left_edges` (the snap targets) is CANVAS-x, not
-        // taffy-local-x: canvas-x = leading_inset + taffy.x, and
-        // `scroll_x` is how far that's panned past the viewport's left
-        // edge.
-        let mut content_w = self.leading_inset;
-        let mut edges: Vec<f64> = Vec::with_capacity(self.node_ids.len());
+        if self.lanes.is_empty() {
+            self.pan.viewport = self.rect;
+            self.pan.inset = self.leading_inset;
+        }
+        let row = self.rect;
+        for lane in &mut self.lanes {
+            let viewport = lane.viewport_in(row);
+            // Built against a row that has since moved: lay out again so
+            // every lane's height matches its display.
+            if (viewport.y0 - lane.built_viewport.y0).abs() > 0.5
+                || (viewport.height() - lane.built_viewport.height()).abs() > 0.5
+                || (viewport.x0 - lane.built_viewport.x0).abs() > 0.5
+            {
+                self.structure_dirty = true;
+            }
+            lane.pan.viewport = viewport;
+            lane.pan.inset = if lane.spec.leading {
+                self.leading_inset
+            } else {
+                0.0
+            };
+        }
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        let runs = self.lanes.len().max(1);
+        // Per run: canvas-x = inset + taffy-local x, where the run's taffy
+        // parent sits at its viewport's left edge; `scroll_x` is how far
+        // that's panned past it.
+        let insets: Vec<f64> = (0..runs).map(|k| self.pan_of_lane(k).inset).collect();
+        let mut content_w: Vec<f64> = insets.clone();
+        let mut edges: Vec<Vec<f64>> = vec![Vec::new(); runs];
         let mut local_x: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         // Only trustworthy when taffy has a node per group — a pass
         // landing between a splice and the rebuild would otherwise pair
         // widths with the wrong ids.
         let spans_aligned = self.node_ids.len() == self.groups.len();
-        let mut spans: Vec<(u64, f64, f64)> = Vec::with_capacity(self.node_ids.len());
+        let mut spans: Vec<Vec<(u64, f64, f64)>> = vec![Vec::new(); runs];
         for (i, &cn) in self.node_ids.iter().enumerate() {
             let cl = taffy.layout(cn).copied().unwrap_or_default();
-            edges.push(self.leading_inset + f64::from(cl.location.x));
-            local_x.push(f64::from(cl.location.x));
-            let left = self.leading_inset + f64::from(cl.location.x);
+            let k = lane_of
+                .get(i)
+                .copied()
+                .unwrap_or(0)
+                .min(runs.saturating_sub(1));
+            let inset = insets.get(k).copied().unwrap_or(0.0);
+            let left = inset + f64::from(cl.location.x);
             let right = left + f64::from(cl.size.width);
-            if spans_aligned && let Some(g) = self.groups.get(i) {
-                spans.push((g.id, left, right));
+            if let Some(e) = edges.get_mut(k) {
+                e.push(left);
             }
-            if right > content_w {
-                content_w = right;
+            local_x.push(f64::from(cl.location.x));
+            if spans_aligned
+                && let Some(g) = self.groups.get(i)
+                && let Some(s) = spans.get_mut(k)
+            {
+                s.push((g.id, left, right));
+            }
+            if let Some(w) = content_w.get_mut(k)
+                && right > *w
+            {
+                *w = right;
             }
         }
-        self.content_w = content_w;
-        self.group_left_edges = edges;
         // First pass that knows how far each group actually moved; only
         // trust it when taffy has a node per group.
         if spans_aligned {
@@ -1856,32 +2514,60 @@ impl Widget for GroupRow {
         if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
             self.shift_anim = None;
         }
-        // Preserve transient rubber-band travel while fingers are down or a
-        // release settle is in flight. At rest, geometry changes clamp to the
-        // deliberate trailing allowance instead of the old three-viewports
-        // of unbounded empty canvas.
-        if self.strip_pan_origin.is_none() && self.snap_anim.is_none() {
-            self.scroll_x = self.scroll_x.clamp(0.0, self.pan_max_scroll_x());
+        let steady = !self.group_drag_active()
+            && !self
+                .handles
+                .iter()
+                .any(super::resize_handle::ResizeHandle::is_dragging);
+        let mut moved = false;
+        for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
+            let pan = self.pan_of_lane_mut(k);
+            pan.content_w = w;
+            pan.group_left_edges = e;
+            // Preserve transient rubber-band travel while fingers are down
+            // or a release settle is in flight. At rest, geometry changes
+            // clamp to the deliberate trailing allowance instead of the old
+            // three-viewports of unbounded empty canvas.
+            if pan.strip_pan_origin.is_none() && pan.snap_anim.is_none() {
+                pan.scroll_x = pan.scroll_x.clamp(0.0, pan.pan_max_scroll_x());
+            }
+            if spans_aligned {
+                moved |= pan.reframe_on_geometry_change(s, steady);
+            }
         }
-        if spans_aligned {
-            self.reframe_on_geometry_change(spans);
+        if moved {
+            self.scroll_dirty = true;
         }
         // Done AFTER the clamp so a structural mutation that snapped
         // scroll_x to max doesn't get re-eased.
         self.tick_snap_at(crate::time::now());
         // Panning stays in lock-step with the wheel-disc's own
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
-        // fullscreen-promoted group drops the leading gutter and any
-        // prior pan, pinning it flush at `rect.x0`.
-        let maximized = self.groups.iter().any(|group| group.maximized);
-        let (origin_inset, origin_scroll) = if self.is_fullscreen() || maximized {
-            (0.0, 0.0)
-        } else {
-            (self.leading_inset, self.scroll_x)
-        };
-        let child_origin = Point::new(self.rect.x0 + origin_inset - origin_scroll, self.rect.y0);
-        for (g, child_id) in self.groups.iter_mut().zip(self.node_ids.iter()) {
-            g.apply_layout(taffy, *child_id, child_origin);
+        // maximized or fullscreen-promoted group drops the leading gutter
+        // and any prior pan, pinning it flush at its viewport's left edge.
+        let collapsed: Vec<bool> = (0..runs)
+            .map(|k| {
+                self.groups.iter().enumerate().any(|(i, g)| {
+                    lane_of.get(i).copied().unwrap_or(0) == k
+                        && (g.maximized || self.fullscreen_group == Some(g.id))
+                })
+            })
+            .collect();
+        let origins: Vec<Point> = (0..runs)
+            .map(|k| {
+                let pan = self.pan_of_lane(k);
+                let (inset, scroll) = if collapsed.get(k).copied().unwrap_or(false) {
+                    (0.0, 0.0)
+                } else {
+                    (pan.inset, pan.scroll_x)
+                };
+                Point::new(pan.viewport.x0 + inset - scroll, pan.viewport.y0)
+            })
+            .collect();
+        for (i, (g, child_id)) in self.groups.iter_mut().zip(self.node_ids.iter()).enumerate() {
+            let k = lane_of.get(i).copied().unwrap_or(0);
+            let origin = origins.get(k).copied().unwrap_or(Point::ORIGIN);
+            g.apply_layout(taffy, *child_id, origin);
         }
         self.sync_handle_neighbours();
     }
@@ -1895,36 +2581,74 @@ impl Widget for GroupRow {
         presence: &PresenceCtx,
     ) {
         self.scroll_dirty = false;
-        // Clip to the row's rect: `content_width` routinely exceeds
-        // `rect.width()`, so off-screen-right groups would bleed past
-        // the window edge. 16px vertical pad keeps shadow/glow sprites
-        // (ambient_pad=50, bloom_pad=120, see `TileHost::draw_steady_state`)
-        // intact at top/bottom.
-        let clip = Rect::new(
-            self.rect.x0,
-            self.rect.y0 - 16.0,
-            self.rect.x1,
-            self.rect.y1 + 16.0,
-        );
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            transform,
-            &clip,
-        );
-        // When any group is maximized, paint ONLY that group: siblings'
-        // rects are degenerate (collapsed by `build_layout`), but
-        // drawing them anyway would emit ghost chrome at the origin.
-        let maximized_idx = self
-            .fullscreen_idx()
-            .or_else(|| self.groups.iter().position(|g| g.maximized));
-        self.draw_groups(scene, transform, tr, theme, presence, maximized_idx);
-        self.draw_handles(scene, transform, tr, theme, presence, maximized_idx);
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        let runs: Vec<(usize, Rect)> = if self.lanes.is_empty() {
+            vec![(0, self.rect)]
+        } else {
+            self.lanes
+                .iter()
+                .enumerate()
+                .map(|(k, lane)| (k, lane.pan.viewport))
+                .collect()
+        };
+        for (k, viewport) in runs {
+            if viewport.width() <= 0.0 || viewport.height() <= 0.0 {
+                continue;
+            }
+            // Clip to the run's viewport: content routinely exceeds it, so
+            // off-screen-right groups would bleed past the display edge.
+            // 16px vertical pad keeps shadow/glow sprites (ambient_pad=50,
+            // bloom_pad=120, see `TileHost::draw_steady_state`) intact at
+            // top/bottom.
+            let clip = Rect::new(
+                viewport.x0,
+                viewport.y0 - 16.0,
+                viewport.x1,
+                viewport.y1 + 16.0,
+            );
+            scene.push_layer(
+                vello::peniko::Fill::NonZero,
+                vello::peniko::BlendMode::default(),
+                1.0,
+                transform,
+                &clip,
+            );
+            let in_run: Vec<bool> = lane_of.iter().map(|&lane| lane == k).collect();
+            // When a group is maximized, paint ONLY that group: siblings'
+            // rects are degenerate (collapsed by `build_layout`), but
+            // drawing them anyway would emit ghost chrome at the origin.
+            let maximized_idx =
+                self.fullscreen_idx()
+                    .filter(|&i| in_run.get(i).copied().unwrap_or(false))
+                    .or_else(|| {
+                        self.groups.iter().enumerate().position(|(i, g)| {
+                            g.maximized && in_run.get(i).copied().unwrap_or(false)
+                        })
+                    });
+            self.draw_groups(
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                maximized_idx,
+                &in_run,
+            );
+            self.draw_handles(
+                scene,
+                transform,
+                tr,
+                theme,
+                presence,
+                maximized_idx,
+                &in_run,
+            );
+            scene.pop_layer();
+        }
         self.draw_group_drag_preview(scene, transform, tr, theme, presence);
         self.draw_reorder_capsule(scene, transform, theme);
-
-        scene.pop_layer();
     }
 
     fn handle_event(
@@ -2238,31 +2962,6 @@ impl GroupRow {
             .collect();
     }
 
-    /// Re-frame when the strip's geometry moved under the pan (resize,
-    /// open/close, output change): the shell's into-view pan only
-    /// triggers on focus change, so an offset chosen for a layout that
-    /// no longer exists would otherwise persist. Held off while dragging
-    /// so the strip doesn't snap out from under the hand; corrected on
-    /// release. Split out of `apply_layout` to keep that under the line cap.
-    fn reframe_on_geometry_change(&mut self, spans: Vec<(u64, f64, f64)>) {
-        let geometry_moved = spans != self.laid_spans;
-        self.laid_spans = spans;
-        let steady = self.snap_anim.is_none()
-            && !self.group_drag_active()
-            && !self
-                .handles
-                .iter()
-                .any(super::resize_handle::ResizeHandle::is_dragging);
-        if geometry_moved
-            && steady
-            && let Some(target) = self.strip_frame_target(&self.laid_spans)
-        {
-            self.scroll_x = target;
-            self.scroll_dirty = true;
-            self.last_wheel_at = None;
-        }
-    }
-
     /// Feeds each `ResizeHandle` the group rects flanking its gap, after
     /// every group has its own new layout applied. Split out of
     /// `apply_layout` to keep that under the line cap.
@@ -2272,6 +2971,9 @@ impl GroupRow {
             self.groups.len().saturating_sub(1),
             "ResizeHandle pool must mirror inter-group gap count after build_layout",
         );
+        let lanes_match: Vec<bool> = (0..self.handles.len())
+            .map(|i| self.lane_index_of(i) == self.lane_index_of(i.saturating_add(1)))
+            .collect();
         for (i, h) in self.handles.iter_mut().enumerate() {
             let Some(left) = self.groups.get(i).map(WindowGroup::get_rect) else {
                 continue;
@@ -2283,6 +2985,11 @@ impl GroupRow {
             else {
                 continue;
             };
+            if !lanes_match.get(i).copied().unwrap_or(true) {
+                // Between two displays there is no gap to drag.
+                h.set_neighbour_rects(Rect::ZERO, Rect::ZERO);
+                continue;
+            }
             h.set_neighbour_rects(left, right);
         }
     }
@@ -2297,6 +3004,7 @@ impl GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
         maximized_idx: Option<usize>,
+        in_run: &[bool],
     ) {
         if let Some(max_i) = maximized_idx {
             if let Some(g) = self.groups.get_mut(max_i) {
@@ -2316,7 +3024,10 @@ impl GroupRow {
         } else {
             Vec::new()
         };
-        for g in &mut self.groups {
+        for (i, g) in self.groups.iter_mut().enumerate() {
+            if !in_run.get(i).copied().unwrap_or(false) {
+                continue;
+            }
             let dx = offsets
                 .iter()
                 .find(|(id, _)| *id == g.id)
@@ -2408,6 +3119,7 @@ impl GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
         maximized_idx: Option<usize>,
+        in_run: &[bool],
     ) {
         let any_drag = self
             .groups
@@ -2433,6 +3145,13 @@ impl GroupRow {
                 g.is_some_and(|g| Widget::presented(g) || Widget::opening(g))
             };
             let next_i = i.saturating_add(1);
+            // Only a gap between two groups of this run; the seam between
+            // two displays is not a gap.
+            if !in_run.get(i).copied().unwrap_or(false)
+                || !in_run.get(next_i).copied().unwrap_or(false)
+            {
+                continue;
+            }
             if !shown(self.groups.get(i)) || !shown(self.groups.get(next_i)) {
                 continue;
             }
@@ -2475,15 +3194,25 @@ impl GroupRow {
         // At either end the capsule sits where the next inter-group gap
         // would open — half a handle slot outside the outermost card — so
         // an end insertion is marked at the same distance from its
-        // neighbour as a middle one.
+        // neighbour as a middle one. On a partitioned strip the ends are
+        // those of the lane the insertion lands in.
         let end_offset = HANDLE_SLOT_PX / 2.0;
-        let gap_x = if ins == 0 {
+        let (run, band) = match self.lane_at(self.last_cursor) {
+            Some(lane) => (self.lane_range(lane), self.pan_of_lane(lane).viewport),
+            None => (0..self.groups.len(), self.rect),
+        };
+        let gap_x = if run.is_empty() {
+            band.x0
+                + self
+                    .pan_of_lane(self.lane_at(self.last_cursor).unwrap_or(0))
+                    .inset
+        } else if ins <= run.start {
             self.groups
-                .first()
+                .get(run.start)
                 .map_or(0.0, |g| g.get_rect().x0 - end_offset)
-        } else if ins >= self.groups.len() {
+        } else if ins >= run.end {
             self.groups
-                .last()
+                .get(run.end.saturating_sub(1))
                 .map_or(0.0, |g| g.get_rect().x1 + end_offset)
         } else {
             let left = self
@@ -2494,8 +3223,8 @@ impl GroupRow {
             left.zip(right)
                 .map_or(0.0, |(l, r)| f64::midpoint(l.x1, r.x0))
         };
-        let y0 = self.rect.y0;
-        let y1 = self.rect.y1;
+        let y0 = band.y0;
+        let y1 = band.y1;
         if y1 <= y0 {
             return;
         }
@@ -2769,6 +3498,7 @@ impl GroupRow {
             // an adjacent gap: replacing its now-empty source with the new
             // group is still the faithful result of the gesture.
             Some(TabDropTarget::GroupGap { gap_index }) => {
+                self.pending_split_lane = self.lane_at(self.last_cursor);
                 self.split_tab_into_new_group(src_idx, tab_id, gap_index)
             }
             None => false,
@@ -2834,6 +3564,15 @@ impl GroupRow {
         }
         self.transfer_tab(src_idx, dst_idx, tab_id, tab_index)
     }
+}
+
+/// Logical-pixel geometry into taffy's `f32` lengths.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "bounded logical-pixel desktop geometry; f32 precision is sufficient for layout"
+)]
+fn f64_to_f32(v: f64) -> f32 {
+    v as f32
 }
 
 /// `base` shifted right by `dx` px. Wrapped so the one
@@ -4523,7 +5262,8 @@ mod tests {
     fn whole_groups(row: &GroupRow) -> Vec<u64> {
         let cut = row.groups_cut_by_row_edges();
         let (vis0, vis1) = row.visible_canvas_span();
-        row.laid_spans
+        row.pan
+            .laid_spans
             .iter()
             .filter(|(id, x0, x1)| !cut.contains(id) && *x1 > vis0 + 0.5 && *x0 < vis1 - 0.5)
             .map(|(id, _, _)| *id)
@@ -4551,7 +5291,7 @@ mod tests {
             "the strip rests cut on both edges after the widening — groups \
              {:?} at scroll_x {:.0}, which shows half of one window on the \
              left and half of another on the right",
-            row.laid_spans,
+            row.pan.laid_spans,
             row.scroll_x(),
         );
         let whole = whole_groups(&row);
@@ -4559,7 +5299,7 @@ mod tests {
             !whole.is_empty(),
             "if the two groups cannot both fit, one of them must still be \
              framed whole — spans {:?} at scroll_x {:.0}",
-            row.laid_spans,
+            row.pan.laid_spans,
             row.scroll_x(),
         );
         assert_eq!(
@@ -4567,7 +5307,7 @@ mod tests {
             1,
             "exactly one window runs off an end when two of them overflow \
              the output; spans {:?} at scroll_x {:.0}",
-            row.laid_spans,
+            row.pan.laid_spans,
             row.scroll_x(),
         );
     }
@@ -4583,9 +5323,10 @@ mod tests {
         relayout_strip(&mut row, 1920.0);
 
         let span = row
+            .pan
             .laid_spans
             .last()
-            .zip(row.laid_spans.first())
+            .zip(row.pan.laid_spans.first())
             .map(|((_, _, r), (_, l, _))| r - l)
             .unwrap_or_default();
         assert!(
@@ -4597,14 +5338,14 @@ mod tests {
             Vec::<u64>::new(),
             "nothing may be cut when the whole strip fits on screen — spans \
              {:?} at scroll_x {:.0}",
-            row.laid_spans,
+            row.pan.laid_spans,
             row.scroll_x(),
         );
         assert_eq!(
             whole_groups(&row).len(),
             2,
             "both windows are on screen and whole — spans {:?} at scroll_x {:.0}",
-            row.laid_spans,
+            row.pan.laid_spans,
             row.scroll_x(),
         );
     }
@@ -4622,12 +5363,12 @@ mod tests {
         let oversized = [(100u64, 0.0, 1400.0)];
         row.set_scroll_x_for_test(250.0);
         assert!(
-            !row.cut_on_both_edges_at(&oversized, row.scroll_x()),
+            !row.pan.cut_on_both_edges_at(&oversized, row.scroll_x()),
             "a single oversized window is not a two-sided cut: there is no \
              offset that frames it, so there is nothing to repair",
         );
         assert_eq!(
-            row.strip_frame_target(&oversized),
+            row.pan.strip_frame_target(&oversized),
             None,
             "the framing rule leaves an unframeable window where it is",
         );
@@ -4635,7 +5376,7 @@ mod tests {
         let both = [(100u64, 0.0, 1400.0), (200u64, 1408.0, 2808.0)];
         row.set_scroll_x_for_test(700.0);
         assert_eq!(
-            row.strip_frame_target(&both),
+            row.pan.strip_frame_target(&both),
             None,
             "nor when every group on the strip is wider than the strip",
         );
@@ -4883,7 +5624,7 @@ mod tests {
         row.set_last_wheel_at_for_test(earlier(base, 250));
         row.tick_snap_at(base);
         assert!(
-            row.snap_anim.is_some(),
+            row.pan.snap_anim.is_some(),
             "precondition: snap must be in flight",
         );
 
@@ -4926,6 +5667,7 @@ mod tests {
             &taffy,
         );
         let anim = row
+            .pan
             .snap_anim
             .expect("the in-flight snap must survive a bare wheel notch");
         // Was easing toward the stop nearest 300; must not be re-targeted.
@@ -5949,5 +6691,111 @@ mod tests {
             row.needs_animation_frame(),
             "a strip making room must keep redrawing until it settles",
         );
+    }
+
+    /// A 1000-wide display with the wheel gutter beside an 800-wide one
+    /// whose bottom edge is 200 rows higher.
+    fn two_lanes() -> Vec<StripLane> {
+        vec![
+            StripLane {
+                output: 0,
+                area: Rect::new(0.0, 0.0, 1000.0, 600.0),
+                usable: 1000.0,
+                leading: true,
+            },
+            StripLane {
+                output: 1,
+                area: Rect::new(1000.0, 0.0, 1800.0, 400.0),
+                usable: 800.0,
+                leading: false,
+            },
+        ]
+    }
+
+    /// Groups 100..=300 on the first display, 400..=600 on the second.
+    fn partitioned_row() -> GroupRow {
+        let groups: Vec<WindowGroup> = (1..=6_u64)
+            .map(|i| make_group(i.saturating_mul(100), &[i]))
+            .collect();
+        let mut row = GroupRow::new(groups);
+        let assignment: HashMap<u64, u32> = (1..=6_u64)
+            .map(|i| (i.saturating_mul(100), u32::from(i > 3)))
+            .collect();
+        row.set_lanes(&two_lanes(), &assignment);
+        // The first pass learns where the row sits; lanes are built
+        // against that on the second.
+        let (row, _, _) = relayout_row_owned(row, 1800.0);
+        let (row, _, _) = relayout_row_owned(row, 1800.0);
+        row
+    }
+
+    fn rect_of(row: &GroupRow, id: u64) -> Rect {
+        row.groups
+            .iter()
+            .find(|g| g.id == id)
+            .map(WindowGroup::get_rect)
+            .expect("group laid out")
+    }
+
+    #[test]
+    fn a_partitioned_strip_lays_each_display_out_on_its_own() {
+        let row = partitioned_row();
+        let lanes = two_lanes();
+        for id in [100, 200, 300] {
+            let r = rect_of(&row, id);
+            assert!(
+                r.x0 >= lanes[0].area.x0,
+                "{id} starts left of its display: {r:?}"
+            );
+            assert!(
+                r.y1 <= lanes[0].area.y1 + 0.5,
+                "{id} is taller than its display"
+            );
+            assert_eq!(row.output_of_group(id), Some(0));
+        }
+        let first_on_second = rect_of(&row, 400);
+        assert!(
+            (first_on_second.x0 - lanes[1].area.x0).abs() < 0.5,
+            "the second display's first window starts at its own left edge: {first_on_second:?}"
+        );
+        for id in [400, 500, 600] {
+            let r = rect_of(&row, id);
+            assert!(
+                r.x0 >= lanes[1].area.x0,
+                "{id} leaks onto the first display: {r:?}"
+            );
+            assert!(
+                r.y1 <= lanes[1].area.y1 + 0.5,
+                "{id} runs past the shorter display's bottom edge: {r:?}"
+            );
+            assert_eq!(row.output_of_group(id), Some(1));
+        }
+        // The seam between the displays is not a resize gap.
+        let seam = row.handle_at(2).expect("handle after the third group");
+        assert!(seam.get_rect().area() <= 0.0, "{:?}", seam.get_rect());
+        assert_eq!(row.group_ids_on(1), vec![400, 500, 600]);
+    }
+
+    #[test]
+    fn panning_one_display_leaves_the_other_where_it_was() {
+        let mut row = partitioned_row();
+        let before: Vec<Rect> = [100, 200, 300]
+            .iter()
+            .map(|&id| rect_of(&row, id))
+            .collect();
+        assert!(
+            row.scroll_group_into_view(600),
+            "the last window is off the second display"
+        );
+        let (row, _, _) = relayout_row_owned(row, 1800.0);
+        let after: Vec<Rect> = [100, 200, 300]
+            .iter()
+            .map(|&id| rect_of(&row, id))
+            .collect();
+        assert_eq!(before, after, "the first display must not move");
+        assert!(row.output_pan(1).expect("lane").scroll_x() > 0.0);
+        assert_eq!(row.output_pan(0).expect("lane").scroll_x(), 0.0);
+        let last = rect_of(&row, 600);
+        assert!(last.x1 <= 1800.5 && last.x0 >= 1000.0, "{last:?}");
     }
 }
