@@ -81,7 +81,7 @@ use crate::compositor::accessibility::{NativeAccessibility, Request as Accessibi
 use crate::compositor::backend::drm::runtime::{DirectTouchDown, DirectTouchOwnership};
 use crate::compositor::backend::{
     Backend, BackendEvent, DrmBackend, HeadlessBackend, Output, OutputId, WinitBackend,
-    combined_geometry, headless, output_geometry,
+    combined_geometry, headless, logical_geometry, output_geometry,
 };
 use crate::compositor::capture::{CaptureExecutor, CaptureOutcome};
 use crate::compositor::client_input;
@@ -915,15 +915,7 @@ fn floating_output_rects(outputs: &[Output], fallback_size: (u32, u32)) -> Vec<R
     let mut rects = outputs
         .iter()
         .filter(|output| output.size.0 > 0 && output.size.1 > 0)
-        .map(|output| {
-            Rect::from_origin_size(
-                vello::kurbo::Point::new(
-                    f64::from(output.position.0),
-                    f64::from(output.position.1),
-                ),
-                vello::kurbo::Size::new(f64::from(output.size.0), f64::from(output.size.1)),
-            )
-        })
+        .map(Output::logical_rect)
         .collect::<Vec<_>>();
     if rects.is_empty() {
         rects.push(Rect::new(
@@ -2673,8 +2665,8 @@ fn write_snapshot_png(
         crate::compositor::drag_feedback::DragVisual,
     )>,
 ) {
-    let (w, h) = fb.viewport();
-    // Viewport dimensions are always non-negative pixel counts; clamped rather
+    let (w, h) = fb.scene_size();
+    // Scene dimensions are always non-negative pixel counts; clamped rather
     // than a bare `as u32` so a pathological value saturates instead of wrapping.
     #[allow(
         clippy::cast_possible_truncation,
@@ -2699,7 +2691,15 @@ fn write_snapshot_png(
     let mut scene = fb.paint_settled();
     if let Some((cursor, visual)) = drag {
         let theme = fb.theme().clone();
-        drag_feedback::draw(&mut scene, cursor, &visual, &theme, fb.text_renderer_mut());
+        let mut feedback = vello::Scene::new();
+        drag_feedback::draw(
+            &mut feedback,
+            cursor,
+            &visual,
+            &theme,
+            fb.text_renderer_mut(),
+        );
+        fb.compose_layout_scene(&feedback, &mut scene);
     }
     let scene = scene;
     // The renderer is kept between snapshots, rebuilt only on viewport resize.
@@ -5265,9 +5265,9 @@ pub fn run() {
     // Per-frame scene production, shared with offscreen tooling via
     // `FrameBuilder` — chrome in the host window is byte-identical to `cargo run --bin shots`.
     //
-    // Scene is sized to the bounding box spanning every output; each output
-    // presents its own sub-rect, so single-monitor layout is unchanged.
-    let initial_size = match combined_geometry(backend.outputs()) {
+    // The shell lays out the logical desktop spanning every output; each
+    // output then draws its part into its own sub-rect of the scene.
+    let initial_size = match logical_geometry(backend.outputs()) {
         (0, 0) => (1600, 900),
         size => size,
     };
@@ -6237,7 +6237,15 @@ pub fn run() {
         // nested DRM/libinput and test-control fds. Drain the backend now,
         // before any frame decision, so its level-triggered poll fd is cleared
         // in this same iteration instead of immediately waking calloop again.
-        backend.poll_events(&mut |event| pending_events.push_back(event));
+        // Backends report positions in the scene; the shell and clients work
+        // in the logical desktop, so input crosses over here, once.
+        let input_placements = crate::compositor::backend::layout::placements(backend.outputs());
+        backend.poll_events(&mut |event| {
+            pending_events.push_back(crate::compositor::backend::layout::event_to_logical(
+                &input_placements,
+                event,
+            ));
+        });
         let t_backend_poll_done = iter_t0.elapsed();
         if slow_prepaint_phase(t_backend_poll_done) {
             tracing::warn!(
@@ -6377,7 +6385,7 @@ pub fn run() {
                                 .set_zones(input_capture_zones(backend.outputs()));
                         }
                         // Keep the fullscreen-configure size in sync so a fullscreened client fills the current output.
-                        state.output_size = size_to_signed(size);
+                        state.output_size = size_to_signed(logical_geometry(backend.outputs()));
                         // The swap chain lives on the render thread now, so the reconfigure
                         // travels with the frames rather than inline, keeping it ordered against any frame already queued at the old size.
                         if let Some(pipe) = present_pipe.as_ref() {
@@ -6868,9 +6876,10 @@ pub fn run() {
                 "compositor: display configuration changed"
             );
             if combined.0 > 0 && combined.1 > 0 {
+                let logical = logical_geometry(&outs);
                 frame_builder.set_viewport(combined);
-                native_accessibility.set_viewport(combined);
-                state.output_size = size_to_signed(combined);
+                native_accessibility.set_viewport(logical);
+                state.output_size = size_to_signed(logical);
                 if let Some(pipe) = present_pipe.as_ref() {
                     pipe.resize(combined);
                 }
@@ -7334,7 +7343,9 @@ pub fn run() {
             if let Some(remote_capture) = remote_capture_runtime.as_ref() {
                 runtime.set_remote_capture_runtime(std::sync::Arc::clone(remote_capture));
             }
-            let (width, height) = combined_geometry(backend.outputs());
+            // The desktop a cross-device pointer crosses into: the logical
+            // one it moves in.
+            let (width, height) = logical_geometry(backend.outputs());
             let display =
                 (width > 0 && height > 0).then_some(crate::shell::device_fabric::DisplayRect {
                     x: 0,
@@ -8009,7 +8020,7 @@ pub fn run() {
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.viewport();
+                    let vp = frame_builder.scene_size();
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
@@ -8060,7 +8071,7 @@ pub fn run() {
                     })
                     .collect();
                 let lock_outputs = if lock_outputs.is_empty() {
-                    let vp = frame_builder.viewport();
+                    let vp = frame_builder.scene_size();
                     vec![LockOutput {
                         origin: (0.0, 0.0),
                         size: (vp.0, vp.1),
@@ -8133,13 +8144,17 @@ pub fn run() {
                 // Audience presentation surfaces bypass WorkspaceTree and
                 // paint only into their requested output rectangles. The DRM
                 // backend splits this combined scene per scanout afterwards.
-                for surface in &state.output_presentation_surfaces {
-                    foreign::paint_output_presentation_surface(
-                        &mut frame_paint.scene,
-                        surface.surface_id,
-                        surface.rect,
-                        frame_builder.theme(),
-                    );
+                if !state.output_presentation_surfaces.is_empty() {
+                    let mut presentation = vello::Scene::new();
+                    for surface in &state.output_presentation_surfaces {
+                        foreign::paint_output_presentation_surface(
+                            &mut presentation,
+                            surface.surface_id,
+                            surface.rect,
+                            frame_builder.theme(),
+                        );
+                    }
+                    frame_builder.compose_layout_scene(&presentation, &mut frame_paint.scene);
                 }
                 if presentation_frame_changed || !state.output_presentation_surfaces.is_empty() {
                     // The output-specific projection is appended after the
@@ -8156,13 +8171,15 @@ pub fn run() {
                     let visual = state.selection.dnd_label.snapshot();
                     let (cx, cy) = state.client_input.cursor();
                     let theme = frame_builder.theme().clone();
+                    let mut feedback = vello::Scene::new();
                     drag_feedback::draw(
-                        &mut frame_paint.scene,
+                        &mut feedback,
                         vello::kurbo::Point::new(cx, cy),
                         &visual,
                         &theme,
                         frame_builder.text_renderer_mut(),
                     );
+                    frame_builder.compose_layout_scene(&feedback, &mut frame_paint.scene);
                     // The feedback was appended outside the retained sections.
                     frame_paint.force_full();
                 }
@@ -8346,7 +8363,7 @@ pub fn run() {
                 && (frame_builder.host().projection_capture_requested()
                     || personal_display_profile.is_some())
             {
-                let viewport = frame_builder.viewport();
+                let viewport = frame_builder.scene_size();
                 #[allow(
                     clippy::cast_possible_truncation,
                     clippy::cast_sign_loss,
@@ -11147,12 +11164,7 @@ fn reconcile_fullscreen_overlay(
         target.surface.send_configure();
         target.configured_size = Some(size);
     }
-    let rect = vello::kurbo::Rect::new(
-        f64::from(output.position.0),
-        f64::from(output.position.1),
-        f64::from(output.position.0) + f64::from(output.size.0),
-        f64::from(output.position.1) + f64::from(output.size.1),
-    );
+    let rect = output.logical_rect();
     frame.set_fullscreen_surface(Some((target.surface_id, "Fullscreen".to_string(), rect)));
 }
 
@@ -11165,12 +11177,9 @@ fn select_fullscreen_output(
         .and_then(|id| outputs.iter().find(|output| output.id == id))
         .or_else(|| {
             current_center.and_then(|point| {
-                outputs.iter().find(|output| {
-                    point.x >= f64::from(output.position.0)
-                        && point.x < f64::from(output.position.0) + f64::from(output.size.0)
-                        && point.y >= f64::from(output.position.1)
-                        && point.y < f64::from(output.position.1) + f64::from(output.size.1)
-                })
+                outputs
+                    .iter()
+                    .find(|output| output.logical_rect().contains(point))
             })
         })
         .or_else(|| {
@@ -11189,11 +11198,14 @@ fn input_capture_zones(
     outputs
         .iter()
         .filter(|output| output.size.0 > 0 && output.size.1 > 0)
-        .map(|output| crate::portal::CaptureZone {
-            width: output.size.0,
-            height: output.size.1,
-            x: output.position.0,
-            y: output.position.1,
+        .map(|output| {
+            let (width, height) = output.logical_size();
+            crate::portal::CaptureZone {
+                width,
+                height,
+                x: output.logical_position.0,
+                y: output.logical_position.1,
+            }
         })
         .collect()
 }
@@ -11508,8 +11520,70 @@ mod gesture_wireup_tests {
 #[cfg(test)]
 #[cfg(test)]
 mod output_geometry_tests {
-    use super::{output_geometry, select_fullscreen_output};
+    use super::{input_capture_zones, output_geometry, select_fullscreen_output};
     use crate::compositor::backend::{Output, OutputId};
+
+    /// A 2x 2560x1600 laptop panel with a 1x 2560x1440 monitor to its right:
+    /// logically the monitor starts at 1280, in the scene at 2560.
+    fn docked() -> [Output; 2] {
+        [
+            Output::new(OutputId(0), (2560, 1600), 2.0),
+            Output {
+                id: OutputId(1),
+                position: (2560, 0),
+                size: (2560, 1440),
+                scale: 1.0,
+                transform: settings_store::hardware::OutputTransform::Normal,
+                color_profile: None,
+                refresh_mhz: None,
+                logical_position: (1280, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
+            },
+        ]
+    }
+
+    /// The shell lays out in the logical desktop and paints each display
+    /// into its scene rectangle at its own scale.
+    #[test]
+    fn a_dense_panel_is_a_logical_display_drawn_at_its_scale() {
+        let geo = output_geometry(&docked());
+        assert_eq!(
+            (
+                geo[0].x,
+                geo[0].y,
+                geo[0].width,
+                geo[0].height,
+                geo[0].scale
+            ),
+            (0.0, 0.0, 1280.0, 800.0, 2.0)
+        );
+        assert_eq!(
+            geo[0].scene,
+            vello::kurbo::Rect::new(0.0, 0.0, 2560.0, 1600.0)
+        );
+        assert_eq!(
+            (geo[1].x, geo[1].width, geo[1].scale),
+            (1280.0, 2560.0, 1.0)
+        );
+        assert_eq!(
+            geo[1].scene,
+            vello::kurbo::Rect::new(2560.0, 0.0, 5120.0, 1440.0)
+        );
+    }
+
+    /// `InputCapture` zones are where a portal client's pointer barriers go:
+    /// the logical desktop the pointer moves in, gapless across a 2x|1x seam.
+    #[test]
+    fn input_capture_zones_are_logical() {
+        let zones = input_capture_zones(&docked());
+        assert_eq!(
+            zones
+                .iter()
+                .map(|z| (z.x, z.y, z.width, z.height))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 1280, 800), (1280, 0, 2560, 1440)]
+        );
+    }
 
     /// A single monitor maps to one display at the origin — the case every screenshot and test runs in.
     #[test]

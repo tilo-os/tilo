@@ -221,8 +221,8 @@ impl SessionLockHooks {
     }
 }
 
-/// One output's `(position, size, scale)` in the compositor's combined
-/// coordinate space — see [`State::output_layout`]. Factored into a named
+/// One output's `(position, size, scale)` in the logical desktop — see
+/// [`State::output_layout`]. Factored into a named
 /// alias to keep that field (and every function taking a slice of it) readable.
 pub type OutputPlacement = ((i32, i32), (u32, u32), f64);
 
@@ -549,16 +549,15 @@ pub struct State {
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
     pub scale: f64,
-    /// Every output as `(position, size, scale)` in the compositor's
-    /// combined coordinate space, mirrored from the backend.
+    /// Every output as `(position, size, scale)` in the logical desktop,
+    /// mirrored from the backend.
     ///
     /// [`Self::scale`] is one number for the whole session, only right on a
     /// single-display machine — a docked laptop has a dense panel and a sparse one, and the wrong factor renders soft. This is what lets the preferred `wp_fractional_scale` be per-surface.
     pub output_layout: Vec<OutputPlacement>,
     /// Each output's logical size — its mode over its scale, rotated — keyed
     /// by the stable backend output identity: what a fullscreen configure
-    /// asks a client for, in the same units as a tiled configure. Separate
-    /// from `output_layout`, which is in scene pixels for scale lookup.
+    /// asks a client for, in the same units as a tiled configure.
     output_sizes: HashMap<crate::compositor::backend::OutputId, (i32, i32)>,
     output_rects: HashMap<crate::compositor::backend::OutputId, Rect>,
     /// Preferred scale per client surface id, derived from [`Self::output_layout`] + tile position; refreshed by the run loop, the only place with both.
@@ -1172,9 +1171,10 @@ impl State {
     /// Called at startup and on every hotplug. Dropping the per-surface
     /// scale cache alongside it is deliberate: the layout the cached values were derived from is gone, so keeping them would hand clients the scale of a monitor that moved.
     pub fn set_output_layout(&mut self, outputs: &[crate::compositor::backend::Output]) {
+        // Logical, like every surface position it is looked up with.
         self.output_layout = outputs
             .iter()
-            .map(|o| (o.position, o.size, f64::from(o.scale)))
+            .map(|o| (o.logical_position, o.logical_size(), f64::from(o.scale)))
             .collect();
         self.output_sizes = outputs
             .iter()
@@ -1215,12 +1215,7 @@ impl State {
         let output = outputs
             .iter()
             .find(|output| output.id == id && output.size.0 > 0 && output.size.1 > 0)?;
-        Some(Rect::new(
-            f64::from(output.position.0),
-            f64::from(output.position.1),
-            f64::from(output.position.0) + f64::from(output.size.0),
-            f64::from(output.position.1) + f64::from(output.size.1),
-        ))
+        Some(output.logical_rect())
     }
 
     /// Rehome an audience surface deterministically when its chosen output

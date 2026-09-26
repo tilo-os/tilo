@@ -102,7 +102,7 @@ pub mod offscreen {
     ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
-        let (w, h) = driver.viewport();
+        let (w, h) = driver.scene_size();
         let (w, h) = (dim_to_u32(w), dim_to_u32(h));
         let mut renderer = OffscreenRenderer::new(w, h);
         println!(
@@ -246,7 +246,7 @@ pub mod recording {
         if let Some(parent) = out.parent() {
             std::fs::create_dir_all(parent).ok();
         }
-        let (w, h) = driver.viewport();
+        let (w, h) = driver.scene_size();
         // 4:2:0 encoders take even dimensions.
         let (w, h) = (dim_to_u32(w) & !1, dim_to_u32(h) & !1);
         let mut renderer = OffscreenRenderer::new(w, h);

@@ -76,6 +76,7 @@ pub mod notes_app;
 pub mod notification;
 pub mod notification_history;
 pub mod osd;
+pub mod output_scene;
 pub mod overlay_host;
 pub mod overview;
 pub mod peer_join_toast;
