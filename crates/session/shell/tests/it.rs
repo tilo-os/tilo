@@ -149,6 +149,8 @@ mod portal_grant_reaches_sandbox;
 mod portal_prompt_drain_e2e;
 #[path = "portal_test.rs"]
 mod portal_test;
+#[path = "presenter_screen.rs"]
+mod presenter_screen;
 #[path = "qs_actions_click_routing.rs"]
 mod qs_actions_click_routing;
 #[path = "real_apps_visual.rs"]
