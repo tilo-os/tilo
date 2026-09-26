@@ -416,7 +416,7 @@ impl AiPane {
             .config
             .profiles
             .iter()
-            .filter(|profile| !profile.is_device_local())
+            .filter(|profile| !profile.is_model_manager())
             .map(|profile| profile.id.clone())
             .collect();
         if ids.is_empty() {
@@ -785,7 +785,7 @@ impl AiPane {
                 .state
                 .targets(task, true)
                 .into_iter()
-                .find(|(_, profile, _)| !profile.is_device_local())
+                .find(|(_, profile, _)| !profile.is_model_manager())
             && !explicit.is_some_and(|assignment| assignment.allow_off_device)
             && let Some(spec) = resource
                 .actions
@@ -975,7 +975,14 @@ impl AiPane {
             "ai-provider-kind",
             &[
                 ("protocol", arg(t(protocol_key(profile.protocol)))),
-                ("location", arg(t(location_key(profile.location)))),
+                (
+                    "location",
+                    arg(t(if profile.is_user_local_server() {
+                        "ai-location-local-server"
+                    } else {
+                        location_key(profile.location)
+                    })),
+                ),
             ],
         )));
         body.push(Box::new(
@@ -1281,6 +1288,14 @@ impl AiPane {
                     "ai.add-private",
                     &t("ai-action-add-private"),
                 )))
+                .push(hgap(8.0))
+                .push(Box::new(bound_button(
+                    tree,
+                    None,
+                    "add-local-server",
+                    "ai.add-local-server",
+                    &t("ai-action-add-local-server"),
+                )))
                 .push(Box::new(Spacer::new())),
         ));
         let hosted: Vec<&ProviderProfile> = self
@@ -1288,7 +1303,7 @@ impl AiPane {
             .config
             .profiles
             .iter()
-            .filter(|profile| !profile.is_device_local())
+            .filter(|profile| !profile.is_model_manager())
             .collect();
         if hosted.is_empty() {
             body.push(caption(&t("ai-providers-empty")));
@@ -1605,7 +1620,7 @@ impl Drop for AiPane {
 }
 
 fn provider_name(profile: &ProviderProfile) -> String {
-    if profile.is_device_local() {
+    if profile.is_model_manager() {
         t("ai-this-device")
     } else {
         profile.display_label().to_string()
@@ -1776,7 +1791,7 @@ impl Widget for AiPane {
                         .config
                         .profiles
                         .iter()
-                        .filter(|profile| !profile.is_device_local())
+                        .filter(|profile| !profile.is_model_manager())
                         .count()
                     && self.probing;
             }
@@ -2083,8 +2098,19 @@ pub fn demo_state(restart_pending: bool) -> AiState {
         ..ModelDescriptor::new("claude-opus-5")
     }];
     anthropic.default_model = Some("claude-opus-5".into());
+    let mut ollama = ProviderProfile::new(
+        ProviderProtocol::OpenAiCompatible,
+        EndpointLocation::ThisDevice,
+    );
+    ollama.id = "5a6b7c8d-ollama".into();
+    ollama.label = "Ollama".into();
+    ollama.models = vec![ModelDescriptor {
+        context_window: Some(32_768),
+        ..ModelDescriptor::new("llama3.3")
+    }];
+    ollama.default_model = Some("llama3.3".into());
     let mut config = ProviderConfig {
-        profiles: vec![anthropic.clone(), azure.clone()],
+        profiles: vec![anthropic.clone(), azure.clone(), ollama],
         default_profile: Some(anthropic.id.clone()),
     };
     if let Some(profile) = snapshot.runtime().profile {

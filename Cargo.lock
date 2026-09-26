@@ -324,6 +324,7 @@ dependencies = [
 name = "agent-provider-config"
 version = "0.1.0"
 dependencies = [
+ "atomic-file",
  "hex",
  "serde",
  "serde_json",
@@ -332,6 +333,7 @@ dependencies = [
  "tempfile",
  "url",
  "uuid",
+ "xdg-paths",
 ]
 
 [[package]]

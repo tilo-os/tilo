@@ -4306,6 +4306,12 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
             ProviderProtocol::OpenAiCompatible,
             EndpointLocation::PrivateNetwork,
         ),
+        (
+            "add-local-server",
+            "ai-action-add-local-server",
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::ThisDevice,
+        ),
     ] {
         if let Some(action) = ai_operation_spec(
             id,
@@ -4346,7 +4352,7 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
         .config
         .profiles
         .iter()
-        .filter(|profile| !profile.is_device_local())
+        .filter(|profile| !profile.is_model_manager())
         .take(MAX_DYNAMIC_RESOURCES)
     {
         let id = profile.id.clone();
@@ -4646,7 +4652,7 @@ pub fn ai_section_for(state: &crate::ai_settings::AiState) -> Resource {
         if task.privacy == PrivacyClass::Sensitive {
             let hosted: Vec<String> = off_device
                 .iter()
-                .filter(|(_, profile, _)| !profile.is_device_local())
+                .filter(|(_, profile, _)| !profile.is_model_manager())
                 .map(|(value, _, _)| value.clone())
                 .take(MAX_DYNAMIC_CHOICES)
                 .collect();

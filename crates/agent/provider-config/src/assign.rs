@@ -479,7 +479,7 @@ fn target<'a>(
                 .profiles
                 .iter()
                 .find(|profile| {
-                    &profile.id == profile_id && profile.enabled && !profile.is_device_local()
+                    &profile.id == profile_id && profile.enabled && !profile.is_model_manager()
                 })
                 .ok_or_else(|| ResolveError::ProfileUnavailable {
                     profile_id: profile_id.clone(),
@@ -555,7 +555,7 @@ fn provider_choice(inputs: &Inputs<'_>, task: &TaskSpec) -> Option<Assignment> {
     let mut profiles: Vec<&ProviderProfile> = config
         .profiles
         .iter()
-        .filter(|profile| profile.enabled && !profile.is_device_local())
+        .filter(|profile| profile.enabled && !profile.is_model_manager())
         .collect();
     profiles.sort_by_key(|profile| Some(&profile.id) != config.default_profile.as_ref());
     profiles.into_iter().find_map(|profile| {
@@ -925,6 +925,78 @@ mod tests {
     }
 
     #[test]
+    fn a_server_the_person_runs_on_this_computer_counts_as_off_device() {
+        let mut ollama = ProviderProfile::new(
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::ThisDevice,
+        );
+        ollama.id = "ollama".into();
+        ollama.models.push(ModelDescriptor {
+            context_window: Some(32_768),
+            capabilities: [ModelCapability::TraceReview, ModelCapability::Vision].into(),
+            ..ModelDescriptor::new("llama3")
+        });
+        let config = ProviderConfig {
+            profiles: vec![ollama],
+            default_profile: Some("ollama".into()),
+        };
+        let mut assignments = ModelAssignments::default();
+        // Any provider may serve an open task.
+        let planning = resolve(
+            &inputs(&config, &assignments, None),
+            &Consumer::app(tasks::AGENT_APP),
+            AGENT_PLANNING.id,
+            None,
+        )
+        .unwrap();
+        assert_eq!(planning.profile.id, "ollama");
+        // It is not isolated by Tilo, so a sensitive task needs the explicit
+        // allowance and a device-only task never uses it.
+        let mut review = Assignment::profile("ollama", "llama3");
+        assignments
+            .tasks
+            .insert(FEEDBACK_REVIEW.id.into(), review.clone());
+        assert_eq!(
+            resolve(
+                &inputs(&config, &assignments, None),
+                &Consumer::Session,
+                FEEDBACK_REVIEW.id,
+                None
+            ),
+            Err(ResolveError::OffDevice {
+                privacy: PrivacyClass::Sensitive
+            })
+        );
+        review.allow_off_device = true;
+        assignments.tasks.insert(FEEDBACK_REVIEW.id.into(), review);
+        assert!(
+            !resolve(
+                &inputs(&config, &assignments, None),
+                &Consumer::Session,
+                FEEDBACK_REVIEW.id,
+                None
+            )
+            .unwrap()
+            .profile
+            .is_supervised()
+        );
+        let mut vision = Assignment::profile("ollama", "llama3");
+        vision.allow_off_device = true;
+        assignments.tasks.insert(PHOTOS_VISION.id.into(), vision);
+        assert_eq!(
+            resolve(
+                &inputs(&config, &assignments, None),
+                &Consumer::app(tasks::PHOTOS_APP),
+                PHOTOS_VISION.id,
+                None
+            ),
+            Err(ResolveError::OffDevice {
+                privacy: PrivacyClass::DeviceOnly
+            })
+        );
+    }
+
+    #[test]
     fn a_caller_can_ask_only_for_tasks_it_consumes() {
         let config = config();
         let assignments = ModelAssignments::default();
@@ -1207,7 +1279,7 @@ mod tests {
                 settings_store::continuity::SettingScope::Personal,
             ),
             (
-                crate::LOCAL_KEY,
+                crate::THIS_DEVICE_KEY,
                 settings_store::continuity::SettingScope::DeviceLocal,
             ),
         ] {

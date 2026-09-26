@@ -110,18 +110,20 @@ ai-agent-pill = Agent
 
 ## Providers
 ai-providers-title = Providers
-ai-providers-body = Providers follow you to your other devices. Their keys stay in this device's vault, so another device asks for its own.
+ai-providers-body = Providers follow you to your other devices. Their keys stay in this device's vault, so another device asks for its own. A server you run on this computer, such as Ollama or LM Studio, stays with this computer; Tilo does not isolate it, so private tasks treat it like a provider.
 ai-providers-empty = No providers yet. Add one, or use only models on this device.
 ai-action-add-anthropic = Add Anthropic
 ai-action-add-openai = Add OpenAI-compatible
 ai-action-add-azure = Add Azure OpenAI
 ai-action-add-private = Add a server on your network
+ai-action-add-local-server = Add a server on this computer
 ai-protocol-anthropic = Anthropic
 ai-protocol-openai = OpenAI-compatible
 ai-protocol-azure = Azure OpenAI
 ai-location-hosted = hosted
 ai-location-device = this device
 ai-location-private = your network
+ai-location-local-server = on this computer, not isolated by Tilo
 # { $protocol } is the API dialect, { $location } where it runs.
 ai-provider-kind = { $protocol } · { $location }
 ai-provider-default = Default

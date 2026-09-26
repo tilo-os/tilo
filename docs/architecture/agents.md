@@ -108,9 +108,18 @@ and `.assignments`) and follow the person to each device. A per-agent choice
 is personal because the agent runs through the person's gateway and spends
 the person's keys; a workspace admits an agent but does not choose which of a
 person's providers it bills. Keys and account tokens are secret, in each
-device's vault. The model manager's runtime profile and hardware facts are
-device-local (`agent_providers.local`); an assignment names a local model by
-catalogue id, so it resolves on whichever device runs it.
+device's vault. Servers the person runs on this computer themselves
+(Ollama, LM Studio) are device-local (`agent_providers.this_device`) and
+labelled "on this computer, not isolated by Tilo": Open tasks may use them,
+a Sensitive task only with the explicit allowance, a device-only task never.
+
+The model manager's record of this device (hardware facts and the profile of
+the models it supervises) is not a setting. The manager owns it at
+`$XDG_DATA_HOME/tilo/models/runtime.json` and rewrites it after every start,
+stop, removal, install step and failure; the gateway reads it on every
+resolution, so a model started without Settings resolves as soon as it runs.
+Settings only displays it. An assignment names a local model by catalogue id,
+so it resolves on whichever device runs it.
 
 Settings' AI pane is the one hub for all of this, and every control in it is
 an action of its resource tree, so agents and `tilo-control` configure it the

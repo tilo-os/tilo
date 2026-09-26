@@ -176,9 +176,10 @@ policies! {
         "tilo.video_player.autoplay",
         "tilo.video_player.loop_enabled",
         "tilo.video_player.recent_history",
-        // The model manager's loopback endpoint and this machine's hardware
-        // facts. Hosted profiles and assignments are personal (above).
-        "tilo.agent_providers.local",
+        // Model servers the person runs on this computer (Ollama, LM
+        // Studio). Hosted profiles and assignments are personal (above); the
+        // model manager's own record is not a setting.
+        "tilo.agent_providers.this_device",
         "tilo.collaboration.status_sharing",
         "tilo.collaboration.manual_status",
         // Consent to keep the last minutes of this device's rooms in memory
@@ -362,7 +363,7 @@ mod tests {
                 "future_value": "must stay local"
             },
             "display_outputs": {"outputs": {"DP-1": {"scale": 2.0}}},
-            "agent_providers": {"local": {"profile": {"endpoint": "http://127.0.0.1:8000"}}},
+            "agent_providers": {"this_device": [{"endpoint": "http://127.0.0.1:8000"}]},
             "security": {"local_credential": {"pin": "never"}}
         });
         let projected = personal_values(document.as_object().unwrap());
@@ -408,7 +409,7 @@ mod tests {
                 "app_continuations": false,
                 "audit": []
             },
-            "agent_providers": {"profiles": {}, "local": {}, "assignments": {}},
+            "agent_providers": {"profiles": {}, "this_device": [], "assignments": {}},
             "collaboration": {"status_sharing": "automatic", "manual_status": null},
             "history": {"seen_frontiers": {}},
             "ebook_local_library": {"books": {}, "watched_folders": [], "shortcuts": {}},

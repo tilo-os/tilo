@@ -37,7 +37,7 @@ use crate::settings_app::NAV_BREAKPOINT;
 pub const DEFAULT_SHOTS_VIEWPORT: (u32, u32) = (1200, 760);
 
 /// Tall viewport for the AI hub's full-page stills.
-pub const AI_SHOTS_VIEWPORT: (u32, u32) = (1000, 3800);
+pub const AI_SHOTS_VIEWPORT: (u32, u32) = (1000, 4300);
 
 /// Narrow viewport used for the responsive single-pane shot — phone-ish.
 pub const NARROW_SHOTS_VIEWPORT: (u32, u32) = (440, 820);

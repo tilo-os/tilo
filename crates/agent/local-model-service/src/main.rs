@@ -1375,6 +1375,39 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
     if let Action::Snapshot { format } = &cli.command {
         return local_snapshot(&root, &catalog_path, &key_path, format).map(Some);
     }
+    let result = run_command(cli, &root, &catalog_path, &key_path);
+    // Every start, stop, removal, install step and failure changes what this
+    // device can serve. The manager owns that record, so the gateway resolves
+    // a model started without Settings the moment it is up.
+    if let Err(error) = publish_runtime(&root, &catalog_path, &key_path) {
+        eprintln!("tilo-model-manager: could not publish the runtime record: {error}");
+    }
+    result
+}
+
+/// Rewrite this device's runtime record from the manager's own state.
+fn publish_runtime(
+    root: &PathBuf,
+    catalog_path: &PathBuf,
+    key_path: &PathBuf,
+) -> Result<(), String> {
+    snapshot_of(root, catalog_path, key_path)?
+        .runtime()
+        .save_at(&root.join(agent_provider_config::RUNTIME_FILE))
+        .map_err(|error| error.to_string())
+}
+
+fn run_command(
+    cli: Cli,
+    root: &Path,
+    catalog_path: &Path,
+    key_path: &Path,
+) -> Result<Option<String>, String> {
+    let (root, catalog_path, key_path) = (
+        root.to_path_buf(),
+        catalog_path.to_path_buf(),
+        key_path.to_path_buf(),
+    );
     let catalog = load_catalog(&catalog_path, &key_path)?;
     let mut service = LocalModelService::open(
         &root,
@@ -1468,6 +1501,20 @@ fn local_snapshot(
     if format != "json" {
         return Err("snapshot supports only --format json".into());
     }
+    let payload = snapshot_of(root, catalog_path, key_path)?;
+    // A snapshot also refreshes the record, so hardware facts stay current.
+    let _ = payload
+        .runtime()
+        .save_at(&root.join(agent_provider_config::RUNTIME_FILE));
+    serde_json::to_string(&payload).map_err(|error| error.to_string())
+}
+
+/// The signed catalogue, this machine's recommendation and installed models.
+fn snapshot_of(
+    root: &PathBuf,
+    catalog_path: &PathBuf,
+    key_path: &PathBuf,
+) -> Result<LocalModelSnapshot, String> {
     let catalog = load_catalog(catalog_path, key_path)?;
     let service = LocalModelService::open(
         root,
@@ -1500,15 +1547,14 @@ fn local_snapshot(
         |_| Vec::new(),
         |kind| available_models(&catalog, &hardware, *kind),
     );
-    let payload = LocalModelSnapshot {
+    Ok(LocalModelSnapshot {
         hardware: recommendation(&hardware, runtime, recommended.is_some()),
         facts: hardware,
         recommendation: recommended,
         available,
         models,
         accelerator_setup,
-    };
-    serde_json::to_string(&payload).map_err(|error| error.to_string())
+    })
 }
 
 /// Install then start one signed release in the detached worker, recording

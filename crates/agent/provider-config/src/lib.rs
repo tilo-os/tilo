@@ -9,19 +9,24 @@
 //!
 //! ## Where each record lives
 //!
-//! The `agent_providers` settings section holds three leaves with three
-//! different owners (see `settings_store::continuity`):
+//! The `agent_providers` settings section holds three leaves with their own
+//! scopes (see `settings_store::continuity`):
 //!
-//! - `profiles` — **personal**. Hosted, Azure and compatible endpoints the
-//!   person configured. They follow the person to each of their devices;
+//! - `profiles` — **personal**. Hosted, Azure and private-network endpoints
+//!   the person configured. They follow the person to each of their devices;
 //!   the keys they point at do not (the vault is per device), so a second
 //!   device shows the provider as needing its key.
-//! - `local` — **device-local**. This machine's hardware snapshot and the
-//!   loopback profile of the models the model manager runs here
-//!   ([`LocalRuntime`]).
+//! - `this_device` — **device-local**. Servers the person runs on this
+//!   computer themselves (Ollama, LM Studio). Tilo does not isolate them, so
+//!   for privacy they count as off the device.
 //! - `assignments` — **personal**. Which model serves which task and agent
 //!   ([`assign::ModelAssignments`]). Assignments that name a local model name
 //!   it by catalogue id, so they resolve on whichever device runs it.
+//!
+//! The model manager's own record ([`LocalRuntime`]: this machine's hardware
+//! facts and the profile of the models it supervises) is not a setting. The
+//! manager owns it and rewrites it on every start, stop, failure and
+//! install, at [`LocalRuntime::default_path`]; everything else only reads it.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -41,8 +46,8 @@ pub use options::{ModelOptionSupport, ModelOptions, OptionError, ReasoningEffort
 pub const SETTINGS_SECTION: &str = "agent_providers";
 /// Personal leaf: the person's configured provider profiles.
 pub const PROFILES_KEY: &str = "profiles";
-/// Device-local leaf: this machine's [`LocalRuntime`].
-pub const LOCAL_KEY: &str = "local";
+/// Device-local leaf: servers the person runs on this computer.
+pub const THIS_DEVICE_KEY: &str = "this_device";
 /// Personal leaf: [`assign::ModelAssignments`].
 pub const ASSIGNMENTS_KEY: &str = "assignments";
 
@@ -359,7 +364,7 @@ impl ProviderProfile {
                 ("Compatible server", "http://server.lan:8000/v1")
             }
             (ProviderProtocol::OpenAiCompatible, EndpointLocation::ThisDevice) => {
-                ("Local server", "http://127.0.0.1:8000/v1")
+                ("Server on this computer", "http://127.0.0.1:11434/v1")
             }
         };
         let credential = (location != EndpointLocation::ThisDevice).then(|| Credential::ApiKey {
@@ -433,11 +438,28 @@ impl ProviderProfile {
             }
     }
 
+    /// Whether this is the model manager's profile of the models it
+    /// supervises on this device, running or not.
+    #[must_use]
+    pub fn is_model_manager(&self) -> bool {
+        self.id == LOCAL_PROFILE_ID
+    }
+
+    /// Whether this is a server the person runs on this computer
+    /// themselves: on loopback, but not isolated by Tilo.
+    #[must_use]
+    pub fn is_user_local_server(&self) -> bool {
+        !self.is_model_manager()
+            && self.location == EndpointLocation::ThisDevice
+            && self.custody == EndpointCustody::UserConfigured
+    }
+
     /// Whether Tilo's model manager runs this endpoint, now, without network
     /// egress, so what it is sent cannot leave the device.
     #[must_use]
     pub fn is_supervised(&self) -> bool {
         self.enabled
+            && self.is_model_manager()
             && self.is_device_local()
             && matches!(self.custody, EndpointCustody::Supervised { .. })
     }
@@ -507,52 +529,48 @@ pub struct LocalRuntime {
 }
 
 impl LocalRuntime {
+    /// Where the model manager keeps this record: beside its model store.
+    #[must_use]
+    pub fn default_path() -> Option<std::path::PathBuf> {
+        xdg_paths::xdg::data_home().map(|data| data.join("tilo/models").join(RUNTIME_FILE))
+    }
+
+    /// Read the manager's record. Missing or malformed reads as "nothing
+    /// installed", never as a usable endpoint.
+    #[must_use]
     pub fn load() -> Self {
-        Self::from_section(&settings_store::load_section(SETTINGS_SECTION))
+        Self::default_path().map_or_else(Self::default, |path| Self::load_at(&path))
     }
 
+    #[must_use]
     pub fn load_at(path: &Path) -> Self {
-        Self::from_section(&settings_store::load_section_at(path, SETTINGS_SECTION))
-    }
-
-    fn from_section(section: &Map<String, Value>) -> Self {
-        let mut runtime: Self = section
-            .get(LOCAL_KEY)
-            .cloned()
-            .and_then(|value| serde_json::from_value(value).ok())
+        let mut runtime: Self = std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default();
-        // Only the supervised loopback profile may occupy this leaf.
+        // Only the manager's own loopback profile may occupy this record.
         runtime.profile = runtime.profile.filter(|profile| {
-            profile.id == LOCAL_PROFILE_ID
-                && profile.is_device_local()
-                && profile.credential.is_none()
+            profile.is_model_manager() && profile.is_device_local() && profile.credential.is_none()
         });
         runtime
     }
 
+    /// Replace the record atomically. Only the model manager calls this.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the shared settings document cannot be updated.
-    pub fn save(&self) -> std::io::Result<()> {
-        settings_store::update_section(SETTINGS_SECTION, self.section()?)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the settings document at `path` cannot be updated.
+    /// Returns an error if the record cannot be serialised or written.
     pub fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        settings_store::update_section_at(path, SETTINGS_SECTION, self.section()?)
-    }
-
-    fn section(&self) -> std::io::Result<Map<String, Value>> {
-        let mut section = Map::new();
-        section.insert(
-            LOCAL_KEY.to_string(),
-            serde_json::to_value(self).map_err(std::io::Error::other)?,
-        );
-        Ok(section)
+        let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        atomic_file::write(path, &bytes)
     }
 }
+
+/// The manager's record file name inside its model store.
+pub const RUNTIME_FILE: &str = "runtime.json";
 
 /// The person's provider profiles and deliberate default, with this device's
 /// local runtime profile merged in on load. Kept separate from a task: tasks
@@ -567,13 +585,28 @@ pub struct ProviderConfig {
 }
 
 impl ProviderConfig {
+    /// The person's profiles, this computer's own servers, and the model
+    /// manager's profile of the models it supervises here.
+    #[must_use]
     pub fn load() -> Self {
         let section = settings_store::load_section(SETTINGS_SECTION);
-        Self::from_section(&section)
+        Self::from_section(&section).with_runtime(LocalRuntime::load())
     }
 
+    /// The settings at `path`, without the model manager's record.
+    #[must_use]
     pub fn load_at(path: &Path) -> Self {
         Self::from_section(&settings_store::load_section_at(path, SETTINGS_SECTION))
+    }
+
+    /// Replace the model manager's profile with `runtime`'s.
+    #[must_use]
+    pub fn with_runtime(mut self, runtime: LocalRuntime) -> Self {
+        self.profiles.retain(|profile| !profile.is_model_manager());
+        if let Some(local) = runtime.profile {
+            self.profiles.push(local);
+        }
+        self
     }
 
     fn from_section(section: &Map<String, Value>) -> Self {
@@ -582,13 +615,20 @@ impl ProviderConfig {
             .cloned()
             .and_then(|value| serde_json::from_value::<Self>(value).ok())
             .unwrap_or_default();
-        // The personal leaf never carries this device's runtime.
+        // The personal leaf never carries anything on this computer.
         config.profiles.retain(|profile| {
-            profile.id != LOCAL_PROFILE_ID && profile.location != EndpointLocation::ThisDevice
+            !profile.is_model_manager() && profile.location != EndpointLocation::ThisDevice
         });
-        if let Some(local) = LocalRuntime::from_section(section).profile {
-            config.profiles.push(local);
-        }
+        let servers: Vec<ProviderProfile> = section
+            .get(THIS_DEVICE_KEY)
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+            .unwrap_or_default();
+        config.profiles.extend(
+            servers
+                .into_iter()
+                .filter(ProviderProfile::is_user_local_server),
+        );
         config.sanitised()
     }
 
@@ -615,11 +655,21 @@ impl ProviderConfig {
     }
 
     fn personal_section(&self) -> std::io::Result<Map<String, Value>> {
-        let mut personal = self.clone().sanitised();
-        personal.profiles.retain(|profile| {
-            profile.id != LOCAL_PROFILE_ID && profile.location != EndpointLocation::ThisDevice
-        });
+        let all = self.clone().sanitised();
+        let servers: Vec<&ProviderProfile> = all
+            .profiles
+            .iter()
+            .filter(|profile| profile.is_user_local_server())
+            .collect();
         let mut section = Map::new();
+        section.insert(
+            THIS_DEVICE_KEY.to_string(),
+            serde_json::to_value(servers).map_err(std::io::Error::other)?,
+        );
+        let mut personal = all.clone();
+        personal.profiles.retain(|profile| {
+            !profile.is_model_manager() && profile.location != EndpointLocation::ThisDevice
+        });
         section.insert(
             PROFILES_KEY.to_string(),
             serde_json::to_value(personal).map_err(std::io::Error::other)?,
@@ -646,6 +696,12 @@ impl ProviderConfig {
                 issues.push(ProfileIssue::new(
                     &profile.id,
                     "Endpoint must be HTTPS unless it is a local or private endpoint.",
+                ));
+            }
+            if profile.is_user_local_server() && !is_loopback_endpoint(&profile.endpoint) {
+                issues.push(ProfileIssue::new(
+                    &profile.id,
+                    "A server on this computer needs a localhost address.",
                 ));
             }
             if profile
@@ -714,7 +770,7 @@ impl ProviderConfig {
     pub fn local_profile(&self) -> Option<&ProviderProfile> {
         self.profiles
             .iter()
-            .find(|profile| profile.id == LOCAL_PROFILE_ID && profile.is_device_local())
+            .find(|profile| profile.is_model_manager() && profile.is_device_local())
     }
 
     pub fn upsert(&mut self, profile: ProviderProfile) {
@@ -845,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn personal_profiles_and_the_device_runtime_are_stored_in_separate_leaves() {
+    fn each_record_is_stored_where_its_scope_says() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("settings.json");
         let mut appearance = Map::new();
@@ -853,53 +909,69 @@ mod tests {
         settings_store::update_section_at(&path, "appearance", appearance).unwrap();
 
         let hosted = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
+        let mut ollama = ProviderProfile::new(
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::ThisDevice,
+        );
+        ollama.endpoint = "http://127.0.0.1:11434/v1".into();
         let mut local =
             ProviderProfile::local_runtime(Some("/run/user/1000/tilo/models/a/api.sock".into()));
         local.models.push(ModelDescriptor::new("qwen"));
-        LocalRuntime {
-            hardware: None,
-            profile: Some(local.clone()),
-        }
-        .save_at(&path)
-        .unwrap();
         let config = ProviderConfig {
             default_profile: Some(hosted.id.clone()),
-            // A caller that saves the merged view never writes the device
-            // runtime into the personal leaf.
-            profiles: vec![hosted.clone(), local.clone()],
+            // A caller that saves the merged view never writes the manager's
+            // profile into a settings leaf.
+            profiles: vec![hosted.clone(), ollama.clone(), local.clone()],
         };
         config.save_at(&path).unwrap();
 
-        assert_eq!(ProviderConfig::load_at(&path), config);
+        let loaded = ProviderConfig::load_at(&path);
+        assert_eq!(loaded.profiles, vec![hosted.clone(), ollama.clone()]);
         let document = settings_store::load_at(&path);
         let section = document[SETTINGS_SECTION].as_object().unwrap();
         let personal = section[PROFILES_KEY].to_string();
         assert!(personal.contains(&hosted.id));
+        assert!(!personal.contains(&ollama.id));
         assert!(!personal.contains(LOCAL_PROFILE_ID));
-        assert!(section[LOCAL_KEY].to_string().contains("api.sock"));
+        assert!(section[THIS_DEVICE_KEY].to_string().contains("11434"));
         assert!(document.contains_key("appearance"));
+
+        let runtime_path = dir.path().join(RUNTIME_FILE);
+        LocalRuntime {
+            hardware: None,
+            profile: Some(local.clone()),
+        }
+        .save_at(&runtime_path)
+        .unwrap();
+        let merged = loaded.with_runtime(LocalRuntime::load_at(&runtime_path));
+        assert_eq!(merged.local_profile(), Some(&local));
+        assert!(!ollama.is_supervised());
+        assert!(ollama.is_user_local_server());
     }
 
     #[test]
-    fn only_the_model_manager_makes_an_endpoint_supervised() {
-        let mut typed_in = ProviderProfile::hosted(ProviderProtocol::OpenAiCompatible);
-        typed_in.location = EndpointLocation::ThisDevice;
-        typed_in.endpoint = "http://127.0.0.1:8000/v1".into();
-        assert!(typed_in.is_device_local());
-        assert!(!typed_in.is_supervised(), "a localhost URL is not custody");
-        let running =
-            ProviderProfile::local_runtime(Some("/run/user/1000/tilo/models/a/api.sock".into()));
-        assert!(running.is_supervised());
-        let stopped = ProviderProfile::local_runtime(None);
-        assert!(!stopped.is_supervised());
-        let relative = ProviderProfile::local_runtime(Some("vllm.sock".into()));
-        assert!(!relative.is_device_local());
+    fn a_server_on_this_computer_must_listen_on_localhost() {
+        let mut lan = ProviderProfile::new(
+            ProviderProtocol::OpenAiCompatible,
+            EndpointLocation::ThisDevice,
+        );
+        lan.endpoint = "http://192.168.1.4:11434/v1".into();
+        let config = ProviderConfig {
+            profiles: vec![lan.clone()],
+            default_profile: None,
+        };
+        assert!(
+            config
+                .validation_errors()
+                .iter()
+                .any(|issue| issue.profile_id == lan.id)
+        );
     }
 
     #[test]
     fn a_non_loopback_profile_is_never_accepted_as_the_device_runtime() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
+        let path = dir.path().join(RUNTIME_FILE);
         let mut remote = ProviderProfile::local_runtime(None);
         remote.endpoint = "http://192.168.1.4:8000/v1".into();
         LocalRuntime {

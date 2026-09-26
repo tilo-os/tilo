@@ -214,7 +214,7 @@ fn profile_mut<'a>(
     config
         .profiles
         .iter_mut()
-        .find(|profile| profile.id == id && !profile.is_device_local())
+        .find(|profile| profile.id == id && !profile.is_model_manager())
         .ok_or_else(|| "provider is no longer available".to_string())
 }
 
@@ -288,8 +288,10 @@ pub fn apply(
 ) -> Result<SideEffect, String> {
     match operation {
         AiOperation::AddProvider { protocol, location } => {
-            if location == EndpointLocation::ThisDevice {
-                return Err("models on this device are managed by the local model service".into());
+            if location == EndpointLocation::ThisDevice
+                && protocol != ProviderProtocol::OpenAiCompatible
+            {
+                return Err("a server on this computer speaks the OpenAI-compatible API".into());
             }
             config.upsert(ProviderProfile::new(protocol, location));
             Ok(SideEffect::None)
@@ -645,14 +647,14 @@ impl AiState {
     /// runtime record, which the gateway resolves against.
     #[must_use]
     pub fn load(snapshot: Result<LocalModelSnapshot, String>) -> Self {
-        if let Ok(snapshot) = &snapshot {
-            let runtime = snapshot.runtime();
-            if agent_provider_config::LocalRuntime::load() != runtime {
-                let _ = runtime.save();
-            }
-        }
+        // The model manager owns its record; Settings shows the same
+        // projection of the snapshot the manager just answered with.
+        let config = match &snapshot {
+            Ok(snapshot) => ProviderConfig::load().with_runtime(snapshot.runtime()),
+            Err(_) => ProviderConfig::load(),
+        };
         Self {
-            config: ProviderConfig::load(),
+            config,
             assignments: ModelAssignments::load(),
             snapshot,
             health: std::collections::BTreeMap::new(),
@@ -694,7 +696,7 @@ impl AiState {
     ) -> Vec<(String, &ProviderProfile, &ModelDescriptor)> {
         let mut targets = Vec::new();
         for profile in &self.config.profiles {
-            let local = profile.is_device_local();
+            let local = profile.is_model_manager();
             if !local && !off_device {
                 continue;
             }

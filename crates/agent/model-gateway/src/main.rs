@@ -1185,6 +1185,7 @@ mod tests {
                 agent_provider_config::SUPERVISED_BASE_URL,
                 revision,
             );
+            profile.id = agent_provider_config::LOCAL_PROFILE_ID.into();
             profile.custody = EndpointCustody::Supervised {
                 socket: "/run/user/1000/tilo/models/m/api.sock".into(),
             };
