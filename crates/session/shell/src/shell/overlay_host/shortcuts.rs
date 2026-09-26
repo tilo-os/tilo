@@ -190,6 +190,8 @@ pub(super) fn shortcut_action_label(action: ShortcutAction) -> &'static str {
         ShortcutAction::Notifications => "open notifications",
         ShortcutAction::ToggleFullscreen => "make the window full screen or restore it",
         ShortcutAction::ToggleMagnifier => "turn the magnifier on or off",
+        ShortcutAction::MagnifierZoomIn => "magnify more",
+        ShortcutAction::MagnifierZoomOut => "magnify less",
         ShortcutAction::PowerMenu => "open the power menu",
     }
 }

@@ -1018,6 +1018,8 @@ pub enum ShortcutAction {
     Notifications,
     ToggleFullscreen,
     ToggleMagnifier,
+    MagnifierZoomIn,
+    MagnifierZoomOut,
     PowerMenu,
 }
 
@@ -1622,6 +1624,9 @@ impl Default for ShortcutConfig {
             // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus)
             // — the second is already the resize-wider default.
             (ShortcutAction::ToggleMagnifier, super_alt_chord("8")),
+            // GNOME's zoom keys; Super+= and Super+- already resize windows.
+            (ShortcutAction::MagnifierZoomIn, super_alt_chord("=")),
+            (ShortcutAction::MagnifierZoomOut, super_alt_chord("-")),
             // The session action sheet: the chord every PC user tries when
             // something has hung.
             (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
@@ -2154,6 +2159,8 @@ mod tests {
         assert_eq!(shown(ShortcutAction::Notifications), "Super+a");
         assert_eq!(shown(ShortcutAction::ToggleFullscreen), "Super+f");
         assert_eq!(shown(ShortcutAction::ToggleMagnifier), "Super+Alt+8");
+        assert_eq!(shown(ShortcutAction::MagnifierZoomIn), "Super+Alt+=");
+        assert_eq!(shown(ShortcutAction::MagnifierZoomOut), "Super+Alt+-");
         assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
         assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
         assert!(cfg.validate().is_ok(), "no two defaults share a chord");
@@ -2309,7 +2316,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 38);
+        assert_eq!(cfg.bindings.len(), 40);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(

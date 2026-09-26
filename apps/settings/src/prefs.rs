@@ -735,9 +735,12 @@ pub struct AccessibilityPrefs {
     /// Whole-desktop colour transform owned by the compositor.
     #[serde(default)]
     pub color_filter: ColorFilter,
-    /// Pointer-following lens magnification. `1` means disabled.
+    /// Desktop magnification factor. `1` means disabled.
     #[serde(default = "default_magnifier_zoom")]
     pub magnifier_zoom: u8,
+    /// A lens around the point of interest, or the whole screen magnified.
+    #[serde(default)]
+    pub magnifier_view: settings_store::magnifier::MagnifierView,
     /// Paint full-screen guide lines through the hardware pointer.
     #[serde(default)]
     pub cursor_crosshair: bool,
@@ -915,6 +918,7 @@ impl Default for AccessibilityPrefs {
             visual_alerts: false,
             color_filter: ColorFilter::None,
             magnifier_zoom: default_magnifier_zoom(),
+            magnifier_view: settings_store::magnifier::MagnifierView::Lens,
             cursor_crosshair: false,
             thick_text_caret: false,
             switch_control: false,
