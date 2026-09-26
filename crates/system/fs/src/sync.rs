@@ -303,8 +303,22 @@ impl Ticket {
 ///
 /// Returns an error if the endpoint fails to bind.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
+    use iroh::endpoint::{QuicTransportConfig, VarInt};
+    /// Unacknowledged bytes one stream, and one connection, may have in
+    /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
+    /// cap a stream at about 30 MB/s and a connection at about 250 MB/s
+    /// over a 40 ms round trip; content transfer needs a window of a few
+    /// bandwidth-delay products.
+    const STREAM_WINDOW: u32 = 16 * 1024 * 1024;
+    const CONNECTION_WINDOW: u32 = 64 * 1024 * 1024;
+    let transport = QuicTransportConfig::builder()
+        .stream_receive_window(VarInt::from_u32(STREAM_WINDOW))
+        .receive_window(VarInt::from_u32(CONNECTION_WINDOW))
+        .send_window(u64::from(CONNECTION_WINDOW))
+        .build();
     let lookup = MemoryLookup::new();
     let endpoint = Endpoint::builder(presets::N0)
+        .transport_config(transport)
         .secret_key(secret)
         .address_lookup(lookup.clone())
         .bind()
@@ -793,9 +807,35 @@ async fn peer_may_read_blob_with_records(
     .await
 }
 
+/// What one blob request asks for.
+enum BlobAsk {
+    /// Whole blobs, with `context`: further hashes named in the same request
+    /// with nothing asked of them (the manifests of requested chunks).
+    Blobs {
+        wanted: Vec<iroh_blobs::Hash>,
+        context: Vec<iroh_blobs::Hash>,
+    },
+    /// Positions of a file version's manifest: the manifest itself (0) and
+    /// its chunks.
+    Manifest {
+        root: iroh_blobs::Hash,
+        children: Vec<u64>,
+    },
+}
+
+impl BlobAsk {
+    fn len(&self) -> usize {
+        match self {
+            Self::Blobs { wanted, .. } => wanted.len(),
+            Self::Manifest { children, .. } => children.len(),
+        }
+    }
+}
+
 /// Whether the caller `(device, certified person)` may receive every blob
 /// in `wanted`; `context` are further hashes named in the same request with
 /// nothing asked of them (the manifests of requested chunks).
+#[cfg(test)]
 async fn authorize_blob_request(
     policy: &PeerPolicy,
     index: &BlobAccessIndex,
@@ -804,6 +844,28 @@ async fn authorize_blob_request(
     caller: (IdentityKey, Option<IdentityKey>),
     wanted: &[iroh_blobs::Hash],
     context: &[iroh_blobs::Hash],
+) -> bool {
+    authorize_ask(
+        policy,
+        index,
+        store,
+        records,
+        caller,
+        &BlobAsk::Blobs {
+            wanted: wanted.to_vec(),
+            context: context.to_vec(),
+        },
+    )
+    .await
+}
+
+async fn authorize_ask(
+    policy: &PeerPolicy,
+    index: &BlobAccessIndex,
+    store: &ContentStore,
+    records: Option<&RecordPlane>,
+    caller: (IdentityKey, Option<IdentityKey>),
+    ask: &BlobAsk,
 ) -> bool {
     if policy.is_none() && records.is_none() {
         return true;
@@ -825,7 +887,16 @@ async fn authorize_blob_request(
         person,
         readable_records,
     };
-    index.authorize(store, &requester, wanted, context).await
+    match ask {
+        BlobAsk::Blobs { wanted, context } => {
+            index.authorize(store, &requester, wanted, context).await
+        }
+        BlobAsk::Manifest { root, children } => {
+            index
+                .authorize_manifest_children(store, &requester, *root, children)
+                .await
+        }
+    }
 }
 
 /// Blob requests authorised at once; further requests wait for a slot,
@@ -886,13 +957,8 @@ impl BlobGuard {
 
     /// Decides one request on its own task and answers on `reply`. Waits
     /// for a free slot first, so a flood of requests is pushed back.
-    async fn decide<R, F>(
-        &self,
-        connection: u64,
-        wanted: Vec<iroh_blobs::Hash>,
-        context: Vec<iroh_blobs::Hash>,
-        reply: R,
-    ) where
+    async fn decide<R, F>(&self, connection: u64, ask: BlobAsk, reply: R)
+    where
         R: FnOnce(iroh_blobs::provider::events::EventResult) -> F + Send + 'static,
         F: std::future::Future<Output = ()> + Send,
     {
@@ -911,14 +977,13 @@ impl BlobGuard {
         tokio::spawn(async move {
             let ok = match caller {
                 Some(caller) => {
-                    authorize_blob_request(
+                    authorize_ask(
                         &guard.policy,
                         &guard.index,
                         &guard.store,
                         guard.records.as_ref(),
                         caller,
-                        &wanted,
-                        &context,
+                        &ask,
                     )
                     .await
                 }
@@ -928,7 +993,7 @@ impl BlobGuard {
             if !ok {
                 eprintln!(
                     "iroh-blobs: refusing {} unreadable blob(s) on connection {connection}",
-                    wanted.len()
+                    ask.len()
                 );
             }
             reply(if ok {
@@ -1049,20 +1114,31 @@ fn blob_guard(
                 }
                 ProviderMessage::GetRequestReceived(msg) => {
                     let request = &msg.inner.request;
-                    if !request.ranges.is_blob() {
-                        // Children of a hash sequence would be served without
-                        // a check of their own; this plane never asks for them.
+                    let hash = request.hash;
+                    let ask = if request.ranges.is_blob() {
+                        BlobAsk::Blobs {
+                            wanted: vec![hash],
+                            context: Vec::new(),
+                        }
+                    } else if request.ranges.is_infinite() {
+                        // An open-ended sequence would reach past the chunks
+                        // of a manifest; this plane never asks for one.
                         msg.tx.send(Err(AbortReason::Permission)).await.ok();
                         continue;
-                    }
-                    let hash = request.hash;
+                    } else {
+                        // Ranges of a file version: its chunks are readable
+                        // exactly when the version is.
+                        BlobAsk::Manifest {
+                            root: hash,
+                            children: request
+                                .ranges
+                                .iter_non_empty_infinite()
+                                .map(|(offset, _)| offset)
+                                .collect(),
+                        }
+                    };
                     guard
-                        .decide(
-                            msg.inner.connection_id,
-                            vec![hash],
-                            Vec::new(),
-                            reply!(msg.tx),
-                        )
+                        .decide(msg.inner.connection_id, ask, reply!(msg.tx))
                         .await;
                 }
                 ProviderMessage::GetManyRequestReceived(msg) => {
@@ -1078,7 +1154,11 @@ fn blob_guard(
                         }
                     }
                     guard
-                        .decide(msg.inner.connection_id, wanted, context, reply!(msg.tx))
+                        .decide(
+                            msg.inner.connection_id,
+                            BlobAsk::Blobs { wanted, context },
+                            reply!(msg.tx),
+                        )
                         .await;
                 }
                 ProviderMessage::ObserveRequestReceived(msg) => {
@@ -1086,8 +1166,10 @@ fn blob_guard(
                     guard
                         .decide(
                             msg.inner.connection_id,
-                            vec![hash],
-                            Vec::new(),
+                            BlobAsk::Blobs {
+                                wanted: vec![hash],
+                                context: Vec::new(),
+                            },
                             reply!(msg.tx),
                         )
                         .await;
