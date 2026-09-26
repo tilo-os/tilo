@@ -11,6 +11,8 @@ const MAX_FS_AUTHORITY_RETRY_DELAY: std::time::Duration = std::time::Duration::f
 struct FsAuthorityPublication {
     acl: PathBuf,
     cache_dir: PathBuf,
+    /// Personal identity directory whose user root signs the authority.
+    identity_dir: PathBuf,
     publisher: PathBuf,
 }
 
@@ -53,9 +55,17 @@ pub(super) fn schedule_fs_authority_publication(acl: PathBuf) {
     if cfg!(test) && std::env::var_os("TILO_FS_AUTHORITY_PUBLISHER").is_none() {
         return;
     }
+    let identity_dir = match runtime_identity::identity_dir_from_env() {
+        Ok(path) => path,
+        Err(error) => {
+            tracing::warn!(%error, "no personal identity directory to sign filesystem authority");
+            return;
+        }
+    };
     let publication = FsAuthorityPublication {
         acl,
         cache_dir: fs_authority_cache_dir(),
+        identity_dir,
         publisher: fs_authority_publisher(),
     };
     let Ok(mut queue) = fs_authority_publication_queue().lock() else {
@@ -99,6 +109,8 @@ fn run_fs_authority_publication_queue() {
                 .arg(&publication.cache_dir)
                 .arg("--acl")
                 .arg(&publication.acl)
+                .arg("--identity-dir")
+                .arg(&publication.identity_dir)
                 .status();
             match result {
                 Ok(status) if status.success() => break,

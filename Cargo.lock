@@ -4317,6 +4317,7 @@ dependencies = [
  "rand 0.10.1",
  "redb",
  "runtime-fs",
+ "runtime-identity",
  "serde",
  "serde_bytes",
  "serde_json",

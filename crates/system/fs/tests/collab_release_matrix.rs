@@ -249,7 +249,44 @@ fn export_home_peer_bundle(
     assert!(status.success(), "home-peer bundle export failed: {status}");
 }
 
-fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl: &Path) {
+/// Install the governor's personal identity the way `shell
+/// --provision-identity` leaves it without Secret Service: a secured record
+/// with a broker-file secret. Authority publication signs only through it.
+fn provision_personal_identity(identity_dir: &Path, person_seed: [u8; 32]) {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    std::fs::create_dir_all(identity_dir).unwrap();
+    std::fs::set_permissions(identity_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let record = serde_json::json!({
+        "display_name": "",
+        "avatar_color": [128, 128, 128],
+        "threshold_identity": {
+            "single_device": true,
+            "group_public_key": SigningKey::from_bytes(&person_seed).verifying_key().to_bytes(),
+            "threshold": 1,
+            "total_shares": 1,
+            "share_index": 1,
+            "secret_bytes": person_seed,
+        },
+        "created_at": "",
+        "schema_version": 1,
+    });
+    runtime_identity::import_identity_with_provider(
+        identity_dir,
+        "primary",
+        &serde_json::to_vec(&record).unwrap(),
+        &runtime_identity::BrokerFileProvider::new(identity_dir),
+    )
+    .unwrap();
+}
+
+fn publish_authority(
+    binary: &Path,
+    identity: &Path,
+    personal_identity: &Path,
+    workspace_cache: &Path,
+    acl: &Path,
+) {
     let status = Command::new(binary)
         .env(fs::identity::IDENTITY_ROOT_ENV, identity)
         .env(
@@ -262,6 +299,8 @@ fn publish_authority(binary: &Path, identity: &Path, workspace_cache: &Path, acl
             workspace_cache.to_str().unwrap(),
             "--acl",
             acl.to_str().unwrap(),
+            "--identity-dir",
+            personal_identity.to_str().unwrap(),
         ])
         .status()
         .unwrap();
@@ -1144,7 +1183,15 @@ macro_rules! run_nas_replica_lifecycle_scenario {
             ),
         ];
         std::fs::write(&revoked_acl, serde_json::to_vec(&revoked_caps).unwrap()).unwrap();
-        publish_authority(binary, &owner_identity, &owner_cache, &revoked_acl);
+        let owner_personal = temp.path().join("owner-personal");
+        provision_personal_identity(&owner_personal, [0xa1; 32]);
+        publish_authority(
+            binary,
+            &owner_identity,
+            &owner_personal,
+            &owner_cache,
+            &revoked_acl,
+        );
         let replica_authority = replica_cache
             .join(original.workspace_id().to_string())
             .join("workspace-authority.bin");

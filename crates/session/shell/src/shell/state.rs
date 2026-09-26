@@ -72,6 +72,8 @@ mod identity_fs_tests {
         env.set("TILO_FS_AUTHORITY_TEST_LOG", &log);
         env.set("TILO_FS_AUTHORITY_TEST_STARTED", &started);
         env.set("TILO_FS_AUTHORITY_TEST_RELEASE", &release);
+        let config = temp.path().join("config");
+        env.set("XDG_CONFIG_HOME", &config);
 
         let tree = WorkspaceTree {
             fs_acl_path: Some(acl.clone()),
@@ -100,6 +102,10 @@ mod identity_fs_tests {
         assert!(arguments.contains("publish-authority"));
         assert!(arguments.contains(cache.to_str().unwrap()));
         assert!(arguments.contains(acl.to_str().unwrap()));
+        assert!(
+            arguments.contains("--identity-dir") && arguments.contains(config.to_str().unwrap()),
+            "the governor signs through the session's personal identity: {arguments}"
+        );
         assert!(
             wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
             "the publisher worker must retire before its fixture is removed"

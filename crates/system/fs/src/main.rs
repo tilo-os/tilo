@@ -496,11 +496,18 @@ enum Command {
         relay_workspace_ids: Vec<u64>,
     },
     /// Sign and atomically publish the current workspace capability policy.
+    ///
+    /// Signs with the governor's user root, held by the personal identity in
+    /// `--identity-dir`; run it as that identity's owner, in their session.
     PublishAuthority {
         #[arg(long)]
         cache_dir: PathBuf,
         #[arg(long)]
         acl: PathBuf,
+        /// The personal identity directory holding the active record
+        /// (`primary.json`), usually `~/.config/tilo/identity`.
+        #[arg(long)]
+        identity_dir: PathBuf,
     },
     /// Register a direct filesystem endpoint obtained from authenticated relay
     /// discovery with the running local filesystem daemon.
@@ -614,7 +621,11 @@ async fn run_command() -> Result<()> {
             principals,
             relay_workspace_ids,
         ),
-        Command::PublishAuthority { cache_dir, acl } => publish_authority(cache_dir, acl).await,
+        Command::PublishAuthority {
+            cache_dir,
+            acl,
+            identity_dir,
+        } => publish_authority(cache_dir, acl, &identity_dir).await,
         Command::RegisterContentPeer {
             cache_dir,
             endpoint_stdin,
@@ -626,11 +637,13 @@ async fn run_command() -> Result<()> {
     }
 }
 
-async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
+async fn publish_authority(cache_dir: PathBuf, acl: PathBuf, identity_dir: &Path) -> Result<()> {
     let ticket = Ticket::decode(&std::fs::read_to_string(workspace_ticket_path(&cache_dir))?)?;
     let capabilities = serde_json::from_slice(&std::fs::read(&acl)?)?;
-    let paths = identity_paths();
-    let governor = tilo_user_identity::persist::read_owned_signing_key(&paths.user_privkey)?;
+    // Load the signer before contacting the daemon, so a missing identity is
+    // reported as such rather than as an unavailable socket.
+    let governor = runtime_identity::load_root_signer(identity_dir)
+        .context("publishing workspace authority signs with your identity root")?;
     let socket = local_authority_socket_path(ticket.workspace_id());
     let current = local_authority_request(
         &socket,
@@ -642,13 +655,8 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
     .await?
     .authority;
     let revision = current.map_or(1, |current| current.revision.saturating_add(1));
-    let envelope = WorkspaceAuthorityEnvelope::sign(
-        ticket.workspace_id(),
-        revision,
-        capabilities,
-        false,
-        &governor,
-    )?;
+    let envelope =
+        sign_authority_revision(&governor, ticket.workspace_id(), revision, capabilities)?;
     let accepted = local_authority_request(
         &socket,
         AuthorityRequest {
@@ -663,6 +671,28 @@ async fn publish_authority(cache_dir: PathBuf, acl: PathBuf) -> Result<()> {
         "workspace authority publication lost a concurrent revision; retry"
     );
     Ok(())
+}
+
+/// Sign one workspace authority revision with the governor's personal
+/// identity; the root never leaves its record.
+fn sign_authority_revision(
+    governor: &runtime_identity::SigningIdentity,
+    workspace: uuid::Uuid,
+    revision: u64,
+    capabilities: Vec<collab_types::CapOverride>,
+) -> Result<WorkspaceAuthorityEnvelope> {
+    WorkspaceAuthorityEnvelope::sign_with(
+        workspace,
+        revision,
+        capabilities,
+        false,
+        governor.group_public_key(),
+        |payload| {
+            governor
+                .sign(payload)
+                .map_err(|error| anyhow::anyhow!("the personal identity could not sign: {error}"))
+        },
+    )
 }
 
 async fn mount_bearer_share(
@@ -3585,6 +3615,65 @@ async fn seed_from_dir(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A governor provisioned as `shell --provision-identity` leaves it on a
+    /// session without Secret Service: the root lives only in the secured
+    /// personal record, never in a root key file, and still signs authority.
+    #[test]
+    fn authority_signs_with_a_freshly_provisioned_personal_identity() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let identity_root = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(identity_dir.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let secret = [0x5a; 32];
+        let group = ed25519_dalek::SigningKey::from_bytes(&secret)
+            .verifying_key()
+            .to_bytes();
+        let record = serde_json::json!({
+            "display_name": "",
+            "avatar_color": [128, 128, 128],
+            "threshold_identity": {
+                "single_device": true,
+                "group_public_key": group,
+                "threshold": 1,
+                "total_shares": 1,
+                "share_index": 1,
+                "secret_bytes": secret,
+            },
+            "created_at": "",
+            "schema_version": 1,
+        });
+        runtime_identity::import_identity_with_provider(
+            identity_dir.path(),
+            "primary",
+            &serde_json::to_vec(&record).unwrap(),
+            &runtime_identity::BrokerFileProvider::new(identity_dir.path()),
+        )
+        .unwrap();
+        assert!(
+            !tilo_user_identity::IdentityPaths::under(identity_root.path())
+                .user_privkey
+                .exists()
+        );
+
+        let governor = runtime_identity::load_root_signer(identity_dir.path()).unwrap();
+        let workspace = uuid::Uuid::from_bytes([7; 16]);
+        let envelope = sign_authority_revision(&governor, workspace, 3, Vec::new()).unwrap();
+        assert_eq!(envelope.governor, group);
+        assert_eq!(envelope.revision, 3);
+        envelope.verify(workspace, group).unwrap();
+
+        let empty = tempfile::tempdir().unwrap();
+        let Err(error) = runtime_identity::load_root_signer(empty.path()) else {
+            panic!("publishing without a personal identity must fail");
+        };
+        assert!(
+            error.to_string().contains("shell --provision-identity"),
+            "{error}"
+        );
+    }
 
     /// Files that ship in the OS image, addressed from this crate.
     fn os_file(rel: &str) -> PathBuf {

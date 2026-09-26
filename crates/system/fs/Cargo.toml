@@ -25,6 +25,7 @@ filesystem = [
     "dep:ed25519-dalek",
     "dep:thumbnail",
     "dep:tilo-user-identity",
+    "dep:runtime-identity",
     "dep:tilo-power-mgmt",
     "document-media",
     "dep:libc",
@@ -115,6 +116,8 @@ tilo-clock = { path = "../tilo-clock" }
 # The machine's one device key. The mount derives its iroh node key from
 # it rather than minting its own, so the node id names the device.
 tilo-user-identity = { path = "../../collab/tilo-user-identity", optional = true }
+# The workspace governor signs authority through its personal identity record.
+runtime-identity = { path = "../../runtime/runtime-identity", optional = true }
 # Bus-free, production battery/AC sampling for speculative-hydration policy.
 tilo-power-mgmt = { path = "../power", default-features = false, optional = true }
 runtime-fs = { path = "../../runtime/runtime-fs", optional = true }
