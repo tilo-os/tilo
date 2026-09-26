@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::hardware::{
-    DisplayConfig, DisplayConfigError, DisplayHardwareSnapshot, DisplayOutputSnapshot,
+    DisplayConfig, DisplayConfigError, DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplaySet,
     DisplayTransaction, OutputConfig, OutputMode, OutputTransform,
 };
 
@@ -234,9 +234,16 @@ pub fn layout_available(
 pub fn stage_layout(mode: DisplayLayoutMode) -> std::io::Result<DisplayTransaction> {
     let snapshot = DisplayHardwareSnapshot::load()
         .ok_or_else(|| std::io::Error::other(DisplayLayoutError::NoHardwareSnapshot))?;
-    let candidate = plan_layout(mode, &snapshot.outputs, &DisplayConfig::load())
+    let set = attached_set(&snapshot.outputs);
+    let candidate = plan_layout(mode, &snapshot.outputs, &DisplayConfig::load_for(&set))
         .map_err(std::io::Error::other)?;
-    DisplayTransaction::request(candidate)
+    DisplayTransaction::request(set, candidate)
+}
+
+/// The monitor set `outputs` describe; layouts are remembered per set.
+pub fn attached_set(outputs: &[DisplayOutputSnapshot]) -> DisplaySet {
+    let descriptors: Vec<_> = outputs.iter().map(|o| o.descriptor.clone()).collect();
+    DisplaySet::of_descriptors(&descriptors)
 }
 
 /// Logical extent of an output in the shared desktop plane: its active mode
@@ -468,6 +475,7 @@ mod tests {
                 hdr: false,
                 vrr: false,
                 color_profiles: Vec::new(),
+                monitor: None,
             },
             current_mode: modes[0],
             builtin,
