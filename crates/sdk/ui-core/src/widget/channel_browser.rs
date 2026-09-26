@@ -8,6 +8,7 @@
 //! both `entry.name` and `entry.space_name` so typing a space prefix
 //! narrows the list.
 
+use crate::search::fuzzy_score;
 use crate::time::SystemTime;
 use std::collections::HashMap;
 
@@ -1029,38 +1030,6 @@ impl ChannelBrowser {
                 }
             }
         }
-    }
-}
-
-// Copy of `command_palette::fuzzy_score`, which is private to its module.
-fn fuzzy_score(query: &str, text: &str) -> Option<i32> {
-    if query.is_empty() {
-        return Some(0);
-    }
-    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
-    let t: Vec<char> = text.chars().flat_map(char::to_lowercase).collect();
-    let mut qi = 0usize;
-    let mut matches = 0i32;
-    let mut gaps = 0i32;
-    let mut prev_match: Option<usize> = None;
-    for (ti, ch) in t.iter().enumerate() {
-        if q.get(qi) == Some(ch) {
-            if let Some(pm) = prev_match {
-                let gap = ti.saturating_sub(pm).saturating_sub(1);
-                gaps = gaps.saturating_add(i32::try_from(gap).unwrap_or(i32::MAX));
-            }
-            prev_match = Some(ti);
-            qi = qi.saturating_add(1);
-            matches = matches.saturating_add(1);
-            if qi == q.len() {
-                break;
-            }
-        }
-    }
-    if qi < q.len() {
-        None
-    } else {
-        Some(matches.saturating_sub(gaps))
     }
 }
 

@@ -12,6 +12,7 @@ use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::rc::Rc;
 use tilo_clock::unix_now;
+use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
@@ -2368,55 +2369,21 @@ impl SearchProvider for ActionsProvider {
     }
 }
 
-/// Case-insensitive scoring:
-/// - Prefix match on label → 100
-/// - Substring match on label → 50
-/// - Exact action id → 90
-/// - Substring match on subtitle or id → 25
-/// - Multi-word terms spanning label/subtitle/id → 20
-/// - Fuzzy subsequence on label → 10
-/// - Empty needle → 0 (matches everything, sort by kind order)
-fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    if label.starts_with(needle) {
-        return Some(100);
-    }
-    if label.contains(needle) {
-        return Some(50);
-    }
-    if id == needle {
-        return Some(90);
-    }
-    if subtitle.contains(needle) || id.contains(needle) {
-        return Some(25);
-    }
-    let terms: Vec<&str> = needle.split_whitespace().collect();
-    if terms.len() > 1
-        && terms
-            .iter()
-            .all(|term| label.contains(term) || subtitle.contains(term) || id.contains(term))
-    {
-        return Some(20);
-    }
-    if fuzzy_subsequence(needle, label) {
-        return Some(10);
-    }
-    None
-}
+/// A typed action id is a verbatim identity — scripts and power users name
+/// actions by it — so it weighs close to the label.
+pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
+/// The shared ranker over an action's label, id and subtitle. An empty
+/// needle ranks everything `0`, so rows sort by kind order.
+fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(label, FieldWeight::TITLE),
+            RankField::new(id, ACTION_ID_WEIGHT),
+            RankField::new(subtitle, FieldWeight::SUBTITLE),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -2637,7 +2604,7 @@ mod tests {
                 "app grants and enforced access for this workspace",
                 "settings.privacy.open",
             ),
-            Some(90),
+            Some(100),
         );
         assert_eq!(
             match_score(
@@ -2646,7 +2613,9 @@ mod tests {
                 "app grants and enforced access for this workspace",
                 "settings.privacy.open",
             ),
-            Some(20),
+            Some(crate::shell::search::provider_score(
+                ui::search::rank::SPANNING_RANK
+            )),
         );
     }
 

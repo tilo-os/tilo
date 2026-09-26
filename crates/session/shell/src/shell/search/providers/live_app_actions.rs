@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 #[cfg(test)]
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::search::{FieldWeight, RankField};
 
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::search::ActionReceipt;
@@ -1434,23 +1435,15 @@ impl LiveAppActionsProvider {
         if descriptor.contract.is_programmatic() {
             return None;
         }
-        let searchable = format!(
-            "{} {} {} {}",
-            descriptor.action_label,
-            descriptor.resource_label,
-            descriptor.address.action,
-            root.app_id
-        )
-        .to_lowercase();
-        let score = if needle.is_empty() {
-            0
-        } else if descriptor.action_label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let score = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&descriptor.action_label, FieldWeight::TITLE),
+                RankField::new(&descriptor.resource_label, FieldWeight::SUBTITLE),
+                RankField::new(&descriptor.address.action, FieldWeight::IDENTITY),
+                RankField::new(&root.app_id, FieldWeight::METADATA),
+            ],
+        )?;
         let contract = descriptor.contract.clone();
         let mut params = descriptor.params.clone();
         push_confirmation_params(&mut params, &contract.advertised_confirmation());
@@ -1551,20 +1544,14 @@ impl LiveAppActionsProvider {
             .flatten()
             .collect::<Vec<_>>()
             .join(" ");
-        let searchable = format!(
-            "{} {} {}",
-            row.resource.label, row.resource.id, presentation_text
-        )
-        .to_lowercase();
-        let rank = if needle.is_empty() {
-            0
-        } else if row.resource.label.to_lowercase().starts_with(needle) {
-            100
-        } else if searchable.contains(needle) {
-            50
-        } else {
-            return None;
-        };
+        let rank = crate::shell::search::rank_fields(
+            needle,
+            &[
+                RankField::new(&row.resource.label, FieldWeight::TITLE),
+                RankField::new(row.resource.id.as_str(), FieldWeight::IDENTITY),
+                RankField::new(&presentation_text, FieldWeight::METADATA),
+            ],
+        )?;
         let scope = crate::shell::chrome_state::SearchResourceScope {
             peer_id: root.peer_id,
             cluster_id: root.cluster_id.clone(),
@@ -1881,22 +1868,16 @@ impl SearchProvider for LiveAppActionsProvider {
                     tilo_actions::Availability::Available => None,
                     tilo_actions::Availability::Unavailable { reason, .. } => Some(reason.clone()),
                 };
-                let searchable = format!(
-                    "{} {} {} {} {}",
-                    action.action_label,
-                    action.resource_label,
-                    action.action,
-                    action.resource,
-                    surface.app_id
-                )
-                .to_lowercase();
-                let score = if needle.is_empty() {
-                    0
-                } else if action.action_label.to_lowercase().starts_with(&needle) {
-                    100
-                } else if searchable.contains(&needle) {
-                    50
-                } else {
+                let Some(score) = crate::shell::search::rank_fields(
+                    &needle,
+                    &[
+                        RankField::new(&action.action_label, FieldWeight::TITLE),
+                        RankField::new(&action.resource_label, FieldWeight::SUBTITLE),
+                        RankField::new(&action.action, FieldWeight::IDENTITY),
+                        RankField::new(&action.resource, FieldWeight::IDENTITY),
+                        RankField::new(&surface.app_id, FieldWeight::METADATA),
+                    ],
+                ) else {
                     continue;
                 };
                 let params = Self::action_params(action);

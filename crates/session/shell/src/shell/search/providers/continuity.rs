@@ -7,6 +7,10 @@
 
 use std::rc::Rc;
 
+use ui::search::{FieldWeight, RankField};
+
+use super::actions::ACTION_ID_WEIGHT;
+
 use crate::shell::device_fabric::{DeviceKind, DisplayEdge};
 use crate::shell::device_fabric_runtime::{
     BluetoothHandoffPhaseView, DisplayMirrorPhase, MediaHandoffPhase,
@@ -50,25 +54,16 @@ fn opaque(domain: &'static str, bytes: &[u8]) -> String {
     hex::encode(digest.get(..16).unwrap_or(&digest))
 }
 
+/// The shared ranker over an action's title, identity and description.
 fn matches(needle: &str, title: &str, subtitle: &str, id: &str) -> Option<i32> {
-    let needle = needle.trim().to_ascii_lowercase();
-    if needle.is_empty() {
-        return Some(0);
-    }
-    let title = title.to_ascii_lowercase();
-    let subtitle = subtitle.to_ascii_lowercase();
-    let id = id.to_ascii_lowercase();
-    if title.starts_with(&needle) {
-        Some(100)
-    } else if id == needle {
-        Some(90)
-    } else if title.contains(&needle) {
-        Some(50)
-    } else if subtitle.contains(&needle) || id.contains(&needle) {
-        Some(25)
-    } else {
-        None
-    }
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(title, FieldWeight::TITLE),
+            RankField::new(id, ACTION_ID_WEIGHT),
+            RankField::new(subtitle, FieldWeight::SUBTITLE),
+        ],
+    )
 }
 
 fn confirmation_params(confirm: bool) -> Vec<ActionParam> {
