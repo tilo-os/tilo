@@ -132,7 +132,21 @@ jobs:
             aarch64) key=WPE_BUILDROOT_AARCH64_REF ;;
           esac
           printf '%s=%s\n' "$key" "$ref" > "refs/${{ matrix.arch }}.env"
-          echo "::notice::$key=$ref"
+          # The buildroot resolves Fedora afresh and is never byte-reproducible,
+          # so every run yields a new digest, and a new pin would discard the
+          # OS image's WPE engine layer cache (over an hour per architecture).
+          # Record whether it installs exactly the packages of the pinned one;
+          # the promotion keeps the pins when neither architecture changed.
+          pinned="$(sed -n "s/^$key=//p" os/wpe-buildroot-snapshot.env)"
+          unchanged=false
+          if [[ $pinned =~ ^code\.podesta\.ai/qos/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] \
+             && docker run --rm --entrypoint cat "$pinned" /usr/lib/tilo/wpe-buildroot-packages.txt > pinned-packages.txt \
+             && docker run --rm --entrypoint cat "$ref" /usr/lib/tilo/wpe-buildroot-packages.txt > new-packages.txt \
+             && cmp -s pinned-packages.txt new-packages.txt; then
+            unchanged=true
+          fi
+          printf '%s_UNCHANGED=%s\n' "$key" "$unchanged" >> "refs/${{ matrix.arch }}.env"
+          echo "::notice::$key=$ref (packages unchanged from the pin: $unchanged)"
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: wpe-buildroot-${{ matrix.arch }}
@@ -208,6 +222,11 @@ jobs:
             printf 'native WPE builds unexpectedly produced one shared manifest\n' >&2
             exit 1
           }
+          if [[ ${WPE_BUILDROOT_X86_64_REF_UNCHANGED:-false} == true \
+                && ${WPE_BUILDROOT_AARCH64_REF_UNCHANGED:-false} == true ]]; then
+            echo '::notice::both buildroots install exactly the pinned packages; keeping the pins and the WPE layer cache'
+            exit 0
+          fi
           git fetch --no-tags origin main
           mapfile -t snapshot_inputs < <(printf '%s' "$WPE_SNAPSHOT_INPUTS")
           if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${snapshot_inputs[@]}"; then
