@@ -1,6 +1,6 @@
 //! Screen 1 — first-run identity creation.
 //!
-//! Layout, top-to-bottom inside the shared sheet ([`super::sheet`]):
+//! Layout, top-to-bottom inside the shared sheet (`super::sheet`):
 //!
 //! ```text
 //! +----------------------------------------+
@@ -31,7 +31,7 @@
 //!
 //! The display-name field is the shared [`TextInput`], embedded the way
 //! `ModalPrompt` embeds one: the sheet's row plan places it
-//! ([`place_field`]), the screen forwards it the events it does not claim
+//! (`place_field`), the screen forwards it the events it does not claim
 //! for itself (Enter submits, PageUp/PageDown scroll), and it hangs off the
 //! screen's layout node as a child of its own so the host's focus order,
 //! the accessibility tree and the headless driver all reach it by name.

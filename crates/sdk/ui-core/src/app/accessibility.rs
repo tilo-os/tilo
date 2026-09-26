@@ -1339,7 +1339,7 @@ impl App {
     /// # Errors
     ///
     /// Returns `Err` when the underlying app action fails to decode or
-    /// dispatch (see [`Self::dispatch_encoded_semantic`]).
+    /// dispatch (see `Self::dispatch_encoded_semantic`).
     pub fn invoke_semantic_action(
         &mut self,
         id: &crate::a11y_tree::SemanticId,

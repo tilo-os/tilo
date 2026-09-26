@@ -1,7 +1,7 @@
-//! Inline marks model used by [`RichTextLine`].
+//! Inline marks model used by [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
 //!
 //! A `MarkSpan` is a half-open byte range `[start, end)` over a
-//! [`RichTextLine`]'s text plus a [`Mark`] tag, stored sorted by `start`.
+//! [`RichTextLine`](crate::widget::rich_text_line::RichTextLine)'s text plus a [`Mark`] tag, stored sorted by `start`.
 //! Multiple marks may cover the same byte range — bold + italic on the same
 //! word produces two `MarkSpan`s, not one fused `BoldItalic` variant.
 //!
@@ -25,7 +25,7 @@ use uuid::Uuid;
 /// round-trips through the markdown layer.
 pub type PageId = Uuid;
 
-/// One inline mark applied to a byte range of a [`RichTextLine`].
+/// One inline mark applied to a byte range of a [`RichTextLine`](crate::widget::rich_text_line::RichTextLine).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mark {
     /// **Bold** — renders as `TextWeight::Bold`.

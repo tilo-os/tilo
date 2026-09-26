@@ -338,7 +338,7 @@ impl ChipStyle {
 
 impl Chip {
     /// Text size a chip of `height` px paints its label at. The widget's
-    /// own [`HEIGHT`] maps to `typography.scale.sm`, whether the caller passes
+    /// own `HEIGHT` maps to `typography.scale.sm`, whether the caller passes
     /// authored geometry or geometry already grown by the responsive layout.
     /// Anything intentionally taller or shorter scales with it, while the
     /// already-scaled type token is still applied exactly once.
@@ -596,7 +596,7 @@ impl Widget for Chip {
     }
 
     /// Replace the advance estimate with the measured pill (see
-    /// [`Chip::intrinsic_size`]) — the estimate was all the retained chip
+    /// `Chip::intrinsic_size`) — the estimate was all the retained chip
     /// ever laid out with, since a `length × length` leaf skips `measure`.
     fn adjust_layout_with_measure(
         &mut self,

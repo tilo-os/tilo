@@ -509,7 +509,7 @@ impl GroupRow {
     }
 
     /// Used by the shell's `resync_strips_from_tree` to diff against the
-    /// persisted [`shell::state::Strip::window_groups`], preserving
+    /// persisted `shell::state::Strip::window_groups`, preserving
     /// existing groups' host state across an unrelated revision bump.
     pub fn group_ids(&self) -> Vec<u64> {
         self.groups.iter().map(|g| g.id).collect()

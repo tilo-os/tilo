@@ -1,7 +1,7 @@
 //! `ResizableSplit` — a two-pane container with a draggable divider.
 //!
 //! Splits its rect between a `left` and a `right` child. Dragging the
-//! divider re-balances the panes, clamped to [`SPLIT_MIN`]..=[`SPLIT_MAX`]
+//! divider re-balances the panes, clamped to `SPLIT_MIN`..=`SPLIT_MAX`
 //! so neither child ever fully collapses. The colour swap on hover/drag
 //! additionally confirms the gesture even in a headless capture.
 //!

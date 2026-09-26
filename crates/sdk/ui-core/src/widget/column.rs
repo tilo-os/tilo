@@ -85,7 +85,7 @@ impl Column {
     /// Resolve the column's height from its content (`auto`) instead of
     /// filling the parent (`percent(1.0)`). Required when wrapping the
     /// column in a `Scrollable` — see the field doc on
-    /// [`Column::intrinsic_height`] for the gory details.
+    /// `Column::intrinsic_height` for the gory details.
     #[must_use]
     pub fn with_intrinsic_height(mut self) -> Self {
         self.intrinsic_height = true;

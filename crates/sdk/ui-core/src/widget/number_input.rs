@@ -918,7 +918,7 @@ impl Widget for NumberInput {
         Some(winit::window::ImePurpose::Normal)
     }
 
-    /// Reports [`Role::SpinButton`] with the formatted value; an assistive
+    /// Reports `Role::SpinButton` with the formatted value; an assistive
     /// technology can nudge it with Increment / Decrement or jump it with
     /// `SetValue`, all through the same commit path as pointer/keyboard input.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

@@ -667,7 +667,7 @@ impl WindowGroup {
     }
 
     /// True inside the bar rect but not on a tab pill and not in the
-    /// right-edge resize band. Used by [`GroupRow`] to arbitrate a press
+    /// right-edge resize band. Used by [`GroupRow`](crate::widget::group_row::GroupRow) to arbitrate a press
     /// into a group-reorder drag vs. a tab/resize gesture.
     pub fn bar_grab_hit(&self, p: Point) -> bool {
         if !self.bar_rect().contains(p) {

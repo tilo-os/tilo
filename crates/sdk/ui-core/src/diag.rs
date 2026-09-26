@@ -8,7 +8,7 @@
 //! diagnostic line then kills the program it was describing, and its window is
 //! left on screen with no process behind it.
 //!
-//! [`diag!`] is `eprintln!` with the write error dropped. Use it wherever an
+//! `diag!` is `eprintln!` with the write error dropped. Use it wherever an
 //! app or the toolkit would reach for `eprintln!`; `tracing` needs no such
 //! treatment, its writers already discard I/O errors.
 

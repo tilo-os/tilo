@@ -1,5 +1,5 @@
 //! The one modal chrome: scrim, card, title row, close control, action row.
-//! Retained [`Widget`]s ([`ModalDialog`](super::modal_dialog::ModalDialog)) and
+//! Retained [`Widget`](crate::widget::Widget)s ([`ModalDialog`](super::modal_dialog::ModalDialog)) and
 //! immediate-mode painters share this implementation, including the focusable,
 //! accessible controls.
 //!

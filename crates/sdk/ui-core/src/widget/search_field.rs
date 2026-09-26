@@ -7,7 +7,7 @@
 //!
 //! Built with [`SearchField::opens_palette`], the field becomes a
 //! non-editable affordance that raises the shared command-search shortcut
-//! [`CommandPalette`](crate::widget::CommandPalette) instead: a click
+//! `CommandPalette` instead: a click
 //! latches a request the host polls with [`SearchField::take_palette_request`]
 //! and opens its own `CommandPalette`. Search UI and ranking thus live in
 //! one shared toolkit widget, not in every app's bespoke search bar.

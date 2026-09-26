@@ -460,7 +460,7 @@ impl Editor {
 
     /// Build an empty radical at the caret and drop into its radicand — the
     /// structured equivalent of typing `sqrt(`. This backs the `√` glyph as
-    /// entered input (routed here by [`type_char`]), so a `√` from the keyboard
+    /// entered input (routed here by `type_char`), so a `√` from the keyboard
     /// / an IME / a paste builds a real radical rather than a literal character
     /// the engine can't parse.
     pub fn insert_sqrt(&mut self) {
