@@ -93,6 +93,8 @@ mod hdr_tonemap_shader;
 mod headless_examples_smoke;
 #[path = "identity_startup.rs"]
 mod identity_startup;
+#[path = "idle_inhibit_protocol.rs"]
+mod idle_inhibit_protocol;
 #[path = "interaction_test.rs"]
 mod interaction_test;
 #[path = "keyboard_focus_wire.rs"]
