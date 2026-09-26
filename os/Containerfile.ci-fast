@@ -3,7 +3,7 @@
 # Reuse the reviewed compiler and audit binaries; never resolve a floating Rust.
 # Built by .forgejo/workflows/build-ci-fast-image.yml. Keep the base on the
 # builder's Fedora release: the copied audit tools link against its glibc.
-ARG TOOLS_IMAGE=code.sandbox.example/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+ARG TOOLS_IMAGE=code.sandbox.example/qos/tilo-builder@sha256:5365970de75407269908d486afd076f4a480356333e1b188958cd2dac60345c9
 FROM ${TOOLS_IMAGE} AS tools
 
 FROM registry.fedoraproject.org/fedora:44@sha256:55159f5c92b7baf5f1c1ca1d727c95e77a4cb77c0829b2c11740a700ff4ea02b
