@@ -617,6 +617,96 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 
+/// How a clickpad (a touchpad whose whole surface is the button) decides
+/// which button a physical press means. libinput decides per device which of
+/// these it supports; the compositor asks only for a supported one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadClickMethod {
+    /// The bottom strip is split into left, middle and right button areas.
+    Areas,
+    /// One finger is a left click, two a right click, three a middle click,
+    /// wherever they rest.
+    Clickfinger,
+    /// Whatever libinput picks for the device (areas on most PC clickpads,
+    /// finger count on Apple-style ones). Also what an unknown value reads
+    /// as, so one odd string never discards the rest of the section.
+    #[default]
+    #[serde(other)]
+    Default,
+}
+
+impl TouchpadClickMethod {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Areas, Self::Clickfinger];
+}
+
+/// When a touchpad produces scrolling instead of pointer motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadScrollMethod {
+    /// One finger along the right or bottom edge scrolls.
+    Edge,
+    /// Two fingers moving together scroll; also what an unknown value reads
+    /// as.
+    #[default]
+    #[serde(other)]
+    TwoFinger,
+}
+
+impl TouchpadScrollMethod {
+    pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
+}
+
+/// `input` key for the scroll-distance multiplier applied to wheel and
+/// finger scrolling alike.
+pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
+/// Slowest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MIN: f64 = 0.25;
+/// Fastest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MAX: f64 = 4.0;
+
+/// Clamp a persisted scroll multiplier into the supported range; anything
+/// non-finite is the neutral `1.0`.
+pub fn clamp_scroll_speed(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(SCROLL_SPEED_MIN, SCROLL_SPEED_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// The scroll multiplier for a `0.0 … 1.0` slider position. The scale is
+/// logarithmic so the midpoint is exactly `1.0` and halving feels as large a
+/// step as doubling.
+pub fn scroll_speed_from_slider(position: f64) -> f64 {
+    let position = if position.is_finite() {
+        position.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let span = SCROLL_SPEED_MAX.log2();
+    clamp_scroll_speed((span * (2.0 * position - 1.0)).exp2())
+}
+
+/// The slider position for a persisted multiplier; the inverse of
+/// [`scroll_speed_from_slider`].
+pub fn scroll_speed_to_slider(speed: f64) -> f64 {
+    let span = SCROLL_SPEED_MAX.log2();
+    f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
+}
+
+/// Default bounce-keys window: a second press of the same key this soon
+/// after its release is treated as a bounce, not a keystroke.
+pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
+/// Shortest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
+/// Longest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
+
+fn default_scroll_speed() -> f64 {
+    1.0
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent input-device toggles serialised by field name; consumers in other \
@@ -654,6 +744,12 @@ pub struct RichInputConfig {
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     pub touchpad_gestures: bool,
+    pub touchpad_click_method: TouchpadClickMethod,
+    pub touchpad_scroll_method: TouchpadScrollMethod,
+    /// Scroll-distance multiplier for wheels and touchpads, within
+    /// [`SCROLL_SPEED_MIN`] … [`SCROLL_SPEED_MAX`].
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: f64,
     pub pen_output: Option<String>,
 }
 
@@ -679,6 +775,9 @@ impl Default for RichInputConfig {
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
             touchpad_gestures: true,
+            touchpad_click_method: TouchpadClickMethod::Default,
+            touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
+            scroll_speed: default_scroll_speed(),
             pen_output: None,
         }
     }
@@ -788,6 +887,20 @@ impl RichInputConfig {
             .get("compose_key")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        // Likewise for the touchpad choices: each is read on its own so one
+        // unexpected value only resets itself.
+        config.touchpad_click_method = section
+            .get("touchpad_click_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.touchpad_scroll_method = section
+            .get("touchpad_scroll_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.scroll_speed = section
+            .get(SCROLL_SPEED_KEY)
+            .and_then(serde_json::Value::as_f64)
+            .map_or(1.0, clamp_scroll_speed);
         config.normalise_sources();
         config
     }
@@ -2180,5 +2293,56 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
         assert_eq!(cfg.active_source_index(), 1);
+    }
+
+    #[test]
+    fn touchpad_click_and_scroll_choices_round_trip_through_the_section() {
+        let config = RichInputConfig {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            scroll_speed: 2.0,
+            ..Default::default()
+        };
+        let section = serde_json::to_value(&config)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(section["touchpad_click_method"], "clickfinger");
+        assert_eq!(section["touchpad_scroll_method"], "edge");
+        let back = RichInputConfig::from_section(&section);
+        assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_touchpad_choices_reset_only_themselves() {
+        let section = serde_json::json!({
+            "touchpad_click_method": "three_finger_magic",
+            "touchpad_scroll_method": "sideways",
+            "scroll_speed": 99.0,
+            "tap_to_click": false
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.touchpad_click_method, TouchpadClickMethod::Default);
+        assert_eq!(cfg.touchpad_scroll_method, TouchpadScrollMethod::TwoFinger);
+        assert!((cfg.scroll_speed - SCROLL_SPEED_MAX).abs() < f64::EPSILON);
+        assert!(!cfg.tap_to_click, "the rest of the section survives");
+    }
+
+    #[test]
+    fn scroll_slider_midpoint_is_neutral_and_the_mapping_inverts() {
+        assert!((scroll_speed_from_slider(0.5) - 1.0).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(0.0) - SCROLL_SPEED_MIN).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(1.0) - SCROLL_SPEED_MAX).abs() < 1e-12);
+        for position in [0.0, 0.1, 0.25, 0.5, 0.8, 1.0] {
+            let back = scroll_speed_to_slider(scroll_speed_from_slider(position));
+            assert!((back - position).abs() < 1e-9, "{position} -> {back}");
+        }
+        assert!((clamp_scroll_speed(f64::NAN) - 1.0).abs() < f64::EPSILON);
     }
 }

@@ -1283,6 +1283,10 @@ impl SettingsApp {
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one exhaustive match over the closed InputOperation catalogue"
+    )]
     fn apply_input_operation(operation: crate::actions::InputOperation) -> Result<String, String> {
         let mut prefs = crate::prefs::SystemPrefs::load();
         let message = match operation {
@@ -1331,6 +1335,24 @@ impl SettingsApp {
             crate::actions::InputOperation::SetTouchpadGestures { enabled } => {
                 prefs.input.touchpad_gestures = enabled;
                 "touchpad gestures updated"
+            }
+            crate::actions::InputOperation::SetTouchpadClickMethod { method } => {
+                prefs.input.touchpad_click_method =
+                    crate::panes::mouse_keyboard::click_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad click method".to_string())?;
+                "touchpad click method updated"
+            }
+            crate::actions::InputOperation::SetTouchpadScrollMethod { method } => {
+                prefs.input.touchpad_scroll_method =
+                    crate::panes::mouse_keyboard::scroll_method_for_label(&method)
+                        .ok_or_else(|| "unsupported touchpad scroll method".to_string())?;
+                "touchpad scroll method updated"
+            }
+            crate::actions::InputOperation::SetScrollSpeed { value } => {
+                prefs.input.scroll_speed = settings_store::hardware::scroll_speed_from_slider(
+                    valid_input_fraction(value)?,
+                );
+                "scroll speed updated"
             }
             crate::actions::InputOperation::SetAccelerationProfile { profile } => {
                 if !["Adaptive", "Flat"].contains(&profile.as_str()) {
