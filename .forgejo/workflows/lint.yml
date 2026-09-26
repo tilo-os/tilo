@@ -61,4 +61,7 @@ jobs:
         run: cargo deny --workspace check --hide-inclusion-graph
 
       - name: cargo machete
-        run: bash tools/ci/check-unused-dependencies.sh
+        run: >-
+          bash tools/ci/check-unused-dependencies.sh --changed
+          '${{ github.event.pull_request.base.sha }}'
+          '${{ github.event.before }}'
