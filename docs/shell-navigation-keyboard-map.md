@@ -1,8 +1,11 @@
 # Tilo shell navigation and keyboard map
 
 Status: implemented contract, 2026-09-01. This is the compact product map for
-shell navigation. The executable chord ownership table remains in
-`crates/session/shell/src/compositor/client_input.rs`; overlay-specific behavior lives in
+shell navigation. Chords Settings cannot rebind live in one table,
+`crates/session/shell/src/shell/fixed_chords.rs`, rendered below under "Fixed
+shell chords"; a test fails when that section and the table disagree.
+Editable bindings default to what this page shows and follow the user's
+Settings. Overlay-specific behavior lives in
 `crates/session/shell/src/shell/overlay_host/mod.rs`.
 
 ## Containment and focus
@@ -23,7 +26,7 @@ strip changes context; switching a window or tab changes focus within it.
 | Intent | Keyboard | Pointer route |
 |---|---|---|
 | Search current app | Ctrl+K | Search |
-| Search all Tilo | Super+K, Super+Space; Alt+Space when nested | Search |
+| Search all Tilo | Super+K, Super+Space | Search |
 | Open/close Overview | Super+Tab | Overview button |
 | Preview workspace in Overview | Up/Down | Workspace rail |
 | Commit preview | Enter | Select workspace |
@@ -56,6 +59,36 @@ Super+Left/Right clamps because it describes a spatial direction.
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.
+
+## Fixed shell chords
+
+These never reach a focused app, cannot be rebound in Settings and cannot be
+granted to an app through the GlobalShortcuts portal.
+
+<!-- fixed-shell-chords:start -->
+| Intent | Keyboard |
+|---|---|
+| Screenshot | Print Screen |
+| Switch windows | Alt+Tab |
+| Switch windows backwards | Alt+Shift+Tab |
+| Close tab | Alt+F4  /  Super+W |
+| Change workspace | Super+Page Up / Down |
+| New window | Super+N |
+| Add tab here | Super+T |
+| Duplicate tab | Super+D |
+| Open terminal | Super+Enter |
+| Global search | Super+Space |
+| Lock | Super+L |
+| Workspace wheel | Super+S |
+| Wireless display | Super+P |
+| Capture screenshot | Super+Shift+S |
+| Picture in picture | Super+Shift+P |
+| Save recent replay | Super+Shift+R |
+| Workspace history | Super+H |
+| Explore workspace history | Super+Shift+H |
+| Keyboard guide | F1 |
+| Stop all remote input | Super+Esc |
+<!-- fixed-shell-chords:end -->
 
 ## Overlay behavior
 
