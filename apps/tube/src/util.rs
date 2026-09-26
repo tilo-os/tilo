@@ -38,7 +38,11 @@ pub fn fnv1a(s: &str) -> u32 {
 /// even relevant, this is post add) to `u8`. Clamped into `[0, 255]`
 /// immediately above the cast, so truncation is exact and the value is
 /// never negative.
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the value is clamped to [0, 255] immediately before the cast"
+)]
 fn channel_u8(x: f32) -> u8 {
     (x * 255.0).round().clamp(0.0, 255.0) as u8
 }
@@ -55,7 +59,11 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
     let x = c * (1.0 - (hp.rem_euclid(2.0) - 1.0).abs());
     // hp = rem_euclid(h, 360) / 60 ∈ [0, 6), so the sector index below is
     // always in 0..=5 — truncation cannot lose information.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "hp is in [0, 6), so the sector index is 0..=5"
+    )]
     let sector = hp as u32;
     let (r1, g1, b1) = match sector {
         0 => (c, x, 0.0),
@@ -75,7 +83,10 @@ pub fn hsl(h: f32, s: f32, l: f32) -> Color {
 pub fn seed_gradient(seed: &str) -> (Color, Color) {
     let h = fnv1a(seed);
     // `h % 360` is always < 360, exactly representable in f32.
-    #[allow(clippy::cast_precision_loss)]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "h % 360 is below 360, exact in f32"
+    )]
     let hue = (h % 360) as f32;
     let top = hsl(hue, 0.55, 0.42);
     let bottom = hsl((hue + 36.0) % 360.0, 0.50, 0.28);
@@ -102,7 +113,11 @@ pub fn duration_hms(secs: u32) -> String {
 pub fn clock(secs: f64) -> String {
     // Clamped non-negative immediately above; truncating the fractional
     // second is intended for a `mm:ss` display label.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped non-negative first; dropping the fractional second is intended"
+    )]
     let secs = secs.max(0.0) as u64;
     ui::format::timecode(secs)
 }
