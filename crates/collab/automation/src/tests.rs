@@ -23,8 +23,8 @@ use crate::{
     AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
     SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, Weekday, check, run,
-    shortcut_resource_id,
+    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
+    check, run, shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -332,6 +332,8 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         output: None,
         grant: notes_grant(),
         triggers: Vec::new(),
+        consents: Vec::new(),
+        saved_by: None,
     }
 }
 
@@ -361,6 +363,17 @@ fn run_with(
     run_id: RunId,
     mode: RunMode,
 ) -> RunReport {
+    run_consented(host, hooks, shortcut, run_id, mode, Vec::new())
+}
+
+fn run_consented(
+    host: &FakeHost,
+    hooks: &Hooks,
+    shortcut: &Shortcut,
+    run_id: RunId,
+    mode: RunMode,
+    consents: Vec<UnattendedConsent>,
+) -> RunReport {
     block_on(run(
         host,
         hooks,
@@ -371,6 +384,7 @@ fn run_with(
             mode,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
+            consents,
         },
     ))
 }
@@ -607,6 +621,67 @@ fn confirmation_is_refused_unattended_and_asked_for_interactively() {
         RunMode::Interactive,
     );
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
+}
+
+#[test]
+fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
+    let host = FakeHost::new();
+    let purge = shortcut(
+        "purge",
+        vec![invoke(
+            "delete",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "delete",
+            &[],
+        )],
+    );
+    let elsewhere = UnattendedConsent::new(NOTES, "notes.note:other", "delete");
+    let report = run_consented(
+        &host,
+        &Hooks::default(),
+        &purge,
+        RunId::new(),
+        RunMode::Unattended,
+        vec![elsewhere],
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::ConfirmationRequired))
+        ),
+        "consent to another resource is no consent here: {report:?}"
+    );
+    assert!(host.started().is_empty());
+
+    let hooks = Hooks::default();
+    let report = run_consented(
+        &host,
+        &hooks,
+        &purge,
+        RunId::new(),
+        RunMode::Unattended,
+        vec![UnattendedConsent::new(NOTES, NOTE, "delete")],
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert!(
+        hooks.confirmations.lock().unwrap().is_empty(),
+        "nobody is asked in an unattended run"
+    );
+    let mut stray = purge;
+    stray.consents = vec![UnattendedConsent::new(NOTES, NOTE, "archive")];
+    assert!(
+        matches!(
+            check(&stray, &host.catalog(), &NoShortcuts)
+                .as_ref()
+                .map_err(Vec::as_slice),
+            Err([error]) if matches!(error.kind, CheckErrorKind::UnusedConsent { .. })
+        ),
+        "a consent no step can use is refused at save time"
+    );
     let started = host.started();
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
@@ -860,6 +935,60 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
         started[0].target.address,
         ActionAddress::new("agent.transform:default", AGENT_SUMMARISE_ACTION)
     );
+}
+
+#[test]
+fn an_ai_step_never_reads_a_secret() {
+    let host = FakeHost::new();
+    let mut leak = shortcut(
+        "leak",
+        vec![Step::new(
+            "sum",
+            StepKind::Ai {
+                transform: AiTransform::Summarise,
+                input: Binding::Input("token".into()),
+            },
+        )],
+    );
+    leak.inputs = vec![ActionParam::required(
+        "token",
+        ParamType::Secret,
+        "An API token",
+    )];
+    leak.grant.push(PermissionProfileRule::grant(
+        Scope::App(AGENT_APP_ID.into()),
+        Verb::Write,
+    ));
+    let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            CheckErrorKind::Incompatible(reason) if reason.contains("secret")
+        )),
+        "{errors:?}"
+    );
+
+    // Refused at run time too, for a shortcut that was never checked.
+    let mut inputs = serde_json::Map::new();
+    inputs.insert("token".into(), json!("s3cret"));
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &leak,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs,
+            consents: Vec::new(),
+        },
+    ));
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Binding { reason })) if reason.contains("secret")),
+        "{report:?}"
+    );
+    assert!(host.started().is_empty());
 }
 
 #[test]

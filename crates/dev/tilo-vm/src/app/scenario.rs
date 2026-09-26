@@ -408,9 +408,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .as_deref()
                         .is_some_and(|value| {
                             value
-                                .strip_prefix(
-                                    "code.podesta.ai/qos/tilo-lenovo-83ed-firmware@sha256:",
-                                )
+                                .strip_prefix("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:")
                                 .is_some_and(|hex| lowercase_hex(hex, 64))
                         })
                     && selected
@@ -418,7 +416,7 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .generation
                         .is_none_or(|generation| generation == 1)
                     && selected.update_origin
-                        == format!("code.podesta.ai/qos/tilo:lenovo-83ed-{source}")
+                        == format!("code.tilo.so/tilo/tilo:lenovo-83ed-{source}")
             }
             "generic" => {
                 selected.provenance.firmware_candidate.is_none()
@@ -429,18 +427,25 @@ fn parse_install_proof(bytes: &[u8]) -> Result<VmInstallProof, String> {
                         .is_some_and(|generation| generation > 0)
                     && selected.update_origin
                         == format!(
-                            "code.podesta.ai/qos/tilo:gen{}",
+                            "registry.tilo.so/tilo/tilo:gen{}",
                             selected.provenance.generation.unwrap_or_default()
                         )
             }
             _ => false,
+        };
+        // Board images carry private firmware and stay on the forge's private
+        // registry; every other image is public.
+        let repository = if selected.hardware_profile == "lenovo-83ed" {
+            "code.tilo.so/tilo/tilo"
+        } else {
+            "registry.tilo.so/tilo/tilo"
         };
         if proof.schema != "tilo.vm-install-image-proof.v2"
             || !lowercase_hex(booted_composefs, 128)
             || !lowercase_hex(installed_composefs, 128)
             || proof.composefs_digest != installed_composefs
             || selected.schema != "tilo.installer-offline-target.v1"
-            || selected.target_ref != format!("code.podesta.ai/qos/tilo@{}", selected.target_digest)
+            || selected.target_ref != format!("{repository}@{}", selected.target_digest)
             || selected.target_digest != proof.installed_image_digest
             || selected.architecture != "aarch64"
             || !profile_matches
@@ -1323,7 +1328,7 @@ mod tests {
     fn vm_v2_proof_binds_distinct_medium_and_signed_target() {
         let revision = "a".repeat(40);
         let target = format!("sha256:{}", "b".repeat(64));
-        let origin = format!("code.podesta.ai/qos/tilo:lenovo-83ed-{revision}");
+        let origin = format!("code.tilo.so/tilo/tilo:lenovo-83ed-{revision}");
         let ids = json!({
             "efi": "11111111-1111-4111-8111-111111111111",
             "boot": "22222222-2222-4222-8222-222222222222",
@@ -1340,12 +1345,12 @@ mod tests {
             "installed_update_origin": format!("ostree-unverified-image:docker://{origin}"),
             "selected_target": {
                 "schema": "tilo.installer-offline-target.v1",
-                "target_ref": format!("code.podesta.ai/qos/tilo@{target}"),
+                "target_ref": format!("code.tilo.so/tilo/tilo@{target}"),
                 "target_digest": target, "architecture": "aarch64",
                 "hardware_profile": "lenovo-83ed", "update_origin": origin,
                 "provenance": {"source_revision": revision,
                     "firmware_manifest_sha256": "d".repeat(64),
-                    "firmware_candidate": format!("code.podesta.ai/qos/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
+                    "firmware_candidate": format!("code.tilo.so/tilo/tilo-lenovo-83ed-firmware@sha256:{}", "e".repeat(64)),
                     "invocation_id": "123"},
                 "verifier_key_sha256": "e".repeat(64),
             },
@@ -1366,13 +1371,20 @@ mod tests {
                 .is_err()
         );
         payload["selected_target"]["target_digest"] = json!(target);
+        // A board target on the public repository is refused.
+        payload["selected_target"]["target_ref"] =
+            json!(format!("registry.tilo.so/tilo/tilo@{target}"));
+        assert!(
+            super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
+                .is_err()
+        );
         payload["selected_target"]["hardware_profile"] = json!("generic");
-        payload["selected_target"]["update_origin"] = json!("code.podesta.ai/qos/tilo:gen7");
+        payload["selected_target"]["update_origin"] = json!("registry.tilo.so/tilo/tilo:gen7");
         payload["selected_target"]["provenance"]["generation"] = json!(7);
         payload["selected_target"]["provenance"]["firmware_candidate"] = Value::Null;
         payload["selected_target"]["provenance"]["firmware_manifest_sha256"] = Value::Null;
         payload["installed_update_origin"] =
-            json!("ostree-unverified-image:docker://code.podesta.ai/qos/tilo:gen7");
+            json!("ostree-unverified-image:docker://registry.tilo.so/tilo/tilo:gen7");
         assert!(
             super::parse_install_proof(format!("TILO_VM_INSTALL_PROOF_V2={payload}\n").as_bytes())
                 .is_ok()

@@ -4,7 +4,7 @@
 #   verify-kernel-provenance.sh <kernel-ref>
 #
 # Verifies the kernel's signature and its signed SLSA provenance, which must
-# bind the qOS source commit, the native architecture and the kernel digest,
+# bind the Tilo source commit, the native architecture and the kernel digest,
 # plus exactly one signed native kernel buildroot
 # (os/dev/kernel-build-environment.py), whose own signature is verified too.
 #
@@ -24,7 +24,7 @@ case "$(uname -m)" in
   aarch64) expected_arch=arm64 ;;
   *) die "unsupported kernel architecture: $(uname -m)" ;;
 esac
-[[ "$ref" =~ ^code\.podesta\.ai/qos/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
+[[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-kernel@sha256:[0-9a-f]{64}$ ]] \
   || die "no digest-pinned native Tilo kernel for $(uname -m)"
 
 cosign verify --key "$key" "$ref" >/dev/null || die "Tilo kernel signature verification failed"

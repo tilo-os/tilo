@@ -149,6 +149,8 @@ zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
+# The shared preview decoder behind drag previews.
+thumbnail = { path = "../../media/thumbnail" }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
@@ -260,6 +262,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 # GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
 # collapses to one copy in the workspace lock.
 naga = { version = "29", features = ["wgsl-in"] }
+# Client side of the wlr output-management protocols, to drive the
+# compositor the way wlr-randr and kanshi do.
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]

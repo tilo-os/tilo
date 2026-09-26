@@ -319,11 +319,12 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         clean_screen_scene: &Scene,
     ) -> Result<(f64, f64, f64), String> {
-        let (width, height) = frame_builder.viewport();
+        let (width, height) = frame_builder.scene_size();
         let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let pointer = frame_builder
             .capture_pointer_position()
+            .map(|p| frame_builder.layout_point_to_scene(p))
             .ok_or_else(|| "move the pointer over the colour to pick it".to_string())?;
         let x = pointer
             .x
@@ -364,7 +365,7 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         scene: &Scene,
     ) -> Result<(u32, u32, std::sync::Arc<[u8]>), String> {
-        let (width, height) = frame_builder.viewport();
+        let (width, height) = frame_builder.scene_size();
         let width = width.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let height = height.round().clamp(1.0, MAX_CAPTURE_EDGE) as u32;
         let mut renderer = OffscreenRenderer::try_new(width, height)
@@ -1596,7 +1597,17 @@ fn capture_source(
     intent: &CaptureIntent,
 ) -> (Scene, Vec<Rect>) {
     let (mut source, regions) = match intent.extent {
-        CaptureExtent::Visible => (clean_screen_scene.clone(), intent.regions.clone()),
+        // The clean screen is the presented scene, where each display drew
+        // its part of the desktop at its own scale; the regions were chosen
+        // on the logical desktop.
+        CaptureExtent::Visible => (
+            clean_screen_scene.clone(),
+            intent
+                .regions
+                .iter()
+                .filter_map(|region| frame_builder.layout_rect_to_scene(*region))
+                .collect(),
+        ),
         CaptureExtent::FullApp | CaptureExtent::WholeStrip => {
             let ids: Vec<String> = intent
                 .targets
@@ -1624,6 +1635,11 @@ fn capture_source(
         && let Some(pointer) = frame_builder.capture_pointer_position()
         && let Some(cursor) = frame_builder.pointer_image().bitmap(24)
     {
+        let pointer = if intent.extent == CaptureExtent::Visible {
+            frame_builder.layout_point_to_scene(pointer)
+        } else {
+            pointer
+        };
         crate::compositor::cursor::draw_scene(&mut source, &cursor, pointer);
     }
     (source, regions)

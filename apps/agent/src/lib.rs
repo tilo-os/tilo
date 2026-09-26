@@ -50,8 +50,6 @@
 
 // Reuse the production-broker integration fixture in private Session tests.
 #[cfg(test)]
-extern crate self as qos_agent;
-#[cfg(test)]
 extern crate self as tilo_agent;
 
 pub mod apply;
@@ -62,6 +60,7 @@ pub mod providers;
 pub mod session;
 pub mod surface;
 pub mod tools;
+pub mod transform;
 pub mod wire;
 
 pub use session::{Config, Session};

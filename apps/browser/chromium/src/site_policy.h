@@ -1,7 +1,7 @@
 #pragma once
 #include "include/cef_parser.h"
 #include <string>
-namespace qos {
+namespace tilo {
 // Match Chromium's serialized HTTP(S) origin, excluding credentials/path.
 inline std::string Origin(const std::string& url) {
   CefURLParts parts;if(url.size()>8192 || !CefParseURL(url,parts)) return {};

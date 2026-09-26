@@ -42,6 +42,17 @@ pub struct Shortcut {
     /// When the system may start it without being asked.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub triggers: Vec<TriggerSpec>,
+    /// Confirmations given in advance for runs nobody is present at: a
+    /// triggered run may take exactly these actions although their contract
+    /// asks for confirmation. They are the saving person's, so a host honours
+    /// them only in runs that person started.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub consents: Vec<UnattendedConsent>,
+    /// Policy id of the person who saved it. Set by the host that stored it,
+    /// whatever the saved JSON claimed; its triggers fire on that person's
+    /// behalf only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub saved_by: Option<String>,
 }
 
 impl Shortcut {
@@ -49,6 +60,36 @@ impl Shortcut {
     #[must_use]
     pub fn action_address(&self) -> ActionAddress {
         ActionAddress::new(shortcut_resource_id(&self.id), SHORTCUT_RUN_ACTION)
+    }
+}
+
+/// Advance confirmation of one exact action: `action` on resource
+/// `resource` of application `app_id`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct UnattendedConsent {
+    pub app_id: String,
+    pub resource: String,
+    pub action: String,
+}
+
+impl UnattendedConsent {
+    #[must_use]
+    pub fn new(
+        app_id: impl Into<String>,
+        resource: impl Into<String>,
+        action: impl Into<String>,
+    ) -> Self {
+        Self {
+            app_id: app_id.into(),
+            resource: resource.into(),
+            action: action.into(),
+        }
+    }
+
+    /// Whether this consent names `address` on `app_id`.
+    #[must_use]
+    pub fn covers(&self, app_id: &str, address: &ActionAddress) -> bool {
+        self.app_id == app_id && self.resource == address.resource && self.action == address.action
     }
 }
 

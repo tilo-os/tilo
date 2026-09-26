@@ -3,7 +3,7 @@ from native_delivery import rows
 
 
 def validate_typing_effects(scenario, lines, *, expected_offset_y=None):
-    effects = rows(lines, 'qos-native-effect ')
+    effects = rows(lines, 'tilo-native-effect ')
     steps = scenario['steps']
     if len(effects) != len(steps):
         raise ValueError('Missing or extra Word Processor effect evidence')

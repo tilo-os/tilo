@@ -6,9 +6,9 @@ use uuid::Uuid;
 
 pub const CHECKED_HISTORY_VERSION: u16 = 1;
 pub const MAX_CHECKED_HISTORY_REQUEST_BYTES: usize = 1024;
-pub const CHECKED_HISTORY_REVIEW_XATTR: &str = "user.qos.history-review";
-pub const CHECKED_HISTORY_RESTORE_XATTR: &str = "user.qos.history-restore";
-pub const CHECKED_HISTORY_RESULT_XATTR_PREFIX: &str = "user.qos.history-result.";
+pub const CHECKED_HISTORY_REVIEW_XATTR: &str = "user.tilo.history-review";
+pub const CHECKED_HISTORY_RESTORE_XATTR: &str = "user.tilo.history-restore";
+pub const CHECKED_HISTORY_RESULT_XATTR_PREFIX: &str = "user.tilo.history-result.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

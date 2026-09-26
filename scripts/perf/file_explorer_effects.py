@@ -42,7 +42,7 @@ def _close(a,b):
 
 def _state(state):
     if (not isinstance(state,dict) or any(k not in state for k in _STABLE)
-            or state['app'] != 'dev.qos.file-explorer' or state['view_id'] != 'file_view'
+            or state['app'] != 'dev.tilo.file-explorer' or state['view_id'] != 'file_view'
             or state['hash_algorithm'] != 'sha256' or not _hash(state['order_hash'])
             or state['ready'] is not True or state['is_loading'] is not False
             or state['has_error'] is not False
@@ -87,7 +87,7 @@ def _effects(scenario,lines):
     if (not isinstance(scenario,dict) or not isinstance(scenario.get('steps'),list)
             or not scenario['steps'] or not all(isinstance(s,dict) for s in scenario['steps'])):
         raise ValueError('Invalid Files scenario')
-    effects=_rows(lines,'qos-native-effect ')
+    effects=_rows(lines,'tilo-native-effect ')
     if len(effects)!=len(scenario['steps']):
         raise ValueError('Missing or extra Files effects')
     previous=None
@@ -118,7 +118,7 @@ def validate_file_explorer_scroll(scenario,lines,manifest):
         if (state['entry_count']!=manifest['entry_count'] or state['order_hash']!=manifest['order_hash']
                 or state['sort_by']!='Name' or state['sort_order']!='Ascending'):
             raise ValueError('Files state does not match fixture order')
-    windows=_rows(lines,'qos-native-window ')
+    windows=_rows(lines,'tilo-native-window ')
     if len(windows)!=1 or not _number(windows[0].get('scale_factor')) or windows[0]['scale_factor']<=0:
         raise ValueError('Files pointer requires one actual positive window scale')
     scale=windows[0]['scale_factor']
@@ -147,7 +147,7 @@ def validate_file_explorer_frame_states(scenario,lines):
     initial=effects[0]['before']
     origin=[initial['content_rect'][axis]+initial[key]-initial['viewport_rect'][axis]
             for axis,key in ((0,'offset_x'),(1,'offset_y'))]
-    frames=_rows(lines,'qos-native-frame ')
+    frames=_rows(lines,'tilo-native-frame ')
     next_input,previous_frame=0,-1
     for frame in frames:
         identity,inputs=frame.get('cpu_frame_id'),frame.get('input_ids')

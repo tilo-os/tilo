@@ -166,7 +166,6 @@ RUN for u in \
 # uses. Refuses to `bootc upgrade` unless the image is signed.
 COPY keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY os/etc/containers/policy.json /etc/containers/policy.json
-COPY os/etc/containers/registries.d/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml
 COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 COPY os/etc/containers/registries.d/registry.tilo.so.yaml /etc/containers/registries.d/registry.tilo.so.yaml
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """Keep the UI toolkit's clock behind ``ui::time``.
 
-``crates/sdk/ui-core`` names its clock types through ``crate::time`` so that a
-host without a native process clock has one module to provide. Clippy enforces
-the calls (``Instant::now``/``SystemTime::now``) from the crate's own
-``clippy.toml``, but it cannot tell ``crate::time::Instant`` from the
-``std::time::Instant`` it re-exports, so this check covers the type paths:
+The toolkit (``crates/sdk/ui-core``) and its host services
+(``crates/sdk/tilo-host``) name their clock types through ``crate::time`` —
+defined once, in ``tilo-host``'s ``src/time.rs``, and re-exported by the
+toolkit — so that a host without a native process clock has one module to
+provide. Clippy enforces the calls (``Instant::now``/``SystemTime::now``) from
+each crate's own ``clippy.toml``, but it cannot tell ``crate::time::Instant``
+from the ``std::time::Instant`` it re-exports, so this check covers the type
+paths:
 
 * no ``std::time::Instant``, ``std::time::SystemTime`` or
-  ``std::time::UNIX_EPOCH`` in production sources outside ``src/time.rs``;
+  ``std::time::UNIX_EPOCH`` in production sources outside the clock module;
   test modules and test files are exempt;
 * Clippy reads only the nearest ``clippy.toml``, so every key of the root file
-  must be repeated in the crate's file with the same value; a list (such as
+  must be repeated in each crate's file with the same value; a list (such as
   ``disallowed-methods``) may extend the root's list but must keep every entry.
 """
 
@@ -25,8 +28,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CRATE = Path("crates/sdk/ui-core")
-CLOCK_MODULE = CRATE / "src" / "time.rs"
+CRATES = (Path("crates/sdk/ui-core"), Path("crates/sdk/tilo-host"))
+CLOCK_MODULE = Path("crates/sdk/tilo-host/src/time.rs")
 
 CLOCK_ITEM = r"(?:Instant|SystemTime|UNIX_EPOCH)"
 DIRECT_PATH = re.compile(rf"\bstd::time::{CLOCK_ITEM}\b")
@@ -66,12 +69,12 @@ def line_number(text: str, offset: int) -> int:
     return text.count("\n", 0, offset) + 1
 
 
-def audit_sources(root: Path) -> list[Violation]:
+def audit_sources(root: Path, crate: Path) -> list[Violation]:
     violations: list[Violation] = []
-    src = root / CRATE / "src"
+    src = root / crate / "src"
     for path in sorted(src.rglob("*.rs")):
         relative = path.relative_to(root)
-        if relative == CLOCK_MODULE or is_test_file(relative.relative_to(CRATE / "src")):
+        if relative == CLOCK_MODULE or is_test_file(relative.relative_to(crate / "src")):
             continue
         text = production_source(path.read_text(encoding="utf-8"))
         offsets = [m.start() for m in DIRECT_PATH.finditer(text)]
@@ -99,11 +102,11 @@ def extends(crate_value: object, root_value: object) -> bool:
     )
 
 
-def audit_clippy_config(root: Path) -> list[Violation]:
-    crate_config_path = root / CRATE / "clippy.toml"
+def audit_clippy_config(root: Path, crate: Path) -> list[Violation]:
+    crate_config_path = root / crate / "clippy.toml"
     root_config = tomllib.loads((root / "clippy.toml").read_text(encoding="utf-8"))
     if not crate_config_path.is_file():
-        return [Violation(str(CRATE / "clippy.toml"), 0, "missing")]
+        return [Violation(str(crate / "clippy.toml"), 0, "missing")]
     crate_config = tomllib.loads(crate_config_path.read_text(encoding="utf-8"))
     violations = []
     for key, value in root_config.items():
@@ -113,12 +116,17 @@ def audit_clippy_config(root: Path) -> list[Violation]:
             reason = f"sets {key!r} differently from the root clippy.toml"
         else:
             continue
-        violations.append(Violation(str(CRATE / "clippy.toml"), 0, reason))
+        violations.append(Violation(str(crate / "clippy.toml"), 0, reason))
     return violations
 
 
 def audit(root: Path = ROOT) -> list[Violation]:
-    return audit_clippy_config(root) + audit_sources(root)
+    """Audit every toolkit crate present under ``root``."""
+    violations: list[Violation] = []
+    for crate in CRATES:
+        if (root / crate).is_dir():
+            violations += audit_clippy_config(root, crate) + audit_sources(root, crate)
+    return violations
 
 
 def main() -> int:
@@ -128,7 +136,7 @@ def main() -> int:
         for violation in violations:
             print(f"  {violation}", file=sys.stderr)
         return 1
-    print("UI clock contract OK (ui-core reads time through ui::time)")
+    print("UI clock contract OK (the toolkit and its host services read time through ui::time)")
     return 0
 
 

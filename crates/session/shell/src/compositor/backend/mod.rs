@@ -138,6 +138,23 @@ impl Output {
         layout::logical_extent(self.physical_size(), f64::from(self.scale), self.transform)
     }
 
+    /// Where the output sits in the logical desktop — the space the shell
+    /// lays out in, clients are configured in and the pointer moves in.
+    pub fn logical_rect(&self) -> vello::kurbo::Rect {
+        let (w, h) = self.logical_size();
+        let (x, y) = (
+            f64::from(self.logical_position.0),
+            f64::from(self.logical_position.1),
+        );
+        vello::kurbo::Rect::new(x, y, x + f64::from(w), y + f64::from(h))
+    }
+
+    /// Where the output's pixels sit in the painted scene.
+    pub fn scene_rect(&self) -> vello::kurbo::Rect {
+        let (x, y) = (f64::from(self.position.0), f64::from(self.position.1));
+        vello::kurbo::Rect::new(x, y, x + f64::from(self.size.0), y + f64::from(self.size.1))
+    }
+
     pub fn physical_size(&self) -> (u32, u32) {
         use settings_store::hardware::OutputTransform::{Rotate90, Rotate270};
         if matches!(self.transform, Rotate90 | Rotate270) {
@@ -172,19 +189,45 @@ pub fn combined_geometry(outputs: &[Output]) -> (u32, u32) {
     (w, h)
 }
 
-/// Translate the backend's output list into the geometry the shell's
-/// strips resolve window widths against.
+/// Bounding box (width, height) of every output's logical rectangle: the
+/// size of the desktop the shell lays out. Equal to [`combined_geometry`]
+/// when every scale is 1.
+pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
+    let mut w: i64 = 0;
+    let mut h: i64 = 0;
+    for o in outputs {
+        let (lw, lh) = o.logical_size();
+        w = w.max(i64::from(o.logical_position.0).saturating_add(i64::from(lw)));
+        h = h.max(i64::from(o.logical_position.1).saturating_add(i64::from(lh)));
+    }
+    let w = u32::try_from(w.max(0)).unwrap_or(u32::MAX);
+    let h = u32::try_from(h.max(0)).unwrap_or(u32::MAX);
+    (w, h)
+}
+
+/// Translate the backend's output list into the geometry the shell lays out
+/// and paints across: each display's logical rectangle, its scale, and
+/// where its pixels go in the scene.
 ///
 /// Outputs with a zero dimension are dropped: a connector mid-modeset
 /// reports 0×0, which would hand a strip a display it can't place a window on.
 pub fn output_geometry(outputs: &[Output]) -> Vec<crate::shell::overlay_host::OutputGeometry> {
     outputs
         .iter()
-        .filter(|o| o.size.0 > 0 && o.size.1 > 0)
-        .map(|o| crate::shell::overlay_host::OutputGeometry {
-            x: f64::from(o.position.0),
-            width: f64::from(o.size.0),
-            height: f64::from(o.size.1),
+        .filter(|o| {
+            let (lw, lh) = o.logical_size();
+            o.size.0 > 0 && o.size.1 > 0 && lw > 0 && lh > 0
+        })
+        .map(|o| {
+            let logical = o.logical_rect();
+            crate::shell::overlay_host::OutputGeometry {
+                x: logical.x0,
+                y: logical.y0,
+                width: logical.width(),
+                height: logical.height(),
+                scale: f64::from(o.scale),
+                scene: o.scene_rect(),
+            }
         })
         .collect()
 }
@@ -226,7 +269,9 @@ pub enum GestureEvent {
     },
 }
 
-/// One touch point's movement, in combined-output coordinates.
+/// One touch point's movement. A backend reports it in scene pixels; the
+/// compositor carries it into the logical desktop with
+/// [`layout::event_to_logical`] before anything hit-tests it.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum TouchEvent {
     Down { slot: u32, x: f64, y: f64 },
@@ -258,9 +303,14 @@ pub enum BackendEvent {
     /// Raw relative mouse motion, emitted by the direct backend alongside the
     /// clamped absolute cursor event. Spatial device control needs the delta
     /// after the local cursor reaches a display edge.
+    /// The same delta before pointer acceleration and the event time in
+    /// microseconds are what `zwp_relative_pointer_v1` hands to games.
     RelativePointerMotion {
         dx: f64,
         dy: f64,
+        dx_unaccel: f64,
+        dy_unaccel: f64,
+        time_usec: u64,
     },
     /// Modifier-state changed. Tracked separately because
     /// `WindowEvent::ModifiersChanged` carries a `Modifiers` struct
@@ -290,6 +340,46 @@ pub enum BackendEvent {
     },
     Redraw,
     Focus(bool),
+}
+
+/// Where local pointer motion may take the pointer, in global coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum PointerConstraintRegion {
+    #[default]
+    Free,
+    /// The pointer stays where it is; only relative motion is reported.
+    Locked,
+    /// The pointer stays inside the union of these `(x0, y0, x1, y1)` rects.
+    Confined(Vec<(f64, f64, f64, f64)>),
+}
+
+impl PointerConstraintRegion {
+    /// Where motion from `current` towards `requested` ends up, or `None`
+    /// when the pointer must not move at all.
+    pub fn constrain(&self, current: (f64, f64), requested: (f64, f64)) -> Option<(f64, f64)> {
+        match self {
+            Self::Free => Some(requested),
+            Self::Locked => None,
+            Self::Confined(rects) => {
+                let inside = |(x, y): (f64, f64), &(x0, y0, x1, y1): &(f64, f64, f64, f64)| {
+                    x >= x0 && x < x1 && y >= y0 && y < y1
+                };
+                if rects.iter().any(|rect| inside(requested, rect)) {
+                    return Some(requested);
+                }
+                // Slide along the edge of the rect the pointer is in (or the
+                // first one, if a relayout left it outside all of them).
+                let &(x0, y0, x1, y1) = rects
+                    .iter()
+                    .find(|rect| inside(current, rect))
+                    .or_else(|| rects.first())?;
+                Some((
+                    requested.0.clamp(x0, (x1 - 1.0).max(x0)),
+                    requested.1.clamp(y0, (y1 - 1.0).max(y0)),
+                ))
+            }
+        }
+    }
 }
 
 pub trait Backend {
@@ -376,6 +466,18 @@ pub trait Backend {
     /// Idempotent: redundant calls are harmless.
     fn set_dpms(&mut self, _on: bool) {}
 
+    /// Every connector this backend knows, enabled or not, as advertised to
+    /// output-management clients. The default treats each live output as a
+    /// virtual connector whose only mode is the one it runs.
+    fn output_heads(&self) -> Vec<crate::compositor::output_heads::OutputHead> {
+        crate::compositor::output_heads::heads_from_outputs(self.outputs())
+    }
+
+    /// Power one output's panel on or off for an output-power client,
+    /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
+    /// for backends with no physical panel.
+    fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
     /// Re-establish the display after the system came back from suspend.
     ///
     /// Default no-op: a hosted backend's display is the host's problem,
@@ -397,6 +499,15 @@ pub trait Backend {
     /// Show `image` as the pointer. Default no-op: a hosted backend's
     /// pointer belongs to the host and a headless one has none.
     fn set_pointer_image(&mut self, _image: crate::compositor::cursor::PointerImage) {}
+
+    /// Hold the pointer still (a game locked it) or keep it inside a region
+    /// (a game confined it). Relative motion keeps being reported either
+    /// way. Default no-op for backends that own no pointer.
+    fn set_pointer_constraint(&mut self, _constraint: PointerConstraintRegion) {}
+
+    /// Move the pointer to global `(x, y)` without a physical motion, as a
+    /// released pointer lock asks with its cursor position hint.
+    fn warp_pointer(&mut self, _x: f64, _y: f64) {}
 
     /// Cancel raw direct-touch contacts at a compositor ownership boundary.
     /// Display-only and hosted backends have no such source to retire.
@@ -450,6 +561,42 @@ mod tests {
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).
         assert_eq!(combined_geometry(&outs), (3200, 1080));
+    }
+
+    #[test]
+    fn pointer_constraints_hold_or_bound_motion() {
+        assert_eq!(
+            PointerConstraintRegion::Free.constrain((1.0, 1.0), (5.0, 6.0)),
+            Some((5.0, 6.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Locked.constrain((1.0, 1.0), (5.0, 6.0)),
+            None
+        );
+        let confined = PointerConstraintRegion::Confined(vec![
+            (0.0, 0.0, 100.0, 50.0),
+            (200.0, 0.0, 300.0, 50.0),
+        ]);
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (20.0, 30.0)),
+            Some((20.0, 30.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (150.0, 80.0)),
+            Some((99.0, 49.0))
+        );
+        assert_eq!(
+            confined.constrain((250.0, 10.0), (-5.0, 10.0)),
+            Some((200.0, 10.0))
+        );
+        assert_eq!(
+            confined.constrain((10.0, 10.0), (210.0, 10.0)),
+            Some((210.0, 10.0))
+        );
+        assert_eq!(
+            PointerConstraintRegion::Confined(Vec::new()).constrain((1.0, 1.0), (2.0, 2.0)),
+            None
+        );
     }
 
     #[test]

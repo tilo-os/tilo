@@ -886,7 +886,7 @@ fn super_s_summons_the_wheel_to_the_pointer_and_toggles_back() {
 }
 
 #[test]
-fn super_p_opens_and_toggles_the_projection_sheet() {
+fn super_p_opens_the_display_sheet_and_escape_closes_it() {
     let mut h = build_harness();
     let sup = Modifiers::from(ModifiersState::SUPER);
     assert!(!h.chrome.borrow().overlays.projection);
@@ -894,14 +894,21 @@ fn super_p_opens_and_toggles_the_projection_sheet() {
     assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
     assert!(
         h.chrome.borrow().overlays.projection,
-        "Win+P must open the OS-owned projection sheet"
+        "Win+P must open the OS-owned display sheet"
     );
 
     assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
     assert!(
-        !h.chrome.borrow().overlays.projection,
-        "the same familiar chord closes the sheet again"
+        h.chrome.borrow().overlays.projection,
+        "pressing Win+P again moves between layouts; it does not close the sheet"
     );
+
+    assert!(pump(
+        &mut h,
+        &key_press(Key::Named(NamedKey::Escape)),
+        Modifiers::default()
+    ));
+    assert!(!h.chrome.borrow().overlays.projection);
 }
 
 #[test]

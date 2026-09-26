@@ -4,9 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 use ui::webview::{SharedEngine, WebViewCommand};
 
-// Small first-run safety net authored for qOS. Full maintained lists are
+// Small first-run safety net authored for Tilo. Full maintained lists are
 // loaded from cache and refreshed below; this is not advertised as a full list.
-const BASELINE: &str = "! qOS first-run baseline\n||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n||adnxs.com^\n||adsrvr.org^\n||scorecardresearch.com^\n||outbrain.com^\n||taboola.com^\n";
+const BASELINE: &str = "! Tilo first-run baseline\n||doubleclick.net^\n||googlesyndication.com^\n||googleadservices.com^\n||adnxs.com^\n||adsrvr.org^\n||scorecardresearch.com^\n||outbrain.com^\n||taboola.com^\n";
 const MAX_LIST: u64 = 8 * 1024 * 1024;
 const MAX_TOTAL: usize = 30 * 1024 * 1024;
 
@@ -163,7 +163,7 @@ pub(crate) fn refresh(engine: &SharedEngine, force: bool) {
             let directory = crate::blocker::cache_dir();
             // Test endpoints are opt-in and restricted to explicitly isolated app roots.
             let endpoint = crate::storage::explicit_root()
-                .and_then(|_| std::env::var("QOS_BROWSER_FILTER_ENDPOINT").ok())
+                .and_then(|_| std::env::var("TILO_BROWSER_FILTER_ENDPOINT").ok())
                 .filter(|s| {
                     url::Url::parse(s).is_ok_and(|u| {
                         matches!(u.host_str(), Some("127.0.0.1" | "localhost" | "[::1]"))
@@ -249,7 +249,7 @@ mod tests {
     fn private_refresh_does_not_recreate_root_after_helper_exit_child() {
         use std::os::unix::fs::PermissionsExt;
 
-        let root = std::path::PathBuf::from(std::env::var_os("QOS_TEST_PRIVATE_ROOT").unwrap());
+        let root = std::path::PathBuf::from(std::env::var_os("TILO_TEST_PRIVATE_ROOT").unwrap());
         crate::storage::configure(root.to_str()).unwrap();
         let fixture = tempfile::tempdir().unwrap();
         let trigger = fixture.path().join("exit-helper");
@@ -283,7 +283,7 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let endpoint = format!("http://{}/filters", listener.local_addr().unwrap());
         let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("QOS_BROWSER_FILTER_ENDPOINT", endpoint);
+        env.set("TILO_BROWSER_FILTER_ENDPOINT", endpoint);
         let (accepted_tx, accepted_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let server = std::thread::spawn(move || {
@@ -343,7 +343,7 @@ mod tests {
                 "--ignored",
                 "--nocapture",
             ])
-            .env("QOS_TEST_PRIVATE_ROOT", &root)
+            .env("TILO_TEST_PRIVATE_ROOT", &root)
             .status()
             .unwrap();
         let remained = root.exists();
@@ -405,7 +405,7 @@ mod tests {
     #[test]
     fn offline_restart_restores_last_successful_update() {
         const LAST_SUCCESS: u64 = 1_700_000_123;
-        if std::env::var_os("QOS_TEST_FILTER_RESTART_CHILD").is_some() {
+        if std::env::var_os("TILO_TEST_FILTER_RESTART_CHILD").is_some() {
             crate::storage::configure(None).unwrap();
             let engine: SharedEngine = ui::webview::test_engine::TestEngine::new();
             start(engine.clone());
@@ -459,9 +459,9 @@ mod tests {
                 "native_blocker::tests::offline_restart_restores_last_successful_update",
                 "--nocapture",
             ])
-            .env("QOS_TEST_FILTER_RESTART_CHILD", "1")
-            .env("QOS_BROWSER_APP_ROOT", root.path())
-            .env("QOS_BROWSER_FILTER_ENDPOINT", endpoint)
+            .env("TILO_TEST_FILTER_RESTART_CHILD", "1")
+            .env("TILO_BROWSER_APP_ROOT", root.path())
+            .env("TILO_BROWSER_FILTER_ENDPOINT", endpoint)
             .output()
             .unwrap();
         server.join().unwrap();

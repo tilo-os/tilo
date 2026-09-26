@@ -195,16 +195,9 @@ pub fn resolve(path: &str) -> MediaSource {
 }
 
 /// Turn a resolved absolute path into the shared [`media::Source`] the decode
-/// engine consumes: a path under the FUSE mount becomes a
-/// [`media::Source::Workspace`] (read *through* the mount so it hydrates on
-/// demand), anything else a [`media::Source::LocalFile`].
+/// engine consumes; see [`media::Source::for_path`].
 pub fn engine_source(abs_path: &Path) -> ::media::Source {
-    let root = ::media::Source::workspace_root();
-    if abs_path.starts_with(&root) || abs_path.starts_with(WORKSPACE_ROOT) {
-        ::media::Source::Workspace(abs_path.to_path_buf())
-    } else {
-        ::media::Source::LocalFile(abs_path.to_path_buf())
-    }
+    ::media::Source::for_path(abs_path)
 }
 
 /// The path the editor should store in the CRDT for an imported file at

@@ -79,7 +79,7 @@ for deterministic rendering. Expose a root `Widget` via `setup::app_root()`.
   and TextInput controls. Use local command callbacks and state, not Automerge
   file paths. Keep navigation visible at compact viewport sizes and long errors
   in a scrollable body. Use headings, accessible names, and live status text.
-- [ ] Experience screen offers Desktop on supported Linux and Full qOS with a
+- [ ] Experience screen offers Desktop on supported Linux and Full Tilo with a
   plain compatibility explanation. Until adapters and catalog evidence exist,
   show the actual unavailable reason. Do not turn model capability flags on just
   because the host OS matches.

@@ -7,8 +7,8 @@ class PresentationTests(unittest.TestCase):
         lines=[]
         for i in range(3):
             identity={'worker_id':1,'worker_frame_ix':i,'cpu_frame_id':i}
-            lines.append('qos-display-request '+json.dumps(identity))
-            lines.append('qos-display-frame '+json.dumps(dict(identity,presented_time_s=100+i/60,backend="metal",drawable_id=i)))
+            lines.append('tilo-display-request '+json.dumps(identity))
+            lines.append('tilo-display-frame '+json.dumps(dict(identity,presented_time_s=100+i/60,backend="metal",drawable_id=i)))
         return lines,[0,1,2]
 
     def test_uses_display_timestamps_not_callback_arrival_order(self):
@@ -42,11 +42,11 @@ class PresentationTests(unittest.TestCase):
         for key,value in [('backend','other'),('backend',None),('drawable_id',True),('drawable_id',-1)]:
             changed=list(lines)
             row=json.loads(changed[1].split(' ',1)[1]);row[key]=value
-            changed[1]='qos-display-frame '+json.dumps(row)
+            changed[1]='tilo-display-frame '+json.dumps(row)
             with self.assertRaises(ValueError):summarize_presentation(changed,ids)
         changed=list(lines)
         row=json.loads(changed[3].split(' ',1)[1]);row['drawable_id']=0
-        changed[3]='qos-display-frame '+json.dumps(row)
+        changed[3]='tilo-display-frame '+json.dumps(row)
         with self.assertRaises(ValueError):summarize_presentation(changed,ids)
 
 if __name__=='__main__':unittest.main()

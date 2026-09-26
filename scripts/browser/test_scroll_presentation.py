@@ -4,14 +4,14 @@ from test_frame_presentation import receipt, scene, display
 
 
 def input_row(identifier=1, dy=-1.625, lo=9.990, hi=9.991):
-    return ('qos-native-input', dict(id=identifier, input=dict(kind='wheel', dx=0, dy=dy),
+    return ('tilo-native-input', dict(id=identifier, input=dict(kind='wheel', dx=0, dy=dy),
         host_clock='mach_absolute_seconds', dispatch_host_lo_s=lo, dispatch_host_hi_s=hi,
         warmup=False))
 
 def evidence(marker=65):
     received = receipt()
     received[1]['scroll_marker_delta'] = marker
-    return [('qos-native-window', dict(scale_factor=2)), input_row(), received, scene(), display()]
+    return [('tilo-native-window', dict(scale_factor=2)), input_row(), received, scene(), display()]
 
 class ScrollPresentationTests(unittest.TestCase):
     def test_matches_native_line_wheel_delta_to_visible_scroll_acknowledgement(self):

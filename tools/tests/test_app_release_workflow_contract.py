@@ -72,7 +72,11 @@ class AppReleaseWorkflowContract(unittest.TestCase):
         self.assertIn('BASELINE_SHA: ${{ github.event.inputs.baseline_sha }}', preparation_step)
         self.assertNotIn('tools/', preparation_step)
         self.assertIn('/usr/bin/git fetch --no-tags --no-write-fetch-head', preparation_step)
-        self.assertIn('GIT_CONFIG_KEY_0=http.https://code.podesta.ai/.extraheader', preparation_step)
+        # The token is scoped to the job's own, validated server, and the
+        # checkout must come from that server's copy of this repository.
+        self.assertIn('[[ $GITHUB_SERVER_URL =~ ^https://[a-z0-9.-]+$ ]]', preparation_step)
+        self.assertIn('$origin == "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"', preparation_step)
+        self.assertIn('GIT_CONFIG_KEY_0="http.$GITHUB_SERVER_URL/.extraheader"', preparation_step)
         selection_step = plan[selection:]
         self.assertNotIn('SOURCE_TOKEN', selection_step)
         self.assertNotIn('github.token', selection_step)
@@ -421,7 +425,7 @@ class AppReleaseWorkflowContract(unittest.TestCase):
              '        run: python3 tools/ci/resolve_builder.py'),
             ('    needs: [plan, authorize-publish]', '    needs: other'),
             ('      image: ${{ needs.plan.outputs.builder_image }}',
-             '      image: code.podesta.ai/qos/tilo-builder:latest'),
+             '      image: registry.tilo.so/tilo/tilo-builder:latest'),
         ):
             with self.subTest(before=before):
                 self.assertIn(before, source)

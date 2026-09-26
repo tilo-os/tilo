@@ -209,7 +209,7 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
         fixed(FixedChordAction::WorkspaceWheel),
         editable("Lock", ShortcutAction::Lock),
         fixed(FixedChordAction::Screenshot),
-        fixed(FixedChordAction::WirelessDisplay),
+        fixed(FixedChordAction::DisplayLayout),
         fixed(FixedChordAction::CaptureScreenshot),
         fixed(FixedChordAction::OpenTerminal),
         fixed(FixedChordAction::PictureInPicture),
@@ -218,6 +218,31 @@ pub(super) fn shortcut_reference_rows(shortcuts: &ShortcutConfig) -> Vec<(&'stat
     .into_iter()
     .flatten()
     .collect()
+}
+
+/// The chords bound to published actions, as the guide lists them: what
+/// each runs, then its chord.
+pub(super) fn shortcut_action_rows(shortcuts: &ShortcutConfig) -> Vec<(String, String)> {
+    shortcuts
+        .actions
+        .iter()
+        .map(|bound| (bound.label.clone(), shortcut_guide_chord(&bound.chord)))
+        .collect()
+}
+
+/// One line for the guide naming every action chord, or `None` when there
+/// is none.
+pub(super) fn shortcut_action_summary(shortcuts: &ShortcutConfig) -> Option<String> {
+    let rows = shortcut_action_rows(shortcuts);
+    (!rows.is_empty()).then(|| {
+        format!(
+            "Your shortcuts: {}",
+            rows.into_iter()
+                .map(|(label, chord)| format!("{label} · {chord}"))
+                .collect::<Vec<_>>()
+                .join("   ")
+        )
+    })
 }
 
 pub(super) fn shortcut_reference_columns(_body_width: f64) -> usize {

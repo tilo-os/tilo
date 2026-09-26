@@ -11,7 +11,7 @@ autoexamples = false
 [package.metadata.cargo-machete]
 # build.rs probes optional system libraries through pkg-config.
 # wgpu-hal is referenced through vello's wgpu re-export; the direct optional
-# dependency enables the qOS presentation-feedback feature in the patched HAL.
+# dependency enables the Tilo presentation-feedback feature in the patched HAL.
 ignored = ["pkg-config", "wgpu-hal"]
 
 [features]
@@ -21,8 +21,8 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["dep:arboard", "dep:open", "dep:accesskit_winit", "dep:smithay-clipboard", "dep:smithay-client-toolkit", "dep:tilo-content"]
-# The collaboration manager's built-in transport: the qOS collab broker's
+native = ["tilo-host/native", "dep:accesskit_winit", "dep:tilo-content"]
+# The collaboration manager's built-in transport: the Tilo collab broker's
 # Cap'n Proto SDK on a worker thread (`collaboration::broker`). Without it the
 # manager is driven only through `CollaborationManager::with_transport`, and
 # `CollaborationManager::new` starts disabled.
@@ -61,18 +61,22 @@ gpu-video = ["dmabuf-import"]
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
 # `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
-mpris = ["native", "dep:zbus"]
+mpris = ["native", "tilo-host/mpris"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure
 # parts always compile, so headless tests drive the exact per-frame drain path
 # with no portal, and a feature-less build degrades to a clean
 # `PortalOutcome::Failed` rather than failing to link.
-portal = ["native", "dep:ashpd", "dep:futures-util", "dep:windows", "dep:mime_guess"]
-notifications = ["native", "dep:windows", "windows/UI_Notifications", "windows/Data_Xml_Dom", "windows/Win32_System_WinRT", "windows/Win32_UI_Shell_PropertiesSystem", "windows/Win32_System_Com_StructuredStorage", "windows/Win32_System_Variant"]
+portal = ["native", "tilo-host/portal"]
+notifications = ["native", "tilo-host/notifications"]
 
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
+# Host services: the clock, background work, clipboard, file choosers,
+# notifications, media sessions, location and screen capture, and their
+# native backends. Re-exported under the toolkit's own module paths.
+tilo-host = { path = "../tilo-host" }
 private-fs = { path = "../../system/private-fs" }
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
@@ -94,7 +98,7 @@ tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 # EasyList→WebKit-content-blocker conversion; blocking then runs inside
 # WebKit's network process, not in Rust.
 adblock = { version = "0.12", optional = true, default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
-# runtime-collab is the qOS collab broker Cap'n Proto SDK. Its vocabulary
+# runtime-collab is the Tilo collab broker Cap'n Proto SDK. Its vocabulary
 # types are part of `CollabRequest` / `CollabEvent`; the RPC client behind
 # them is only needed by the `broker-transport` feature.
 runtime-collab = { path = "../../runtime/runtime-collab", default-features = false }
@@ -136,9 +140,6 @@ vello.workspace = true
 libc.workspace = true
 wgpu.workspace = true
 winit.workspace = true
-# `ui::time` clock types. On targets with a native clock it re-exports
-# `std::time` unchanged; it keeps the toolkit buildable where `std` has none.
-web-time = "1"
 fluent.workspace = true
 tilo-headless-schema = { path = "../../dev/headless-schema" }
 unic-langid.workspace = true
@@ -168,14 +169,6 @@ chrono = { workspace = true, features = ["clock", "std"] }
 # gstreamer dependency, so `ui`'s hermetic build / `--shots` / CI stay green.
 # An app that wants real decode enables `media/decode` in its own manifest.
 media = { path = "../../media/core" }
-# Clipboard for non-Wayland platforms (X11, Windows, macOS). Wayland goes
-# through `smithay-clipboard` below; `arboard`'s Wayland path needs the
-# data-control manager protocol Tilo withholds from sandboxed apps.
-arboard = { workspace = true, features = ["image-data"], optional = true }
-# The native host's URI opener behind `portal::open_uri` for builds without
-# the XDG portal path (Windows, or Unix without the `portal` feature). Unix builds
-# with `portal` hand URIs to the OpenURI portal instead.
-open = { workspace = true, features = ["shellexecute-on-windows"], optional = true }
 # Shared collaboration types used by the history/conflict/channel widgets and
 # by the signed wire envelopes carried by
 # `CollabRequest::SignedSyncIncremental` /
@@ -254,29 +247,11 @@ accesskit_winit = { version = "0.34.0", optional = true, default-features = fals
 # stack is installed), so depending on this is safe in headless builds.
 tts = { path = "../../system/tts" }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# `smithay-clipboard` speaks Wayland protocols and does not compile on native
-# Windows/macOS targets. The only call sites are already Linux-gated in
-# `clipboard.rs`, so keep the backend out of host bundles on other platforms.
-smithay-clipboard = { version = "0.7", optional = true }
-# The image source uses the regular focus-gated wl_data_device protocol. The
-# text-only smithay-clipboard facade cannot advertise binary MIME payloads,
-# while data-control would bypass Tilo's focus/privilege boundary.
-smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional = true }
-
 [target.'cfg(unix)'.dependencies]
-# Shared MPRIS media control needs a Unix session bus. Keep zbus out of native
-# Windows builds even when an app enables `mpris`; p2p supports hermetic tests.
-zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
-ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
-# Drives the location portal's update stream (`native::location`).
-futures-util = { workspace = true, optional = true }
 # Takes the launcher's content-store capability at launch (`launch.rs`).
 tilo-content = { path = "../../system/content", optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", optional = true, features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
-mime_guess = { version = "2.0.5", optional = true }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [build-dependencies]
@@ -373,4 +348,8 @@ name = "manual-composition-shots"
 path = "examples/manual_composition_shots.rs"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-wgpu-hal = { version = "29", default-features = false, features = ["metal", "qos-presentation-feedback"], optional = true }
+wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
+
+[[example]]
+name = "block-editor-typing"
+path = "examples/block_editor_typing.rs"

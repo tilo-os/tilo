@@ -2838,10 +2838,10 @@ mod tests {
         assert_eq!(parse_bootc_staged(none), None);
 
         let image =
-            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/qos/qos:latest"}}}}}"#;
+            r#"{"status":{"staged":{"image":{"image":{"image":"quay.io/tilo/tilo:latest"}}}}}"#;
         assert_eq!(
             parse_bootc_staged(image).as_deref(),
-            Some("quay.io/qos/qos:latest")
+            Some("quay.io/tilo/tilo:latest")
         );
     }
 

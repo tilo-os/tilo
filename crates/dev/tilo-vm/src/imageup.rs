@@ -50,7 +50,7 @@ pub enum UpgradeFrom {
     Ci { tag: String },
 }
 
-const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image code.podesta.ai/qos/tilo-vm:<tag> (a published one)";
+const FROM_FORMS: &str = "tilo-vm vm upgrade --from local (build this worktree's dev image)   |   --from ci:main-<sha7> or --from sha:<commit> (a CI build)   |   --from local:localhost/tilo-vm:<tag> (one already built)   |   --image registry.tilo.so/tilo/tilo-vm:<tag> (a published one)";
 
 /// Parse `--from`; a `sha:` is resolved through the worktree's git.
 ///
@@ -98,12 +98,12 @@ pub fn ci_candidates(tag: &str, arch: &str) -> CiCandidates {
     let dev_tag = tag.strip_suffix("-ci").unwrap_or(tag);
     CiCandidates {
         dev_images: vec![
-            format!("code.podesta.ai/qos/tilo-vm:{dev_tag}-ci"),
-            format!("code.podesta.ai/qos/tilo-vm:{dev_tag}"),
+            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}-ci"),
+            format!("registry.tilo.so/tilo/tilo-vm:{dev_tag}"),
         ],
         bases: vec![
-            format!("code.podesta.ai/qos/tilo-ci:{dev_tag}-{arch}"),
-            format!("code.podesta.ai/qos/tilo:{dev_tag}"),
+            format!("registry.tilo.so/tilo/tilo-ci:{dev_tag}-{arch}"),
+            format!("registry.tilo.so/tilo/tilo:{dev_tag}"),
         ],
     }
 }
@@ -121,10 +121,10 @@ pub fn exists_command(reference: &str) -> CommandLine {
 }
 
 /// A dev image may only be named `localhost/tilo-vm` or
-/// `code.podesta.ai/qos/tilo-vm`, with a tag or digest: the same rule
+/// `registry.tilo.so/tilo/tilo-vm`, with a tag or digest: the same rule
 /// `os/dev/build-dev-image.sh` enforces when it tags one.
 pub fn is_dev_name(reference: &str) -> bool {
-    ["localhost/tilo-vm", "code.podesta.ai/qos/tilo-vm"]
+    ["localhost/tilo-vm", "registry.tilo.so/tilo/tilo-vm"]
         .iter()
         .any(|repo| {
             reference.strip_prefix(repo).is_some_and(|rest| {
@@ -207,7 +207,7 @@ pub fn check_image(reference: &str, facts: &ImageFacts) -> Result<(), CliError> 
     if !is_dev_name(reference) {
         return Err(refused(
             reference,
-            "is not named as a dev image (localhost/tilo-vm:<tag> or code.podesta.ai/qos/tilo-vm:<tag>); a production image is sealed and carries no sshd or tilo-vmd, and a VM must not be moved onto something that could be one",
+            "is not named as a dev image (localhost/tilo-vm:<tag> or registry.tilo.so/tilo/tilo-vm:<tag>); a production image is sealed and carries no sshd or tilo-vmd, and a VM must not be moved onto something that could be one",
             if reference.contains("/tilo:") || reference.contains("/tilo@") {
                 build.to_owned()
             } else {
@@ -714,12 +714,12 @@ mod tests {
     fn ci_candidates_try_published_dev_images_then_bases() {
         let expected = CiCandidates {
             dev_images: vec![
-                "code.podesta.ai/qos/tilo-vm:main-1a2b3c4-ci".into(),
-                "code.podesta.ai/qos/tilo-vm:main-1a2b3c4".into(),
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4-ci".into(),
+                "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4".into(),
             ],
             bases: vec![
-                "code.podesta.ai/qos/tilo-ci:main-1a2b3c4-x86_64".into(),
-                "code.podesta.ai/qos/tilo:main-1a2b3c4".into(),
+                "registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64".into(),
+                "registry.tilo.so/tilo/tilo:main-1a2b3c4".into(),
             ],
         };
         assert_eq!(ci_candidates("main-1a2b3c4", "x86_64"), expected);
@@ -733,12 +733,12 @@ mod tests {
 
     #[test]
     fn a_dev_image_built_from_a_ci_base_is_a_local_dev_name() {
-        let image = ci_dev_image("code.podesta.ai/qos/tilo-ci:main-1a2b3c4-x86_64");
+        let image = ci_dev_image("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64");
         assert_eq!(image, "localhost/tilo-vm:ci-main-1a2b3c4-x86_64");
         assert!(is_dev_name(&image));
         assert_eq!(
-            exists_command("code.podesta.ai/qos/tilo-ci:main-1a2b3c4-x86_64").display(),
-            "skopeo inspect --raw docker://code.podesta.ai/qos/tilo-ci:main-1a2b3c4-x86_64"
+            exists_command("registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64").display(),
+            "skopeo inspect --raw docker://registry.tilo.so/tilo/tilo-ci:main-1a2b3c4-x86_64"
         );
     }
 
@@ -746,14 +746,14 @@ mod tests {
     fn only_dev_names_pass() {
         for good in [
             "localhost/tilo-vm:latest",
-            "code.podesta.ai/qos/tilo-vm:main-1a2b3c4",
+            "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
             "localhost/tilo-vm@sha256:0123",
         ] {
             assert!(is_dev_name(good), "{good}");
         }
         for bad in [
             "localhost/tilo:latest",
-            "code.podesta.ai/qos/tilo:main",
+            "registry.tilo.so/tilo/tilo:main",
             "localhost/tilo-vm",
             "localhost/tilo-vmx:latest",
             "tilo-vm:latest",
@@ -889,8 +889,8 @@ mod tests {
             "bootc upgrade"
         );
         assert_eq!(
-            stage_command(&following, "registry", "code.podesta.ai/qos/tilo-vm:x").join(" "),
-            "bootc switch code.podesta.ai/qos/tilo-vm:x"
+            stage_command(&following, "registry", "registry.tilo.so/tilo/tilo-vm:x").join(" "),
+            "bootc switch registry.tilo.so/tilo/tilo-vm:x"
         );
         let locked = under_vm_lock(&["bootc".into(), "upgrade".into()]);
         assert!(

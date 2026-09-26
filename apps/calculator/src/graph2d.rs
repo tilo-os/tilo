@@ -1,8 +1,8 @@
-//! 2D grapher: a `y = f(x)` function list plus a custom Cartesian canvas
-//! that samples each function per pixel-column and draws axes, gridlines,
-//! numeric labels and discontinuity-aware polylines straight into the
-//! Vello scene.
+//! 2D grapher: a `y = f(x)` function list plus a pannable, zoomable canvas
+//! that samples each function per pixel-column into discontinuity-aware
+//! polylines, painted over the toolkit's [`FunctionPlane`] grid.
 
+use ui::charts::{ChartPalette, FunctionPlane};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use vello::Scene;
@@ -14,19 +14,6 @@ use crate::engine;
 use crate::mathfield::MathField;
 use crate::model::{CalcModel, View2d};
 use crate::zoom::ZoomAnim2d;
-
-/// Distinct, theme-derived colour for plot series `i`.
-pub fn series_color(theme: &Theme, i: usize) -> Color {
-    let c = &theme.tokens.colors;
-    match i % 6 {
-        0 => c.accent[5],
-        1 => c.semantic.success,
-        2 => c.semantic.warning,
-        3 => c.semantic.info,
-        4 => c.semantic.danger,
-        _ => c.accent[7],
-    }
-}
 
 /// Below this body width the Functions panel can't dock without eating half the
 /// plot, so it collapses to a toggle + overlay drawer (matching Calc's history
@@ -616,7 +603,7 @@ impl Graph2dScreen {
                 r.x0 + 26.0,
                 r.center().y + 7.0,
             );
-            let col = series_color(theme, i);
+            let col = ChartPalette::from_theme(theme).categorical(i);
             draw::fill_round(
                 scene,
                 t,
@@ -906,15 +893,14 @@ impl Graph2dScreen {
 
     // ----- canvas internals -------------------------------------------------
 
+    fn plane(&self, v: &View2d) -> FunctionPlane {
+        FunctionPlane::new(self.canvas, Point::new(v.cx, v.cy), v.scale)
+    }
     fn to_screen(&self, wx: f64, wy: f64, v: &View2d) -> Point {
-        let cx = self.canvas.center().x;
-        let cy = self.canvas.center().y;
-        Point::new(cx + (wx - v.cx) * v.scale, cy - (wy - v.cy) * v.scale)
+        self.plane(v).to_screen(Point::new(wx, wy))
     }
     pub fn to_world(&self, p: Point, v: &View2d) -> Point {
-        let cx = self.canvas.center().x;
-        let cy = self.canvas.center().y;
-        Point::new(v.cx + (p.x - cx) / v.scale, v.cy - (p.y - cy) / v.scale)
+        self.plane(v).to_world(p)
     }
 
     fn draw_grid(
@@ -925,158 +911,16 @@ impl Graph2dScreen {
         theme: &Theme,
         v: &View2d,
     ) {
-        let c = &theme.tokens.colors;
-        let step = nice_step(72.0 / v.scale);
-        let minor = step / 5.0;
-        let left = self.to_world(Point::new(self.canvas.x0, 0.0), v).x;
-        let right = self.to_world(Point::new(self.canvas.x1, 0.0), v).x;
-        let top = self.to_world(Point::new(0.0, self.canvas.y0), v).y;
-        let bottom = self.to_world(Point::new(0.0, self.canvas.y1), v).y;
-        let bounds = (left, right, bottom, top);
-
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            1.0,
-            t,
-            &self.canvas,
-        );
-
-        self.draw_grid_lines(
+        // The grid derives against the canvas ground `draw_canvas` fills;
+        // its tick labels match the canvas's other 11 px captions.
+        self.plane(v).paint_grid(
             scene,
             t,
-            v,
-            draw::with_alpha(c.neutral[2], 120),
-            bounds,
-            minor,
+            tr,
+            theme,
+            theme.tokens.colors.neutral[0],
+            draw::type_size(11.0),
         );
-        self.draw_grid_lines(scene, t, v, c.neutral[3], bounds, step);
-        let origin = self.draw_grid_axes(scene, t, v, c.neutral[5]);
-        self.draw_grid_labels(scene, t, tr, (v, c.text_dim), bounds, (step, origin));
-
-        scene.pop_layer();
-    }
-
-    /// One set of evenly-spaced grid lines (minor or major, depending on
-    /// `spacing`) across the world-space `bounds` (`left, right, bottom,
-    /// top`).
-    fn draw_grid_lines(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        v: &View2d,
-        color: Color,
-        bounds: (f64, f64, f64, f64),
-        spacing: f64,
-    ) {
-        let (left, right, bottom, top) = bounds;
-        for k in line_indices(left, right, spacing) {
-            let wx = k as f64 * spacing;
-            let px = self.to_screen(wx, 0.0, v).x;
-            draw::line(
-                scene,
-                t,
-                Point::new(px, self.canvas.y0),
-                Point::new(px, self.canvas.y1),
-                color,
-                1.0,
-            );
-        }
-        for k in line_indices(bottom, top, spacing) {
-            let wy = k as f64 * spacing;
-            let py = self.to_screen(0.0, wy, v).y;
-            draw::line(
-                scene,
-                t,
-                Point::new(self.canvas.x0, py),
-                Point::new(self.canvas.x1, py),
-                color,
-                1.0,
-            );
-        }
-    }
-
-    /// The x/y axis lines (only drawn where the origin falls inside the
-    /// canvas). Returns the origin in screen space, for the label pass.
-    fn draw_grid_axes(&self, scene: &mut Scene, t: Affine, v: &View2d, color: Color) -> Point {
-        let origin = self.to_screen(0.0, 0.0, v);
-        if origin.y >= self.canvas.y0 && origin.y <= self.canvas.y1 {
-            draw::line(
-                scene,
-                t,
-                Point::new(self.canvas.x0, origin.y),
-                Point::new(self.canvas.x1, origin.y),
-                color,
-                1.6,
-            );
-        }
-        if origin.x >= self.canvas.x0 && origin.x <= self.canvas.x1 {
-            draw::line(
-                scene,
-                t,
-                Point::new(origin.x, self.canvas.y0),
-                Point::new(origin.x, self.canvas.y1),
-                color,
-                1.6,
-            );
-        }
-        origin
-    }
-
-    /// Numeric tick labels along both axes at the major grid step.
-    fn draw_grid_labels(
-        &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        view_style: (&View2d, Color),
-        bounds: (f64, f64, f64, f64),
-        grid_state: (f64, Point),
-    ) {
-        let (v, color) = view_style;
-        let (left, right, bottom, top) = bounds;
-        let (step, origin) = grid_state;
-
-        let label_y = (origin.y + 4.0).clamp(self.canvas.y0 + 2.0, self.canvas.y1 - 18.0);
-        for k in line_indices(left, right, step) {
-            if k == 0 {
-                continue;
-            }
-            let wx = k as f64 * step;
-            let px = self.to_screen(wx, 0.0, v).x;
-            let r = Rect::new(px + 3.0, label_y, px + 60.0, label_y + 16.0);
-            draw::text_in(
-                scene,
-                tr,
-                t,
-                r,
-                &fmt_tick(wx, step),
-                11.0,
-                color,
-                Align::Left,
-                TextWeight::Regular,
-            );
-        }
-        let label_x = (origin.x + 6.0).clamp(self.canvas.x0 + 2.0, self.canvas.x1 - 50.0);
-        for k in line_indices(bottom, top, step) {
-            if k == 0 {
-                continue;
-            }
-            let wy = k as f64 * step;
-            let py = self.to_screen(0.0, wy, v).y;
-            let r = Rect::new(label_x, py - 16.0, label_x + 60.0, py);
-            draw::text_in(
-                scene,
-                tr,
-                t,
-                r,
-                &fmt_tick(wy, step),
-                11.0,
-                color,
-                Align::Left,
-                TextWeight::Regular,
-            );
-        }
     }
 
     fn draw_curves(&mut self, scene: &mut Scene, t: Affine, theme: &Theme, model: &CalcModel) {
@@ -1098,8 +942,9 @@ impl Graph2dScreen {
             &self.canvas,
         );
         let stroke = vello::kurbo::Stroke::new(2.0);
+        let palette = ChartPalette::from_theme(theme);
         for cp in &self.curve_cache.paths {
-            let col = series_color(theme, cp.series);
+            let col = palette.categorical(cp.series);
             scene.stroke(&stroke, t * aff, col, None, &cp.path);
         }
         scene.pop_layer();
@@ -1215,7 +1060,7 @@ impl Graph2dScreen {
         if wy.is_finite() {
             let dot = self.to_screen(wx, wy, v);
             if dot.y >= self.canvas.y0 && dot.y <= self.canvas.y1 {
-                let col = series_color(theme, model.active_fn);
+                let col = ChartPalette::from_theme(theme).categorical(model.active_fn);
                 let dot_r = Rect::new(dot.x - 5.0, dot.y - 5.0, dot.x + 5.0, dot.y + 5.0);
                 draw::fill_round(scene, t, dot_r, 5.0, col);
                 draw::stroke_round(
@@ -1292,50 +1137,6 @@ fn clamp_rect_x(r: Rect, bounds: Rect) -> Rect {
         x0 = bounds.x0 + 6.0;
     }
     Rect::new(x0, r.y0, x0 + w, r.y1)
-}
-
-/// Inclusive integer multipliers `k` such that `k*step` spans `[lo, hi]`.
-fn line_indices(lo: f64, hi: f64, step: f64) -> impl Iterator<Item = i64> {
-    let kmin = (lo / step).floor() as i64 - 1;
-    let kmax = (hi / step).ceil() as i64 + 1;
-    let span = (kmax - kmin).clamp(0, 100_000);
-    (0..=span).map(move |i| kmin + i)
-}
-
-/// 1-2-5 "nice" step at least covering `raw` units.
-fn nice_step(raw: f64) -> f64 {
-    if !raw.is_finite() || raw <= 0.0 {
-        return 1.0;
-    }
-    let mag = 10f64.powf(raw.log10().floor());
-    let norm = raw / mag;
-    let nice = if norm < 1.5 {
-        1.0
-    } else if norm < 3.0 {
-        2.0
-    } else if norm < 7.0 {
-        5.0
-    } else {
-        10.0
-    };
-    nice * mag
-}
-
-fn fmt_tick(v: f64, step: f64) -> String {
-    if v.abs() < step * 1e-6 {
-        return "0".to_string();
-    }
-    let decimals = if step >= 1.0 {
-        0
-    } else {
-        (-step.log10().floor()) as usize
-    };
-    let s = format!("{v:.decimals$}");
-    if decimals == 0 {
-        s
-    } else {
-        s.trim_end_matches('0').trim_end_matches('.').to_string()
-    }
 }
 
 #[cfg(test)]

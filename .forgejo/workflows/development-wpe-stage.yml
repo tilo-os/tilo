@@ -16,7 +16,7 @@ on:
         description: Reviewed native tilo-builder@sha256 tools base; architecture is checked before use
         required: true
         type: string
-        default: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
+        default: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 concurrency:
   group: development-wpe-stage-${{ github.ref }}-${{ inputs.architecture }}
@@ -98,9 +98,17 @@ jobs:
           key: tilo-wpe-source-archives-v1-${{ hashFiles('os/dev/build-wpe.sh') }}
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
         with:
-          registry: code.podesta.ai
+          registry: code.tilo.so
           username: ${{ github.actor }}
           password: ${{ secrets.REGISTRY_TOKEN }}
+      # The build guest pushes with a copy of these credentials, so it gets a
+      # static registry.tilo.so entry: the job's ID token (valid one hour).
+      - name: Log in to registry.tilo.so for the build guest
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Produce and retain completed WPE payload
         env:
           ARCHITECTURE: ${{ inputs.architecture }}
@@ -143,11 +151,12 @@ jobs:
           docker cp . "$name:/work/repo"
           python3 - "${DOCKER_CONFIG:-$HOME/.docker}/config.json" "$context/registry-auth.json" <<'PY'
           import json, os, sys
-          registry = 'code.podesta.ai'
-          credentials = json.load(open(sys.argv[1]))['auths'][registry]
+          auths = json.load(open(sys.argv[1]))['auths']
+          # Public images on registry.tilo.so, private firmware on the forge.
+          credentials = {registry: auths[registry] for registry in ('registry.tilo.so', 'code.tilo.so')}
           descriptor = os.open(sys.argv[2], os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
           with os.fdopen(descriptor, 'w') as output:
-              json.dump({'auths': {registry: credentials}}, output)
+              json.dump({'auths': credentials}, output)
           PY
           docker cp "$context/registry-auth.json" "$name:/registry-auth.json"
           docker start --attach "$name"

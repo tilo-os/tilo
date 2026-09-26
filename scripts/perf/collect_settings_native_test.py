@@ -17,12 +17,12 @@ class SettingsCollectorTests(unittest.TestCase):
 import os,sys,json
 from pathlib import Path
 assert len(sys.argv)==1
-assert os.environ['QUICK_APP_ID']=='dev.qos.settings'
-run=Path(os.environ['QOS_NATIVE_SCENARIO']).parent
+assert os.environ['QUICK_APP_ID']=='dev.tilo.settings'
+run=Path(os.environ['TILO_NATIVE_SCENARIO']).parent
 for key,name in [('XDG_DATA_HOME','xdg'),('XDG_CONFIG_HOME','config'),('XDG_CACHE_HOME','cache')]:
     assert Path(os.environ[key])==run/name
 assert not Path(os.environ['XDG_CONFIG_HOME']).exists()
-scenario=json.loads(Path(os.environ['QOS_NATIVE_SCENARIO']).read_text())
+scenario=json.loads(Path(os.environ['TILO_NATIVE_SCENARIO']).read_text())
 assert len(scenario['steps'])-scenario['warmup_steps']>=1000
 assert all(s in [{'kind':'character','value':'z'},{'kind':'key','key':'backspace'}] for s in scenario['steps'][scenario['warmup_steps']:])
 print('normal Settings route',flush=True)

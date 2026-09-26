@@ -5,7 +5,7 @@
 #include <sstream>
 #include <iostream>
 #include <limits>
-using namespace qos;
+using namespace tilo;
 int main() {
   assert(ValidDocumentGeneration(1));
   assert(ValidDocumentGeneration(9007199254740991.0));

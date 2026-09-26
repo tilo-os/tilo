@@ -64,7 +64,7 @@ Super+Left/Right clamps because it describes a spatial direction.
 | Move active tab into a new group | Super+Shift+Enter | Drag tab into a gap |
 | Move active tab into adjacent group | Super+[/] | Drag tab onto adjacent group |
 | Previous/next tab in current group | Ctrl+Shift+Tab / Ctrl+Tab | Tab strip |
-| Open wireless display picker | Super+P | Quick Settings / display route |
+| Choose where the desktop appears (extend, mirror, one screen, wireless) | Super+P | Search "mirror displays" / Settings › Displays |
 
 Application Ctrl shortcuts stay application-owned; shell-level window actions
 use Super so a browser, terminal or editor does not lose familiar bindings.
@@ -89,7 +89,7 @@ granted to an app through the GlobalShortcuts portal.
 | Global search | Super+Space |
 | Lock | Super+L |
 | Workspace wheel | Super+S |
-| Wireless display | Super+P |
+| Display layout | Super+P |
 | Capture screenshot | Super+Shift+S |
 | Picture in picture | Super+Shift+P |
 | Save recent replay | Super+Shift+R |
@@ -104,6 +104,11 @@ granted to an app through the GlobalShortcuts portal.
 - Quick Settings root: Tab/Shift+Tab moves through every enabled control,
   Enter/Space activates it, and Left/Right adjusts a focused slider.
 - Overview: Up/Down changes only the preview; Enter commits and closes.
+- Display layout (Super+P): Super+P again moves the highlight to the next
+  layout the attached displays allow; Up/Down walk the layouts, Keep/Revert
+  and the wireless receivers; Enter applies. A new layout applies at once and
+  restores itself after 15 seconds unless Keep is chosen. 1–4 choose a layout
+  directly.
 - Workspace rename and Wi-Fi password entry consume editing keys before global
   chords. Password characters can never accidentally open Search.
 - Escape follows visual stacking order and closes only the top transient

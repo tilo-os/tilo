@@ -37,6 +37,12 @@ pub fn paint_scale(tr: &TextRenderer, theme: &ui::theme::Theme) -> f32 {
     }
 }
 
+/// `size` through this paint pass's scale — the renderer-relative size to
+/// hand a toolkit painter that sets canvas text beside this module's own.
+pub fn type_size(size: f32) -> f32 {
+    scaled_size(size)
+}
+
 fn scaled_size(size: f32) -> f32 {
     TEXT_SCALE.with(|scale| size * scale.get())
 }

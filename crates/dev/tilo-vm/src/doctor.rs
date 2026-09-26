@@ -8,7 +8,7 @@ use serde::Serialize;
 
 use crate::config::VmEntry;
 use crate::disk::{self, Token};
-use crate::error::{CliError, FORGE_TOKEN_USE, REGISTRY_LOGIN_USE, no_disk_help};
+use crate::error::{CliError, FORGE_TOKEN_USE, no_disk_help};
 use crate::host::{self, Choice, HostFacts, HostKind, Missing};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -218,8 +218,9 @@ pub fn vm_adapter_checks(
     checks
 }
 
-/// The two credentials, each with the operations that read it.
-pub fn credential_checks(token: Option<&Token>, login: Result<String, CliError>) -> Vec<Check> {
+/// The forge token, with the operations that read it. Image pulls need no
+/// credential: registry.tilo.so is public.
+pub fn credential_checks(token: Option<&Token>) -> Vec<Check> {
     let forge = match token {
         Some(token) => Check::ok(
             "forge token",
@@ -233,21 +234,7 @@ pub fn credential_checks(token: Option<&Token>, login: Result<String, CliError>)
             "export FORGEJO_TOKEN=<forge token with package read access>, or log in with fgj or tea",
         ),
     };
-    let registry = match login {
-        Ok(user) => Check::ok(
-            "registry login",
-            format!(
-                "podman here is logged in to {} as {user}; that login is {REGISTRY_LOGIN_USE}",
-                crate::app::REGISTRY
-            ),
-        ),
-        Err(error) => Check::warn(
-            "registry login",
-            format!("{error}; a registry login is {REGISTRY_LOGIN_USE}"),
-            error.hint(),
-        ),
-    };
-    vec![forge, registry]
+    vec![forge]
 }
 
 /// Is a dev disk published? `listing` is the forge's answer to
@@ -450,25 +437,13 @@ mod tests {
             value: "t".into(),
             source: "FORGEJO_TOKEN".into(),
         };
-        let checks = credential_checks(
-            Some(&token),
-            Err(CliError::RegistryLogin {
-                place: "this host".into(),
-                registry: "code.podesta.ai".into(),
-            }),
-        );
+        let checks = credential_checks(Some(&token));
+        assert_eq!(checks.len(), 1);
         assert!(
             checks[0].detail.contains("dev disk downloads"),
             "{:?}",
             checks[0]
         );
-        assert_eq!(checks[1].state, "warn");
-        assert!(
-            checks[1].detail.contains("swap --from ci:/sha:"),
-            "{:?}",
-            checks[1]
-        );
-        assert!(checks[1].fix.as_deref().unwrap().contains("podman login"));
     }
 
     #[test]

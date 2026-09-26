@@ -24,7 +24,7 @@ import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
 CATALOG = ROOT / "dist/apps/registry-metadata.toml"
-SOURCE_URL = "https://code.podesta.ai/qos/qos"
+SOURCE_URL = "https://code.tilo.so/tilo/tilo"
 PUBLIC_IMAGE_HOST = "https://apps.tilo.so/"
 LANGUAGE_FILE = re.compile(r"^([A-Za-z]{2,3})(?:[-_][A-Za-z0-9]+)?\.(?:ftl|json|po)$")
 

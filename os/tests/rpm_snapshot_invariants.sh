@@ -65,15 +65,15 @@ for package in dbus-tools harfbuzz-icu libatomic wine wine-dxvk qemu-kvm libvirt
   libvirt-daemon-kvm libvirt-daemon-config-nwfilter swtpm swtpm-tools \
   edk2-ovmf virtio-win freerdp xwayland-satellite virt-viewer xorriso \
   genisoimage udftools; do
-  printf '%s\n' "$all_packages" | grep -Fxq "$package" \
+  grep -Fxq "$package" <<<"$all_packages" \
     && ok "$package is in the derived frozen package set" \
     || bad "$package is missing from the derived frozen package set"
 done
 
 arm_packages="$("$derive" --arch aarch64)"
-if printf '%s\n' "$arm_packages" | grep -Fxq edk2-aarch64 \
-  && ! printf '%s\n' "$arm_packages" | grep -Fxq edk2-ovmf \
-  && ! printf '%s\n' "$all_packages" | grep -Fxq edk2-aarch64; then
+if grep -Fxq edk2-aarch64 <<<"$arm_packages" \
+  && ! grep -Fxq edk2-ovmf <<<"$arm_packages" \
+  && ! grep -Fxq edk2-aarch64 <<<"$all_packages"; then
   ok 'each architecture selects its native Windows VM firmware'
 else
   bad 'Windows VM firmware package selection crosses architectures'
@@ -317,13 +317,13 @@ has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
 has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'production CI rejects a stale frozen package manifest before building'
-has "$image_workflow" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+has "$image_workflow" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
   'production CI accepts only the real digest-pinned RPM registry path'
 has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'
-has "$build_script" '^code\.podesta\.ai/qos/rpms@sha256:[0-9a-f]{64}$' \
+has "$build_script" '^registry\.tilo\.so/tilo/rpms@sha256:[0-9a-f]{64}$' \
   'local builds accept only the real digest-pinned RPM registry path'
 
 if grep -Rqs --exclude-dir=output --include='Containerfile*' 'DROP_RPMDB_WAL' \

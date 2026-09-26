@@ -34,7 +34,7 @@ while (($#)); do
 done
 printf '%s\t%s\n' "$header" "$url" >> "$CURL_LOG"
 [[ $header == 'Authorization: Bearer reuse-token' ]]
-[[ $url == https://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz ]]
+[[ $url == https://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz ]]
 cp "$PRIOR_FIXTURE" "$output"
 EOF
 chmod +x "$work/bin/curl"
@@ -42,7 +42,7 @@ chmod +x "$work/bin/curl"
 export PATH="$work/bin:$PATH"
 export RUNNER_TEMP="$work/tmp"
 export TILO_PACKAGE_TOKEN=reuse-token
-export TILO_PACKAGE_PUBLIC_BASE_URL=https://code.podesta.ai/api/packages/qos/generic
+export TILO_PACKAGE_PUBLIC_BASE_URL=https://code.tilo.so/api/packages/tilo/generic
 export PRIOR_FIXTURE="$work/prior.tar.gz"
 export CURL_LOG="$work/curl.log"
 
@@ -58,14 +58,14 @@ PATH="$work/bin:$PATH" tools/reuse_prior_app_collection.sh \
 [[ ! -e $CURL_LOG ]]
 
 printf '{"apps":[{"name":"new","id":"so.tilo.new","package":"new","version":"1.0.1-dev.10+gb","declared_version":"1.0.0","runtime":"tilo-runtime/1.0.0"}]}\n' > "$work/release/index.json"
-internal_url=http://forgejo.forgejo.svc.cluster.local:3000/api/packages/qos/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz
+internal_url=http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz
 tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \
   "$work/partial-out" x86_64 "$internal_url" "$prior_sha"
 cmp "$work/prior/tapp/old-1.0.1-dev.9+ga-x86_64.tapp" "$work/partial-out/old-1.0.1-dev.9+ga-x86_64.tapp"
 jq -e '.catalog[] | select(.name == "old") | .version == "1.0.1-dev.9+ga"' "$work/plan.json" >/dev/null
 jq -e '.catalog[] | select(.name == "new") | .version == "1.0.1-dev.10+gb"' "$work/plan.json" >/dev/null
 
-grep -Fxq $'Authorization: Bearer reuse-token\thttps://code.podesta.ai/api/packages/qos/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz' "$CURL_LOG"
+grep -Fxq $'Authorization: Bearer reuse-token\thttps://code.tilo.so/api/packages/tilo/generic/tilo-app-collections/v1/tilo-apps-x86_64.tar.gz' "$CURL_LOG"
 
 if tools/reuse_prior_app_collection.sh "$work/release/index.json" "$work/plan.json" \
     "$work/bad-digest-out" x86_64 "$internal_url" "${prior_sha/??/00}" >/dev/null 2>&1; then

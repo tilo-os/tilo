@@ -36,7 +36,7 @@ def _number(value):
 
 def _state(state):
     if (not isinstance(state,dict) or any(k not in state for k in _STABLE)
-        or state['app']!='dev.qos.settings' or state['search_id']!='settings.search'
+        or state['app']!='dev.tilo.settings' or state['search_id']!='settings.search'
         or state['ready'] is not True or state['selected_category']!='network'
         or state['narrow'] is not False or state['sidebar_open'] is not True
         or state['document_witness_kind']!='effective_heads_on_disposable_clone'
@@ -87,7 +87,7 @@ def _effects(scenario,lines):
     if (not isinstance(scenario,dict) or not isinstance(scenario.get('steps'),list)
         or not scenario['steps'] or not all(isinstance(s,dict) for s in scenario['steps'])):
         raise ValueError('Invalid Settings scenario')
-    effects=_rows(lines,'qos-native-effect ')
+    effects=_rows(lines,'tilo-native-effect ')
     if len(effects)!=len(scenario['steps']):raise ValueError('Missing or extra Settings effects')
     previous=None
     for identity,effect in enumerate(effects):
@@ -114,7 +114,7 @@ def validate_settings_typing(scenario,lines):
     effects=_effects(scenario,lines)
     warmup=scenario.get('warmup_steps',0)
     if type(warmup) is not int or not 0<=warmup<len(effects):raise ValueError('Invalid warmup boundary')
-    windows=_rows(lines,'qos-native-window ')
+    windows=_rows(lines,'tilo-native-window ')
     if len(windows)!=1 or not _number(windows[0].get('scale_factor')) or windows[0]['scale_factor']<=0:
         raise ValueError('Settings pointer requires actual positive native scale')
     scale=windows[0]['scale_factor'];edits=0
@@ -141,7 +141,7 @@ def validate_settings_typing(scenario,lines):
 
 
 def validate_settings_frame_states(scenario,lines):
-    effects=_effects(scenario,lines);frames=_rows(lines,'qos-native-frame ')
+    effects=_effects(scenario,lines);frames=_rows(lines,'tilo-native-frame ')
     next_input,previous_frame=0,-1
     for frame in frames:
         identity,inputs=frame.get('cpu_frame_id'),frame.get('input_ids')

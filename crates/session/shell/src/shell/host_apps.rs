@@ -450,6 +450,76 @@ fn launch_resolved(
     Ok(app)
 }
 
+/// The `tilo-launcher run-host` command for an XDG autostart entry. It names
+/// the file itself, since autostart entries need not be in any
+/// `applications` directory. Pure, like [`build_launch_command`].
+pub(crate) fn build_autostart_command(
+    entry: &DesktopEntry,
+    launcher_bin: &Path,
+    wayland_socket: &Path,
+    x11: Option<&X11Session>,
+    portal_workspace_id: Option<String>,
+) -> launcher::LaunchCommand {
+    let mut command = build_launch_command(
+        &HostApp::from_entry(entry),
+        launcher_bin,
+        wayland_socket,
+        None,
+        x11,
+        portal_workspace_id,
+        None,
+    );
+    command.args.push("--desktop-file".to_string());
+    command.args.push(entry.path.display().to_string());
+    command
+}
+
+/// Start the session's XDG autostart entries, attributing their portal
+/// requests to `portal_workspace_id`. Console programs (`Terminal=true`)
+/// are not started at login: a terminal window nobody asked for is noise.
+///
+/// # Errors
+///
+/// Returns [`LaunchError::NoDisplay`] or a launcher-resolution error when
+/// nothing can be started at all.
+pub fn launch_autostart(portal_workspace_id: Option<&str>) -> Result<usize, LaunchError> {
+    require_host_execution()?;
+    let socket = launcher::wayland_socket().ok_or(LaunchError::NoDisplay)?;
+    let launcher_bin = launcher::resolve_launcher_bin()?;
+    let desktops = vec![crate::compositor::session_env::CURRENT_DESKTOP.to_string()];
+    let scan = desktop_entry::autostart::scan_autostart(
+        &desktop_entry::autostart::autostart_dirs(),
+        &desktops,
+        desktop_entry::autostart::program_on_path,
+    );
+    for (path, reason) in &scan.skipped {
+        tracing::info!(path = %path.display(), ?reason, "autostart entry not started");
+    }
+    let x11 = x11_session_for(portal_workspace_id);
+    let startable: Vec<&DesktopEntry> = scan
+        .start
+        .iter()
+        .filter(|entry| {
+            if entry.terminal {
+                tracing::info!(id = %entry.id, "autostart console program not started");
+            }
+            !entry.terminal
+        })
+        .collect();
+    for entry in &startable {
+        let command = build_autostart_command(
+            entry,
+            &launcher_bin,
+            &socket,
+            x11.as_ref(),
+            portal_workspace_id.map(str::to_string),
+        );
+        launcher::remember_launch_named(&entry.id, &entry.window_identities(), &entry.name);
+        let _ = launcher::spawn_launch(entry.id.clone(), entry.name.clone(), command);
+    }
+    Ok(startable.len())
+}
+
 /// A foreign toplevel arrives with an `app_id` Tilo didn't mint, so the
 /// note is keyed on every identity the entry might use.
 pub fn note_placement(app: &HostApp, placement: crate::shell::tab_binding::Placement) {
@@ -786,5 +856,44 @@ mod unavailable_provider_tests {
         );
         assert!(!published.defaults.contains_key("application/pdf"));
         assert!(published.defaults.contains_key("image/tiff"));
+    }
+
+    #[test]
+    fn an_autostart_entry_is_started_by_its_file_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sync-client.desktop");
+        std::fs::write(
+            &path,
+            "[Desktop Entry]\nType=Application\nName=Sync\nExec=sync-client --background\n",
+        )
+        .unwrap();
+        let scan = desktop_entry::autostart::scan_autostart(
+            &[dir.path().to_path_buf()],
+            &["tilo".to_string()],
+            |_| true,
+        );
+        let [entry] = scan.start.as_slice() else {
+            panic!("one entry to start: {scan:?}");
+        };
+        let command = build_autostart_command(
+            entry,
+            Path::new("/usr/bin/tilo-launcher"),
+            Path::new("/run/user/1000/wayland-1"),
+            None,
+            Some("room".to_string()),
+        );
+        assert_eq!(
+            command.args,
+            vec![
+                "run-host",
+                "--desktop-id",
+                "sync-client",
+                "--wayland-socket",
+                "/run/user/1000/wayland-1",
+                "--desktop-file",
+                &path.display().to_string(),
+            ]
+        );
+        assert_eq!(command.portal_workspace_id.as_deref(), Some("room"));
     }
 }

@@ -33,7 +33,7 @@ class PushEventTests(unittest.TestCase):
 
     def test_synthetic_push_fixtures(self):
         for name, worktree, branch in [
-            ("qos157", "child", "topic/child"),
+            ("tilo157", "child", "topic/child"),
             ("infra240", "wrapped", "topic/wrapped"),
         ]:
             event = json.loads((Path(__file__).parent / "fixtures" / f"{name}.json").read_text())
@@ -116,10 +116,10 @@ class PushEventTests(unittest.TestCase):
         self.assertIsNone(push_target(event))
 
     def test_scp_remote_and_credential_redaction(self):
-        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, "git@code.podesta.ai:qos/qos.git", "")):
-            self.assertEqual(watch_ci.forgejo_target(Path.cwd()), ("code.podesta.ai", "qos/qos"))
+        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, "git@code.tilo.so:tilo/tilo.git", "")):
+            self.assertEqual(watch_ci.forgejo_target(Path.cwd()), ("code.tilo.so", "tilo/tilo"))
         secret = "dummy-secret-never-deliver"
-        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, f"https://user:{secret}@code.podesta.ai/invalid", "")):
+        with patch.object(watch_ci, "run", return_value=subprocess.CompletedProcess([], 0, f"https://user:{secret}@code.tilo.so/invalid", "")):
             with self.assertRaises(ValueError) as error:
                 watch_ci.forgejo_target(Path.cwd())
             self.assertNotIn(secret, str(error.exception))
@@ -143,7 +143,7 @@ class PushEventTests(unittest.TestCase):
                 else:
                     self.fail(f"Unexpected command: {args}")
                 return subprocess.CompletedProcess(args, 0, output, "")
-            with patch.object(watch_ci, "run", side_effect=run), patch.object(watch_ci, "forgejo_target", return_value=("code.podesta.ai", "qos/qos")), patch.object(watch_ci, "spawn_worker") as spawn:
+            with patch.object(watch_ci, "run", side_effect=run), patch.object(watch_ci, "forgejo_target", return_value=("code.tilo.so", "tilo/tilo")), patch.object(watch_ci, "spawn_worker") as spawn:
                 with patch("sys.stdin", io.StringIO(json.dumps(event))):
                     self.assertEqual(watch_ci.launch(), 0)
                 self.assertEqual(spawn.call_count, 1)
@@ -160,8 +160,8 @@ class PushEventTests(unittest.TestCase):
                 "cwd": Path("C:/work/child"),
                 "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                 "branch": "topic/child",
-                "host": "code.podesta.ai",
-                "repo": "qos/qos",
+                "host": "code.tilo.so",
+                "repo": "tilo/tilo",
                 "receipt_directory": Path(directory),
             }
             with patch.object(watch_ci, "branch_is_on_remote", return_value=True), patch.object(watch_ci, "watch", return_value=("complete", [{"status": "success", "index_in_repo": 42}] )) as watch, patch.object(watch_ci, "deliver") as deliver:
@@ -194,8 +194,8 @@ class PushEventTests(unittest.TestCase):
                     cwd=Path("C:/repo"),
                     sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     branch="topic",
-                    host="code.podesta.ai",
-                    repo="qos/qos",
+                    host="code.tilo.so",
+                    repo="tilo/tilo",
                     receipt_directory=Path(directory),
                 ),
                 0,

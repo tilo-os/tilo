@@ -140,8 +140,8 @@ else
   grep -R -Fq -- 'WinGet submission in review.' "$work/site/dist" \
     || { printf 'landing page does not explain the pending WinGet route\n' >&2; exit 1; }
 fi
-if grep -R -Fq -- 'https://code.podesta.ai/qos/qos/releases/download/' "$work/site/dist" \
-   || grep -R -Fq -- 'https://code.podesta.ai/qos/releases/download/' "$work/site/dist"; then
+if grep -R -Fq -- 'https://code.tilo.so/tilo/tilo/releases/download/' "$work/site/dist" \
+   || grep -R -Fq -- 'https://code.tilo.so/tilo/releases/download/' "$work/site/dist"; then
   printf 'landing page still contains private-source release downloads\n' >&2
   exit 1
 fi

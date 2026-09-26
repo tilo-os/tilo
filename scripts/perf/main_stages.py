@@ -14,14 +14,14 @@ def summarize_main_stages(lines, expected_cpu_ids):
     if (not expected or len(expected)!=len(expected_cpu_ids)
             or any(type(i) is not int or i<0 for i in expected)):
         raise ValueError('Invalid expected main-stage CPU identities')
-    evidence=rows(lines,'qos-native-main-stages ')
+    evidence=rows(lines,'tilo-native-main-stages ')
     if not evidence:
         return dict(available=False,performance_certified=False,
                     reason='Main-stage boundaries unavailable')
     # Require the same complete positive worker/display identity chain.
     if not summarize_render_boundaries(lines,expected_cpu_ids)['available']:
         raise ValueError('Main-stage evidence lacks render boundaries')
-    sends={r['cpu_frame_id']:r for r in rows(lines,'qos-native-send ')}
+    sends={r['cpu_frame_id']:r for r in rows(lines,'tilo-native-send ')}
     by_cpu={}
     for row in evidence:
         cpu=row.get('cpu_frame_id')

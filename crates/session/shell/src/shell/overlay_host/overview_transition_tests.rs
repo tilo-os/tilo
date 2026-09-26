@@ -31,11 +31,7 @@ fn a_full_width_window_stops_short_of_both_screen_edges() {
     }
     assert_eq!(STRIP_TRAILING_GUTTER_PX, WHEEL_TO_STRIP_GAP_PX);
     let mut h = host().with_sidebar(Box::new(Container::new()));
-    h.set_output_geometry(&[OutputGeometry {
-        x: 0.0,
-        width: 1600.0,
-        height: 900.0,
-    }]);
+    h.set_output_geometry(&[OutputGeometry::unscaled(0.0, 0.0, 1600.0, 900.0)]);
 
     let spans = h.strip_output_spans();
     assert_eq!(spans.len(), 1, "one output in, one span out");

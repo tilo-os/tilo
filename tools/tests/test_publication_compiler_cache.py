@@ -186,7 +186,7 @@ class KernelPublicationTests(unittest.TestCase):
         build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
         self.assertIn(
             "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
-            "ref={0}/qos/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
+            "ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
             " || '' }}", build)
         self.assertEqual(self.workflow.count("cache-from:"), 1)
 

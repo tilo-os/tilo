@@ -275,7 +275,7 @@ fn permission_prompt_panel_edge_registers_in_both_themes() {
     let panel = Rect::new(20.0, 40.0, 620.0, 40.0 + PROMPT_HEIGHT);
     for (name, theme) in themes() {
         let mut prompt = PermissionPrompt::new(
-            "org.qos.Photos".to_string(),
+            "org.tilo.Photos".to_string(),
             "read your Pictures folder".to_string(),
             true,
         );

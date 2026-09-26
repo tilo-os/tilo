@@ -53,7 +53,7 @@ constexpr int kOffscreenFrameRate = 60;
 constexpr size_t kMaxMediaFrames = 64;
 // Bounded, opt-in startup geometry evidence; never includes page content.
 void TraceGeometry(const char* stage,int tab,int width=0,int height=0,double scale=0) {
-  static const bool enabled=[] {const char* value=std::getenv("QOS_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
+  static const bool enabled=[] {const char* value=std::getenv("TILO_WEBVIEW_PROFILE");return value && std::strcmp(value,"trace")==0;}();
   static std::atomic<unsigned> count{0};
   if(enabled && count.fetch_add(1)<128) std::fprintf(stderr,"[chromium-geometry] %s tab=%d %dx%d scale=%g\n",stage,tab,width,height,scale);
 }
@@ -64,7 +64,7 @@ class Output {
   ~Output() { Stop(); }
   void Send(uint8_t kind,std::string data) {
     std::lock_guard<std::mutex> lock(mutex_);
-    auto packet=qos::EncodePacket(kind,data);
+    auto packet=tilo::EncodePacket(kind,data);
     if(kind==2 || kind==3) frame_=std::move(packet);
     else if(events_.size()<256) events_.push_back(std::move(packet));
     else failed_=true;
@@ -140,19 +140,19 @@ bool closing=false;
 bool clear_on_exit=false;
 bool private_mode=false;
 std::string downloads_directory;
-std::shared_ptr<qos::CredentialWorker> credential_worker;
+std::shared_ptr<tilo::CredentialWorker> credential_worker;
 struct CredentialDeliveryState {std::mutex mutex;bool active=false;};
 // A blocked worker retains this plain state through shutdown, without touching
 // destroyed globals or retaining CEF objects after CefShutdown.
 const auto credential_delivery=std::make_shared<CredentialDeliveryState>();
-CefRefPtr<qos::RequestFilter> request_filter;
-CefRefPtr<qos::Downloads> downloads;
-qos::DownloadOwnerReservations download_owners;
+CefRefPtr<tilo::RequestFilter> request_filter;
+CefRefPtr<tilo::Downloads> downloads;
+tilo::DownloadOwnerReservations download_owners;
 
 class Client final : public CefClient, public CefRenderHandler, public CefLifeSpanHandler,
                      public CefDisplayHandler, public CefLoadHandler, public CefFrameHandler, public CefRequestHandler, public CefFindHandler, public CefContextMenuHandler, public CefDialogHandler {
  public:
-  explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new qos::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
+  explicit Client(int id):id_(id),credential_document_(private_mode),capabilities_(new tilo::Capabilities([this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);})) {}
   void Event(const std::string& name,CefRefPtr<CefDictionaryValue> fields=nullptr) {
     if(transfer_owner_ && name!="tab_detached" && name!="closed") return;
     if(!fields) fields=CefDictionaryValue::Create();fields->SetInt("tab",id_);::Event(name,fields);
@@ -230,12 +230,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnAfterCreated(CefRefPtr<CefBrowser> browser) override {
     browser_=browser;
-    if(id_==1 && qos::StartupDiagnostics::Enabled()){startup_diagnostics_=new qos::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
+    if(id_==1 && tilo::StartupDiagnostics::Enabled()){startup_diagnostics_=new tilo::StartupDiagnostics(browser);startup_diagnostics_->Attach();}
     request_filter->Begin(browser->GetIdentifier(),"about:blank");
-    site_clear_=new qos::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
-    document_scripts_=new qos::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
+    site_clear_=new tilo::SiteClear(browser,[this](int request,const std::string& origin,uint64_t generation,bool success,const std::string& message){SiteResult(request,origin,generation,"clear",success,message);});site_clear_->Attach();
+    document_scripts_=new tilo::DocumentScripts(browser,[this] { CefPostTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){ self->FlushNavigation(); },CefRefPtr<Client>(this))); },[this] { StringEvent("error","message","Document-start script registration failed");CloseHost(); });
     document_scripts_->Attach();
-    navigation_history_=new qos::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
+    navigation_history_=new tilo::NavigationHistory(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});navigation_history_->Attach();
     auto d=CefDictionaryValue::Create();d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -286,10 +286,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!frame->IsMain()) return;
     InvalidateCredentials();
     TraceGeometry("load-start",id_);
-    credential_committed_origin_=qos::Origin(frame->GetURL());
+    credential_committed_origin_=tilo::Origin(frame->GetURL());
   }
   void OnLoadEnd(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,int status) override {
-    if(!frame->IsMain()) return; if(startup_diagnostics_ && qos::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
+    if(!frame->IsMain()) return; if(startup_diagnostics_ && tilo::Origin(frame->GetURL()).starts_with("https://"))startup_diagnostics_->Loaded();OfferCredentialContext(frame);pending_main_media_token_.reset();PublishZoom();auto d=CefDictionaryValue::Create();d->SetString("url",frame->GetURL());d->SetInt("status",status);Event("loaded",d);SendScripts();
   }
   void OnLoadError(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame> frame,ErrorCode code,const CefString& text,const CefString& url) override {
     if(frame->IsMain()) InvalidateCredentials();
@@ -299,7 +299,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnPopupSize(CefRefPtr<CefBrowser>,const CefRect& rect) override { popup_rect_=rect; }
   void OnPaint(CefRefPtr<CefBrowser> browser,PaintElementType type,const RectList&,const void* buffer,int width,int height) override {
     if(!visible_) return;
-    auto size=qos::FrameSize(width,height);if(!size) return;
+    auto size=tilo::FrameSize(width,height);if(!size) return;
     if(type==PET_VIEW && !geometry_.PaintMatches(width,height)) {
       TraceGeometry("paint-stale",id_,width,height,geometry_.scale());
       if(!stale_paint_recovery_pending_) {
@@ -323,7 +323,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void EmitFrame() {
     if(!visible_ || pixels_.empty()) return;
     TraceGeometry("frame-published",id_,pixel_width_,pixel_height_,geometry_.scale());
-    std::string body; qos::AppendU32(body,pixel_width_);qos::AppendU32(body,pixel_height_);body+=pixels_;
+    std::string body; tilo::AppendU32(body,pixel_width_);tilo::AppendU32(body,pixel_height_);body+=pixels_;
     if(popup_visible_ && !popup_.empty()) {
       int x=static_cast<int>(std::round(popup_rect_.x*geometry_.scale())),y=static_cast<int>(std::round(popup_rect_.y*geometry_.scale()));
       for(int row=0;row<popup_height_;++row) {
@@ -333,14 +333,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
     if(id_==1) output->Send(2,std::move(body));
-    else {std::string routed;qos::AppendU32(routed,id_);routed+=body;output->Send(3,std::move(routed));}
+    else {std::string routed;tilo::AppendU32(routed,id_);routed+=body;output->Send(3,std::move(routed));}
   }
   bool OnProcessMessageReceived(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,CefProcessId source,CefRefPtr<CefProcessMessage> message) override {
     if(source!=PID_RENDERER) return false;
-    if(message->GetName()=="qos.credential_result") {
+    if(message->GetName()=="tilo.credential_result") {
       ReceiveCredentialResult(browser,frame,message->GetArgumentList());return true;
     }
-    if(message->GetName()=="qos.credential_context" || message->GetName()=="qos.credential_context_closed") {
+    if(message->GetName()=="tilo.credential_context" || message->GetName()=="tilo.credential_context_closed") {
       if(!browser_ || !browser || !browser->IsSame(browser_) || !frame ||
          !frame->IsMain() || !frame->IsValid() || transfer_owner_) return true;
       TraceGeometry("credential-context-received",id_);
@@ -350,20 +350,20 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
          args->GetString(0).ToString()!=std::to_string(credential_generation_)) return true;
       const auto context=args->GetString(1).ToString();
       if(context.empty() || context.size()>128 || args->GetString(2)!=frame->GetURL()) return true;
-      if(message->GetName()=="qos.credential_context_closed") {
+      if(message->GetName()=="tilo.credential_context_closed") {
         if(credential_identity_ && credential_identity_->context==context) InvalidateCredentials();
         return true;
       }
-      qos::CredentialIdentity identity{browser->GetIdentifier(),frame->GetIdentifier().ToString(),
-          qos::Origin(frame->GetURL()),context,credential_generation_};
+      tilo::CredentialIdentity identity{browser->GetIdentifier(),frame->GetIdentifier().ToString(),
+          tilo::Origin(frame->GetURL()),context,credential_generation_};
       if(!credential_handshake_.Accept(identity) || !CredentialPageSecure(frame)) return true;
       if(credential_document_.Commit(identity,true,true,false)) {credential_identity_=identity;TraceGeometry("credential-context-committed",id_);}
       return true;
     }
-    if(message->GetName()=="qos.media_context" && frame && browser_) {const auto key=frame->GetIdentifier().ToString();const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0));if(frame->IsMain())pending_main_media_token_=token;auto found=media_frames_.find(key);if(found!=media_frames_.end()) found->second={token,false};else if(media_frames_.size()<kMaxMediaFrames) media_frames_.emplace(key,std::make_pair(token,false));if(media_frames_.size()==kMaxMediaFrames && !media_limit_reported_){media_limit_reported_=true;auto d=CefDictionaryValue::Create();d->SetInt("tracked_frames",static_cast<int>(media_frames_.size()));Event("media_frame_limit",d);}return true; }
-    if(message->GetName()=="qos.media_context_closed" && frame && browser_) {auto found=media_frames_.find(frame->GetIdentifier().ToString());if(found!=media_frames_.end() && found->second.first==static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0))){const bool was_playing=found->second.second;media_frames_.erase(found);if(was_playing)PublishMediaState();}return true;}
-    if(message->GetName()=="qos.media_state" && frame && browser_) { auto found=media_frames_.find(frame->GetIdentifier().ToString());const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(1));if(found!=media_frames_.end() && found->second.first==token) {found->second.second=message->GetArgumentList()->GetBool(0);PublishMediaState();}return true; }
-    if(message->GetName()!="qos.config") return false;
+    if(message->GetName()=="tilo.media_context" && frame && browser_) {const auto key=frame->GetIdentifier().ToString();const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0));if(frame->IsMain())pending_main_media_token_=token;auto found=media_frames_.find(key);if(found!=media_frames_.end()) found->second={token,false};else if(media_frames_.size()<kMaxMediaFrames) media_frames_.emplace(key,std::make_pair(token,false));if(media_frames_.size()==kMaxMediaFrames && !media_limit_reported_){media_limit_reported_=true;auto d=CefDictionaryValue::Create();d->SetInt("tracked_frames",static_cast<int>(media_frames_.size()));Event("media_frame_limit",d);}return true; }
+    if(message->GetName()=="tilo.media_context_closed" && frame && browser_) {auto found=media_frames_.find(frame->GetIdentifier().ToString());if(found!=media_frames_.end() && found->second.first==static_cast<uint64_t>(message->GetArgumentList()->GetDouble(0))){const bool was_playing=found->second.second;media_frames_.erase(found);if(was_playing)PublishMediaState();}return true;}
+    if(message->GetName()=="tilo.media_state" && frame && browser_) { auto found=media_frames_.find(frame->GetIdentifier().ToString());const auto token=static_cast<uint64_t>(message->GetArgumentList()->GetDouble(1));if(found!=media_frames_.end() && found->second.first==token) {found->second.second=message->GetArgumentList()->GetBool(0);PublishMediaState();}return true; }
+    if(message->GetName()!="tilo.config") return false;
     SendFilters(frame,message->GetArgumentList()->GetDouble(0));SendScripts(frame);return true;
   }
   void PublishMediaState(std::optional<bool> forced=std::nullopt) {
@@ -373,9 +373,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void SendFilters(CefRefPtr<CefFrame> frame,double token=0) {
     if(!frame) return;
-    auto message=CefProcessMessage::Create("qos.filters");auto args=message->GetArgumentList();
+    auto message=CefProcessMessage::Create("tilo.filters");auto args=message->GetArgumentList();
     auto state=request_filter->Snapshot();args->SetString(0,state->rules);args->SetBool(1,state->enabled);
-    auto exceptions=CefListValue::Create();for(const auto& origin:state->exceptions)exceptions->SetString(exceptions->GetSize(),origin);args->SetList(2,exceptions);args->SetString(3,browser_?qos::Origin(browser_->GetMainFrame()->GetURL()):std::string());args->SetString(4,frame->GetURL());args->SetDouble(5,token);
+    auto exceptions=CefListValue::Create();for(const auto& origin:state->exceptions)exceptions->SetString(exceptions->GetSize(),origin);args->SetList(2,exceptions);args->SetString(3,browser_?tilo::Origin(browser_->GetMainFrame()->GetURL()):std::string());args->SetString(4,frame->GetURL());args->SetDouble(5,token);
     frame->SendProcessMessage(PID_RENDERER,message);
   }
   void RefreshFilters() {if(!browser_)return;UpdateScriptPolicy();std::vector<CefString> ids;browser_->GetFrameIdentifiers(ids);for(const auto& id:ids)SendFilters(browser_->GetFrameByIdentifier(id));}
@@ -384,7 +384,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void SiteCommand(CefRefPtr<CefDictionaryValue> command) {
     const auto origin=command->GetString("origin").ToString(),op=command->GetString("op").ToString();const int request=command->GetInt("request_id");
-    auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=qos::Origin(browser_->GetMainFrame()->GetURL());
+    auto document=request_filter->Document(browser_->GetIdentifier());const auto actual=tilo::Origin(browser_->GetMainFrame()->GetURL());
     const auto action=op=="site_status"?"status":command->GetString("action").ToString();
     // Action replies echo their requested document, including stale failures,
     // so chrome can finish the matching request instead of waiting for timeout.
@@ -406,7 +406,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
         return;
       }
       if(action=="revoke") {
-        capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:qos::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
+        capabilities_->Close();auto context=browser_->GetHost()->GetRequestContext();for(const auto& permission:tilo::kSitePermissions)context->SetContentSetting(origin,origin,permission.type,CEF_CONTENT_SETTING_VALUE_BLOCK);
         SiteResult(request,origin,document->generation,action,true,"Permissions blocked. Reload to end existing media sessions.");
       } else if(action=="enable" || action=="disable") {
         auto origins=request_filter->Snapshot()->exceptions;if(action=="disable")origins.insert(origin);else origins.erase(origin);
@@ -416,21 +416,21 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       return;
     }
     auto state=request_filter->Snapshot();auto d=CefDictionaryValue::Create();d->SetInt("request_id",request);d->SetString("origin",actual);d->SetDouble("generation",document->generation);d->SetDouble("blocked",std::min<uint64_t>(document->blocked.load(),9007199254740991ULL));d->SetBool("global_enabled",state->enabled);d->SetBool("excepted",state->exceptions.count(actual));d->SetBool("effective",state->enabled && !state->exceptions.count(actual));
-    auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && qos::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
+    auto entry=browser_->GetHost()->GetVisibleNavigationEntry();auto ssl=entry && tilo::Origin(entry->GetURL())==actual?entry->GetSSLStatus():nullptr;
     const bool secure=ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus());
     d->SetString("security",actual.starts_with("http:")?"insecure":secure?"secure":"unverified");d->SetInt("certificate_status",ssl?ssl->GetCertStatus():0);d->SetInt("tls_version",ssl?ssl->GetSSLVersion():0);d->SetInt("content_status",ssl?ssl->GetContentStatus():0);
     std::string subject,issuer;double expires=0;
     if(ssl)if(auto certificate=ssl->GetX509Certificate()){subject=certificate->GetSubject()->GetDisplayName();issuer=certificate->GetIssuer()->GetDisplayName();expires=certificate->GetValidExpiry().val;}
-    d->SetString("subject",subject.substr(0,512));d->SetString("issuer",issuer.substr(0,512));d->SetDouble("expires",expires);d->SetDictionary("permissions",qos::PermissionStatus(browser_->GetHost()->GetRequestContext(),actual));Event("site_status",d);
+    d->SetString("subject",subject.substr(0,512));d->SetString("issuer",issuer.substr(0,512));d->SetDouble("expires",expires);d->SetDictionary("permissions",tilo::PermissionStatus(browser_->GetHost()->GetRequestContext(),actual));Event("site_status",d);
   }
   void SendScripts(CefRefPtr<CefFrame> frame=nullptr) {
     if(!frame) { if(!browser_) return;frame=browser_->GetMainFrame(); }
-    auto message=CefProcessMessage::Create("qos.scripts");auto args=message->GetArgumentList();
+    auto message=CefProcessMessage::Create("tilo.scripts");auto args=message->GetArgumentList();
     args->SetString(0,ScriptSource());
     frame->SendProcessMessage(PID_RENDERER,message);
   }
   std::string ScriptSource() {
-    auto scripts=scripts_;auto policy=request_filter->Snapshot();if(!blocking_scripts_.empty())scripts.push_back(qos::BlockingScriptSource(blocking_scripts_,policy->enabled,policy->exceptions));return qos::ScriptSource(scripts);
+    auto scripts=scripts_;auto policy=request_filter->Snapshot();if(!blocking_scripts_.empty())scripts.push_back(tilo::BlockingScriptSource(blocking_scripts_,policy->enabled,policy->exceptions));return tilo::ScriptSource(scripts);
   }
   void UpdateScriptPolicy() {if(document_scripts_){document_scripts_->Configure(ScriptSource());SendScripts();}}
   void FlushNavigation() {
@@ -505,12 +505,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     else if(op=="focus") host->SetFocus(d->GetBool("focused"));
     else if(op=="resize") {
       int w=d->GetInt("width"),h=d->GetInt("height"); double scale=Number(d,"scale_factor");
-      if(!std::isfinite(scale)||scale<0.25||scale>8||!qos::FrameSize(w,h)) { CloseHost(); return; }
+      if(!std::isfinite(scale)||scale<0.25||scale>8||!tilo::FrameSize(w,h)) { CloseHost(); return; }
       // IPC sizes and pointer coordinates are physical pixels; CEF uses DIP.
       const auto effect=geometry_.ResizePhysical(w,h,scale);
       TraceGeometry("resize-applied",id_,w,h,scale);
       stale_paint_recovery_pending_=false;
-      if(effect==qos::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
+      if(effect==tilo::ResizeEffect::Repaint) { host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);return; }
       popup_.clear();pixels_.clear();host->NotifyScreenInfoChanged();host->WasResized();host->Invalidate(PET_VIEW);
     } else if(op=="mouse_move" || op=="mouse_button" || op=="scroll") {
       CefMouseEvent event;event.x=static_cast<int>(Number(d,"x")/geometry_.scale());event.y=static_cast<int>(Number(d,"y")/geometry_.scale());event.modifiers=mouse_modifiers_|key_modifiers_;
@@ -555,7 +555,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
 #endif
-    const auto mapping=qos::MapKey(key);
+    const auto mapping=tilo::MapKey(key);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
     e.unmodified_character=mapping.character;
@@ -587,48 +587,48 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
  private:
   struct CredentialPending {
     int request=0;
-    qos::CredentialOperation operation;
-    qos::CredentialIdentity identity;
+    tilo::CredentialOperation operation;
+    tilo::CredentialIdentity identity;
     std::string action, form, account;
   };
   struct CredentialStorePending {
     CredentialPending pending;
-    std::shared_ptr<qos::CredentialCancellation> cancellation;
+    std::shared_ptr<tilo::CredentialCancellation> cancellation;
     bool timed_out=false;
   };
-  static std::string CredentialStatusMessage(qos::CredentialStatus status) {
+  static std::string CredentialStatusMessage(tilo::CredentialStatus status) {
     switch(status) {
-      case qos::CredentialStatus::Ok:return "Done";
-      case qos::CredentialStatus::Cancelled:return "Cancelled";
-      case qos::CredentialStatus::NotFound:return "Saved account no longer exists";
-      case qos::CredentialStatus::Denied:return "Keychain access was denied or is locked";
-      case qos::CredentialStatus::Capacity:return "This site has reached the 64-account capacity; new accounts cannot be saved";
-      case qos::CredentialStatus::Exists:return "This account is already saved; choose Update";
-      case qos::CredentialStatus::Invalid:return "Credential request or stored entry is invalid";
-      case qos::CredentialStatus::Unavailable:return "Keychain is unavailable";
+      case tilo::CredentialStatus::Ok:return "Done";
+      case tilo::CredentialStatus::Cancelled:return "Cancelled";
+      case tilo::CredentialStatus::NotFound:return "Saved account no longer exists";
+      case tilo::CredentialStatus::Denied:return "Keychain access was denied or is locked";
+      case tilo::CredentialStatus::Capacity:return "This site has reached the 64-account capacity; new accounts cannot be saved";
+      case tilo::CredentialStatus::Exists:return "This account is already saved; choose Update";
+      case tilo::CredentialStatus::Invalid:return "Credential request or stored entry is invalid";
+      case tilo::CredentialStatus::Unavailable:return "Keychain is unavailable";
     }
     return "Keychain is unavailable";
   }
-  void StartCredentialStore(int request,const std::string& action,qos::CredentialRequest operation,const std::string& form={}) {
+  void StartCredentialStore(int request,const std::string& action,tilo::CredentialRequest operation,const std::string& form={}) {
     if(!credential_worker || private_mode || !credential_identity_ || !CredentialPageSecure(browser_->GetMainFrame())) {
       CredentialEvent(request,action,false,"Credential storage is unavailable");return;
     }
     const auto kind=operation.operation;const auto account=operation.account;
-    auto id=credential_document_.Begin(kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+    auto id=credential_document_.Begin(kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
     if(!id || credential_store_pending_.size()>=16){
-      if(id)credential_document_.Take(*id,kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+      if(id)credential_document_.Take(*id,kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
       CredentialEvent(request,action,false,"Too many pending Keychain requests");return;
     }
     operation.origin=credential_identity_->origin;
     const int tab=id_,browser_id=browser_->GetIdentifier();
-    auto cancellation=credential_worker->Submit(std::move(operation),[tab,browser_id,id=*id,delivery=credential_delivery](qos::CredentialResult result,bool cancelled){
-      auto outcome=std::make_shared<qos::CredentialResult>(std::move(result));
+    auto cancellation=credential_worker->Submit(std::move(operation),[tab,browser_id,id=*id,delivery=credential_delivery](tilo::CredentialResult result,bool cancelled){
+      auto outcome=std::make_shared<tilo::CredentialResult>(std::move(result));
       std::lock_guard lock(delivery->mutex);
       if(!delivery->active)return;
       // Only plain IDs and native result data cross threads. No Client/CEF
       // object is retained by a blocked OS call after its browser closes.
       CefPostTask(TID_UI,base::BindOnce([](int tab,int browser_id,uint64_t id,
-          std::shared_ptr<qos::CredentialResult> result,bool cancelled){
+          std::shared_ptr<tilo::CredentialResult> result,bool cancelled){
         auto client=clients.find(tab);
         if(client==clients.end() || !client->second->browser_ ||
            client->second->browser_->GetIdentifier()!=browser_id)return;
@@ -636,7 +636,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       },tab,browser_id,id,std::move(outcome),cancelled));
     });
     if(!cancellation) {
-      credential_document_.Take(*id,kind,*credential_identity_,qos::CredentialDocument::Clock::now());
+      credential_document_.Take(*id,kind,*credential_identity_,tilo::CredentialDocument::Clock::now());
       CredentialEvent(request,action,false,"Keychain queue is full or unavailable");return;
     }
     credential_store_pending_.emplace(*id,CredentialStorePending{
@@ -645,11 +645,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto found=self->credential_store_pending_.find(id);if(found==self->credential_store_pending_.end())return;
       found->second.timed_out=true;found->second.cancellation->Cancel();
       const auto& pending=found->second.pending;
-      self->credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+      self->credential_document_.Take(id,pending.operation,pending.identity,tilo::CredentialDocument::Clock::now());
       self->CredentialEvent(pending.request,pending.action,false,"Keychain timed out; an operation already started may still finish. Refresh saved accounts before retrying.");
     },CefRefPtr<Client>(this),*id),30000);
   }
-  void FinishCredentialStore(uint64_t id,qos::CredentialResult result,bool cancelled) {
+  void FinishCredentialStore(uint64_t id,tilo::CredentialResult result,bool cancelled) {
     auto found=credential_store_pending_.find(id);if(found==credential_store_pending_.end())return;
     auto state=std::move(found->second);credential_store_pending_.erase(found);
     const auto& pending=state.pending;
@@ -657,14 +657,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
        !CredentialPageSecure(browser_->GetMainFrame()))return;
     if(state.timed_out) {
       auto fields=CefDictionaryValue::Create();fields->SetBool("late",true);
-      CredentialEvent(pending.request,pending.action,pending.action!="fill" && result.status==qos::CredentialStatus::Ok,
+      CredentialEvent(pending.request,pending.action,pending.action!="fill" && result.status==tilo::CredentialStatus::Ok,
                       pending.action=="fill"?"Delayed read discarded; nothing was filled":"Delayed Keychain result: "+CredentialStatusMessage(result.status)+". Refresh saved accounts.",fields);
       return;
     }
-    if(!credential_document_.Take(id,pending.operation,*credential_identity_,qos::CredentialDocument::Clock::now()) || cancelled) {
+    if(!credential_document_.Take(id,pending.operation,*credential_identity_,tilo::CredentialDocument::Clock::now()) || cancelled) {
       CredentialEvent(pending.request,pending.action,false,"Request no longer active; refresh saved accounts to see the final state");return;
     }
-    if(result.status==qos::CredentialStatus::Ok && pending.action=="fill") {
+    if(result.status==tilo::CredentialStatus::Ok && pending.action=="fill") {
       if(result.accounts.size()!=1 || result.accounts.front().id!=pending.account ||
          result.accounts.front().username.size()>1024 || result.secret.View().empty() || result.secret.View().size()>4096) {
         CredentialEvent(pending.request,pending.action,false,"Stored credential is invalid");return;
@@ -673,9 +673,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       payload->SetString("username",result.accounts.front().username);
       std::string secret(result.secret.View());payload->SetString("password",secret);
       volatile char* bytes=secret.data();for(size_t i=0;i<secret.size();++i)bytes[i]=0;
-      SendCredentialForm(pending.request,"fill",qos::CredentialOperation::Fill,payload);return;
+      SendCredentialForm(pending.request,"fill",tilo::CredentialOperation::Fill,payload);return;
     }
-    auto fields=CefDictionaryValue::Create();bool success=result.status==qos::CredentialStatus::Ok;
+    auto fields=CefDictionaryValue::Create();bool success=result.status==tilo::CredentialStatus::Ok;
     if(success && pending.action=="list") {
       auto accounts=CefListValue::Create();
       if(result.accounts.size()>64)success=false;
@@ -691,14 +691,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void CancelCredentialStoreRequests() {
     for(const auto& [id,state]:credential_store_pending_) {
       state.cancellation->Cancel();
-      credential_document_.Take(id,state.pending.operation,state.pending.identity,qos::CredentialDocument::Clock::now());
+      credential_document_.Take(id,state.pending.operation,state.pending.identity,tilo::CredentialDocument::Clock::now());
     }
     credential_store_pending_.clear();
   }
   void CancelCredentialRequests() {
     CancelCredentialStoreRequests();credential_consent_.Clear();
     for(const auto& [id,pending]:credential_pending_)
-      credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+      credential_document_.Take(id,pending.operation,pending.identity,tilo::CredentialDocument::Clock::now());
     credential_pending_.clear();credential_confirming_.clear();
   }
   void CredentialEvent(int request,const std::string& action,bool success,const std::string& message,
@@ -722,46 +722,46 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     if(action=="status"){CredentialEvent(request,action,true,"Ready");return;}
     if(action=="list" || action=="delete") {
-      qos::CredentialRequest operation;operation.operation=action=="list"?qos::CredentialOperation::List:qos::CredentialOperation::Delete;
+      tilo::CredentialRequest operation;operation.operation=action=="list"?tilo::CredentialOperation::List:tilo::CredentialOperation::Delete;
       if(action=="delete")operation.account=command->GetString("account").ToString();
       StartCredentialStore(request,action,std::move(operation));return;
     }
     if(action=="save" || action=="update") {
-      auto captured=credential_consent_.Take(command->GetString("capture").ToString(),*credential_identity_,qos::CredentialDocument::Clock::now());
+      auto captured=credential_consent_.Take(command->GetString("capture").ToString(),*credential_identity_,tilo::CredentialDocument::Clock::now());
       if(!captured){CredentialEvent(request,action,false,"Capture expired or page changed; capture the login again");return;}
       auto payload=CefDictionaryValue::Create();payload->SetString("action","validate");payload->SetString("form",captured->form);
-      SendCredentialForm(request,action,action=="save"?qos::CredentialOperation::Save:qos::CredentialOperation::Update,
+      SendCredentialForm(request,action,action=="save"?tilo::CredentialOperation::Save:tilo::CredentialOperation::Update,
                          payload,std::move(captured),command->GetString("account").ToString());return;
     }
     if(action=="fill") {
-      qos::CredentialRequest operation;operation.operation=qos::CredentialOperation::Fill;
+      tilo::CredentialRequest operation;operation.operation=tilo::CredentialOperation::Fill;
       operation.account=command->GetString("account").ToString();
       StartCredentialStore(request,action,std::move(operation),command->GetString("form").ToString());return;
     }
-    const auto operation=action=="capture"?qos::CredentialOperation::Capture:qos::CredentialOperation::List;
+    const auto operation=action=="capture"?tilo::CredentialOperation::Capture:tilo::CredentialOperation::List;
     auto payload=CefDictionaryValue::Create();payload->SetString("action",action);
     if(action=="capture" || action=="fill_address")payload->SetString("form",command->GetString("form"));
     if(action=="fill_address")payload->SetDictionary("profile",command->GetDictionary("profile")->Copy(false));
     SendCredentialForm(request,action,operation,payload);
   }
-  void SendCredentialForm(int request,const std::string& action,qos::CredentialOperation operation,
+  void SendCredentialForm(int request,const std::string& action,tilo::CredentialOperation operation,
                           CefRefPtr<CefDictionaryValue> payload,
-                          std::optional<qos::CapturedCredential> captured=std::nullopt,const std::string& account={}) {
+                          std::optional<tilo::CapturedCredential> captured=std::nullopt,const std::string& account={}) {
     if(!credential_identity_ || !browser_ || !CredentialPageSecure(browser_->GetMainFrame())) {
       CredentialEvent(request,action,false,"Page changed; request cancelled");return;
     }
-    auto id=credential_document_.Begin(operation,*credential_identity_,qos::CredentialDocument::Clock::now());
+    auto id=credential_document_.Begin(operation,*credential_identity_,tilo::CredentialDocument::Clock::now());
     if(!id){CredentialEvent(request,action,false,"Too many pending requests");return;}
     credential_pending_.emplace(*id,CredentialPending{request,operation,*credential_identity_,action,payload->GetString("form").ToString(),account});
     if(captured)credential_confirming_.emplace(*id,std::move(*captured));
-    auto message=CefProcessMessage::Create("qos.credential_action");auto args=message->GetArgumentList();
+    auto message=CefProcessMessage::Create("tilo.credential_action");auto args=message->GetArgumentList();
     args->SetString(0,std::to_string(credential_identity_->generation));args->SetString(1,credential_identity_->context);
     args->SetString(2,std::to_string(*id));args->SetDictionary(3,payload);
     browser_->GetMainFrame()->SendProcessMessage(PID_RENDERER,message);
     CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,uint64_t id){
       auto found=self->credential_pending_.find(id);if(found==self->credential_pending_.end())return;
       const auto pending=found->second;self->credential_pending_.erase(found);self->credential_confirming_.erase(id);
-      self->credential_document_.Take(id,pending.operation,pending.identity,qos::CredentialDocument::Clock::now());
+      self->credential_document_.Take(id,pending.operation,pending.identity,tilo::CredentialDocument::Clock::now());
       self->CredentialEvent(pending.request,pending.action,false,"Request timed out; try again");
     },CefRefPtr<Client>(this),*id),30000);
   }
@@ -773,11 +773,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
        args->GetType(2)!=VTYPE_STRING || args->GetType(3)!=VTYPE_DICTIONARY ||
        args->GetString(0).ToString()!=std::to_string(credential_identity_->generation) ||
        args->GetString(1).ToString()!=credential_identity_->context ||
-       !qos::ValidCredentialCounter(args->GetString(2).ToString()))return;
+       !tilo::ValidCredentialCounter(args->GetString(2).ToString()))return;
     const auto id=std::stoull(args->GetString(2).ToString());
     auto found=credential_pending_.find(id);if(found==credential_pending_.end())return;
     const auto pending=found->second;credential_pending_.erase(found);
-    if(!credential_document_.Take(id,pending.operation,*credential_identity_,qos::CredentialDocument::Clock::now())) {
+    if(!credential_document_.Take(id,pending.operation,*credential_identity_,tilo::CredentialDocument::Clock::now())) {
       credential_confirming_.erase(id);CredentialEvent(pending.request,pending.action,false,"Request expired; try again");return;
     }
     auto value=args->GetDictionary(3);auto fields=CefDictionaryValue::Create();
@@ -785,10 +785,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(pending.action=="save" || pending.action=="update") {
       auto captured=credential_confirming_.extract(id);
       if(!success || captured.empty()){CredentialEvent(pending.request,pending.action,false,"Original form changed; capture the login again");return;}
-      qos::CredentialRequest operation;operation.operation=pending.operation;
+      tilo::CredentialRequest operation;operation.operation=pending.operation;
       operation.username=std::move(captured.mapped().username);operation.secret=std::move(captured.mapped().secret);
 #if defined(OS_MAC)
-      operation.account=pending.action=="save"?qos::CredentialAccountId(operation.username):pending.account;
+      operation.account=pending.action=="save"?tilo::CredentialAccountId(operation.username):pending.account;
 #else
       operation.account=pending.account;
 #endif
@@ -802,14 +802,14 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
               value->GetType("password")==VTYPE_STRING && value->GetString("password").length()<=4096;
       if(success) {
         auto password=value->GetString("password").ToString();
-        qos::CredentialSecret secret(password);
+        tilo::CredentialSecret secret(password);
         volatile char* data=password.data();for(size_t i=0;i<password.size();++i)data[i]=0;
         const auto username=value->GetString("username").ToString();
-        success=credential_consent_.Offer(std::to_string(id),*credential_identity_,pending.form,username,std::move(secret),qos::CredentialDocument::Clock::now());
+        success=credential_consent_.Offer(std::to_string(id),*credential_identity_,pending.form,username,std::move(secret),tilo::CredentialDocument::Clock::now());
         if(success) {
           fields->SetString("capture",std::to_string(id));fields->SetString("username",username);
           CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self){
-            self->credential_consent_.Expire(qos::CredentialDocument::Clock::now());
+            self->credential_consent_.Expire(tilo::CredentialDocument::Clock::now());
           },CefRefPtr<Client>(this)),30000);
         }
       }
@@ -818,7 +818,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       auto safe=CefListValue::Create();
       if(success)for(size_t index=0;index<forms->GetSize();++index) {
         auto form=forms->GetDictionary(index);
-        if(!form || form->GetType("id")!=VTYPE_STRING || !qos::ValidCredentialCounter(form->GetString("id").ToString())){success=false;break;}
+        if(!form || form->GetType("id")!=VTYPE_STRING || !tilo::ValidCredentialCounter(form->GetString("id").ToString())){success=false;break;}
         auto entry=CefDictionaryValue::Create();entry->SetString("id",form->GetString("id"));
         if(pending.action=="discover") {
           if(form->GetType("username")!=VTYPE_STRING || form->GetString("username").ToString().size()>1024 ||
@@ -843,10 +843,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
        !frame->IsMain() || credential_generation_exhausted_) return false;
     if(credential_identity_ && (credential_identity_->browser_id!=browser_->GetIdentifier() ||
        credential_identity_->frame!=frame->GetIdentifier().ToString()))return false;
-    const auto origin=qos::Origin(frame->GetURL());
+    const auto origin=tilo::Origin(frame->GetURL());
     if(!origin.starts_with("https://") || origin!=credential_committed_origin_) return false;
     auto entry=browser_->GetHost()->GetVisibleNavigationEntry();
-    if(!entry || qos::Origin(entry->GetURL())!=origin) return false;
+    if(!entry || tilo::Origin(entry->GetURL())!=origin) return false;
     auto ssl=entry->GetSSLStatus();
     return ssl && ssl->IsSecureConnection() && !CefIsCertStatusError(ssl->GetCertStatus()) &&
            ssl->GetContentStatus()==0;
@@ -855,8 +855,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!CredentialPageSecure(frame)) {TraceGeometry("credential-offer-ineligible",id_);return;}
     TraceGeometry("credential-offer",id_);
     credential_handshake_.Offer({browser_->GetIdentifier(),frame->GetIdentifier().ToString(),
-                                qos::Origin(frame->GetURL()),{},credential_generation_});
-    auto message=CefProcessMessage::Create("qos.credential_probe");
+                                tilo::Origin(frame->GetURL()),{},credential_generation_});
+    auto message=CefProcessMessage::Create("tilo.credential_probe");
     message->GetArgumentList()->SetString(0,std::to_string(credential_generation_));
     message->GetArgumentList()->SetString(1,frame->GetURL());
     frame->SendProcessMessage(PID_RENDERER,message);
@@ -865,26 +865,26 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   std::map<std::string,std::pair<uint64_t,bool>> media_frames_;
   std::optional<uint64_t> pending_main_media_token_;
   std::optional<bool> last_media_playing_;bool media_limit_reported_=false;
-  qos::FullscreenState fullscreen_;
-  qos::CredentialDocument credential_document_;
-  qos::CredentialHandshake credential_handshake_;
-  qos::CredentialConsent credential_consent_;
+  tilo::FullscreenState fullscreen_;
+  tilo::CredentialDocument credential_document_;
+  tilo::CredentialHandshake credential_handshake_;
+  tilo::CredentialConsent credential_consent_;
   std::map<uint64_t,CredentialPending> credential_pending_;
-  std::map<uint64_t,qos::CapturedCredential> credential_confirming_;
+  std::map<uint64_t,tilo::CapturedCredential> credential_confirming_;
   std::map<uint64_t,CredentialStorePending> credential_store_pending_;
-  std::optional<qos::CredentialIdentity> credential_identity_;
+  std::optional<tilo::CredentialIdentity> credential_identity_;
   uint64_t credential_generation_=0;
   bool credential_generation_exhausted_=false;
   std::string credential_committed_origin_;
-  CefRefPtr<qos::NavigationHistory> navigation_history_;
-  CefRefPtr<qos::Capabilities> capabilities_;
-  CefRefPtr<qos::StartupDiagnostics> startup_diagnostics_;
-  CefRefPtr<qos::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
-  CefRefPtr<qos::SiteClear> site_clear_;
+  CefRefPtr<tilo::NavigationHistory> navigation_history_;
+  CefRefPtr<tilo::Capabilities> capabilities_;
+  CefRefPtr<tilo::StartupDiagnostics> startup_diagnostics_;
+  CefRefPtr<tilo::DocumentScripts> document_scripts_;std::vector<CefRefPtr<CefDictionaryValue>> pending_navigation_;
+  CefRefPtr<tilo::SiteClear> site_clear_;
   int pixel_width_=0,pixel_height_=0,popup_width_=0,popup_height_=0,mouse_modifiers_=0;
   CefRefPtr<CefRunContextMenuCallback> context_callback_;int context_id_=0;std::set<int> context_commands_;
   bool finding_=false,select_initial_=false;CefString find_text_;int find_id_=0;std::deque<CefRefPtr<CefDictionaryValue>> pending_find_;
-  qos::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
+  tilo::ViewGeometry geometry_;bool stale_paint_recovery_pending_=false;bool popup_visible_=false;CefRect popup_rect_;std::string pixels_,popup_;std::vector<CefString> scripts_,blocking_scripts_;
   IMPLEMENT_REFCOUNTING(Client);
 };
 void FaviconDownload::OnDownloadImageFinished(const CefString&,int,CefRefPtr<CefImage> image) {
@@ -901,7 +901,7 @@ void DownloadOwnerIdle(int id) {
   auto found=clients.find(id);
   const bool detached=found!=clients.end() && found->second->detached();
   const bool busy=downloads && downloads->OwnerBusy(id);
-  if(found!=clients.end() && qos::ShouldCloseDetached(detached,busy))found->second->CloseNative();
+  if(found!=clients.end() && tilo::ShouldCloseDetached(detached,busy))found->second->CloseNative();
   PublishDownloadRuntime();
 }
 void CreateTab(int id) {
@@ -932,7 +932,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     if(process_type.empty()) command_line->AppendSwitch("no-first-run");
   }
   void OnContextInitialized() override {
-    request_filter=new qos::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
+    request_filter=new tilo::RequestFilter([] { StringEvent("error","message","Native request matcher failed to check a resource"); });
     if(private_mode) {
       CefRequestContextSettings settings;
       // Empty cache_path is CEF's incognito request context. The separate
@@ -941,7 +941,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     } else {
       shared_context=CefRequestContext::CreateContext(CefRequestContext::GetGlobalContext(),request_filter);
     }
-    downloads=new qos::Downloads(
+    downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
       [](CefRefPtr<CefBrowser> browser){for(const auto& entry:clients)if(entry.second->browser_ && browser && entry.second->browser_->IsSame(browser))return entry.first;return 0;},
@@ -988,7 +988,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     auto list=d->GetList("scripts");for(size_t i=0;i<list->GetSize();++i) if(list->GetType(i)!=VTYPE_STRING) return false;
     return true;
   }
-  if(op=="site_exceptions") {if(!type("origins",VTYPE_LIST))return false;auto list=d->GetList("origins");if(list->GetSize()>1024)return false;for(size_t i=0;i<list->GetSize();++i){if(list->GetType(i)!=VTYPE_STRING)return false;const auto origin=list->GetString(i).ToString();if(origin.empty() || qos::Origin(origin)!=origin)return false;}return true;}
+  if(op=="site_exceptions") {if(!type("origins",VTYPE_LIST))return false;auto list=d->GetList("origins");if(list->GetSize()>1024)return false;for(size_t i=0;i<list->GetSize();++i){if(list->GetType(i)!=VTYPE_STRING)return false;const auto origin=list->GetString(i).ToString();if(origin.empty() || tilo::Origin(origin)!=origin)return false;}return true;}
   if(op=="credential_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("action",VTYPE_STRING) ||
        !type("origin",VTYPE_STRING) || d->GetString("origin").ToString().size()>8192 ||
@@ -996,10 +996,10 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     const auto action=d->GetString("action").ToString();
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);std::vector<std::string> fields;
     for(const auto& key:keys)fields.push_back(key.ToString());
-    if(!qos::CredentialFieldsValid(action,fields))return false;
-    if(action!="status" && action!="cancel" && !qos::ValidCredentialCounter(d->GetString("document").ToString()))return false;
+    if(!tilo::CredentialFieldsValid(action,fields))return false;
+    if(action!="status" && action!="cancel" && !tilo::ValidCredentialCounter(d->GetString("document").ToString()))return false;
     if(d->HasKey("account") && (!type("account",VTYPE_STRING) || d->GetString("account").empty() || d->GetString("account").ToString().size()>128))return false;
-    for(const auto* key:{"capture","form"})if(d->HasKey(key) && (!type(key,VTYPE_STRING) || !qos::ValidCredentialCounter(d->GetString(key).ToString())))return false;
+    for(const auto* key:{"capture","form"})if(d->HasKey(key) && (!type(key,VTYPE_STRING) || !tilo::ValidCredentialCounter(d->GetString(key).ToString())))return false;
     if(action=="fill_address") {
       if(!type("profile",VTYPE_DICTIONARY))return false;
       auto profile=d->GetDictionary("profile");CefDictionaryValue::KeyList names;profile->GetKeys(names);
@@ -1015,7 +1015,7 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="site_status" || op=="site_action") {
     if(!type("request_id",VTYPE_INT) || d->GetInt("request_id")<=0 || !type("origin",VTYPE_STRING) || d->GetString("origin").length()>8192)return false;
     if(op=="site_status")return true;
-    const auto action=d->GetString("action");return number("generation") && qos::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
+    const auto action=d->GetString("action");return number("generation") && tilo::ValidDocumentGeneration(Number(d,"generation")) && (action=="clear" || action=="revoke" || action=="enable" || action=="disable" || action=="reload");
   }
   if(op=="filter_rules") return type("rules",VTYPE_STRING) && (type("enabled",VTYPE_BOOL) || type("enabled",VTYPE_NULL));
   return op=="back" || op=="forward" || op=="reload" || op=="stop" || op=="clear_data" || op=="devtools" || op=="download_cancel_all" || op=="shutdown";
@@ -1028,7 +1028,7 @@ void ReadCommands(std::atomic<bool>& stop) {
     ssize_t n=read(STDIN_FILENO,chunk,sizeof(chunk));if(n<=0) break;buffer.append(chunk,n);
     bool bad=false;
     while(buffer.size()>=4) {
-      auto size=qos::U32(buffer.data());if(!size || size>qos::kMaxPacket) {bad=true;break;}
+      auto size=tilo::U32(buffer.data());if(!size || size>tilo::kMaxPacket) {bad=true;break;}
       if(buffer.size()<size_t(size)+4) break;
       if(buffer[4]!=1) {bad=true;break;}
       auto parsed=CefParseJSON(buffer.substr(5,size-1),JSON_PARSER_RFC);
@@ -1077,8 +1077,8 @@ int RunHost(int argc,char** argv) {
   if(!CefInitialize(CefMainArgs(argc,argv),settings,MakeHostApp(),nullptr)) return CefGetExitCode();
 #if defined(OS_MAC)
   if(!private_mode) {
-    auto store=qos::MakeMacCredentialStore(qos::CredentialServiceForProfile(profile));
-    if(store)credential_worker=std::make_shared<qos::CredentialWorker>(false,std::move(store));
+    auto store=tilo::MakeMacCredentialStore(tilo::CredentialServiceForProfile(profile));
+    if(store)credential_worker=std::make_shared<tilo::CredentialWorker>(false,std::move(store));
   }
 #endif
   {std::lock_guard lock(credential_delivery->mutex);credential_delivery->active=true;}

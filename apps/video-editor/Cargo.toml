@@ -41,6 +41,8 @@ taffy.workspace = true
 gstreamer = { workspace = true, optional = true }
 media = { path = "../../crates/media/core" }
 gstreamer-app = { version = "0.24", optional = true }
+# Bin swatches and filmstrip frames come from the shared preview pipeline.
+thumbnail = { path = "../../crates/media/thumbnail" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
@@ -60,7 +62,7 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "dep:gstreamer", "dep:gstreamer-app"]
+decode = ["media/decode", "thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
 gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]

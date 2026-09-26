@@ -7,10 +7,10 @@
 //!
 //! ```bash
 //! cargo run -p ui --example ui-shots -- history_cases target/shots-history
-//! QOS_SHOTS_THEME=light cargo run -p ui --example ui-shots -- history_cases target/shots-history
+//! TILO_SHOTS_THEME=light cargo run -p ui --example ui-shots -- history_cases target/shots-history
 //! ```
 //!
-//! `QOS_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
+//! `TILO_SHOTS_THEME` picks the palette (`dark` by default, `light`, or any
 //! other [`Theme::named`] preset); the PNGs land in `<dir>/<theme>/`.
 //!
 //! Every case here builds an **automerge document**, edits it through `qdoc` (or
@@ -249,13 +249,13 @@ struct Shot {
     theme: Theme,
 }
 
-/// The palette the run paints with: `QOS_SHOTS_THEME`, or the dark default.
+/// The palette the run paints with: `TILO_SHOTS_THEME`, or the dark default.
 fn shot_theme() -> (String, Theme) {
-    let name = std::env::var("QOS_SHOTS_THEME").unwrap_or_else(|_| "dark".to_string());
+    let name = std::env::var("TILO_SHOTS_THEME").unwrap_or_else(|_| "dark".to_string());
     match Theme::named(&name) {
         Some(theme) => (name, theme),
         None => {
-            eprintln!("history_cases: unknown QOS_SHOTS_THEME {name:?}, using dark");
+            eprintln!("history_cases: unknown TILO_SHOTS_THEME {name:?}, using dark");
             ("dark".to_string(), Theme::dark())
         }
     }

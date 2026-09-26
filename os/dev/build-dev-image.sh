@@ -21,8 +21,8 @@
 # Environment:
 #   TILO_DEV_BASE     production image to build FROM (default localhost/tilo:latest,
 #                     what ./os/build.sh produces). A CI image works too:
-#                       podman pull code.podesta.ai/qos/tilo:<tag>
-#                       TILO_DEV_BASE=code.podesta.ai/qos/tilo:<tag> ./os/dev/build-dev-image.sh
+#                       podman pull registry.tilo.so/tilo/tilo:<tag>
+#                       TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> ./os/dev/build-dev-image.sh
 #   TILO_DEV_BASE_BUILD  0 (default): the base must exist. 1: rebuild it first.
 #                     auto (./os/build.sh --dev --local): rebuild it when it is
 #                     missing or its inputs changed. The inputs are every file of
@@ -60,9 +60,9 @@ source "$_dev_dir/_common.sh"
 base="${TILO_DEV_BASE:-localhost/tilo:latest}"
 dev_image="${TILO_DEV_IMAGE:-localhost/tilo-vm:latest}"
 case "$dev_image" in
-  localhost/tilo-vm:*|code.podesta.ai/qos/tilo-vm:*) ;;
+  localhost/tilo-vm:*|registry.tilo.so/tilo/tilo-vm:*) ;;
   *) die "TILO_DEV_IMAGE=$dev_image: the dev image may only be tagged localhost/tilo-vm:<tag> or
-  code.podesta.ai/qos/tilo-vm:<tag>. It runs sshd and dev-overrides binaries, so it must never
+  registry.tilo.so/tilo/tilo-vm:<tag>. It runs sshd and dev-overrides binaries, so it must never
   carry a production image name." ;;
 esac
 base_build="${TILO_DEV_BASE_BUILD:-0}"
@@ -137,8 +137,8 @@ fi
 
 podman image exists "$base" || die "the production base $base is not in local storage.
   Build it with ./os/build.sh (or TILO_DEV_BASE_BUILD=auto $0), or use a CI image:
-    podman pull code.podesta.ai/qos/tilo:<tag>
-    TILO_DEV_BASE=code.podesta.ai/qos/tilo:<tag> $0"
+    podman pull registry.tilo.so/tilo/tilo:<tag>
+    TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> $0"
 base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null || true)"
 [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || base_digest=""
 # Production builds clamp .Created to their commit's time; tilo-vm compares it

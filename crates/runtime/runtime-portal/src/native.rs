@@ -5,7 +5,7 @@ use std::io;
 /// The automatic host records which process received its descriptor transfer.
 /// A normal later `Command` child retains environment strings, not that transfer.
 pub(crate) fn connection_owner() -> io::Result<Option<u32>> {
-    std::env::var_os("QOS_RUNTIME_CONNECTION_OWNER_PID")
+    std::env::var_os("TILO_RUNTIME_CONNECTION_OWNER_PID")
         .map(|value| {
             value
                 .to_str()
@@ -26,7 +26,7 @@ pub(crate) fn connection_metadata_is_current() -> bool {
 }
 
 /// Join the shared native runtime, or retain an inherited launcher connection.
-/// `QOS_RUNTIME_STANDALONE=1` explicitly disables automatic attachment.
+/// `TILO_RUNTIME_STANDALONE=1` explicitly disables automatic attachment.
 ///
 /// # Errors
 /// Invalid inherited descriptors, unavailable hosts and failed execs are
@@ -39,7 +39,7 @@ pub fn ensure_attached(app_id: &str) -> io::Result<()> {
     #[cfg(not(unix))]
     {
         let _ = app_id;
-        if std::env::var_os("QOS_RUNTIME_STANDALONE").as_deref() == Some(std::ffi::OsStr::new("1"))
+        if std::env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(std::ffi::OsStr::new("1"))
         {
             return Ok(());
         }
@@ -125,7 +125,7 @@ mod unix {
         if inherited()? {
             return Ok(());
         }
-        if env::var_os("QOS_RUNTIME_STANDALONE").as_deref() == Some(OsStr::new("1")) {
+        if env::var_os("TILO_RUNTIME_STANDALONE").as_deref() == Some(OsStr::new("1")) {
             return Ok(());
         }
         if app_id.trim().is_empty() || app_id.len() > 4096 {
@@ -134,9 +134,9 @@ mod unix {
         let executable = env::current_exe()?;
         let host = locate_host(&executable)?;
         Err(Command::new(host)
-            .env("QOS_RUNTIME_RESUME_LIVE", app_id)
+            .env("TILO_RUNTIME_RESUME_LIVE", app_id)
             .env(
-                "QOS_RUNTIME_CONNECTION_OWNER_PID",
+                "TILO_RUNTIME_CONNECTION_OWNER_PID",
                 std::process::id().to_string(),
             )
             .arg("--run-app")
@@ -153,24 +153,24 @@ mod unix {
     }
 
     fn locate_host(app: &Path) -> io::Result<PathBuf> {
-        if let Some(path) = env::var_os("QOS_RUNTIME_BINARY") {
+        if let Some(path) = env::var_os("TILO_RUNTIME_BINARY") {
             let path = PathBuf::from(path);
             if !path.is_absolute() || !executable(&path) {
                 return Err(invalid(
-                    "QOS_RUNTIME_BINARY must name an absolute executable file",
+                    "TILO_RUNTIME_BINARY must name an absolute executable file",
                 ));
             }
             return Ok(path);
         }
         if let Some(parent) = app.parent() {
-            let sibling = parent.join("qos-runtime-mcp");
+            let sibling = parent.join("tilo-runtime-mcp");
             if executable(&sibling) {
                 return Ok(sibling);
             }
         }
         if let Some(paths) = env::var_os("PATH") {
             for directory in env::split_paths(&paths) {
-                let candidate = directory.join("qos-runtime-mcp");
+                let candidate = directory.join("tilo-runtime-mcp");
                 if executable(&candidate) {
                     return candidate.canonicalize();
                 }
@@ -178,7 +178,7 @@ mod unix {
         }
         Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "qos-runtime-mcp is missing; install it beside the app or on PATH",
+            "tilo-runtime-mcp is missing; install it beside the app or on PATH",
         ))
     }
 }

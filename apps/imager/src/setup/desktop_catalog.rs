@@ -124,7 +124,7 @@ fn valid_digest(value: &str) -> bool {
 pub(super) fn trusted_url(value: &str) -> Result<reqwest::Url, String> {
     let url = reqwest::Url::parse(value).map_err(|_| "Invalid Desktop package URL.".to_string())?;
     if url.scheme() != "https"
-        || url.host_str() != Some("code.podesta.ai")
+        || url.host_str() != Some("code.tilo.so")
         || url.port_or_known_default() != Some(443)
         || !url.username().is_empty()
         || url.password().is_some()
@@ -190,7 +190,7 @@ mod tests {
     pub(super) fn release_json() -> Value {
         json!({"id":"fedora-44-aarch64", "version":"test-1", "distro_id":"fedora",
             "distro_version":"44", "architecture":"aarch64", "package_format":"rpm",
-            "url":"https://code.podesta.ai/qos/releases/test.rpm", "byte_size":7,
+            "url":"https://code.tilo.so/tilo/releases/test.rpm", "byte_size":7,
             "sha256":"a".repeat(64), "verified_runtime":null})
     }
 
@@ -250,11 +250,11 @@ mod tests {
     #[test]
     fn desktop_catalog_rejects_untrusted_urls() {
         for url in [
-            "http://code.podesta.ai/test.rpm",
+            "http://code.tilo.so/test.rpm",
             "https://example.com/test.rpm",
-            "https://code.podesta.ai:444/test.rpm",
-            "https://user@code.podesta.ai/test.rpm",
-            "https://code.podesta.ai/test.rpm#fragment",
+            "https://code.tilo.so:444/test.rpm",
+            "https://user@code.tilo.so/test.rpm",
+            "https://code.tilo.so/test.rpm#fragment",
         ] {
             let mut release = release_json();
             release["url"] = json!(url);

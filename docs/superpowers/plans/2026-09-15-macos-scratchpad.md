@@ -3,7 +3,7 @@
 **Goal:** Build and run a small native app using the real UI, FS and actions crates.
 
 **Design:** One persistent note with a multiline editor and Save action. Text edits
-use a serializable `qos-actions` document action through the UI action dispatcher.
+use a serializable `tilo-actions` document action through the UI action dispatcher.
 Save is an exported effect that writes the Automerge document to FS ContentStore,
 flushes that store, and atomically replaces a hash reference. Restart loads that
 reference; corrupt or unavailable data produces an error, never a blank replacement.
@@ -27,7 +27,7 @@ The existing isolated worktree and unrelated edits are preserved.
   retaining the previous note, and rejection of concurrent data-directory access.
 - [x] Add native entry point, explicit `--data-dir`, and `--shots` using the same
   widget tree. Default storage is in the platform's local data directory.
-- [x] Run `cargo test -p qos-scratchpad`, package clippy, and formatting checks.
+- [x] Run `cargo test -p tilo-scratchpad`, package clippy, and formatting checks.
 - [x] Build and launch the native app, verify a real macOS window, render and inspect
   its screenshot, and document commands and the mounting limitation.
 
