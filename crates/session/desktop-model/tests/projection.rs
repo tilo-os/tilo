@@ -186,7 +186,7 @@ fn tasks_and_record_references_round_trip() {
     let held = [("rec-1".to_string(), "note".to_string())]
         .into_iter()
         .collect();
-    project_room_records(&mut doc, &held).unwrap();
+    project_room_records(&mut doc, &held, None).unwrap();
     assert_eq!(
         room_records_of(&doc),
         vec![("rec-1".to_string(), "note".to_string())]

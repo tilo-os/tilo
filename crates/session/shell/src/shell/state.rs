@@ -1615,9 +1615,31 @@ impl WorkspaceTree {
 
         // Projected by **every** member, unlike governance below: a room
         // a guest can't bring a record — or a window — into isn't shared.
-        if let Err(err) = projection::project_room_records(doc, &held) {
+        let previous = self.desktop.room_records_projected.get(&room);
+        if let Err(err) = projection::project_room_records(doc, &held, previous) {
             tracing::error!(?err, "room doc: records map");
         }
+        // A reference this machine made first is its own to take back.
+        for id in held.keys() {
+            if previous.is_none_or(|previous| !previous.contains_key(id)) {
+                self.desktop
+                    .room_record_adders
+                    .entry((room, id.clone()))
+                    .or_insert_with(|| PeerOrigin::local().as_str().to_string());
+            }
+        }
+        // First projection this session: a withdrawal already in the
+        // document applies to a copy still held here.
+        if previous.is_none() {
+            for id in projection::room_records_removed_of(doc) {
+                if held.contains_key(&id) {
+                    self.desktop.room_records_withdrawn.push((room, id));
+                }
+            }
+        }
+        self.desktop
+            .room_records_projected
+            .insert(room, held.clone());
         if let Err(err) = projection::project_owned_contents(doc, &strips, local_salt, share_floor)
         {
             tracing::error!(?err, "room doc: contents map");
@@ -2171,7 +2193,12 @@ impl WorkspaceTree {
     /// for `room`, queues the difference for the shell to fold in (see
     /// [`Self::take_inbound_room_records`]), and reports whether
     /// anything arrived.
-    fn queue_inbound_records(&mut self, room: RoomId, candidate: &AutoCommit) -> bool {
+    fn queue_inbound_records(
+        &mut self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
         // The difference from what's already held is what a peer
         // brought — queued for the shell to fold in, since the tree
         // can't reach the room's own index.
@@ -2181,12 +2208,74 @@ impl WorkspaceTree {
         for (id, kind) in arrived {
             let known = already.and_then(|h| h.get(&id));
             if known.map(std::string::String::as_str) != Some(kind.as_str()) {
-                inbound.push((room, id, kind));
+                self.desktop
+                    .room_record_adders
+                    .entry((room, id.clone()))
+                    .or_insert_with(|| from.as_str().to_string());
+                inbound.push((room, id.clone(), kind));
             }
         }
-        let records_changed = !inbound.is_empty();
+        // And what a peer took out, which a copy still held here follows.
+        let mut withdrawn: Vec<(RoomId, String)> = Vec::new();
+        for id in projection::room_records_removed_of(candidate) {
+            if already.is_some_and(|held| held.contains_key(&id)) {
+                withdrawn.push((room, id));
+            }
+        }
+        let records_changed = !inbound.is_empty() || !withdrawn.is_empty();
         self.desktop.room_records_inbound.extend(inbound);
+        self.desktop.room_records_withdrawn.extend(withdrawn);
         records_changed
+    }
+
+    /// True (and logs a warning) if `candidate` withdraws a room record
+    /// that `from` has no standing to withdraw: only the peer that brought
+    /// it in, or the room's authority, may take it out. Automerge has no
+    /// per-key ACL, so the check is on the batch, like governance.
+    fn record_withdrawal_refused(
+        &self,
+        room: RoomId,
+        candidate: &AutoCommit,
+        from: &PeerOrigin,
+    ) -> bool {
+        let before: std::collections::BTreeSet<String> = self
+            .room_docs
+            .get(&room)
+            .map(projection::room_records_removed_of)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+        let authority =
+            matches!(self.room_authority(room), RoomAuthority::Peer(ref peer) if peer == from);
+        for id in projection::room_records_removed_of(candidate) {
+            if before.contains(&id) {
+                continue;
+            }
+            let adder = self.desktop.room_record_adders.get(&(room, id.clone()));
+            if authority || adder.is_some_and(|adder| adder == from.as_str()) {
+                continue;
+            }
+            tracing::warn!(
+                target: "shell::state",
+                room = %room,
+                from = %from,
+                record = %id,
+                "room sync refused: only who brought a record in, or the room's authority, may take it out",
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Whether this machine may take `record` out of `room`: it brought it
+    /// in, or it governs the room.
+    pub fn may_withdraw_room_record(&self, room: RoomId, record: &str) -> bool {
+        self.governs_room(room)
+            || self
+                .desktop
+                .room_record_adders
+                .get(&(room, record.to_string()))
+                .is_none_or(|adder| adder == PeerOrigin::local().as_str())
     }
 
     /// Merge a peer's changes to `room` into the cached workspace, and
@@ -2250,6 +2339,9 @@ impl WorkspaceTree {
         if self.owned_contents_conflict(room, &candidate, from) {
             return Ok(false);
         }
+        if self.record_withdrawal_refused(room, &candidate, from) {
+            return Ok(false);
+        }
 
         let (name, owner, caps) = Self::extract_governed_fields(&candidate);
         let channel_class = projection::channel_class_of(&candidate);
@@ -2274,7 +2366,7 @@ impl WorkspaceTree {
                 }
             }
         }
-        let records_changed = self.queue_inbound_records(room, &candidate);
+        let records_changed = self.queue_inbound_records(room, &candidate, from);
 
         self.room_docs.insert(room, candidate);
 
@@ -5007,6 +5099,70 @@ mod automerge_foundation_tests {
             )],
             "a guest's reference must reach the room's owner",
         );
+    }
+
+    /// Taking a record back reaches a member who already holds its
+    /// reference, and that member's copy follows: removing the reference
+    /// removes access, as rooms.md says. The bytes they synced stay theirs.
+    #[test]
+    fn a_withdrawn_record_leaves_the_other_members_room_too() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut host, &mut guest, room, 1);
+        let inbound = guest.take_inbound_room_records();
+        assert_eq!(inbound.len(), 1);
+        // The guest's index folds it in, as the host's frame pump does.
+        guest.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut guest, &mut host, room, 2);
+
+        host.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut host, &mut guest, room, 1);
+        assert_eq!(
+            guest.take_withdrawn_room_records(),
+            vec![(room, "file:/docs/plan.md".to_string())],
+            "the guest is told to take the reference back",
+        );
+        let doc = guest.room_docs.get(&room).expect("a room document");
+        assert!(projection::room_records_of(doc).is_empty());
+        assert!(projection::room_record_removed(doc, "file:/docs/plan.md"));
+
+        // Once the guest's index has let go, its own projection agrees and
+        // does not bring it back.
+        guest.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut guest, &mut host, room, 2);
+        let doc = host.room_docs.get(&room).expect("a room document");
+        assert!(
+            projection::room_records_of(doc).is_empty(),
+            "a withdrawal stays withdrawn"
+        );
+        assert!(host.take_inbound_room_records().is_empty());
+    }
+
+    /// A member may not take out a record somebody else brought in; the
+    /// batch that tries is refused whole, like a governance forgery.
+    #[test]
+    fn only_who_brought_a_record_in_may_take_it_out() {
+        let (mut host, mut guest, room) = two_in_a_room();
+        host.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        ship(&mut host, &mut guest, room, 1);
+        guest.take_inbound_room_records();
+        guest.set_room_records(room, held(("file:/docs/plan.md", "document")));
+        assert!(
+            !guest.may_withdraw_room_record(room, "file:/docs/plan.md"),
+            "the guest did not bring it in and does not govern the room",
+        );
+        ship(&mut guest, &mut host, room, 2);
+
+        // The guest takes it out anyway; the host refuses the batch.
+        guest.set_room_records(room, std::collections::BTreeMap::new());
+        ship(&mut guest, &mut host, room, 2);
+        let doc = host.room_docs.get(&room).expect("a room document");
+        assert_eq!(
+            projection::room_records_of(doc).len(),
+            1,
+            "a member cannot withdraw another's record",
+        );
+        assert!(host.may_withdraw_room_record(room, "file:/docs/plan.md"));
     }
 
     /// Two people bringing something at the same moment — keyed by

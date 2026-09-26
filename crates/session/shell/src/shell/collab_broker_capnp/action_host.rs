@@ -985,6 +985,11 @@ impl CapnpBrokerState {
         };
         {
             let mut tree = membership.write();
+            if !reference && !tree.may_withdraw_room_record(workspace.room, id) {
+                return Err(ActionHostError::Refused {
+                    reason: "another member brought this record in; only they or the room's administrator can take it out".into(),
+                });
+            }
             if reference {
                 tree.request_room_reference(
                     workspace.room,

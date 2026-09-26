@@ -89,6 +89,17 @@ pub struct DesktopTree {
     /// direct-room and invite flows live. Drained by the host.
     #[serde(skip, default)]
     pub person_requests: Vec<PersonRequest>,
+    /// Each room's record index as this machine last projected it, so the
+    /// next projection writes only what changed (see
+    /// `projection::project_room_records`). Not persisted: a restart starts
+    /// a fresh session that clears no withdrawal.
+    #[serde(skip, default)]
+    pub room_records_projected: HashMap<RoomId, BTreeMap<String, String>>,
+    /// Who brought each room record in, as this machine learned it: the
+    /// peer whose batch first carried it live, or `local`. A withdrawal is
+    /// accepted from that peer or from the room's authority only.
+    #[serde(skip, default)]
+    pub room_record_adders: HashMap<(RoomId, String), String>,
     /// This tree's own peer salt, overriding the host's process-wide one —
     /// needed when one process holds two trees (e.g. two simulated peers).
     #[serde(skip, default)]
@@ -110,6 +121,8 @@ impl Default for DesktopTree {
             room_records_inbound: Vec::new(),
             room_records_withdrawn: Vec::new(),
             person_requests: Vec::new(),
+            room_records_projected: HashMap::new(),
+            room_record_adders: HashMap::new(),
             peer_salt_override: None,
         }
     }

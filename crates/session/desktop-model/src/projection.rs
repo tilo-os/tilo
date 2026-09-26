@@ -796,14 +796,24 @@ pub fn localise_tile(
 /// crosses the wire.
 pub const ROOM_RECORDS_KEY: &str = "records";
 
+/// Key of the withdrawal mark on a room record entry.
+pub const ROOM_RECORD_REMOVED_KEY: &str = "removed";
+
 /// Project a room's record index into that room's replication
 /// document. A room holds a *reference* (id and type), never the
 /// record itself — documents travel per-record over the broker.
 ///
-/// Additive only: a key this machine doesn't hold is left alone,
-/// not swept, since sweeping would race a peer's record that hasn't
-/// reached our index yet. Cost: an un-reference doesn't propagate
-/// until removal becomes an explicit tombstone.
+/// What is written is what this machine *did* since `previous` (the index
+/// it projected last): a record it brought in is written live, one it took
+/// out is marked removed. A record neither brought in nor taken out is left
+/// alone, so a peer's reference that has not reached our index yet is never
+/// swept and a peer's withdrawal is never undone by our stale copy. With no
+/// `previous` (the first projection of the session) nothing is marked
+/// removed and no withdrawal is cleared.
+///
+/// Removal is a mark, not a delete, so it reaches a member who synced the
+/// reference; and a withdrawal wins over a concurrent re-reference (see
+/// [`room_record_removed`]).
 ///
 /// # Errors
 ///
@@ -812,10 +822,19 @@ pub const ROOM_RECORDS_KEY: &str = "records";
 pub fn project_room_records(
     doc: &mut AutoCommit,
     held: &std::collections::BTreeMap<String, String>,
+    previous: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<(), automerge::AutomergeError> {
     use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
 
-    if held.is_empty() {
+    let withdrawn: Vec<&String> = previous
+        .map(|previous| {
+            previous
+                .keys()
+                .filter(|id| !held.contains_key(*id))
+                .collect()
+        })
+        .unwrap_or_default();
+    if held.is_empty() && withdrawn.is_empty() {
         return Ok(());
     }
     let records_id = match doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() {
@@ -842,19 +861,70 @@ pub fn project_room_records(
         if current.as_deref() != Some(kind.as_str()) {
             let _ = doc.put(&entry, "kind", kind.clone());
         }
+        // Brought in again during this session after being taken out: the
+        // later act clears the mark. A record merely still held does not.
+        let re_referenced = previous.is_some_and(|previous| !previous.contains_key(id));
+        if re_referenced && entry_removed(doc, &entry) {
+            let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, false);
+        }
+    }
+    for id in withdrawn {
+        if let Some((_, entry)) = doc.get(&records_id, id.as_str()).ok().flatten()
+            && !entry_removed(doc, &entry)
+        {
+            let _ = doc.put(&entry, ROOM_RECORD_REMOVED_KEY, true);
+        }
     }
     Ok(())
 }
 
+/// Whether an entry is marked removed. Every concurrent value counts, so a
+/// withdrawal is never lost to a re-reference made without seeing it.
+fn entry_removed(doc: &AutoCommit, entry: &automerge::ObjId) -> bool {
+    use automerge::{ReadDoc, ScalarValue, Value};
+    doc.get_all(entry, ROOM_RECORD_REMOVED_KEY)
+        .unwrap_or_default()
+        .iter()
+        .any(|(value, _)| matches!(value, Value::Scalar(v) if matches!(v.as_ref(), ScalarValue::Boolean(true))))
+}
+
+/// Whether the room document marks record `id` removed from the room.
+pub fn room_record_removed(doc: &AutoCommit, id: &str) -> bool {
+    use automerge::{ROOT, ReadDoc};
+    doc.get(&ROOT, ROOM_RECORDS_KEY)
+        .ok()
+        .flatten()
+        .and_then(|(_, records)| doc.get(&records, id).ok().flatten())
+        .is_some_and(|(_, entry)| entry_removed(doc, &entry))
+}
+
 /// Read a room document's record index back as `(record id, kind)`
 /// pairs, sorted by id so two peers read one document the same way.
+/// Records marked removed are not in the room.
 pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
+    room_record_entries(doc)
+        .into_iter()
+        .filter(|(_, _, removed)| !removed)
+        .map(|(id, kind, _)| (id, kind))
+        .collect()
+}
+
+/// Ids the room document marks removed, sorted.
+pub fn room_records_removed_of(doc: &AutoCommit) -> Vec<String> {
+    room_record_entries(doc)
+        .into_iter()
+        .filter(|(_, _, removed)| *removed)
+        .map(|(id, _, _)| id)
+        .collect()
+}
+
+fn room_record_entries(doc: &AutoCommit) -> Vec<(String, String, bool)> {
     use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 
     let Some((_, records_id)) = doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() else {
         return Vec::new();
     };
-    let mut out: Vec<(String, String)> = Vec::new();
+    let mut out = Vec::new();
     for key in doc.keys(&records_id) {
         let Some((_, entry)) = doc.get(&records_id, key.as_str()).ok().flatten() else {
             continue;
@@ -866,7 +936,8 @@ pub fn room_records_of(doc: &AutoCommit) -> Vec<(String, String)> {
             },
             _ => String::new(),
         };
-        out.push((key, kind));
+        let removed = entry_removed(doc, &entry);
+        out.push((key, kind, removed));
     }
     out.sort();
     out
