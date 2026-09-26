@@ -56,8 +56,9 @@ use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{El, caption, card, choice_row, rows, setting_row, value_row};
 use settings_store::hardware::{
-    DisplayConfig, DisplayHardwareSnapshot, DisplayTransaction, DisplayTransactionState,
-    OutputConfig, OutputDescriptor, OutputMode, OutputTransform, logical_extent,
+    DisplayConfig, DisplayHardwareSnapshot, DisplaySet, DisplayTransaction,
+    DisplayTransactionState, MonitorIdentity, OutputConfig, OutputDescriptor, OutputMode,
+    OutputTransform, logical_extent,
 };
 
 /// CRDT key the brightness slider writes into.
@@ -208,6 +209,8 @@ pub struct DisplayOutput {
     pub vrr_unavailable_reason: Option<String>,
     pub color_profiles: Vec<String>,
     pub color_profile_labels: BTreeMap<String, String>,
+    /// EDID identity; decides which saved arrangement applies.
+    pub monitor: Option<MonitorIdentity>,
 }
 
 /// Map a raw DRM connector directory name + its `status` file contents to a
@@ -240,6 +243,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         vrr_unavailable_reason: None,
         color_profiles: Vec::new(),
         color_profile_labels: BTreeMap::new(),
+        monitor: None,
     }
 }
 
@@ -273,14 +277,20 @@ fn is_virtual_connector(conn: &str) -> bool {
 /// cards with that label become e.g. `HDMI-A-1 · pci:0000:01:00.0` so every
 /// control, mirror target and saved key refers to exactly one display.
 fn snapshot_label(descriptor: &OutputDescriptor, builtin: bool) -> String {
-    let base = if builtin {
-        "Built-in display"
-    } else {
-        descriptor.label()
+    let monitor_name = descriptor
+        .monitor
+        .as_ref()
+        .map(MonitorIdentity::display_name)
+        .filter(|name| !name.is_empty());
+    let base = match (builtin, monitor_name) {
+        (true, _) => "Built-in display".to_string(),
+        // The port stays visible: two identical monitors differ only there.
+        (false, Some(name)) => format!("{name} · {}", descriptor.label()),
+        (false, None) => descriptor.label().to_string(),
     };
     descriptor
         .card_qualifier()
-        .map_or_else(|| base.to_string(), |card| format!("{base} · {card}"))
+        .map_or_else(|| base.clone(), |card| format!("{base} · {card}"))
 }
 
 /// Enumerate real DRM connectors from `/sys/class/drm`. Best-effort: returns
@@ -312,6 +322,7 @@ fn read_outputs() -> Vec<DisplayOutput> {
                 vrr_unavailable_reason: snapshot.vrr_unavailable_reason,
                 color_profiles: snapshot.descriptor.color_profiles,
                 color_profile_labels: snapshot.color_profile_labels,
+                monitor: snapshot.descriptor.monitor,
             }
         })
         .collect();
@@ -387,15 +398,17 @@ impl DisplayPane {
                 }
             })
             .ok();
+        let outputs = read_outputs();
+        let output_config = DisplayConfig::load_for(&Self::display_set_of(&outputs));
         Self {
             dispatcher,
-            outputs: read_outputs(),
+            outputs,
             ambient_sensor_available: false,
             initial_brightness: initial,
             initial_prefs: SystemPrefs::load().display,
             last_brightness: initial,
             last_prefs: DisplayPrefs::default(),
-            output_config: DisplayConfig::load(),
+            output_config,
             pending_candidate: None,
             last_seen_transaction: None,
             last_snapshot_check: Instant::now(),
@@ -449,6 +462,7 @@ impl DisplayPane {
                 vrr_unavailable_reason: None,
                 color_profiles: Vec::new(),
                 color_profile_labels: BTreeMap::new(),
+                monitor: None,
             }],
             ambient_sensor_available: true,
             initial_brightness,
@@ -1498,7 +1512,7 @@ impl DisplayPane {
         if stamp != self.snapshot_stamp {
             self.snapshot_stamp = stamp;
             self.outputs = read_outputs();
-            self.output_config = DisplayConfig::load();
+            self.output_config = DisplayConfig::load_for(&self.display_set());
             self.needs_seed = true;
             self.composed = None;
         }
@@ -2063,7 +2077,22 @@ impl DisplayPane {
             hdr: output.hdr,
             vrr: output.vrr,
             color_profiles: output.color_profiles.clone(),
+            monitor: output.monitor.clone(),
         }
+    }
+
+    /// The connected monitors, whose saved arrangement this pane edits.
+    fn display_set(&self) -> DisplaySet {
+        Self::display_set_of(&self.outputs)
+    }
+
+    fn display_set_of(outputs: &[DisplayOutput]) -> DisplaySet {
+        let descriptors: Vec<_> = outputs
+            .iter()
+            .filter(|output| output.connected)
+            .map(Self::output_descriptor)
+            .collect();
+        DisplaySet::of_descriptors(&descriptors)
     }
 
     /// Apply/Keep/Revert button keys, plus reseeding controls once the
@@ -2073,7 +2102,7 @@ impl DisplayPane {
             let _ = state.put(root, APPLY_DISPLAY_KEY, false);
             match self.pending_candidate.clone() {
                 Some(candidate) => {
-                    if let Err(error) = DisplayTransaction::request(candidate) {
+                    if let Err(error) = DisplayTransaction::request(self.display_set(), candidate) {
                         warn!(target: "tilo::settings", %error, "failed to stage display configuration");
                         self.finish_display_operation(Err(format!(
                             "Display configuration could not be staged: {error}"
@@ -2127,7 +2156,7 @@ impl DisplayPane {
                         | DisplayTransactionState::Reverted
                         | DisplayTransactionState::Rejected
                 ) {
-                    self.output_config = DisplayConfig::load();
+                    self.output_config = DisplayConfig::load_for(&self.display_set());
                     self.pending_candidate = None;
                     let committed = self.output_config.clone();
                     self.write_output_controls(state, root, &committed);
@@ -2234,6 +2263,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let second = OutputDescriptor {
             connector: "pci:0000:03:00.0/HDMI-A-1".into(),
@@ -2242,8 +2272,22 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         assert_eq!(snapshot_label(&first, false), "HDMI-A-1 · pci:0000:01:00.0");
+        let named = OutputDescriptor {
+            monitor: Some(MonitorIdentity {
+                make: "Dell".into(),
+                model: "DELL U2720Q".into(),
+                ..MonitorIdentity::default()
+            }),
+            ..first.clone()
+        };
+        assert_eq!(
+            snapshot_label(&named, false),
+            "Dell U2720Q · HDMI-A-1 · pci:0000:01:00.0",
+            "a monitor is named by its EDID and still told apart by port"
+        );
         assert_eq!(
             snapshot_label(&second, false),
             "HDMI-A-1 · pci:0000:03:00.0"
@@ -2447,6 +2491,7 @@ mod tests {
             vrr_unavailable_reason: None,
             color_profiles: Vec::new(),
             color_profile_labels: BTreeMap::new(),
+            monitor: None,
         }
     }
 
@@ -2666,7 +2711,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        committed.save().unwrap();
+        let set = pane.display_set();
+        committed.save_for(&set).unwrap();
         pane.output_config = committed.clone();
 
         let mut doc = AutoCommit::new();
@@ -2679,12 +2725,20 @@ mod tests {
             pane.pending_candidate.as_ref().unwrap().outputs["eDP-1"].transform,
             OutputTransform::Rotate90
         );
-        assert_eq!(DisplayConfig::load(), committed, "editing is only staged");
+        assert_eq!(
+            DisplayConfig::load_for(&set),
+            committed,
+            "editing is only staged"
+        );
 
         let _ = doc.put(&root, APPLY_DISPLAY_KEY, true);
         pane.sync(&mut doc, &root);
         let mut transaction = DisplayTransaction::load().expect("Apply wrote a transaction");
         assert_eq!(transaction.state, DisplayTransactionState::Requested);
+        assert_eq!(
+            transaction.set, set,
+            "the plan is staged for the monitors it was arranged on"
+        );
         transaction.state = DisplayTransactionState::AwaitingConfirmation;
         transaction.deadline_unix_ms = Some(unix_now_ms() + 15_000);
         transaction.save().unwrap();

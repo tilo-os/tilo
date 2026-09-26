@@ -9310,6 +9310,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (0, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let mut memberships = SurfaceOutputMemberships::default();
         assert_eq!(
@@ -9366,6 +9367,7 @@ mod tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (x, 0),
+            identity: crate::compositor::backend::OutputIdentity::default(),
         };
         let old_outputs = [output(0, 0), output(1, 100)];
         let moved_outputs = [output(0, 100), output(1, 0)];
@@ -11536,6 +11538,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let geo = output_geometry(&outs);
@@ -11567,6 +11570,7 @@ mod output_geometry_tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1600, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let centre = vello::kurbo::Point::new(2000.0, 400.0);
@@ -11612,6 +11616,7 @@ mod external_floating_security_tests {
             color_profile: None,
             refresh_mhz: None,
             logical_position: position,
+            identity: crate::compositor::backend::OutputIdentity::default(),
         }
     }
 
