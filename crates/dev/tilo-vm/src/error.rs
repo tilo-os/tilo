@@ -409,7 +409,7 @@ impl CliError {
                 "wait for the other command to finish and retry, or pass --force to go ahead anyway".into()
             }
             Self::InvalidInput(_) => {
-                "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input move 400 300   |   input click left --at 400 300   (text beyond a US layout: tilo-vm control type '<text>')".into()
+                "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input click left --at 400 300   |   input touch tap 400 300   |   input gamepad press a   (each device: tilo-vm input <key|touch|pen|gamepad> --help; text beyond a US layout: tilo-vm control type '<text>')".into()
             }
             Self::KernelBuild { log } => format!(
                 "the build output above names the cause (full log: {log}); fix os/kernel/config-fragments/ or os/kernel/patches/ and rerun tilo-vm swap kernel   (os/kernel/dev-build.sh runs the same build by hand)"
