@@ -2556,7 +2556,18 @@ mod tests {
             &tilo_relay_protocol::metrics::MetricsSnapshot::default(),
         )
         .unwrap();
-        let now = SystemTime::now();
+        // Observe at the snapshot's own modification time, not the wall
+        // clock after the save: the atomic write stamps the file before its
+        // fsync, and a slow fsync would otherwise age the snapshot past
+        // STATUS_FRESHNESS before the first read.
+        let now = std::fs::metadata(
+            config
+                .state_root
+                .join(tilo_relay_protocol::metrics::METRICS_FILE),
+        )
+        .unwrap()
+        .modified()
+        .unwrap();
         let now_ms = now
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()

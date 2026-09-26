@@ -3,7 +3,7 @@
 //! The project mandates i18n via [Fluent](https://projectfluent.org/): UI code
 //! passes **translation keys**, never literal strings. The bundled `.ftl`
 //! catalogs are embedded via `include_str!` (no build script, no runtime file
-//! I/O) and resolved through the toolkit's [`ui::i18n`] manager with [`t`] /
+//! I/O) and resolved through the toolkit's [`mod@ui::i18n`] manager with [`t`] /
 //! [`t_args`], so `--shots` and unit tests get the same strings as a live
 //! session.
 //!

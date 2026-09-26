@@ -1,7 +1,7 @@
 //! Settings panes as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: Settings declares its
-//! searchable type by implementing [`SearchProvider`] over the static list of
+//! Mirrors the reference wiring in `apps/contacts`: Settings declares its
+//! searchable type by implementing `SearchProvider` over the static list of
 //! [`Category`] panes, so a settings screen is findable from the unified Ctrl+K
 //! palette by its title, summary, or any of its built-in keyword synonyms
 //! ("vpn", "night light", "wallpaper", …). Each result addresses the pane's
@@ -21,7 +21,7 @@ use crate::categories::Category;
 /// The kind label (and result-group header) Settings produces.
 pub const SETTINGS_KIND: &str = "Personal Settings";
 
-/// A [`SearchProvider`] over the complete Settings destination corpus.
+/// A `SearchProvider` over the complete Settings destination corpus.
 ///
 /// The category list is small today, but it is still a durable namespace: an
 /// old continuation must not silently skip a category when a future build

@@ -428,7 +428,7 @@ impl AddAccountPanel {
 
     /// Open with the Advanced-options section already expanded. Used by the
     /// `--shots` renderer to capture the tall, scrolling form; runtime opens
-    /// via [`open`] with Advanced collapsed.
+    /// via `open` with Advanced collapsed.
     pub fn open_with_advanced(&mut self) {
         self.open();
         self.advanced_open = true;

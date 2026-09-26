@@ -424,13 +424,19 @@ pub enum PersonalFabricAction {
     RemoteCaptureChunk {
         chunk: crate::shell::remote_capture::device::RemoteCaptureChunk,
     },
-    /// Shell-owned liveness/RTT probe. The random nonce is bound to the exact
-    /// authenticated peer and is never exposed through an app contract.
+    /// Shell-owned liveness, RTT and clock probe. The random nonce is bound to
+    /// the exact authenticated peer and is never exposed through an app
+    /// contract. `sent_us` is the prober's `CLOCK_MONOTONIC` send time in
+    /// microseconds, echoed back so the report closes a four-timestamp
+    /// exchange.
     DeviceHealthProbe {
         nonce: [u8; 16],
+        sent_us: u64,
     },
     /// Power is diagnostic routing context, never authorization. Latency is
-    /// deliberately absent because the probing compositor measures it.
+    /// deliberately absent because the probing compositor measures it; the
+    /// reporter's receive and reply times let the prober estimate clock
+    /// offset and skew.
     DeviceHealthReport {
         report: crate::shell::spatial_calibration::DeviceHealthReport,
     },
@@ -475,6 +481,13 @@ pub enum PersonalFabricAction {
     MediaCancelled {
         request_id: [u8; 16],
         session_id: String,
+    },
+    /// Liveness for one approved remote-audio session, sent by both peers
+    /// while it is active. A paused source produces no frames, so silence on
+    /// the media path alone cannot tell an idle route from a dead link.
+    RemoteAudioKeepalive {
+        session_id: [u8; 16],
+        authorization: [u8; 16],
     },
 }
 
@@ -795,6 +808,10 @@ impl PersonalFabricActionEnvelope {
             PersonalFabricAction::RemoteAudioStop {
                 session_id,
                 authorization,
+            }
+            | PersonalFabricAction::RemoteAudioKeepalive {
+                session_id,
+                authorization,
             } => {
                 if session_id == &[0; 16] || authorization == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -821,7 +838,7 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::DeviceHealthProbe { nonce }
+            PersonalFabricAction::DeviceHealthProbe { nonce, .. }
             | PersonalFabricAction::InputLeaseRevoked { nonce } => {
                 if nonce == &[0; 16] {
                     return Err(FabricError::InvalidAction);
@@ -2617,6 +2634,22 @@ mod tests {
         assert_eq!(
             envelope(PersonalFabricAction::RemoteAudioCancel {
                 session_id: [0; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Err(FabricError::InvalidAction)
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: [4; 16],
+                authorization: [5; 16],
+            })
+            .validate_at(&source, &target, 10_100),
+            Ok(())
+        );
+        assert_eq!(
+            envelope(PersonalFabricAction::RemoteAudioKeepalive {
+                session_id: [4; 16],
+                authorization: [0; 16],
             })
             .validate_at(&source, &target, 10_100),
             Err(FabricError::InvalidAction)

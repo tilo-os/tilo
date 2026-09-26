@@ -55,6 +55,9 @@ class CompilerInputsTests(unittest.TestCase):
         check = workflow.index("python3 tools/ci/compiler_inputs.py")
         upload = workflow.index("- name: Save observed compiler inputs")
         clippy = workflow.index("- name: Clippy shard")
+        # Clippy records the same observation for the x86_64 check it replaces.
+        self.assertIn('python3 "$root/tools/ci/compiler_inputs.py"',
+                      (Path(__file__).parents[2] / "tools/ci/clippy-check.sh").read_text())
         self.assertLess(check, upload)
         self.assertLess(upload, clippy)
         self.assertIn("check --locked --all-targets ${{ matrix.packages }}", workflow[check:upload])

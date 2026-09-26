@@ -298,8 +298,9 @@ pub use view::{
     FROZEN_VERSION, FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect,
 };
 pub use virtual_viewport::{
-    DragScrollFinish, DragScrollUpdate, DragScroller, ReconcileError, ScrollAlignment,
-    ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
+    DragScrollFinish, DragScrollUpdate, DragScroller, KineticSampler, ReconcileError,
+    ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, VirtualViewport,
+    WheelStep,
 };
 
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid

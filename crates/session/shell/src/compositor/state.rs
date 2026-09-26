@@ -66,6 +66,7 @@ use smithay::wayland::shell::xdg::{
     XdgToplevelSurfaceData,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
+use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
@@ -73,7 +74,7 @@ use smithay::wayland::xdg_activation::{
 };
 use smithay::{
     delegate_compositor, delegate_data_control, delegate_data_device, delegate_dmabuf,
-    delegate_ext_data_control, delegate_fractional_scale, delegate_output,
+    delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit, delegate_output,
     delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
@@ -534,6 +535,10 @@ pub struct State {
     pub fractional_scale_manager: FractionalScaleManagerState,
     /// `wp_viewporter` state, fractional scaling's companion protocol — `wp_viewport.set_destination` declares a 1.5×-buffer's logical size, which integer `set_buffer_scale` can't express.
     pub viewporter: ViewporterState,
+    /// `zwp_idle_inhibit_manager_v1` — how a video player keeps the screen on.
+    pub idle_inhibit_manager: IdleInhibitManagerState,
+    /// Live idle inhibitors and the registry holds their visible windows earn; see [`crate::compositor::idle_inhibit`].
+    pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
@@ -614,7 +619,7 @@ pub struct State {
     pub(crate) floating_toplevel_events: Vec<FloatingToplevelEvent>,
 }
 
-fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
+pub(crate) fn foreign_root(surface: &WlSurface) -> Option<WlSurface> {
     use smithay::wayland::compositor::get_parent;
 
     let mut current = surface.clone();
@@ -893,6 +898,7 @@ impl State {
         // (e.g. 1.5×) and have the compositor composite the correct logical size; the preferred scale is pushed per-surface on commit.
         let fractional_scale_manager = FractionalScaleManagerState::new::<Self>(&display_handle);
         let viewporter = ViewporterState::new::<Self>(&display_handle);
+        let idle_inhibit_manager = IdleInhibitManagerState::new::<Self>(&display_handle);
         // Session locking controls the compositor's authentication boundary:
         // only clients accepted on the session's privileged socket may even
         // see the manager. Sandboxed and ordinary host applications receive
@@ -945,6 +951,8 @@ impl State {
             color_manager,
             fractional_scale_manager,
             viewporter,
+            idle_inhibit_manager,
+            idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors::default(),
             scale,
             output_layout: Vec::new(),
             output_sizes: HashMap::new(),
@@ -4217,6 +4225,17 @@ delegate_pointer_gestures!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
+delegate_idle_inhibit!(State);
+
+impl IdleInhibitHandler for State {
+    fn inhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.inhibit(surface);
+    }
+
+    fn uninhibit(&mut self, surface: WlSurface) {
+        self.idle_inhibitors.uninhibit(&surface);
+    }
+}
 
 // Selection: clipboard, primary selection, drag-and-drop. Handler impls live in `compositor::selection`; only dispatch wiring belongs here.
 delegate_data_device!(State);
@@ -4631,6 +4650,7 @@ mod tick_hook_tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 

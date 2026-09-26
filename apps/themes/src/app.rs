@@ -7,7 +7,7 @@
 //!
 //! The gallery is the app's **primary navigation sidebar**. On a wide window
 //! it stays docked beside the preview + customizer. When the window is narrower
-//! than [`BREAKPOINT`] the gallery collapses into an overlay *flap*: the preview +
+//! than `BREAKPOINT` the gallery collapses into an overlay *flap*: the preview +
 //! customizer take the full width and the gallery, closed by default, slides
 //! in over a dimming scrim when summoned by the top-bar hamburger. The
 //! breakpoint is driven by the app's own allocated width and the eased
@@ -561,7 +561,7 @@ impl ThemesApp {
         self.structure_dirty = true;
     }
 
-    /// The last action an affordance dispatched through [`Self::perform_action`].
+    /// The last action an affordance dispatched through `Self::perform_action`.
     /// Rising state: it is the most recent dispatch, not cleared on read.
     pub fn last_dispatched(&self) -> Option<&EncodedAction> {
         self.actions.last_dispatched()
@@ -1563,7 +1563,7 @@ impl Widget for ThemesApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its Themes action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }

@@ -364,7 +364,7 @@ impl MathField {
     }
 
     /// The engine-ready linear form after an edit, recording it as the new
-    /// source so a subsequent [`set_source`] with the same value is a no-op.
+    /// source so a subsequent `set_source` with the same value is a no-op.
     pub fn current_linear(&mut self) -> String {
         let s = engine_linear(&self.editor.to_linear());
         self.source.clone_from(&s);
@@ -472,7 +472,7 @@ impl MathField {
     }
 
     /// Press at scene point `p`, hit-testing against the layout cached by the
-    /// last [`draw`]/[`set_rect`]. Places the caret at the nearest gap, or
+    /// last [`draw`](crate::draw)/`set_rect`. Places the caret at the nearest gap, or
     /// selects a token on a double click. No-op if no layout is cached yet.
     pub fn on_press_cached(&mut self, p: Point, double: bool) {
         let origin = self.content_origin();

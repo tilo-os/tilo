@@ -1020,7 +1020,7 @@ impl WordProcessor {
 
     /// Set a **non-toggle** inline mark to a specific `value` over the selection
     /// (per-run), or — with no selection — over the whole caret block. Unlike
-    /// [`toggle_mark`] (which flips a boolean on/off), this *replaces* any prior
+    /// `toggle_mark` (which flips a boolean on/off), this *replaces* any prior
     /// value of the same-named mark over each range: it removes the existing mark
     /// then re-adds it at `value`, so changing e.g. a run's size/colour/font
     /// overwrites rather than stacking. Used for the valued character formats
@@ -1070,7 +1070,7 @@ impl WordProcessor {
     }
 
     /// Remove a named run mark over the selection (per-run), or the caret block —
-    /// the inverse of [`set_mark_value`]. Used by the toolbar's neutral colour
+    /// the inverse of `set_mark_value`. Used by the toolbar's neutral colour
     /// swatch to clear a `color` mark (reverting to the block's style ink).
     pub fn clear_mark(&mut self, state: &mut AutoCommit, name: &str) {
         let ranges = self.font_ranges(state);

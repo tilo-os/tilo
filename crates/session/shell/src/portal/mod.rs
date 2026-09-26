@@ -52,6 +52,7 @@
 pub mod account;
 #[cfg(any(test, target_os = "linux"))]
 pub mod app_chooser;
+pub mod appearance;
 #[cfg(target_os = "linux")]
 pub mod auth;
 #[cfg(any(test, target_os = "linux"))]
@@ -87,11 +88,12 @@ pub mod remote_desktop;
 #[cfg(any(test, target_os = "linux"))]
 pub mod screencast;
 pub mod screencast_pipewire;
+#[cfg(target_os = "linux")]
+pub mod screensaver;
 #[cfg(any(test, target_os = "linux"))]
 pub mod screenshot;
 #[cfg(any(test, target_os = "linux"))]
 pub mod secret;
-#[cfg(any(test, target_os = "linux"))]
 pub mod settings;
 #[cfg(any(test, target_os = "linux"))]
 pub mod usb;
@@ -1174,6 +1176,7 @@ pub async fn serve_with_inhibit_and_clipboard(
     );
     let shortcut_events = shortcuts.handle();
     shortcut_service.attach_event_bridge(shortcut_events.clone());
+    let screensaver = screensaver::ScreenSaverService::new(inhibit_registry.clone());
     let inhibit = InhibitBackend::with_lifecycle(ctx.clone(), inhibit_registry, lifecycle.clone());
     let inhibit_monitors = inhibit.monitor_handle();
     input_capture.spawn_signal_emitter(connection.clone());
@@ -1227,6 +1230,13 @@ pub async fn serve_with_inhibit_and_clipboard(
         .await?;
     connection.object_server().at(OBJECT_PATH, secret).await?;
     connection.object_server().at(OBJECT_PATH, usb).await?;
+    for path in screensaver::OBJECT_PATHS {
+        connection
+            .object_server()
+            .at(path, screensaver.clone())
+            .await?;
+    }
+    screensaver.spawn_disconnect_cleanup(&connection);
 
     // Compositor-owned shortcut events are queued by `shortcut_events`; this
     // pump is the only path which emits activation signals for an approved
@@ -1244,6 +1254,12 @@ pub async fn serve_with_inhibit_and_clipboard(
             false
         }
     };
+
+    // Another screensaver service may already own the name (a nested
+    // session); the portal is still useful without it.
+    if let Err(e) = connection.request_name(screensaver::BUS_NAME).await {
+        tracing::debug!("portal: {} not claimed: {e}", screensaver::BUS_NAME);
+    }
 
     Ok(ServerHandle {
         connection,
