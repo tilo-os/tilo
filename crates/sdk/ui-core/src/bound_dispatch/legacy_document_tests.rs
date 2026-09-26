@@ -109,6 +109,13 @@ pub(crate) fn address() -> ActionAddress {
     ActionAddress::new("controlled.value", "set")
 }
 impl Widget for Probe {
+    crate::testing::inert_widget_methods!(
+        leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "Controlled owner"
+    );
     fn needs_commit(&self) -> bool {
         self.commit.get()
     }
@@ -143,35 +150,6 @@ impl Widget for Probe {
         let (u, s) = self.model_passes.get();
         self.model_passes.set((u + 1, s));
         false
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut crate::TextRenderer,
-        _: &crate::Theme,
-        _: &crate::presence::PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-    fn name(&self) -> &str {
-        "Controlled owner"
-    }
-    fn get_rect(&self) -> vello::kurbo::Rect {
-        vello::kurbo::Rect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["controlled.effect"]
@@ -263,31 +241,12 @@ impl Widget for Probe {
         self.acks.set(self.acks.get() + 1);
         *self.ack_heads.borrow_mut() = before.to_vec();
     }
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &crate::Theme,
-        map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let id = tree.new_leaf(taffy::Style::default()).unwrap();
-        map.insert(id, std::ptr::from_mut(self));
-        id
-    }
 }
-impl crate::widget::AppWidget for Probe {
-    fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &str {
-        "Controlled owner"
-    }
-    fn app_icon(&self) -> crate::widget::IconDescriptor {
-        crate::widget::IconDescriptor::Named("document".into())
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(
+    Probe,
+    "Controlled owner",
+    icon = crate::widget::IconDescriptor::Named("document".into())
+);
 pub(crate) struct Fixture {
     _temp: tempfile::TempDir,
     _owners: crate::record::RecordOwners,

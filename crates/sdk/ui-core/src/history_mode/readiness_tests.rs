@@ -1,13 +1,6 @@
 use super::*;
-use crate::widget::{AppKind, AppWidget, Column, IconDescriptor};
-use crate::{TextRenderer, Theme};
-use std::collections::HashMap;
+use crate::widget::{Column, IconDescriptor};
 use std::{cell::Cell, rc::Rc};
-use taffy::{NodeId, TaffyTree};
-use vello::{
-    Scene,
-    kurbo::{Affine, Point, Rect},
-};
 
 struct DraftRoot {
     pending: Rc<Cell<bool>>,
@@ -24,6 +17,14 @@ impl DraftRoot {
     }
 }
 impl Widget for DraftRoot {
+    crate::testing::delegate_widget_methods!(
+        inner: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        get_rect
+    );
+    crate::testing::inert_widget_methods!(name = "draft-root");
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
         assert_eq!(scope, "document");
         self.calls.set(self.calls.get() + 1);
@@ -33,64 +34,12 @@ impl Widget for DraftRoot {
             Ok(())
         }
     }
-    fn sync(&mut self, d: &mut automerge::AutoCommit, p: &automerge::ObjId) {
-        self.inner.sync(d, p);
-    }
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        h: &Theme,
-        n: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.inner.build_layout(t, h, n)
-    }
-    fn apply_layout(&mut self, t: &TaffyTree<()>, n: NodeId, p: Point) {
-        self.inner.apply_layout(t, n, p);
-    }
-    fn draw(
-        &mut self,
-        s: &mut Scene,
-        a: Affine,
-        t: &mut TextRenderer,
-        h: &Theme,
-        p: &crate::presence::PresenceCtx,
-    ) {
-        self.inner.draw(s, a, t, h, p);
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-    fn name(&self) -> &str {
-        "draft-root"
-    }
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
-    }
 }
-impl AppWidget for DraftRoot {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Editor
-    }
-    fn app_title(&self) -> &str {
-        "Draft root"
-    }
-    fn app_icon(&self) -> IconDescriptor {
-        IconDescriptor::Named("draft".into())
-    }
-    fn permission_hint(&self) -> Option<AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(
+    DraftRoot,
+    "Draft root",
+    icon = IconDescriptor::Named("draft".into())
+);
 fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();

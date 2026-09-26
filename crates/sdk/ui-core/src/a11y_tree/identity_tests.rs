@@ -12,60 +12,22 @@ struct Parent {
     name: &'static str,
 }
 
-macro_rules! inert_widget_methods {
-    () => {
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: TaffyNodeId, _: vello::kurbo::Point) {}
-        fn draw(
-            &mut self,
-            _: &mut vello::Scene,
-            _: vello::kurbo::Affine,
-            _: &mut crate::text_render::TextRenderer,
-            _: &Theme,
-            _: &crate::presence::PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<TaffyNodeId>,
-            _: TaffyNodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
-        fn name(&self) -> &str {
-            self.name
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
-    };
-}
-
 impl Widget for Leaf {
-    inert_widget_methods!();
-    fn build_layout(
-        &mut self,
-        tree: &mut TaffyTree<()>,
-        _: &Theme,
-        nodes: &mut HashMap<TaffyNodeId, *mut dyn Widget>,
-    ) -> TaffyNodeId {
-        let node = tree.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
+    crate::testing::inert_widget_methods!(
+        sync,
+        apply_layout,
+        draw,
+        get_rect,
+        leaf_layout,
+        name_field
+    );
     fn accessibility(&self) -> Option<AccessNode> {
         Some(AccessNode::new(Role::Button).with_semantic_key("child"))
     }
 }
 
 impl Widget for Parent {
-    inert_widget_methods!();
+    crate::testing::inert_widget_methods!(sync, apply_layout, draw, get_rect, name_field);
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,

@@ -2396,6 +2396,13 @@ mod tests {
     }
 
     impl Widget for RetainedTraversalProbe {
+        crate::testing::inert_widget_methods!(
+            sync,
+            apply_layout,
+            draw,
+            get_rect,
+            name = "RetainedTraversalProbe"
+        );
         fn unsaved_documents(
             &self,
             _: &AutoCommit,
@@ -2439,7 +2446,6 @@ mod tests {
                 .set(self.hits.resources_mut.get() + 1);
             Ok(())
         }
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -2448,51 +2454,14 @@ mod tests {
         ) -> NodeId {
             taffy.leaf_node(Style::default())
         }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
-        fn name(&self) -> &'static str {
-            "RetainedTraversalProbe"
-        }
-        fn get_rect(&self) -> Rect {
-            Rect::ZERO
-        }
     }
 
-    impl crate::widget::app_widget::AppWidget for RetainedTraversalProbe {
-        fn app_kind(&self) -> AppKind {
-            AppKind::Settings
-        }
-        fn app_title(&self) -> &'static str {
-            "Retained traversal probe"
-        }
-        fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-            crate::widget::app_widget::IconDescriptor::Glyph("R")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
-    }
+    crate::testing::test_app_widget!(
+        RetainedTraversalProbe,
+        "Retained traversal probe",
+        icon = crate::widget::app_widget::IconDescriptor::Glyph("R"),
+        kind = AppKind::Settings
+    );
 
     #[test]
     fn inactive_tabs_retain_session_collaboration_delivery() {

@@ -7650,6 +7650,12 @@ mod tests {
     }
 
     impl Widget for StructureReplacingEditor {
+        crate::testing::delegate_widget_methods!(
+            current: build_layout,
+            apply_layout,
+            draw,
+            get_rect
+        );
         fn name(&self) -> &'static str {
             "StructureReplacingEditor"
         }
@@ -7662,30 +7668,6 @@ mod tests {
                 self.structure_dirty = true;
             }
             self.current.sync(state, path);
-        }
-
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            theme: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            self.current.build_layout(tree, theme, nodes)
-        }
-
-        fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.current.apply_layout(tree, node, origin);
-        }
-
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
-            self.current.draw(scene, transform, text, theme, presence);
         }
 
         fn handle_event(
@@ -7726,10 +7708,6 @@ mod tests {
 
         fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
             vec![self.current.as_mut()]
-        }
-
-        fn get_rect(&self) -> Rect {
-            self.current.get_rect()
         }
 
         fn take_structure_dirty(&mut self) -> bool {
@@ -9421,6 +9399,14 @@ mod tests {
         checkout: crate::record::RecordCheckout,
     }
     impl Widget for RecordRootProbe {
+        crate::testing::inert_widget_methods!(
+            sync,
+            leaf_layout,
+            apply_layout,
+            draw,
+            get_rect,
+            name = "RecordRootProbe"
+        );
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             Some(self.checkout.clone())
         }
@@ -9430,50 +9416,6 @@ mod tests {
                 "probe.document",
                 "Probe document",
             )]
-        }
-        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            _: &Theme,
-            map: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            let node = tree.new_leaf(taffy::Style::default()).unwrap();
-            map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-            node
-        }
-        fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-        fn draw(
-            &mut self,
-            _: &mut Scene,
-            _: Affine,
-            _: &mut TextRenderer,
-            _: &Theme,
-            _: &PresenceCtx,
-        ) {
-        }
-        #[allow(
-            clippy::too_many_arguments,
-            reason = "the probe implements the fixed Widget event signature"
-        )]
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
-        fn name(&self) -> &'static str {
-            "RecordRootProbe"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            vello::kurbo::Rect::ZERO
         }
     }
 
@@ -11219,7 +11161,7 @@ mod ordinary_confirmation_owner_tests {
 #[cfg(test)]
 pub(crate) mod legacy_control_feedback_tests {
     use super::*;
-    use crate::widget::{AppKind, AppWidget, Column, IconDescriptor, TileContent, TileHost};
+    use crate::widget::{Column, IconDescriptor, TileContent, TileHost};
     use std::{
         cell::{Cell, RefCell},
         collections::VecDeque,
@@ -11250,49 +11192,15 @@ pub(crate) mod legacy_control_feedback_tests {
         descendants: Column,
     }
     impl Widget for ImportProbe {
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-            self.descendants.sync(doc, path);
-        }
-        fn build_layout(
-            &mut self,
-            tree: &mut TaffyTree<()>,
-            theme: &Theme,
-            nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-        ) -> NodeId {
-            self.descendants.build_layout(tree, theme, nodes)
-        }
-        fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-            self.descendants.apply_layout(tree, node, origin);
-        }
-        fn draw(
-            &mut self,
-            scene: &mut Scene,
-            transform: Affine,
-            text: &mut TextRenderer,
-            theme: &Theme,
-            presence: &PresenceCtx,
-        ) {
-            self.descendants
-                .draw(scene, transform, text, theme, presence);
-        }
-        fn handle_event(
-            &mut self,
-            _: &WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<NodeId>,
-            _: NodeId,
-            _: &TaffyTree<()>,
-        ) {
-        }
+        crate::testing::delegate_widget_methods!(
+            descendants: sync,
+            build_layout,
+            apply_layout,
+            draw,
+            get_rect
+        );
         fn name(&self) -> &str {
             "Queued import fixture"
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.descendants.get_rect()
         }
         fn children(&self) -> Vec<&dyn Widget> {
             vec![&self.descendants]
@@ -11413,20 +11321,11 @@ pub(crate) mod legacy_control_feedback_tests {
             })
         }
     }
-    impl AppWidget for ImportProbe {
-        fn app_kind(&self) -> AppKind {
-            AppKind::Editor
-        }
-        fn app_title(&self) -> &str {
-            "Import fixture"
-        }
-        fn app_icon(&self) -> IconDescriptor {
-            IconDescriptor::Glyph("I")
-        }
-        fn permission_hint(&self) -> Option<AppKind> {
-            None
-        }
-    }
+    crate::testing::test_app_widget!(
+        ImportProbe,
+        "Import fixture",
+        icon = IconDescriptor::Glyph("I")
+    );
     pub(crate) fn owner(
         id: u64,
         fail: bool,

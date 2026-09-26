@@ -845,6 +845,14 @@ struct CheckedCompositionRoot {
 }
 
 impl Widget for CheckedCompositionRoot {
+    crate::testing::delegate_widget_methods!(
+        inner: sync,
+        build_layout,
+        apply_layout,
+        draw,
+        handle_event,
+        get_rect
+    );
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
@@ -862,56 +870,6 @@ impl Widget for CheckedCompositionRoot {
         Some(&CHECKED_COMPOSITION)
     }
 
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.inner.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        tree: &mut taffy::TaffyTree<()>,
-        theme: &Theme,
-        nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
-    ) -> taffy::NodeId {
-        self.inner.build_layout(tree, theme, nodes)
-    }
-
-    fn apply_layout(
-        &mut self,
-        tree: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.inner.apply_layout(tree, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-    ) {
-        self.inner.draw(scene, transform, text, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
-    ) {
-        self.inner.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, tree,
-        );
-    }
-
     fn children(&self) -> Vec<&dyn Widget> {
         self.inner.children()
     }
@@ -922,10 +880,6 @@ impl Widget for CheckedCompositionRoot {
 
     fn name(&self) -> &str {
         "checked-composition-root"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.inner.get_rect()
     }
 }
 

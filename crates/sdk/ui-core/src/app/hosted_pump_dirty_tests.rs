@@ -14,6 +14,13 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
+    crate::testing::inert_widget_methods!(
+        unregistered_leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "hosted-pump-probe"
+    );
     fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {
         self.syncs.set(self.syncs.get() + 1);
         if let Some(label) = self.pending_label.borrow_mut().take() {
@@ -25,36 +32,6 @@ impl Widget for HostedPumpProbe {
     }
     fn on_commit(&mut self) {
         self.commit.set(false);
-    }
-    fn build_layout(
-        &mut self,
-        t: &mut TaffyTree<()>,
-        _: &Theme,
-        _: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        t.new_leaf(taffy::Style::default()).unwrap()
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: Point) {}
-    fn draw(&mut self, _: &mut Scene, _: Affine, _: &mut TextRenderer, _: &Theme, _: &PresenceCtx) {
-    }
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-    fn name(&self) -> &'static str {
-        "hosted-pump-probe"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]

@@ -212,20 +212,11 @@ fn hosted_directory_hidden_immediate_target_change_stays_stale() {
     );
 }
 
-impl crate::widget::AppWidget for DeclaredDirectory {
-    fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &'static str {
-        "Declared directory"
-    }
-    fn app_icon(&self) -> crate::widget::IconDescriptor {
-        crate::widget::IconDescriptor::Glyph("D")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(
+    DeclaredDirectory,
+    "Declared directory",
+    icon = crate::widget::IconDescriptor::Glyph("D")
+);
 
 fn owned_declared_directory_factory(
     mut context: crate::application::HostContext,

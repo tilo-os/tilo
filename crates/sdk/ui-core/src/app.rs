@@ -3244,6 +3244,14 @@ pub(crate) mod ordinary_confirmation_tests {
         output: Rc<RefCell<Option<crate::ControlOutbox>>>,
     }
     impl Widget for Fixture {
+        crate::testing::delegate_widget_methods!(
+            child: sync,
+            build_layout,
+            apply_layout,
+            draw,
+            handle_event,
+            get_rect
+        );
         fn install_control_custody(
             &mut self,
             domain: &crate::ControlDomain,
@@ -3257,62 +3265,6 @@ pub(crate) mod ordinary_confirmation_tests {
         }
         fn name(&self) -> &str {
             "Ordinary confirmation fixture"
-        }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-            self.child.sync(doc, path);
-        }
-        fn build_layout(
-            &mut self,
-            tree: &mut taffy::TaffyTree<()>,
-            theme: &crate::Theme,
-            nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
-        ) -> taffy::NodeId {
-            self.child.build_layout(tree, theme, nodes)
-        }
-        fn apply_layout(
-            &mut self,
-            tree: &taffy::TaffyTree<()>,
-            node: taffy::NodeId,
-            origin: vello::kurbo::Point,
-        ) {
-            self.child.apply_layout(tree, node, origin);
-        }
-        fn draw(
-            &mut self,
-            scene: &mut vello::Scene,
-            transform: vello::kurbo::Affine,
-            text: &mut crate::TextRenderer,
-            theme: &crate::Theme,
-            presence: &crate::presence::PresenceCtx,
-        ) {
-            self.child.draw(scene, transform, text, theme, presence);
-        }
-        fn get_rect(&self) -> vello::kurbo::Rect {
-            self.child.get_rect()
-        }
-        fn handle_event(
-            &mut self,
-            event: &winit::event::WindowEvent,
-            scale_factor: f64,
-            modifiers: &winit::event::Modifiers,
-            doc: &mut automerge::AutoCommit,
-            path: &automerge::ObjId,
-            handled: &mut bool,
-            focus: &mut Option<taffy::NodeId>,
-            node: taffy::NodeId,
-            tree: &taffy::TaffyTree<()>,
-        ) {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                doc,
-                path,
-                handled,
-                focus,
-                node,
-                tree,
-            );
         }
         fn children(&self) -> Vec<&dyn crate::widget::Widget> {
             vec![self.child.as_ref()]
@@ -3432,20 +3384,7 @@ pub(crate) mod ordinary_confirmation_tests {
         let (widget, ledger, resources) = fixture_widget(policy, source());
         (managed(Box::new(widget)), ledger, resources)
     }
-    impl crate::widget::AppWidget for Fixture {
-        fn app_kind(&self) -> crate::widget::AppKind {
-            crate::widget::AppKind::Editor
-        }
-        fn app_title(&self) -> &str {
-            "Confirmation fixture"
-        }
-        fn app_icon(&self) -> crate::widget::IconDescriptor {
-            crate::widget::IconDescriptor::Glyph("T")
-        }
-        fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-            None
-        }
-    }
+    crate::testing::test_app_widget!(Fixture, "Confirmation fixture");
     #[allow(
         dead_code,
         reason = "fixture guards retain actual owner stores for each test"

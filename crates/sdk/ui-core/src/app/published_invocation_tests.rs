@@ -292,20 +292,11 @@ fn causal_scope_expired_accepted_job_must_not_mutate_from_model_sync() {
     );
 }
 
-impl crate::widget::AppWidget for CounterCard {
-    fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &str {
-        "Scoped counter"
-    }
-    fn app_icon(&self) -> crate::widget::IconDescriptor {
-        crate::widget::IconDescriptor::Glyph("C")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(
+    CounterCard,
+    "Scoped counter",
+    icon = crate::widget::IconDescriptor::Glyph("C")
+);
 fn owned_counter(
     card: CounterCard,
 ) -> (

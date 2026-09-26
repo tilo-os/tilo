@@ -71,47 +71,14 @@ fn tree(view: &str) -> Vec<Resource> {
 }
 
 impl Widget for TwoViews {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _: &Theme,
-        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let node = taffy.new_leaf(taffy::Style::default()).unwrap();
-        nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-        node
-    }
-    fn apply_layout(&mut self, _: &TaffyTree<()>, _: NodeId, _: vello::kurbo::Point) {}
-    fn draw(
-        &mut self,
-        _: &mut vello::Scene,
-        _: vello::kurbo::Affine,
-        _: &mut TextRenderer,
-        _: &Theme,
-        _: &PresenceCtx,
-    ) {
-    }
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-    fn name(&self) -> &'static str {
-        "two-views"
-    }
-    fn get_rect(&self) -> KurboRect {
-        KurboRect::ZERO
-    }
+    crate::testing::inert_widget_methods!(
+        sync,
+        leaf_layout,
+        apply_layout,
+        draw,
+        get_rect,
+        name = "two-views"
+    );
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<Resource> {
         tree(if self.0.borrow().host {
             "schema"
@@ -416,20 +383,7 @@ fn a_participant_view_op_is_re_emitted_as_a_presence_change() {
     );
 }
 
-impl crate::widget::AppWidget for TwoViews {
-    fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::Editor
-    }
-    fn app_title(&self) -> &'static str {
-        "Two views"
-    }
-    fn app_icon(&self) -> crate::widget::IconDescriptor {
-        crate::widget::IconDescriptor::Glyph("T")
-    }
-    fn permission_hint(&self) -> Option<crate::widget::AppKind> {
-        None
-    }
-}
+crate::testing::test_app_widget!(TwoViews, "Two views");
 
 thread_local! {
     static BOUND_PROBE: RefCell<Option<Rc<RefCell<Probe>>>> = const { RefCell::new(None) };
