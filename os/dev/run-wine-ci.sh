@@ -73,7 +73,7 @@ docker cp "$source_dir" "$resolver:/work/source"
 docker exec "$resolver" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/wine-mock-producer.py \
     resolve --target "$target" --runtime-image "$runtime" --pin /tilo/wine-source.json \
     --source /work/source --config "$config" --output /work/bundle --jobs 2
-snapshot_tag="code.sandbox.example/qos/wine-resolution:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
+snapshot_tag="code.sandbox.example/qos/wine-resolution:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:?}-${target}"
 docker exec "$resolver" tar -C /work/bundle -cf - . | docker import --platform linux/amd64 - "$snapshot_tag"
 docker push "$snapshot_tag"
 snapshot_ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$snapshot_tag")
@@ -94,7 +94,7 @@ docker exec "$builder" runuser -u tilo-build -- sudo -n /usr/bin/python3 /tilo/w
     --bundle /inputs/bundle --output /work/output --jobs 2
 docker exec "$builder" python3 /tilo/wine_rpm_contract.py import-mock "$target" /tilo/wine-source.json \
     /work/output /inputs/bundle /work/wine-output "$snapshot_ref"
-artifact_tag="code.sandbox.example/qos/wine-rpms:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${target}"
+artifact_tag="code.sandbox.example/qos/wine-rpms:candidate-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:?}-${target}"
 docker exec "$builder" tar -C /work -cf - wine-output | docker import --platform linux/amd64 - "$artifact_tag"
 docker push "$artifact_tag"
 artifact_ref=$(docker image inspect --format '{{index .RepoDigests 0}}' "$artifact_tag")
