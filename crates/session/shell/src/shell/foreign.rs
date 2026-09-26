@@ -1478,7 +1478,7 @@ impl ForeignFrameStore {
     ///
     /// Presentable when: a **capture failed** (must say so, not be
     /// invisible); a **frame answers the tab** per `fills` (else the
-    /// unasked-for buffer size scales via `fit_rect`, snapping to 1:1
+    /// unasked-for buffer size scales via `fit_into`, snapping to 1:1
     /// later); or **`PRESENT_GRACE` passes** (backstop against an unclosable window). `tile` degenerate means not laid out, unjudgeable.
     #[allow(
         clippy::cast_possible_truncation,
@@ -1543,7 +1543,7 @@ const OPENING_CONFIGURE_GRACE: Duration = Duration::from_millis(250);
 /// Whether a `w`x`h` buffer is this client's answer to the tab it was
 /// configured into, rather than the size it picked before being asked.
 ///
-/// Two ways to be an answer: it **covers the tab** ([`fit_rect`] scales
+/// Two ways to be an answer: it **covers the tab** ([`fit_into`] scales
 /// uniformly by the smaller ratio, so aspect match means exact cover),
 /// or it **fits inside and matches one axis** (a client keeping a title
 /// bar out of its given size answers one axis and falls short forever,
@@ -1693,19 +1693,7 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        match store().snapshot(self.surface_id) {
-            Some(frame) => {
-                self.cached = Some(ImageData {
-                    data: Blob::new(std::sync::Arc::new(frame.rgba)),
-                    format: ImageFormat::Rgba8,
-                    // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
-                    alpha_type: ImageAlphaType::AlphaPremultiplied,
-                    width: frame.width,
-                    height: frame.height,
-                });
-            }
-            None => self.cached = None,
-        }
+        self.cached = surface_image(self.surface_id);
         true
     }
 
@@ -1724,27 +1712,93 @@ impl ForeignSurfaceWidget {
         // final paint and then lets a static desktop sleep.
         !store().mark_presented(self.surface_id, self.rect)
     }
+}
 
-    /// Destination rect for the client image inside `self.rect`, preserving
-    /// aspect ratio and anchoring at the tile's top-left corner. A
-    /// correctly-configured client renders at exactly the tab size (identity fit); a letterbox band only shows briefly between a resize configure and the client's answering commit.
-    ///
-    /// The anchor is load-bearing: pointer input reaches the client by
-    /// subtracting the tile origin from the global cursor
-    /// (`client_input::surface_local`), so a *centred* draw instead would slide every pixel while input kept addressing the un-slid position.
-    fn fit_rect(&self, img_w: u32, img_h: u32) -> Option<Rect> {
-        if img_w == 0 || img_h == 0 || self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
-            return None;
-        }
-        let iw = f64::from(img_w);
-        let ih = f64::from(img_h);
-        let scale = (self.rect.width() / iw).min(self.rect.height() / ih);
-        let dw = iw * scale;
-        let dh = ih * scale;
-        let dx = self.rect.x0;
-        let dy = self.rect.y0;
-        Some(Rect::new(dx, dy, dx + dw, dy + dh))
+/// Destination rect for the client image inside `rect`, preserving
+/// aspect ratio and anchoring at the tile's top-left corner. A
+/// correctly-configured client renders at exactly the tab size (identity fit); a letterbox band only shows briefly between a resize configure and the client's answering commit.
+///
+/// The anchor is load-bearing: pointer input reaches the client by
+/// subtracting the tile origin from the global cursor
+/// (`client_input::surface_local`), so a *centred* draw instead would slide every pixel while input kept addressing the un-slid position.
+fn fit_into(rect: Rect, img_w: u32, img_h: u32) -> Option<Rect> {
+    if img_w == 0 || img_h == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return None;
     }
+    let iw = f64::from(img_w);
+    let ih = f64::from(img_h);
+    let scale = (rect.width() / iw).min(rect.height() / ih);
+    let dw = iw * scale;
+    let dh = ih * scale;
+    Some(Rect::new(rect.x0, rect.y0, rect.x0 + dw, rect.y0 + dh))
+}
+
+/// The latest frame of `surface_id` (subsurfaces composited) as an image
+/// the scene can draw, or `None` before its first commit.
+pub fn surface_image(surface_id: SurfaceId) -> Option<ImageData> {
+    let frame = store().snapshot(surface_id)?;
+    Some(ImageData {
+        data: Blob::new(std::sync::Arc::new(frame.rgba)),
+        format: ImageFormat::Rgba8,
+        // Wayland `ARGB8888` carries premultiplied alpha; `X` variants are forced opaque during the swizzle, where premultiplied and straight coincide.
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: frame.width,
+        height: frame.height,
+    })
+}
+
+/// Paint a client's pixels the way its tile shows them, and nothing else:
+/// fitted into `rect` from the top-left, over the neutral surface backdrop
+/// and inside the tile's rounded corners, or bare when the buffer carries
+/// its own silhouette (`preserve_transparency`).
+///
+/// This is the one definition of what an app's surface looks like. The tile
+/// draws it and then adds shell chrome on top (collaboration overlays);
+/// every frame capture draws exactly this, so a recorded frame holds the
+/// app's pixels and never the shell's.
+pub fn paint_tile_surface(
+    scene: &mut Scene,
+    transform: Affine,
+    image: &ImageData,
+    rect: Rect,
+    theme: &Theme,
+    preserve_transparency: bool,
+) -> bool {
+    let Some(dst) = fit_into(rect, image.width, image.height) else {
+        return false;
+    };
+    let sx = dst.width() / f64::from(image.width);
+    let sy = dst.height() / f64::from(image.height);
+    let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
+    let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+    let pixels = Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height));
+    if preserve_transparency {
+        // The app buffer already carries the shared floating chrome's
+        // soft silhouette. Drawing it directly preserves transparent
+        // corners and prevents a second radius/backdrop from making
+        // the native handoff look wider than the in-app surface.
+        scene.fill(Fill::NonZero, brush_transform, &brush, None, &pixels);
+        return true;
+    }
+    let clip = RoundedRect::from_rect(rect, f64::from(theme.tokens.radii.xl));
+    // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.base,
+        None,
+        &clip,
+    );
+    scene.push_layer(
+        Fill::NonZero,
+        vello::peniko::BlendMode::default(),
+        1.0,
+        transform,
+        &clip,
+    );
+    scene.fill(Fill::NonZero, brush_transform, &brush, None, &pixels);
+    scene.pop_layer();
+    true
 }
 
 /// `base` composed with a translation to `(dx, dy)`. Wrapped so the one
@@ -1875,54 +1929,18 @@ impl Widget for ForeignSurfaceWidget {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
         }
-        let radius = f64::from(theme.tokens.radii.xl);
-        let clip = RoundedRect::from_rect(self.rect, radius);
-
-        if let Some(image) = self.cached.clone()
-            && let Some(dst) = self.fit_rect(image.width, image.height)
+        if let Some(image) = self.cached.as_ref()
+            && paint_tile_surface(
+                scene,
+                transform,
+                image,
+                self.rect,
+                theme,
+                self.preserve_transparency,
+            )
         {
-            let sx = dst.width() / f64::from(image.width);
-            let sy = dst.height() / f64::from(image.height);
-            let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
-            let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
-            if self.preserve_transparency {
-                // The app buffer already carries the shared floating chrome's
-                // soft silhouette. Drawing it directly preserves transparent
-                // corners and prevents a second radius/backdrop from making
-                // the native handoff look wider than the in-app surface.
-                scene.fill(
-                    Fill::NonZero,
-                    brush_transform,
-                    &brush,
-                    None,
-                    &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
-                );
-                self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
-                return;
-            }
-            // Neutral backdrop so letterbox bands (and client transparency) read as compositor surface, not whatever the tile card painted.
-            scene.fill(
-                Fill::NonZero,
-                transform,
-                theme.tokens.colors.surfaces.base,
-                None,
-                &clip,
-            );
-            scene.push_layer(
-                Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                1.0,
-                transform,
-                &clip,
-            );
-            scene.fill(
-                Fill::NonZero,
-                brush_transform,
-                &brush,
-                None,
-                &Rect::new(0.0, 0.0, f64::from(image.width), f64::from(image.height)),
-            );
-            scene.pop_layer();
+            // Shell chrome over the app's pixels: never part of what a
+            // frame capture records.
             self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
             return;
         }
@@ -3045,12 +3063,12 @@ mod tests {
         let mut w = ForeignSurfaceWidget::new(sid(8), "x".into());
         w.rect = Rect::new(0.0, 0.0, 400.0, 200.0);
         // A square image inside a 2:1 tile: height-limited, anchored at the tile's top-left with the spare width to the right.
-        let fit = w.fit_rect(100, 100).expect("fit");
+        let fit = fit_into(w.rect, 100, 100).expect("fit");
         assert_eq!((fit.width(), fit.height()), (200.0, 200.0));
         assert_eq!(fit.x0, 0.0);
         assert_eq!(fit.y0, 0.0);
         // An exactly-matching client fills the tile with no letterbox.
-        let exact = w.fit_rect(400, 200).expect("fit");
+        let exact = fit_into(w.rect, 400, 200).expect("fit");
         assert_eq!(exact, w.rect);
     }
 
@@ -3063,7 +3081,7 @@ mod tests {
 
         // Every size a lagging client might still be presenting: exactly right, short, tall, narrow and wide.
         for (iw, ih) in [(856, 868), (856, 834), (856, 900), (800, 868), (900, 868)] {
-            let dst = w.fit_rect(iw, ih).expect("fit");
+            let dst = fit_into(w.rect, iw, ih).expect("fit");
             let (local_x, local_y) =
                 crate::shell::input_policy::surface_local((dst.x0, dst.y0), tile);
             assert_eq!(

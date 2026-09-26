@@ -242,7 +242,10 @@ impl SemanticNode {
         crate::a11y::presents_value(self.role, self.value.is_some())
     }
 
-    fn window_root(children: Vec<SemanticId>) -> Self {
+    /// The window itself. Its bounds are the whole surface: the toolkit
+    /// paints every pixel of it (background, padding, chrome), so the
+    /// window's pixels are described even where no widget node lies.
+    fn window_root(children: Vec<SemanticId>, surface: Option<Rect>) -> Self {
         SemanticNode {
             id: SemanticId::root(),
             durable_identity: true,
@@ -251,7 +254,7 @@ impl SemanticNode {
             value: None,
             sensitivity: Sensitivity::Public,
             state: AccessState::default(),
-            bounds: None,
+            bounds: surface,
             clip: None,
             actions: Vec::new(),
             children,
@@ -305,6 +308,9 @@ pub struct SemanticTree {
     overlays: Vec<crate::view::OpenOverlay>,
     /// Bumped by every refresh that changed the tree, whoever asked for it.
     revision: u64,
+    /// The surface the window is laid out on, in logical pixels: the
+    /// window root's bounds.
+    surface: Option<Rect>,
 }
 
 impl Default for SemanticTree {
@@ -317,7 +323,7 @@ impl SemanticTree {
     pub fn new() -> Self {
         let root = SemanticId::root();
         let mut nodes = HashMap::new();
-        nodes.insert(root.clone(), SemanticNode::window_root(Vec::new()));
+        nodes.insert(root.clone(), SemanticNode::window_root(Vec::new(), None));
         Self {
             nodes,
             order: vec![root.clone()],
@@ -327,7 +333,15 @@ impl SemanticTree {
             duplicate_ids: Vec::new(),
             overlays: Vec::new(),
             revision: 0,
+            surface: None,
         }
+    }
+
+    /// The surface the window is laid out on, in logical pixels, taken as
+    /// the window root's bounds from the next refresh on. `None` before the
+    /// first layout.
+    pub fn set_surface(&mut self, surface: Option<Rect>) {
+        self.surface = surface.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
     }
 
     /// Rebuild the tree from the live UI and diff it against the retained frame.
@@ -449,9 +463,10 @@ impl SemanticTree {
             }
         }
 
-        builder
-            .nodes
-            .insert(root_id.clone(), SemanticNode::window_root(root_children));
+        builder.nodes.insert(
+            root_id.clone(),
+            SemanticNode::window_root(root_children, self.surface),
+        );
         builder.resolve_references();
 
         let delta = self.diff(&builder.nodes);

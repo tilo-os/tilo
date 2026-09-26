@@ -147,7 +147,6 @@ impl SessionSurface {
 struct RecordedSurface {
     surface_id: u64,
     tab: crate::shell::state::TabId,
-    target_id: String,
     app_id: String,
     room: String,
 }
@@ -178,7 +177,6 @@ fn recorded_surfaces(
                 surfaces.push(RecordedSurface {
                     surface_id: *surface_id,
                     tab: tab.id,
-                    target_id: format!("group:{}:tab:{}", group.id, tab.id),
                     app_id: app_id.clone(),
                     room: room.clone(),
                 });
@@ -883,8 +881,8 @@ impl CaptureExecutor {
                 .filter(|scale| scale.is_finite() && *scale > 0.0)
                 .unwrap_or(1.0);
             let frame = render_session_frame(
-                frame_builder,
-                &surface.target_id,
+                frame_builder.theme(),
+                surface.surface_id,
                 rect,
                 scale,
                 &mut followed.renderer,
@@ -910,10 +908,8 @@ impl CaptureExecutor {
         }
     }
 
-    /// Every laid-out app surface of `room` as it looks now, rendered
-    /// exactly as a recording captures one: the tile alone, at `at` on the
-    /// caller's clock. A replay reads its frames through this, so captured
-    /// and replayed pixels come from one path.
+    /// Every laid-out app surface of `room` as it looks now, through
+    /// [`Self::surface_frames`] at each tile's own size.
     pub fn room_surface_frames(
         frame_builder: &mut FrameBuilder,
         room: &str,
@@ -923,34 +919,58 @@ impl CaptureExecutor {
         let surfaces = recorded_surfaces(&frame_builder.chrome().tree(), |candidate, _| {
             candidate == room
         });
-        let mut frames = Vec::with_capacity(surfaces.len());
-        for surface in surfaces {
-            let Some(rect) = frame_builder.foreign_surface_rect(surface.surface_id) else {
-                continue;
-            };
-            let mut renderer = None;
-            frames.push(
-                render_session_frame(
-                    frame_builder,
-                    &surface.target_id,
+        let placed: Vec<(u64, session_trace::Route, Rect)> = surfaces
+            .into_iter()
+            .filter_map(|surface| {
+                let rect = frame_builder.foreign_surface_rect(surface.surface_id)?;
+                Some((
+                    surface.surface_id,
+                    session_trace::Route::new(surface.app_id, surface.room, ""),
                     rect,
+                ))
+            })
+            .collect();
+        Self::surface_frames(frame_builder, &placed, at, scale)
+    }
+
+    /// Client surfaces rendered exactly as a recording captures them: the
+    /// app's pixels as its tile shows them ([`paint_tile_surface`]) at
+    /// `rect`'s logical size and `scale` device pixels per logical pixel,
+    /// straight from the committed frames. Nothing needs to be laid out or
+    /// shown, so a replay renders surfaces it never displays through the
+    /// same path the recording used, and no shell chrome or collaboration
+    /// overlay is ever part of the pixels. Each frame carries `route` and
+    /// `at`. A surface that has not committed a frame yet is an error.
+    ///
+    /// [`paint_tile_surface`]: crate::shell::foreign::paint_tile_surface
+    pub fn surface_frames(
+        frame_builder: &FrameBuilder,
+        surfaces: &[(u64, session_trace::Route, Rect)],
+        at: session_trace::Offset,
+        scale: f64,
+    ) -> Vec<Result<session_trace::frames::SurfaceFrame, String>> {
+        surfaces
+            .iter()
+            .map(|(surface_id, route, rect)| {
+                let mut renderer = None;
+                let (width, height, rgba) = render_session_frame(
+                    frame_builder.theme(),
+                    *surface_id,
+                    *rect,
                     scale,
                     &mut renderer,
+                )?;
+                session_trace::frames::SurfaceFrame::new(
+                    at,
+                    route.clone(),
+                    width,
+                    height,
+                    f64::from(width) / rect.width(),
+                    rgba,
                 )
-                .and_then(|(width, height, rgba)| {
-                    session_trace::frames::SurfaceFrame::new(
-                        at,
-                        session_trace::Route::new(surface.app_id, surface.room, ""),
-                        width,
-                        height,
-                        f64::from(width) / rect.width(),
-                        rgba,
-                    )
-                    .map_err(|error| error.to_string())
-                }),
-            );
-        }
-        frames
+                .map_err(|error| error.to_string())
+            })
+            .collect()
     }
 
     pub fn has_live_mirrors(&self) -> bool {
@@ -1589,32 +1609,30 @@ fn app_local_region_on_surface(region: Rect, app_rect: Rect) -> Option<Rect> {
     (local.area() > 0.0).then_some(local + app_rect.origin().to_vec2())
 }
 
-/// Paint one recorded app surface alone, unclipped by the output, and read
-/// it back at `scale` device pixels per logical pixel: the tile's content
-/// rectangle, without its tab decoration.
+/// Render one client surface as its tile shows it, from its committed
+/// frame, at `rect`'s size and `scale` device pixels per logical pixel.
 fn render_session_frame(
-    frame_builder: &mut FrameBuilder,
-    target_id: &str,
+    theme: &ui::Theme,
+    surface_id: u64,
     rect: Rect,
     scale: f64,
     renderer: &mut Option<OffscreenRenderer>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
-    let (scene, painted) = frame_builder.paint_capture_targets(
-        &[target_id.to_string()],
-        CaptureExtent::FullApp,
-        false,
-    );
-    if painted.is_empty() {
-        return Err("the recorded window is not painted".into());
-    }
+    let image = crate::shell::foreign::surface_image(surface_id)
+        .ok_or_else(|| "the surface has not drawn a frame yet".to_string())?;
     let (width, height, fit) = output_dimensions(rect.width() * scale, rect.height() * scale)?;
-    let mut composed = Scene::new();
-    append_clipped(
-        &mut composed,
-        &scene,
-        rect,
-        Affine::scale(scale * fit) * Affine::translate((-rect.x0, -rect.y0)),
-    );
+    let mut scene = Scene::new();
+    let local = Rect::from_origin_size(Point::ZERO, rect.size());
+    if !crate::shell::foreign::paint_tile_surface(
+        &mut scene,
+        Affine::scale(scale * fit),
+        &image,
+        local,
+        theme,
+        false,
+    ) {
+        return Err("the surface has nothing to show".into());
+    }
     let resized = renderer
         .as_ref()
         .is_none_or(|renderer| renderer.width != width || renderer.height != height);
@@ -1627,7 +1645,7 @@ fn render_session_frame(
     let renderer = renderer
         .as_mut()
         .ok_or_else(|| "recording frame renderer disappeared".to_string())?;
-    Ok((width, height, render_capture_rgba(renderer, &composed)))
+    Ok((width, height, render_capture_rgba(renderer, &scene)))
 }
 
 fn record_frame(

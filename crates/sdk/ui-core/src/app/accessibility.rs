@@ -1324,6 +1324,11 @@ impl App {
         )
         .unwrap_or_default();
         let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
+        tree.set_surface(
+            self.layout
+                .last_layout_logical
+                .map(|(width, height)| vello::kurbo::Rect::new(0.0, 0.0, width, height)),
+        );
         let delta = self
             .with_native_presentation(|root, nodes, focused, _, doc| {
                 tree.refresh_components(root, nodes, focused, &resources, &components, Some(doc))

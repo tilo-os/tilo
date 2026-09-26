@@ -452,6 +452,46 @@ mod inspected {
     }
 }
 
+/// Replaying the room as it shows now yields `Logic`, step for step.
+fn assert_replays_as_logic(
+    fb: &mut FrameBuilder,
+    trace: &session_trace::SessionTrace,
+    strip: &FrameStrip,
+) {
+    let mut replay = Showing {
+        fb,
+        room: ROOM.to_string(),
+    };
+    let report =
+        session_trace::divergence::check(trace, strip, &mut replay, &Tolerance::default()).unwrap();
+    assert_eq!(
+        report.layer,
+        tilo_reference::SessionLayer::Logic,
+        "{:?}",
+        report.steps
+    );
+    assert_eq!(report.compared, u32::try_from(strip.frames.len()).unwrap());
+}
+
+/// A replay that is the live desktop: what `room` shows now, through the
+/// same capture path a recording uses.
+struct Showing<'a> {
+    fb: &'a mut FrameBuilder,
+    room: String,
+}
+
+impl session_trace::frames::FrameProvider for Showing<'_> {
+    fn frames_at(
+        &mut self,
+        at: session_trace::Offset,
+    ) -> Result<Vec<session_trace::frames::SurfaceFrame>, session_trace::frames::FrameError> {
+        CaptureExecutor::room_surface_frames(self.fb, &self.room, at, 1.0)
+            .into_iter()
+            .map(|frame| frame.map_err(session_trace::frames::FrameError::Render))
+            .collect()
+    }
+}
+
 /// The inspected app, connected and inspectable, having committed its own
 /// drawn frame at its tile's size as `surface_id`'s buffer: the pixels the
 /// compositor records are the app's, and its Inspect bounds describe them.
@@ -569,18 +609,56 @@ fn a_personal_field_of_a_real_app_is_masked_in_every_kept_frame() {
             pixels.pixel(outside.0, outside.1),
             Some(session_trace::mask::MASK_RGBA)
         );
-        // The app describes its whole surface, so nothing is unexplained
-        // where its nodes lie.
+        // The toolkit paints every pixel of its window, so none of them is
+        // unexplained: not the field, not the window's own background.
         assert!(
-            !stored
-                .unexplained
-                .iter()
-                .any(|rect| !rect.intersect(&field).is_empty()),
-            "the field is described: {:?}",
+            stored.unexplained.is_empty(),
+            "a toolkit window is described: {:?}",
             stored.unexplained
         );
     }
+
+    // Replaying the same window, pixel for pixel, is a logic problem.
+    assert_replays_as_logic(&mut fb, &trace, &strip);
     store().forget(surface_id);
     drop(app);
     drop(broker);
+}
+
+#[test]
+fn a_surface_that_is_never_shown_is_rendered_from_its_committed_frame() {
+    // A client configured to a recorded geometry but never laid out, as a
+    // replay room's app is: no tab, no tile, only its committed frame.
+    let surface_id = 0x5EED_F4A3_0004;
+    store().forget(surface_id);
+    store().publish_rgba(surface_id, &solid(80, 60, [0x20, 0xA0, 0x40]), 80, 60);
+    let fb = FrameBuilder::new((W, H));
+    let route = session_trace::Route::new(APP, ROOM.to_string(), "");
+    let geometry = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 30.0);
+    let frames = CaptureExecutor::surface_frames(
+        &fb,
+        &[(surface_id, route.clone(), geometry)],
+        session_trace::Offset(7),
+        2.0,
+    );
+    let frame = frames.into_iter().next().unwrap().unwrap();
+    assert_eq!((frame.width, frame.height), (80, 60));
+    assert!((frame.scale - 2.0).abs() < 1e-9);
+    assert_eq!(frame.at, session_trace::Offset(7));
+    assert!(frame.same_surface(&route));
+    let centre = frame.pixel(40, 30).unwrap();
+    for (got, want) in centre.iter().zip([0x20, 0xA0, 0x40]) {
+        assert!(got.abs_diff(want) <= 4, "centre is {centre:?}");
+    }
+    let unknown = CaptureExecutor::surface_frames(
+        &fb,
+        &[(0x5EED_F4A3_0005, route, geometry)],
+        session_trace::Offset(7),
+        1.0,
+    );
+    assert!(
+        unknown[0].is_err(),
+        "a surface with no frame yet has nothing to capture"
+    );
+    store().forget(surface_id);
 }
