@@ -115,6 +115,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
+          filter: blob:none
 
       - name: Fetch comparison base
         shell: bash
@@ -693,6 +694,7 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 0
+          filter: blob:none
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
         env:
