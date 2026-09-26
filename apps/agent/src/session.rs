@@ -1367,7 +1367,7 @@ impl Session {
                     address: descriptor.address,
                 },
                 argument: tilo_actions::remote::InvokeArgument::Json(arguments.clone()),
-                context: None,
+                context: self.task_context(),
                 confirmation: match confirmation {
                     ConfirmationEvidence::None => None,
                     ConfirmationEvidence::Confirm => {
@@ -2805,7 +2805,7 @@ mod tests {
                             action,
                             argument,
                             actor,
-                            ..
+                            context,
                         } = event
                         {
                             let json = argument
@@ -2850,6 +2850,7 @@ mod tests {
                                     action,
                                     argument.as_deref(),
                                     &actor,
+                                    context.as_deref(),
                                 )
                             };
                             client

@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 use automerge::transaction::Transactable;
 use automerge::{ActorId, AutoCommit};
-use tilo_actions::door::{self, ActionAddress, DoorError};
+use tilo_actions::door::{self, ActionAddress, DoorError, InvocationProvenance};
 use tilo_actions::{ActionRegistry, LocalTransport, Resource};
 use tilo_automerge::ApplyIncoming;
 
@@ -498,7 +498,9 @@ impl Editor {
         Ok((!delta.is_empty()).then_some(delta))
     }
 
-    /// Perform the operation `address` names, attributed to the agent.
+    /// Perform the operation `address` names, attributed to the agent and
+    /// recorded within the task context set by
+    /// [`set_history_context`](Self::set_history_context).
     ///
     /// Resolved against a tree built from the document **as it stands right
     /// now**, not the survey it was chosen from: a section that has been
@@ -522,23 +524,11 @@ impl Editor {
         argument: Option<&str>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
-        let resources = self.resources(view);
-        let mut transport = LocalTransport::new();
-        self.doc.set_actor(self.actor.clone());
-        let text_before = block_texts(&self.doc);
-        door::invoke(
-            &mut self.doc,
-            &resources,
-            address,
-            argument,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
-        self.stamp_authorship(&text_before);
-        self.commit_task_context();
-        let delta = self.doc.save_incremental();
-        Ok((!delta.is_empty()).then_some(delta))
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke(
+                doc, resources, address, argument, provenance, registry, transport,
+            )
+        })
     }
 
     /// Typed counterpart to [`invoke`](Self::invoke). This is the canonical
@@ -557,23 +547,11 @@ impl Editor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
-        let resources = self.resources(view);
-        let mut transport = LocalTransport::new();
-        self.doc.set_actor(self.actor.clone());
-        let text_before = block_texts(&self.doc);
-        door::invoke_json(
-            &mut self.doc,
-            &resources,
-            address,
-            arguments,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
-        self.stamp_authorship(&text_before);
-        self.commit_task_context();
-        let delta = self.doc.save_incremental();
-        Ok((!delta.is_empty()).then_some(delta))
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke_json(
+                doc, resources, address, arguments, provenance, registry, transport,
+            )
+        })
     }
 
     /// Invoke typed arguments after the caller has verified the live
@@ -592,19 +570,35 @@ impl Editor {
         arguments: &serde_json::Map<String, serde_json::Value>,
         registry: &ActionRegistry,
     ) -> Result<Option<Vec<u8>>, DoorError> {
+        self.through_door(view, |doc, resources, provenance, transport| {
+            door::invoke_json_confirmed(
+                doc, resources, address, arguments, provenance, registry, transport,
+            )
+        })
+    }
+
+    /// Run one door call against a tree built from `view` now, as the agent
+    /// and within the current task context, then stamp authorship and return
+    /// the delta it produced.
+    fn through_door(
+        &mut self,
+        view: &View,
+        call: impl FnOnce(
+            &mut AutoCommit,
+            &[Resource],
+            InvocationProvenance<'_>,
+            &mut LocalTransport,
+        ) -> Result<tilo_actions::Dispatched, DoorError>,
+    ) -> Result<Option<Vec<u8>>, DoorError> {
         let resources = self.resources(view);
         let mut transport = LocalTransport::new();
         self.doc.set_actor(self.actor.clone());
         let text_before = block_texts(&self.doc);
-        door::invoke_json_confirmed(
-            &mut self.doc,
-            &resources,
-            address,
-            arguments,
-            self.actor.to_bytes(),
-            registry,
-            &mut transport,
-        )?;
+        let provenance = InvocationProvenance {
+            actor: self.actor.to_bytes(),
+            ambient: self.history_context.as_ref(),
+        };
+        call(&mut self.doc, &resources, provenance, &mut transport)?;
         self.stamp_authorship(&text_before);
         self.commit_task_context();
         let delta = self.doc.save_incremental();
@@ -973,5 +967,86 @@ mod tests {
         assert_eq!(snap.comments[0].replies.len(), 1);
         assert_eq!(snap.comments[0].replies[0].author, "Scribe");
         assert_eq!(snap.comments[0].replies[0].blocks[0].text, "Clarified.");
+    }
+
+    /// A destructive operation the agent performs after its policy gate
+    /// confirmed it lands in history within the run that asked for it, not
+    /// only under the resource it touched.
+    #[test]
+    fn a_confirmed_destructive_invocation_is_recorded_within_the_run() {
+        let mut document = AutoCommit::new();
+        let containers = qdoc::model::init(&mut document, &ROOT);
+        let mut ids = qdoc::model::seeded_id_gen(&document, &containers);
+        let (paragraph, image) = {
+            let mut dm = qdoc::DocMut {
+                doc: &mut document,
+                c: &containers,
+                ids: &mut ids,
+            };
+            let paragraph = dm.insert_block(None, "paragraph");
+            dm.splice_text(&paragraph, 0, 0, "Draft figure below.");
+            let image = dm.insert_block(Some(&paragraph), "image");
+            (paragraph, image)
+        };
+        document.commit();
+
+        let mut editor = Editor::from_snapshot(&document.save(), "Scribe")
+            .expect("the seeded document is a word processor document");
+        editor.set_history_context(Some(
+            tilo_actions::ActionContext::for_resource(
+                "Agent task",
+                "active document",
+                "document",
+                "active document",
+            )
+            .with_app("org.tilo.Agent", "Agent")
+            .with_purpose("Remove the draft figure")
+            .with_group("agent-run:ins-1", "Remove the draft figure", "agent-run"),
+        ));
+        let view = View {
+            focus_block: Some(paragraph),
+            ..View::default()
+        };
+        let registry = crate::surface::registry();
+        let delete = ActionAddress::new(format!("word-processor.image:{image}"), "delete");
+        let arguments = serde_json::Map::new();
+
+        assert_eq!(
+            editor
+                .invoke_json(&view, &delete, &arguments, &registry)
+                .unwrap_err(),
+            DoorError::ConfirmationRequired,
+            "deleting an image is destructive"
+        );
+        assert!(
+            editor
+                .invoke_json_confirmed(&view, &delete, &arguments, &registry)
+                .expect("the confirmed deletion runs")
+                .is_some(),
+            "the deletion changes the shared document"
+        );
+
+        let heads = editor.doc.get_heads();
+        let change = editor
+            .doc
+            .get_change_by_hash(&heads[0])
+            .expect("the deletion was committed");
+        assert_eq!(change.actor_id(), &editor.actor);
+        let context = change
+            .message()
+            .and_then(tilo_actions::ActionContext::from_change_message)
+            .expect("the deletion carries its provenance");
+        assert_eq!(context.action_label, "Delete image");
+        assert_eq!(
+            context
+                .resource
+                .as_ref()
+                .map(|resource| resource.id.clone()),
+            Some(format!("word-processor.image:{image}"))
+        );
+        let group = context.group.expect("the run's group is recorded");
+        assert_eq!(group.id, "agent-run:ins-1");
+        assert_eq!(group.kind, "agent-run");
+        assert_eq!(context.purpose.as_deref(), Some("Remove the draft figure"));
     }
 }
