@@ -9401,6 +9401,7 @@ name = "osk"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "emoji",
  "libc",
  "runtime-dylib",
  "serde",
