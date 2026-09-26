@@ -2,9 +2,10 @@ use automerge::AutoCommit;
 use portable_pty::{MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
-use ui::history_mode::{
-    HistoryPresentation, HistoryRegistration, HistorySourceRegistration, ManagedRoot,
+use ui::headless::test_support::{
+    assert_external_history_open, find_semantic, resource_snapshot, unversioned_driver,
 };
+use ui::history_mode::HistoryPresentation;
 use ui::widget::Widget;
 use vello::kurbo::Rect;
 
@@ -30,51 +31,19 @@ fn real_terminal_root_declares_truthful_external_process_output_history() {
 }
 
 fn managed_driver(widget: crate::TerminalWidget, doc: AutoCommit) -> ui::headless::Driver {
-    let definition = widget
-        .document_history_definition()
-        .expect("the real Terminal root declares framework History");
-    let scope = &definition.scopes[0];
-    let HistoryPresentation::External { reason } = scope.presentation else {
-        panic!("Terminal process output must be external");
-    };
-    let registration = HistoryRegistration::new(
-        definition,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: scope.key,
-            reason,
-        }],
-    )
-    .unwrap();
-    ui::headless::Driver::from_managed_root(
-        ui::State::from_doc(doc),
-        ManagedRoot::new(Box::new(widget), registration),
-        (800, 240),
-    )
-    .unwrap()
+    unversioned_driver(ui::State::from_doc(doc), Box::new(widget), (800, 240))
 }
 
-fn find_terminal_semantics(inspection: &str) -> Option<serde_json::Value> {
-    fn find(value: &serde_json::Value) -> Option<&serde_json::Value> {
-        if value
-            .get("semantics")
-            .and_then(|semantics| semantics.get("action_target"))
-            .and_then(serde_json::Value::as_str)
+fn find_terminal_semantics(driver: &ui::headless::Driver) -> Option<ui::AccessNode> {
+    find_semantic(driver, |node| {
+        node.action_target
+            .as_deref()
             .is_some_and(|target| target.starts_with("terminal.transcript:"))
-        {
-            return value.get("semantics");
-        }
-        value
-            .get("children")
-            .and_then(serde_json::Value::as_array)
-            .and_then(|children| children.iter().find_map(find))
-    }
-    let value: serde_json::Value = serde_json::from_str(inspection).unwrap();
-    find(&value["root"]).cloned()
+    })
 }
 
-fn terminal_semantics(inspection: &str) -> serde_json::Value {
-    find_terminal_semantics(inspection)
-        .unwrap_or_else(|| panic!("Terminal semantics must be present: {inspection}"))
+fn terminal_semantics(driver: &ui::headless::Driver) -> ui::AccessNode {
+    find_terminal_semantics(driver).expect("Terminal semantics must be present")
 }
 
 struct RecordingMaster(std::sync::mpsc::Sender<PtySize>);
@@ -144,20 +113,6 @@ fn recording_widget() -> RecordingWidget {
     (widget, writes, output, resizes)
 }
 
-fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String)> {
-    fn collect(resource: &ui::tilo_actions::Resource, out: &mut Vec<(String, String)>) {
-        out.push((resource.id.0.clone(), resource.label.clone()));
-        for child in &resource.children {
-            collect(child, out);
-        }
-    }
-    let mut out = Vec::new();
-    for resource in driver.resources() {
-        collect(&resource, &mut out);
-    }
-    out
-}
-
 #[test]
 fn history_round_trip_preserves_exact_live_view_selection_focus_title_mode_and_transport() {
     let (mut widget, writes, _output) = crate::tests::build_test_widget_io();
@@ -182,36 +137,30 @@ fn history_round_trip_preserves_exact_live_view_selection_focus_title_mode_and_t
     widget.set_focus(true);
 
     let mut driver = managed_driver(widget, doc);
-    let before = driver.inspection_json().unwrap();
-    let before_terminal = terminal_semantics(&before);
+    let before_terminal = terminal_semantics(&driver);
     let before_resources = resource_snapshot(&driver);
-    assert_eq!(before_terminal["name"], "Retained Session");
-    assert_eq!(before_terminal["text_selection"]["anchor"], 1);
-    assert_eq!(before_terminal["text_selection"]["focus"], 4);
-    assert_eq!(before_terminal["state"]["focused"], true);
+    assert_eq!(before_terminal.name.as_deref(), Some("Retained Session"));
+    let selection = before_terminal.text_selection.as_ref().unwrap();
+    assert_eq!((selection.anchor, selection.focus), (1, 4));
+    assert!(before_terminal.state.focused);
     assert!(
-        before_terminal["value"]
-            .as_str()
+        before_terminal
+            .value
+            .as_deref()
             .is_some_and(|value| value.contains("HISTORY-LINE-002"))
     );
     assert!(crate::tests::drain_writes(&writes).is_empty());
 
     driver.click_named("history-open").unwrap();
-    let history = driver.inspection_json().unwrap();
-    assert!(history.contains(EXPECTED_LIMITATION));
+    assert_external_history_open(&driver, EXPECTED_LIMITATION);
     assert!(
-        find_terminal_semantics(&history).is_none(),
+        find_terminal_semantics(&driver).is_none(),
         "an External limitation has no historical terminal canvas"
     );
-    assert!(!driver.targets().contains_key("activity_timeline"));
-    assert!(!driver.targets().contains_key("history-before"));
-    assert!(!driver.targets().contains_key("history-after"));
-    assert!(!driver.targets().contains_key("history-restore"));
     assert!(crate::tests::drain_writes(&writes).is_empty());
 
     driver.click_named("history-open").unwrap();
-    let returned = driver.inspection_json().unwrap();
-    assert_eq!(terminal_semantics(&returned), before_terminal);
+    assert_eq!(terminal_semantics(&driver), before_terminal);
     assert_eq!(resource_snapshot(&driver), before_resources);
     assert_eq!(
         std::sync::Arc::strong_count(&waker),
@@ -251,27 +200,22 @@ fn external_history_does_not_resize_or_reset_the_live_terminal_at_any_width() {
         assert!(right_edge_report.ends_with(b"R"));
         let _settled_resizes: Vec<_> = resizes.try_iter().collect();
 
-        let before = driver.inspection_json().unwrap();
-        let before_terminal = terminal_semantics(&before);
+        let before_terminal = terminal_semantics(&driver);
         let before_resources = resource_snapshot(&driver);
-        assert_eq!(before_terminal["name"], "Geometry Session");
+        assert_eq!(before_terminal.name.as_deref(), Some("Geometry Session"));
         assert_eq!(std::sync::Arc::strong_count(&waker), 2);
 
         driver.click_named("history-open").unwrap();
-        let history = driver.inspection_json().unwrap();
-        assert!(history.contains(EXPECTED_LIMITATION));
+        assert_external_history_open(&driver, EXPECTED_LIMITATION);
         assert!(
             resizes.try_recv().is_err(),
             "opening History resized the PTY at width {width}"
         );
-        assert!(find_terminal_semantics(&history).is_none());
+        assert!(find_terminal_semantics(&driver).is_none());
         assert!(crate::tests::drain_writes(&writes).is_empty());
 
         driver.click_named("history-open").unwrap();
-        assert_eq!(
-            terminal_semantics(&driver.inspection_json().unwrap()),
-            before_terminal
-        );
+        assert_eq!(terminal_semantics(&driver), before_terminal);
         assert_eq!(resource_snapshot(&driver), before_resources);
         assert!(
             resizes.try_recv().is_err(),
@@ -317,9 +261,8 @@ fn live_output_is_adopted_once_while_history_is_open_without_terminal_effects_or
     output.send(b"LIVE-DELTA-7\r\n".to_vec()).unwrap();
     output.send(b"\x1b[5n".to_vec()).unwrap();
     driver.relayout();
-    let history = driver.inspection_json().unwrap();
-    assert!(history.contains(EXPECTED_LIMITATION));
-    assert!(find_terminal_semantics(&history).is_none());
+    assert_external_history_open(&driver, EXPECTED_LIMITATION);
+    assert!(find_terminal_semantics(&driver).is_none());
     assert_eq!(
         crate::tests::drain_writes(&writes),
         b"\x1b[0n",

@@ -20,40 +20,16 @@ fn perform_named_target(
     target: &str,
     action: &ui::a11y::Action,
 ) {
-    fn visit_access(
-        node: &ui::a11y::AccessNode,
-        owner: &str,
-        name: &str,
-        target: &str,
-        found: &mut Vec<(String, Option<String>)>,
-    ) {
-        if node.name.as_deref() == Some(name) && node.action_target.as_deref() == Some(target) {
-            found.push((owner.to_owned(), node.action_target.clone()));
-        }
-        for child in &node.children {
-            visit_access(child, owner, name, target, found);
-        }
-    }
-    fn visit_inspection(
-        node: &ui::headless::InspectionNode,
-        name: &str,
-        target: &str,
-        found: &mut Vec<(String, Option<String>)>,
-    ) {
-        if let Some(access) = &node.semantics {
-            visit_access(access, &node.path, name, target, found);
-        }
-        for child in &node.children {
-            visit_inspection(child, name, target, found);
-        }
-    }
-
-    let mut routes = Vec::new();
-    visit_inspection(&driver.inspection().root, name, target, &mut routes);
+    let mut routes = ui::headless::test_support::semantic_nodes(driver)
+        .into_iter()
+        .filter(|(_, node)| {
+            node.name.as_deref() == Some(name) && node.action_target.as_deref() == Some(target)
+        })
+        .collect::<Vec<_>>();
     assert_eq!(routes.len(), 1, "expected one {name:?}/{target:?} route");
-    let (owner, action_target) = routes.pop().unwrap();
+    let (owner, _) = routes.pop().unwrap();
     driver
-        .perform_semantic_named(&owner, action_target.as_deref(), action)
+        .perform_semantic_named(&owner, Some(target), action)
         .unwrap();
 }
 

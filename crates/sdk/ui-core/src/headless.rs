@@ -480,6 +480,7 @@ pub struct FrameOutput<'a> {
 
 mod caller_palette;
 pub mod system_search;
+pub mod test_support;
 
 pub struct FrameHarness {
     control_domain: crate::ControlDomain,

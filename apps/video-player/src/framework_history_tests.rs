@@ -1,6 +1,7 @@
-use ui::history_mode::{
-    HistoryPresentation, HistoryRegistration, HistorySourceRegistration, ManagedRoot,
+use ui::headless::test_support::{
+    assert_external_history_open, find_semantic, resource_snapshot, unversioned_driver,
 };
+use ui::history_mode::HistoryPresentation;
 use ui::widget::Widget;
 
 const EXPECTED_LIMITATION: &str = "Video Player does not retain versions of media or an edit journal; recent media is device-local viewing history. Restore is unavailable.";
@@ -10,80 +11,16 @@ fn controlled_root() -> Box<dyn Widget> {
 }
 
 fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
-    let definition = root
-        .document_history_definition()
-        .expect("Video Player root must declare framework History");
-    let scope = &definition.scopes[0];
-    let HistoryPresentation::External { reason } = scope.presentation else {
-        panic!("media versions must be explicitly unversioned");
-    };
-    let registration = HistoryRegistration::new(
-        definition,
-        vec![HistorySourceRegistration::Unversioned {
-            scope: scope.key,
-            reason,
-        }],
-    )
-    .unwrap();
-    ui::headless::Driver::from_managed_root(
-        ui::State::new(),
-        ManagedRoot::new(root, registration),
-        (390, 750),
-    )
-    .unwrap()
+    unversioned_driver(ui::State::new(), root, (390, 750))
 }
 
-fn resource_snapshot(driver: &ui::headless::Driver) -> Vec<(String, String, Vec<String>)> {
-    fn collect(
-        resource: &ui::tilo_actions::Resource,
-        out: &mut Vec<(String, String, Vec<String>)>,
-    ) {
-        out.push((
-            resource.id.0.clone(),
-            resource.label.clone(),
-            resource
-                .actions
-                .iter()
-                .map(|action| action.id.clone())
-                .collect(),
-        ));
-        for child in &resource.children {
-            collect(child, out);
-        }
-    }
-
-    let mut snapshot = Vec::new();
-    for resource in driver.resources() {
-        collect(&resource, &mut snapshot);
-    }
-    snapshot
-}
-
-fn semantic_action_is_focused(inspection: &str, action_target: &str) -> bool {
-    fn find(value: &serde_json::Value, action_target: &str) -> Option<bool> {
-        if value
-            .get("action_target")
-            .and_then(serde_json::Value::as_str)
-            == Some(action_target)
-        {
-            return value
-                .get("state")
-                .and_then(|state| state.get("focused"))
-                .and_then(serde_json::Value::as_bool);
-        }
-        match value {
-            serde_json::Value::Array(values) => {
-                values.iter().find_map(|value| find(value, action_target))
-            }
-            serde_json::Value::Object(values) => {
-                values.values().find_map(|value| find(value, action_target))
-            }
-            _ => None,
-        }
-    }
-
-    find(&serde_json::from_str(inspection).unwrap(), action_target)
-        .expect("action target must be present in the accessibility tree")
+fn semantic_action_is_focused(driver: &ui::headless::Driver, action_target: &str) -> bool {
+    find_semantic(driver, |node| {
+        node.action_target.as_deref() == Some(action_target)
+    })
+    .expect("action target must be present in the accessibility tree")
+    .state
+    .focused
 }
 
 #[test]
@@ -115,7 +52,7 @@ fn managed_history_is_truthful_and_returns_to_exact_local_media_state() {
     assert!(live.contains("Play Autumn reel"));
     assert!(live.contains("Play City study"));
     assert!(semantic_action_is_focused(
-        &live,
+        &driver,
         "video-player.library.play.controlled-recent-city"
     ));
     assert!(resources.iter().any(|(id, label, _)| {
@@ -131,13 +68,9 @@ fn managed_history_is_truthful_and_returns_to_exact_local_media_state() {
     }));
 
     driver.click_named("history-open").unwrap();
-    let history = driver.inspection_json().unwrap();
-    assert!(history.contains(EXPECTED_LIMITATION));
+    assert_external_history_open(&driver, EXPECTED_LIMITATION);
     assert!(driver.targets().contains_key("history-open"));
-    assert!(!driver.targets().contains_key("activity_timeline"));
-    assert!(!driver.targets().contains_key("history-restore"));
-    assert!(!driver.targets().contains_key("history-before"));
-    assert!(!driver.targets().contains_key("history-after"));
+    let history = driver.inspection_json().unwrap();
     assert!(!history.contains("Controlled history clip"));
     assert!(!history.contains("Autumn reel"));
     assert!(!history.contains("City study"));
@@ -150,7 +83,7 @@ fn managed_history_is_truthful_and_returns_to_exact_local_media_state() {
     assert!(returned.contains("Play Autumn reel"));
     assert!(returned.contains("Play City study"));
     assert!(semantic_action_is_focused(
-        &returned,
+        &driver,
         "video-player.library.play.controlled-recent-city"
     ));
     assert_eq!(resource_snapshot(&driver), resources);
