@@ -120,8 +120,8 @@ pub const DEFAULT_HOMEPAGE: &str = "https://duckduckgo.com";
 /// chrome persists — the [`SettingsPane`] only edits the live CRDT
 /// mirror of these fields.
 ///
-/// Persistence goes through `serde_json::Value` (see [`Settings::to_json`]
-/// / [`Settings::from_json`]) rather than a `#[derive(Serialize)]`: the
+/// Persistence goes through `serde_json::Value` (see `Settings::to_json`
+/// / `Settings::from_json`) rather than a `#[derive(Serialize)]`: the
 /// browser crate depends on `serde_json` but not on `serde` with its
 /// derive feature, so the JSON shape is built explicitly here. The
 /// on-disk format is a flat object with the four field names as keys,

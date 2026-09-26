@@ -54,6 +54,7 @@ tempfile.workspace = true
 # keymaps and symbol resolution.
 xkbcommon = "0.8"
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [[test]]
 name = "it"

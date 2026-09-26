@@ -257,6 +257,17 @@ struct CacheFingerprint {
     focused: bool,
     focused_control: Option<String>,
     clock_activity: Option<(String, u64, bool, bool)>,
+    app_tray_revision: u64,
+}
+
+/// One application tray icon as last painted: where, and what a click on
+/// it addresses.
+#[derive(Clone, Debug)]
+struct AppTraySlot {
+    key: String,
+    id: String,
+    item_is_menu: bool,
+    rect: Rect,
 }
 
 /// One dot in the centre band's carousel indicator. Paint and hit testing
@@ -403,6 +414,17 @@ fn small_count_to_f64(n: usize) -> f64 {
 /// below. Vello's `Affine::mul` is plain matrix composition with no
 /// side effects, but it is a custom `Mul` impl rather than primitive
 /// integer arithmetic, which is what trips the lint at each call site.
+/// A logical pointer position as the whole-pixel coordinates a tray item's
+/// `Activate`/`ContextMenu` call carries.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounded and clamped into i32's range before the cast"
+)]
+fn pointer_coordinates(point: Point) -> (i32, i32) {
+    let whole = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    (whole(point.x), whole(point.y))
+}
+
 fn at(transform: Affine, xy: (f64, f64)) -> Affine {
     #[allow(
         clippy::arithmetic_side_effects,
@@ -496,6 +518,11 @@ pub struct TopBarChrome {
     /// prove the pill's trailing padding equals its leading padding.
     ws_gear_rect: Rect,
     tray_pill_rect: Rect,
+    /// Application tray icons, right to left, as last painted.
+    app_tray: Vec<AppTraySlot>,
+    /// Uploaded icon images by item key, reused while the item's pixels
+    /// are the same allocation.
+    app_tray_images: HashMap<String, (usize, vello::peniko::ImageData)>,
     /// Interaction geometry is deliberately larger than the painted pill:
     /// the screen's top-right edge must remain an easy Quick Settings target.
     tray_hit_rect: Rect,
@@ -799,6 +826,8 @@ impl TopBarChrome {
             ws_pill_rect: Rect::ZERO,
             ws_gear_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            app_tray: Vec::new(),
+            app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
@@ -896,6 +925,7 @@ impl TopBarChrome {
                     .as_ref()
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
+            app_tray_revision: crate::tray::Tray::global().revision(),
         }
     }
 
@@ -3023,6 +3053,181 @@ impl TopBarChrome {
         );
     }
 
+    /// Running applications' status-notifier icons (`crate::tray`), drawn
+    /// leftward from `rx` beside the system tray pill. `Passive` items stay
+    /// hidden, as the protocol asks; one that needs attention carries a
+    /// warning dot. Returns where the next cluster may end.
+    fn draw_app_tray(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        rx: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let items: Vec<crate::tray::TrayItem> = crate::tray::Tray::global()
+            .snapshot()
+            .into_iter()
+            .filter(|item| item.status != crate::tray::ItemStatus::Passive)
+            .collect();
+        self.app_tray.clear();
+        self.app_tray_images
+            .retain(|key, _| items.iter().any(|item| &item.key == key));
+        if items.is_empty() {
+            return rx;
+        }
+        let slot = f64::from(tokens.spacing.s6);
+        let gap = f64::from(tokens.spacing.s1);
+        let icon_px = 18.0_f64;
+        let mut right = rx;
+        for item in items.iter().rev() {
+            let hit = Rect::new(
+                right - slot,
+                center_y - BAR_CONTROL_PX / 2.0,
+                right,
+                center_y + BAR_CONTROL_PX / 2.0,
+            );
+            let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
+            self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
+            if item.status == crate::tray::ItemStatus::NeedsAttention {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.semantic.warning,
+                    None,
+                    &vello::kurbo::Circle::new((icon_rect.x1, icon_rect.y0 + 2.0), 3.0),
+                );
+            }
+            self.app_tray.push(AppTraySlot {
+                key: item.key.clone(),
+                id: item.id.clone(),
+                item_is_menu: item.item_is_menu,
+                rect: hit,
+            });
+            right = hit.x0 - gap;
+        }
+        right - f64::from(tokens.spacing.s3) + gap
+    }
+
+    /// One tray item's image, or its letter badge, in `icon_rect`.
+    fn draw_app_tray_icon(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        item: &crate::tray::TrayItem,
+        icon_rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let icon_px = icon_rect.width();
+        match &item.icon {
+            crate::tray::TrayIcon::Pixels {
+                width,
+                height,
+                rgba,
+            } => {
+                let identity = std::sync::Arc::as_ptr(rgba) as usize;
+                let image = match self.app_tray_images.get(&item.key) {
+                    Some((cached, image)) if *cached == identity => image.clone(),
+                    _ => {
+                        let image = vello::peniko::ImageData {
+                            data: vello::peniko::Blob::new(rgba.clone()),
+                            format: vello::peniko::ImageFormat::Rgba8,
+                            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                            width: *width,
+                            height: *height,
+                        };
+                        self.app_tray_images
+                            .insert(item.key.clone(), (identity, image.clone()));
+                        image
+                    }
+                };
+                let sx = icon_px / f64::from((*width).max(1));
+                let sy = icon_px / f64::from((*height).max(1));
+                scene.fill(
+                    Fill::NonZero,
+                    transform
+                        .pre_translate((icon_rect.x0, icon_rect.y0).into())
+                        .pre_scale_non_uniform(sx, sy),
+                    &vello::peniko::ImageBrush::new(image),
+                    None,
+                    &Rect::new(0.0, 0.0, f64::from(*width), f64::from(*height)),
+                );
+            }
+            crate::tray::TrayIcon::Letter(letter) => {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.raised,
+                    None,
+                    &vello::kurbo::Circle::new(icon_rect.center(), icon_px / 2.0),
+                );
+                let label = letter.to_string();
+                let size = tokens.typography.scale.xs;
+                let (w, h) =
+                    text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &label,
+                    size,
+                    colors.text_primary,
+                    at(
+                        transform,
+                        (
+                            icon_rect.center().x - f64::from(w) / 2.0,
+                            icon_rect.center().y - f64::from(h) / 2.0,
+                        ),
+                    ),
+                    None,
+                    TextWeight::Semibold,
+                );
+            }
+        }
+    }
+
+    /// A press on an application tray icon: the primary button activates
+    /// the item (or asks for its menu when it has no primary action), the
+    /// secondary button asks for its menu, the middle one runs its
+    /// secondary action.
+    fn handle_app_tray_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(point) = self.last_cursor else {
+            return false;
+        };
+        let Some(slot) = self.app_tray.iter().find(|slot| slot.rect.contains(point)) else {
+            return false;
+        };
+        let (x, y) = pointer_coordinates(point);
+        let request = match button {
+            winit::event::MouseButton::Left if slot.item_is_menu => {
+                crate::tray::TrayRequest::ContextMenu { x, y }
+            }
+            winit::event::MouseButton::Left => crate::tray::TrayRequest::Activate { x, y },
+            winit::event::MouseButton::Right => crate::tray::TrayRequest::ContextMenu { x, y },
+            winit::event::MouseButton::Middle => {
+                crate::tray::TrayRequest::SecondaryActivate { x, y }
+            }
+            _ => return false,
+        };
+        if let Err(error) = crate::tray::Tray::global().request(&slot.key, request) {
+            tracing::debug!(target: "shell::tray", key = %slot.key, %error, "tray click not delivered");
+        }
+        *handled = true;
+        true
+    }
+
     /// Active microphone/camera use, drawn leftward from `rx`. New use is
     /// announced as a named pill for four seconds, then settles into a
     /// quiet dot; hovering that exact dot expands the same verified app
@@ -4543,6 +4748,14 @@ impl Widget for TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - layout.tray_w
             - f64::from(theme.tokens.spacing.s4);
+        let stack_right_x = self.draw_app_tray(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         // Snapshotted before drawing, so `avatar_stack_rect` can be
         // populated once the drawn circle count (incl. overflow) is known.
         let stack_right_x = self.draw_media_indicator(
@@ -4613,7 +4826,7 @@ impl Widget for TopBarChrome {
             return;
         }
         self.handle_keyboard(event, handled);
-        if *handled {
+        if *handled || self.handle_app_tray_press(event, handled) {
             return;
         }
         if let WindowEvent::MouseInput {
@@ -4655,7 +4868,11 @@ impl Widget for TopBarChrome {
     /// So a harness clicks the pill the renderer painted instead of a
     /// guessed coordinate.
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        vec![
+        let app_tray = self
+            .app_tray
+            .iter()
+            .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
+        let mut rects = vec![
             ("topbar_overview_button".to_string(), self.overview_btn_rect),
             ("topbar_workspace_up".to_string(), self.up_btn_rect),
             ("topbar_workspace_down".to_string(), self.down_btn_rect),
@@ -4728,7 +4945,9 @@ impl Widget for TopBarChrome {
                 "topbar_editor_add_calendar".to_string(),
                 self.control_rect(Self::CONTROL_ADD_CALENDAR),
             ),
-        ]
+        ];
+        rects.extend(app_tray);
+        rects
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -4889,6 +5108,9 @@ impl Widget for TopBarChrome {
     fn needs_redraw(&self) -> bool {
         // `Default` for CacheFingerprint has rect_px = (0,0,0,0) → w=0.
         if self.cache_fp.rect_px.2 == 0 {
+            return true;
+        }
+        if crate::tray::Tray::global().revision() != self.cache_fp.app_tray_revision {
             return true;
         }
         // A status change must reach the screen without waiting for an

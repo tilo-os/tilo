@@ -116,6 +116,7 @@ mod tests {
             scale,
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
+            refresh_mhz: None,
         }
     }
 

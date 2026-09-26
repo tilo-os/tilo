@@ -52,7 +52,9 @@ class CheckAggregateTests(unittest.TestCase):
                   event="pull_request",
                   suites_required="false", suites="skipped",
                   pins_required="false", pins="skipped",
-                  test=None, check=None, clippy=None):
+                  test=None, check=None, clippy=None, check_required=None):
+        if check_required is None:
+            check_required = "true" if required == "true" else "false"
         with tempfile.TemporaryDirectory() as directory:
             summary = Path(directory) / "summary"
             result = subprocess.run(
@@ -62,6 +64,7 @@ class CheckAggregateTests(unittest.TestCase):
                      "TEST_RESULT": affected if test is None else test,
                      "CHECK_RESULT": affected if check is None else check,
                      "CLIPPY_RESULT": affected if clippy is None else clippy,
+                     "CHECK_REQUIRED": check_required,
                      "RUST_REQUIRED": required,
                      "SECURITY_REQUIRED": security_required, "EVENT_NAME": event,
                      "SUITES_REQUIRED": suites_required, "SUITES_RESULT": suites,
@@ -144,6 +147,29 @@ class CheckAggregateTests(unittest.TestCase):
                 self.assertNotEqual(self.aggregate(test=test, check=check, clippy=clippy,
                                                    required="false", count="0")[0], 0)
 
+    def test_clippy_stands_in_for_the_check_only_where_the_selector_says_so(self):
+        # x86_64-only selections: Clippy is the all-target check.
+        code, summary = self.aggregate(check="skipped", check_required="false")
+        self.assertEqual(code, 0)
+        self.assertIn("4 selected packages", summary)
+        for overrides in (
+            # A required standalone check must run and pass.
+            {"check": "skipped", "check_required": "true"},
+            {"check": "failure", "check_required": "true"},
+            {"check": "cancelled", "check_required": "true"},
+            # A check that ran although none was selected is invalid.
+            {"check": "success", "check_required": "false"},
+            {"check": "failure", "check_required": "false"},
+            # Missing selector output never passes.
+            {"check": "skipped", "check_required": ""},
+            {"check": "success", "check_required": ""},
+            # Clippy and tests remain mandatory either way.
+            {"check": "skipped", "check_required": "false", "clippy": "skipped"},
+            {"check": "skipped", "check_required": "false", "test": "failure"},
+        ):
+            with self.subTest(overrides=overrides):
+                self.assertNotEqual(self.aggregate(**overrides)[0], 0)
+
     def test_design_skip_does_not_mask_security_or_selector_failure(self):
         for job, results in (
             ("select", ("failure", "cancelled", "skipped", "")),
@@ -197,20 +223,35 @@ class CheckAggregateTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_wiring_and_failed_selector_pipeline(self):
-        for name, matrix in (("test", "matrix"), ("check", "matrix"), ("clippy", "clippy_matrix")):
+        for name, matrix in (("test", "matrix"), ("clippy", "clippy_matrix")):
             with self.subTest(job=name):
                 job = section(self.workflow, name, 2)
-                self.assertIn("if: needs.select.outputs.rust_required == 'true'", job)
+                self.assertIn("if: needs.select.outputs.rust_required == 'true'\n", job)
                 self.assertIn("needs: [builder, select]", job)
                 self.assertIn(
                     f"fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.{matrix} ||", job)
                 self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', job)
+        check = section(self.workflow, "check", 2)
+        condition = ("needs.select.outputs.rust_required == 'true' && "
+                     "needs.select.outputs.check_required == 'true'")
+        self.assertIn(f"if: {condition}\n", check)
+        self.assertIn("needs: [builder, select]", check)
+        self.assertIn(f"fromJSON({condition} && needs.select.outputs.check_matrix ||", check)
+        self.assertIn('{"include":[{"runner":"runner","check_runner":"runner"}]}', check)
+        clippy = section(self.workflow, "clippy", 2)
+        self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", clippy)
+        self.assertIn("cargo check --locked -p tilo-ui --no-default-features --lib", check)
+        self.assertIn("key: cargo-deps-", clippy)
         checks = section(self.workflow, "checks", 2)
         self.assertIn("if: always()", checks)
         self.assertIn(
             "needs: [builder, select, security, test, check, clippy, suites, pins]", checks)
         for name in ("test", "check", "clippy"):
             self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
+        self.assertIn("CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}", checks)
+        select_job = section(self.workflow, "select", 2)
+        self.assertIn("check_matrix: ${{ steps.plan.outputs.check_matrix }}", select_job)
+        self.assertIn("check_required: ${{ steps.plan.outputs.check_required }}", select_job)
         self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
         self.assertIn('test "$BUILDER_RESULT" = success', checks)
         security = section(self.workflow, "security", 2)

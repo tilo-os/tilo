@@ -4,7 +4,7 @@
 //! Every document-mutating operation the API tester performs on its shared
 //! workspace is an [`ApiTesterAction`]: a small serializable value that
 //! deterministically mutates the CRDT. The workspace is persisted as keyed
-//! records (see [`crate::doc`]), so an action reads the current projection,
+//! records (see `crate::doc`), so an action reads the current projection,
 //! mutates exactly the record(s) it owns, and writes the result back: a change
 //! that replicates and replays for free. The exact same [`EncodedAction`] is
 //! what the visible builder/rail affordances and the Ctrl+K palette dispatch —
@@ -227,7 +227,7 @@ pub enum ApiTesterAction {
     /// Insert or replace a saved request in a collection. Keyed by the request's
     /// own id: an id already in the collection is replaced *in place* (edit), a
     /// new id is appended (create / "save the current request here"). The whole
-    /// [`Request`] — method, url, params, headers, auth, body — is carried, so
+    /// `Request` — method, url, params, headers, auth, body — is carried, so
     /// this one action covers "save a request" and "set method/url/headers/body/
     /// params" as a single deterministic write.
     SaveRequest {

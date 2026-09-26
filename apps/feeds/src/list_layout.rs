@@ -8,15 +8,15 @@
 //! groups. This module holds that rule as a pure function of measured text
 //! heights so `draw_list`, the star hit rect and the tests share one answer.
 //!
-//! Row height follows the same measured lines ([`row_height`]): the row is
+//! Row height follows the same measured lines (`row_height`): the row is
 //! tall enough for a two-line title, its meta line and the padding around
 //! them, never shorter than the authored 1× row, so a larger text scale grows
-//! the list instead of stacking rows over each other. [`article_row_layout`]
+//! the list instead of stacking rows over each other. `article_row_layout`
 //! then decides where the text block, the unread marker, the time and the
 //! star land inside that row.
 //!
 //! The row's trailing column — the relative-time label over the star — is one
-//! block too ([`trailing_column`]): the time used to sit on the title's first
+//! block too (`trailing_column`): the time used to sit on the title's first
 //! line and the star on the row's centre, which for a one-line title put the
 //! label's descenders over the star's top (HIG §7: nothing touches). Now the
 //! two stack with an `s1` gap and the pair is centred on the row, and the

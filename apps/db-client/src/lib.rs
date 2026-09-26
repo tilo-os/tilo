@@ -19,9 +19,9 @@
 //! - [`sample`]    — the bundled offline sample database.
 //! - [`session`]   — runtime view state (connections, schema, results).
 //! - [`doc`]       — the CRDT-backed SQL buffer + saved-connection list.
-//! - [`ui::CodeEditor`] — the shared CRDT-backed SQL editing surface.
+//! - `ui::CodeEditor` — the shared CRDT-backed SQL editing surface.
 //! - [`grid`]      — the sortable, paginated, horizontally-scrollable results grid.
-//! - [`schema_tree`] — the database → schema → table → column browser.
+//! - `schema_tree` — the database → schema → table → column browser.
 //! - [`structure`] — the columns/keys/indexes inspector.
 //! - [`connect_modal`] — the new-connection form.
 //! - [`app`]       — the root widget that composes them all.

@@ -1219,6 +1219,60 @@ fn third_direct_touch_contact_cancels_the_real_wayland_touch_client_without_leak
     );
 }
 
+/// A one-finger tap on a client tile is a `wl_touch` down/up pair for that
+/// client and nothing else. The compositor's pointer emulation exists for
+/// shell chrome; a client that already received the touch sequence must not
+/// also see a `wl_pointer` click, or every tap would activate it twice.
+#[test]
+fn a_touch_tap_on_a_client_activates_it_once() {
+    let compositor = Compositor::start();
+    let mut client = TestClient::new(compositor.connect(), "org.tilo.test.touch-tap");
+    client.assert_is_tilo_compositor();
+    client.map_window(&compositor);
+    client.wait_until(
+        |state| state.touch_bound,
+        "the client did not finish binding wl_touch before injection",
+    );
+    client.roundtrip();
+    let (x, y) = client.pointer_target(&compositor);
+    client.clear_touch_and_pointer_trace();
+
+    compositor.touch("e2e-panel", 0, "down", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    compositor.touch("e2e-panel", 0, "up", x, y);
+    compositor.touch("e2e-panel", 0, "frame", x, y);
+    client.wait_until(
+        |state| state.touch_events.contains(&TouchTrace::Up(0)),
+        "the tapped client never received its wl_touch up",
+    );
+    for _ in 0..4 {
+        client.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    assert_eq!(
+        client.state.touch_events,
+        vec![
+            TouchTrace::Down(0),
+            TouchTrace::Frame,
+            TouchTrace::Up(0),
+            TouchTrace::Frame,
+        ],
+        "the tapped client receives exactly one touch sequence"
+    );
+    let buttons = client
+        .state
+        .pointer_events
+        .iter()
+        .filter(|event| **event == "button")
+        .count();
+    assert_eq!(
+        buttons, 0,
+        "a tap already delivered as wl_touch must not also click the client: {:?}",
+        client.state.pointer_events
+    );
+}
+
 #[test]
 fn app_wayland_clipboard_publishes_png_and_text_to_another_client() {
     let compositor = Compositor::start();

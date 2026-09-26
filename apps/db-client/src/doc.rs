@@ -108,7 +108,7 @@ impl EditorDoc {
 ///
 /// Reads are shared by [`crate::app`]'s `sync` (which reconciles the live
 /// session from the document each frame) and the honesty tests. Writes happen
-/// only through [`crate::actions::DbAction::apply`] so every mutation is an
+/// only through `crate::actions::DbAction::apply` so every mutation is an
 /// undoable, replayable action.
 pub struct ConnectionsDoc;
 

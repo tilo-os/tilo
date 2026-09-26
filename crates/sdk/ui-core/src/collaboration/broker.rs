@@ -4693,6 +4693,17 @@ mod tests {
         certificate: Option<Vec<u8>>,
         replies: Vec<runtime_identity::wire::Response>,
     ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
+        host_identity_fixture_with_keys(certificate, replies, None)
+    }
+
+    /// A scripted identity service. `ChannelKeys` requests arrive on the
+    /// endpoint's own refresh cadence, so they are answered from `keys`
+    /// (or as unavailable) without consuming the scripted `replies`.
+    fn host_identity_fixture_with_keys(
+        certificate: Option<Vec<u8>>,
+        replies: Vec<runtime_identity::wire::Response>,
+        keys: Option<(u64, Vec<u8>)>,
+    ) -> (tokio::io::DuplexStream, Arc<std::sync::Mutex<Vec<u8>>>) {
         use runtime_identity::wire::Response;
         let mut responses = vec![Response::Metadata {
             display_name: "Host fixture".into(),
@@ -4710,7 +4721,8 @@ mod tests {
         let (client, mut server) = tokio::io::duplex(64 * 1024);
         tokio::task::spawn_local(async move {
             let framing = runtime_identity::wire::FRAMING;
-            for response in responses {
+            let mut responses = responses.into_iter();
+            loop {
                 let Ok(Some(body)) = framing.read_async(&mut server).await else {
                     return;
                 };
@@ -4718,6 +4730,29 @@ mod tests {
                     .lock()
                     .unwrap()
                     .extend_from_slice(&framing.encode(&body).unwrap());
+                let asks_keys = matches!(
+                    postcard::from_bytes::<runtime_identity::wire::Request>(&body),
+                    Ok(runtime_identity::wire::Request::ChannelKeys { .. })
+                );
+                let response = if asks_keys {
+                    match &keys {
+                        Some((generation, keys)) => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Ready,
+                            generation: *generation,
+                            keys: keys.clone(),
+                        },
+                        None => Response::ChannelKeys {
+                            access: runtime_identity::wire::ChannelAccess::Unavailable,
+                            generation: 0,
+                            keys: Vec::new(),
+                        },
+                    }
+                } else {
+                    let Some(response) = responses.next() else {
+                        return;
+                    };
+                    response
+                };
                 if framing
                     .write_value_async(&mut server, &response)
                     .await
@@ -4912,17 +4947,13 @@ mod tests {
         .unwrap()
         .to_vec();
         let connector = HostSessionConnector::new(move |_| async move {
-            let (identity, requests) = host_identity_fixture(
+            let (identity, requests) = host_identity_fixture_with_keys(
                 Some(b"fixture certificate".to_vec()),
                 vec![
                     runtime_identity::wire::Response::Signature(vec![7; 64]),
-                    runtime_identity::wire::Response::ChannelKeys {
-                        access: runtime_identity::wire::ChannelAccess::Ready,
-                        generation: 1,
-                        keys,
-                    },
                     runtime_identity::wire::Response::Denied("fixture role revoked".into()),
                 ],
+                Some((1, keys)),
             );
             requests_tx.send(requests).unwrap();
             let broker = FakeBroker {
@@ -4974,8 +5005,16 @@ mod tests {
         manager.send(CollabRequest::document_incremental(
             b"fixture document change".to_vec(),
         ));
+        let is_op = |request: &runtime_identity::wire::Request| {
+            matches!(
+                request,
+                runtime_identity::wire::Request::CollaborationOp { .. }
+            )
+        };
         assert!(wait_until(
-            || host_identity_requests(&requests.lock().unwrap()).len() >= 4,
+            || host_identity_requests(&requests.lock().unwrap())
+                .iter()
+                .any(is_op),
             HANG_GUARD
         ));
         let requests = host_identity_requests(&requests.lock().unwrap());
@@ -4986,7 +5025,8 @@ mod tests {
             matches!(&requests[2], runtime_identity::wire::Request::ChannelKeys { app_id, record_id, .. } if app_id == "so.tilo.notes" && record_id == "note"),
             "a joined route asks for its channel keys before its first edit"
         );
-        match &requests[3] {
+        let op = requests.iter().find(|request| is_op(request)).unwrap();
+        match op {
             runtime_identity::wire::Request::CollaborationOp {
                 workspace_id,
                 app_id,

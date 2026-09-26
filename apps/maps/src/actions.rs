@@ -2,7 +2,7 @@
 //!
 //! Every document-mutating operation Maps performs on its shared map state is a
 //! [`MapsAction`]: a small serializable value that deterministically mutates the
-//! CRDT. [`MapModel`](crate::model::MapModel) is projected into native keyed,
+//! CRDT. [`MapModel`] is projected into native keyed,
 //! scalar, and text structures (see [`crate::doc::MapsDoc`]), so an action's
 //! [`apply`](Action::apply) writes exactly the addressed shared field. The exact same
 //! [`EncodedAction`] is what the on-screen affordances (the save/star button, the

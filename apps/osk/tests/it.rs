@@ -10,6 +10,8 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+#[path = "preferences.rs"]
+mod preferences;
 #[path = "render_smoke.rs"]
 mod render_smoke;
 #[path = "shots_smoke.rs"]

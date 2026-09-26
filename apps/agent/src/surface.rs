@@ -1028,7 +1028,7 @@ pub enum NoMatch {
 /// words the apps put on their operations, and insists on a clear winner:
 /// an instruction that fits two operations equally is [`NoMatch::Ambiguous`],
 /// not whichever came first — unless what the instruction *supplied* breaks
-/// the tie itself (see [`collects_a_value_said`]). A run with no model
+/// the tie itself (see `collects_a_value_said`). A run with no model
 /// reachable either does the one thing plainly named, or says which of
 /// these three it ran into — it never reports success for something it did
 /// not do, and never substitutes the nearest available operation for the

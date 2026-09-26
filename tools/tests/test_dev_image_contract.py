@@ -130,6 +130,21 @@ class DevImageContractTests(unittest.TestCase):
                   "ARG RPMS_REF=code.sandbox.example/qos/rpms@sha256:0\n")
         self.assertIn("RPMS_REF has a default", "\n".join(self.findings(root)))
 
+    def test_rust_toolchain_is_digest_pinned(self):
+        root = self.fixture()
+        dev = root / "os/Containerfile.dev"
+        text = dev.read_text(encoding="utf-8")
+        pinned = next(line for line in text.splitlines() if line.startswith("ARG RUST_TOOLCHAIN_IMAGE="))
+        self.edit(dev, pinned, "ARG RUST_TOOLCHAIN_IMAGE=code.sandbox.example/qos/tilo-builder:latest")
+        self.assertIn("RUST_TOOLCHAIN_IMAGE is not a digest-pinned tilo-builder image",
+                      "\n".join(self.findings(root)))
+
+    def test_builder_packages_leave_out_fedora_rust(self):
+        listed = (REPO / "os/scripts/builder-packages.txt").read_text(encoding="utf-8").split()
+        self.assertNotIn("rust", listed)
+        self.assertNotIn("cargo", listed)
+        self.assertIn("sccache", listed)
+
     def test_builder_package_drift_fails(self):
         root = self.fixture()
         self.edit(root / "os/Containerfile", "        nasm \\\n", "        nasm mold \\\n")
