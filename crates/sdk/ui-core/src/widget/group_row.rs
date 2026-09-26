@@ -5369,7 +5369,7 @@ mod tests {
                 "the strip rests cut on both edges after the widening — groups \
              {:?} at scroll_x {:.0}, which shows half of one window on the \
              left and half of another on the right",
-                row.laid_spans,
+                row.pan.laid_spans,
                 row.scroll_x(),
             );
             let whole = whole_groups(&row);
@@ -5377,7 +5377,7 @@ mod tests {
                 !whole.is_empty(),
                 "if the two groups cannot both fit, one of them must still be \
              framed whole — spans {:?} at scroll_x {:.0}",
-                row.laid_spans,
+                row.pan.laid_spans,
                 row.scroll_x(),
             );
             assert_eq!(
@@ -5385,7 +5385,7 @@ mod tests {
                 1,
                 "exactly one window runs off an end when two of them overflow \
              the output; spans {:?} at scroll_x {:.0}",
-                row.laid_spans,
+                row.pan.laid_spans,
                 row.scroll_x(),
             );
         }
@@ -5400,9 +5400,10 @@ mod tests {
             relayout_strip(&mut row, 1920.0);
 
             let span = row
+                .pan
                 .laid_spans
                 .last()
-                .zip(row.laid_spans.first())
+                .zip(row.pan.laid_spans.first())
                 .map(|((_, _, r), (_, l, _))| r - l)
                 .unwrap_or_default();
             assert!(
@@ -5414,14 +5415,14 @@ mod tests {
                 Vec::<u64>::new(),
                 "nothing may be cut when the whole strip fits on screen — spans \
              {:?} at scroll_x {:.0}",
-                row.laid_spans,
+                row.pan.laid_spans,
                 row.scroll_x(),
             );
             assert_eq!(
                 whole_groups(&row).len(),
                 2,
                 "both windows are on screen and whole — spans {:?} at scroll_x {:.0}",
-                row.laid_spans,
+                row.pan.laid_spans,
                 row.scroll_x(),
             );
         }
@@ -5438,12 +5439,12 @@ mod tests {
             let oversized = [(100u64, 0.0, 1400.0)];
             row.set_scroll_x_for_test(250.0);
             assert!(
-                !row.cut_on_both_edges_at(&oversized, row.scroll_x()),
+                !row.pan.cut_on_both_edges_at(&oversized, row.scroll_x()),
                 "a single oversized window is not a two-sided cut: there is no \
              offset that frames it, so there is nothing to repair",
             );
             assert_eq!(
-                row.strip_frame_target(&oversized),
+                row.pan.strip_frame_target(&oversized),
                 None,
                 "the framing rule leaves an unframeable window where it is",
             );
@@ -5451,7 +5452,7 @@ mod tests {
             let both = [(100u64, 0.0, 1400.0), (200u64, 1408.0, 2808.0)];
             row.set_scroll_x_for_test(700.0);
             assert_eq!(
-                row.strip_frame_target(&both),
+                row.pan.strip_frame_target(&both),
                 None,
                 "nor when every group on the strip is wider than the strip",
             );
@@ -5755,7 +5756,7 @@ mod tests {
             row.set_last_wheel_at_for_test(earlier(base, 250));
             row.tick_snap_at(base);
             assert!(
-                row.snap_anim.is_some(),
+                row.pan.snap_anim.is_some(),
                 "precondition: snap must be in flight",
             );
 
@@ -5798,6 +5799,7 @@ mod tests {
                 &taffy,
             );
             let anim = row
+                .pan
                 .snap_anim
                 .expect("the in-flight snap must survive a bare wheel notch");
             // Was easing toward the stop nearest 300; must not be re-targeted.
