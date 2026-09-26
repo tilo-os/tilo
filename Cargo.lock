@@ -14863,6 +14863,7 @@ dependencies = [
  "two-face",
  "unic-langid",
  "unicode-linebreak",
+ "unicode-normalization",
  "unicode-script",
  "url",
  "uuid",

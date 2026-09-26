@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
-use ui::search::{CatalogSearchProvider, SearchCatalog, SearchResult};
+use ui::search::{CatalogSearchProvider, FieldWeight, SearchCatalog, SearchRecord, SearchResult};
 
 use crate::model::{Contact, ContactId, ContactStore, normalize_text};
 
@@ -102,11 +102,7 @@ impl ContactSearchProvider {
         for contact in &store.contacts {
             let result = contact_result(contact);
             lookup.contacts.insert(contact.id, contact.display_name());
-            rows.push((
-                crate::actions::contact_resource_id(contact.id),
-                normalize_text(&searchable_fields(contact).join("\0")),
-                result,
-            ));
+            rows.push(contact_record(contact, result));
         }
         let mut ignored_affected_groups = BTreeSet::new();
         for contact in &store.contacts {
@@ -123,18 +119,14 @@ impl ContactSearchProvider {
             };
             let resource = crate::actions::group_resource_id(key);
             lookup.groups.insert(resource.clone(), group.clone());
-            rows.push((
-                resource,
-                normalize_text(&format!("group {group}")),
-                group_result(group),
-            ));
+            rows.push(group_record(resource, group));
         }
         // Build every posting and gram before taking the public snapshot
         // mutex. A 100k-contact refresh therefore leaves current searches and
         // exact actions responsive until one short, atomic generation swap.
         // A rejected replacement leaves the prior, last-good snapshot intact.
         let catalog = SearchCatalog::new(CONTACT_KIND);
-        catalog.replace_all(rows)?;
+        catalog.replace_all_records(rows)?;
         #[cfg(test)]
         let hook = self
             .before_publish
@@ -251,11 +243,9 @@ impl ContactSearchProvider {
         )?;
 
         if let Some(after) = after {
-            snapshot.catalog.upsert(
-                crate::actions::contact_resource_id(after.id),
-                normalize_text(&searchable_fields(after).join("\0")),
-                contact_result(after),
-            )?;
+            snapshot
+                .catalog
+                .upsert_record(contact_record(after, contact_result(after)))?;
         } else if let Some(resource) = &contact_resource
             && !snapshot.catalog.remove(resource)
         {
@@ -263,11 +253,9 @@ impl ContactSearchProvider {
         }
         for (_, resource, group) in &group_updates {
             if let Some(group) = group {
-                snapshot.catalog.upsert(
-                    resource.clone(),
-                    normalize_text(&format!("group {group}")),
-                    group_result(group),
-                )?;
+                snapshot
+                    .catalog
+                    .upsert_record(group_record(resource.clone(), group))?;
             } else if !snapshot.catalog.remove(resource) {
                 return Err(ui::search::SearchCatalogError::MissingResource);
             }
@@ -378,42 +366,66 @@ fn collect_group_keys(contact: &Contact, keys: &mut BTreeSet<String>) {
     }
 }
 
-/// Every user-searchable field in a contact. The vector rather than a
-/// flattened string retains field boundaries via a newline separator.
-fn searchable_fields(contact: &Contact) -> Vec<String> {
+/// Every user-searchable field in a contact, weighted by how likely a
+/// person is to look the contact up by it. Separate fields keep their
+/// boundaries: a query never matches across two of them.
+fn searchable_fields(contact: &Contact) -> Vec<(String, FieldWeight)> {
     let mut fields = vec![
-        contact.first.clone(),
-        contact.last.clone(),
-        contact.org.clone(),
-        contact.title.clone(),
-        contact.website.clone(),
-        contact.notes.clone(),
+        (contact.display_name(), FieldWeight::TITLE),
+        (contact.first.clone(), FieldWeight::TITLE),
+        (contact.last.clone(), FieldWeight::TITLE),
+        (contact.org.clone(), FieldWeight::SUBTITLE),
+        (contact.title.clone(), FieldWeight::SUBTITLE),
+        (contact.website.clone(), FieldWeight::IDENTITY),
+        (contact.notes.clone(), FieldWeight::BODY),
     ];
     if let Some(birthday) = contact.birthday {
-        fields.extend([birthday.iso(), birthday.pretty()]);
-    }
-    for field in &contact.phones {
-        fields.extend([field.label.clone(), field.value.clone()]);
-    }
-    for field in &contact.emails {
-        fields.extend([field.label.clone(), field.value.clone()]);
-    }
-    for address in &contact.addresses {
         fields.extend([
-            address.label.clone(),
-            address.street.clone(),
-            address.city.clone(),
-            address.region.clone(),
-            address.postal.clone(),
-            address.country.clone(),
-            address.one_line(),
+            (birthday.iso(), FieldWeight::METADATA),
+            (birthday.pretty(), FieldWeight::METADATA),
         ]);
     }
-    fields.extend(contact.groups.iter().map(|group| group.value.clone()));
+    for field in contact.phones.iter().chain(&contact.emails) {
+        fields.extend([
+            (field.label.clone(), FieldWeight::METADATA),
+            (field.value.clone(), FieldWeight::IDENTITY),
+        ]);
+    }
+    for address in &contact.addresses {
+        fields.extend(
+            [
+                address.label.clone(),
+                address.street.clone(),
+                address.city.clone(),
+                address.region.clone(),
+                address.postal.clone(),
+                address.country.clone(),
+                address.one_line(),
+            ]
+            .map(|field| (field, FieldWeight::METADATA)),
+        );
+    }
+    fields.extend(
+        contact
+            .groups
+            .iter()
+            .map(|group| (group.value.clone(), FieldWeight::METADATA)),
+    );
+    fields.retain(|(field, _)| !field.is_empty());
     fields
-        .into_iter()
-        .filter(|field| !field.is_empty())
-        .collect()
+}
+
+fn contact_record(contact: &Contact, result: SearchResult) -> SearchRecord {
+    searchable_fields(contact).into_iter().fold(
+        SearchRecord::new(crate::actions::contact_resource_id(contact.id), result),
+        |record, (text, weight)| record.field(text, weight),
+    )
+}
+
+fn group_record(resource: String, group: &str) -> SearchRecord {
+    SearchRecord::new(resource, group_result(group))
+        .field(group, FieldWeight::TITLE)
+        .field(format!("group {group}"), FieldWeight::METADATA)
 }
 
 impl CatalogSearchProvider for ContactSearchProvider {
@@ -429,11 +441,6 @@ impl CatalogSearchProvider for ContactSearchProvider {
                 .catalog
                 .clone(),
         )
-    }
-
-    fn catalog_query<'q>(&self, query: &'q str) -> std::borrow::Cow<'q, str> {
-        // Rows are indexed from normalised text, so fold the query the same way.
-        std::borrow::Cow::Owned(normalize_text(query))
     }
 
     fn resolve_action_address(
