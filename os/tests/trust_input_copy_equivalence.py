@@ -19,6 +19,7 @@ LEGACY = """COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem /run/tilo-offi
 COPY os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py /run/tilo-trust-tools/
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
+COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 """
 DESTINATIONS = (
     'run/tilo-official-trust', 'run/tilo-trust-tools', 'etc/containers',

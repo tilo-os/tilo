@@ -167,6 +167,7 @@ RUN for u in \
 COPY keys/cosign.pub /usr/share/tilo/cosign.pub
 COPY os/etc/containers/policy.json /etc/containers/policy.json
 COPY os/etc/containers/registries.d/code.sandbox.example.yaml /etc/containers/registries.d/code.sandbox.example.yaml
+COPY os/etc/containers/registries.d/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml
 
 # Same bootloader swap as the desktop image: install systemd-boot,
 # drop the GRUB stack, tell bootc to plant systemd-boot on the ESP at
