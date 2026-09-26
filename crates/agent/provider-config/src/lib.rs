@@ -179,6 +179,23 @@ impl ModelDescriptor {
     }
 }
 
+/// Who runs an endpoint, and so what it can reach.
+///
+/// Only Tilo's model manager makes an endpoint [`Self::Supervised`]: it runs
+/// a pinned, signed runtime in a container without a network and serves it
+/// through a private Unix socket. Settings records that from the manager's
+/// ready state; no form offers it. Every endpoint a person types in, even on
+/// `localhost`, is [`Self::UserConfigured`], because it could forward what it
+/// is sent anywhere.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EndpointCustody {
+    #[default]
+    UserConfigured,
+    /// Reached only through `socket`; the runtime has no network egress.
+    Supervised { socket: std::path::PathBuf },
+}
+
 /// A configured model-provider endpoint.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -198,6 +215,7 @@ pub struct ProviderProfile {
     /// by `None`, so callers prompt instead of silently choosing a model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    pub custody: EndpointCustody,
 }
 
 impl Default for ProviderProfile {
@@ -212,6 +230,7 @@ impl Default for ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model: None,
+            custody: EndpointCustody::UserConfigured,
         }
     }
 }
@@ -240,6 +259,7 @@ impl ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model,
+            custody: EndpointCustody::UserConfigured,
         }
     }
 
@@ -259,6 +279,7 @@ impl ProviderProfile {
             enabled: true,
             models: Vec::new(),
             default_model: None,
+            custody: EndpointCustody::UserConfigured,
         }
     }
 
@@ -276,14 +297,24 @@ impl ProviderProfile {
             && (self.endpoint.contains(":8000") || self.label.to_ascii_lowercase().contains("vllm"))
     }
 
-    /// Whether this is an enabled OpenAI-compatible endpoint on this device's
-    /// loopback interface: the only kind of profile the gateway's fixed local
-    /// verbs (image analysis, face clustering, trace review) run on.
+    /// Whether this is an enabled OpenAI-compatible endpoint on this device:
+    /// a supervised runtime's socket, or a user-configured endpoint on the
+    /// loopback interface. These are the only profiles the gateway's fixed
+    /// local verbs (image analysis, face clustering, trace review) run on.
     pub fn is_device_local(&self) -> bool {
         self.enabled
             && self.location == EndpointLocation::ThisDevice
             && self.protocol == ProviderProtocol::OpenAiCompatible
-            && is_loopback_endpoint(&self.endpoint)
+            && match &self.custody {
+                EndpointCustody::Supervised { socket } => socket.is_absolute(),
+                EndpointCustody::UserConfigured => is_loopback_endpoint(&self.endpoint),
+            }
+    }
+
+    /// Whether Tilo's model manager runs this endpoint without network
+    /// egress, so what it is sent cannot leave the device.
+    pub fn is_supervised(&self) -> bool {
+        self.is_device_local() && matches!(self.custody, EndpointCustody::Supervised { .. })
     }
 
     /// `model_id` of this profile when the profile is device-local, the model
@@ -561,6 +592,26 @@ mod tests {
         assert!(!is_pinned_revision("main"));
         assert!(!is_pinned_revision(&"A".repeat(40)));
         assert!(!is_pinned_revision(&"g".repeat(40)));
+    }
+
+    #[test]
+    fn only_the_model_manager_makes_an_endpoint_supervised() {
+        let mut typed_in = ProviderProfile::local_vllm();
+        assert!(typed_in.is_device_local());
+        assert!(!typed_in.is_supervised(), "a localhost URL is not custody");
+        typed_in.custody = EndpointCustody::Supervised {
+            socket: "/run/user/1000/tilo/models/abc/vllm.sock".into(),
+        };
+        assert!(typed_in.is_supervised());
+        typed_in.location = EndpointLocation::Hosted;
+        assert!(!typed_in.is_supervised());
+        let relative = ProviderProfile {
+            custody: EndpointCustody::Supervised {
+                socket: "vllm.sock".into(),
+            },
+            ..ProviderProfile::local_vllm()
+        };
+        assert!(!relative.is_device_local());
     }
 
     #[test]

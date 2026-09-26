@@ -1,8 +1,8 @@
 # Local model catalog releases
 
 `tilo-model-catalog` is the only supported compiler for the catalog consumed by
-`tilo-model-manager`. It turns a declarative JSON source plus local release
-artifacts into two image inputs:
+`tilo-model-manager`. It turns a declarative JSON source plus local copies of
+the pinned inputs into two image inputs:
 
 - `catalog.json`: model releases, signed runtime-extension manifests, artifact
   receipts, and a domain-separated Ed25519 signature;
@@ -23,17 +23,32 @@ cargo run -p local-model-service --bin tilo-model-catalog -- \
 The source must point at regular files already fetched by the release job.
 Their byte count and SHA-256 are recomputed; declared receipts are comparisons,
 not trusted input. Model revisions must be exact 40- or 64-character lowercase
-commit hashes and the immutable revision must occur in the HTTPS artifact URL.
-Runtime container identities must end in `@sha256:<64 lowercase hex>`. Floating
-branches, tags, `latest`, redirects encoded as query strings, symlinks, empty
-artifacts, and production `.invalid` URLs are rejected.
+commit hashes and the immutable revision must occur in every model URL.
+Floating branches, tags, `latest`, redirects encoded as query strings,
+symlinks, empty artifacts, and production `.invalid` URLs are rejected.
 
-Each model must explicitly declare `"artifact_format"`. Production Hugging
-Face/vLLM releases use `"hf_snapshot_tar_zst"`: the signed compressed object
-is verified first, then extracted into a content-addressed directory only
-after rejecting traversal, links, special files, excessive entry counts, and
-expansion beyond `installed_size_bytes`. `"vllm_gguf"` is the sole explicit
-single-file option; no model is treated as a single file by inference.
+Nothing is mirrored or repackaged; every byte is fetched from its vendor:
+
+- **Models** are `"artifact": {"hf_snapshot": {"files": [...]}}`: every file
+  of the snapshot, each pinned by SHA-256 and size and fetched from its own
+  Hugging Face resolve URL at the pinned revision
+  (`https://huggingface.co/<repo>/resolve/<revision>/<path>`). The manager
+  verifies each file into the content-addressed store, then links them into a
+  private snapshot directory whose paths come only from the signed listing.
+  `{"gguf": {...}}` is the single-file alternative; no model is treated as a
+  single file by inference.
+- **Runtimes** are OCI images pulled from their registry by manifest digest.
+  The runtime's `artifact` is the image manifest itself (its registry URL,
+  SHA-256 and size), and the compiler refuses a manifest that does not hash to
+  the digest `oci_image` names, so the signed extension covers exactly what the
+  container engine verifies on pull. `engine` names the server inside
+  (`vllm`); the manager builds that engine's argv from signed fields.
+
+A runtime container has no network (`--network none`). It serves its
+OpenAI-compatible API on a Unix socket in a private per-model directory, the
+only thing mounted writable. Settings records that socket as the profile's
+`Supervised` custody, which is what lets the gateway treat the model as unable
+to send anything off the device.
 
 The catalog signature covers:
 
@@ -45,86 +60,77 @@ The checked-in `tests/fixtures/catalog-source.example.json` is explicitly
 `"production": false`; its tiny text artifacts exercise deterministic tooling
 and are not model weights, a runtime, or approved upstream release pins.
 
-## SmolVLM2 500M visual analysis release
+## Release inputs
 
-`dist/local-models/smolvlm2-500m/prepare-release.sh` is the production
-recipe for the first local visual-analysis delivery. It stages exactly these
-upstream inputs:
+`dist/local-models/` holds the pinned inputs, one directory per model:
 
-- `HuggingFaceTB/SmolVLM2-500M-Video-Instruct` at
-  `a3992d502a8714ce2f6207fde3507ccf9503f224`. Its model card at that exact
-  revision declares Apache-2.0; the checked-in manifest pins every file used
-  by the vLLM snapshot, including `model.safetensors`.
-- `docker.io/vllm/vllm-openai@sha256:c62343ee72f094ef574ab3af2717d0c60fec5e0808b238f19ac4c0d22fd152f7`
-  (vLLM 0.10.1), saved as a verified OCI archive for `x86_64` NVIDIA CUDA.
+| Model | Capability | Revision | Notes |
+| --- | --- | --- | --- |
+| `qwen3-4b-awq` (`Qwen/Qwen3-4B-AWQ`) | `trace_review` | `74d4bd2b…` | Apache-2.0, 2.7 GB, 8K context, 70 % of an 8 GiB card |
+| `smolvlm2-500m` (`HuggingFaceTB/SmolVLM2-500M-Video-Instruct`) | `vision` | `a3992d50…` | Apache-2.0; no biometric capability |
 
-It deliberately creates no CPU fallback and no biometric capability. The
-model is catalogued with `"capabilities": ["vision"]` only; it can
-serve the bounded Photos caption/label/pet/OCR request, but cannot enable the
-separate face clustering route.
-
-The recipe downloads roughly 2 GB of model data plus the OCI runtime and
-requires `curl`, `skopeo`, GNU `tar`, and `zstd`. It calculates the final
-archive receipts locally, so no placeholder weight hash or mutable upstream
-download URL can become a signed catalog.
+Each has `release.json` (catalog metadata) and `model-files.sha256` (every
+served file with its SHA-256). `runtimes/` pins the vLLM 0.10.1 CUDA image by
+digest. `prepare-release.py` fetches and verifies all of them and writes the
+compiler source; `tests/test_prepare_release.py` checks the pins offline.
 
 ```sh
-dist/local-models/smolvlm2-500m/prepare-release.sh \
-  --output /secure/build/local-models/smolvlm2-500m \
-  --publish-base-url "$TILO_RELEASE_ARTIFACT_BASE_URL" \
-  --base-image-digest "$TILO_BASE_IMAGE_DIGEST"
+dist/local-models/prepare-release.py \
+  --output /secure/build/local-models \
+  --base-image-digest "$TILO_BASE_IMAGE_DIGEST" \
+  --recommendation qwen/qwen3-4b-awq \
+  dist/local-models/qwen3-4b-awq dist/local-models/smolvlm2-500m
 ```
 
-`TILO_RELEASE_ARTIFACT_BASE_URL` must be the permanent HTTPS artifact host;
-`TILO_BASE_IMAGE_DIGEST` is the exact, already-approved desktop base-image
-digest. Upload the two files in `artifacts/` unchanged, then fetch the actual
-published URLs and compare their size and SHA-256 with the generated
-`local-models.json`. Only after that evidence is retained may the release key
-compile and sign the catalog:
+It needs `curl` and `skopeo`. Then compile
+`/secure/build/local-models/local-models.json` with the release key as above.
+
+## Developer catalog on this machine
+
+A developer signs with a key of their own; the release key never leaves
+release infrastructure. The model manager is a per-user service and accepts
+`--catalog`, `--keys` and `--root` overrides only when it is not elevated, so
+this is the production install path pointed at a dev-signed catalog. It needs
+rootless Podman with the NVIDIA CDI spec (`/etc/cdi/nvidia.yaml`), a working
+NVIDIA driver (`nvidia-smi` must succeed), a user systemd instance, and about
+23 GB of disk, 20 GB of it the vLLM image.
 
 ```sh
-release_dir=/secure/build/local-models/smolvlm2-500m
-cargo run -p local-model-service --bin tilo-model-catalog -- \
-  --source "$release_dir/local-models.json" \
-  --signing-key /run/secrets/tilo-model-release-key \
-  --catalog-out dist/usr/share/tilo/system-extensions/local-model-catalog.json \
-  --trust-out dist/usr/share/tilo/system-extensions/local-model-keys.json
+# 1. Build the manager, the compiler and the gateway.
+cargo build --release -p local-model-service -p tilo-model-gateway
+
+# 2. Fetch and verify the pinned inputs (2.7 GB of weights, the image manifest).
+# The compiler refuses symlinked path components (on Fedora Atomic /home is one).
+dev=$(realpath -m ~/.local/share/tilo/dev-models)
+dist/local-models/prepare-release.py --output "$dev/inputs" \
+  --base-image-digest "sha256:$(printf dev | sha256sum | cut -d' ' -f1)" \
+  --key-id tilo-dev-local-models --recommendation qwen/qwen3-4b-awq \
+  dist/local-models/qwen3-4b-awq
+
+# 3. Sign with a dev key.
+(umask 077; od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$dev/signing-key")
+target/release/tilo-model-catalog --source "$dev/inputs/local-models.json" \
+  --signing-key "$dev/signing-key" \
+  --catalog-out "$dev/catalog.json" --trust-out "$dev/keys.json"
+
+# 4. Install and start through the manager: it downloads each file from
+#    Hugging Face, pulls the image by digest, and starts vLLM without network.
+manager() { target/release/tilo-model-manager --catalog "$dev/catalog.json" --keys "$dev/keys.json" "$@"; }
+manager install --model qwen/qwen3-4b-awq
+manager snapshot   # repeat until the phase is ready with an endpoint socket
 ```
 
-Before image publication, validate the signed files and retain the command
-output with the release record:
+Settings › Agent models then records the ready model in the local provider
+profile (supervised custody, `trace_review` capability, pinned revision); on a
+Tilo desktop that is the normal sync. With the gateway on that profile, run a
+real review as the desktop session does:
 
 ```sh
-cargo run -p local-model-service --bin tilo-model-catalog -- --help
-dist/local-models/smolvlm2-500m/contract-test.sh
+dist/local-models/qwen3-4b-awq/smoke-review.py \
+  --socket "$XDG_RUNTIME_DIR/tilo/services/model-gateway.sock"
 ```
 
-### Genuine inference acceptance
-
-On an `x86_64` desktop with an NVIDIA driver, at least 16 GiB RAM, 8 GiB VRAM,
-rootless Podman, and a working user systemd instance, deploy the signed catalog
-and use Settings to install and start **SmolVLM2 500M Video Instruct**. Settings
-must show a ready loopback endpoint before proceeding; its normal sync writes
-the signed model id, revision, and capability into the local provider profile.
-
-For a developer-only probe, start a separate local gateway listener that reads
-that same profile, then send the fixed Photos image request through the real
-gateway. The probe checks the actual vLLM response envelope and fixed analysis
-schema; it does not accept a mocked response or a face result.
-
-```sh
-scratch=$(mktemp -d)
-target/release/tilo-model-gateway serve --socket "$scratch/model-gateway.sock" &
-gateway_pid=$!
-# Replace this with the profile id Settings created for the ready local model.
-dist/local-models/smolvlm2-500m/smoke-gateway.py \
-  --socket "$scratch/model-gateway.sock" \
-  --profile "$TILO_LOCAL_VLLM_PROFILE_ID" \
-  --model huggingface/smolvlm2-500m-video-instruct
-kill "$gateway_pid"
-```
-
-The desktop launcher, rather than this developer socket, supplies the normal
-gateway descriptor to Photos. A successful probe is evidence that the signed
-model service, vLLM runtime, provider profile, and bounded gateway all carried
-out real image inference.
+The answer is the gateway's validated `ReviewAnswer`: `model` names the
+reviewer and revision, and `proposals` holds redactions addressed by step,
+node and byte span, and step titles. For Photos, `smolvlm2-500m/smoke-gateway.py`
+sends the fixed image request the same way with the Photos app principal.

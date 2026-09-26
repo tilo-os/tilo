@@ -1,0 +1,16 @@
+{
+  "id": "huggingface/smolvlm2-500m-video-instruct",
+  "label": "SmolVLM2 500M Video Instruct",
+  "description": "Local Apache-2.0 image captioning, labels, pet labels, and OCR through vLLM. This release does not provide face recognition or identity inference.",
+  "repository": "HuggingFaceTB/SmolVLM2-500M-Video-Instruct",
+  "revision": "a3992d502a8714ce2f6207fde3507ccf9503f224",
+  "license_id": "Apache-2.0",
+  "license_file": "README.md",
+  "requires_acceptance": false,
+  "runtime": "vllm-cuda-0.10.1",
+  "required_memory_mib": 16384,
+  "required_accelerator_mib": 4096,
+  "context_window": 8192,
+  "capabilities": ["vision"],
+  "accelerator_memory_percent": 60
+}

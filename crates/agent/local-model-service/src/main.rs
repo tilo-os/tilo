@@ -18,13 +18,13 @@ use std::time::{Duration, Instant};
 use agent_provider_config::ModelCapability;
 use agent_provider_config::local::{
     Accelerator, HardwareSnapshot, LocalEndpoint, LocalModelCatalog, LocalModelRelease,
-    LocalModelStatus, RuntimeDecision, RuntimeKind, select_runtime,
+    LocalModelStatus, ModelArtifact, RuntimeDecision, RuntimeKind, select_runtime,
 };
 use clap::{Parser, Subcommand};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use local_model_service::{
-    HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, ServiceError,
-    SignedRuntime, VllmCommand,
+    HttpsTransport, LocalModelService, ProcessHandle, ProcessSupervisor, RuntimeCommand,
+    ServiceError, SignedRuntime,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -308,7 +308,16 @@ impl ReqwestTransport {
     fn new() -> Result<Self, ServiceError> {
         Ok(Self {
             client: tilo_net::http::blocking_client()
-                .redirect(reqwest::redirect::Policy::none())
+                // Vendors serve pinned files through their CDN (a Hugging Face
+                // resolve URL redirects to it). Follow only HTTPS hops; the
+                // pinned digest, not the host, decides what is accepted.
+                .redirect(reqwest::redirect::Policy::custom(|attempt| {
+                    if attempt.url().scheme() == "https" && attempt.previous().len() < 5 {
+                        attempt.follow()
+                    } else {
+                        attempt.stop()
+                    }
+                }))
                 .tls_backend_rustls()
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(30 * 60))
@@ -393,14 +402,23 @@ impl HttpsTransport for ReqwestTransport {
 /// User-systemd supervision. The executable and every vLLM argument come from
 /// [`VllmCommand`], itself constructed only from a verified signed catalog.
 struct SystemdSupervisor;
-fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
+/// The container has no network at all: the only way in or out is the API
+/// socket in its private socket directory, so what a model is sent cannot
+/// leave the device through it.
+fn podman_runtime_argv(command: &RuntimeCommand) -> Vec<String> {
     let mut argv = vec![
         "run".into(),
         "--rm".into(),
         "--pull".into(),
         "never".into(),
         "--network".into(),
-        "host".into(),
+        "none".into(),
+        // Nothing inside should try to reach a hub or report usage; with no
+        // network it would only fail slowly.
+        "--env".into(),
+        "HF_HUB_OFFLINE=1".into(),
+        "--env".into(),
+        "VLLM_NO_USAGE_STATS=1".into(),
     ];
     match command.runtime_kind {
         agent_provider_config::local::RuntimeKind::Cpu => {}
@@ -426,6 +444,12 @@ fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
             command.model_path.display(),
             command.model_container_path
         ),
+        "--mount".into(),
+        format!(
+            "type=bind,src={},dst={}",
+            command.socket_dir.display(),
+            local_model_service::CONTAINER_SOCKET_DIR
+        ),
         "--security-opt".into(),
         "label=disable".into(),
         command.runtime_image.clone(),
@@ -433,22 +457,40 @@ fn podman_vllm_argv(command: &VllmCommand) -> Vec<String> {
     argv.extend(command.args.iter().cloned());
     argv
 }
+
+/// Whether the runtime's API answers `GET /health` with 200 on `socket`.
+/// A listening socket alone is not readiness: the server binds before the
+/// weights are loaded.
+fn api_ready(socket: &Path) -> bool {
+    let Ok(mut stream) = UnixStream::connect(socket) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+    if stream
+        .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .is_err()
+    {
+        return false;
+    }
+    let mut status = [0_u8; 12];
+    stream.read_exact(&mut status).is_ok()
+        && status.starts_with(b"HTTP/1.")
+        && status.get(9..12) == Some(b"200".as_slice())
+}
+
 impl ProcessSupervisor for SystemdSupervisor {
-    fn install_runtime_image(
-        &mut self,
-        archive: &std::path::Path,
-        signed_image: &str,
-    ) -> Result<(), ServiceError> {
-        // `podman load` receives a verified, content-addressed archive path;
-        // it is never given a registry tag or caller-controlled image string.
-        let mut load = Command::new("podman");
-        load.args(["load", "--input"]).arg(archive);
+    fn pull_runtime_image(&mut self, signed_image: &str) -> Result<(), ServiceError> {
+        // The image string is the signed `repository@sha256:` reference; the
+        // container engine verifies the manifest digest while pulling.
+        let mut pull = Command::new("podman");
+        pull.args(["pull", "--quiet", signed_image]);
         let output =
-            bounded_command::run_prepared(load, None, 1024 * 1024, Duration::from_secs(1800))
+            bounded_command::run_prepared(pull, None, 1024 * 1024, Duration::from_secs(4 * 3600))
                 .map_err(|error| ServiceError::Backend(error.to_string()))?;
         if !output.status.success() {
             return Err(ServiceError::Backend(
-                "podman could not import verified runtime archive".into(),
+                "podman could not pull the signed runtime image".into(),
             ));
         }
         let mut inspect = Command::new("podman");
@@ -464,7 +506,7 @@ impl ProcessSupervisor for SystemdSupervisor {
                 .map_err(|error| ServiceError::Backend(error.to_string()))?;
         if !output.status.success() {
             return Err(ServiceError::Backend(
-                "podman cannot inspect imported signed runtime image".into(),
+                "podman cannot inspect the pulled runtime image".into(),
             ));
         }
         let digests: Vec<String> = serde_json::from_slice(&output.stdout).map_err(|_| {
@@ -472,14 +514,22 @@ impl ProcessSupervisor for SystemdSupervisor {
         })?;
         if !digests.iter().any(|digest| digest == signed_image) {
             return Err(ServiceError::Backend(
-                "imported OCI archive did not provide the exact signed image digest".into(),
+                "the pulled image does not carry the exact signed digest".into(),
             ));
         }
         Ok(())
     }
-    fn start(&mut self, command: &VllmCommand) -> Result<ProcessHandle, ServiceError> {
+    fn start(&mut self, command: &RuntimeCommand) -> Result<ProcessHandle, ServiceError> {
         let digest = hex::encode(Sha256::digest(command.endpoint.model_id.as_bytes()));
-        let unit = format!("tilo-vllm-{}", digest.get(..16).unwrap_or(&digest));
+        let unit = format!("tilo-model-{}", digest.get(..16).unwrap_or(&digest));
+        // A private directory per model holds nothing but the API socket.
+        std::fs::create_dir_all(&command.socket_dir)?;
+        std::fs::set_permissions(&command.socket_dir, std::fs::Permissions::from_mode(0o700))?;
+        match std::fs::remove_file(&command.endpoint.socket) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(ServiceError::Io(error)),
+        }
         let mut launch = Command::new("systemd-run");
         launch
             .args([
@@ -491,42 +541,30 @@ impl ProcessSupervisor for SystemdSupervisor {
                 "--",
                 "podman",
             ])
-            .args(podman_vllm_argv(command));
+            .args(podman_runtime_argv(command));
         let output =
             bounded_command::run_prepared(launch, None, 1024 * 1024, Duration::from_secs(30))
                 .map_err(|error| ServiceError::Backend(error.to_string()))?;
         if !output.status.success() {
             return Err(ServiceError::Backend(
-                "systemd-run rejected the verified vLLM command".into(),
+                "systemd-run rejected the verified runtime command".into(),
             ));
         }
-        let address = command
-            .endpoint
-            .url
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .unwrap_or_default();
         // Loading model weights routinely takes minutes. This worker is
         // already detached from Settings, so favour a truthful bounded wait
         // over reporting a healthy large model as failed after 20 seconds.
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(10 * 60) {
-            if std::net::TcpStream::connect_timeout(
-                &address.parse().map_err(|_| ServiceError::InvalidEndpoint)?,
-                Duration::from_millis(250),
-            )
-            .is_ok()
-            {
+            if api_ready(&command.endpoint.socket) {
                 return Ok(ProcessHandle { id: unit });
             }
-            std::thread::sleep(Duration::from_millis(150));
+            std::thread::sleep(Duration::from_millis(500));
         }
         let mut stop = Command::new("systemctl");
         stop.args(["--user", "stop", &unit]);
         let _ = bounded_command::run_prepared(stop, None, 64 * 1024, Duration::from_secs(30));
         Err(ServiceError::Backend(
-            "verified vLLM service did not become ready".into(),
+            "verified model runtime did not become ready".into(),
         ))
     }
     fn stop(&mut self, handle: &ProcessHandle) -> Result<(), ServiceError> {
@@ -544,7 +582,9 @@ impl ProcessSupervisor for SystemdSupervisor {
     }
 }
 
-fn local_hardware() -> HardwareSnapshot {
+/// What this machine offers. Free storage is measured where the model store
+/// actually lives, so a per-user store is not judged by a system path.
+fn local_hardware(store: &Path) -> HardwareSnapshot {
     let memory_mib = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|body| {
@@ -557,7 +597,7 @@ fn local_hardware() -> HardwareSnapshot {
             })
         })
         .map_or(0, |kib| kib / 1024);
-    let free_storage_mib = free_storage_mib("/var/lib/tilo/models").unwrap_or(0);
+    let free_storage_mib = free_storage_mib(store).unwrap_or(0);
     let mut accelerators = Vec::new();
     // NVIDIA's vendor tool is called with a fixed query/format, never a
     // caller-provided argument. Sysfs discovery distinguishes an absent
@@ -625,8 +665,9 @@ fn local_hardware() -> HardwareSnapshot {
         accelerators,
     }
 }
-fn free_storage_mib(path: &str) -> Option<u64> {
-    let path = std::ffi::CString::new(path).ok()?;
+fn free_storage_mib(path: &Path) -> Option<u64> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
     let mut info = std::mem::MaybeUninit::<libc::statvfs>::uninit();
     if unsafe { libc::statvfs(path.as_ptr(), info.as_mut_ptr()) } != 0 {
         return None;
@@ -641,16 +682,30 @@ fn free_storage_mib(path: &str) -> Option<u64> {
         .checked_mul(u64::try_from(info.f_frsize).ok()?)?
         .checked_div(1024 * 1024)
 }
+/// Where a release's bytes come from, as shown before download: the file for
+/// a single object, the pinned revision's directory for a snapshot.
+fn package_source(artifact: &ModelArtifact) -> String {
+    match artifact {
+        ModelArtifact::Gguf(object) => object.url.clone(),
+        ModelArtifact::HfSnapshot { files } => files
+            .iter()
+            .find(|file| file.path == "config.json")
+            .and_then(|file| file.artifact.url.strip_suffix("/config.json"))
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
 fn package(model: &LocalModelRelease) -> LocalModelPackage {
     LocalModelPackage {
         id: model.id.clone(),
         name: model.label.clone(),
         description: model.description.clone(),
-        source: model.artifact.url.clone(),
+        source: package_source(&model.artifact),
         revision: model.version.clone(),
         license: model.license_id.clone(),
         license_url: model.license_url.clone(),
-        download_bytes: model.artifact.size_bytes,
+        download_bytes: model.artifact.download_bytes(),
         installed_bytes: model.installed_size_bytes,
         capabilities: model.capabilities.clone(),
     }
@@ -1173,12 +1228,16 @@ fn user_model_root() -> PathBuf {
         .join("tilo/models")
 }
 
-fn allocate_loopback_port() -> Result<u16, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").map_err(|error| error.to_string())?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| error.to_string())
+/// The private directory a model's runtime serves its API socket in, under
+/// the user's runtime directory so it disappears with the session.
+fn runtime_socket_dir(model_id: &str) -> Result<PathBuf, String> {
+    let runtime = xdg_paths::xdg::runtime_dir().ok_or_else(|| {
+        "XDG_RUNTIME_DIR is not set; the model runtime has no socket directory".to_string()
+    })?;
+    let digest = hex::encode(Sha256::digest(model_id.as_bytes()));
+    Ok(runtime
+        .join("tilo/models")
+        .join(digest.get(..16).unwrap_or(&digest)))
 }
 
 fn system_extension_request(request: &str) -> Result<Vec<u8>, String> {
@@ -1365,8 +1424,8 @@ fn run_local(cli: Cli) -> Result<Option<String>, String> {
                 .iter()
                 .find(|release| release.id == model)
                 .ok_or_else(|| "model is not in the signed catalog".to_string())?;
-            let runtime = signed_runtime_for(&catalog, &local_hardware(), release)?;
-            if let Err(error) = service.start(runtime, release, allocate_loopback_port()?) {
+            let runtime = signed_runtime_for(&catalog, &local_hardware(&root), release)?;
+            if let Err(error) = service.start(runtime, release, &runtime_socket_dir(&model)?) {
                 let _ = service.record_failure(&model, error.to_string());
                 return Err(error.to_string());
             }
@@ -1397,7 +1456,7 @@ fn local_snapshot(
         SystemdSupervisor,
     )
     .map_err(|error| error.to_string())?;
-    let hardware = local_hardware();
+    let hardware = local_hardware(root);
     let (recommended, runtime) = match recommended_model(&catalog, &hardware) {
         Ok((model, kind)) => (Some(package(model)), Ok(kind)),
         Err(reason) => (None, Err(reason)),
@@ -1441,7 +1500,7 @@ fn run_install_worker(
             release.id == model && revision.is_none_or(|revision| revision == &release.version)
         })
         .ok_or_else(|| "model/revision is not in the signed catalog".to_string())?;
-    let runtime = signed_runtime_for(catalog, &local_hardware(), release)?;
+    let runtime = signed_runtime_for(catalog, &local_hardware(service.root()), release)?;
     if let Err(error) = service
         .install_with_runtime_progress(runtime, release)
         .and_then(|_| {
@@ -1449,7 +1508,7 @@ fn run_install_worker(
                 .start(
                     runtime,
                     release,
-                    allocate_loopback_port().map_err(ServiceError::Backend)?,
+                    &runtime_socket_dir(model).map_err(ServiceError::Backend)?,
                 )
                 .map(|_| ())
         })
@@ -1601,16 +1660,31 @@ mod tests {
 
     #[test]
     fn podman_mounts_only_verified_model_path_and_uses_container_path() {
-        let command = VllmCommand {
+        let command = RuntimeCommand {
             runtime_image: "registry.example/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             runtime_kind: RuntimeKind::Cpu,
+            engine: agent_provider_config::local::RuntimeEngine::Vllm,
             args: vec!["serve".into(), "/models/model".into()],
             model_path: PathBuf::from("/home/ada/.local/share/tilo/models/sha256/abc"),
             model_container_path: "/models/model".into(),
-            endpoint: agent_provider_config::local::LocalEndpoint { url: "http://127.0.0.1:9000/v1".into(), model_id: "tiny".into() },
+            socket_dir: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef"),
+            endpoint: agent_provider_config::local::LocalEndpoint {
+                socket: PathBuf::from("/run/user/1000/tilo/models/0123456789abcdef/api.sock"),
+                model_id: "tiny".into(),
+            },
             runtime_extension_id: "runtime".into(),
         };
-        let argv = podman_vllm_argv(&command);
+        let argv = podman_runtime_argv(&command);
+        assert!(
+            argv.windows(2).any(|pair| pair == ["--network", "none"]),
+            "the runtime must have no network egress"
+        );
+        assert!(!argv.iter().any(|arg| arg == "host"));
+        assert!(argv.windows(2).any(|pair| pair
+            == [
+                "--mount",
+                "type=bind,src=/run/user/1000/tilo/models/0123456789abcdef,dst=/run/tilo-model"
+            ]));
         assert!(argv.windows(2).any(|pair| pair
             == [
                 "--mount",

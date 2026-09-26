@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use accounts::{AccountId, Secret, SecretVault};
-use agent_provider_config::{ModelCapability, ProviderConfig, ProviderProfile, ProviderProtocol};
+use agent_provider_config::{
+    EndpointCustody, ModelCapability, ProviderConfig, ProviderProfile, ProviderProtocol,
+};
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tilo_model_gateway::{
@@ -527,6 +529,7 @@ async fn analyze_image(
     image: VisionImage,
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || vision_request(&profile_id, &model_id, &image)).await?;
+    let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
     // A local vLLM endpoint is normally unauthenticated. Do not invent a
@@ -568,6 +571,7 @@ async fn cluster_faces(
     images: Vec<FaceImage>,
 ) -> Result<String, String> {
     let (profile, body) = blocking(move || face_request(&profile_id, &model_id, &images)).await?;
+    let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
     while_busy(
@@ -847,6 +851,23 @@ where
             return Err(give_up());
         }
         wait(waiting).await;
+    }
+}
+
+/// The client that reaches `profile`: the shared one, or, for a runtime the
+/// model manager supervises, one bound to its private socket. Such a runtime
+/// has no network and no TCP listener; the socket is its only door.
+pub(crate) fn profile_client(
+    shared: &reqwest::Client,
+    profile: &ProviderProfile,
+) -> Result<reqwest::Client, String> {
+    match &profile.custody {
+        EndpointCustody::Supervised { socket } => tilo_net::http::client()
+            .unix_socket(socket.clone())
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()
+            .map_err(|_| "the local model's socket client is unavailable".to_string()),
+        EndpointCustody::UserConfigured => Ok(shared.clone()),
     }
 }
 

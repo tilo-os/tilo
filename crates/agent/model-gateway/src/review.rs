@@ -24,7 +24,8 @@ use tilo_feedback_review::{
 use tilo_model_gateway::{ReviewAnswer, review_model};
 
 use super::{
-    blocking, configured_profile, local_profile, provider_attempt, provider_url, while_busy,
+    blocking, configured_profile, local_profile, profile_client, provider_attempt, provider_url,
+    while_busy,
 };
 
 /// A 4B model on a laptop GPU answers a full request in well under this.
@@ -322,16 +323,18 @@ pub(crate) async fn review_trace(
             ModelCapability::TraceReview,
             "trace review",
         )?;
-        let body = review_body(&model.model_id, &trace, Exposure::Placeholders);
-        Ok((Some((model, profile, body)), trace))
+        let exposure = exposure_for(&profile);
+        let body = review_body(&model.model_id, &trace, exposure);
+        Ok((Some((model, profile, body, exposure)), trace))
     })
     .await?;
-    let Some((model, profile, body)) = chosen else {
+    let Some((model, profile, body, exposure)) = chosen else {
         return encode(&ReviewAnswer {
             model: None,
             proposals: ReviewProposals::default(),
         });
     };
+    let http = &profile_client(http, &profile)?;
     let endpoint = provider_url(&profile);
     let began = Instant::now();
     // A local endpoint is unauthenticated; no hosted secret is looked up.
@@ -341,11 +344,23 @@ pub(crate) async fn review_trace(
         |budget| provider_attempt(http, &profile, &endpoint, None, &body, budget),
     )
     .await?;
-    let proposals = parse_review(&trace, Exposure::Placeholders, &raw)?;
+    let proposals = parse_review(&trace, exposure, &raw)?;
     encode(&ReviewAnswer {
         model: Some(model),
         proposals,
     })
+}
+
+/// Only a runtime the model manager supervises, which cannot reach the
+/// network, is shown the whole trace. Any other endpoint, even one on
+/// `localhost`, could forward what it is sent, so it sees declared values as
+/// placeholders.
+fn exposure_for(profile: &agent_provider_config::ProviderProfile) -> Exposure {
+    if profile.is_supervised() {
+        Exposure::Full
+    } else {
+        Exposure::Placeholders
+    }
 }
 
 fn encode(answer: &ReviewAnswer) -> Result<String, String> {
@@ -455,6 +470,24 @@ mod tests {
         assert_eq!(data["steps"][0]["texts"][1]["id"], "t1");
         assert_eq!(data["steps"][0]["texts"][0]["sensitivity"], "personal");
         assert_eq!(body["messages"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn only_a_supervised_runtime_sees_declared_values() {
+        let mut profile = agent_provider_config::ProviderProfile::local_vllm();
+        assert_eq!(
+            exposure_for(&profile),
+            Exposure::Placeholders,
+            "a typed-in localhost URL"
+        );
+        profile.custody = agent_provider_config::EndpointCustody::Supervised {
+            socket: "/run/user/1000/tilo/models/0123456789abcdef/api.sock".into(),
+        };
+        assert_eq!(exposure_for(&profile), Exposure::Full);
+        let full = review_body("m", &trace(), Exposure::Full).to_string();
+        assert!(full.contains("Jana Nov"));
+        let hidden = review_body("m", &trace(), Exposure::Placeholders).to_string();
+        assert!(!hidden.contains("Jana"));
     }
 
     #[test]

@@ -1,0 +1,16 @@
+{
+  "id": "qwen/qwen3-4b-awq",
+  "label": "Qwen3 4B (AWQ, 4-bit)",
+  "description": "Local Apache-2.0 instruction model for reviewing feedback recordings before they are sent: it proposes redactions and writes step titles. Runs in vLLM without network access.",
+  "repository": "Qwen/Qwen3-4B-AWQ",
+  "revision": "74d4bd2bd4bff9cafc9345221320bffb08b406a3",
+  "license_id": "Apache-2.0",
+  "license_file": "LICENSE",
+  "requires_acceptance": false,
+  "runtime": "vllm-cuda-0.10.1",
+  "required_memory_mib": 12288,
+  "required_accelerator_mib": 6144,
+  "context_window": 8192,
+  "capabilities": ["trace_review"],
+  "accelerator_memory_percent": 70
+}

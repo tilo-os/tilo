@@ -157,12 +157,26 @@ You wrote to ▮▮▮▮▮. You pressed Send. *Couldn't send* appeared." Each 
 shows the replayed state with its redactions, and the user can open,
 re-redact, cut or keep each one.
 
-A local model, through the model gateway and a device-local provider profile,
-does two jobs: it proposes redactions for undeclared text and image content
-(OCR plus the local vision model), and it writes the step titles. It never
-receives anything the sensitivity layer already marked `Secret`. Without a
-local model, review still works: declared sensitivity and pattern detectors
-propose the redactions, and step titles come from action labels.
+A model, reached through the model gateway's fixed `ReviewTrace` verb, does
+two jobs: it proposes redactions for undeclared text and image content (OCR
+plus the local vision model), and it writes the step titles. Review is a
+sensitive task: it runs on a model on this device unless the user has
+explicitly allowed otherwise in Settings. The gateway owns the prompt and the
+answer schema, and it rejects any answer that does not address the request.
+The model never receives anything the sensitivity layer already marked
+`Secret`, since that is never part of a trace. A model in Tilo's own
+supervised runtime, which has no network egress, sees the rest of the trace.
+Any other model sees each declared `Personal` value, wherever it occurs, as a
+typed placeholder such as `‹name›`: those values are redacted anyway, so it
+has nothing to add about them.
+
+Review always starts from a deterministic floor (`tilo-feedback-review`):
+declared `Personal` values, wherever they are repeated, plus pattern detectors
+for email addresses, phone numbers, IBANs and card numbers (checksum-verified),
+credential-shaped tokens and secret URL parameters. Model proposals are
+merged on top and can never remove or lower a floor proposal. Titles are
+masked last, so no title shows a value that is being redacted. Without a
+model, the floor is the review, and step titles come from action labels.
 
 ## Rooms, and why the public one is different
 

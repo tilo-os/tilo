@@ -9,7 +9,7 @@ kernel-coupled drivers.
 
 | Class | Examples | Activation | Rollback |
 | --- | --- | --- | --- |
-| Runtime pack | vLLM, CUDA/ROCm userspace, model gateway | A supervised, loopback-only service after artifact verification | Stop service and select the previous content-addressed runtime |
+| Runtime pack | vLLM, CUDA/ROCm userspace, model gateway | A supervised service without network egress after artifact verification | Stop service and select the previous content-addressed runtime |
 | System extension | Additive `/usr` or `/opt` payload with no early-boot dependency | Read-only systemd-sysext image matched to the Tilo release | Unmerge/mask the image |
 | Boot pack | NVIDIA kernel modules, firmware, initramfs inputs | A new signed bootc deployment; reboot required | Normal Tilo deployment rollback |
 
@@ -59,9 +59,12 @@ opaque mutation:
 4. Runtime and model artifacts are hash-verified. A boot pack is staged when a
    compatible kernel driver is missing; otherwise the userspace runtime is
    activated immediately.
-5. The model manager starts vLLM under a supervisor, bound only to loopback,
-   waits for readiness, and publishes the endpoint into the device-local model
-   profile. Agents still need their normal workspace capabilities.
+5. The model manager starts vLLM under a supervisor in a container with no
+   network, serving only a Unix socket in a private directory, waits until its
+   API answers, and publishes that socket into the device-local model profile
+   as supervised custody. Only such a profile counts as unable to send what it
+   is given off the device. Agents still need their normal workspace
+   capabilities.
 
 Leaving Settings, logging out, losing the network, or rebooting does not lose
 the transaction. Cancellation stops at a safe boundary; retry reuses verified

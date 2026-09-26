@@ -8,7 +8,7 @@
       "id": "example-vllm-cpu",
       "kind": "cpu",
       "version": "0.0.0-example",
-      "oci_image": "registry.example.invalid/tilo/vllm@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "oci_image": "registry.example.invalid/tilo/vllm@sha256:2440391d6cecede54d6bd4f5829b78062e4d4a1659e47ddd5293631fd0045642",
       "artifact": {
         "file": "example-runtime.bin",
         "url": "https://artifacts.example.invalid/tilo/runtime/8f4a7e9dfd2b174f2dc92326a7ca2a3f96bf6741/runtime.bin",
@@ -28,17 +28,20 @@
       "description": "Non-production catalog compiler fixture; contains no usable model weights.",
       "revision": "0123456789abcdef0123456789abcdef01234567",
       "artifact": {
-        "file": "example-model.bin",
-        "url": "https://huggingface.example.invalid/example/tiny-model/resolve/0123456789abcdef0123456789abcdef01234567/model.bin",
-        "sha256": "a4272135cef00cd46731f541963dad0cb2b27c16743e1b00aae6d9bb72fbc108",
-        "size_bytes": 42
+        "gguf": {
+          "file": "example-model.bin",
+          "url": "https://huggingface.example.invalid/example/tiny-model/resolve/0123456789abcdef0123456789abcdef01234567/model.bin",
+          "sha256": "a4272135cef00cd46731f541963dad0cb2b27c16743e1b00aae6d9bb72fbc108",
+          "size_bytes": 42
+        }
       },
-      "artifact_format": "vllm_gguf",
       "license_id": "Apache-2.0",
       "license_url": "https://huggingface.example.invalid/example/tiny-model/blob/0123456789abcdef0123456789abcdef01234567/LICENSE",
       "requires_acceptance": true,
       "installed_size_bytes": 64,
-      "allowed_runtimes": ["cpu"],
+      "allowed_runtimes": [
+        "cpu"
+      ],
       "required_memory_mib": 1024,
       "required_accelerator_mib": 0,
       "context_window": 4096

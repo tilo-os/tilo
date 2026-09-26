@@ -9,8 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use agent_provider_config::{
-    EndpointLocation, ModelCapability, ModelDescriptor, ProviderConfig, ProviderProfile,
-    ProviderProtocol,
+    EndpointCustody, EndpointLocation, ModelCapability, ModelDescriptor, ProviderConfig,
+    ProviderProfile, ProviderProtocol,
 };
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use serde::{Deserialize, Serialize};
@@ -130,11 +130,16 @@ pub enum LocalModelPhase {
     },
 }
 
+/// The manager's running model: the private socket its API is served on.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalModelEndpoint {
-    pub url: String,
+    pub socket: std::path::PathBuf,
     pub model_id: String,
 }
+
+/// The HTTP base a supervised runtime answers on, over its socket. The host
+/// name is never resolved: the gateway connects to the socket itself.
+const SUPERVISED_BASE_URL: &str = "http://localhost/v1";
 
 impl LocalModelPhase {
     fn is_transient(&self) -> bool {
@@ -452,10 +457,7 @@ fn synced_local_profile(
         LocalModelPhase::Ready {
             running: true,
             endpoint: Some(endpoint),
-        } if endpoint.model_id == model.package.id
-            && (endpoint.url.starts_with("http://127.0.0.1:")
-                || endpoint.url.starts_with("http://[::1]:")) =>
-        {
+        } if endpoint.model_id == model.package.id && endpoint.socket.is_absolute() => {
             Some(endpoint)
         }
         _ => None,
@@ -482,10 +484,14 @@ fn synced_local_profile(
         .default_model
         .filter(|id| profile.models.iter().any(|model| model.id == *id))
         .or_else(|| profile.models.first().map(|model| model.id.clone()));
-    // The manager owns port allocation. Settings persists only the endpoint
-    // returned by its ready state, never the legacy `:8000` placeholder.
+    // The manager owns the runtime and its socket. Settings records only the
+    // socket its ready state reports; that record is what makes the profile
+    // supervised, so nothing typed into a form can claim it.
     if let Some(endpoint) = running_endpoint {
-        profile.endpoint.clone_from(&endpoint.url);
+        profile.endpoint = SUPERVISED_BASE_URL.into();
+        profile.custody = EndpointCustody::Supervised {
+            socket: endpoint.socket.clone(),
+        };
         profile.default_model = Some(endpoint.model_id.clone());
     }
     profile.enabled = running_endpoint.is_some();
@@ -1774,7 +1780,7 @@ mod tests {
     }
 
     #[test]
-    fn local_profile_uses_the_ready_manager_endpoint_not_port_8000() {
+    fn local_profile_is_supervised_through_the_ready_manager_socket() {
         let mut package = package();
         package.capabilities = [
             ModelCapability::Vision,
@@ -1788,13 +1794,14 @@ mod tests {
             phase: LocalModelPhase::Ready {
                 running: true,
                 endpoint: Some(LocalModelEndpoint {
-                    url: "http://127.0.0.1:43127/v1".into(),
+                    socket: "/run/user/1000/tilo/models/0123456789abcdef/api.sock".into(),
                     model_id,
                 }),
             },
         }];
         let profile = synced_local_profile(None, &models).expect("ready local profile");
-        assert_eq!(profile.endpoint, "http://127.0.0.1:43127/v1");
+        assert_eq!(profile.endpoint, SUPERVISED_BASE_URL);
+        assert!(profile.is_supervised());
         assert_eq!(profile.default_model.as_deref(), Some("test/model"));
         assert_eq!(
             profile.models[0].revision.as_deref(),

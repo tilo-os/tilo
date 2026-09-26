@@ -40,8 +40,8 @@ use std::path::{Path, PathBuf};
 
 use agent_provider_config::ModelCapability;
 use agent_provider_config::local::{
-    LocalModelRelease, ModelArtifactFormat, PinnedArtifact as ModelArtifact, RuntimeKind,
-    RuntimeRelease,
+    LocalModelRelease, ModelArtifact, PinnedArtifact, RuntimeEngine, RuntimeKind, RuntimeRelease,
+    SnapshotFile, is_snapshot_path,
 };
 use clap::Parser;
 use ed25519_dalek::{Signer as _, SigningKey};
@@ -151,8 +151,14 @@ struct RuntimeSource {
     id: String,
     kind: RuntimeKind,
     version: String,
-    /// Digest-pinned OCI identity used by a container-aware supervisor.
+    #[serde(default)]
+    engine: RuntimeEngine,
+    /// `registry/repository@sha256:<manifest digest>`, pulled by digest from
+    /// the vendor's registry.
     oci_image: String,
+    /// The image manifest itself: `file` holds its bytes (for example
+    /// `skopeo inspect --raw`), `url` its registry location. Its SHA-256 must
+    /// be the digest `oci_image` names.
     artifact: ArtifactSource,
     base_image_digest: String,
     architecture: Option<String>,
@@ -168,8 +174,7 @@ struct ModelSource {
     description: String,
     /// Immutable upstream commit/revision, never `main`, `latest`, or a tag.
     revision: String,
-    artifact: ArtifactSource,
-    artifact_format: ModelArtifactFormat,
+    artifact: ModelArtifactSource,
     license_id: String,
     license_url: String,
     requires_acceptance: bool,
@@ -187,6 +192,51 @@ struct ModelSource {
     /// Share of accelerator memory, in percent, vLLM may claim.
     #[serde(default)]
     accelerator_memory_percent: Option<u8>,
+}
+
+/// A model's bytes, each fetched from the vendor's own source.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum ModelArtifactSource {
+    /// Every file of a Hugging Face snapshot at the pinned revision; each
+    /// `url` is that file's resolve URL.
+    HfSnapshot {
+        files: Vec<SnapshotFileSource>,
+    },
+    Gguf(ArtifactSource),
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(from = "SnapshotFileWire")]
+struct SnapshotFileSource {
+    /// Path inside the snapshot, which the resolve URL must end with.
+    path: String,
+    artifact: ArtifactSource,
+}
+
+/// [`SnapshotFileSource`] as written: its path beside the artifact fields.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SnapshotFileWire {
+    path: String,
+    file: PathBuf,
+    url: String,
+    sha256: Option<String>,
+    size_bytes: Option<u64>,
+}
+
+impl From<SnapshotFileWire> for SnapshotFileSource {
+    fn from(wire: SnapshotFileWire) -> Self {
+        Self {
+            path: wire.path,
+            artifact: ArtifactSource {
+                file: wire.file,
+                url: wire.url,
+                sha256: wire.sha256,
+                size_bytes: wire.size_bytes,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -289,8 +339,14 @@ fn compile(
             return Err(format!("duplicate runtime id {}", runtime.id));
         }
         runtime_kinds.insert(runtime.kind);
-        validate_oci_digest(&runtime.oci_image)?;
+        let digest = validate_oci_digest(&runtime.oci_image)?;
         let receipt = resolve_artifact(&runtime.artifact, source_dir, source.production, None)?;
+        if receipt.sha256 != digest {
+            return Err(format!(
+                "runtime {} manifest does not hash to the digest its image names",
+                runtime.id
+            ));
+        }
         let manifest = ExtensionManifest {
             schema_version: system_extension::SCHEMA_VERSION,
             id: runtime.id.clone(),
@@ -323,7 +379,8 @@ fn compile(
                 id: runtime.id,
                 kind: runtime.kind,
                 version: runtime.version,
-                artifact: ModelArtifact {
+                engine: runtime.engine,
+                artifact: PinnedArtifact {
                     url: runtime.artifact.url,
                     sha256: receipt.sha256,
                     size_bytes: receipt.size_bytes,
@@ -363,13 +420,13 @@ fn compile(
                 model.id
             ));
         }
-        let receipt = resolve_artifact(
+        let artifact = resolve_model_artifact(
             &model.artifact,
             source_dir,
             source.production,
-            Some(&model.revision),
+            &model.revision,
         )?;
-        if model.installed_size_bytes < receipt.size_bytes {
+        if model.installed_size_bytes < artifact.download_bytes() {
             return Err(format!(
                 "model {} installed size is smaller than its artifact",
                 model.id
@@ -380,12 +437,7 @@ fn compile(
             label: model.label,
             description: model.description,
             version: model.revision,
-            artifact: ModelArtifact {
-                url: model.artifact.url,
-                sha256: receipt.sha256,
-                size_bytes: receipt.size_bytes,
-            },
-            artifact_format: model.artifact_format,
+            artifact,
             license_id: model.license_id,
             license_url: model.license_url,
             requires_acceptance: model.requires_acceptance,
@@ -443,6 +495,50 @@ fn catalog_signing_bytes(payload: &CatalogPayload) -> Result<Vec<u8>, String> {
     bytes.push(0);
     bytes.extend_from_slice(&encoded);
     Ok(bytes)
+}
+
+fn pinned(source: &ArtifactSource, receipt: Receipt) -> PinnedArtifact {
+    PinnedArtifact {
+        url: source.url.clone(),
+        sha256: receipt.sha256,
+        size_bytes: receipt.size_bytes,
+    }
+}
+
+fn resolve_model_artifact(
+    source: &ModelArtifactSource,
+    source_dir: &Path,
+    production: bool,
+    revision: &str,
+) -> Result<ModelArtifact, String> {
+    match source {
+        ModelArtifactSource::Gguf(file) => Ok(ModelArtifact::Gguf(pinned(
+            file,
+            resolve_artifact(file, source_dir, production, Some(revision))?,
+        ))),
+        ModelArtifactSource::HfSnapshot { files } => {
+            let files = files
+                .iter()
+                .map(|file| {
+                    if !is_snapshot_path(&file.path)
+                        || !file.artifact.url.ends_with(&format!("/{revision}/{}", file.path))
+                    {
+                        return Err(format!(
+                            "snapshot file {} must be fetched from its resolve URL at the pinned revision",
+                            file.path
+                        ));
+                    }
+                    let receipt =
+                        resolve_artifact(&file.artifact, source_dir, production, Some(revision))?;
+                    Ok(SnapshotFile {
+                        path: file.path.clone(),
+                        artifact: pinned(&file.artifact, receipt),
+                    })
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            Ok(ModelArtifact::HfSnapshot { files })
+        }
+    }
 }
 
 fn resolve_artifact(
@@ -550,7 +646,7 @@ fn validate_revision(revision: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_oci_digest(image: &str) -> Result<(), String> {
+fn validate_oci_digest(image: &str) -> Result<&str, String> {
     let Some((repository, digest)) = image.rsplit_once("@sha256:") else {
         return Err("runtime OCI image must use a sha256 digest, not a tag".into());
     };
@@ -562,7 +658,7 @@ fn validate_oci_digest(image: &str) -> Result<(), String> {
     {
         return Err("runtime OCI image has an invalid sha256 digest".into());
     }
-    Ok(())
+    Ok(digest)
 }
 
 fn validate_identifier(name: &str, value: &str) -> Result<(), String> {
@@ -665,11 +761,32 @@ mod tests {
         }
     }
 
+    fn snapshot_file(dir: &Path, revision: &str, path: &str, bytes: &[u8]) -> SnapshotFileSource {
+        let mut file = artifact(dir, &path.replace('/', "_"), bytes);
+        file.url =
+            format!("https://huggingface.example.invalid/acme/model/resolve/{revision}/{path}");
+        SnapshotFileSource {
+            path: path.into(),
+            artifact: file,
+        }
+    }
+
+    const MANIFEST: &[u8] = b"{\"schemaVersion\":2}\n";
+
     fn source(dir: &Path) -> CatalogSource {
         let revision = "0123456789abcdef0123456789abcdef01234567";
-        let mut model_artifact = artifact(dir, "model.bin", b"deterministic model fixture\n");
-        model_artifact.url =
-            format!("https://huggingface.example.invalid/acme/model/resolve/{revision}/model.bin");
+        let model_artifact = ModelArtifactSource::HfSnapshot {
+            files: vec![
+                snapshot_file(dir, revision, "config.json", b"{}\n"),
+                snapshot_file(
+                    dir,
+                    revision,
+                    "weights/model.safetensors",
+                    b"deterministic weights\n",
+                ),
+            ],
+        };
+        let manifest_digest = hex::encode(Sha256::digest(MANIFEST));
         CatalogSource {
             schema: 1,
             production: false,
@@ -679,11 +796,9 @@ mod tests {
                 id: "vllm-cpu".into(),
                 kind: RuntimeKind::Cpu,
                 version: "0.1.0-example".into(),
-                oci_image: format!(
-                    "registry.example.invalid/tilo/vllm@sha256:{}",
-                    "b".repeat(64)
-                ),
-                artifact: artifact(dir, "runtime.bin", b"deterministic runtime fixture\n"),
+                engine: RuntimeEngine::Vllm,
+                oci_image: format!("registry.example.invalid/tilo/vllm@sha256:{manifest_digest}"),
+                artifact: artifact(dir, "runtime.bin", MANIFEST),
                 base_image_digest: format!("sha256:{}", "a".repeat(64)),
                 architecture: Some("x86_64".into()),
                 kernel_abi: None,
@@ -695,7 +810,6 @@ mod tests {
                 description: "Deterministic test fixture".into(),
                 revision: revision.into(),
                 artifact: model_artifact,
-                artifact_format: ModelArtifactFormat::VllmGguf,
                 license_id: "Apache-2.0".into(),
                 license_url: format!(
                     "https://huggingface.example.invalid/acme/model/blob/{revision}/LICENSE"
@@ -722,7 +836,7 @@ mod tests {
         let (catalog, trust) =
             compile(source, &fixtures, &SigningKey::from_bytes(&[11; 32])).unwrap();
         assert_eq!(catalog.payload.recommendation, "example/tiny-model");
-        assert_eq!(catalog.payload.models[0].artifact.size_bytes, 42);
+        assert_eq!(catalog.payload.models[0].artifact.download_bytes(), 42);
         assert_eq!(catalog.payload.runtimes[0].release.artifact.size_bytes, 44);
         assert_eq!(trust.keys.len(), 1);
     }
@@ -751,9 +865,60 @@ mod tests {
     fn artifact_receipt_is_resolved_and_declared_mismatch_fails() {
         let temp = tempfile::tempdir().unwrap();
         let mut source = source(temp.path());
-        source.models[0].artifact.sha256 = Some("f".repeat(64));
+        let ModelArtifactSource::HfSnapshot { files } = &mut source.models[0].artifact else {
+            panic!("snapshot fixture");
+        };
+        files[1].artifact.sha256 = Some("f".repeat(64));
         let error = compile(source, temp.path(), &SigningKey::from_bytes(&[3; 32])).unwrap_err();
         assert!(error.contains("SHA-256 does not match"));
+    }
+
+    #[test]
+    fn a_snapshot_file_comes_from_its_own_resolve_url_at_the_revision() {
+        let temp = tempfile::tempdir().unwrap();
+        let compiled = compile(
+            source(temp.path()),
+            temp.path(),
+            &SigningKey::from_bytes(&[3; 32]),
+        )
+        .unwrap();
+        let ModelArtifact::HfSnapshot { files } = &compiled.0.payload.models[0].artifact else {
+            panic!("snapshot fixture");
+        };
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1].path, "weights/model.safetensors");
+
+        for url in [
+            "https://huggingface.example.invalid/acme/model/resolve/0123456789abcdef0123456789abcdef01234567/other.safetensors",
+            "https://mirror.example.invalid/0123456789abcdef0123456789abcdef01234567/model.safetensors",
+        ] {
+            let mut moved = source(temp.path());
+            let ModelArtifactSource::HfSnapshot { files } = &mut moved.models[0].artifact else {
+                panic!("snapshot fixture");
+            };
+            files[1].artifact.url = url.into();
+            assert!(
+                compile(moved, temp.path(), &SigningKey::from_bytes(&[3; 32]))
+                    .unwrap_err()
+                    .contains("resolve URL"),
+                "{url}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_runtime_manifest_must_hash_to_the_digest_its_image_names() {
+        let temp = tempfile::tempdir().unwrap();
+        let mut retargeted = source(temp.path());
+        retargeted.runtimes[0].oci_image = format!(
+            "registry.example.invalid/tilo/vllm@sha256:{}",
+            "b".repeat(64)
+        );
+        assert!(
+            compile(retargeted, temp.path(), &SigningKey::from_bytes(&[3; 32]))
+                .unwrap_err()
+                .contains("digest its image names")
+        );
     }
 
     #[cfg(unix)]

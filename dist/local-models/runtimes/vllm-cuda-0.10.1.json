@@ -1,0 +1,9 @@
+{
+  "id": "vllm-cuda-0.10.1",
+  "kind": "nvidia_cuda",
+  "version": "0.10.1",
+  "engine": "vllm",
+  "image": "docker.io/vllm/vllm-openai@sha256:c62343ee72f094ef574ab3af2717d0c60fec5e0808b238f19ac4c0d22fd152f7",
+  "manifest_url": "https://registry-1.docker.io/v2/vllm/vllm-openai/manifests/sha256:c62343ee72f094ef574ab3af2717d0c60fec5e0808b238f19ac4c0d22fd152f7",
+  "architecture": "x86_64"
+}

@@ -49,17 +49,42 @@ impl RuntimeKind {
     }
 }
 
-/// A pinned runtime image or package. `artifact` is checksum-addressed, so a
-/// mutable tag can never be installed by this planner.
+/// The inference engine a runtime image carries. The model manager builds
+/// the engine's fixed argv from signed catalogue fields; the catalogue never
+/// carries a command line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeEngine {
+    /// vLLM's OpenAI-compatible server.
+    #[default]
+    Vllm,
+}
+
+/// A pinned runtime: an OCI image in its vendor's registry, pulled by digest.
+///
+/// `artifact` pins the image manifest itself (its registry URL, SHA-256 and
+/// length), so `oci_image` names exactly that digest and the signed extension
+/// record covers the same bytes the container engine verifies on pull. The
+/// image is never mirrored or repackaged.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeRelease {
     pub id: String,
     pub kind: RuntimeKind,
     pub version: String,
+    #[serde(default)]
+    pub engine: RuntimeEngine,
     pub artifact: PinnedArtifact,
-    /// Immutable OCI image digest prepared by the signed runtime extension.
-    /// A runtime is never treated as an executable downloaded blob.
+    /// `registry/repository@sha256:<manifest digest>`.
     pub oci_image: String,
+}
+
+impl RuntimeRelease {
+    /// The manifest digest `oci_image` names, when it is digest-pinned.
+    #[must_use]
+    pub fn image_digest(&self) -> Option<&str> {
+        let (repository, digest) = self.oci_image.rsplit_once("@sha256:")?;
+        (!repository.is_empty() && is_sha256(digest)).then_some(digest)
+    }
 }
 
 /// An immutable, verified downloadable object.
@@ -70,18 +95,11 @@ pub struct PinnedArtifact {
     pub size_bytes: u64,
 }
 
-/// The only model artifact layouts the local runtime understands. The format
-/// is signed catalog data, never guessed from a filename or HTTP header.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelArtifactFormat {
-    /// A complete Hugging Face/vLLM snapshot packaged as a `.tar.zst` stream.
-    /// The service verifies the compressed object, then refuses unsafe archive
-    /// entries before atomically promoting the extracted directory.
-    HfSnapshotTarZst,
-    /// An explicit GGUF single-file release. Catalog authors must assert vLLM
-    /// compatibility; the format is not inferred as a fallback.
-    VllmGguf,
+fn is_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 impl PinnedArtifact {
@@ -97,15 +115,130 @@ impl PinnedArtifact {
                 "artifact URL must use HTTPS",
             ));
         }
-        if self.sha256.len() != 64 || !self.sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        if !is_sha256(&self.sha256) {
             return Err(ProvisionError::InvalidCatalog(
-                "artifact SHA-256 must be 64 hex characters",
+                "artifact SHA-256 must be 64 lowercase hex characters",
             ));
         }
         if self.size_bytes == 0 {
             return Err(ProvisionError::InvalidCatalog(
                 "artifact size must be non-zero",
             ));
+        }
+        Ok(())
+    }
+}
+
+/// One file of a model snapshot, at its path inside the snapshot.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotFile {
+    pub path: String,
+    pub artifact: PinnedArtifact,
+}
+
+/// Files a snapshot may hold; far above any real model repository.
+pub const MAX_SNAPSHOT_FILES: usize = 4_096;
+
+/// Whether `path` is a plain relative path inside a snapshot.
+#[must_use]
+pub fn is_snapshot_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.len() <= 1_024
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.chars().any(char::is_control)
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+/// A model release's bytes and how they are laid out. The layout is signed
+/// catalogue data, never guessed from a filename or HTTP header, and every
+/// byte is fetched from the vendor's own source.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelArtifact {
+    /// A Hugging Face snapshot at a pinned revision, fetched file by file
+    /// from the repository's own resolve URLs and assembled into a directory.
+    HfSnapshot { files: Vec<SnapshotFile> },
+    /// A single GGUF file.
+    Gguf(PinnedArtifact),
+}
+
+impl ModelArtifact {
+    /// The pinned objects to fetch.
+    #[must_use]
+    pub fn objects(&self) -> Vec<&PinnedArtifact> {
+        match self {
+            Self::HfSnapshot { files } => files.iter().map(|file| &file.artifact).collect(),
+            Self::Gguf(artifact) => vec![artifact],
+        }
+    }
+
+    /// Bytes to download.
+    #[must_use]
+    pub fn download_bytes(&self) -> u64 {
+        self.objects().iter().fold(0_u64, |total, artifact| {
+            total.saturating_add(artifact.size_bytes)
+        })
+    }
+
+    /// The release's content identity: the object's SHA-256 for a single
+    /// file, or the SHA-256 of the sorted `path NUL sha256 NUL size LF`
+    /// listing for a snapshot. Installed directories and license acceptances
+    /// are keyed by it.
+    #[must_use]
+    pub fn identity(&self) -> String {
+        use sha2::{Digest as _, Sha256};
+        match self {
+            Self::Gguf(artifact) => artifact.sha256.clone(),
+            Self::HfSnapshot { files } => {
+                let mut listing: Vec<&SnapshotFile> = files.iter().collect();
+                listing.sort_by(|left, right| left.path.cmp(&right.path));
+                let mut hasher = Sha256::new();
+                for file in listing {
+                    hasher.update(file.path.as_bytes());
+                    hasher.update([0]);
+                    hasher.update(file.artifact.sha256.as_bytes());
+                    hasher.update([0]);
+                    hasher.update(file.artifact.size_bytes.to_string().as_bytes());
+                    hasher.update(b"\n");
+                }
+                hex::encode(hasher.finalize())
+            }
+        }
+    }
+
+    /// Validate every pinned object and, for a snapshot, its paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid object, an empty or oversized
+    /// snapshot, an unsafe or duplicate path, or a snapshot without a model
+    /// configuration.
+    pub fn validate(&self) -> Result<(), ProvisionError> {
+        for artifact in self.objects() {
+            artifact.validate()?;
+        }
+        if let Self::HfSnapshot { files } = self {
+            if files.is_empty() || files.len() > MAX_SNAPSHOT_FILES {
+                return Err(ProvisionError::InvalidCatalog(
+                    "a snapshot holds 1 through 4096 files",
+                ));
+            }
+            let mut paths = BTreeSet::new();
+            for file in files {
+                if !is_snapshot_path(&file.path) || !paths.insert(file.path.as_str()) {
+                    return Err(ProvisionError::InvalidCatalog(
+                        "snapshot paths must be unique plain relative paths",
+                    ));
+                }
+            }
+            if !paths.contains("config.json") {
+                return Err(ProvisionError::InvalidCatalog(
+                    "a snapshot must contain config.json",
+                ));
+            }
         }
         Ok(())
     }
@@ -119,8 +252,7 @@ pub struct LocalModelRelease {
     /// Release-authored description shown before any bytes are downloaded.
     pub description: String,
     pub version: String,
-    pub artifact: PinnedArtifact,
-    pub artifact_format: ModelArtifactFormat,
+    pub artifact: ModelArtifact,
     /// SPDX license identifier where one exists (`Apache-2.0`, `MIT`, ...).
     pub license_id: String,
     /// Immutable model-card or license document for the pinned revision.
@@ -169,9 +301,9 @@ impl LocalModelCatalog {
                 return Err(ProvisionError::InvalidCatalog("runtime ids must be unique"));
             }
             runtime.artifact.validate()?;
-            if !runtime.oci_image.contains("@sha256:") {
+            if runtime.image_digest() != Some(runtime.artifact.sha256.as_str()) {
                 return Err(ProvisionError::InvalidCatalog(
-                    "runtime OCI image must be digest pinned",
+                    "runtime OCI image must be pinned to its signed manifest digest",
                 ));
             }
         }
@@ -205,7 +337,7 @@ impl LocalModelCatalog {
                     "model context window must be non-zero",
                 ));
             }
-            if model.installed_size_bytes < model.artifact.size_bytes {
+            if model.installed_size_bytes < model.artifact.download_bytes() {
                 return Err(ProvisionError::InvalidCatalog(
                     "installed model size cannot be smaller than its artifact",
                 ));
@@ -235,9 +367,14 @@ impl LocalModelCatalog {
                 model.allowed_runtimes.contains(&runtime)
                     && model.required_memory_mib <= hardware.memory_mib
                     && model.required_accelerator_mib <= accelerator
-                    && model.artifact.size_bytes / (1024 * 1024) <= hardware.free_storage_mib
+                    && model.installed_size_bytes / (1024 * 1024) <= hardware.free_storage_mib
             })
-            .max_by_key(|model| (model.context_window, Reverse(model.artifact.size_bytes)))
+            .max_by_key(|model| {
+                (
+                    model.context_window,
+                    Reverse(model.artifact.download_bytes()),
+                )
+            })
     }
 }
 
@@ -320,23 +457,25 @@ pub enum LocalModelStatus {
     },
 }
 
+/// A running supervised model: the Unix socket its OpenAI-compatible server
+/// listens on, and the catalogue id it serves. The runtime has no network;
+/// this socket is the only way to reach it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalEndpoint {
-    pub url: String,
+    pub socket: std::path::PathBuf,
     pub model_id: String,
 }
 
 impl LocalEndpoint {
-    /// Validate that an activated endpoint is local and identifies a model.
+    /// Validate that an activated endpoint is a socket path and identifies a
+    /// model.
     ///
     /// # Errors
     ///
-    /// Returns an error when the endpoint is not loopback-only or does not
-    /// identify a model.
+    /// Returns an error when the socket path is not absolute or the endpoint
+    /// does not identify a model.
     pub fn validate(&self) -> Result<(), ProvisionError> {
-        let local =
-            self.url.starts_with("http://127.0.0.1:") || self.url.starts_with("http://[::1]:");
-        if !local {
+        if !self.socket.is_absolute() {
             return Err(ProvisionError::UnsafeEndpoint);
         }
         if self.model_id.trim().is_empty() {
@@ -344,81 +483,6 @@ impl LocalEndpoint {
         }
         Ok(())
     }
-}
-
-/// A resumable transfer report. `verified` must stay false until the backend
-/// has downloaded the full expected length; hash verification is a distinct,
-/// mandatory orchestration step below.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TransferProgress {
-    pub received_bytes: u64,
-    pub complete: bool,
-}
-
-/// The only side-effect boundary for provision/install/start. It has typed
-/// operations, pinned artifacts, and a typed vLLM launch request — no `run`,
-/// `sh`, or free-form command string exists in this API.
-pub trait LocalModelBackend {
-    /// Return the number of bytes currently persisted for an artifact.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the partial download cannot be inspected.
-    fn partial_size(&self, artifact: &PinnedArtifact) -> Result<u64, ProvisionError>;
-
-    /// Resume downloading an artifact from a previously persisted byte offset.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the transfer cannot be resumed.
-    fn resume_download(
-        &mut self,
-        artifact: &PinnedArtifact,
-        from_byte: u64,
-    ) -> Result<TransferProgress, ProvisionError>;
-    /// Return the SHA-256 digest of the persisted artifact bytes.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the partial download cannot be read or hashed.
-    fn sha256_of_partial(&self, artifact: &PinnedArtifact) -> Result<String, ProvisionError>;
-
-    /// Atomically promote a verified artifact to its installed location.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the verified artifact cannot be promoted.
-    fn promote_verified(&mut self, artifact: &PinnedArtifact) -> Result<(), ProvisionError>;
-
-    /// Install a pinned runtime release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the runtime cannot be installed.
-    fn install_runtime(&mut self, runtime: &RuntimeRelease) -> Result<(), ProvisionError>;
-
-    /// Install a verified model release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model cannot be installed.
-    fn install_model(&mut self, model: &LocalModelRelease) -> Result<(), ProvisionError>;
-
-    /// Start the model service with the typed, loopback-only launch request.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the model service cannot be started.
-    fn start_vllm(&mut self, launch: VllmLaunch) -> Result<LocalEndpoint, ProvisionError>;
-}
-
-/// Sanitised, typed vLLM activation request. The port is loopback-only and is
-/// not user-provided; a backend maps this record to its service manager/API.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VllmLaunch {
-    pub runtime_id: String,
-    pub model_id: String,
-    pub port: u16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -444,132 +508,12 @@ impl fmt::Display for ProvisionError {
                 formatter.write_str("download hash did not match the pinned artifact")
             }
             Self::UnsafeEndpoint => {
-                formatter.write_str("local runtime returned a non-loopback endpoint")
+                formatter.write_str("local runtime returned an endpoint that is not a socket path")
             }
         }
     }
 }
 impl std::error::Error for ProvisionError {}
-
-/// Orchestrates a single catalog-approved runtime+model installation.
-pub struct LocalModelProvisioner<'a, B> {
-    backend: &'a mut B,
-}
-
-impl<'a, B: LocalModelBackend> LocalModelProvisioner<'a, B> {
-    pub fn new(backend: &'a mut B) -> Self {
-        Self { backend }
-    }
-
-    /// Install the selected catalog-approved model and runtime.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the catalog, hardware, transfer, verification, or
-    /// backend installation step is invalid or fails.
-    pub fn install(
-        &mut self,
-        catalog: &LocalModelCatalog,
-        hardware: &HardwareSnapshot,
-        model_id: &str,
-    ) -> Result<LocalModelStatus, ProvisionError> {
-        catalog.validate()?;
-        let runtime = match select_runtime(hardware) {
-            RuntimeDecision::Ready(runtime) => runtime,
-            RuntimeDecision::Unavailable(reason) => {
-                return Err(ProvisionError::UnsupportedHardware(reason.into()));
-            }
-        };
-        let release = catalog
-            .models
-            .iter()
-            .find(|model| model.id == model_id)
-            .ok_or(ProvisionError::InvalidCatalog("unknown model id"))?;
-        if !release.allowed_runtimes.contains(&runtime) {
-            return Err(ProvisionError::UnsupportedHardware(format!(
-                "{} cannot run on {}",
-                release.label,
-                runtime.label()
-            )));
-        }
-        let runtime_release = catalog
-            .runtime(runtime)
-            .ok_or(ProvisionError::InvalidCatalog(
-                "no pinned runtime for selected hardware",
-            ))?;
-        self.download_verified(&runtime_release.artifact)?;
-        self.backend.install_runtime(runtime_release)?;
-        self.download_verified(&release.artifact)?;
-        self.backend.install_model(release)?;
-        Ok(LocalModelStatus::Installed)
-    }
-
-    /// Start an installed model and validate its returned loopback endpoint.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the hardware, catalog, requested port, backend, or
-    /// returned endpoint is invalid.
-    pub fn activate(
-        &mut self,
-        catalog: &LocalModelCatalog,
-        hardware: &HardwareSnapshot,
-        model_id: &str,
-        port: u16,
-    ) -> Result<LocalModelStatus, ProvisionError> {
-        let runtime = match select_runtime(hardware) {
-            RuntimeDecision::Ready(runtime) => runtime,
-            RuntimeDecision::Unavailable(reason) => {
-                return Err(ProvisionError::UnsupportedHardware(reason.into()));
-            }
-        };
-        let runtime_release = catalog
-            .runtime(runtime)
-            .ok_or(ProvisionError::InvalidCatalog(
-                "no pinned runtime for selected hardware",
-            ))?;
-        let model = catalog
-            .models
-            .iter()
-            .find(|model| model.id == model_id)
-            .ok_or(ProvisionError::InvalidCatalog("unknown model id"))?;
-        if port == 0 {
-            return Err(ProvisionError::Backend("port 0 cannot be activated".into()));
-        }
-        let endpoint = self.backend.start_vllm(VllmLaunch {
-            runtime_id: runtime_release.id.clone(),
-            model_id: model.id.clone(),
-            port,
-        })?;
-        endpoint.validate()?;
-        if endpoint.model_id != model.id {
-            return Err(ProvisionError::Backend(
-                "runtime reported a different model than requested".into(),
-            ));
-        }
-        Ok(LocalModelStatus::Ready { endpoint })
-    }
-
-    fn download_verified(&mut self, artifact: &PinnedArtifact) -> Result<(), ProvisionError> {
-        let from = self.backend.partial_size(artifact)?;
-        if from > artifact.size_bytes {
-            return Err(ProvisionError::Transfer(
-                "partial artifact exceeds its pinned size".into(),
-            ));
-        }
-        let transfer = self.backend.resume_download(artifact, from)?;
-        if !transfer.complete || transfer.received_bytes != artifact.size_bytes {
-            return Err(ProvisionError::Transfer(
-                "download did not reach its pinned size".into(),
-            ));
-        }
-        let digest = self.backend.sha256_of_partial(artifact)?;
-        if !digest.eq_ignore_ascii_case(&artifact.sha256) {
-            return Err(ProvisionError::IntegrityMismatch);
-        }
-        self.backend.promote_verified(artifact)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -588,6 +532,7 @@ mod tests {
                 id: "vllm-cpu-0.9.0".into(),
                 kind: RuntimeKind::Cpu,
                 version: "0.9.0".into(),
+                engine: RuntimeEngine::Vllm,
                 artifact: artifact("runtime"),
                 oci_image: "registry.example.invalid/tilo/vllm@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
             }],
@@ -596,12 +541,22 @@ mod tests {
                 label: "Tiny Q4".into(),
                 description: "A tiny test model".into(),
                 version: "1".into(),
-                artifact: artifact("model"),
-                artifact_format: ModelArtifactFormat::VllmGguf,
+                artifact: ModelArtifact::HfSnapshot {
+                    files: vec![
+                        SnapshotFile {
+                            path: "config.json".into(),
+                            artifact: artifact("config.json"),
+                        },
+                        SnapshotFile {
+                            path: "model.safetensors".into(),
+                            artifact: artifact("model.safetensors"),
+                        },
+                    ],
+                },
                 license_id: "Apache-2.0".into(),
                 license_url: "https://models.example.invalid/LICENSE".into(),
                 requires_acceptance: true,
-                installed_size_bytes: 100,
+                installed_size_bytes: 200,
                 allowed_runtimes: [RuntimeKind::Cpu].into(),
                 required_memory_mib: 8192,
                 required_accelerator_mib: 0,
@@ -611,6 +566,63 @@ mod tests {
             }],
         }
     }
+    #[test]
+    fn a_catalogue_pins_runtimes_by_manifest_digest_and_snapshots_by_file() {
+        let mut catalog = catalog();
+        assert_eq!(catalog.validate(), Ok(()));
+
+        let mut retagged = catalog.clone();
+        retagged.runtimes[0].oci_image = "registry.example.invalid/tilo/vllm:latest".into();
+        assert!(retagged.validate().is_err());
+        let mut other_digest = catalog.clone();
+        other_digest.runtimes[0].artifact.sha256 = "b".repeat(64);
+        assert!(
+            other_digest.validate().is_err(),
+            "the image must name the signed manifest"
+        );
+
+        let ModelArtifact::HfSnapshot { files } = &mut catalog.models[0].artifact else {
+            panic!("snapshot fixture");
+        };
+        for unsafe_path in ["../escape", "/etc/passwd", "a//b", "a/./b", ""] {
+            let mut files = files.clone();
+            files[1].path = unsafe_path.into();
+            let snapshot = ModelArtifact::HfSnapshot { files };
+            assert!(snapshot.validate().is_err(), "{unsafe_path:?}");
+        }
+        let mut duplicate = files.clone();
+        duplicate[1].path = "config.json".into();
+        assert!(
+            ModelArtifact::HfSnapshot { files: duplicate }
+                .validate()
+                .is_err()
+        );
+        let without_config = ModelArtifact::HfSnapshot {
+            files: vec![files[1].clone()],
+        };
+        assert!(without_config.validate().is_err());
+    }
+
+    #[test]
+    fn a_snapshot_identity_is_its_file_listing_in_any_order() {
+        let catalog = catalog();
+        let ModelArtifact::HfSnapshot { files } = &catalog.models[0].artifact else {
+            panic!("snapshot fixture");
+        };
+        let identity = catalog.models[0].artifact.identity();
+        let reversed = ModelArtifact::HfSnapshot {
+            files: files.iter().rev().cloned().collect(),
+        };
+        assert_eq!(reversed.identity(), identity);
+        let mut changed = files.clone();
+        changed[1].artifact.size_bytes = 101;
+        assert_ne!(
+            ModelArtifact::HfSnapshot { files: changed }.identity(),
+            identity
+        );
+        assert_eq!(catalog.models[0].artifact.download_bytes(), 200);
+    }
+
     fn cpu() -> HardwareSnapshot {
         HardwareSnapshot {
             cpu_threads: 8,
@@ -664,84 +676,6 @@ mod tests {
         assert_eq!(
             select_runtime(&card(6144)),
             RuntimeDecision::Ready(RuntimeKind::Cpu)
-        );
-    }
-
-    struct Fake {
-        partial: u64,
-        calls: Vec<&'static str>,
-        endpoint: String,
-    }
-    impl LocalModelBackend for Fake {
-        fn partial_size(&self, _: &PinnedArtifact) -> Result<u64, ProvisionError> {
-            Ok(self.partial)
-        }
-        fn resume_download(
-            &mut self,
-            artifact: &PinnedArtifact,
-            from: u64,
-        ) -> Result<TransferProgress, ProvisionError> {
-            self.calls.push("resume");
-            if from != self.partial {
-                return Err(ProvisionError::Transfer(
-                    "unexpected resume offset".to_string(),
-                ));
-            }
-            Ok(TransferProgress {
-                received_bytes: artifact.size_bytes,
-                complete: true,
-            })
-        }
-        fn sha256_of_partial(&self, artifact: &PinnedArtifact) -> Result<String, ProvisionError> {
-            Ok(artifact.sha256.clone())
-        }
-        fn promote_verified(&mut self, _: &PinnedArtifact) -> Result<(), ProvisionError> {
-            self.calls.push("promote");
-            Ok(())
-        }
-        fn install_runtime(&mut self, _: &RuntimeRelease) -> Result<(), ProvisionError> {
-            self.calls.push("runtime");
-            Ok(())
-        }
-        fn install_model(&mut self, _: &LocalModelRelease) -> Result<(), ProvisionError> {
-            self.calls.push("model");
-            Ok(())
-        }
-        fn start_vllm(&mut self, _: VllmLaunch) -> Result<LocalEndpoint, ProvisionError> {
-            Ok(LocalEndpoint {
-                url: self.endpoint.clone(),
-                model_id: "tiny-q4".into(),
-            })
-        }
-    }
-
-    #[test]
-    fn installation_resumes_then_verifies_before_each_install() {
-        let mut fake = Fake {
-            partial: 20,
-            calls: vec![],
-            endpoint: "http://127.0.0.1:8000/v1".into(),
-        };
-        let status = LocalModelProvisioner::new(&mut fake)
-            .install(&catalog(), &cpu(), "tiny-q4")
-            .unwrap();
-        assert_eq!(status, LocalModelStatus::Installed);
-        assert_eq!(
-            fake.calls,
-            ["resume", "promote", "runtime", "resume", "promote", "model"]
-        );
-    }
-
-    #[test]
-    fn activation_refuses_a_network_facing_vllm_endpoint() {
-        let mut fake = Fake {
-            partial: 0,
-            calls: vec![],
-            endpoint: "http://192.168.1.2:8000/v1".into(),
-        };
-        assert_eq!(
-            LocalModelProvisioner::new(&mut fake).activate(&catalog(), &cpu(), "tiny-q4", 8000),
-            Err(ProvisionError::UnsafeEndpoint)
         );
     }
 }
