@@ -302,3 +302,92 @@ fn pane_background_and_scrollbar_press_still_focus_the_scrollable() {
         assert!(driver.targets().get("content").unwrap().y0 < before);
     }
 }
+
+fn tall_scroll_driver(theme: Theme) -> Driver {
+    let root = Scrollable::new_vertical()
+        .with_height(300.0)
+        .with_child(Box::new(
+            Container::new()
+                .with_no_padding()
+                .with_size(100.0, 20_000.0)
+                .with_child(Box::new(Text::new("Tall content").with_id("content"))),
+        ));
+    let mut driver = Driver::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
+    driver.send(&winit::event::WindowEvent::CursorMoved {
+        device_id: winit::event::DeviceId::dummy(),
+        position: winit::dpi::PhysicalPosition::new(150.0, 150.0),
+    });
+    driver
+}
+
+/// A two-finger touchpad stroke: pixel deltas bracketed by its phases.
+fn touchpad_flick(driver: &mut Driver, strokes: usize, step: f64) {
+    use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
+    let wheel = |delta: f64, phase| WindowEvent::MouseWheel {
+        device_id: winit::event::DeviceId::dummy(),
+        delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, delta)),
+        phase,
+    };
+    driver.send(&wheel(-step, TouchPhase::Started));
+    for _ in 1..strokes {
+        driver.send(&wheel(-step, TouchPhase::Moved));
+    }
+    driver.send(&wheel(0.0, TouchPhase::Ended));
+    driver.relayout();
+}
+
+fn content_top(driver: &Driver) -> f64 {
+    driver.targets().get("content").unwrap().y0
+}
+
+#[test]
+fn touchpad_flick_keeps_gliding_after_release_then_settles() {
+    let mut driver = tall_scroll_driver(Theme::dark().with_reduce_motion(false));
+    let start = content_top(&driver);
+    touchpad_flick(&mut driver, 6, 20.0);
+    let released = content_top(&driver);
+    assert!(
+        start - released >= 120.0,
+        "pixel deltas move the content at least as far as the fingers: {start} -> {released}"
+    );
+    driver.relayout();
+    driver.relayout();
+    let gliding = content_top(&driver);
+    assert!(
+        gliding < released - 1.0,
+        "a fast lift keeps the content moving: released {released}, then {gliding}"
+    );
+    let mut last = gliding;
+    let mut settled = false;
+    for _ in 0..600 {
+        driver.relayout();
+        let now = content_top(&driver);
+        assert!(now <= last, "the glide never reverses: {last} -> {now}");
+        if now.to_bits() == last.to_bits() {
+            settled = true;
+            break;
+        }
+        last = now;
+    }
+    assert!(settled, "the glide decelerates to rest, still at {last}");
+    assert!(
+        last > -19_000.0,
+        "the glide settled on its own rather than at the content end: {last}"
+    );
+}
+
+#[test]
+fn reduced_motion_touchpad_flick_stops_on_release() {
+    let mut driver = tall_scroll_driver(Theme::dark().with_reduce_motion(true));
+    let start = content_top(&driver);
+    touchpad_flick(&mut driver, 6, 20.0);
+    let released = content_top(&driver);
+    assert!(
+        (start - released - 120.0).abs() < 1.0,
+        "{start} -> {released}"
+    );
+    for _ in 0..10 {
+        driver.relayout();
+    }
+    assert_eq!(content_top(&driver), released);
+}

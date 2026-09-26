@@ -15,14 +15,23 @@
     reason = "bounded usize index arithmetic and finite pixel sums are the core of this geometry index"
 )]
 
-use crate::time::Duration;
-use std::collections::{HashMap, HashSet};
+use crate::time::{Duration, Instant};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::ops::Range;
 
 const PAGE_FRACTION: f64 = 0.9;
 const DRAG_SCROLL_THRESHOLD: f64 = 4.0;
 const MAX_DRAG_FLING_VELOCITY: f64 = 6_000.0;
+const WHEEL_LINE_PX: f64 = 60.0;
+/// How far back a lift looks when estimating the release velocity.
+const KINETIC_WINDOW: Duration = Duration::from_millis(100);
+/// The shortest interval one sample is assumed to span. Devices report at
+/// 60-240 Hz; a burst delivered faster than that (event coalescing, replay,
+/// a test driver) must not read as an unbounded velocity.
+const KINETIC_MIN_SAMPLE_INTERVAL: Duration = Duration::from_millis(8);
+/// Below this release speed a lift is a deliberate stop, not a throw.
+const KINETIC_MIN_VELOCITY: f64 = 60.0;
 
 /// Where an item should land when explicitly scrolled into view.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -44,6 +53,8 @@ pub struct ScrollMomentum {
     velocity: f64,
     decay_per_second: f64,
     max_velocity: f64,
+    kinetic: KineticSampler,
+    pending_pixel: bool,
 }
 
 impl Default for ScrollMomentum {
@@ -52,6 +63,8 @@ impl Default for ScrollMomentum {
             velocity: 0.0,
             decay_per_second: 9.0,
             max_velocity: 6_000.0,
+            kinetic: KineticSampler::new(),
+            pending_pixel: false,
         }
     }
 }
@@ -96,10 +109,152 @@ impl ScrollMomentum {
         self.velocity = 0.0;
     }
 
+    /// Classify one vertical wheel event. Line (detented) wheels accelerate
+    /// through [`Self::push`]; pixel (touchpad, touchscreen) deltas track
+    /// the finger exactly and, when the gesture's `Ended` phase arrives
+    /// while still moving, continue as a fling. `reduce_motion` keeps every
+    /// movement 1:1 with the input.
+    pub fn wheel(
+        &mut self,
+        delta: &winit::event::MouseScrollDelta,
+        phase: winit::event::TouchPhase,
+        reduce_motion: bool,
+    ) -> WheelStep {
+        use winit::event::{MouseScrollDelta, TouchPhase};
+        self.pending_pixel = false;
+        match delta {
+            MouseScrollDelta::LineDelta(_, y) => {
+                self.kinetic.reset();
+                let delta = f64::from(*y) * -WHEEL_LINE_PX;
+                if reduce_motion {
+                    self.stop();
+                    WheelStep::Scroll(delta)
+                } else {
+                    WheelStep::Scroll(self.push(delta))
+                }
+            }
+            MouseScrollDelta::PixelDelta(position) => match phase {
+                TouchPhase::Ended => match self.kinetic.release(crate::time::now()) {
+                    Some((_, velocity)) if !reduce_motion => {
+                        self.fling(velocity);
+                        WheelStep::Fling
+                    }
+                    _ => WheelStep::Ignored,
+                },
+                TouchPhase::Cancelled => {
+                    self.kinetic.reset();
+                    WheelStep::Ignored
+                }
+                TouchPhase::Started | TouchPhase::Moved => {
+                    if phase == TouchPhase::Started {
+                        self.kinetic.reset();
+                    }
+                    // Fingers back on the surface catch a glide in progress.
+                    self.stop();
+                    let delta = -finite_or_zero(position.y);
+                    if delta == 0.0 {
+                        return WheelStep::Ignored;
+                    }
+                    self.pending_pixel = true;
+                    WheelStep::Scroll(delta)
+                }
+            },
+        }
+    }
+
+    /// Report whether the [`WheelStep::Scroll`] delta moved the content. A
+    /// refused delta (at an edge) stops momentum and forgets the gesture so
+    /// an outer scroll region can take it over, fling included.
+    pub fn wheel_applied(&mut self, delta: f64, moved: bool) {
+        if !moved {
+            self.stop();
+            self.kinetic.reset();
+        } else if self.pending_pixel {
+            self.kinetic.record(0.0, delta, crate::time::now());
+        }
+        self.pending_pixel = false;
+    }
+
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.velocity.abs() >= 2.0
     }
+}
+
+/// Release-velocity estimator for continuous (pixel) scrolling.
+///
+/// Touchpads and touchscreens report a gesture as `PixelDelta` wheel events
+/// bracketed by [`winit::event::TouchPhase`]s. Feed every delta the view
+/// actually consumed to [`Self::record`]; on `Ended`, [`Self::release`]
+/// returns the average content-space velocity over the last 100 ms, so a
+/// finger that paused before lifting does not fling.
+#[derive(Clone, Debug, Default)]
+pub struct KineticSampler {
+    samples: VecDeque<(Instant, f64, f64)>,
+}
+
+impl KineticSampler {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record one consumed content-space delta.
+    pub fn record(&mut self, dx: f64, dy: f64, now: Instant) {
+        self.prune(now);
+        self.samples
+            .push_back((now, finite_or_zero(dx), finite_or_zero(dy)));
+    }
+
+    /// Forget the gesture, e.g. when the view stopped consuming it.
+    pub fn reset(&mut self) {
+        self.samples.clear();
+    }
+
+    /// End the gesture and return its content-space velocity in logical
+    /// pixels per second, or `None` when the fingers had come to rest.
+    pub fn release(&mut self, now: Instant) -> Option<(f64, f64)> {
+        self.prune(now);
+        let samples = std::mem::take(&mut self.samples);
+        let first = samples.front()?.0;
+        let count = u32::try_from(samples.len()).unwrap_or(u32::MAX);
+        let span = now
+            .saturating_duration_since(first)
+            .max(KINETIC_MIN_SAMPLE_INTERVAL.saturating_mul(count))
+            .as_secs_f64();
+        let (dx, dy) = samples
+            .iter()
+            .fold((0.0, 0.0), |(x, y), &(_, dx, dy)| (x + dx, y + dy));
+        let (vx, vy) = (dx / span, dy / span);
+        (vx.hypot(vy) >= KINETIC_MIN_VELOCITY).then_some((
+            vx.clamp(-MAX_DRAG_FLING_VELOCITY, MAX_DRAG_FLING_VELOCITY),
+            vy.clamp(-MAX_DRAG_FLING_VELOCITY, MAX_DRAG_FLING_VELOCITY),
+        ))
+    }
+
+    fn prune(&mut self, now: Instant) {
+        while self
+            .samples
+            .front()
+            .is_some_and(|&(at, _, _)| now.saturating_duration_since(at) > KINETIC_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+    }
+}
+
+/// What a vertical collection should do with one wheel event, decided by
+/// [`ScrollMomentum::wheel`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WheelStep {
+    /// Move the content by this many logical pixels now, then report whether
+    /// it moved through [`ScrollMomentum::wheel_applied`].
+    Scroll(f64),
+    /// A continuous gesture ended fast enough to keep gliding; the momentum
+    /// is now active and the event is consumed.
+    Fling,
+    /// Nothing to do (a phase marker, or a gesture that ended at rest).
+    Ignored,
 }
 
 /// Result of moving a pointer tracked by [`DragScroller`].
@@ -1086,6 +1241,80 @@ fn finite_or_zero(value: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinetic_release_averages_the_recent_window() {
+        let start = crate::time::now();
+        let mut sampler = KineticSampler::new();
+        for step in 0..6_u64 {
+            sampler.record(0.0, 10.0, start + Duration::from_millis(step * 16));
+        }
+        let (vx, vy) = sampler
+            .release(start + Duration::from_millis(96))
+            .expect("a moving lift flings");
+        assert_eq!(vx, 0.0);
+        // 60 px over the 96 ms the samples span.
+        assert!((vy - 625.0).abs() < 1.0, "{vy}");
+        assert_eq!(sampler.release(start + Duration::from_millis(96)), None);
+    }
+
+    #[test]
+    fn kinetic_release_after_a_pause_is_at_rest() {
+        let start = crate::time::now();
+        let mut sampler = KineticSampler::new();
+        sampler.record(0.0, 40.0, start);
+        assert_eq!(sampler.release(start + Duration::from_millis(150)), None);
+    }
+
+    #[test]
+    fn kinetic_release_bounds_a_burst_of_simultaneous_samples() {
+        let start = crate::time::now();
+        let mut sampler = KineticSampler::new();
+        for _ in 0..4 {
+            sampler.record(0.0, 20.0, start);
+        }
+        let (_, vy) = sampler.release(start).expect("fling");
+        // Four samples are assumed to span at least 32 ms.
+        assert!((vy - 2_500.0).abs() < 1.0, "{vy}");
+    }
+
+    #[test]
+    fn pixel_wheel_gesture_flings_on_end_unless_motion_is_reduced() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{MouseScrollDelta, TouchPhase};
+        let pixel = |y| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
+        for reduce_motion in [false, true] {
+            let mut momentum = ScrollMomentum::new();
+            for phase in [TouchPhase::Started, TouchPhase::Moved, TouchPhase::Moved] {
+                let step = momentum.wheel(&pixel(-20.0), phase, reduce_motion);
+                assert_eq!(step, WheelStep::Scroll(20.0));
+                momentum.wheel_applied(20.0, true);
+                assert!(!momentum.is_active(), "pixel deltas track the fingers 1:1");
+            }
+            let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, reduce_motion);
+            if reduce_motion {
+                assert_eq!(end, WheelStep::Ignored);
+                assert!(!momentum.is_active());
+            } else {
+                assert_eq!(end, WheelStep::Fling);
+                assert!(momentum.tick(Duration::from_millis(16)) > 0.0);
+            }
+        }
+    }
+
+    #[test]
+    fn pixel_wheel_refused_at_an_edge_does_not_fling() {
+        use winit::dpi::PhysicalPosition;
+        use winit::event::{MouseScrollDelta, TouchPhase};
+        let pixel = |y| MouseScrollDelta::PixelDelta(PhysicalPosition::new(0.0, y));
+        let mut momentum = ScrollMomentum::new();
+        let _ = momentum.wheel(&pixel(-20.0), TouchPhase::Started, false);
+        momentum.wheel_applied(20.0, true);
+        let _ = momentum.wheel(&pixel(-20.0), TouchPhase::Moved, false);
+        momentum.wheel_applied(20.0, false);
+        let end = momentum.wheel(&pixel(0.0), TouchPhase::Ended, false);
+        assert_eq!(end, WheelStep::Ignored);
+    }
 
     #[test]
     fn scroll_momentum_accelerates_repeated_wheel_input_and_settles() {
