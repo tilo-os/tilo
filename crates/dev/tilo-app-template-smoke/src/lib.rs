@@ -128,30 +128,6 @@ pub mod graph {
     include!("../../tilo-app-cli/templates/graph.rs");
 }
 
-pub mod generated_form_component {
-    include!(concat!(env!("OUT_DIR"), "/profile_card.rs"));
-}
-
-pub mod generated_display_component {
-    include!(concat!(env!("OUT_DIR"), "/activity_card.rs"));
-}
-
-pub mod generated_tree_component {
-    include!(concat!(env!("OUT_DIR"), "/project_tree.rs"));
-}
-
-pub mod generated_list_component {
-    include!(concat!(env!("OUT_DIR"), "/activity_list.rs"));
-}
-
-pub mod generated_table_component {
-    include!(concat!(env!("OUT_DIR"), "/results_table.rs"));
-}
-
-pub mod generated_text_component {
-    include!(concat!(env!("OUT_DIR"), "/article_body.rs"));
-}
-
 pub mod screens {
     use ui::widget::Widget;
     use ui::{RouteError, Router, Theme, UiBuildContext, UiGraphError, UiGraphHandle};
@@ -277,11 +253,9 @@ pub mod screens {
     }
 }
 
+// The generated `src/components/` of an app with one component per template.
 pub mod components {
-    #[must_use]
-    pub fn ui_graph_context() -> ui::UiBuildContext {
-        crate::generated_display_component::register_ui_graph(ui::UiBuildContext::default())
-    }
+    include!(concat!(env!("OUT_DIR"), "/components/mod.rs"));
 }
 
 // Each template's generated `tests/app.rs`, run against the template itself.
