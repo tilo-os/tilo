@@ -13,6 +13,18 @@
 //! else's behalf, and deleting a shortcut disarms it at the next event.
 //!
 //! - [`KeyboardTriggers`] fires on a chord in the shell's own notation.
+//! - [`AppOpenedTriggers`] fires when an application starts publishing its
+//!   actions to the broker.
+//! - [`WorkspaceJoinedTriggers`] fires when this device joins a workspace.
+//! - [`FileChangedTriggers`] fires on a change inside a folder a workspace
+//!   capability shares with the saver ([`watched_folders`]).
+//! - [`FocusModeTriggers`] fires when Do Not Disturb or the focus schedule
+//!   switches on or off.
+//!
+//! What an event says (the app, the workspace, the file, the mode) is the
+//! trigger's payload ([`TriggerSpec::payload`]); each value is handed to the
+//! run as the shortcut's input of the same name and type.
+//!
 //! - [`ScheduleTriggers`] fires at intervals or at local wall-clock times.
 //!   Each schedule's next fire time is persisted before the firing is handed
 //!   over, so a restart neither repeats a fire nor forgets one; a fire time
@@ -29,7 +41,7 @@
 //! is covered by the next one.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{
@@ -37,9 +49,14 @@ use chrono::{
     Offset as _, TimeZone as _, Utc,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use settings_store::hardware::KeyChord;
 use sha2::{Digest as _, Sha256};
-use tilo_automation::{CatchUp, RunId, Schedule, ScheduleClaim, Shortcut, TriggerSpec, Weekday};
+use tilo_actions::params::ParamType;
+use tilo_automation::{
+    CatchUp, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, RunId, Schedule, ScheduleClaim,
+    Shortcut, TriggerSpec, Weekday,
+};
 
 /// A fire time this far in the past counts as missed rather than on time.
 pub const MISSED_AFTER: ChronoDuration = ChronoDuration::seconds(90);
@@ -208,6 +225,85 @@ pub enum TriggerEvent<'a> {
     Tick,
     /// A chord was pressed that nothing else in the shell took.
     Key(&'a KeyChord),
+    /// The applications publishing live actions to the broker now.
+    Apps(&'a BTreeSet<String>),
+    /// The workspaces this device is in now: room id to name.
+    Workspaces(&'a BTreeMap<String, String>),
+    /// Whether each focus mode is on now.
+    Focus(FocusState),
+    /// Files changed inside watched folders since the last look.
+    Files(&'a [FolderChange]),
+}
+
+/// Whether each focus mode is on.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusState {
+    pub do_not_disturb: bool,
+    pub focus: bool,
+}
+
+impl FocusState {
+    /// Whether `mode` ([`FOCUS_DO_NOT_DISTURB`], [`FOCUS_SCHEDULE`]) is on.
+    #[must_use]
+    pub fn is_on(self, mode: &str) -> Option<bool> {
+        match mode {
+            FOCUS_DO_NOT_DISTURB => Some(self.do_not_disturb),
+            FOCUS_SCHEDULE => Some(self.focus),
+            _ => None,
+        }
+    }
+}
+
+/// How a file in a watched folder changed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileChange {
+    Created,
+    Modified,
+    Removed,
+}
+
+impl FileChange {
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Modified => "modified",
+            Self::Removed => "removed",
+        }
+    }
+}
+
+/// A folder a file-changed trigger watches: the path the capability
+/// `capability` of workspace `room` shares with the shortcut's saver.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WatchedFolder {
+    pub room: String,
+    pub capability: String,
+    pub path: PathBuf,
+}
+
+/// One file that changed inside a watched folder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FolderChange {
+    pub room: String,
+    pub capability: String,
+    /// The file's path inside the folder.
+    pub file: String,
+    pub change: FileChange,
+}
+
+impl FolderChange {
+    /// The change to `path` inside `folder`, when it is inside it.
+    #[must_use]
+    pub fn inside(folder: &WatchedFolder, path: &Path, change: FileChange) -> Option<Self> {
+        let file = path.strip_prefix(&folder.path).ok()?;
+        (!file.as_os_str().is_empty()).then(|| Self {
+            room: folder.room.clone(),
+            capability: folder.capability.clone(),
+            file: file.to_string_lossy().into_owned(),
+            change,
+        })
+    }
 }
 
 /// One trigger that fired: run `shortcut` in `room`, as run `run`.
@@ -221,6 +317,37 @@ pub struct Firing {
     /// ([`WorkspaceTree::claim_schedule`](crate::shell::state::WorkspaceTree::claim_schedule))
     /// before the run starts.
     pub claim: Option<ScheduleClaim>,
+    /// The trigger's payload, as values for the shortcut's inputs.
+    pub inputs: Map<String, Value>,
+}
+
+impl Firing {
+    /// `trigger` of `armed` firing with `payload`: each value the shortcut
+    /// declares an input of the same name and type for is handed to it.
+    fn event(armed: &Armed<'_>, trigger: &TriggerSpec, payload: &[(&str, Value)]) -> Self {
+        let inputs = payload
+            .iter()
+            .filter(|(name, value)| {
+                armed.shortcut.inputs.iter().any(|input| {
+                    input.name == *name
+                        && match input.ty {
+                            ParamType::Boolean => value.is_boolean(),
+                            ParamType::Text => value.is_string(),
+                            _ => false,
+                        }
+                })
+            })
+            .map(|(name, value)| ((*name).to_string(), value.clone()))
+            .collect();
+        Self {
+            room: armed.room.clone(),
+            shortcut: armed.shortcut.id.clone(),
+            trigger: trigger.clone(),
+            run: RunId::new(),
+            claim: None,
+            inputs,
+        }
+    }
 }
 
 /// What every source reads besides the event.
@@ -267,11 +394,255 @@ impl TriggerSource for KeyboardTriggers {
                         trigger: trigger.clone(),
                         run: RunId::new(),
                         claim: None,
+                        inputs: Map::new(),
                     })
                 })
             })
             .collect()
     }
+}
+
+/// Every trigger of the armed shortcuts that `matches`, with its payload.
+fn fire_matching<'t>(
+    armed: &[Armed<'_>],
+    mut matches: impl FnMut(&Armed<'_>, &TriggerSpec) -> Option<Vec<(&'t str, Value)>>,
+) -> Vec<Firing> {
+    let mut firings = Vec::new();
+    for armed in armed {
+        for trigger in &armed.shortcut.triggers {
+            if let Some(payload) = matches(armed, trigger) {
+                firings.push(Firing::event(armed, trigger, &payload));
+            }
+        }
+    }
+    firings
+}
+
+/// Fires when an application starts publishing live actions. The first
+/// look only learns what is already running.
+#[derive(Debug, Default)]
+pub struct AppOpenedTriggers {
+    running: Option<BTreeSet<String>>,
+}
+
+impl TriggerSource for AppOpenedTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        _context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let TriggerEvent::Apps(running) = event else {
+            return Vec::new();
+        };
+        let Some(before) = self.running.replace(running.clone()) else {
+            return Vec::new();
+        };
+        running
+            .difference(&before)
+            .flat_map(|opened| {
+                fire_matching(armed, |_, trigger| match trigger {
+                    TriggerSpec::AppOpened { app_id } if app_id == opened => {
+                        Some(vec![("app_id", Value::from(opened.as_str()))])
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Fires when this device joins a workspace. The first look only learns
+/// the workspaces it is already in.
+#[derive(Debug, Default)]
+pub struct WorkspaceJoinedTriggers {
+    joined: Option<BTreeSet<String>>,
+}
+
+impl TriggerSource for WorkspaceJoinedTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        _context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let TriggerEvent::Workspaces(workspaces) = event else {
+            return Vec::new();
+        };
+        let now: BTreeSet<String> = workspaces.keys().cloned().collect();
+        let Some(before) = self.joined.replace(now) else {
+            return Vec::new();
+        };
+        workspaces
+            .iter()
+            .filter(|(room, _)| !before.contains(*room))
+            .flat_map(|(room, name)| {
+                fire_matching(armed, |_, trigger| match trigger {
+                    TriggerSpec::WorkspaceJoined { room: wanted }
+                        if wanted.as_ref().is_none_or(|wanted| wanted == room) =>
+                    {
+                        Some(vec![
+                            ("workspace", Value::from(room.as_str())),
+                            ("workspace_name", Value::from(name.as_str())),
+                        ])
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Fires for each change inside a folder a shortcut's file-changed trigger
+/// watches, in the shortcut's own workspace.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FileChangedTriggers;
+
+impl TriggerSource for FileChangedTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        _context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let TriggerEvent::Files(changes) = event else {
+            return Vec::new();
+        };
+        changes
+            .iter()
+            .flat_map(|change| {
+                fire_matching(armed, |armed, trigger| match trigger {
+                    TriggerSpec::FileChanged { capability }
+                        if *capability == change.capability && armed.room == change.room =>
+                    {
+                        Some(vec![
+                            ("file", Value::from(change.file.as_str())),
+                            ("change", Value::from(change.change.label())),
+                        ])
+                    }
+                    _ => None,
+                })
+            })
+            .collect()
+    }
+}
+
+/// Fires when a focus mode switches on or off. The first look only learns
+/// which modes are on.
+#[derive(Debug, Default)]
+pub struct FocusModeTriggers {
+    last: Option<FocusState>,
+}
+
+impl TriggerSource for FocusModeTriggers {
+    fn observe(
+        &mut self,
+        event: TriggerEvent<'_>,
+        armed: &[Armed<'_>],
+        _context: TriggerContext<'_>,
+    ) -> Vec<Firing> {
+        let TriggerEvent::Focus(now) = event else {
+            return Vec::new();
+        };
+        let Some(before) = self.last.replace(now) else {
+            return Vec::new();
+        };
+        if before == now {
+            return Vec::new();
+        }
+        fire_matching(armed, |_, trigger| {
+            let TriggerSpec::FocusMode { mode, transition } = trigger else {
+                return None;
+            };
+            let active = now.is_on(mode)?;
+            let switched = before.is_on(mode)? != active;
+            let wanted = match transition {
+                FocusTransition::Enter => active,
+                FocusTransition::Leave => !active,
+            };
+            (switched && wanted).then(|| {
+                vec![
+                    ("mode", Value::from(mode.as_str())),
+                    ("active", Value::from(active)),
+                ]
+            })
+        })
+    }
+}
+
+/// The folders the file-changed triggers of `armed` watch. A trigger names
+/// a capability of its shortcut's workspace; it watches that capability's
+/// folder only while the capability is a filesystem grant the saver may
+/// still read through, so a revoked or narrowed grant stops the watch.
+#[must_use]
+pub fn watched_folders(
+    workspaces: &[crate::shell::state::Workspace],
+    armed: &[Armed<'_>],
+) -> Vec<WatchedFolder> {
+    let mut folders = Vec::new();
+    for armed in armed {
+        let Some(workspace) = workspaces
+            .iter()
+            .find(|workspace| workspace.room.to_string() == armed.room)
+        else {
+            continue;
+        };
+        let Some(saver) = armed.shortcut.saved_by.as_deref() else {
+            continue;
+        };
+        for trigger in &armed.shortcut.triggers {
+            let TriggerSpec::FileChanged { capability } = trigger else {
+                continue;
+            };
+            if let Ok(path) = readable_folder(workspace, capability, saver) {
+                folders.push(WatchedFolder {
+                    room: armed.room.clone(),
+                    capability: capability.clone(),
+                    path,
+                });
+            }
+        }
+    }
+    folders.sort();
+    folders.dedup();
+    folders
+}
+
+/// The folder capability `capability` of `workspace` shares, when `saver`
+/// may read through it.
+///
+/// # Errors
+///
+/// Why it cannot be watched, for the person saving the trigger.
+pub fn readable_folder(
+    workspace: &crate::shell::state::Workspace,
+    capability: &str,
+    saver: &str,
+) -> Result<PathBuf, String> {
+    use crate::shell::state::WorkspaceAuthority as _;
+
+    let granted = workspace
+        .capabilities
+        .iter()
+        .find(|granted| granted.id == capability)
+        .ok_or_else(|| format!("the workspace has no capability `{capability}`"))?;
+    let collab_types::Scope::FsPath(path) = &granted.scope else {
+        return Err(format!("capability `{capability}` does not share a folder"));
+    };
+    let role = workspace
+        .role_of(&saver.to_string())
+        .ok_or("the saver is not a member of the workspace")?;
+    let actor = collab_types::Actor::person(Some(role), saver).in_room(workspace.room.to_string());
+    if !workspace.allows(
+        &actor,
+        &collab_types::ResourceRef::FsPath(path.clone()),
+        collab_types::Verb::Read,
+    ) {
+        return Err(format!(
+            "the saver may not read the folder capability `{capability}` shares"
+        ));
+    }
+    Ok(PathBuf::from(path))
 }
 
 /// One schedule's persisted state.
@@ -387,6 +758,7 @@ impl TriggerSource for ScheduleTriggers {
                                 shortcut: armed.shortcut.id.clone(),
                                 trigger: trigger.clone(),
                                 run: scheduled_run(&key, due),
+                                inputs: Map::new(),
                                 claim: context.devices.local.as_ref().map(|device| ScheduleClaim {
                                     shortcut: armed.shortcut.id.clone(),
                                     trigger: index,
@@ -575,8 +947,24 @@ pub fn validate_trigger(trigger: &TriggerSpec) -> Result<(), String> {
                 ))
             }
         }
+        TriggerSpec::AppOpened { app_id } if app_id.trim().is_empty() => {
+            Err("an app-opened trigger names the application".into())
+        }
+        TriggerSpec::FileChanged { capability } if capability.trim().is_empty() => {
+            Err("a file-changed trigger names the capability sharing its folder".into())
+        }
+        TriggerSpec::FocusMode { mode, .. } if FocusState::default().is_on(mode).is_none() => {
+            Err(format!(
+                "`{mode}` is not a focus mode; `{FOCUS_DO_NOT_DISTURB}` and `{FOCUS_SCHEDULE}` are"
+            ))
+        }
+        TriggerSpec::AppOpened { .. }
+        | TriggerSpec::WorkspaceJoined { .. }
+        | TriggerSpec::FileChanged { .. }
+        | TriggerSpec::FocusMode { .. } => Ok(()),
         other => Err(format!(
-            "`{}` triggers cannot be saved yet; keyboard and schedule triggers can",
+            "`{}` triggers cannot be saved yet; keyboard, schedule, app-opened, \
+             workspace-joined, file-changed and focus-mode triggers can",
             other.kind()
         )),
     }
@@ -601,6 +989,10 @@ impl TriggerHost {
             sources: vec![
                 Box::new(KeyboardTriggers),
                 Box::new(ScheduleTriggers::open(schedules)),
+                Box::new(AppOpenedTriggers::default()),
+                Box::new(WorkspaceJoinedTriggers::default()),
+                Box::new(FileChangedTriggers),
+                Box::new(FocusModeTriggers::default()),
             ],
         }
     }
@@ -931,7 +1323,7 @@ mod tests {
     }
 
     #[test]
-    fn only_keyboard_and_schedule_triggers_can_be_saved() {
+    fn only_triggers_the_session_watches_can_be_saved() {
         assert!(
             validate_trigger(&TriggerSpec::Keyboard {
                 chord: "Super+Shift+N".into()
@@ -963,7 +1355,379 @@ mod tests {
             validate_trigger(&TriggerSpec::AppOpened {
                 app_id: "so.tilo.notes".into()
             })
+            .is_ok()
+        );
+        assert!(validate_trigger(&TriggerSpec::AppOpened { app_id: " ".into() }).is_err());
+        assert!(validate_trigger(&TriggerSpec::WorkspaceJoined { room: None }).is_ok());
+        assert!(
+            validate_trigger(&TriggerSpec::FileChanged {
+                capability: String::new()
+            })
             .is_err()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::FocusMode {
+                mode: "sleep".into(),
+                transition: FocusTransition::Enter,
+            })
+            .is_err()
+        );
+        assert!(
+            validate_trigger(&TriggerSpec::NetworkChanged {
+                network: None,
+                connected: None,
+            })
+            .is_err()
+        );
+    }
+
+    /// A shortcut saved by `person:me` with `trigger` and the inputs `inputs`
+    /// (name and type).
+    fn event_shortcut(trigger: &TriggerSpec, inputs: &[(&str, &str)]) -> Shortcut {
+        let inputs: Vec<serde_json::Value> = inputs
+            .iter()
+            .map(|(name, ty)| {
+                serde_json::json!({
+                    "name": name, "ty": ty, "required": false, "description": name
+                })
+            })
+            .collect();
+        serde_json::from_value(serde_json::json!({
+            "id": "on-event",
+            "name": "On event",
+            "inputs": inputs,
+            "steps": [],
+            "triggers": [trigger],
+            "saved_by": "person:me"
+        }))
+        .expect("shortcut JSON")
+    }
+
+    fn observe_once(
+        source: &mut dyn TriggerSource,
+        event: TriggerEvent<'_>,
+        saved: &Shortcut,
+        room: &str,
+    ) -> Vec<Firing> {
+        let armed = [Armed {
+            room: room.into(),
+            shortcut: saved,
+            claims: &[],
+        }];
+        let clock = SystemClock;
+        let devices = PersonalDevices::default();
+        source.observe(
+            event,
+            &armed,
+            TriggerContext {
+                clock: &clock,
+                devices: &devices,
+            },
+        )
+    }
+
+    #[test]
+    fn an_app_opening_fires_with_its_id_once_it_starts_publishing() {
+        let saved = event_shortcut(
+            &TriggerSpec::AppOpened {
+                app_id: "so.tilo.notes".into(),
+            },
+            &[("app_id", "text")],
+        );
+        let mut source = AppOpenedTriggers::default();
+        let running =
+            |apps: &[&str]| -> BTreeSet<String> { apps.iter().map(ToString::to_string).collect() };
+        let already = running(&["so.tilo.notes"]);
+        assert!(
+            observe_once(&mut source, TriggerEvent::Apps(&already), &saved, "room").is_empty(),
+            "an app running when the session starts did not just open"
+        );
+        let closed = running(&[]);
+        assert!(observe_once(&mut source, TriggerEvent::Apps(&closed), &saved, "room").is_empty());
+        let other = running(&["so.tilo.files"]);
+        assert!(observe_once(&mut source, TriggerEvent::Apps(&other), &saved, "room").is_empty());
+        let reopened = running(&["so.tilo.files", "so.tilo.notes"]);
+        let fired = observe_once(&mut source, TriggerEvent::Apps(&reopened), &saved, "room");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(
+            fired[0].inputs,
+            serde_json::json!({ "app_id": "so.tilo.notes" })
+                .as_object()
+                .cloned()
+                .expect("an object")
+        );
+    }
+
+    #[test]
+    fn joining_a_workspace_fires_with_its_id_and_name() {
+        let any = event_shortcut(
+            &TriggerSpec::WorkspaceJoined { room: None },
+            &[("workspace_name", "text"), ("workspace", "integer")],
+        );
+        let mut source = WorkspaceJoinedTriggers::default();
+        let mut rooms = BTreeMap::from([("personal".to_string(), "Home".to_string())]);
+        assert!(
+            observe_once(
+                &mut source,
+                TriggerEvent::Workspaces(&rooms),
+                &any,
+                "personal"
+            )
+            .is_empty(),
+            "the workspaces a device starts in were not just joined"
+        );
+        rooms.insert("design".into(), "Design review".into());
+        let fired = observe_once(
+            &mut source,
+            TriggerEvent::Workspaces(&rooms),
+            &any,
+            "personal",
+        );
+        assert_eq!(fired.len(), 1);
+        assert_eq!(
+            fired[0].inputs.get("workspace_name"),
+            Some(&serde_json::json!("Design review"))
+        );
+        assert!(
+            !fired[0].inputs.contains_key("workspace"),
+            "an input of another type is not given the workspace id"
+        );
+
+        let only_design = event_shortcut(
+            &TriggerSpec::WorkspaceJoined {
+                room: Some("design".into()),
+            },
+            &[],
+        );
+        let mut source = WorkspaceJoinedTriggers::default();
+        rooms.remove("design");
+        observe_once(
+            &mut source,
+            TriggerEvent::Workspaces(&rooms),
+            &only_design,
+            "personal",
+        );
+        rooms.insert("standup".into(), "Standup".into());
+        assert!(
+            observe_once(
+                &mut source,
+                TriggerEvent::Workspaces(&rooms),
+                &only_design,
+                "personal"
+            )
+            .is_empty()
+        );
+        rooms.insert("design".into(), "Design review".into());
+        assert_eq!(
+            observe_once(
+                &mut source,
+                TriggerEvent::Workspaces(&rooms),
+                &only_design,
+                "personal"
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_change_in_a_watched_folder_fires_the_trigger_naming_its_capability() {
+        let saved = event_shortcut(
+            &TriggerSpec::FileChanged {
+                capability: "inbox-read".into(),
+            },
+            &[("file", "text"), ("change", "text")],
+        );
+        let inbox = WatchedFolder {
+            room: "room".into(),
+            capability: "inbox-read".into(),
+            path: PathBuf::from("/var/workspace/inbox"),
+        };
+        let changes = [
+            FolderChange::inside(
+                &inbox,
+                Path::new("/var/workspace/inbox/scans/receipt.pdf"),
+                FileChange::Created,
+            )
+            .expect("inside the folder"),
+            FolderChange {
+                capability: "outbox-read".into(),
+                ..FolderChange::inside(
+                    &inbox,
+                    Path::new("/var/workspace/inbox/other.txt"),
+                    FileChange::Modified,
+                )
+                .expect("inside the folder")
+            },
+        ];
+        assert!(
+            FolderChange::inside(
+                &inbox,
+                Path::new("/var/workspace/inboxes/x"),
+                FileChange::Created
+            )
+            .is_none(),
+            "a sibling folder is not inside"
+        );
+        let fired = observe_once(
+            &mut FileChangedTriggers,
+            TriggerEvent::Files(&changes),
+            &saved,
+            "room",
+        );
+        assert_eq!(fired.len(), 1, "{fired:?}");
+        assert_eq!(
+            fired[0].inputs,
+            serde_json::json!({ "file": "scans/receipt.pdf", "change": "created" })
+                .as_object()
+                .cloned()
+                .expect("an object")
+        );
+        assert!(
+            observe_once(
+                &mut FileChangedTriggers,
+                TriggerEvent::Files(&changes),
+                &saved,
+                "another-room"
+            )
+            .is_empty(),
+            "a capability id is only meaningful in its own workspace"
+        );
+    }
+
+    #[test]
+    fn a_focus_mode_fires_on_the_transition_it_names() {
+        let entering_dnd = event_shortcut(
+            &TriggerSpec::FocusMode {
+                mode: FOCUS_DO_NOT_DISTURB.into(),
+                transition: FocusTransition::Enter,
+            },
+            &[("active", "boolean"), ("mode", "text")],
+        );
+        let leaving_focus = event_shortcut(
+            &TriggerSpec::FocusMode {
+                mode: FOCUS_SCHEDULE.into(),
+                transition: FocusTransition::Leave,
+            },
+            &[],
+        );
+        let mut dnd = FocusModeTriggers::default();
+        let mut focus = FocusModeTriggers::default();
+        let quiet = FocusState {
+            do_not_disturb: true,
+            focus: true,
+        };
+        let calm = FocusState::default();
+        let dnd_only = FocusState {
+            do_not_disturb: true,
+            focus: false,
+        };
+        assert!(
+            observe_once(&mut dnd, TriggerEvent::Focus(calm), &entering_dnd, "room").is_empty(),
+            "the first look only learns the state"
+        );
+        let fired = observe_once(&mut dnd, TriggerEvent::Focus(quiet), &entering_dnd, "room");
+        assert_eq!(fired.len(), 1);
+        assert_eq!(
+            fired[0].inputs,
+            serde_json::json!({ "mode": "do_not_disturb", "active": true })
+                .as_object()
+                .cloned()
+                .expect("an object")
+        );
+        assert!(
+            observe_once(
+                &mut dnd,
+                TriggerEvent::Focus(dnd_only),
+                &entering_dnd,
+                "room"
+            )
+            .is_empty(),
+            "another mode switching is not this one"
+        );
+        assert!(
+            observe_once(&mut dnd, TriggerEvent::Focus(calm), &entering_dnd, "room").is_empty(),
+            "leaving is not entering"
+        );
+
+        observe_once(
+            &mut focus,
+            TriggerEvent::Focus(quiet),
+            &leaving_focus,
+            "room",
+        );
+        assert_eq!(
+            observe_once(
+                &mut focus,
+                TriggerEvent::Focus(dnd_only),
+                &leaving_focus,
+                "room"
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_folder_is_watched_only_while_its_capability_lets_the_saver_read_it() {
+        use crate::shell::state::{Workspace, WorkspaceAuthority as _, WorkspaceId};
+        use collab_types::{CapOverride, Scope, Subject, Verb};
+
+        let owner = "person:owner".to_string();
+        let mut workspace = Workspace::new(WorkspaceId(1), "Scans");
+        workspace.room = personal_room();
+        workspace.set_owner(owner.clone());
+        workspace
+            .grant_as(
+                &owner,
+                CapOverride::membership(
+                    Subject::person("person:me"),
+                    workspace.room.to_string(),
+                    Verb::Read,
+                )
+                .with_id("me-membership"),
+            )
+            .expect("the owner admits the saver");
+        workspace
+            .grant_as(
+                &owner,
+                CapOverride::grant(
+                    Subject::person("person:me"),
+                    Scope::FsPath("/var/workspace/inbox".into()),
+                    Verb::Read,
+                )
+                .with_id("inbox-read"),
+            )
+            .expect("the owner shares the folder");
+        workspace.shortcuts = vec![event_shortcut(
+            &TriggerSpec::FileChanged {
+                capability: "inbox-read".into(),
+            },
+            &[],
+        )];
+        let folders = |workspaces: &[Workspace]| {
+            let armed = armed(workspaces, |_| "person:me".into());
+            watched_folders(workspaces, &armed)
+        };
+        let watched = folders(std::slice::from_ref(&workspace));
+        assert_eq!(
+            watched,
+            [WatchedFolder {
+                room: PERSONAL.into(),
+                capability: "inbox-read".into(),
+                path: PathBuf::from("/var/workspace/inbox"),
+            }]
+        );
+        assert!(
+            readable_folder(&workspace, "me-membership", "person:me")
+                .expect_err("a membership is no folder")
+                .contains("does not share a folder")
+        );
+
+        assert!(workspace.revoke_as(&owner, "inbox-read"));
+        assert!(
+            folders(std::slice::from_ref(&workspace)).is_empty(),
+            "a revoked capability stops the watch"
         );
     }
 }
