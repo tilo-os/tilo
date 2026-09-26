@@ -858,7 +858,29 @@ impl SettingsApp {
                         Ok(())
                     }
                     crate::actions::AudioOperation::SetMono { .. }
-                    | crate::actions::AudioOperation::SetEchoCancellation { .. } => Ok(()),
+                    | crate::actions::AudioOperation::SetEchoCancellation { .. }
+                    | crate::actions::AudioOperation::SetSystemSounds { .. } => Ok(()),
+                    crate::actions::AudioOperation::SetSystemSoundVolume { value } => {
+                        if !value.is_finite() || !(0.0..=1.0).contains(&value) {
+                            return Err("system sound volume must be between 0 and 1".into());
+                        }
+                        Ok(())
+                    }
+                    crate::actions::AudioOperation::SetSoundTheme { theme } => {
+                        if media::event_sound::installed_themes()
+                            .iter()
+                            .any(|installed| installed.id == theme)
+                        {
+                            Ok(())
+                        } else {
+                            Err("that sound theme is not installed".into())
+                        }
+                    }
+                    crate::actions::AudioOperation::SetEventSound { event, .. } => {
+                        settings_store::system_sounds::SystemSoundEvent::from_key(&event)
+                            .map(|_| ())
+                            .ok_or_else(|| "unknown system sound event".to_string())
+                    }
                     crate::actions::AudioOperation::SetDeviceProfile {
                         device_id,
                         profile_index,

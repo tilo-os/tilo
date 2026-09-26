@@ -26,7 +26,7 @@
 //! {
 //!   "version": 1,
 //!   "locale":  { … },                       // owned by region.rs
-//!   "audio":   { "event_sounds": true, "chat_join": true, "chat_leave": true },
+//!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
 //!   "input":   { "natural_scroll": false, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
@@ -57,23 +57,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::region::RegionSettings;
 
-/// Remembered default audio devices and persistent transforms. The three
-/// legacy sound booleans remain deserializable for compatibility but are not
-/// exposed as controls: notification sound delivery belongs to Notifications,
-/// and collaboration sounds are not offered until the shell has a real event
-/// sound consumer.
-/// `#[serde(default)]` keeps configs written before these fields existed
-/// loadable.
+/// Remembered default audio devices, persistent transforms and which system
+/// events make a sound.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
 pub struct AudioPrefs {
-    pub event_sounds: bool,
-    pub chat_join: bool,
-    pub chat_leave: bool,
+    /// "System sounds": master switch, volume, theme and per-event choices.
+    /// The compositor plays them; see [`settings_store::system_sounds`].
+    #[serde(default)]
+    pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Label of the last chosen default sink (output device), if any.
     #[serde(default)]
     pub output_device: Option<String>,
@@ -101,9 +92,7 @@ const fn default_audio_balance() -> f32 {
 impl Default for AudioPrefs {
     fn default() -> Self {
         Self {
-            event_sounds: true,
-            chat_join: true,
-            chat_leave: true,
+            system_sounds: settings_store::system_sounds::SystemSoundPrefs::default(),
             output_device: None,
             input_device: None,
             balance: default_audio_balance(),
@@ -1220,7 +1209,7 @@ mod tests {
     #[test]
     fn defaults_are_sensible() {
         let p = SystemPrefs::default();
-        assert!(p.audio.event_sounds);
+        assert!(p.audio.system_sounds.enabled);
         assert!(!p.display.night_light);
         assert!(p.input.tap_to_click);
         assert_eq!(p.input.touchpad_natural_scroll, Some(true));
@@ -1280,7 +1269,9 @@ mod tests {
     #[test]
     fn round_trips_through_json() {
         let mut p = SystemPrefs::default();
-        p.audio.event_sounds = false;
+        p.audio.system_sounds.enabled = false;
+        p.audio.system_sounds.theme = Some("ocean".into());
+        p.audio.system_sounds.events.error = false;
         p.display.night_light = true;
         p.input.pointer_speed = 0.9;
         p.input.keyboard_layout = "de".into();
@@ -1528,11 +1519,11 @@ mod tests {
         // A garbage `input` section falls back to defaults rather than
         // throwing away the whole document.
         let p = SystemPrefs::from_json(
-            r#"{"input":"not-an-object","audio":{"event_sounds":false,"chat_join":true,"chat_leave":true}}"#,
+            r#"{"input":"not-an-object","audio":{"system_sounds":{"enabled":false}}}"#,
         );
         assert_eq!(p.input, InputPrefs::default());
         assert!(
-            !p.audio.event_sounds,
+            !p.audio.system_sounds.enabled,
             "the valid audio section still parsed"
         );
     }

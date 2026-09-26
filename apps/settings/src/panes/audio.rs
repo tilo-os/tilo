@@ -77,6 +77,8 @@ use winit::event::{Modifiers, WindowEvent};
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{AudioPrefs, SystemPrefs};
 use crate::widgets::{caption, card, choice_row_described, rows, setting_row};
+use media::event_sound::SoundTheme;
+use settings_store::system_sounds::{SystemSoundEvent, SystemSoundPrefs};
 
 /// How often the pane re-reads the `PipeWire` graph while it is open, so a
 /// device plugged in (a headset) or an application that just started playing
@@ -115,6 +117,15 @@ pub const INPUT_DEVICE_KEY: &str = "audio.input_device";
 pub const BALANCE_KEY: &str = "audio.balance";
 pub const MONO_KEY: &str = "audio.mono";
 pub const ECHO_CANCELLATION_KEY: &str = "audio.echo_cancellation";
+pub const SYSTEM_SOUNDS_KEY: &str = "audio.system_sounds";
+pub const SYSTEM_SOUND_VOLUME_KEY: &str = "audio.system_sound_volume";
+/// CRDT key the sound-theme dropdown writes the chosen theme's name into.
+pub const SOUND_THEME_KEY: &str = "audio.sound_theme";
+
+/// CRDT key of one event's "makes a sound" toggle.
+pub fn event_sound_key(event: SystemSoundEvent) -> String {
+    format!("audio.event_sound.{}", event.key())
+}
 pub(crate) const ADVANCED_KEY: &str = "audio.advanced";
 pub(crate) const TEST_LEFT_KEY: &str = "audio.test.left";
 pub(crate) const TEST_RIGHT_KEY: &str = "audio.test.right";
@@ -417,6 +428,11 @@ pub struct AudioPane {
     balance: f32,
     mono_enabled: bool,
     echo_cancellation: bool,
+    system_sounds: SystemSoundPrefs,
+    /// Installed freedesktop sound themes, for the theme picker.
+    sound_themes: Vec<SoundTheme>,
+    /// Whether this machine can play event sounds at all.
+    event_sounds_available: bool,
     advanced: bool,
     runtime_notice: Option<String>,
     channel_test: Option<Box<dyn BoundedSession>>,
@@ -546,6 +562,10 @@ impl AudioPane {
             balance: prefs.balance.clamp(0.0, 1.0),
             mono_enabled: prefs.mono_output,
             echo_cancellation: prefs.echo_cancellation,
+            system_sounds: prefs.system_sounds.clone(),
+            sound_themes: media::event_sound::installed_themes(),
+            event_sounds_available: media::event_sound::sound_backend()
+                != media::event_sound::SoundBackend::Unavailable,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -608,6 +628,9 @@ impl AudioPane {
             balance: 0.5,
             mono_enabled: false,
             echo_cancellation: AudioPrefs::default().echo_cancellation,
+            system_sounds: SystemSoundPrefs::default(),
+            sound_themes: Vec::new(),
+            event_sounds_available: false,
             advanced: false,
             runtime_notice: None,
             channel_test: None,
@@ -656,6 +679,15 @@ impl AudioPane {
         self.enumerator = Arc::new(StaticEnumerator(graph.clone()));
         self.graph = graph;
         self.gctl = gctl;
+        self
+    }
+
+    /// Test builder: a machine that can play event sounds from `themes`.
+    #[cfg(test)]
+    #[must_use]
+    fn with_sound_themes(mut self, themes: Vec<SoundTheme>) -> Self {
+        self.sound_themes = themes;
+        self.event_sounds_available = true;
         self
     }
 
@@ -722,6 +754,22 @@ impl AudioPane {
             }
             Op::SetEchoCancellation { enabled } => {
                 let _ = local.put(&root, ECHO_CANCELLATION_KEY, *enabled);
+            }
+            Op::SetSystemSounds { enabled } => {
+                let _ = local.put(&root, SYSTEM_SOUNDS_KEY, *enabled);
+            }
+            Op::SetSystemSoundVolume { value } => {
+                let _ = local.put(&root, SYSTEM_SOUND_VOLUME_KEY, *value);
+            }
+            Op::SetSoundTheme { theme } => {
+                if let Some(installed) = self.sound_themes.iter().find(|t| &t.id == theme) {
+                    let _ = local.put(&root, SOUND_THEME_KEY, installed.name.as_str());
+                }
+            }
+            Op::SetEventSound { event, enabled } => {
+                if let Some(event) = SystemSoundEvent::from_key(event) {
+                    let _ = local.put(&root, event_sound_key(event), *enabled);
+                }
             }
             Op::SetDeviceProfile {
                 device_id,
@@ -810,6 +858,7 @@ impl AudioPane {
         self.apply_volume_controls(local, &root);
         self.apply_balance_and_mono(local, &root);
         self.apply_echo_cancellation(local, &root);
+        self.apply_system_sounds(local, &root);
         self.apply_diagnostics_requests(local, &root);
         self.apply_device_selection(local, &root);
         self.apply_streams_and_profiles(local, &root);
@@ -904,7 +953,12 @@ impl AudioPane {
         if let Some(hardware) = hardware {
             cards.push(hardware);
         }
-        cards.extend([apps, recording, Self::speakers_card()]);
+        cards.extend([
+            apps,
+            recording,
+            Self::speakers_card(),
+            self.build_system_sounds_card(),
+        ]);
         crate::widgets::cards(cards)
     }
 
@@ -1546,6 +1600,7 @@ impl AudioPane {
             ECHO_CANCELLATION_KEY,
             self.initial_prefs.echo_cancellation,
         );
+        self.seed_system_sounds(state, root);
         for key in [ADVANCED_KEY, TEST_LEFT_KEY, TEST_RIGHT_KEY, MIC_TEST_KEY] {
             let _ = state.put(root, key, false);
         }
@@ -1746,6 +1801,195 @@ impl AudioPane {
                 "Mono output is off; the physical output is restored.".into()
             });
             self.structure_dirty = true;
+        }
+    }
+
+    /// The CRDT mirror of [`Self::system_sounds`], written once at seed time.
+    fn seed_system_sounds(&self, state: &mut AutoCommit, root: &ObjId) {
+        let prefs = &self.system_sounds;
+        let _ = state.put(root, SYSTEM_SOUNDS_KEY, prefs.enabled);
+        let _ = state.put(
+            root,
+            SYSTEM_SOUND_VOLUME_KEY,
+            automerge::ScalarValue::F64(prefs.volume),
+        );
+        if let Some(theme) = self
+            .sound_themes
+            .iter()
+            .find(|theme| theme.id == prefs.theme_name())
+        {
+            let _ = state.put(root, SOUND_THEME_KEY, theme.name.as_str());
+        }
+        for event in SystemSoundEvent::ALL {
+            let _ = state.put(root, event_sound_key(event), prefs.events.get(event));
+        }
+    }
+
+    /// The "System sounds" card: the master switch, then volume, theme and
+    /// one switch per event while it is on.
+    fn build_system_sounds_card(&self) -> crate::widgets::El {
+        if !self.event_sounds_available {
+            return card(
+                "System sounds",
+                rows(vec![caption(
+                    "This device cannot play system sounds. They need libcanberra or the PipeWire sound tools.",
+                )]),
+            );
+        }
+        let mut sound_rows = vec![setting_row(
+            "System sounds",
+            Box::new(
+                Toggle::new("settings.audio.system_sounds", SYSTEM_SOUNDS_KEY)
+                    .with_id("audio.system_sounds")
+                    .on_action(
+                        crate::actions::audio_bool_binding("system-sounds")
+                            .expect("system sounds are part of the static resource contract"),
+                    ),
+            ),
+        )];
+        if !self.system_sounds.enabled {
+            return card("System sounds", rows(sound_rows));
+        }
+        sound_rows.push(setting_row(
+            "Volume",
+            Box::new(
+                Slider::new(
+                    "settings.audio.system_sound_volume",
+                    SYSTEM_SOUND_VOLUME_KEY,
+                )
+                .with_id("audio.system_sound_volume")
+                .on_action(
+                    crate::actions::audio_number_binding("system-sound-volume")
+                        .expect("system sound volume is part of the static resource contract"),
+                ),
+            ),
+        ));
+        let themes: Vec<(String, String)> = self
+            .sound_themes
+            .iter()
+            .map(|theme| (theme.name.clone(), theme.id.clone()))
+            .collect();
+        if themes.len() >= 2
+            && let Some(binding) = crate::actions::audio_sound_theme_binding(themes.clone())
+        {
+            let names = themes.into_iter().map(|(name, _)| name).collect();
+            sound_rows.push(setting_row(
+                "Sound theme",
+                Box::new(
+                    Dropdown::new(names, SOUND_THEME_KEY)
+                        .with_id("audio.sound_theme")
+                        .on_action(binding),
+                ),
+            ));
+        }
+        for event in SystemSoundEvent::ALL {
+            let action = crate::actions::event_sound_action_id(event);
+            sound_rows.push(setting_row(
+                event.label(),
+                Box::new(
+                    Toggle::new(
+                        &format!("settings.audio.event_sound.{}", event.key()),
+                        &event_sound_key(event),
+                    )
+                    .with_id(&format!("audio.event_sound.{}", event.key()))
+                    .on_action(
+                        crate::actions::audio_bool_binding(&action)
+                            .expect("every system sound event is part of the resource contract"),
+                    ),
+                ),
+            ));
+        }
+        sound_rows.push(caption("Notification sounds also follow each app's choice in Notifications. Do Not Disturb and focus time hold back interruptions; volume feedback, the screenshot shutter and low battery still play."));
+        card("System sounds", rows(sound_rows))
+    }
+
+    /// Persist "System sounds" changes. The compositor reads the saved
+    /// preference whenever an event would make a sound.
+    fn apply_system_sounds(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        use crate::actions::AudioOperation as Op;
+        let mut next = self.system_sounds.clone();
+        let mut operations = Vec::new();
+        if let Some(enabled) =
+            read_bool(state, root, SYSTEM_SOUNDS_KEY).filter(|enabled| *enabled != next.enabled)
+        {
+            next.enabled = enabled;
+            operations.push((
+                Op::SetSystemSounds { enabled },
+                SYSTEM_SOUNDS_KEY.to_string(),
+            ));
+        }
+        if let Some(value) = read_f64(state, root, SYSTEM_SOUND_VOLUME_KEY)
+            .map(|value| value.clamp(0.0, 1.0))
+            .filter(|value| (value - next.volume).abs() > 0.001)
+        {
+            next.volume = value;
+            operations.push((
+                Op::SetSystemSoundVolume { value },
+                SYSTEM_SOUND_VOLUME_KEY.to_string(),
+            ));
+        }
+        if let Some(theme) = read_str_or_text(state, root, SOUND_THEME_KEY)
+            .and_then(|name| self.sound_themes.iter().find(|theme| theme.name == name))
+            .filter(|theme| theme.id != next.theme_name())
+        {
+            next.theme = Some(theme.id.clone());
+            operations.push((
+                Op::SetSoundTheme {
+                    theme: theme.id.clone(),
+                },
+                SOUND_THEME_KEY.to_string(),
+            ));
+        }
+        for event in SystemSoundEvent::ALL {
+            let key = event_sound_key(event);
+            if let Some(enabled) = read_bool(state, root, key.as_str())
+                .filter(|enabled| *enabled != next.events.get(event))
+            {
+                next.events.set(event, enabled);
+                operations.push((
+                    Op::SetEventSound {
+                        event: event.key().to_string(),
+                        enabled,
+                    },
+                    key,
+                ));
+            }
+        }
+        if operations.is_empty() {
+            return;
+        }
+        let next = next.sanitized();
+        let allowed = operations
+            .iter()
+            .all(|(operation, _)| self.operation_is_running(operation));
+        let result = if !allowed {
+            Err(None)
+        } else if self.persist_prefs {
+            let saved = next.clone();
+            Self::persist_audio(move |prefs| prefs.system_sounds = saved).map_err(Some)
+        } else {
+            Ok(())
+        };
+        match result {
+            Ok(()) => {
+                let enabled_changed = next.enabled != self.system_sounds.enabled;
+                self.system_sounds = next;
+                for (operation, _) in operations {
+                    self.finish_local_operation(operation, Ok("System sounds updated.".into()));
+                }
+                if enabled_changed {
+                    self.structure_dirty = true;
+                }
+            }
+            Err(error) => {
+                // Put the controls back to what is actually saved.
+                self.seed_system_sounds(state, root);
+                if let Some(error) = error {
+                    for (operation, _) in operations {
+                        self.finish_local_operation(operation, Err(error.clone()));
+                    }
+                }
+            }
         }
     }
 
@@ -2067,6 +2311,7 @@ impl Widget for AudioPane {
             self.apply_volume_controls(&mut state, &root);
             self.apply_balance_and_mono(&mut state, &root);
             self.apply_echo_cancellation(&mut state, &root);
+            self.apply_system_sounds(&mut state, &root);
             self.apply_diagnostics_requests(&mut state, &root);
             self.apply_device_selection(&mut state, &root);
             self.apply_streams_and_profiles(&mut state, &root);
@@ -2879,6 +3124,66 @@ Video
             runtime.calls.lock().unwrap().is_empty(),
             "the compositor session, not Settings, actuates persistent transforms"
         );
+    }
+
+    #[test]
+    fn system_sound_choices_round_trip_through_the_shared_store() {
+        let _guard = crate::prefs::test_env::ConfigGuard::new();
+        let disp = Arc::new(RecordingDispatcher::default());
+        let mut pane = AudioPane::with_controls(disp, Arc::new(RealInput), 0.5, 0.75)
+            .with_sound_themes(vec![
+                SoundTheme {
+                    id: "freedesktop".into(),
+                    name: "Default".into(),
+                },
+                SoundTheme {
+                    id: "ocean".into(),
+                    name: "Ocean".into(),
+                },
+            ]);
+        pane.persist_prefs = true;
+        let mut doc = AutoCommit::new();
+        let root = automerge::ROOT;
+        pane.sync(&mut doc, &root);
+        assert_eq!(read_bool(&doc, &root, SYSTEM_SOUNDS_KEY), Some(true));
+        assert_eq!(
+            read_str_or_text(&doc, &root, SOUND_THEME_KEY).as_deref(),
+            Some("Default")
+        );
+        let low_battery = event_sound_key(SystemSoundEvent::LowBattery);
+        assert_eq!(read_bool(&doc, &root, low_battery.as_str()), Some(true));
+
+        let _ = doc.put(&root, SYSTEM_SOUND_VOLUME_KEY, 0.3);
+        let _ = doc.put(&root, SOUND_THEME_KEY, "Ocean");
+        let _ = doc.put(
+            &root,
+            event_sound_key(SystemSoundEvent::VolumeChange),
+            false,
+        );
+        pane.sync(&mut doc, &root);
+        let saved = SystemPrefs::load().audio.system_sounds;
+        assert!((saved.volume - 0.3).abs() < 0.001);
+        assert_eq!(saved.theme.as_deref(), Some("ocean"));
+        assert!(!saved.events.volume_change);
+        assert!(
+            saved.events.low_battery,
+            "untouched events keep their choice"
+        );
+
+        let _ = doc.put(&root, SOUND_THEME_KEY, "Default");
+        let _ = doc.put(&root, SYSTEM_SOUNDS_KEY, false);
+        pane.sync(&mut doc, &root);
+        let saved = SystemPrefs::load().audio.system_sounds;
+        assert!(!saved.enabled);
+        assert_eq!(
+            saved.theme, None,
+            "the default theme is stored as no choice"
+        );
+        assert!(!saved.events.volume_change);
+
+        let _ = doc.put(&root, SOUND_THEME_KEY, "Not installed");
+        pane.sync(&mut doc, &root);
+        assert_eq!(SystemPrefs::load().audio.system_sounds, saved);
     }
 
     #[test]
