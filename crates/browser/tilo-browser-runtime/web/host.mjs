@@ -7,7 +7,7 @@ import {commitPeerBatches,readPeerBatch} from './peer-persistence.mjs';
 import {createAssetRecovery,retryableMemo} from './asset-recovery.mjs';
 import {createFontDemandPump,createFontLoader,createIdleFontInstaller,createIdlePrewarm} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
+import {MountRegistry,reopenedRecord,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,routeGlobalSearchShortcut,wheelPixels} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {semanticBridge} from './semantics.mjs';
@@ -39,7 +39,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  let id,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
+  let id,application,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
@@ -219,16 +219,16 @@ export async function mountDesktop(target,options={}) {
   try{
     if(!navigator.gpu)throw Error('WebGPU is required for the Tilo Vello compute renderer');
     await ready();if(!registry.current(token))throw Error('mount disposed');
+    // An app id the build does not contain rejects here with the catalog's error.
+    try{application=config.app==='desktop'?undefined:JSON.parse(runtime.application(config.app));}
+    catch(error){report({phase:'failed',error:String(error)});throw Error(String(error));}
     const acquired=await acquireStorage(config.profile,config.device);
     if(closed||!registry.current(token)){await acquired.release();throw Error("mount disposed");}
     storage=acquired;
     if(storage.fresh){runtime.refresh_storage_lease(config.profile,config.device);storage.fresh=false;}
     const [assets,entries]=await Promise.all([fonts(),storage.hydrate()]);
     if(!registry.current(token))throw Error('mount disposed');
-    if(config.app==='writer'&&!config.record&&!config.newDocument){
-      const found=entries.map(e=>JSON.parse(e.key)).find(k=>k.type==='record'&&k.package==='so.tilo.word-processor'&&k.workspace===config.room);
-      config.record=found?.record;
-    }
+    if(!config.record&&!config.newDocument)config.record=reopenedRecord(entries,application,config.room);
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};
@@ -343,7 +343,7 @@ export async function mountDesktop(target,options={}) {
       },{capture:true});
       options.onNavigation?.(navigation.controller);
     }
-    return {navigation: navigation?.controller,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+    return {navigation: navigation?.controller,application,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),
@@ -352,6 +352,8 @@ export async function mountDesktop(target,options={}) {
       liveOverlay:()=>liveOverlay?.stats()??null};
   }catch(error){registry.remove(token);await cleanup();throw error;}
 }
+/** Every application this build can mount standalone. */
+export async function applications(){await ready();return JSON.parse(runtime.applications());}
 export function pendingComponentCloseCount(){return runtime.component_close_count();}
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}

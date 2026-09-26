@@ -6,24 +6,19 @@ use tilo_peer_state::StatePeer;
 use ui::application::ApplicationDefinition;
 use ui::record::{RecordCheckout, RecordId};
 
-pub(crate) fn installed_applications() -> [&'static ApplicationDefinition; 4] {
-    [
-        word_processor::definition(),
-        chat::definition(),
-        notes::definition(),
-        calculator::definition(),
-    ]
+/// The installed definitions, in the catalogue's order.
+#[cfg(any(target_arch = "wasm32", test))]
+pub(crate) fn installed_applications() -> Vec<&'static ApplicationDefinition> {
+    crate::catalog::installed()
 }
 /// Resolve an app id to its installed definition.
 pub(crate) fn definition(app: &str) -> Option<&'static ApplicationDefinition> {
-    installed_applications()
-        .into_iter()
-        .find(|definition| definition.app_id == app)
+    crate::catalog::resolve(app).ok()
 }
-/// Whether a persisted app id names the Chat package, whose room record is
-/// its package-primary route.
-pub(crate) fn is_chat(app: &str) -> bool {
-    app == chat::definition().app_id
+/// Whether a persisted app id names a package whose room record is its
+/// package-primary route (Chat's workspace).
+pub(crate) fn opens_package_primary(app: &str) -> bool {
+    crate::catalog::scope(app) == Some(crate::catalog::RecordScope::PackagePrimary)
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Requirement {
@@ -57,17 +52,17 @@ pub(crate) fn checkout(
     routes: &BTreeMap<u64, String>,
 ) -> Result<RecordCheckout, String> {
     let app_id = definition.app_id;
-    let chat = is_chat(app_id);
+    let primary = opens_package_primary(app_id);
     match routes.get(&tab) {
         None => Ok(tilo_desktop::records::component_record(
             app_id,
             tab,
             definition.record_kind.clone(),
         )),
-        Some(record) if record.is_empty() && chat => Ok(RecordCheckout::package_primary(
+        Some(record) if record.is_empty() && primary => Ok(RecordCheckout::package_primary(
             definition.record_kind.clone(),
         )),
-        Some(record) if !chat => Ok(RecordCheckout::new(
+        Some(record) if !primary => Ok(RecordCheckout::new(
             RecordId::parse(record).ok_or("invalid canonical ordinary record route")?,
             definition.record_kind.clone(),
         )),

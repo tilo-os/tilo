@@ -76,6 +76,7 @@ mod peer_live;
 #[cfg(test)]
 mod post_ready_repair;
 
+mod catalog;
 mod desktop;
 
 #[cfg(any(target_arch = "wasm32", test))]
