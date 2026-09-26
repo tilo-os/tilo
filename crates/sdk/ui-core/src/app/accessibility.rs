@@ -1013,10 +1013,11 @@ impl App {
                 &self.history_presentation_roots(),
                 &exported.nodes,
                 alias,
+                &exported.custody,
             );
         }
         self.with_native_presentation(|root, nodes, _, _, _| {
-            crate::accesskit_bridge::widget_ak_id_bound(&[root], nodes, alias)
+            crate::accesskit_bridge::widget_ak_id_bound(&[root], nodes, alias, &exported.custody)
         })
         .ok()
         .flatten()
@@ -1039,13 +1040,15 @@ impl App {
                 exported.focus(self.focused_node),
                 scale,
                 &resources,
+                &exported.custody,
             );
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
+        let custody = exported.custody;
         self.with_native_presentation(|root, nodes, focused, _, _| {
             crate::accesskit_bridge::build_tree_update_with_resources_bound(
-                root, nodes, focused, scale, &resources,
+                root, nodes, focused, scale, &resources, &custody,
             )
         })
         .unwrap_or_else(|_| {
@@ -1055,6 +1058,7 @@ impl App {
                 self.focused_node,
                 scale,
                 &self.collect_declared_resources(),
+                &custody,
             )
         })
     }

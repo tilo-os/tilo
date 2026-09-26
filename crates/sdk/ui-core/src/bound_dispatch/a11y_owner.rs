@@ -46,6 +46,9 @@ impl OwnerAliases {
 /// widget callbacks. The inverse resolves back through the current admission.
 pub(crate) struct ExportedNodes {
     pub(crate) nodes: HashMap<NodeId, *mut dyn Widget>,
+    /// Whose lifetime each exported node answers to, which scopes its
+    /// AccessKit id.
+    pub(crate) custody: crate::accesskit_bridge::Custody,
     actual: HashMap<NodeId, NodeId>,
     exported: HashMap<NodeId, NodeId>,
 }
@@ -60,7 +63,8 @@ impl ExportedNodes {
     }
 
     pub(crate) fn resolve(&self, root: &dyn Widget, id: accesskit::NodeId) -> Option<A11yTarget> {
-        let target = crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id)?;
+        let target =
+            crate::accesskit_bridge::resolve_node_id_bound(root, &self.nodes, id, &self.custody)?;
         Some(match target {
             A11yTarget::Root => A11yTarget::Root,
             A11yTarget::Widget(node) => A11yTarget::Widget(*self.actual.get(&node)?),
@@ -82,6 +86,7 @@ impl BoundNodeMap {
     pub(crate) fn exported_nodes(&self, nodes: &HashMap<NodeId, *mut dyn Widget>) -> ExportedNodes {
         let mut exported = ExportedNodes {
             nodes: HashMap::new(),
+            custody: HashMap::new(),
             actual: HashMap::new(),
             exported: HashMap::new(),
         };
@@ -109,10 +114,24 @@ impl BoundNodeMap {
             }
             exported.actual.insert(alias, node);
             exported.exported.insert(node, alias);
+            if let Some(lifetime) = admitted
+                .binding
+                .as_ref()
+                .map(|binding| binding.lifetime_id)
+                .or_else(|| {
+                    admitted
+                        .legacy
+                        .as_ref()
+                        .and_then(crate::history_mode::HistoryOwner::lifetime_id)
+                })
+            {
+                exported.custody.insert(alias, lifetime);
+            }
         }
         // Alias exhaustion/collision is unavailable, never a raw-id fallback.
         for alias in collisions {
             exported.nodes.remove(&alias);
+            exported.custody.remove(&alias);
             exported.actual.remove(&alias);
             exported.exported.retain(|_, candidate| *candidate != alias);
         }

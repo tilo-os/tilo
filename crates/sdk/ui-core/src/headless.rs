@@ -2031,12 +2031,19 @@ impl FrameHarness {
                 &exported.nodes,
                 exported.focus(self.focused),
                 1.0,
+                &exported.custody,
             )
             .nodes;
         }
         self.with_presentation_roots(|roots| {
-            build_presentation_tree_bound(roots, &exported.nodes, exported.focus(self.focused), 1.0)
-                .nodes
+            build_presentation_tree_bound(
+                roots,
+                &exported.nodes,
+                exported.focus(self.focused),
+                1.0,
+                &exported.custody,
+            )
+            .nodes
         })
     }
 
@@ -2063,7 +2070,13 @@ impl FrameHarness {
         self.drain_component_wakes();
         let exported = self.bindings.exported_nodes(&self.node_map);
         let update = self.with_presentation_roots(|roots| {
-            build_presentation_tree_bound(roots, &exported.nodes, exported.focus(self.focused), 1.0)
+            build_presentation_tree_bound(
+                roots,
+                &exported.nodes,
+                exported.focus(self.focused),
+                1.0,
+                &exported.custody,
+            )
         });
         let focus = update.focus;
         update.nodes.into_iter().find(|(id, _)| *id == focus)

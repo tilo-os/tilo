@@ -266,7 +266,7 @@ pub fn widget_ak_id<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     taffy_id: TaffyNodeId,
 ) -> Option<AkNodeId> {
-    widget_ak_id_impl::<S, false>(&[root], node_map, taffy_id)
+    widget_ak_id_impl::<S, false>(&[root], node_map, taffy_id, None)
 }
 
 /// [`widget_ak_id`] for the host's bound presentation roots.
@@ -274,16 +274,18 @@ pub(crate) fn widget_ak_id_bound<S: BuildHasher>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     taffy_id: TaffyNodeId,
+    custody: &Custody,
 ) -> Option<AkNodeId> {
-    widget_ak_id_impl::<S, true>(roots, node_map, taffy_id)
+    widget_ak_id_impl::<S, true>(roots, node_map, taffy_id, Some(custody))
 }
 
 fn widget_ak_id_impl<S: BuildHasher, const BOUND: bool>(
     roots: &[&dyn Widget],
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     taffy_id: TaffyNodeId,
+    custody: Option<&Custody>,
 ) -> Option<AkNodeId> {
-    let (_, targets) = build_with_targets::<S, BOUND>(roots, node_map, None, 1.0, &[]);
+    let (_, targets) = build_with_targets::<S, BOUND>(roots, node_map, None, 1.0, &[], custody);
     targets.into_iter().find_map(|(id, target)| {
         (target == A11yTarget::Widget(taffy_id) && id.0 & TEXT_RUN_ID_BASE == 0).then_some(id)
     })
@@ -367,27 +369,30 @@ pub fn resolve_node_id<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
 ) -> Option<A11yTarget> {
-    resolve_node_id_impl::<S, false>(root, node_map, id)
+    resolve_node_id_impl::<S, false>(root, node_map, id, None)
 }
 /// Host traversal retaining the originating component through every callback.
 pub(crate) fn resolve_node_id_bound<S: BuildHasher>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
+    custody: &Custody,
 ) -> Option<A11yTarget> {
-    resolve_node_id_impl::<S, true>(root, node_map, id)
+    resolve_node_id_impl::<S, true>(root, node_map, id, Some(custody))
 }
 fn resolve_node_id_impl<S: BuildHasher, const BOUND: bool>(
     root: &dyn Widget,
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     id: AkNodeId,
+    custody: Option<&Custody>,
 ) -> Option<A11yTarget> {
     if id == ROOT_ID {
         return Some(A11yTarget::Root);
     }
     // One walk derives every id, for export and for resolution alike, so the
     // two can never drift apart.
-    let (_, mut targets) = build_with_targets::<S, BOUND>(&[root], node_map, None, 1.0, &[]);
+    let (_, mut targets) =
+        build_with_targets::<S, BOUND>(&[root], node_map, None, 1.0, &[], custody);
     targets.remove(&id)
 }
 
@@ -510,7 +515,14 @@ pub fn build_tree_update_with_resources<S: BuildHasher>(
     scale: f64,
     resources: &[tilo_actions::Resource],
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, false>(&[root], node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, false>(
+        &[root],
+        node_map,
+        focused,
+        scale,
+        resources,
+        None,
+    )
 }
 
 /// Adapt the redacted semantic tree to native-provider requirements.
@@ -542,8 +554,16 @@ pub(crate) fn build_tree_update_with_resources_bound<S: BuildHasher>(
     focused: Option<TaffyNodeId>,
     scale: f64,
     resources: &[tilo_actions::Resource],
+    custody: &Custody,
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, true>(
+        &[root],
+        node_map,
+        focused,
+        scale,
+        resources,
+        Some(custody),
+    )
 }
 
 pub(crate) fn build_tree_update_bound<S: BuildHasher>(
@@ -551,8 +571,16 @@ pub(crate) fn build_tree_update_bound<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
+    custody: &Custody,
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(&[root], node_map, focused, scale, &[])
+    build_tree_update_with_resources_impl::<S, true>(
+        &[root],
+        node_map,
+        focused,
+        scale,
+        &[],
+        Some(custody),
+    )
 }
 
 pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
@@ -560,8 +588,16 @@ pub(crate) fn build_presentation_tree_bound<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     focused: Option<TaffyNodeId>,
     scale: f64,
+    custody: &Custody,
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, &[])
+    build_tree_update_with_resources_impl::<S, true>(
+        roots,
+        node_map,
+        focused,
+        scale,
+        &[],
+        Some(custody),
+    )
 }
 
 /// Multiple presentation roots retain ordinary live resource nodes when their
@@ -572,8 +608,16 @@ pub(crate) fn build_presentation_with_resources_bound<S: BuildHasher>(
     focused: Option<TaffyNodeId>,
     scale: f64,
     resources: &[tilo_actions::Resource],
+    custody: &Custody,
 ) -> TreeUpdate {
-    build_tree_update_with_resources_impl::<S, true>(roots, node_map, focused, scale, resources)
+    build_tree_update_with_resources_impl::<S, true>(
+        roots,
+        node_map,
+        focused,
+        scale,
+        resources,
+        Some(custody),
+    )
 }
 
 fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
@@ -582,9 +626,14 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
     focused: Option<TaffyNodeId>,
     scale: f64,
     resources: &[tilo_actions::Resource],
+    custody: Option<&Custody>,
 ) -> TreeUpdate {
-    build_with_targets::<S, BOUND>(roots, node_map, focused, scale, resources).0
+    build_with_targets::<S, BOUND>(roots, node_map, focused, scale, resources, custody).0
 }
+
+/// Whose lifetime each exported layout node answers to: a bound component's
+/// or a legacy record owner's, as the host admitted them.
+pub(crate) type Custody = HashMap<TaffyNodeId, uuid::Uuid>;
 
 /// Where each exported widget and synthetic node points in the live tree.
 type Targets = HashMap<AkNodeId, A11yTarget>;
@@ -595,6 +644,7 @@ fn build_with_targets<S: BuildHasher, const BOUND: bool>(
     focused: Option<TaffyNodeId>,
     scale: f64,
     resources: &[tilo_actions::Resource],
+    custody: Option<&Custody>,
 ) -> (TreeUpdate, Targets) {
     // Reverse map so we can look up a stable id for any &dyn Widget during the walk.
     let ptr_to_taffy = reverse_node_map::<S, BOUND>(roots, node_map);
@@ -603,6 +653,8 @@ fn build_with_targets<S: BuildHasher, const BOUND: bool>(
         scale,
         focused,
         identities: crate::semantic_identity::IdentityScope::new::<BOUND>(roots),
+        legacy_boundaries: legacy_boundaries(roots),
+        custody,
         nodes: Vec::new(),
         targets: HashMap::new(),
         focused_id: None,
@@ -622,7 +674,7 @@ fn build_with_targets<S: BuildHasher, const BOUND: bool>(
             &window,
             "",
             &mut root_counts,
-            None,
+            OwnerScope::default(),
             &mut root_children,
         );
     }
@@ -742,6 +794,12 @@ struct Walk<'a, const BOUND: bool> {
     scale: f64,
     focused: Option<TaffyNodeId>,
     identities: crate::semantic_identity::IdentityScope,
+    /// Layout nodes where a legacy record owner's custody begins, with that
+    /// owner's lifetime.
+    legacy_boundaries: HashMap<TaffyNodeId, uuid::Uuid>,
+    /// The host's own record of whose custody each exported layout node is
+    /// in, when the host supplies it. It wins over anything derived here.
+    custody: Option<&'a Custody>,
     nodes: Vec<(AkNodeId, AkNode)>,
     targets: Targets,
     /// The focused widget's node, when it was emitted.
@@ -749,6 +807,70 @@ struct Walk<'a, const BOUND: bool> {
     /// Set when the *focused* widget marks one of its synthetic descendants
     /// focused — the active-descendant target (see the module docs).
     active_descendant: Option<AkNodeId>,
+}
+
+/// Which owner a widget's callbacks answer to, and so whose lifetime scopes
+/// its AccessKit id. Derived exactly as the host derives callback custody
+/// (`BoundNodeMap::rebuild_roots_with_retained`): a component binding is
+/// inherited until a widget resets it; a legacy record owner's custody
+/// begins at the layout node the owner declares — not at the widget that
+/// declares it — and ends at any binding or reset below.
+#[derive(Clone, Copy, Debug, Default)]
+struct OwnerScope {
+    binding: Option<uuid::Uuid>,
+    legacy: Option<uuid::Uuid>,
+}
+
+impl OwnerScope {
+    fn enter(self, w: &dyn Widget, legacy_boundary: Option<uuid::Uuid>) -> Self {
+        let resets = w.resets_callback_binding();
+        let binding = if resets {
+            None
+        } else {
+            w.callback_binding()
+                .map(|binding| binding.lifetime_id)
+                .or(self.binding)
+        };
+        let legacy = if binding.is_some() || resets {
+            None
+        } else {
+            legacy_boundary.or(self.legacy)
+        };
+        Self { binding, legacy }
+    }
+
+    /// Custody the host decided for a node, inherited by what below it has
+    /// no layout node of its own.
+    fn held(lifetime: Option<uuid::Uuid>) -> Self {
+        Self {
+            binding: lifetime,
+            legacy: None,
+        }
+    }
+
+    fn lifetime(self) -> Option<uuid::Uuid> {
+        self.binding.or(self.legacy)
+    }
+}
+
+/// Every legacy owner boundary declared anywhere under `roots`, keyed by the
+/// layout node the owner names.
+fn legacy_boundaries(roots: &[&dyn Widget]) -> HashMap<TaffyNodeId, uuid::Uuid> {
+    fn collect(widget: &dyn Widget, out: &mut HashMap<TaffyNodeId, uuid::Uuid>) {
+        if let Some((node, owner)) = widget.legacy_callback_boundary()
+            && let Some(lifetime) = owner.lifetime_id()
+        {
+            out.insert(node, lifetime);
+        }
+        for child in widget.children() {
+            collect(child, out);
+        }
+    }
+    let mut out = HashMap::new();
+    for root in roots {
+        collect(*root, &mut out);
+    }
+    out
 }
 
 /// Where a synthetic node sits under the widget that owns it.
@@ -769,26 +891,23 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
         semantic_parent: &SemanticId,
         path_base: &str,
         sibling_counts: &mut HashMap<String, usize>,
-        lifetime: Option<uuid::Uuid>,
+        scope: OwnerScope,
         parent_children: &mut Vec<AkNodeId>,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
         };
-        // The owner lifetime scopes ids exactly as the host scopes callback
-        // authority: a bound component's own binding, else a legacy record
-        // owner's, inherited by the subtree until something resets it.
-        let lifetime = if w.resets_callback_binding() {
-            None
-        } else {
-            w.callback_binding()
-                .map(|binding| binding.lifetime_id)
-                .or_else(|| {
-                    w.legacy_callback_boundary()
-                        .and_then(|(_, owner)| owner.lifetime_id())
-                })
-                .or(lifetime)
+        let taffy_id = self.ptr_to_taffy.get(w);
+        let scope = match (self.custody, taffy_id) {
+            // The host decided this node's custody; nothing is re-derived.
+            (Some(custody), Some(node)) => OwnerScope::held(custody.get(&node).copied()),
+            (Some(_), None) => scope,
+            (None, _) => scope.enter(
+                w,
+                taffy_id.and_then(|node| self.legacy_boundaries.get(&node).copied()),
+            ),
         };
+        let lifetime = scope.lifetime();
         let path = crate::semantic_identity::structural_path(w, path_base, sibling_counts);
         let mut child_counts = HashMap::new();
         let Some(access_node) = self.identities.access_of(w) else {
@@ -798,13 +917,12 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                     semantic_parent,
                     &path,
                     &mut child_counts,
-                    lifetime,
+                    scope,
                     parent_children,
                 );
             }
             return;
         };
-        let taffy_id = self.ptr_to_taffy.get(w);
         let identified = self
             .identities
             .enter(w, &access_node, semantic_parent, path);
@@ -836,7 +954,7 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                     &identified.id,
                     &identified.children_base,
                     &mut child_counts,
-                    lifetime,
+                    scope,
                     &mut my_children,
                 );
             }
@@ -859,7 +977,7 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                     ordinal_path: &[ordinal],
                 },
                 hosted.remove(&ordinal).unwrap_or_default(),
-                lifetime,
+                scope,
                 &mut my_children,
             );
         }
@@ -923,7 +1041,7 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
         ordinal: usize,
         place: &SyntheticPlace<'_>,
         hosted: Vec<HostedWidget<'_>>,
-        lifetime: Option<uuid::Uuid>,
+        scope: OwnerScope,
         parent_children: &mut Vec<AkNodeId>,
     ) {
         let key = access.key.unwrap_or(ordinal as u64);
@@ -978,7 +1096,7 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                         ordinal_path: &ordinal_path,
                     },
                     nested.remove(&i).unwrap_or_default(),
-                    lifetime,
+                    scope,
                     &mut my_children,
                 );
             }
@@ -990,7 +1108,7 @@ impl<const BOUND: bool> Walk<'_, BOUND> {
                     &semantic_id,
                     semantic_id.as_str(),
                     &mut counts,
-                    lifetime,
+                    scope,
                     &mut my_children,
                 );
             }
@@ -1417,6 +1535,37 @@ mod tests {
                 update.nodes.iter().map(|(id, _)| *id).collect();
             assert_eq!(ids.len(), update.nodes.len());
         }
+    }
+
+    #[test]
+    fn a_legacy_owners_custody_starts_at_the_node_it_names_not_at_the_declarer() {
+        let widget = TestWidget::new(Some(AccessNode::new(Role::Group)));
+        let owner = uuid::Uuid::from_u128(7);
+        let outside = OwnerScope::default().enter(&widget, None);
+        assert_eq!(
+            outside.lifetime(),
+            None,
+            "the declaring chrome is not in custody"
+        );
+        let boundary = outside.enter(&widget, Some(owner));
+        assert_eq!(
+            boundary.lifetime(),
+            Some(owner),
+            "custody begins at the named node"
+        );
+        let below = boundary.enter(&widget, None);
+        assert_eq!(below.lifetime(), Some(owner), "and holds for its subtree");
+        let replaced = outside.enter(&widget, Some(uuid::Uuid::from_u128(8)));
+        let same_semantic = SemanticId("t:body".into());
+        assert_ne!(
+            widget_node_id(&same_semantic, boundary.lifetime()),
+            widget_node_id(&same_semantic, replaced.lifetime()),
+            "a replacement owner's widget never answers to the old id"
+        );
+        assert_eq!(
+            widget_node_id(&same_semantic, outside.lifetime()),
+            widget_node_id(&same_semantic, None)
+        );
     }
 
     #[test]
