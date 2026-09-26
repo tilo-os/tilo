@@ -8,7 +8,7 @@
 //!     --filesystem <btrfs|ext4|xfs> \
 //!     --hostname <name> [--timezone <tz>] \
 //!     --keymap <xkb-layout> [--keyvariant <xkb-variant>] \
-//!     --encrypt --pin [--fido2] --yes
+//!     --encrypt --pin [--fido2] [--codecs] --yes
 //! ```
 //!
 //! Native Tilo always uses full-disk encryption. The backend builds the LUKS2
@@ -235,6 +235,11 @@ pub struct InstallOptions {
     /// only with the guided plan; the backend re-derives every fact from the
     /// booted ESP, firmware and partition table and refuses any other mode.
     pub internal_handoff: String,
+    /// The owner opted in to the third-party media codecs pack; maps to
+    /// `--codecs`. The backend only records the choice on the installed system,
+    /// which downloads the packages from their publishers once it is online.
+    /// Default `false`.
+    pub codecs: bool,
 }
 
 impl Default for InstallOptions {
@@ -277,6 +282,7 @@ impl Default for InstallOptions {
             pin: Zeroizing::new(String::new()),
             fido2: false,
             internal_handoff: String::new(),
+            codecs: false,
         }
     }
 }
@@ -420,6 +426,9 @@ pub fn install_command(disk: &str, user: &str, opts: &InstallOptions) -> Command
     }
     if opts.fido2 {
         cmd.arg("--fido2");
+    }
+    if opts.codecs {
+        cmd.arg("--codecs");
     }
     cmd.arg("--yes");
     cmd
@@ -1090,6 +1099,26 @@ mod tests {
     }
 
     #[test]
+    fn install_command_passes_the_codecs_opt_in_only_when_chosen() {
+        let chosen = InstallOptions {
+            codecs: true,
+            ..InstallOptions::default()
+        };
+        let args: Vec<String> = install_command("/dev/vda", "qq", &chosen)
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let codecs = args.iter().position(|a| a == "--codecs").expect("--codecs");
+        let yes = args.iter().position(|a| a == "--yes").expect("--yes");
+        assert!(codecs < yes, "flags come before --yes");
+        let default: Vec<String> = install_command("/dev/vda", "qq", &InstallOptions::default())
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert!(!default.iter().any(|a| a == "--codecs"));
+    }
+
+    #[test]
     fn install_command_omits_pin_flag_when_pin_empty_but_keeps_fido2() {
         // Encryption + FIDO2 but no PIN: `--fido2` is present, `--pin` is not.
         let opts = InstallOptions {
@@ -1127,6 +1156,7 @@ mod tests {
         assert!(o.keyvariant.is_empty());
         assert!(o.pin.is_empty(), "no TPM2 PIN by default");
         assert!(!o.fido2, "FIDO2 enrolment is opt-in (default off)");
+        assert!(!o.codecs, "media codecs are opt-in (default off)");
     }
 
     #[test]

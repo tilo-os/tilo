@@ -102,7 +102,7 @@ impl SignedRoot {
     /// Returns [`SignedRootError::WrongLength`] if `bytes` is not exactly
     /// [`SIGNED_ROOT_LEN`] bytes, [`SignedRootError::BadMagic`] if the
     /// header doesn't match, [`SignedRootError::UnsupportedFormat`] if the
-    /// format version isn't [`FORMAT_VERSION`],
+    /// format version isn't `FORMAT_VERSION`,
     /// [`SignedRootError::BadHasSignatureFlag`] if the `has_signature` byte
     /// is neither 0 nor 1, and
     /// [`SignedRootError::NonZeroSignatureWhenUnsigned`] if it is 0 but the

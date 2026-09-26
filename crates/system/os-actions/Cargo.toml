@@ -18,7 +18,7 @@ path = "src/lib.rs"
 [dependencies]
 bounded-command = { path = "../bounded-command" }
 libc.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["fs"] }
 tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -54,8 +54,8 @@ const DEFAULT_LAUNCHER_PATH: &str = "/usr/bin/tilo-launcher";
 struct Sidecar {
     /// Reverse-DNS package id (`so.tilo.notes-cli`).
     package_id: String,
-    /// Command name as declared in the manifest's [cli].commands.
-    /// Duplicated here (argv[0] also carries it) so renaming the shim
+    /// Command name as declared in the manifest's `cli`.commands.
+    /// Duplicated here (argv`0` also carries it) so renaming the shim
     /// doesn't silently rebind to a different command.
     command: String,
     /// Optional override for the launcher binary path; falls back to [`DEFAULT_LAUNCHER_PATH`] when unset.

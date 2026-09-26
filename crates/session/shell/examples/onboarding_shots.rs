@@ -19,6 +19,7 @@ use shell::onboarding::MintedIdentity;
 use shell::onboarding_view::{
     KEY_BACKUP_CONTINUE, KEY_BACKUP_SKIP_ACKNOWLEDGED, KEY_BEGIN, KEY_CONNECT, KEY_CREATE,
     KEY_IMPORT, KEY_TOUR_NEXT, KEY_TOUR_START, KEY_UNDERSTOOD, OnboardingView,
+    OnboardingVisualState,
 };
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::State;
@@ -120,6 +121,58 @@ fn shoot_in_context(
     // their own state out of the CRDT yet — a freshly built Checkbox does not
     // know it is ticked until it syncs. The live loop syncs once per frame,
     // so this captures the settled state after the tree was rebuilt.
+    view.sync(&mut state.doc, &state.root);
+    view.settle_motion_for_snapshot();
+
+    let mut scene = Scene::new();
+    let presence = PresenceCtx::default();
+    view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+
+    let mut r = OffscreenRenderer::new(width, height);
+    r.render_png(&scene, theme.bg_app, out);
+    println!("wrote {}", out.display());
+    Ok(())
+}
+
+/// Render one deterministic visual state (the media codecs step's results
+/// cannot be reached by key presses alone without a real helper).
+#[allow(
+    clippy::cast_precision_loss,
+    reason = "snapshot dimensions are small renderer sizes and exactly representable"
+)]
+fn shoot_visual(
+    theme: &Theme,
+    out: &Path,
+    visual: OnboardingVisualState,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let mut state = State::new();
+    let mut view = OnboardingView::with_minter(Box::new(|| {
+        Err("identity creation is not part of this snapshot".to_string())
+    }));
+    view.set_visual_state_for_snapshot(visual);
+    view.sync(&mut state.doc, &state.root);
+
+    let mut tr = TextRenderer::new();
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+    let node = view.build_layout(&mut taffy, theme, &mut node_map);
+    taffy
+        .compute_layout_with_measure(
+            node,
+            Size {
+                width: AvailableSpace::Definite(width as f32),
+                height: AvailableSpace::Definite(height as f32),
+            },
+            |known, available, node_id, _, _| {
+                node_map.get(&node_id).map_or(Size::ZERO, |&p| unsafe {
+                    (*p).measure(known, available, &mut tr)
+                })
+            },
+        )
+        .map_err(|e| format!("compute_layout_with_measure: {e}"))?;
+    view.apply_layout(&taffy, node, Point::ZERO);
     view.sync(&mut state.doc, &state.root);
     view.settle_motion_for_snapshot();
 
@@ -292,6 +345,29 @@ fn main() -> Result<(), String> {
             720,
         )?;
     }
+
+    for (visual, name) in [
+        (OnboardingVisualState::Codecs, "offer"),
+        (OnboardingVisualState::CodecsInstalling, "installing"),
+        (OnboardingVisualState::CodecsWaitingForNetwork, "offline"),
+        (OnboardingVisualState::CodecsInstalled, "installed"),
+        (OnboardingVisualState::CodecsFailed, "failed"),
+    ] {
+        shoot_visual(
+            &Theme::dark(),
+            &dir.join(format!("codecs-{name}-1280x800.png")),
+            visual,
+            1280,
+            800,
+        )?;
+    }
+    shoot_visual(
+        &Theme::light().with_text_scale(1.3),
+        &dir.join("codecs-offer-large-text-1024x640.png"),
+        OnboardingVisualState::Codecs,
+        1024,
+        640,
+    )?;
 
     if std::env::var_os("ONBOARDING_SHOTS_HOST_ONLY").is_some() {
         return Ok(());

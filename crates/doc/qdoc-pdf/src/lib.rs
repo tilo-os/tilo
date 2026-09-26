@@ -6,10 +6,10 @@
 //!
 //! ## Approach
 //!
-//! Written by a small hand-rolled writer ([`pdf`]) — no `printpdf`
+//! Written by a small hand-rolled writer (`pdf`) — no `printpdf`
 //! dependency — for lockfile stability and full control of pagination
 //! and image embedding. Text uses the base-14 Helvetica/Helvetica-Bold
-//! fonts (viewer-shipped); AFM advance widths ([`metrics`]) drive
+//! fonts (viewer-shipped); AFM advance widths (`metrics`) drive
 //! accurate word-wrap. Images are decoded with the `image` crate and
 //! embedded as `/DeviceRGB` `Image` `XObjects`.
 //!

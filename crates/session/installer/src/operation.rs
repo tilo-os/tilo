@@ -99,6 +99,9 @@ pub enum Operation {
     SetSecurityKey {
         enabled: bool,
     },
+    SetMediaCodecs {
+        enabled: bool,
+    },
     SetHostname {
         hostname: String,
     },
@@ -149,6 +152,7 @@ impl Operation {
             Self::SetDiskPassphrase { .. } => "set-disk-passphrase",
             Self::SetFilesystem { .. } => "set-filesystem",
             Self::SetSecurityKey { .. } => "set-security-key",
+            Self::SetMediaCodecs { .. } => "set-media-codecs",
             Self::SetHostname { .. } => "set-hostname",
             Self::SetLocale { .. } => "set-locale",
             Self::SetTimezone { .. } => "set-timezone",

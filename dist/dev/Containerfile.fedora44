@@ -15,9 +15,13 @@ FROM registry.fedoraproject.org/fedora-toolbox:44
 # runs here as in CI (tools/test-env.sh sets up its environment). Only
 # interactive conveniences are added on top.
 COPY install-build-deps.sh /usr/local/libexec/tilo-install-build-deps
+
+# createrepo_c, rpm-build and rpm-sign build the signed fake repository the
+# codec-pack end-to-end test (os/tests/codec-pack-e2e.sh) resolves against.
 RUN /usr/local/libexec/tilo-install-build-deps fedora test \
  && dnf install -y --setopt=install_weak_deps=False \
       mold sccache openssh-clients \
+      createrepo_c rpm-build rpm-sign \
  && dnf clean all \
  && rm -rf /var/cache/dnf /usr/local/libexec/tilo-install-build-deps
 

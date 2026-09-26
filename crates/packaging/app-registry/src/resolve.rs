@@ -13,7 +13,7 @@
 //!    provider ([`FetchOutcome::payload`]), only those the device lacks.
 //! 5. Verify the downloaded bytes fail-closed: blake3 matches, and the
 //!    embedded publisher signature validates against the entry's
-//!    publisher (via [`tilo_app_package::verify`]).
+//!    publisher (via [`tilo_app_package::verify()`]).
 //!
 //! A hash/signature mismatch on downloaded bytes aborts the whole
 //! fetch — those bytes are never returned for install. A registry that

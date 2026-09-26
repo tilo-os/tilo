@@ -229,6 +229,7 @@ members = [
     "crates/system/xdg-paths",
 
     # Text
+    "crates/text/emoji",
     "crates/text/pim-lines",
     "crates/text/spellcheck",
 
