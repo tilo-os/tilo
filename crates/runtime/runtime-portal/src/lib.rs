@@ -33,6 +33,7 @@
 )]
 
 pub mod agent_transport;
+pub mod local_socket;
 
 use std::env;
 use std::io;
