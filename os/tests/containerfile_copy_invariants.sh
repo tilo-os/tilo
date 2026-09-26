@@ -41,13 +41,14 @@ containerfile="$repo/os/Containerfile"
 # payload, as is the room store volume: its helper, the unit that prepares it
 # before fs.service and the loop unit of image-backed stores. The signature
 # attachment lookups for the code.tilo.so OS repository and the
-# registry.tilo.so owner namespace are staged with the other trust inputs. Sorting
+# registry.tilo.so owner namespace are staged with the other trust inputs; the
+# former code.podesta.ai lookup is gone. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=512204ff985e3431f51110ceb720334a9ffe6df4339136060a2d68b5e2a7a061
+expected_contract=ba0806705b5fa4d8864ca95f300d50d10182e9b487dcae67cc9623c2e852f9c0
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
