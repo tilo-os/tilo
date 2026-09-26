@@ -97,6 +97,10 @@ pub struct ClientInput {
     /// Persistence fsyncs both the replacement file and its directory, so it
     /// must run after latency-sensitive Wayland input has been queued/flushed.
     focus_persistence_pending: bool,
+    /// Whether the latest direct-touch down was delivered to a client over
+    /// `wl_touch`. That client owns the whole tap, so the compositor must not
+    /// also synthesise a pointer click for it.
+    touch_down_reached_client: bool,
 }
 
 impl ClientInput {
@@ -597,6 +601,18 @@ impl State {
         }
     }
 
+    /// Record a direct-touch down that the compositor kept away from every
+    /// client (a locked session, or chrome capturing input).
+    pub fn note_touch_down_withheld_from_clients(&mut self) {
+        self.client_input.touch_down_reached_client = false;
+    }
+
+    /// Whether a confirmed tap may be emulated as a pointer click. A tap whose
+    /// touch sequence already reached a client is that client's alone.
+    pub fn touch_tap_needs_pointer_click(&self) -> bool {
+        !self.client_input.touch_down_reached_client
+    }
+
     /// Forward one touch point to the focused client over `wl_touch`.
     /// `target` is `(surface id, tile origin)` for a `Down` landing inside a client tile; touch focus is set on `down` only (per protocol).
     pub fn forward_client_touch(
@@ -604,9 +620,7 @@ impl State {
         touch: BackendTouchEvent,
         target: Option<(u64, (f64, f64))>,
     ) {
-        let Some(handle) = self.seat.get_touch() else {
-            return;
-        };
+        let handle = self.seat.get_touch();
         let focus: Option<(WlSurface, SmithayPoint<f64, Logical>)> =
             target.and_then(|(id, origin)| {
                 self.client_input
@@ -615,6 +629,12 @@ impl State {
                     .cloned()
                     .map(|s| (s, SmithayPoint::from(origin)))
             });
+        if matches!(touch, BackendTouchEvent::Down { .. }) {
+            self.client_input.touch_down_reached_client = handle.is_some() && focus.is_some();
+        }
+        let Some(handle) = handle else {
+            return;
+        };
         let serial = mint_serial(self);
         let time = event_time(self);
         match touch {
