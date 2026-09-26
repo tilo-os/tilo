@@ -9,7 +9,6 @@
 //! local so one device can never start audio or consume another device's disk.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -5059,16 +5058,12 @@ fn portable_cover_data_url(source: &[u8]) -> Result<String, String> {
     if source.is_empty() || source.len() as u64 > MAX_COVER_SOURCE_BYTES {
         return Err("image is empty or larger than 8 MiB".to_string());
     }
-    let image = image::load_from_memory(source).map_err(|error| error.to_string())?;
-    let image = image.thumbnail(
-        crate::actions::MAX_PORTABLE_COVER_EDGE,
-        crate::actions::MAX_PORTABLE_COVER_EDGE,
-    );
-    let mut output = Cursor::new(Vec::new());
-    image
-        .write_to(&mut output, image::ImageFormat::Png)
-        .map_err(|error| error.to_string())?;
-    let png = output.into_inner();
+    // The shared preview decoder refuses a header declaring an oversized image
+    // before it allocates a pixel, and applies the EXIF orientation.
+    let cover = thumbnail::image_thumb(source, crate::actions::MAX_PORTABLE_COVER_EDGE)
+        .ok_or_else(|| "image could not be decoded".to_string())?;
+    let png =
+        thumbnail::encode_png(&cover).ok_or_else(|| "image could not be encoded".to_string())?;
     if png.len() > crate::actions::MAX_PORTABLE_COVER_BYTES {
         return Err("normalized image is larger than 256 KiB".to_string());
     }
