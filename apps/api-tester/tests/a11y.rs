@@ -622,3 +622,15 @@ fn composition_pointer_and_keyboard_send_use_the_live_request() {
         );
     }
 }
+
+/// Every effect-capable control is bound to an action: the sidebar
+/// disclosures and the request-area divider publish semantic action targets
+/// of their own, in the empty workspace and in the populated demo.
+#[test]
+fn native_app_contract_is_certified() {
+    for app in [ApiTesterApp::new, ApiTesterApp::new_demo] {
+        let d = Driver::new(State::new(), Box::new(app()), (1280, 800));
+        let audit = d.native_app_audit();
+        assert!(audit.is_certified(), "{audit:#?}");
+    }
+}

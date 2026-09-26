@@ -160,6 +160,7 @@ suites = [
   "os/tests/test_kernel_build_environment.py",
   "os/tests/test_open_snapshot_pr.py",
   "os/tests/test_reconcile_snapshot_pins.py",
+  "os/tests/wpe_runtime_check.sh",
   "os/tests/test_raw_layer_epoch.py",
 ]
 
