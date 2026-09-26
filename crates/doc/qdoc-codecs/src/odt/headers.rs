@@ -172,11 +172,35 @@ fn region_xml(blocks: &[BlockView], tag: &str) -> Option<String> {
 /// Inject (or replace) the `style:header`/`style:footer` children of the first
 /// `style:master-page`, synthesising a minimal one if none exists; `None` when the
 /// document has neither header nor footer, leaving `styles.xml` untouched.
+///
+/// A region the model holds unedited (it equals a fresh import of the original) keeps its
+/// original elements, left/first-page variants and everything the model does not hold
+/// included; when neither region was edited `styles.xml` stays as it is.
 pub(super) fn export_master_headers(doc: &DocRef, original: Option<&[u8]>) -> Option<Vec<u8>> {
     let header = materialize_region(doc.doc, doc.c, Region::Header);
     let footer = materialize_region(doc.doc, doc.c, Region::Footer);
-    let header_xml = region_xml(&header, "style:header");
-    let footer_xml = region_xml(&footer, "style:footer");
+    let kept = original.map(|bytes| {
+        let s = String::from_utf8_lossy(bytes).into_owned();
+        let mut scratch = qdoc::Document::new();
+        import_master_headers(bytes, &mut scratch.as_mut());
+        let fresh = scratch.as_ref();
+        let unchanged = |region: Region, now: &[BlockView]| {
+            crate::preserve::same_blocks(now, &materialize_region(fresh.doc, fresh.c, region))
+        };
+        let inner = first_master_page_span(&s)
+            .and_then(|(_, start, end)| s.get(start..end).map(str::to_string))
+            .unwrap_or_default();
+        (
+            unchanged(Region::Header, &header).then(|| region_elements(&inner, true)),
+            unchanged(Region::Footer, &footer).then(|| region_elements(&inner, false)),
+        )
+    });
+    let (kept_header, kept_footer) = kept.unwrap_or_default();
+    if kept_header.is_some() && kept_footer.is_some() {
+        return None;
+    }
+    let header_xml = kept_header.or_else(|| region_xml(&header, "style:header"));
+    let footer_xml = kept_footer.or_else(|| region_xml(&footer, "style:footer"));
     if header_xml.is_none() && footer_xml.is_none() {
         return None;
     }
@@ -288,6 +312,47 @@ fn strip_regions(inner: &str) -> String {
                     out.push_str(span);
                 }
             }
+        }
+    }
+    out
+}
+
+/// The verbatim header (`headers`) or footer elements of a master-page's inner XML, the
+/// left/first-page variants included.
+fn region_elements(inner: &str, headers: bool) -> String {
+    let wanted = |name: &[u8]| {
+        is_region_tag(name)
+            && name.starts_with(if headers {
+                b"style:header"
+            } else {
+                b"style:footer"
+            })
+    };
+    let mut out = String::new();
+    let mut reader = Reader::from_str(inner);
+    let mut open: Option<(usize, usize)> = None; // (start, depth)
+    loop {
+        let pos = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        let Ok(ev) = reader.read_event() else {
+            break;
+        };
+        let after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
+        match (&ev, open.as_mut()) {
+            (Event::Start(_), Some((_, depth))) => *depth = depth.saturating_add(1),
+            (Event::End(_), Some((start, depth))) => {
+                if *depth == 0 {
+                    out.push_str(inner.get(*start..after).unwrap_or_default());
+                    open = None;
+                } else {
+                    *depth = depth.saturating_sub(1);
+                }
+            }
+            (Event::Start(e), None) if wanted(e.name().as_ref()) => open = Some((pos, 0)),
+            (Event::Empty(e), None) if wanted(e.name().as_ref()) => {
+                out.push_str(inner.get(pos..after).unwrap_or_default());
+            }
+            (Event::Eof, _) => break,
+            _ => {}
         }
     }
     out

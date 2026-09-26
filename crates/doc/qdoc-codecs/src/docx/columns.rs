@@ -11,7 +11,8 @@ use quick_xml::reader::Reader;
 /// Twips (1/20 pt) per CSS px at 96 dpi: 1 px = 1/96 in = 1440/96 twips = 15 twips.
 const TWIPS_PER_PX: f64 = 15.0;
 
-/// Import the body column count + gap from the first `w:sectPr`'s `w:cols`. No-op when
+/// Import the body column count + gap from the final `w:sectPr`'s `w:cols` (the body's own
+/// section; a section break keeps its columns verbatim with its paragraph). No-op when
 /// the section carries no `w:cols` (or a count of one) — the document keeps its
 /// single-column default.
 pub(super) fn import_section_columns(document_xml: &[u8], doc: &mut DocMut) {
@@ -24,19 +25,32 @@ pub(super) fn import_section_columns(document_xml: &[u8], doc: &mut DocMut) {
     doc.set_columns(count, gap);
 }
 
-/// Scan `document.xml` for the first `w:cols` inside a `w:sectPr` and read its
-/// `w:num`/`w:space`; `None` when no `w:cols` is present.
+/// Scan `document.xml` for the `w:cols` of the body's own `w:sectPr` (not a section break's,
+/// inside a paragraph's `w:pPr`) and read its `w:num`/`w:space`; `None` when it has none.
 fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
     let s = std::str::from_utf8(document_xml).ok()?;
     let mut reader = Reader::from_str(s);
     let mut in_sectpr = false;
+    let mut in_ppr = 0usize;
+    let mut last = None;
+    let mut current = None;
     loop {
         let Ok(ev) = reader.read_event() else {
-            return None;
+            return last;
         };
         match ev {
-            Event::Start(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = true,
-            Event::End(e) if e.name().as_ref() == b"w:sectPr" => in_sectpr = false,
+            Event::Start(e) if e.name().as_ref() == b"w:pPr" => in_ppr = in_ppr.saturating_add(1),
+            Event::End(e) if e.name().as_ref() == b"w:pPr" => in_ppr = in_ppr.saturating_sub(1),
+            _ if in_ppr > 0 => {}
+            Event::Start(e) if e.name().as_ref() == b"w:sectPr" => {
+                in_sectpr = true;
+                current = None;
+            }
+            Event::Empty(e) if e.name().as_ref() == b"w:sectPr" => last = None,
+            Event::End(e) if e.name().as_ref() == b"w:sectPr" => {
+                in_sectpr = false;
+                last = current.take();
+            }
             Event::Empty(e) | Event::Start(e) if in_sectpr && e.name().as_ref() == b"w:cols" => {
                 let num = e
                     .attributes()
@@ -52,9 +66,9 @@ fn parse_cols(document_xml: &[u8]) -> Option<(u32, Option<f64>)> {
                     .and_then(|a| crate::unescape_attr(&a))
                     .and_then(|v| v.trim().parse::<f64>().ok())
                     .map(|twips| (twips / TWIPS_PER_PX * 100.0).round() / 100.0);
-                return Some((num, gap));
+                current = Some((num, gap));
             }
-            Event::Eof => return None,
+            Event::Eof => return last,
             _ => {}
         }
     }

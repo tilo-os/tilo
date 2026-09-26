@@ -41,7 +41,8 @@ impl Default for HtmlOptions {
               would only move the & to each of those callers for no behavioural gain"
 )]
 pub fn render_html(snap: &DocSnapshot, opts: HtmlOptions, content: &dyn ContentSource) -> String {
-    render_resolved(&Resolved::new(snap, content), opts)
+    let snap = qdoc::export::without_kept_placeholders(snap);
+    render_resolved(&Resolved::new(&snap, content), opts)
 }
 
 /// [`render_html`] over a snapshot whose images are already resolved.
