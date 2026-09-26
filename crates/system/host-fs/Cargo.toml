@@ -1,0 +1,10 @@
+[package]
+name = "host-fs"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "Portable filesystem operations that only some hosts provide: permission bits, symbolic links"
+
+[lints]
+workspace = true

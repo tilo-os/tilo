@@ -248,45 +248,13 @@ fn prepare_fixture_owned(
         )
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
         let document = record_dir.join(app_state::DOCUMENT_FILE);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            let lock = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(0)
-                .open(&document)
-                .map_err(|error| LaunchError::Operation(format!("lock capture store: {error}")))?;
-            let (signal, wait) = std::sync::mpsc::channel();
-            let release = std::thread::spawn(move || {
-                let _ = wait.recv_timeout(std::time::Duration::from_secs(30));
-                drop(lock);
-            });
-            SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
-            *directory.failed_save_signal.borrow_mut() = Some(signal);
-            *directory.failed_save_release.borrow_mut() = Some(release);
-        }
-        #[cfg(unix)]
-        {
-            // CI runs as root, so removing write permission does not reliably
-            // make the atomic replacement fail. A directory at the document
-            // path does, regardless of privileges.
-            let backup = document.with_extension("capture-save-fault");
-            std::fs::rename(&document, &backup)
+        let (signal, wait) = std::sync::mpsc::channel();
+        let release =
+            atomic_file::block_replacement(&document, wait, std::time::Duration::from_secs(30))
                 .map_err(|error| LaunchError::Operation(error.to_string()))?;
-            if let Err(error) = std::fs::create_dir(&document) {
-                let _ = std::fs::rename(&backup, &document);
-                return Err(LaunchError::Operation(error.to_string()));
-            }
-            let (signal, wait) = std::sync::mpsc::channel();
-            let release = std::thread::spawn(move || {
-                let _ = wait.recv_timeout(std::time::Duration::from_secs(30));
-                let _ = std::fs::remove_dir(&document);
-                let _ = std::fs::rename(&backup, &document);
-            });
-            SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
-            *directory.failed_save_signal.borrow_mut() = Some(signal);
-            *directory.failed_save_release.borrow_mut() = Some(release);
-        }
+        SAVE_FAULT_RELEASE.with_borrow_mut(|slot| *slot = Some(signal.clone()));
+        *directory.failed_save_signal.borrow_mut() = Some(signal);
+        *directory.failed_save_release.borrow_mut() = Some(release);
     }
     Ok((prepared, records))
 }

@@ -460,37 +460,15 @@ pub mod recovery {
 
     /// The directory recovery copies live in. Resolution order:
     /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
-    ///
-    /// On Windows, the default is `%LOCALAPPDATA%/tilo/word-processor/recovery`,
-    /// falling back to `%USERPROFILE%/AppData/Local` when necessary.
-    ///
-    /// On other hosts, the remaining resolution order is:
-    ///
-    /// 2. `$XDG_STATE_HOME/tilo/word-processor/recovery`;
-    /// 3. `$HOME/.local/state/tilo/word-processor/recovery`;
-    /// 4. `./.tilo-wp-recovery` as a last resort (no HOME at all).
+    /// 2. the per-user state directory (`$XDG_STATE_HOME`, else
+    ///    `$HOME/.local/state`; Windows: `%LOCALAPPDATA%`), joined with
+    ///    `tilo/word-processor/recovery`;
+    /// 3. `./.tilo-wp-recovery` as a last resort (no home directory at all).
     pub fn base_dir() -> PathBuf {
         if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
             return PathBuf::from(dir);
         }
-        #[cfg(windows)]
-        let state_home = std::env::var_os("LOCALAPPDATA")
-            .map(PathBuf::from)
-            .filter(|path| path.is_absolute())
-            .or_else(|| {
-                std::env::var_os("USERPROFILE")
-                    .map(PathBuf::from)
-                    .filter(|path| path.is_absolute())
-                    .map(|path| path.join("AppData").join("Local"))
-            });
-        #[cfg(not(windows))]
-        let state_home = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| !p.as_os_str().is_empty())
-            .or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("state"))
-            });
-        match state_home {
+        match xdg_paths::state_home_or_local_app_data() {
             Some(p) => p.join("tilo").join("word-processor").join("recovery"),
             None => PathBuf::from(".tilo-wp-recovery"),
         }
@@ -543,18 +521,9 @@ pub mod recovery {
                     }
                     resolved
                 });
-                // Windows canonicalization adds a verbatim path prefix once a
-                // file exists. File URLs normalize both spellings, keeping the
-                // recovery slot stable across the document's first save.
-                #[cfg(windows)]
-                {
-                    url::Url::from_file_path(&abs).map_or_else(
-                        |()| abs.to_string_lossy().into_owned(),
-                        |url| url.to_string(),
-                    )
-                }
-                #[cfg(not(windows))]
-                abs.to_string_lossy().into_owned()
+                // Keep the recovery slot stable across the document's first
+                // save, when canonicalization starts to succeed.
+                ui::uri::stable_path_key(&abs)
             }
             None => ":untitled:".to_string(),
         };

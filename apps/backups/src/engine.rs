@@ -73,8 +73,9 @@ pub struct BackupEntry {
     pub size: u64,
     pub sha256: Option<String>,
     pub link_target: Option<PathBuf>,
-    #[cfg(unix)]
-    pub mode: u32,
+    /// Unix permission bits, recorded where the platform has them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -200,11 +201,7 @@ fn build_snapshot(
         validate_relative(relative)?;
         let target = data.join(relative);
         let metadata = fs::symlink_metadata(item.path())?;
-        #[cfg(unix)]
-        let mode = {
-            use std::os::unix::fs::PermissionsExt;
-            metadata.permissions().mode()
-        };
+        let mode = host_fs::mode(&metadata);
         if metadata.is_dir() {
             fs::create_dir(&target)?;
             entries.push(BackupEntry {
@@ -213,7 +210,6 @@ fn build_snapshot(
                 size: 0,
                 sha256: None,
                 link_target: None,
-                #[cfg(unix)]
                 mode,
             });
         } else if metadata.is_file() {
@@ -228,7 +224,6 @@ fn build_snapshot(
                 size,
                 sha256: Some(digest),
                 link_target: None,
-                #[cfg(unix)]
                 mode,
             });
         } else if metadata.file_type().is_symlink() {
@@ -240,7 +235,6 @@ fn build_snapshot(
                 size: 0,
                 sha256: None,
                 link_target: Some(link_target),
-                #[cfg(unix)]
                 mode,
             });
         } else {
@@ -484,10 +478,10 @@ fn restore_into_stage(
                 on_progress(&progress);
             }
         }
-        #[cfg(unix)]
-        if !matches!(entry.kind, EntryKind::Symlink) {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&to, fs::Permissions::from_mode(entry.mode))?;
+        if !matches!(entry.kind, EntryKind::Symlink)
+            && let Some(mode) = entry.mode
+        {
+            host_fs::set_mode(&to, mode)?;
         }
     }
     Ok(Verification {
@@ -715,17 +709,14 @@ fn integrity<T>(path: &Path, message: &str) -> Result<T> {
     )))
 }
 
-#[cfg(unix)]
 fn create_symlink(target: &Path, path: &Path) -> Result<()> {
-    std::os::unix::fs::symlink(target, path)?;
+    if !host_fs::HAS_SYMLINKS {
+        return Err(BackupError::InvalidSource(
+            "Symbolic links are not supported on this platform".into(),
+        ));
+    }
+    host_fs::symlink(target, path)?;
     Ok(())
-}
-
-#[cfg(not(unix))]
-fn create_symlink(_target: &Path, _path: &Path) -> Result<()> {
-    Err(BackupError::InvalidSource(
-        "Symbolic links are not supported on this platform".into(),
-    ))
 }
 
 #[cfg(test)]

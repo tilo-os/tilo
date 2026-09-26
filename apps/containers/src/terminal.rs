@@ -73,21 +73,8 @@ pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<
     let script =
         format!("#!/bin/sh\nexport SHELL_FALLBACK=\"${{SHELL_FALLBACK:-/bin/bash}}\"\n{command}\n");
     std::fs::write(&path, script)?;
-    set_executable(&path)?;
+    bounded_command::make_executable(&path)?;
     Ok(path)
-}
-
-#[cfg(unix)]
-fn set_executable(path: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    std::fs::set_permissions(path, perms)
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path) -> std::io::Result<()> {
-    Ok(())
 }
 
 /// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/tilo-containers`

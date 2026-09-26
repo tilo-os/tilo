@@ -60,9 +60,12 @@ gpu-video = ["dmabuf-import"]
 # `VideoPlayer` widget: media keys + the system top-bar now-playing widget can
 # drive playback and show the current title/artist/art. Off by default so the
 # hermetic build / `--shots` / CI need no D-Bus; an app enables it (e.g. Tube's
-# `media` feature turns on `ui/mpris`). zbus runs on the workspace's tokio
+# `media` feature turns on `ui/media-session`). zbus runs on the workspace's tokio
 # backend; the server lives on its own thread with a private runtime.
 mpris = ["native", "dep:zbus"]
+# Publish an address book's priority contacts to the Tilo shell
+# (`ui::priority_contacts`) over the Unix session bus.
+priority-contacts = ["native", "dep:zbus", "zbus?/blocking-api"]
 # Host-native file open/save through the XDG Desktop Portal (`ui::portal`).
 # Pulls `ashpd` (D-Bus / FileChooser) only when an app needs to open or
 # save files — an app opts in with `ui = { …, features = ["portal"] }`. The pure

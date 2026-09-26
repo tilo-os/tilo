@@ -279,6 +279,34 @@ pub fn runtime_dir() -> Option<PathBuf> {
     platform::runtime()
 }
 
+/// Per-user data for stores that follow XDG on every Unix, macOS included:
+/// [`xdg::data_home`] there, and [`data_local_dir`] on Windows.
+#[must_use]
+pub fn data_home_or_local_app_data() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        data_local_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        xdg::data_home()
+    }
+}
+
+/// Per-user state for stores that follow XDG on every Unix, macOS included:
+/// [`xdg::state_home`] there, and [`data_local_dir`] on Windows.
+#[must_use]
+pub fn state_home_or_local_app_data() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        data_local_dir()
+    }
+    #[cfg(not(windows))]
+    {
+        xdg::state_home()
+    }
+}
+
 #[cfg(all(unix, not(target_os = "macos")))]
 mod platform {
     use std::path::PathBuf;

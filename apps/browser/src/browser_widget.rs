@@ -3798,11 +3798,8 @@ impl BrowserWidget {
             return false;
         }
         let modifiers = modifiers.state();
-        let platform = if cfg!(target_os = "macos") {
-            modifiers.super_key()
-        } else {
-            modifiers.control_key()
-        };
+        let platform =
+            ui::platform::PlatformConventions::default().command_modifier_down(modifiers);
         if platform && !modifiers.alt_key() {
             use crate::daily_controls::Action;
             if matches!(&key.logical_key, WKey::Character(c) if c == "[" || c == "]") {

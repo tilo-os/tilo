@@ -45,7 +45,7 @@ tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 blake3.workspace = true
-libc.workspace = true
+private-fs = { path = "../../crates/system/private-fs" }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
@@ -85,7 +85,7 @@ media = [
     "media/decode",
     # Desktop media integration: the watch-page player publishes now-playing +
     # accepts media keys through the toolkit's MPRIS service.
-    "ui/mpris",
+    "ui/media-session",
 ]
 # Grayjay account/device sync over Noise (TCP 12315 + pairing), including its
 # portal-backed lifecycle.

@@ -1,5 +1,4 @@
 //! Responsive Clocks UI. All controls mutate the durable engine state directly.
-#[cfg(windows)]
 use crate::native_timers::timer_id as native_timer_id;
 use crate::{Alarm, ClockState, DueEvent, ShellSnapshot, Timer, WeekdayKey, WorldClock};
 use automerge::{AutoCommit, ObjId};
@@ -984,15 +983,10 @@ pub struct ClocksApp {
     notice: ui::LocalState<Option<(String, String)>>,
     persistent: bool,
     next_clock_tick: std::time::Instant,
-    #[cfg(windows)]
     native_notifications: Option<ui::host_notifications::HostNotifications>,
-    #[cfg(windows)]
     pending_notifications: Vec<(String, String, String)>,
-    #[cfg(windows)]
     next_notification_attempt: std::time::Instant,
-    #[cfg(windows)]
     last_scheduled_timers: String,
-    #[cfg(windows)]
     next_schedule_attempt: std::time::Instant,
 }
 impl ClocksApp {
@@ -1050,12 +1044,13 @@ impl ClocksApp {
 
     fn with_state(value: ClockState, mode: usize, persistent: bool) -> Self {
         // Register legacy timers before the first UI event can delete them.
-        #[cfg(windows)]
         let value = {
             let mut value = value;
-            value
-                .native_timer_owners
-                .extend(value.timers.iter().map(|timer| timer.id));
+            if ui::host_notifications::SUPPORTED {
+                value
+                    .native_timer_owners
+                    .extend(value.timers.iter().map(|timer| timer.id));
+            }
             value
         };
         let state = ui::LocalState::new(value);
@@ -1075,15 +1070,10 @@ impl ClocksApp {
             notice,
             persistent,
             next_clock_tick: std::time::Instant::now(),
-            #[cfg(windows)]
             native_notifications: None,
-            #[cfg(windows)]
             pending_notifications: Vec::new(),
-            #[cfg(windows)]
             next_notification_attempt: std::time::Instant::now(),
-            #[cfg(windows)]
             last_scheduled_timers: String::new(),
-            #[cfg(windows)]
             next_schedule_attempt: std::time::Instant::now(),
         }
     }
@@ -1095,22 +1085,22 @@ impl ClocksApp {
     /// shell observes it. A stable notification ID lets the producer keep the
     /// notice attached to later tombstones while the shell deduplicates it.
     fn remember_due(&mut self, event: DueEvent) {
-        #[cfg(windows)]
         let native = match &event {
             DueEvent::Timer {
                 id,
                 native_scheduled,
                 ..
-            } => Some((native_timer_id(*id), *native_scheduled)),
-            DueEvent::Alarm { .. } => None,
+            } if ui::host_notifications::SUPPORTED => {
+                Some((native_timer_id(*id), *native_scheduled))
+            }
+            DueEvent::Timer { .. } | DueEvent::Alarm { .. } => None,
         };
         let (title, body) = match event {
             DueEvent::Alarm { label, .. } => ("Alarm".to_owned(), label),
             DueEvent::Timer { label, .. } => ("Timer finished".to_owned(), label),
         };
         let notice = (uuid::Uuid::new_v4(), title, body);
-        #[cfg(windows)]
-        if self.persistent {
+        if ui::host_notifications::SUPPORTED && self.persistent {
             let (tag, scheduled) = native.unwrap_or_else(|| {
                 (
                     notice.0.simple().to_string().chars().take(16).collect(),
@@ -1130,14 +1120,14 @@ impl ClocksApp {
         );
     }
 
-    #[cfg(windows)]
     fn deliver_native_notifications(&mut self) {
         if self.pending_notifications.is_empty()
             || std::time::Instant::now() < self.next_notification_attempt
         {
             return;
         }
-        self.next_notification_attempt = std::time::Instant::now() + Duration::from_secs(5);
+        let now = std::time::Instant::now();
+        self.next_notification_attempt = now.checked_add(Duration::from_secs(5)).unwrap_or(now);
         if self.native_notifications.is_none() {
             match ui::host_notifications::HostNotifications::new("so.tilo.clocks")
                 .and_then(|host| host.with_protocol_activation("tilo-clocks:"))
@@ -1159,7 +1149,6 @@ impl ClocksApp {
         }
     }
 
-    #[cfg(windows)]
     fn schedule_native_timers(&mut self, now: chrono::DateTime<Utc>) {
         if !self.persistent || std::time::Instant::now() < self.next_schedule_attempt {
             return;
@@ -1175,16 +1164,18 @@ impl ClocksApp {
             Ok(()) => {
                 self.last_scheduled_timers = self
                     .state
-                    .with(|s| serde_json::to_string(&s.timers).unwrap_or_default())
+                    .with(|s| serde_json::to_string(&s.timers).unwrap_or_default());
             }
             Err(error) => {
                 eprintln!("Windows Clocks scheduling: {error}");
-                self.next_schedule_attempt = std::time::Instant::now() + Duration::from_secs(5);
+                let retry_base = std::time::Instant::now();
+                self.next_schedule_attempt = retry_base
+                    .checked_add(Duration::from_secs(5))
+                    .unwrap_or(retry_base);
             }
         }
     }
 
-    #[cfg(windows)]
     fn reconcile_native_timers(&mut self, now: chrono::DateTime<Utc>) -> Result<(), String> {
         if self.native_notifications.is_none() {
             self.native_notifications = Some(
@@ -1370,15 +1361,17 @@ impl Widget for ClocksApp {
                 .update(|state| state.apply_shell_command(&cmd, activity_id, now));
         }
         let mut due = Vec::new();
-        #[cfg(windows)]
-        self.schedule_native_timers(now);
+        if ui::host_notifications::SUPPORTED {
+            self.schedule_native_timers(now);
+        }
         self.state
             .update(|s| due = s.tick(now, chrono::Local::now()));
         for event in due {
             self.remember_due(event);
         }
-        #[cfg(windows)]
-        self.deliver_native_notifications();
+        if ui::host_notifications::SUPPORTED {
+            self.deliver_native_notifications();
+        }
         self.generation = self.generation.saturating_add(1);
         self.state.with(|s| {
             let activity = s.shell_activity(now);

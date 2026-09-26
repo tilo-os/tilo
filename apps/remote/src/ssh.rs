@@ -174,12 +174,7 @@ fn ensure_private_directory(path: &Path) -> Result<(), String> {
         Ok(_) => validate_private_directory(path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(path).map_err(|error| error.to_string())?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-                    .map_err(|error| error.to_string())?;
-            }
+            private_fs::restrict_directory(path).map_err(|error| error.to_string())?;
             validate_private_directory(path)
         }
         Err(error) => Err(error.to_string()),
@@ -194,20 +189,12 @@ fn validate_private_directory(path: &Path) -> Result<(), String> {
     validate_private_mode(&metadata, "SSH host-key store parent")
 }
 
-#[cfg(unix)]
 fn validate_private_mode(metadata: &fs::Metadata, label: &str) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = metadata.permissions().mode() & 0o777;
-    if mode & 0o077 != 0 {
+    if !private_fs::is_owner_only(metadata) {
         return Err(format!(
             "{label} must not be accessible to group or other users"
         ));
     }
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn validate_private_mode(_metadata: &fs::Metadata, _label: &str) -> Result<(), String> {
     Ok(())
 }
 

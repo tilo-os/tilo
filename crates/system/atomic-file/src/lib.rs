@@ -86,8 +86,12 @@ mod legacy;
 mod native;
 #[cfg(any(unix, windows))]
 mod publication;
+#[cfg(any(unix, windows))]
+mod replacement_block;
 #[cfg(all(any(unix, windows), feature = "test-support"))]
 pub mod test_support;
+#[cfg(any(unix, windows))]
+pub use replacement_block::block_replacement;
 
 #[cfg(any(unix, windows))]
 pub use directory::StorageDirectory;

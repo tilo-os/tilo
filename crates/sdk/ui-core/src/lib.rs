@@ -168,6 +168,9 @@ pub mod history_source;
 pub mod host;
 #[cfg(all(windows, feature = "notifications"))]
 pub use native::host_notifications;
+#[cfg(not(all(windows, feature = "notifications")))]
+#[path = "host_notifications_unsupported.rs"]
+pub mod host_notifications;
 pub mod i18n;
 pub mod icons;
 pub mod image_store;
@@ -196,6 +199,7 @@ pub mod png;
 pub mod portable_storage;
 pub mod portal;
 pub mod presence;
+pub mod priority_contacts;
 pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;

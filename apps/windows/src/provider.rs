@@ -1,7 +1,6 @@
 //! Provider boundary for the session compatibility service. No runner command
 //! or host path is constructed in UI code.
 use std::fs::File;
-use std::os::fd::{FromRawFd, OwnedFd};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -460,12 +459,11 @@ impl LiveProvider {
     /// Returns an error when no verified descriptor was inherited or the
     /// bounded worker thread cannot be started.
     pub fn connect() -> Result<Self, String> {
-        let raw = runtime_portal::service_fd("compat")
+        // SAFETY: the app creates exactly one live provider, which becomes the
+        // inherited descriptor's sole owner and transfers it immediately to
+        // `SessionClient`.
+        let owned = unsafe { runtime_portal::take_service_fd("compat") }
             .ok_or_else(|| "The Tilo compatibility service is unavailable.".to_string())?;
-        // SAFETY: `runtime_portal::service_fd` verified that the inherited slot
-        // is open. The app creates exactly one live provider, which becomes its
-        // sole owner and transfers it immediately to `SessionClient`.
-        let owned = unsafe { OwnedFd::from_raw_fd(raw) };
         let client = SessionClient::from_owned_fd(owned);
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();

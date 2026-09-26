@@ -5,8 +5,6 @@
 //! explicit Cap'n Proto endpoint.
 
 use std::collections::VecDeque;
-use std::os::fd::{FromRawFd, IntoRawFd};
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
 
@@ -53,28 +51,8 @@ impl Link {
     ) -> Result<Self> {
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let manager = if std::env::var_os("TILO_MANAGED_AGENT_CONTEXT").is_some() {
-            static CLAIMED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            let raw: i32 = std::env::var("TILO_SVC_COLLAB_FD")?.parse()?;
-            anyhow::ensure!(raw >= 3, "invalid managed collaboration descriptor");
-            CLAIMED
-                .compare_exchange(
-                    false,
-                    true,
-                    std::sync::atomic::Ordering::AcqRel,
-                    std::sync::atomic::Ordering::Acquire,
-                )
-                .map_err(|_| anyhow::anyhow!("managed descriptor already consumed"))?;
-            // The managed launcher transfers this sole descriptor owner once.
-            let mut stream = unsafe { UnixStream::from_raw_fd(raw) };
-            complete_managed_handshake(&mut stream)?;
-            CollaborationManager::for_agent_route_fd(
-                stream.into_raw_fd(),
-                app_id,
-                cluster_id,
-                record,
-                agent_id,
-            )
+            let fd = runtime_portal::agent_transport::claim_managed_agent_fd()?;
+            CollaborationManager::for_agent_route_fd(fd, app_id, cluster_id, record, agent_id)
         } else {
             CollaborationManager::for_agent_route(app_id, cluster_id, record, agent_id)
         }
@@ -103,9 +81,8 @@ impl Link {
         handle: Option<String>,
         identity: Option<CertifiedEndpointIdentity>,
     ) -> Result<Self> {
-        let stream = UnixStream::connect(path)
+        let fd = runtime_portal::agent_transport::connect_endpoint(path)
             .with_context(|| format!("connect to typed endpoint at {}", path.display()))?;
-        let fd = stream.into_raw_fd();
         let agent_id = handle.ok_or_else(|| anyhow::anyhow!("agent connection needs an id"))?;
         let manager = match identity {
             Some(identity) => CollaborationManager::for_agent_route_fd_with_identity(
@@ -137,15 +114,10 @@ impl Link {
         handle: Option<String>,
         identity: CertifiedEndpointIdentity,
     ) -> Result<Self> {
-        let stream = UnixStream::connect(path)
+        let fd = runtime_portal::agent_transport::connect_endpoint(path)
             .with_context(|| format!("connect to typed endpoint at {}", path.display()))?;
         let manager = CollaborationManager::for_route_fd_with_identity(
-            stream.into_raw_fd(),
-            app_id,
-            cluster_id,
-            record,
-            handle,
-            identity,
+            fd, app_id, cluster_id, record, handle, identity,
         )
         .context("start typed collaboration client")?;
         Ok(Self {
@@ -373,22 +345,6 @@ mod tests {
     }
 }
 
-/// Finish launcher kernel-credential attestation before starting Cap'n Proto.
-fn complete_managed_handshake(stream: &mut UnixStream) -> Result<()> {
-    use std::io::{Read, Write};
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(10)))?;
-    let mut challenge = [0; 32];
-    stream.read_exact(&mut challenge)?;
-    stream.write_all(&challenge)?;
-    let mut ack = [0];
-    stream.read_exact(&mut ack)?;
-    anyhow::ensure!(ack == [1], "managed process binding refused");
-    stream.set_read_timeout(None)?;
-    stream.set_write_timeout(None)?;
-    Ok(())
-}
-
 impl Link {
     /// Queueing is not acceptance. Wait for the actual correlated RPC result.
     ///
@@ -422,36 +378,6 @@ impl Link {
         };
         self.defer(deferred);
         result
-    }
-}
-
-#[cfg(test)]
-mod managed_tests {
-    use super::*;
-    use std::io::{Read, Write};
-    #[test]
-    fn managed_connection_requires_exact_ready_ack_before_rpc() {
-        for acknowledgement in [0, 1] {
-            let (mut host, mut app) = UnixStream::pair().unwrap();
-            let worker = std::thread::spawn(move || {
-                host.write_all(&[37; 32]).unwrap();
-                let mut answer = [0; 32];
-                host.read_exact(&mut answer).unwrap();
-                assert_eq!(answer, [37; 32]);
-                host.write_all(&[acknowledgement]).unwrap();
-                if acknowledgement == 1 {
-                    let mut value = [0];
-                    host.read_exact(&mut value).unwrap();
-                    assert_eq!(value, [9]);
-                }
-            });
-            let result = complete_managed_handshake(&mut app);
-            assert_eq!(result.is_ok(), acknowledgement == 1);
-            if result.is_ok() {
-                app.write_all(&[9]).unwrap();
-            }
-            worker.join().unwrap();
-        }
     }
 }
 

@@ -18,10 +18,15 @@ webview-wpe = ["ui-core/webview-wpe"]
 dmabuf-import = ["ui-core/dmabuf-import"]
 gpu-video = ["ui-core/gpu-video"]
 mpris = ["ui-core/mpris"]
+# Semantic capabilities for apps. The SDK picks the backend: WPE WebKit for
+# `webview` and MPRIS for `media-session` on Linux.
+webview = ["webview-wpe"]
+media-session = ["mpris"]
 portal = ["ui-core/portal"]
 # Optional native presentation diagnostics shared by app entrypoints.
 presentation-feedback = ["ui-core/presentation-feedback"]
 notifications = ["ui-core/notifications"]
+priority-contacts = ["ui-core/priority-contacts"]
 
 [dependencies]
 ui-core = { package = "tilo-ui", path = "../ui-core", default-features = false }

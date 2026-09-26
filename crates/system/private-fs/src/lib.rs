@@ -62,6 +62,152 @@ mod platform {
     }
 }
 
+/// Make `options` create files that only their owner can read or write
+/// (mode `0600` on Unix; other platforms keep their default access).
+///
+/// Unlike [`create_new`] this adds no ownership validation, so it costs no
+/// extra system call.
+#[inline]
+pub fn owner_only(options: &mut OpenOptions) -> &mut OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options
+}
+
+/// Restrict an existing directory to its owner (mode `0700` on Unix; a no-op
+/// on platforms without permission bits).
+///
+/// # Errors
+/// Returns the permission change's error.
+pub fn restrict_directory(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Restrict an existing file to its owner (mode `0600` on Unix; a no-op on
+/// platforms without permission bits).
+///
+/// # Errors
+/// Returns the permission change's error.
+pub fn restrict_file(path: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
+/// Whether `metadata` grants no access to group or other users. Always `true`
+/// on platforms without Unix permission bits.
+#[inline]
+#[must_use]
+pub fn is_owner_only(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        #[expect(
+            clippy::verbose_bit_mask,
+            reason = "the group and other permission bits read clearer as a mask"
+        )]
+        let owner_only = metadata.permissions().mode() & 0o077 == 0;
+        owner_only
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        true
+    }
+}
+
+/// Open an existing regular file the current user owns, for reading at most
+/// `max_len` bytes, and return it with its length.
+///
+/// A final symbolic link is never followed and the opened object must be the
+/// one inspected, so a rename cannot redirect the read. A file that grants
+/// access beyond its owner is narrowed to owner-only (`0600` on Unix) before
+/// it is returned. Other platforms check only the file type and length.
+///
+/// # Errors
+/// Returns filesystem errors, or rejects links, special files, foreign owners,
+/// oversized files, and a file that changed while opening.
+pub fn open_owned_for_read(path: &Path, max_len: u64) -> io::Result<(File, u64)> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+        // SAFETY: `geteuid` has no preconditions and only reads the calling
+        // process's credential.
+        let uid = || unsafe { libc::geteuid() };
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() {
+            return Err(io::Error::other("target is not a regular file"));
+        }
+        if metadata.uid() != uid() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file is not owned by the current user",
+            ));
+        }
+        if metadata.len() > max_len {
+            return Err(io::Error::other("file exceeds size limit"));
+        }
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(path)?;
+        let opened = file.metadata()?;
+        if !opened.file_type().is_file()
+            || opened.len() > max_len
+            || opened.uid() != uid()
+            || opened.dev() != metadata.dev()
+            || opened.ino() != metadata.ino()
+        {
+            return Err(io::Error::other("target changed while opening"));
+        }
+        if opened.permissions().mode() & 0o777 != 0o600 {
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+            if file.metadata()?.permissions().mode() & 0o777 != 0o600 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "could not enforce owner-only file permissions",
+                ));
+            }
+        }
+        Ok((file, opened.len()))
+    }
+    #[cfg(not(unix))]
+    {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !metadata.file_type().is_file() {
+            return Err(io::Error::other("target is not a regular file"));
+        }
+        if metadata.len() > max_len {
+            return Err(io::Error::other("file exceeds size limit"));
+        }
+        let file = File::open(path)?;
+        let opened = file.metadata()?;
+        if !opened.file_type().is_file() || opened.len() > max_len {
+            return Err(io::Error::other("target changed while opening"));
+        }
+        Ok((file, opened.len()))
+    }
+}
+
 /// Create or restrict a user-owned private directory.
 ///
 /// # Errors

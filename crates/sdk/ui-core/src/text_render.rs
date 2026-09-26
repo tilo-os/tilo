@@ -156,6 +156,32 @@ pub fn configured_font_system() -> FontSystem {
     font_system
 }
 
+/// The toolkit's color emoji face for engines that load their own fonts, as
+/// font data and face index.
+///
+/// On Windows the toolkit ships its font catalog, so this returns the
+/// catalog's Noto Color Emoji face instead of relying on machine-specific font
+/// discovery. Elsewhere the platform's fonts already provide emoji and this
+/// returns `None`.
+#[must_use]
+pub fn bundled_emoji_face() -> Option<(Vec<u8>, u32)> {
+    #[cfg(windows)]
+    {
+        let system = configured_font_system();
+        let database = system.db();
+        let face = database.faces().find(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name == "Noto Color Emoji")
+        })?;
+        database.with_face_data(face.id, |data, index| (data.to_vec(), index))
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 pub(crate) fn balance_buffer(buffer: &mut Buffer, font_system: &mut FontSystem, max_width: f32) {
     if max_width <= 0.0 {
         return;

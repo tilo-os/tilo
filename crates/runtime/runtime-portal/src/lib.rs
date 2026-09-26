@@ -32,6 +32,8 @@
     )
 )]
 
+pub mod agent_transport;
+
 use std::env;
 use std::io;
 
@@ -113,6 +115,21 @@ pub fn service_fd(name: &str) -> Option<RawFd> {
         fcntl_getfd(borrowed).ok()?;
         Some(fd)
     }
+}
+
+/// Take ownership of the inherited service descriptor that [`service_fd`]
+/// finds for `name`.
+///
+/// # Safety
+///
+/// The caller becomes the descriptor's sole owner: nothing else in the
+/// process may use, close or take the same service descriptor afterwards.
+#[cfg(unix)]
+#[must_use]
+pub unsafe fn take_service_fd(name: &str) -> Option<OwnedFd> {
+    // SAFETY: `service_fd` verified the slot is open; the caller guarantees
+    // exclusive ownership.
+    service_fd(name).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// A tokio Cap'n Proto two-party RPC client wrapped around an owned,
