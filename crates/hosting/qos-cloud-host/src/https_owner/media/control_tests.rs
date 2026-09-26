@@ -472,7 +472,7 @@ fn cloud_media_remote_leave_denies_all_scopes_but_keeps_own_publication_current(
         permit.status_offered(&[remote_namespace.as_str()], &mut lapsed),
         AuthorizationStatus::Current
     ));
-    assert_eq!(lapsed, [remote_namespace.clone()]);
+    assert_eq!(lapsed, std::slice::from_ref(&remote_namespace));
     assert_eq!(
         f.source.0.turns.load(Ordering::Relaxed) - before,
         1,

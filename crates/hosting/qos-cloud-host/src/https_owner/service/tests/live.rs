@@ -191,9 +191,9 @@ async fn live_connect(
         ),
     )
     .await??;
-    Ok(timeout(T, LiveClient::start(transport, &token, Some(own)))
+    timeout(T, LiveClient::start(transport, &token, Some(own)))
         .await?
-        .map_err(anyhow::Error::from)?)
+        .map_err(anyhow::Error::from)
 }
 async fn announced(client: &LiveClient, path: &str) -> moq_net::broadcast::Consumer {
     timeout(T, client.member(path))
