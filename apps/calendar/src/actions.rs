@@ -3257,6 +3257,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn resource_directory_publishes_a_bounded_tree_resolves_exact_ids_and_withholds_hidden() {
         // Case `ctrl_k_publishes_the_calendar_tree`:
         // Ctrl+K on the calendar yields the tree: the calendar with a "New event"
@@ -3522,6 +3526,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn search_rows_and_project_actions_invoke_exports_preserving_relationships() {
         // Case `search_rows_invoke_exported_event_and_task_view_actions`:
         // Search activation stays entirely inside the resource/action door for
@@ -3893,6 +3901,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn replicated_edits_converge_and_imports_replay_deterministically() {
         // Case `invite_recurrence_and_timezone_actions_converge_across_divergent_replicas`.
         {
@@ -4073,6 +4085,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn event_and_task_actions_create_and_patch_typed_strict_fields() {
         // Case `new_event_action_creates_an_event`:
         // Dispatching the "New event" prompted action creates an event in the

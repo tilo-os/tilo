@@ -1978,6 +1978,10 @@ mod tests {
     /// stable identity (surviving index shifts, refusing deleted rows). Recall
     /// is presentation only. Each phase builds a fresh seeded app + document.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn history_recall_by_published_action_uses_stable_identity() {
         // phase history_recall_through_headless_host_is_available_to_local_viewer
         {
@@ -2182,6 +2186,10 @@ mod tests {
     #[allow(
         clippy::items_after_statements,
         reason = "the local sibling-key assertion reads most clearly next to the tree it validates"
+    )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
     )]
     fn accessibility_exposes_and_activates_calculator_controls() {
         use ui::a11y::Action;
@@ -2873,6 +2881,10 @@ mod tests {
     /// visibility dot and delete button act on the tapped row. Fresh app + state
     /// per phase.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn graph_pointer_path_drives_views_drawer_and_row_controls() {
         // phase graph2d_drag_pans_the_view
         {
@@ -2946,6 +2958,7 @@ mod tests {
 
         // phase narrow_graph2d_toggle_opens_drawer_via_handle_event
         {
+            use taffy::{Style, TaffyTree};
             // Drive the REAL production event path (handle_event → on_press) at a
             // narrow width and assert the collapsed Functions drawer opens.
             let mut app = CalculatorApp::new();
@@ -2959,7 +2972,6 @@ mod tests {
                 .toggle_center()
                 .expect("a collapsed toggle must be present");
 
-            use taffy::{Style, TaffyTree};
             let mut taffy: TaffyTree<()> = TaffyTree::new();
             let node = taffy.new_leaf(Style::default()).unwrap();
             let mut st = ui::State::new();

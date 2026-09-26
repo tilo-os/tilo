@@ -162,6 +162,10 @@ fn startup_is_empty_live_with_onboarding_and_seeded_only_for_demo() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn resource_provider_and_search_catalog_stay_bounded_and_refresh_on_revision() {
     // Case `real_resource_provider_keeps_snapshot_and_late_exact_resolution_bounded`.
     {
@@ -934,6 +938,10 @@ fn shared_store_migrates_edits_and_deletes_without_rewriting_legacy() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn user_edits_and_source_identity_persist_across_restart() {
     // Case `user_events_persist_across_restart`.
     {
@@ -1408,6 +1416,10 @@ fn view_and_anchor_navigation_update_shared_state() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn new_event_is_created_named_and_discarded_only_while_pristine() {
     // Case `new_event_appends_and_selects`.
     {
@@ -1621,6 +1633,10 @@ fn new_event_is_created_named_and_discarded_only_while_pristine() {
 // --- responsive layout ---------------------------------------------
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
     // Case `schedule_overlap_warning_reflows_and_keeps_complete_semantics`.
     {
@@ -1960,6 +1976,10 @@ fn large_text_layouts_stay_in_bounds_and_keep_the_one_x_design() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
     // Case `invitation_handoff_is_the_exact_mail_resource_action_and_never_claims_send`.
     {
@@ -2115,6 +2135,10 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn sidebar_presentation_follows_width_and_collapses_via_chevrons() {
     // Case `wide_window_uses_persistent_sidebar_and_overlay_editor`.
     {
@@ -2301,6 +2325,10 @@ fn sidebar_presentation_follows_width_and_collapses_via_chevrons() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn detail_and_editor_presentation_follow_width_with_matching_close_affordances() {
     // Case `narrow_detail_screen_replaces_the_calendar`.
     {
@@ -2682,6 +2710,10 @@ fn calendar_and_project_selectors_file_events_and_reach_every_option() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn accessibility_exports_named_stable_controls_that_reuse_actions() {
     // Case `accessibility_exposes_sidebar_lists_and_calendar_visibility_controls`.
     {
@@ -3070,6 +3102,10 @@ fn keyboard_focus_and_shortcuts_route_between_editor_and_calendar() {
 // --- caldav accounts seam ------------------------------------------
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
     // Case `sync_merges_visible_calendar_events`.
     {
@@ -3235,6 +3271,10 @@ fn caldav_sync_runs_off_thread_and_drains_results_tags_or_failure() {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn calendar_visibility_and_account_collapse_filter_views_and_sidebar() {
     // Case `toggling_calendar_visibility_flips_the_flag`.
     {
@@ -3693,6 +3733,10 @@ impl Harness {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn week_timeline_scrolls_the_full_day_and_drags_create_and_reschedule() {
     // Case `week_timeline_keeps_min_slot_height_and_scrolls_the_full_day`.
     {
@@ -4025,6 +4069,10 @@ fn selected_event_id(app: &CalendarApp) -> Id {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn event_form_fields_edit_traverse_and_pick_dates_and_times() {
     // Case `event_title_is_a_real_editable_field_on_the_key_path`.
     {
@@ -4180,6 +4228,10 @@ fn event_form_fields_edit_traverse_and_pick_dates_and_times() {
 // --- delete ---------------------------------------------------------
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
     // Case `delete_event_removes_it_from_the_model_and_crdt`.
     {
@@ -4319,6 +4371,10 @@ fn delete_by_action_key_and_button_removes_items_and_queues_remote_deletes() {
 // --- create → name → persist flow ----------------------------------
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn caldav_reconciliation_keeps_stable_resources_by_href() {
     // Case `caldav_reconciliation_updates_and_deletes_by_href_without_uuid_churn`.
     {

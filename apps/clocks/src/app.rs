@@ -1590,6 +1590,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn due_notices_are_announced_once_and_survive_the_inactive_tombstone() {
         // Case: a completed timer's notice survives the inactive tombstone.
         {

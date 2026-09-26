@@ -106,6 +106,10 @@ fn caret_motion_by_atom_word_row_edge_and_structure() {
 #[test]
 fn selection_ranges_for_each_selecting_gesture() {
     // Each case builds a fresh editor, runs a gesture, expects (lo, hi).
+    #[allow(
+        clippy::type_complexity,
+        reason = "one row per gesture: name, text, gesture, expected range"
+    )]
     let cases: [(&str, &str, fn(&mut Editor), (usize, usize)); 5] = [
         (
             "shift_arrows_extend_selection",
@@ -231,6 +235,10 @@ fn delete_and_backspace_including_structure_unwrap() {
 /// `√` radicals, function calls, `pi` → π, `*` → `·`, auto-paired parens.
 /// Every phase starts from a fresh editor.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn typed_characters_build_structured_nodes() {
     // phase slash_builds_fraction_and_enters_denominator
     {
@@ -570,6 +578,10 @@ fn field_key_and_pointer_paths_edit_content() {
 /// boundaries, drawn gaps sit at summed advances, remote cursors snap to a gap,
 /// and the layout cache rebuilds only when content changes. Fresh field per phase.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn field_layout_maps_carets_to_measured_glyph_positions() {
     use super::MathField;
     use ui::text_render::TextRenderer;
@@ -716,6 +728,10 @@ fn field_layout_maps_carets_to_measured_glyph_positions() {
 /// an expandable card grows to fit up to its max, then scrolls. Fresh field per
 /// phase.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn bounded_field_scrolls_instead_of_resizing() {
     use super::{CARD_MAX_H, CARD_MIN_H, MathField, card_view_height};
     use ui::text_render::TextRenderer;

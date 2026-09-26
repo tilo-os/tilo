@@ -706,7 +706,7 @@ mod tests {
         })
     }
 
-    /// History actions: commit pushes to the front and caps at HISTORY_CAP;
+    /// History actions: commit pushes to the front and caps at `HISTORY_CAP`;
     /// delete removes one entry, clear empties, out-of-range delete is a no-op.
     /// Each phase uses a fresh document.
     #[test]
@@ -942,6 +942,10 @@ mod tests {
     /// byte-identical actions the on-screen controls dispatch. Each phase seeds a
     /// fresh document.
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario, one labelled phase per merged case"
+    )]
     fn published_resources_expose_stable_canonical_affordances() {
         // phase ctrl_k_publishes_workspace_history_and_graph_tree
         {

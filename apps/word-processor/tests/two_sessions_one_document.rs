@@ -66,6 +66,10 @@ fn texts(state: &mut ui::State, wp: &mut WordProcessorWidget) -> Vec<String> {
 /// Two sessions that each opened a file keep both documents, a photograph pasted on one side reaches the
 /// other, and no container is shadowed after a merge.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
 fn sessions_keep_their_documents_and_share_content() {
     // Phase: two_sessions_that_each_opened_a_file_keep_both_documents.
     // Two sessions, two files, one room. Neither side's paragraphs may disappear,
