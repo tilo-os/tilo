@@ -8,7 +8,7 @@
 //! component; Mail therefore retains the HTML document model and serialization.
 //!
 //! ## Model
-//! A document is a list of [`Block`]s. Each block has a [`BlockKind`]
+//! A document is a list of `Block`s. Each block has a [`BlockKind`]
 //! (paragraph, H1–H3, bullet / numbered list item, block-quote) and a run of
 //! text carrying per-character inline [`Style`] flags (bold / italic /
 //! underline) plus an optional link target. The caret is a `(block, character)`

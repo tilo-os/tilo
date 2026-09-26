@@ -1,6 +1,6 @@
 //! Notes as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: Notes declares its
+//! Mirrors the reference wiring in `apps/contacts`: Notes declares its
 //! searchable type by implementing [`SearchProvider`] over a snapshot of the
 //! page tree, so every note page becomes a typed [`SearchResult`] the unified
 //! Ctrl+K palette can rank alongside every other provider's hits. Activating a

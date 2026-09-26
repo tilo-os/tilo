@@ -26,7 +26,7 @@ use crate::model::{PageId, Workspace, WorkspaceData};
 /// Snapshot of "where is the saver right now" — surfaced by both
 /// [`Saver`] and [`PageSaver`] so the UI status bar can render a
 /// "Saved / Saving… / Save failed" indicator. The numeric repr is an
-/// `AtomicU8` storage detail (encoded by [`SaveStatus::as_u8`]) so the
+/// `AtomicU8` storage detail (encoded by `SaveStatus::as_u8`) so the
 /// background thread can publish state to the UI thread without locks.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
 pub enum SaveStatus {

@@ -16,7 +16,7 @@
 //!   libgit2 (see [`crate::repo`]). They are exported as typed effects on the
 //!   repository resource rather than disguised as document actions. The live
 //!   repository is *projected* into the in-memory
-//!   [`RepoModel`](crate::model::RepoModel) and re-read after each op; that model
+//!   [`RepoModel`] and re-read after each op; that model
 //!   is not persisted to the document either.
 //!
 //! - **Presentation — never actions.** Which screen is showing, the selected

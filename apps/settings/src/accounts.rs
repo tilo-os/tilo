@@ -364,7 +364,7 @@ impl MailAccount {
 }
 
 /// The mail account list — Mail's `AccountStore` shape, persisted at
-/// [`MailStore::PATH`].
+/// `MailStore::PATH`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailStore {
     pub accounts: Vec<MailAccount>,

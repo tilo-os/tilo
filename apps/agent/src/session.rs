@@ -400,7 +400,7 @@ impl Session {
     /// # Errors
     ///
     /// When no participant answers with the document within
-    /// `await_document` (see [`Self::unanswered`] for the message), or when
+    /// `await_document` (see `Self::unanswered` for the message), or when
     /// a turn's own I/O — receiving from the broker, decoding a snapshot,
     /// applying an edit — fails.
     pub fn run(&mut self) -> Result<()> {

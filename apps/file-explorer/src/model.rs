@@ -1269,7 +1269,7 @@ fn path_under_any(path: &Path, roots: &[PathBuf]) -> bool {
 /// which is what a sync-state query needs. Naming the workspace needs the
 /// root itself, and that is a different question: `/var/workspace` *is*
 /// the workspace, while `/var/workspace/notes` is a folder in it. Pure
-/// over an explicit root list for the same reason [`path_under_any`] is.
+/// over an explicit root list for the same reason `path_under_any` is.
 pub fn workspace_root_for<'a>(path: &Path, roots: &'a [PathBuf]) -> Option<&'a Path> {
     roots
         .iter()
