@@ -1311,7 +1311,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         return;
     }
     match doc_open::resolve(path) {
-        DocumentTarget::App { .. } => {
+        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
             if let Err(e) = doc_open::open_in_workspace(path, chrome) {
                 notify_open_failure(path, &e.user_message(), chrome);
             }

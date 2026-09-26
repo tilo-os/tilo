@@ -7970,6 +7970,9 @@ impl ShellOverlayHost {
             return false;
         };
         self.harvest_widget_only_groups_into_tree();
+        // A drop lands in the strip at an exact seam, which only a Tilo tile
+        // can honour; a host application opens its own window elsewhere, so
+        // drops it would handle stay with the shell's own document tile.
         let owned = matches!(
             crate::shell::doc_open::resolve(path),
             crate::shell::doc_open::DocumentTarget::App { .. }

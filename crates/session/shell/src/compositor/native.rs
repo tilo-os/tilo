@@ -5440,6 +5440,10 @@ pub fn run() {
     // Publish to the app launcher: every app is pointed at this socket
     // explicitly (`tilo-launcher --wayland-socket`), never at the compositor's own env.
     crate::shell::launcher::set_wayland_socket(&socket_name);
+    // Host tools started before the first open still see Tilo's defaults.
+    let _ = std::thread::Builder::new()
+        .name("tilo-mimeapps-publish".to_string())
+        .spawn(crate::shell::launcher::publish_host_mimeapps);
     let mut desktop_continuation = if crate::compositor::parse_install_mode_from_args()
         == crate::compositor::InstallMode::HostDesktop
     {

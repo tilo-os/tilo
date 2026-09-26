@@ -36,6 +36,11 @@ pub enum DocumentTarget {
         /// for — still a good open, just not a document one.
         editable_document: bool,
     },
+    /// A host desktop entry opens it: nothing Tilo packaged claims the type,
+    /// or the person chose this host application.
+    HostApp {
+        app: Box<crate::shell::host_apps::HostApp>,
+    },
     /// An editable document with no installed owner, distinct from
     /// [`Self::Unclaimed`] because it's actionable: the store can name an editor.
     NoAppForDocument { ext: String },
@@ -60,17 +65,24 @@ pub enum Opened {
         app: InstalledApp,
         tab: Option<TabId>,
     },
+    /// Handed to an unconfined host application, which owns its own windows
+    /// and file access.
+    HostLaunched {
+        app: crate::shell::host_apps::HostApp,
+    },
 }
 
 impl Opened {
-    pub fn app(&self) -> &InstalledApp {
+    /// The Tilo package that holds the document; `None` for a host application.
+    pub fn app(&self) -> Option<&InstalledApp> {
         match self {
-            Opened::Launched { app } | Opened::Focused { app, .. } => app,
+            Opened::Launched { app } | Opened::Focused { app, .. } => Some(app),
+            Opened::HostLaunched { .. } => None,
         }
     }
 
     pub fn launched(&self) -> bool {
-        matches!(self, Opened::Launched { .. })
+        matches!(self, Opened::Launched { .. } | Opened::HostLaunched { .. })
     }
 }
 
@@ -134,21 +146,44 @@ pub fn resolve_for(
     let ext = extension_of(path);
     let editable_document = ext.as_deref().is_some_and(qdoc_codecs::is_supported_ext);
     let mime = mime_guess::from_path(path).first_raw();
-    let app = mime
+    let by_mime = mime
         .and_then(|mime| desktop_policy::ResourceKind::mime(mime).ok())
         .and_then(|resource| {
-            launcher::app_for_resource_with_policy(&resource, user_id, workspace_defaults)
-        })
-        .or_else(|| {
-            ext.as_deref().and_then(|ext| {
-                launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
-            })
+            launcher::handler_for_resource_with_policy(&resource, user_id, workspace_defaults)
         });
-    match app {
-        Some(app) => DocumentTarget::App {
+    let by_extension = || {
+        ext.as_deref().and_then(|ext| {
+            launcher::app_for_extension_with_policy(ext, user_id, workspace_defaults)
+        })
+    };
+    // A host application only wins over a package claiming the extension
+    // when the person or workspace chose it; otherwise Tilo's own app opens it.
+    let handler = match by_mime {
+        Some((launcher::ResourceHandler::Host(host), source))
+            if !matches!(
+                source,
+                desktop_policy::defaults::SelectionSource::SystemDefault
+                    | desktop_policy::defaults::SelectionSource::DeterministicFallback
+            ) =>
+        {
+            Some(launcher::ResourceHandler::Host(host))
+        }
+        Some((launcher::ResourceHandler::Host(host), _)) => Some(
+            by_extension().map_or(launcher::ResourceHandler::Host(host), |app| {
+                launcher::ResourceHandler::Package(app)
+            }),
+        ),
+        Some((handler, _)) => Some(handler),
+        None => by_extension().map(launcher::ResourceHandler::Package),
+    };
+    match handler {
+        Some(launcher::ResourceHandler::Package(app)) => DocumentTarget::App {
             app: Box::new(app),
             editable_document,
         },
+        Some(launcher::ResourceHandler::Host(app)) => {
+            DocumentTarget::HostApp { app: Box::new(app) }
+        }
         None if editable_document => DocumentTarget::NoAppForDocument {
             ext: ext.unwrap_or_default(),
         },
@@ -215,6 +250,7 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
     };
     let app = match target {
         DocumentTarget::App { app, .. } => app,
+        DocumentTarget::HostApp { app } => return open_with_host(&app, path, chrome, placement),
         DocumentTarget::NoAppForDocument { ext } => {
             return Err(OpenError::NoHandler {
                 path: path.to_path_buf(),
@@ -310,6 +346,42 @@ fn open(path: &Path, chrome: &Chrome, placement: Option<Placement>) -> Result<Op
             Err(OpenError::NoWorkspace)
         }
     }
+}
+
+/// Hand `path` to a host application. It runs unconfined with the person's
+/// own files, so there is no read grant to record and no sandbox to open in;
+/// the workspace only attributes its portal requests.
+fn open_with_host(
+    app: &crate::shell::host_apps::HostApp,
+    path: &Path,
+    chrome: &Chrome,
+    placement: Option<Placement>,
+) -> Result<Opened, OpenError> {
+    // Re-read the catalogue: the resolution may be seconds old.
+    let Some(app) = crate::shell::host_apps::find(&app.desktop_id) else {
+        return Err(OpenError::NoHandler {
+            path: path.to_path_buf(),
+            ext: extension_of(path),
+        });
+    };
+    if let Some(placement) = placement.or_else(|| placement_for_document_open(chrome)) {
+        crate::shell::host_apps::note_placement(&app, placement);
+    }
+    let portal_workspace_id = {
+        let state = chrome.borrow();
+        let tree = state.tree();
+        tree.desktop
+            .active_workspace()
+            .map(|workspace| workspace.room.to_string())
+    };
+    crate::shell::host_apps::launch_resolved_with_activation(
+        app,
+        Some(path),
+        portal_workspace_id,
+        None,
+    )
+    .map(|app| Opened::HostLaunched { app })
+    .map_err(OpenError::Launch)
 }
 
 /// A document opened elsewhere belongs *with* whatever asked for it —

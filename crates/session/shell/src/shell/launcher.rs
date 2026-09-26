@@ -509,6 +509,9 @@ pub enum LaunchError {
     /// No `.desktop` entry with this id (distinct from
     /// [`LaunchError::NotInstalled`]: nothing Tilo packaged is missing).
     HostAppNotFound { desktop_id: String },
+    /// The host entry exists but cannot be run as written (for example an
+    /// unusable `Exec=` line).
+    HostAppRefused { desktop_id: String, detail: String },
 }
 
 impl LaunchError {
@@ -556,6 +559,9 @@ impl LaunchError {
             LaunchError::HostAppNotFound { desktop_id } => {
                 format!("no application on this system has the id {desktop_id}")
             }
+            LaunchError::HostAppRefused { desktop_id, detail } => {
+                format!("{desktop_id} cannot be started: {detail}")
+            }
         }
     }
 
@@ -585,6 +591,7 @@ impl LaunchError {
                 "The workspace identity could not be loaded. Try again."
             }
             Self::RegistryUnreadable { .. } => "The app list could not be read. Try again.",
+            Self::HostAppRefused { .. } => "This app's desktop entry cannot be started.",
         }
     }
 }
@@ -1224,6 +1231,137 @@ pub fn app_for_extension_with_policy(
     app_for_resource_with_policy(&resource, user_id, workspace)
 }
 
+/// Who opens a resource: a Tilo package, or a host desktop entry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceHandler {
+    Package(InstalledApp),
+    Host(crate::shell::host_apps::HostApp),
+}
+
+/// Resolve a resource over Tilo packages *and* host desktop entries, honouring
+/// the host's `mimeapps.list` chain among host entries. Personal and
+/// workspace choices may name either kind; without one a Tilo package wins.
+pub fn handler_for_resource_with_policy(
+    resource: &desktop_policy::ResourceKind,
+    user_id: &str,
+    workspace: Option<&desktop_policy::WorkspaceDefaults>,
+) -> Option<(ResourceHandler, desktop_policy::defaults::SelectionSource)> {
+    let apps = gui_apps();
+    let hosts = crate::shell::host_apps::host_apps();
+    let chain = desktop_policy::mimeapps::session_chain();
+    let mut candidates = default_app_candidates_from(&apps);
+    candidates.extend(host_app_candidates(&hosts, &chain));
+    let personal = desktop_policy::PersonalDefaults::load();
+    let selected = desktop_policy::DefaultAppResolver::new(&candidates)
+        .with_system_defaults(&chain)
+        .resolve(resource, user_id, &personal, workspace);
+    // Keep host tools in step with what this resolution just saw; the write
+    // is skipped when nothing changed and never delays the open.
+    let published = resolved_host_defaults(&candidates, &chain, &personal);
+    let _ = std::thread::Builder::new()
+        .name("tilo-mimeapps-publish".to_string())
+        .spawn(move || publish_host_defaults(&published));
+    let selected = selected?;
+    let source = selected.source;
+    if let Some(desktop_id) = desktop_policy::host_desktop_id(&selected.package_id) {
+        return hosts
+            .into_iter()
+            .find(|host| host.desktop_id == desktop_id)
+            .map(|host| (ResourceHandler::Host(host), source));
+    }
+    apps.into_iter()
+        .find(|app| app.package_id == selected.package_id)
+        .map(|app| (ResourceHandler::Package(app), source))
+}
+
+/// Host desktop entries as policy candidates: their `MimeType=` claims plus
+/// associations the `mimeapps.list` chain adds, minus those it removes.
+pub fn host_app_candidates(
+    hosts: &[crate::shell::host_apps::HostApp],
+    chain: &desktop_policy::MimeAppsChain,
+) -> Vec<desktop_policy::AppCandidate> {
+    hosts
+        .iter()
+        .filter_map(|host| {
+            let package_id = desktop_policy::host_app_id(&host.desktop_id);
+            desktop_policy::defaults::validate_package_id(&package_id).ok()?;
+            let declared: std::collections::BTreeSet<String> = host
+                .mime_types
+                .iter()
+                .map(|mime| mime.trim().to_ascii_lowercase())
+                .collect();
+            let resources = declared
+                .iter()
+                .cloned()
+                .chain(chain.added_types(&package_id))
+                .filter(|mime| chain.handles(&package_id, mime, declared.contains(mime)))
+                .filter_map(|mime| desktop_policy::ResourceKind::from_mimeapps_type(&mime))
+                .collect();
+            Some(desktop_policy::AppCandidate {
+                package_id,
+                display_name: host.name.clone(),
+                resources,
+            })
+        })
+        .collect()
+}
+
+/// Publish the host defaults this desktop resolves to
+/// `$XDG_CONFIG_HOME/tilo-mimeapps.list`, so `xdg-open` and toolkits started
+/// by host apps open files with the same application Tilo would. Called once
+/// the session is up and again whenever a resolution runs.
+pub fn publish_host_mimeapps() {
+    let apps = gui_apps();
+    let hosts = crate::shell::host_apps::host_apps();
+    let chain = desktop_policy::mimeapps::session_chain();
+    let mut candidates = default_app_candidates_from(&apps);
+    candidates.extend(host_app_candidates(&hosts, &chain));
+    publish_host_defaults(&resolved_host_defaults(
+        &candidates,
+        &chain,
+        &desktop_policy::PersonalDefaults::load(),
+    ));
+}
+
+fn publish_host_defaults(list: &desktop_policy::MimeAppsList) {
+    let Some(path) = desktop_policy::mimeapps::published_list_path() else {
+        return;
+    };
+    if let Err(error) = desktop_policy::mimeapps::publish(&path, list) {
+        tracing::warn!(%error, path = %path.display(), "could not publish host default applications");
+    }
+}
+
+/// Every MIME type (and scheme) a host entry claims, mapped to the host entry
+/// the resolver picks for it from personal defaults. Types a Tilo package wins
+/// are left out: there is no desktop file a host tool could start for them.
+/// Workspace policy is not published — host tools have no workspace.
+pub fn resolved_host_defaults(
+    candidates: &[desktop_policy::AppCandidate],
+    chain: &desktop_policy::MimeAppsChain,
+    personal: &desktop_policy::PersonalDefaults,
+) -> desktop_policy::MimeAppsList {
+    let resolver = desktop_policy::DefaultAppResolver::new(candidates).with_system_defaults(chain);
+    let claimed: std::collections::BTreeSet<&desktop_policy::ResourceKind> = candidates
+        .iter()
+        .filter(|candidate| candidate.is_host())
+        .flat_map(|candidate| candidate.resources.iter())
+        .collect();
+    let mut list = desktop_policy::MimeAppsList::default();
+    for resource in claimed {
+        let (Some(key), Some(selected)) = (
+            resource.mimeapps_type(),
+            resolver.resolve(resource, "", personal, None),
+        ) else {
+            continue;
+        };
+        if desktop_policy::host_desktop_id(&selected.package_id).is_some() {
+            list.defaults.insert(key, vec![selected.package_id]);
+        }
+    }
+    list
+}
+
 pub fn app_for_resource_with_policy(
     resource: &desktop_policy::ResourceKind,
     user_id: &str,
@@ -1802,6 +1940,39 @@ pub fn launch_tool_intent(intent: &ToolIntent, room: RoomId) -> Result<Installed
     launch_with_context(package_id, room, None, None, Some(intent), None)
 }
 
+/// The Tilo terminal, which hosts `Terminal=true` desktop entries.
+pub const TERMINAL_PACKAGE_ID: &str = "so.tilo.terminal";
+
+/// Launch context the terminal reads to run one program instead of a login
+/// shell. Carried in the launcher's bounded JSON-object context channel.
+pub fn terminal_command_context(argv: &[String]) -> String {
+    serde_json::json!({ "terminal_command": argv }).to_string()
+}
+
+/// Run a console program's argv in the Tilo terminal, in `room`. The program
+/// runs inside the terminal's confined guest, never directly on the host.
+///
+/// # Errors
+///
+/// Returns an error when `argv` is empty or too large for the launch
+/// context, or under the same conditions as [`launch_with_document`].
+pub fn launch_terminal_command(argv: &[String], room: RoomId) -> Result<InstalledApp, LaunchError> {
+    let context = terminal_command_context(argv);
+    if argv.is_empty() || context.len() > 4 * 1024 {
+        return Err(LaunchError::HostAppRefused {
+            desktop_id: argv.first().cloned().unwrap_or_default(),
+            detail: "the command does not fit a terminal launch".to_string(),
+        });
+    }
+    let app = installed_apps()?
+        .into_iter()
+        .find(|a| a.package_id == TERMINAL_PACKAGE_ID)
+        .ok_or_else(|| LaunchError::NotInstalled {
+            package_id: TERMINAL_PACKAGE_ID.to_string(),
+        })?;
+    execute_installed_with_context(app, room, context)
+}
+
 #[derive(Clone)]
 struct MediaHandoffLaunch {
     title: String,
@@ -1877,12 +2048,56 @@ fn selected_execution_program() -> Result<PathBuf, LaunchError> {
     }
 }
 
+fn execute_installed_with_context(
+    app: InstalledApp,
+    room: RoomId,
+    context: String,
+) -> Result<InstalledApp, LaunchError> {
+    execute_installed_inner(
+        app,
+        room,
+        None,
+        None,
+        LaunchContext::Raw(context),
+        None,
+        None,
+    )
+}
+
+/// The launcher's typed context channel: a validated tool intent, or a
+/// shell-built context for one specific package.
+enum LaunchContext<'a> {
+    None,
+    Tool(&'a ToolIntent),
+    Raw(String),
+}
+
 fn execute_installed(
     app: InstalledApp,
     room: RoomId,
     document: Option<&Path>,
     uri: Option<&str>,
     tool_intent: Option<&ToolIntent>,
+    media_handoff: Option<MediaHandoffLaunch>,
+    capability_snapshot: Option<Vec<CapOverride>>,
+) -> Result<InstalledApp, LaunchError> {
+    execute_installed_inner(
+        app,
+        room,
+        document,
+        uri,
+        tool_intent.map_or(LaunchContext::None, LaunchContext::Tool),
+        media_handoff,
+        capability_snapshot,
+    )
+}
+
+fn execute_installed_inner(
+    app: InstalledApp,
+    room: RoomId,
+    document: Option<&Path>,
+    uri: Option<&str>,
+    context: LaunchContext<'_>,
     media_handoff: Option<MediaHandoffLaunch>,
     capability_snapshot: Option<Vec<CapOverride>>,
 ) -> Result<InstalledApp, LaunchError> {
@@ -1957,19 +2172,23 @@ fn execute_installed(
             hex::encode(resume),
         ));
     }
-    if let Some(intent) = tool_intent {
-        // Validation happens at the service boundary too; repeat it here so
-        // this public launcher helper remains safe when called elsewhere.
-        intent
-            .validate()
-            .map_err(|detail| LaunchError::RegistryUnreadable {
-                detail: format!("invalid tool context: {detail}"),
-            })?;
-        let encoded =
-            serde_json::to_string(intent).map_err(|e| LaunchError::RegistryUnreadable {
-                detail: format!("serialising tool context: {e}"),
-            })?;
-        command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+    match context {
+        LaunchContext::None => {}
+        LaunchContext::Tool(intent) => {
+            // Validation happens at the service boundary too; repeat it here so
+            // this public launcher helper remains safe when called elsewhere.
+            intent
+                .validate()
+                .map_err(|detail| LaunchError::RegistryUnreadable {
+                    detail: format!("invalid tool context: {detail}"),
+                })?;
+            let encoded =
+                serde_json::to_string(intent).map_err(|e| LaunchError::RegistryUnreadable {
+                    detail: format!("serialising tool context: {e}"),
+                })?;
+            command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded));
+        }
+        LaunchContext::Raw(encoded) => command.env.push((TOOL_CONTEXT_ENV.to_string(), encoded)),
     }
     if let Some(handoff) = media_handoff {
         attach_media_handoff(&mut command, handoff);
