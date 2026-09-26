@@ -343,7 +343,11 @@ export async function mountDesktop(target,options={}) {
       },{capture:true});
       options.onNavigation?.(navigation.controller);
     }
-    return {navigation: navigation?.controller,application,retryAsset,cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
+    const actionSurface=()=>{if(!active())throw Error('mount disposed');return id;};
+    return {navigation: navigation?.controller,application,retryAsset,
+      get record(){return lastState?.record||undefined;},
+      actions:resource=>JSON.parse(runtime.component_actions(actionSurface(),resource)),
+      invokeAction:(resource,action,args={},{confirm=false}={})=>JSON.parse(runtime.invoke_component_action(actionSurface(),resource,action,JSON.stringify(args),confirm)),cleanup:async()=>{registry.remove(token);await cleanup();},flush:()=>{persistenceFailed=false;return persist();},
       state:()=>lastState,canvas,get editor(){return editor;},semantics:accessibility,requestSemantics,
 
       durableState:()=>acquired.hydrate(),probePixels:async()=>JSON.parse(await runtime.probe_pixels(id)),failNextWrite:()=>{storage.abortNext=true;},destroyDevice:()=>runtime.destroy_device(id),recover:()=>runtime.recover(id),

@@ -106,6 +106,9 @@ struct Mount {
     peer: Option<u32>,
     desktop: Option<crate::desktop_host::DesktopHandle>,
     record: Option<crate::desktop_host::OwnedRecord>,
+    /// `record_version` of `record` when this mount last drew or was
+    /// re-synced; a change is what re-syncs the page's other mounts of it.
+    record_version: (Vec<automerge::ChangeHash>, usize),
     window: Arc<Window>,
     canvas: web_sys::HtmlCanvasElement,
     frame: FrameHarness,
@@ -335,6 +338,9 @@ impl ApplicationHandler<u64> for Runner {
                         m.error = Some(e);
                         m.publish(id);
                     }
+                    if let Some(changed) = m.take_record_change() {
+                        resync_record_mounts(mounts, id, &changed);
+                    }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
                     if m.peer_suspended {
@@ -562,6 +568,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     .map_err(error)?;
     let images = std::mem::take(&mut *loaders.borrow_mut());
     let checkout = component.record().clone();
+    let record_version = records
+        .read(&checkout.id, record_version)
+        .unwrap_or_default();
     let system = ui::font_catalog::FontCatalog::product("", "en-US")
         .load_browser_startup_bytes(|name| {
             Reflect::get(&fonts, &name.into())
@@ -617,6 +626,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
             store: records,
             checkout,
         }),
+        record_version,
         window: window.clone(),
         canvas,
         frame,
@@ -723,6 +733,7 @@ fn begin_desktop(
         peer: Some(peer),
         desktop: Some(desktop),
         record: None,
+        record_version: Default::default(),
         window: window.clone(),
         canvas,
         frame,
@@ -814,7 +825,57 @@ fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>) {
         }
     });
 }
+/// Committed heads and uncommitted operations: any edit moves one of them.
+fn record_version(doc: &automerge::AutoCommit) -> (Vec<automerge::ChangeHash>, usize) {
+    (doc.base_heads(), doc.pending_ops())
+}
+/// One standalone record as the page's mounts share it: every mount of the
+/// same profile/device cache, app and record edits one in-memory document.
+struct SharedRecord {
+    storage: ui::portable_storage::ProfileNamespace,
+    app: String,
+    record: RecordId,
+}
+impl SharedRecord {
+    fn shown_by(&self, mount: &Mount) -> bool {
+        mount.record.as_ref().is_some_and(|record| {
+            record.app == self.app
+                && record.checkout.id == self.record
+                && *mount.storage.namespace() == self.storage
+        })
+    }
+}
+/// Another mount changed a record these mounts show. Nothing else wakes a
+/// component whose document another component edited, so re-run their frame
+/// passes, which read the document afresh, and present them.
+fn resync_record_mounts(mounts: &mut HashMap<u64, Mount>, origin: u64, changed: &SharedRecord) {
+    for (_, mount) in mounts
+        .iter_mut()
+        .filter(|(id, mount)| **id != origin && changed.shown_by(mount))
+    {
+        // Heads first: only a change this re-sync itself makes echoes back.
+        let _ = mount.take_record_change();
+        mount.frame.relayout();
+        mount.pending = true;
+        mount.window.request_redraw();
+    }
+}
 impl Mount {
+    /// The shared record this standalone mount shows, when its heads moved
+    /// since the last call.
+    fn take_record_change(&mut self) -> Option<SharedRecord> {
+        let record = self.record.as_ref()?;
+        let version = record.store.read(&record.checkout.id, record_version)?;
+        if version == self.record_version {
+            return None;
+        }
+        self.record_version = version;
+        Some(SharedRecord {
+            storage: self.storage.namespace().clone(),
+            app: record.app.clone(),
+            record: record.checkout.id.clone(),
+        })
+    }
     fn metric_start(&self) -> Option<web_time::Instant> {
         self.metrics.borrow().begin()
     }
@@ -1247,6 +1308,75 @@ pub fn semantic(
         m.window.request_redraw();
         Ok(true)
     })
+}
+/// The actions a standalone mount's application publishes, described as
+/// `tilo-control actions list` describes them. `resource` narrows to one
+/// resource and its children, including one the app resolves lazily.
+#[wasm_bindgen]
+pub fn component_actions(id: u64, resource: Option<String>) -> Result<String, JsValue> {
+    MOUNTS.with_borrow(|mounts| {
+        let m = mounts.get(&id).ok_or_else(|| error("closed mount"))?;
+        if m.desktop.is_some() {
+            return Err(error(DESKTOP_ACTIONS));
+        }
+        let resources = m
+            .frame
+            .bound_resources(resource.as_deref())
+            .map_err(door_error)?;
+        serde_json::to_string(&tilo_actions::door::survey(&resources)).map_err(error)
+    })
+}
+/// Invoke one action a standalone mount's application publishes, through the
+/// bound door the palette, agents and assistive technology use: the address
+/// must be published now, the mount's permissions must allow it, its
+/// arguments must bind, and a confirmation policy requires `confirmed`.
+#[wasm_bindgen]
+pub fn invoke_component_action(
+    id: u64,
+    resource: &str,
+    action: &str,
+    arguments: &str,
+    confirmed: bool,
+) -> Result<String, JsValue> {
+    let arguments: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(arguments).map_err(error)?;
+    MOUNTS.with_borrow_mut(|mounts| {
+        let m = mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?;
+        if m.desktop.is_some() {
+            return Err(error(DESKTOP_ACTIONS));
+        }
+        if m.peer_suspended {
+            return Err(error("the mount is suspended"));
+        }
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: m
+                .frame
+                .component_instance_id()
+                .ok_or_else(|| error("the mount hosts no application"))?,
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        let started = if confirmed {
+            m.frame.invoke_bound_action_confirmed(&address, &arguments)
+        } else {
+            m.frame.invoke_bound_action(&address, &arguments)
+        }
+        .map_err(door_error)?;
+        // A following call sees the state this one left, not the last frame's.
+        m.frame.relayout();
+        m.pending = true;
+        m.window.request_redraw();
+        Ok(match started {
+            ui::widget::ResourceOperationStart::Completed(output) => {
+                serde_json::json!({"state":"completed","output":output})
+            }
+            ui::widget::ResourceOperationStart::Accepted => serde_json::json!({"state":"accepted"}),
+        }
+        .to_string())
+    })
+}
+const DESKTOP_ACTIONS: &str = "the canonical desktop's actions go through its certified peer";
+fn door_error(e: tilo_actions::DoorError) -> JsValue {
+    error(format!("{}: {e}", e.code()))
 }
 /// The host needs the complete semantics tree now, for example when assistive
 /// technology focus enters the surface: the next status carries it even if
