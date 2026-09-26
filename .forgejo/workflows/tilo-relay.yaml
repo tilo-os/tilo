@@ -351,7 +351,11 @@ jobs:
             github-assets=os/external-assets/cache
           file: os/containers/tilo-relay/Containerfile
           push: ${{ startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          # The metadata tags move on every run; the run- and attempt-unique tag
+          # keeps each pushed digest reachable after they do.
+          tags: |
+            ${{ steps.meta.outputs.tags }}
+            code.sandbox.example/qos/tilo-relay:run-${{ github.run_id }}-${{ github.run_attempt }}
           labels: ${{ steps.meta.outputs.labels }}
           # Source bytes and pinned base/RPM refs invalidate the build. A
           # commit timestamp is not an artifact input and changes on rebase.

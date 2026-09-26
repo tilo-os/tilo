@@ -62,10 +62,10 @@ jobs:
           load: true
           push: false
           provenance: false
-          tags: ${{ env.IMAGE_REPOSITORY }}:candidate-${{ env.SOURCE_REVISION }}-${{ matrix.arch }}
+          tags: ${{ env.IMAGE_REPOSITORY }}:candidate-${{ env.SOURCE_REVISION }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
 
       - name: Reject compilers and exercise every publication tool
-        run: bash os/tests/release_tools_image.sh "$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ matrix.arch }}"
+        run: bash os/tests/release_tools_image.sh "$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
 
       - name: Log in only after the candidate passed
         if: >-
@@ -87,7 +87,7 @@ jobs:
           }}
         run: |
           set -euo pipefail
-          image="$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ matrix.arch }}"
+          image="$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
           output=$(docker push "$image" 2>&1)
           printf '%s\n' "$output"
           digest=$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' <<<"$output" | tail -1)
@@ -156,7 +156,11 @@ jobs:
           refs=()
           while IFS= read -r digest; do refs+=("$IMAGE_REPOSITORY@$digest"); done \
             < <(jq -r '.[].digest' <<<"$children")
-          docker buildx imagetools create --tag "$IMAGE_REPOSITORY:$tag" "${refs[@]}"
+          # $tag is written again by a rerun, and the registry drops an index
+          # that loses its last tag; the run- and attempt-unique tag keeps
+          # every published index reachable by digest.
+          unique="$tag-$GITHUB_RUN_ID-${{ github.run_attempt }}"
+          docker buildx imagetools create --tag "$IMAGE_REPOSITORY:$unique" --tag "$IMAGE_REPOSITORY:$tag" "${refs[@]}"
           inspection=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$tag")
           printf '%s\n' "$inspection"
           digest=$(sed -n 's/^Digest:[[:space:]]*//p' <<<"$inspection" | head -1)
@@ -166,6 +170,7 @@ jobs:
           # tools image must be anonymously pullable. Copy the exact tested
           # multi-architecture index; never rebuild a public variant.
           docker buildx imagetools create \
+            --tag "$PUBLIC_IMAGE_REPOSITORY:$unique" \
             --tag "$PUBLIC_IMAGE_REPOSITORY:$tag" \
             "$IMAGE_REPOSITORY@$digest"
           public_inspection=$(docker buildx imagetools inspect "$PUBLIC_IMAGE_REPOSITORY:$tag")

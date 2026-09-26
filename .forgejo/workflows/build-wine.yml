@@ -62,7 +62,7 @@ jobs:
           file: os/Containerfile.wine-tools
           platforms: linux/amd64
           push: true
-          tags: code.sandbox.example/qos/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}
+          tags: code.sandbox.example/qos/wine-tools:candidate-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
           build-args: BASE_REF=${{ env.BASE_REF }}
           provenance: false
 
