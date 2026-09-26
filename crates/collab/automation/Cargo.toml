@@ -1,0 +1,26 @@
+[package]
+name = "tilo-automation"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+[lib]
+name = "tilo_automation"
+path = "src/lib.rs"
+
+# Shortcuts: typed pipelines of actions, checked against the descriptors the
+# action door publishes and run through `tilo_actions::remote::ActionHost`.
+# Pure data and logic with no I/O, no runtime and no UI dependency.
+
+[dependencies]
+tilo-actions = { path = "../actions" }
+collab-types = { path = "../collab-types" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

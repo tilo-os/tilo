@@ -107,6 +107,7 @@ members = [
 
     # Collab
     "crates/collab/actions",
+    "crates/collab/automation",
     "crates/collab/channel-crypto",
     "crates/collab/collab-fixtures",
     "crates/collab/collab-types",
