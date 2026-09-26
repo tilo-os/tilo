@@ -164,8 +164,8 @@ mod tests {
         let backlight = FakeBacklight::at(0.8);
         let mut dimmer = ScreenDimmer::new(&backlight);
         dimmer.dim();
-        let dimmed = backlight.level.borrow().unwrap();
-        assert!((dimmed - 0.8 * DIM_FRACTION).abs() < 1e-6);
+        let lowered = backlight.level.borrow().unwrap();
+        assert!((lowered - 0.8 * DIM_FRACTION).abs() < 1e-6);
         assert_eq!(dimmer.overlay_alpha(), None, "a backlight needs no overlay");
 
         dimmer.dim();
