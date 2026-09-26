@@ -484,7 +484,7 @@ mod tests {
                 "c_fb",
                 "m_report",
                 crate::feedback::ReportStatus::Planned,
-                "u_iris",
+                "u_d417",
                 2,
             ),
         );

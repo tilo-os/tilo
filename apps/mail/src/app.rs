@@ -2749,7 +2749,7 @@ impl MailApp {
             .mailbox
             .threads_in(folder)
             .into_iter()
-            .find(|thread| thread.id == anchor_raw)?;
+            .find(|thread| crate::actions::thread_resource_key(folder, &thread.id) == stable)?;
         let subject = thread.subject;
         Some((
             subject,

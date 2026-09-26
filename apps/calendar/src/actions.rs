@@ -1026,9 +1026,13 @@ pub fn history_context(action: &CalendarAction) -> tilo_actions::ActionContext {
         } else {
             format!("{kind}:{id}")
         },
+        sensitivity: if kind == "calendar.attendee" {
+            tilo_actions::Sensitivity::Personal
+        } else {
+            tilo_actions::Sensitivity::Public
+        },
         kind: kind.to_string(),
         label: title,
-        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }
@@ -2707,7 +2711,9 @@ pub fn provide_resources(ctx: &CalendarResourceCtx, _doc: &AutoCommit) -> Vec<Re
                 } else {
                     attendee.name.clone()
                 },
-            );
+            )
+            // An attendee is a person: their name or address.
+            .with_sensitivity(tilo_actions::Sensitivity::Personal);
             let patch_event_id = event_id_s.clone();
             let patch_attendee_id = attendee_id_s.clone();
             attendee_resource =

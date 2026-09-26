@@ -639,9 +639,9 @@ pub fn history_context(action: &ChatAction) -> tilo_actions::ActionContext {
         } else {
             channel.clone()
         },
-        // Channel names are chosen by the people in them, and a direct
-        // channel is named after a person.
-        sensitivity: tilo_actions::Sensitivity::Personal,
+        // Workspace channel names are shared chrome; a message's body is not
+        // in this context at all.
+        sensitivity: tilo_actions::Sensitivity::Public,
     });
     context
 }
@@ -1846,7 +1846,6 @@ fn build_channel_resource(
         "chat.channel",
         channel_label(ch),
     )
-    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Open conversation",
@@ -2013,7 +2012,6 @@ fn build_call_resource(
         "chat.call",
         format!("Call: {}", channel_label(ch)),
     )
-    .with_sensitivity(tilo_actions::Sensitivity::Personal)
     .with_action(view_operation(
         "open",
         "Open call conversation",
@@ -3286,7 +3284,7 @@ mod tests {
             send_message => |_| encode(&send_message_action(
                 "c_general",
                 "m_conv",
-                "u_aria",
+                "u_a71c",
                 TS,
                 "converge",
                 None,
@@ -3630,20 +3628,20 @@ mod feedback_tests {
     #[test]
     fn votes_are_the_canonical_reaction_and_count_once_per_person() {
         let mut doc = feedback_doc();
-        post(&mut doc, "m_r", "u_aria", None);
-        for user in ["u_me", "u_milo", "u_me"] {
+        post(&mut doc, "m_r", "u_a71c", None);
+        for user in ["u_me", "u_3c9e", "u_me"] {
             dispatch(&mut doc, &vote_action("c_fb", "m_r", user, true));
         }
         dispatch(
             &mut doc,
-            &add_reaction_action("c_fb", "m_r", "🎉", "u_sora"),
+            &add_reaction_action("c_fb", "m_r", "🎉", "u_8b02"),
         );
         assert_eq!(
             vote_count(&message(&doc, "m_r")),
             2,
             "a repeat vote is one vote"
         );
-        dispatch(&mut doc, &vote_action("c_fb", "m_r", "u_milo", false));
+        dispatch(&mut doc, &vote_action("c_fb", "m_r", "u_3c9e", false));
         let m = message(&doc, "m_r");
         assert_eq!(vote_count(&m), 1);
         assert!(
@@ -3652,7 +3650,7 @@ mod feedback_tests {
         );
 
         // The vote is the report resource's own action, Comment-gated.
-        let report = resolved(&doc, "u_milo", "chat.message:m_r");
+        let report = resolved(&doc, "u_3c9e", "chat.message:m_r");
         let vote = action(&report, "vote").expect("a report offers a vote");
         assert_eq!(vote.contract.permission, PermissionRequirement::Comment);
         assert_eq!(vote.kind, OperationKind::Effect, "a comment Chat performs");
@@ -3661,13 +3659,13 @@ mod feedback_tests {
             &ui::testing::action_contract::spec_encoding(vote, None),
         );
         assert_eq!(vote_count(&message(&doc, "m_r")), 2);
-        let report = resolved(&doc, "u_milo", "chat.message:m_r");
+        let report = resolved(&doc, "u_3c9e", "chat.message:m_r");
         assert!(action(&report, "unvote").is_some());
         assert!(
             message(&doc, "m_r")
                 .reactions
                 .iter()
-                .any(|r| r.emoji == VOTE_EMOJI && r.reacted_by("u_milo"))
+                .any(|r| r.emoji == VOTE_EMOJI && r.reacted_by("u_3c9e"))
         );
     }
 
@@ -3677,7 +3675,7 @@ mod feedback_tests {
     #[test]
     fn status_is_gated_to_editors_and_participation_to_commenters() {
         let mut doc = feedback_doc();
-        post(&mut doc, "m_r", "u_aria", None);
+        post(&mut doc, "m_r", "u_a71c", None);
         let report = resolved(&doc, model::ME, "chat.message:m_r");
         assert_eq!(
             action(&report, "set-status").unwrap().contract.permission,
@@ -3723,9 +3721,9 @@ mod feedback_tests {
     #[test]
     fn set_status_decodes_typed_arguments_and_applies_only_to_reports() {
         let mut doc = feedback_doc();
-        post(&mut doc, "m_a", "u_aria", None);
-        post(&mut doc, "m_b", "u_milo", None);
-        post(&mut doc, "m_reply", "u_sora", Some("m_a"));
+        post(&mut doc, "m_a", "u_a71c", None);
+        post(&mut doc, "m_b", "u_3c9e", None);
+        post(&mut doc, "m_reply", "u_8b02", Some("m_a"));
         let report = resolved(&doc, model::ME, "chat.message:m_b");
         let spec = action(&report, "set-status").unwrap();
 
@@ -3748,7 +3746,7 @@ mod feedback_tests {
             Ok(ReportStatus::Duplicate { of: "m_a".into() })
         );
 
-        let set = |status| set_report_status_action("c_fb", "m_b", status, "u_iris", TS);
+        let set = |status| set_report_status_action("c_fb", "m_b", status, "u_d417", TS);
         dispatch(&mut doc, &set(ReportStatus::Duplicate { of: "m_a".into() }));
         let duplicate = ReportStatus::Duplicate { of: "m_a".into() };
         assert_eq!(status_of(&message(&doc, "m_b")), duplicate);
@@ -3763,14 +3761,14 @@ mod feedback_tests {
         assert_eq!(status_of(&message(&doc, "m_b")), duplicate);
         dispatch(
             &mut doc,
-            &set_report_status_action("c_fb", "m_reply", ReportStatus::WontFix, "u_iris", TS),
+            &set_report_status_action("c_fb", "m_reply", ReportStatus::WontFix, "u_d417", TS),
         );
         assert!(message(&doc, "m_reply").report.is_none());
         // In an ordinary channel nothing is a report.
         dispatch(&mut doc, &set_channel_feedback_action("c_fb", false));
         dispatch(
             &mut doc,
-            &set_report_status_action("c_fb", "m_a", ReportStatus::Planned, "u_iris", TS),
+            &set_report_status_action("c_fb", "m_a", ReportStatus::Planned, "u_d417", TS),
         );
         assert!(message(&doc, "m_a").report.is_none());
         assert_eq!(
@@ -3812,7 +3810,7 @@ mod feedback_tests {
         assert!(action(&card, "withdraw").is_some());
 
         // Someone else's card replays, but its sharing is not theirs.
-        let other = resolved(&doc, "u_aria", "chat.attachment:m_rec");
+        let other = resolved(&doc, "u_a71c", "chat.attachment:m_rec");
         assert!(action(&other, "share").is_none());
         assert!(action(&other, "withdraw").is_none());
         assert!(action(&other, "replay").is_some());
@@ -3935,13 +3933,13 @@ mod feedback_tests {
     #[test]
     fn a_person_offers_message_and_invite_as_workspace_requests() {
         let doc = feedback_doc();
-        let person = resolved(&doc, model::ME, "chat.person:u_aria");
+        let person = resolved(&doc, model::ME, "chat.person:u_a71c");
         let invite = action(&person, "invite").expect("invite");
         assert_eq!(invite.contract.permission, PermissionRequirement::Invite);
         for spec in [action(&person, "message").expect("message"), invite] {
             let asked = request(spec);
             assert_eq!(asked.resource, tilo_actions::remote::PEOPLE_RESOURCE);
-            assert_eq!(asked.argument, InvokeArgument::Text("u_aria".into()));
+            assert_eq!(asked.argument, InvokeArgument::Text("u_a71c".into()));
         }
         // Nobody messages themselves.
         let me = resolved(&doc, model::ME, "chat.person:u_me");

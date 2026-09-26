@@ -2857,7 +2857,7 @@ mod tests {
     #[test]
     fn cannot_edit_another_authors_message() {
         let (mut app, _doc) = app_with_doc();
-        assert_eq!(app.message("m_open").unwrap().author, "u_aria");
+        assert_eq!(app.message("m_open").unwrap().author, "u_a71c");
         app.begin_edit("m_open".into());
         assert!(
             app.editing.is_none(),
@@ -3561,13 +3561,13 @@ mod tests {
             rows[0].1.is_some() && rows[1].1.is_some() && rows[2].1.is_some(),
             "the three huddle members rank first"
         );
-        let aria = rows.iter().find(|(u, _)| u.id == "u_aria").unwrap();
+        let aria = rows.iter().find(|(u, _)| u.id == "u_a71c").unwrap();
         assert_eq!(
             aria.1.as_deref(),
             Some("Design Huddle"),
             "shows the real voice channel"
         );
-        let devon = rows.iter().find(|(u, _)| u.id == "u_devon").unwrap();
+        let devon = rows.iter().find(|(u, _)| u.id == "u_5e70").unwrap();
         assert!(
             devon.1.is_none(),
             "someone not in a call has no voice label"
@@ -3578,7 +3578,7 @@ mod tests {
     fn workspace_people_do_not_leak_from_the_global_identity_directory() {
         let (mut app, mut doc) = app_with_doc();
         assert!(
-            app.users.iter().any(|user| user.id == "u_aria"),
+            app.users.iter().any(|user| user.id == "u_a71c"),
             "demo precondition: the first workspace has other known people"
         );
 
@@ -3725,7 +3725,7 @@ mod tests {
             &mut doc,
             "c_random",
             NewMessage {
-                author: "u_aria".into(),
+                author: "u_a71c".into(),
                 ts: NOW,
                 text: "anyone around?".into(),
                 ..Default::default()
@@ -3922,11 +3922,11 @@ mod tests {
         );
 
         // A remote announces a screen share over the shared voice membership.
-        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_aria", true);
+        ChatDoc::voice_set_sharing(&mut doc, "c_huddle", "u_a71c", true);
         app.reload(&doc);
         assert_eq!(
             app.screen_sharer().as_deref(),
-            Some("u_aria"),
+            Some("u_a71c"),
             "the sharer is read from the CRDT"
         );
 
@@ -4272,7 +4272,7 @@ mod tests {
             &mut doc,
             &app.active_channel,
             NewMessage {
-                author: "u_aria".into(),
+                author: "u_a71c".into(),
                 ts: NOW + 1,
                 text: "A newer update while you are reading history".into(),
                 ..Default::default()
@@ -4302,7 +4302,7 @@ mod tests {
                 &mut doc,
                 &app.active_channel,
                 NewMessage {
-                    author: "u_aria".into(),
+                    author: "u_a71c".into(),
                     ts: NOW + i64::from(n),
                     text: format!(
                         "Longer history line {n}: enough text to wrap inside a narrow conversation column."
@@ -4353,19 +4353,19 @@ mod tests {
     fn edit_history_popover_opens_and_dismisses() {
         let (mut app, mut doc) = app_with_doc();
         assert!(
-            app.message("m_sora").unwrap().edited,
-            "m_sora is an edited message"
+            app.message("m_8b02").unwrap().edited,
+            "m_8b02 is an edited message"
         );
         app.on_hit(
             Hit::EditHistory {
-                msg: "m_sora".into(),
+                msg: "m_8b02".into(),
                 anchor: Point::ZERO,
             },
             &mut doc,
         );
         assert_eq!(
             app.history_open.as_deref(),
-            Some("m_sora"),
+            Some("m_8b02"),
             "the history popover opened"
         );
         app.on_hit(Hit::Dismiss, &mut doc);
@@ -4416,18 +4416,18 @@ mod tests {
         // Alice seeds a starter workspace; Bob adopts her document (as a
         // late-joining peer does) and announces himself.
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_a11c", "Alice", "AL");
         let snapshot = doc_a.save(); // resets alice's incremental cursor
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        ChatDoc::ensure_user(&mut doc_b, "u_b0b", "Bob", "BO", 1, Presence::Online);
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_a11c", "Alice", "AL", 0);
+        let mut b = peer("u_b0b", "Bob", "BO", 1);
         a.reload(&doc_a);
         b.reload(&doc_b);
-        assert_eq!(a.me.id, "u_alice");
-        assert_eq!(b.me.id, "u_bob");
+        assert_eq!(a.me.id, "u_a11c");
+        assert_eq!(b.me.id, "u_b0b");
 
         // Structure converges: a channel Alice creates shows up for Bob.
         let chan = ChatDoc::create_channel(
@@ -4457,9 +4457,9 @@ mod tests {
             .iter()
             .find(|m| m.text == "morning all")
             .expect("B sees A's message");
-        assert_eq!(alice_msg.author, "u_alice");
+        assert_eq!(alice_msg.author, "u_a11c");
         assert_eq!(
-            b.user_name("u_alice"),
+            b.user_name("u_a11c"),
             "Alice",
             "attributed to the right person"
         );
@@ -4475,8 +4475,8 @@ mod tests {
             .iter()
             .find(|m| m.text == "morning!")
             .expect("A sees B's reply");
-        assert_eq!(bob_msg.author, "u_bob");
-        assert_eq!(a.user_name("u_bob"), "Bob");
+        assert_eq!(bob_msg.author, "u_b0b");
+        assert_eq!(a.user_name("u_b0b"), "Bob");
 
         // Both react with the SAME emoji to Alice's message. Distinct
         // identities mean the count is 2 — the exact thing a shared `u_me`
@@ -4510,7 +4510,7 @@ mod tests {
                 2,
                 "peer {who}: both distinct reactors counted once each"
             );
-            assert!(thumbs.reacted_by("u_alice") && thumbs.reacted_by("u_bob"));
+            assert!(thumbs.reacted_by("u_a11c") && thumbs.reacted_by("u_b0b"));
         }
 
         // Full convergence: identical timelines on both peers.
@@ -4531,14 +4531,14 @@ mod tests {
         // (begin_edit → insert_text → commit_edit → ChatDoc::edit_message), then
         // shuttles the incremental delta a peer would receive from the broker.
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_a11c", "Alice", "AL");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        ChatDoc::ensure_user(&mut doc_b, "u_b0b", "Bob", "BO", 1, Presence::Online);
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_a11c", "Alice", "AL", 0);
+        let mut b = peer("u_b0b", "Bob", "BO", 1);
         a.reload(&doc_a);
         b.reload(&doc_b);
 
@@ -4761,14 +4761,14 @@ mod tests {
     fn joining_a_call_publishes_a_ticket_and_two_peers_exchange_them() {
         use crate::model::{CallSession, Presence};
         let mut doc_a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut doc_a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut doc_a, "u_a11c", "Alice", "AL");
         let snapshot = doc_a.save();
         let mut doc_b = AutoCommit::load(&snapshot).unwrap();
-        ChatDoc::ensure_user(&mut doc_b, "u_bob", "Bob", "BO", 1, Presence::Online);
+        ChatDoc::ensure_user(&mut doc_b, "u_b0b", "Bob", "BO", 1, Presence::Online);
         exchange(&mut doc_a, &mut doc_b);
 
-        let mut a = peer("u_alice", "Alice", "AL", 0);
-        let mut b = peer("u_bob", "Bob", "BO", 1);
+        let mut a = peer("u_a11c", "Alice", "AL", 0);
+        let mut b = peer("u_b0b", "Bob", "BO", 1);
         a.reload(&doc_a);
         b.reload(&doc_b);
 
@@ -4788,8 +4788,8 @@ mod tests {
                 members.iter().all(|m| m.ticket.is_some()),
                 "every member published a ticket"
             );
-            assert!(members.iter().any(|m| m.user == "u_alice"));
-            assert!(members.iter().any(|m| m.user == "u_bob"));
+            assert!(members.iter().any(|m| m.user == "u_a11c"));
+            assert!(members.iter().any(|m| m.user == "u_b0b"));
         }
 
         // The receiving half of the handshake dials the peers without panicking,

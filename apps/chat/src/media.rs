@@ -760,7 +760,7 @@ mod tests {
     #[test]
     fn media_object_wire_round_trips() {
         let obj = MediaObject {
-            sender: "u_aria".into(),
+            sender: "u_a71c".into(),
             kind: TrackKind::Video,
             seq: 42,
             pts: Duration::from_millis(1234),
@@ -817,7 +817,7 @@ mod tests {
         assert!(!t.is_live());
         t.publish(TrackKind::Audio);
         t.subscribe(Subscription {
-            peer: "u_aria".into(),
+            peer: "u_a71c".into(),
             kind: TrackKind::Audio,
         });
         t.send(MediaObject {

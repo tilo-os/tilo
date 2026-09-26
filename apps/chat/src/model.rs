@@ -893,8 +893,8 @@ mod tests {
     fn call_host_is_the_deterministic_smallest_id() {
         // Every peer independently agrees on the host (smallest id) with no
         // extra signalling round-trip.
-        let members = vec![vm("u_charlie"), vm("u_alice"), vm("u_bob")];
-        assert_eq!(call_host(&members), Some("u_alice".to_string()));
+        let members = vec![vm("u_c4a1"), vm("u_a11c"), vm("u_b0b")];
+        assert_eq!(call_host(&members), Some("u_a11c".to_string()));
         assert_eq!(call_host(&[]), None);
     }
 }

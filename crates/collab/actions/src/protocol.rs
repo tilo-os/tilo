@@ -164,6 +164,40 @@ fn validate_resource_identity(
     if !seen_resources.insert(resource_id.to_string()) {
         violations.push(issue(resource_id, "duplicate resource id"));
     }
+    if spells_its_personal_value(resource) {
+        violations.push(issue(
+            resource_id,
+            "the id of a personal resource spells its personal value; use an opaque id",
+        ));
+    }
+}
+
+/// Whether a Personal or Secret resource's id carries what its label says.
+///
+/// A resource id leaves the device unredacted — it is an address other
+/// devices resolve — so it must never be where the personal value is kept.
+/// Caught: an id containing an email address, or whose final segment (the
+/// part that names this resource, after its kind and scope) contains the
+/// label or one of the label's words of four or more characters that is not
+/// a run of hex digits — so a random hex id cannot match a short name by
+/// chance, and a structural segment such as a folder does not count.
+fn spells_its_personal_value(resource: &Resource) -> bool {
+    if resource.sensitivity == crate::Sensitivity::Public {
+        return false;
+    }
+    let full = resource.id.as_str().to_lowercase();
+    if full.contains('@') {
+        return true;
+    }
+    let id = full.rsplit(':').next().unwrap_or(&full).to_owned();
+    let label = resource.label.trim().to_lowercase();
+    let distinctive =
+        |word: &str| word.chars().count() >= 4 && !word.chars().all(|c| c.is_ascii_hexdigit());
+    (distinctive(&label) && id.contains(&label))
+        || label
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|word| distinctive(word))
+            .any(|word| id.contains(word))
 }
 
 fn validate_views(resource: &Resource, violations: &mut Vec<ContractViolation>) {
@@ -203,6 +237,40 @@ fn issue(address: &str, reason: &str) -> ContractViolation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_personal_resource_may_not_spell_its_value_in_its_id() {
+        let personal = |id: &str, label: &str| {
+            Resource::new(id, "contacts.person", label)
+                .with_sensitivity(crate::Sensitivity::Personal)
+        };
+        let flagged = |resource: Resource| {
+            validate_surface_contracts(&[resource], &ActionRegistry::new())
+                .iter()
+                .any(|violation| violation.reason.contains("personal value"))
+        };
+        assert!(flagged(personal("contacts.person:ada@example.org", "Ada")));
+        assert!(flagged(personal(
+            "contacts.person:grace-hopper",
+            "Grace Hopper"
+        )));
+        assert!(
+            !flagged(personal("contacts.person:6f1c2ada9e0b4c7d", "Ada")),
+            "a short name inside a random hex id is chance, not a leak"
+        );
+        assert!(!flagged(personal(
+            "contacts.person:6f1c2ad9e0b4",
+            "Grace Hopper"
+        )));
+        assert!(
+            !flagged(Resource::new(
+                "files.entry:/w/grace.md",
+                "files.entry",
+                "grace.md"
+            )),
+            "a public resource may name itself"
+        );
+    }
     use crate::{
         ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType, ResourceViewMountSpec,
         ResourceViewSpec,

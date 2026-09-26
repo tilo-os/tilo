@@ -322,12 +322,12 @@ mod tests {
     fn room() -> Vec<Participant> {
         vec![
             Participant {
-                id: "u_ada".into(),
+                id: "u_ad4".into(),
                 name: "Ada".into(),
                 is_agent: false,
             },
             Participant {
-                id: "u_lovelace".into(),
+                id: "u_10e1".into(),
                 name: "Ada Lovelace".into(),
                 is_agent: false,
             },
@@ -343,7 +343,7 @@ mod tests {
     fn a_mention_is_a_participant_id_not_a_string() {
         let m = resolve("morning @Ada", &room());
         assert_eq!(m.len(), 1);
-        assert_eq!(m[0].user, "u_ada");
+        assert_eq!(m[0].user, "u_ad4");
         assert_eq!(m[0].slice("morning @Ada"), "@Ada");
         assert!(!m[0].is_agent);
     }
@@ -353,7 +353,7 @@ mod tests {
         let text = "@Ada Lovelace can you look";
         let m = resolve(text, &room());
         assert_eq!(m.len(), 1, "one mention, not Ada plus stray prose");
-        assert_eq!(m[0].user, "u_lovelace");
+        assert_eq!(m[0].user, "u_10e1");
         assert_eq!(m[0].slice(text), "@Ada Lovelace");
     }
 
@@ -406,9 +406,9 @@ mod tests {
     fn candidates_rank_prefix_then_word_then_substring() {
         let r = room();
         let c = candidates(&r, "ada");
-        assert_eq!(c[0].id, "u_ada");
+        assert_eq!(c[0].id, "u_ad4");
         let c = candidates(&r, "lov");
-        assert_eq!(c[0].id, "u_lovelace", "a later word still matches");
+        assert_eq!(c[0].id, "u_10e1", "a later word still matches");
         assert_eq!(
             candidates(&r, "").len(),
             3,
@@ -420,7 +420,7 @@ mod tests {
     fn completion_closes_the_run_so_the_picker_does_not_reopen() {
         let q = query_at_caret("hi @ad", 6).unwrap();
         let who = Participant {
-            id: "u_lovelace".into(),
+            id: "u_10e1".into(),
             name: "Ada Lovelace".into(),
             is_agent: false,
         };
@@ -443,7 +443,7 @@ mod tests {
     fn completing_mid_sentence_keeps_the_tail() {
         let q = query_at_caret("hi @ad, look", 6).unwrap();
         let who = Participant {
-            id: "u_ada".into(),
+            id: "u_ad4".into(),
             name: "Ada".into(),
             is_agent: false,
         };

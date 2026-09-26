@@ -447,14 +447,14 @@ impl ChatDoc {
             (
                 "m_fb_send",
                 NewMessage {
-                    author: "u_aria".into(),
+                    author: "u_a71c".into(),
                     ts: m(180),
                     text: "Send in Mail does nothing when the To field ends with a comma. No error, the draft just stays.".into(),
                     reference: Some(ResourceRef::whole("mail.draft", "mail.draft:d_42", "Draft to Milo")),
                     attachment: Some(session("uuid:5a1e-send", "Send does nothing", &["so.tilo.mail"], 83, 7, SessionLayer::Logic, 3, 0)),
                     reactions: vec![
-                        votes(&["u_me", "u_milo", "u_sora", "u_devon"]),
-                        ("🎉".into(), vec!["u_iris".into()]),
+                        votes(&["u_me", "u_3c9e", "u_8b02", "u_5e70"]),
+                        ("🎉".into(), vec!["u_d417".into()]),
                     ],
                     ..Default::default()
                 },
@@ -463,11 +463,11 @@ impl ChatDoc {
             (
                 "m_fb_clip",
                 NewMessage {
-                    author: "u_milo".into(),
+                    author: "u_3c9e".into(),
                     ts: m(120),
                     text: "Sidebar labels are clipped at 125% scaling.".into(),
                     attachment: Some(session("uuid:c11p-scale", "Clipped sidebar", &["so.tilo.file-explorer"], 42, 3, SessionLayer::BelowToolkit, 0, 2)),
-                    reactions: vec![votes(&["u_aria", "u_sora"])],
+                    reactions: vec![votes(&["u_a71c", "u_8b02"])],
                     ..Default::default()
                 },
                 Some(ReportStatus::InProgress),
@@ -475,10 +475,10 @@ impl ChatDoc {
             (
                 "m_fb_keys",
                 NewMessage {
-                    author: "u_sora".into(),
+                    author: "u_8b02".into(),
                     ts: m(95),
                     text: "Keyboard shortcuts for moving between strips, please.".into(),
-                    reactions: vec![votes(&["u_milo"])],
+                    reactions: vec![votes(&["u_3c9e"])],
                     ..Default::default()
                 },
                 None,
@@ -486,10 +486,10 @@ impl ChatDoc {
             (
                 "m_fb_ics",
                 NewMessage {
-                    author: "u_devon".into(),
+                    author: "u_5e70".into(),
                     ts: m(300),
                     text: "Calendar crashed importing an .ics with no DTEND.".into(),
-                    reactions: vec![votes(&["u_me", "u_aria", "u_milo"])],
+                    reactions: vec![votes(&["u_me", "u_a71c", "u_3c9e"])],
                     ..Default::default()
                 },
                 Some(ReportStatus::Fixed { generation: 117 }),
@@ -516,7 +516,7 @@ impl ChatDoc {
                     id,
                     &ReportState {
                         status,
-                        by: "u_iris".into(),
+                        by: "u_d417".into(),
                         since: NOW,
                     },
                 );
@@ -527,7 +527,7 @@ impl ChatDoc {
             tilo_reference::FEEDBACK_CHANNEL,
             "m_fb_keys_r1",
             NewMessage {
-                author: "u_iris".into(),
+                author: "u_d417".into(),
                 ts: m(90),
                 text: "Planned alongside the strip overview work.".into(),
                 parent: Some("m_fb_keys".into()),
@@ -567,11 +567,11 @@ impl ChatDoc {
     fn seed_demo_users(doc: &mut AutoCommit) {
         for (id, name, initials, color, status) in [
             ("u_me", "You", "QD", 0usize, Presence::Online),
-            ("u_aria", "Aria Chen", "AC", 1, Presence::Online),
-            ("u_milo", "Milo Park", "MP", 2, Presence::Idle),
-            ("u_sora", "Sora Vega", "SV", 3, Presence::Online),
-            ("u_devon", "Devon Reyes", "DR", 5, Presence::Dnd),
-            ("u_iris", "Iris Wolfe", "IW", 6, Presence::Offline),
+            ("u_a71c", "Aria Chen", "AC", 1, Presence::Online),
+            ("u_3c9e", "Milo Park", "MP", 2, Presence::Idle),
+            ("u_8b02", "Sora Vega", "SV", 3, Presence::Online),
+            ("u_5e70", "Devon Reyes", "DR", 5, Presence::Dnd),
+            ("u_d417", "Iris Wolfe", "IW", 6, Presence::Offline),
         ] {
             Self::put_user(doc, id, name, initials, color, status);
         }
@@ -751,9 +751,9 @@ impl ChatDoc {
     /// active speaker.
     fn seed_demo_voice_membership(doc: &mut AutoCommit) {
         for (user, talking, muted, audio_only) in [
-            ("u_aria", true, false, false),
-            ("u_milo", false, true, false),
-            ("u_sora", false, false, true),
+            ("u_a71c", true, false, false),
+            ("u_3c9e", false, true, false),
+            ("u_8b02", false, false, true),
         ] {
             Self::voice_join(doc, "c_huddle", user);
             Self::voice_set_state(
@@ -777,17 +777,17 @@ impl ChatDoc {
             (
                 "m_open",
                 NewMessage {
-                    author: "u_aria".into(),
+                    author: "u_a71c".into(),
                     ts: m(96),
                     text: "Morning! Pushed the new call overlay mock — pulling tiles into a 2x2 grid reads way calmer than the old filmstrip.".into(),
-                    reactions: vec![("🎉".into(), vec!["u_me".into(), "u_milo".into()])],
+                    reactions: vec![("🎉".into(), vec!["u_me".into(), "u_3c9e".into()])],
                     ..Default::default()
                 },
             ),
             (
                 "m_concept",
                 NewMessage {
-                    author: "u_aria".into(),
+                    author: "u_a71c".into(),
                     ts: m(95),
                     text: "Here's the frame — the host tile keeps the live camera, everyone else collapses to chips when they're audio-only.".into(),
                     attachment: Some(Attachment::Image {
@@ -797,8 +797,8 @@ impl ChatDoc {
                         h: 360,
                     }),
                     reactions: vec![
-                        ("❤️".into(), vec!["u_me".into(), "u_sora".into(), "u_milo".into()]),
-                        ("🔥".into(), vec!["u_devon".into()]),
+                        ("❤️".into(), vec!["u_me".into(), "u_8b02".into(), "u_3c9e".into()]),
+                        ("🔥".into(), vec!["u_5e70".into()]),
                     ],
                     ..Default::default()
                 },
@@ -813,12 +813,12 @@ impl ChatDoc {
                 },
             ),
             (
-                "m_milo",
+                "m_3c9e",
                 NewMessage {
-                    author: "u_milo".into(),
+                    author: "u_3c9e".into(),
                     ts: m(84),
                     text: "+1 — and we should read every colour from the OS theme so it matches whatever the cluster is themed to.".into(),
-                    reactions: vec![("👍".into(), vec!["u_me".into(), "u_aria".into()])],
+                    reactions: vec![("👍".into(), vec!["u_me".into(), "u_a71c".into()])],
                     ..Default::default()
                 },
             ),
@@ -830,9 +830,9 @@ impl ChatDoc {
         let m = |off_min: i64| NOW - off_min * 60;
         vec![
             (
-                "m_devon",
+                "m_5e70",
                 NewMessage {
-                    author: "u_devon".into(),
+                    author: "u_5e70".into(),
                     ts: m(70),
                     text: "Dropping the transport notes here so they don't get lost.".into(),
                     attachment: Some(Attachment::File {
@@ -846,7 +846,7 @@ impl ChatDoc {
             (
                 "m_clip",
                 NewMessage {
-                    author: "u_sora".into(),
+                    author: "u_8b02".into(),
                     ts: m(64),
                     text: "Screen recording of the tile-promotion motion — this is the feel I'm after:".into(),
                     attachment: Some(Attachment::Video {
@@ -856,14 +856,14 @@ impl ChatDoc {
                         h: 720,
                         size: 6_815_744,
                     }),
-                    reactions: vec![("🔥".into(), vec!["u_me".into(), "u_aria".into()])],
+                    reactions: vec![("🔥".into(), vec!["u_me".into(), "u_a71c".into()])],
                     ..Default::default()
                 },
             ),
             (
-                "m_sora",
+                "m_8b02",
                 NewMessage {
-                    author: "u_sora".into(),
+                    author: "u_8b02".into(),
                     ts: m(41),
                     text: "Wired the screen-share stage — whoever presents gets a big featured tile and everyone else drops to the filmstrip beneath it. Reads really cleanly.".into(),
                     edited: true,
@@ -874,8 +874,8 @@ impl ChatDoc {
                         },
                     ],
                     reactions: vec![
-                        ("🚀".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into(), "u_devon".into()]),
-                        ("👀".into(), vec!["u_iris".into()]),
+                        ("🚀".into(), vec!["u_me".into(), "u_a71c".into(), "u_3c9e".into(), "u_5e70".into()]),
+                        ("👀".into(), vec!["u_d417".into()]),
                     ],
                     ..Default::default()
                 },
@@ -905,14 +905,14 @@ impl ChatDoc {
         let m = |off_min: i64| NOW - off_min * 60;
         let thread: Vec<NewMessage> = vec![
             NewMessage {
-                author: "u_milo".into(),
+                author: "u_3c9e".into(),
                 ts: m(93),
                 text: "Should the chips show a mic-level ring when someone's talking?".into(),
                 parent: Some(parent_id.into()),
                 ..Default::default()
             },
             NewMessage {
-                author: "u_aria".into(),
+                author: "u_a71c".into(),
                 ts: m(92),
                 text: "Yeah — a thin accent ring that pulses. I'll spec the motion token.".into(),
                 parent: Some(parent_id.into()),
@@ -939,10 +939,10 @@ impl ChatDoc {
             doc,
             "c_general",
             NewMessage {
-                author: "u_iris".into(),
+                author: "u_d417".into(),
                 ts: m(220),
                 text: "Welcome to Acme Design on Tilo 👋 Channels relate to the workspace you're standing in — switch workspaces from the rail on the left.".into(),
-                reactions: vec![("👋".into(), vec!["u_me".into(), "u_aria".into(), "u_milo".into()])],
+                reactions: vec![("👋".into(), vec!["u_me".into(), "u_a71c".into(), "u_3c9e".into()])],
                 ..Default::default()
             },
         );
@@ -2932,7 +2932,7 @@ mod tests {
         // thread replies hang off the concept image
         assert_eq!(model::reply_count(&msgs, "m_concept"), 3);
         // an edited message preserves its prior version
-        let sora = msgs.iter().find(|m| m.id == "m_sora").unwrap();
+        let sora = msgs.iter().find(|m| m.id == "m_8b02").unwrap();
         assert!(sora.edited);
         assert_eq!(sora.history.len(), 1);
     }
@@ -3060,9 +3060,9 @@ mod tests {
         // The huddle is pre-populated with three members; Aria is talking.
         let members = ChatDoc::list_voice_members(&doc, "c_huddle");
         assert_eq!(members.len(), 3);
-        assert!(members.iter().any(|m| m.user == "u_aria" && m.talking));
-        assert!(members.iter().any(|m| m.user == "u_milo" && m.muted));
-        assert!(members.iter().any(|m| m.user == "u_sora" && m.audio_only));
+        assert!(members.iter().any(|m| m.user == "u_a71c" && m.talking));
+        assert!(members.iter().any(|m| m.user == "u_3c9e" && m.muted));
+        assert!(members.iter().any(|m| m.user == "u_8b02" && m.audio_only));
     }
 
     #[test]
@@ -3275,7 +3275,7 @@ mod tests {
             &mut doc,
             "c_crit",
             NewMessage {
-                author: "u_aria".into(),
+                author: "u_a71c".into(),
                 ts: NOW,
                 text: "one more".into(),
                 ..Default::default()
@@ -3287,7 +3287,7 @@ mod tests {
             &mut doc,
             "c_crit",
             NewMessage {
-                author: "u_aria".into(),
+                author: "u_a71c".into(),
                 ts: NOW,
                 text: "in the thread".into(),
                 parent: Some("m_concept".into()),
@@ -3319,13 +3319,13 @@ mod tests {
         // their concurrent joins add distinct user keys to the *same* map and a
         // merge keeps BOTH — no silently-dropped participant.
         let mut a = AutoCommit::new();
-        ChatDoc::seed_starter(&mut a, "u_alice", "Alice", "AL");
+        ChatDoc::seed_starter(&mut a, "u_a11c", "Alice", "AL");
         let mut b = AutoCommit::load(&a.save()).unwrap();
         // Concurrent, un-synced joins.
-        ChatDoc::voice_join(&mut a, "c_lounge", "u_alice");
-        ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_alice", "iroh://alice");
-        ChatDoc::voice_join(&mut b, "c_lounge", "u_bob");
-        ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_bob", "iroh://bob");
+        ChatDoc::voice_join(&mut a, "c_lounge", "u_a11c");
+        ChatDoc::voice_set_ticket(&mut a, "c_lounge", "u_a11c", "iroh://alice");
+        ChatDoc::voice_join(&mut b, "c_lounge", "u_b0b");
+        ChatDoc::voice_set_ticket(&mut b, "c_lounge", "u_b0b", "iroh://bob");
         // Merge both ways.
         let mut b2 = AutoCommit::load(&b.save()).unwrap();
         a.merge_incoming(&mut b2).unwrap();
@@ -3338,12 +3338,12 @@ mod tests {
         assert!(
             members
                 .iter()
-                .any(|m| m.user == "u_alice" && m.ticket.as_deref() == Some("iroh://alice"))
+                .any(|m| m.user == "u_a11c" && m.ticket.as_deref() == Some("iroh://alice"))
         );
         assert!(
             members
                 .iter()
-                .any(|m| m.user == "u_bob" && m.ticket.as_deref() == Some("iroh://bob"))
+                .any(|m| m.user == "u_b0b" && m.ticket.as_deref() == Some("iroh://bob"))
         );
     }
 
@@ -3495,14 +3495,14 @@ mod tests {
         // churns the doc / spams empty collab deltas), and a fresh peer id is
         // announced into the roster so others learn its name + colour.
         let mut doc = seeded();
-        let wrote = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+        let wrote = ChatDoc::ensure_user(&mut doc, "u_b0b", "Bob", "BO", 4, Presence::Online);
         assert!(wrote, "a new peer is announced");
         assert!(
             ChatDoc::list_users(&doc)
                 .iter()
-                .any(|u| u.id == "u_bob" && u.name == "Bob")
+                .any(|u| u.id == "u_b0b" && u.name == "Bob")
         );
-        let again = ChatDoc::ensure_user(&mut doc, "u_bob", "Bob", "BO", 4, Presence::Online);
+        let again = ChatDoc::ensure_user(&mut doc, "u_b0b", "Bob", "BO", 4, Presence::Online);
         assert!(!again, "an unchanged re-announce writes nothing");
     }
 
@@ -3514,14 +3514,14 @@ mod tests {
         let mut doc = seeded();
         let total = ChatDoc::top_level_count(&doc, "c_crit") as u32;
         assert!(total > 0);
-        ChatDoc::mark_read(&mut doc, "c_crit", "u_alice");
+        ChatDoc::mark_read(&mut doc, "c_crit", "u_a11c");
         assert_eq!(
-            ChatDoc::unread_count(&doc, "c_crit", "u_alice"),
+            ChatDoc::unread_count(&doc, "c_crit", "u_a11c"),
             0,
             "alice caught up"
         );
         assert_eq!(
-            ChatDoc::unread_count(&doc, "c_crit", "u_bob"),
+            ChatDoc::unread_count(&doc, "c_crit", "u_b0b"),
             total,
             "bob's unread is untouched by alice reading"
         );
@@ -3532,8 +3532,8 @@ mod tests {
         // Peer A seeds; peer B adopts A's state, both react, then merge.
         let mut a = seeded();
         let mut b = AutoCommit::load(&a.save()).unwrap();
-        ChatDoc::toggle_reaction(&mut a, "c_crit", "m_me1", "👍", "u_aria");
-        ChatDoc::toggle_reaction(&mut b, "c_crit", "m_me1", "👍", "u_milo");
+        ChatDoc::toggle_reaction(&mut a, "c_crit", "m_me1", "👍", "u_a71c");
+        ChatDoc::toggle_reaction(&mut b, "c_crit", "m_me1", "👍", "u_3c9e");
         let mut b_loaded = AutoCommit::load(&b.save()).unwrap();
         a.merge_incoming(&mut b_loaded).unwrap();
         let msgs = ChatDoc::list_messages(&a, "c_crit");

@@ -1049,7 +1049,7 @@ pub fn provide_resources(ctx: &MailResourceCtx, _doc: &AutoCommit) -> Vec<Resour
         Resource::new("mail.accounts", "mail.account.collection", "Accounts").with_children(
             ctx.accounts.iter().map(|(id, label, active)| {
                 Resource::new(
-                    format!("mail.account:{id}"),
+                    account_resource_id(id),
                     "mail.account",
                     if *active {
                         format!("{label} · Active")
@@ -1172,10 +1172,41 @@ pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resourc
 
 pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {
     // The RFC References root (or the model's documented legacy fallback) is
-    // a stable domain identity. Scoping it to the folder prevents virtual
-    // Starred and a physical folder from claiming the same resource address,
-    // while avoiding lossy subject-derived hashes.
-    format!("{}:{thread_id}", folder.as_key())
+    // a stable domain identity, but a Message-ID carries the sender's host
+    // and often their name, and a resource id leaves the device. The address
+    // is an opaque digest of it, scoped to the folder so virtual Starred and
+    // a physical folder never claim the same resource address.
+    format!(
+        "{}:{}",
+        folder.as_key(),
+        opaque_resource_key("mail.thread", thread_id)
+    )
+}
+
+/// A stable, opaque stand-in for `value` in a resource id: resource ids
+/// travel to other devices unredacted, so one never spells an address, a
+/// name or a Message-ID. Resolution recomputes it from the local value.
+pub(crate) fn opaque_resource_key(domain: &str, value: &str) -> String {
+    use sha2::Digest as _;
+    let digest = sha2::Sha256::new()
+        .chain_update(domain.as_bytes())
+        .chain_update([0])
+        .chain_update(value.as_bytes())
+        .finalize();
+    digest
+        .iter()
+        .take(12)
+        .fold(String::with_capacity(24), |mut out, byte| {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{byte:02x}");
+            out
+        })
+}
+
+/// The resource id of the account stored under `id`, which may be the
+/// account's email address.
+pub(crate) fn account_resource_id(id: &str) -> String {
+    format!("mail.account:{}", opaque_resource_key("mail.account", id))
 }
 
 impl ResourceProvider for crate::app::MailApp {
@@ -1778,8 +1809,51 @@ mod tests {
             .iter()
             .map(|thread| thread.id.as_str())
             .collect();
-        assert!(ids.contains(&"mail.thread:inbox:thread-a"));
-        assert!(ids.contains(&"mail.thread:inbox:thread-b"));
+        assert!(ids.contains(&thread_id_of(Folder::Inbox, "thread-a").as_str()));
+        assert!(ids.contains(&thread_id_of(Folder::Inbox, "thread-b").as_str()));
+    }
+
+    fn thread_id_of(folder: Folder, thread: &str) -> String {
+        format!("mail.thread:{}", thread_resource_key(folder, thread))
+    }
+
+    #[test]
+    fn published_mail_ids_never_spell_an_address_or_a_message_id() {
+        let ctx = MailResourceCtx {
+            mailbox_label: "Mailbox".into(),
+            current_folder: Folder::Inbox,
+            accounts: vec![("ada@example.org".into(), "Ada".into(), true)],
+            messages: Vec::new(),
+            custom_folders: Vec::new(),
+            has_draft: false,
+            can_sync: false,
+        };
+        let resources = provide_resources(&ctx, &AutoCommit::new());
+        let ids: Vec<String> = tilo_actions::flatten(&resources)
+            .into_iter()
+            .map(|action| action.resource_id.0)
+            .collect();
+        assert!(ids.iter().any(|id| id.starts_with("mail.account:")));
+        assert!(
+            ids.iter()
+                .all(|id| !id.contains('@') && !id.contains("example"))
+        );
+        let thread = thread_resource_key(Folder::Inbox, "<CAF=ada.lovelace@mail.example.org>");
+        assert!(!thread.contains('@') && !thread.contains("lovelace"));
+        assert_eq!(
+            thread,
+            thread_resource_key(Folder::Inbox, "<CAF=ada.lovelace@mail.example.org>"),
+            "the opaque key is stable"
+        );
+        assert!(
+            tilo_actions::validate_surface_contracts(
+                &resources,
+                &tilo_actions::ActionRegistry::new()
+            )
+            .iter()
+            .all(|violation| !violation.reason.contains("personal")),
+            "no Personal resource spells its value in its id"
+        );
     }
 
     #[test]
@@ -1797,7 +1871,7 @@ mod tests {
             can_sync: false,
         };
         let resources = provide_resources(&ctx, &AutoCommit::new());
-        let address = tilo_actions::ActionAddress::new("mail.account:work-99", "open");
+        let address = tilo_actions::ActionAddress::new(account_resource_id("work-99"), "open");
         let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("the stable account address resolves through the mailbox tree");
         assert_eq!(

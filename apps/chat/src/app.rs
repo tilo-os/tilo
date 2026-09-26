@@ -1511,7 +1511,7 @@ impl ChatApp {
             "person" => {
                 // A participant's card opened from a report: Message, Invite.
                 self.seed_shot_scenario("feedback");
-                self.revealed_person = Some("u_aria".into());
+                self.revealed_person = Some("u_a71c".into());
                 self.right_flap.snap(true);
             }
             "starter" => {
@@ -5028,7 +5028,7 @@ mod identity_on_screen {
         );
         assert_eq!(app.roster_label(), "Collaborators");
 
-        app.users = vec![user("u_me", false), user("u_aria", false)];
+        app.users = vec![user("u_me", false), user("u_a71c", false)];
         assert_eq!(app.roster_label(), "People");
     }
 
