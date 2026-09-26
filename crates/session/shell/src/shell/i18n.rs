@@ -42,6 +42,12 @@ mod tests {
             "tab-closed-undo",
             "tab-closed-undo-hint",
             "tab-closed-undo-hint-unbound",
+            "window-switcher-title",
+            "window-switcher-description",
+            "window-switcher-app-title",
+            "window-switcher-app-description",
+            "window-switcher-untitled",
+            "window-switcher-caption-paged",
         ] {
             let s = t(key);
             assert_ne!(s, key, "{key} has no entry in the catalogue");
