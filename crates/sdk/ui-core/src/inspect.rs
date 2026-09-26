@@ -17,8 +17,8 @@
 use vello::kurbo::{Point, Rect};
 
 pub use tilo_reference::inspect::{
-    INSPECT_VERSION, InspectQuery, InspectReply, InspectRequest, InspectedNode, MAX_INSPECT_DEPTH,
-    MAX_INSPECT_NODES, SurfaceRect, redact_node,
+    Content, INSPECT_VERSION, Identity, InspectQuery, InspectReply, InspectRequest, InspectedNode,
+    MAX_INSPECT_DEPTH, MAX_INSPECT_NODES, NodeState, Pixels, SurfaceRect, redact_node,
 };
 
 use crate::a11y::{Audience, Role};
@@ -58,19 +58,33 @@ fn surface_rect(rect: Rect) -> SurfaceRect {
 fn inspected(node: &SemanticNode, audience: Audience) -> InspectedNode {
     let mut out = InspectedNode {
         id: node.id.0.clone(),
-        durable: node.durable_identity,
+        identity: if node.durable_identity {
+            Identity::Durable
+        } else {
+            Identity::Positional
+        },
         role: role_name(node.role),
         label: node.name.clone(),
         value: node.value.clone(),
         sensitivity: node.sensitivity,
-        content_in_value: node.presents_value(),
+        content: if node.presents_value() {
+            Content::Value
+        } else {
+            Content::Label
+        },
         bounds: node.bounds.map(surface_rect),
         visible: node.visible_bounds().map(surface_rect),
         // A canvas paints what no node describes, so its pixels are not
         // accounted for by the tree.
-        described: !matches!(node.role, Role::Canvas | Role::Unknown),
-        focused: node.state.focused,
-        disabled: node.state.disabled,
+        pixels: if matches!(node.role, Role::Canvas | Role::Unknown) {
+            Pixels::Undescribed
+        } else {
+            Pixels::Described
+        },
+        state: NodeState {
+            focused: node.state.focused,
+            disabled: node.state.disabled,
+        },
         children: node.children.iter().map(|child| child.0.clone()).collect(),
         reference: node.reference.clone(),
     };

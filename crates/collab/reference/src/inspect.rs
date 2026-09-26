@@ -82,19 +82,52 @@ impl SurfaceRect {
     }
 }
 
+/// How long an [`InspectedNode::id`] stays meaningful.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Identity {
+    /// Declared by the app (a resource, a unique test id, a semantic key):
+    /// it may be kept and resolved later.
+    Durable,
+    /// A structural path: it survives a rebuild of the same structure but
+    /// shifts when a sibling is inserted before it.
+    Positional,
+}
+
+/// Where a node presents its content, which is what redaction applies to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Content {
+    /// In its value; the label is only the field's name.
+    Value,
+    /// In its label: a plain label or a list row *is* its name.
+    Label,
+}
+
+/// Whether the semantic tree accounts for a node's pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Pixels {
+    /// The node describes what it paints.
+    Described,
+    /// A canvas or an unknown role: no node describes these pixels, so a
+    /// frame comparison cannot explain them.
+    Undescribed,
+}
+
+/// The node's interactive state, as a screen reader would announce it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeState {
+    pub focused: bool,
+    pub disabled: bool,
+}
+
 /// One node of an inspection answer.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "each flag is an independent fact about one node on the wire (durable identity, where content sits, whether pixels are described, focus, disabled); folding them into an enum would forbid valid combinations"
-)]
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InspectedNode {
     /// The node's stable semantic id.
     pub id: String,
-    /// Whether [`id`](Self::id) may be kept beyond this frame and resolved
-    /// later. A positional path survives a rebuild of the same structure but
-    /// shifts when a sibling is inserted before it.
-    pub durable: bool,
+    pub identity: Identity,
     /// The accessibility role, snake case (`button`, `text_input`, `heading`).
     pub role: String,
     /// The accessible name; redacted like content when it is the content.
@@ -102,25 +135,29 @@ pub struct InspectedNode {
     /// The node's value, redacted for the audience. Never set for a secret.
     pub value: Option<String>,
     pub sensitivity: Sensitivity,
-    /// Where the node presents its content: its value (the label is then only
-    /// the field's name) or, when `false`, its label.
-    pub content_in_value: bool,
+    pub content: Content,
     /// Full bounds, already scrolled. Kept for every sensitivity.
     pub bounds: Option<SurfaceRect>,
     /// The on-screen part of [`bounds`](Self::bounds) after every ancestor
     /// clip; `None` when the node is not on screen.
     pub visible: Option<SurfaceRect>,
-    /// Whether the semantic tree describes what these pixels show. `false`
-    /// for a canvas or an unknown role: the pixels are not accounted for by
-    /// any node, so a frame comparison cannot explain them.
-    pub described: bool,
-    pub focused: bool,
-    pub disabled: bool,
+    pub pixels: Pixels,
+    pub state: NodeState,
     /// Every child's id, in reading order, whether or not the reply carries
     /// the child itself.
     pub children: Vec<String>,
     /// The document content this node stands for.
     pub reference: Option<ResourceRef>,
+}
+
+impl InspectedNode {
+    /// The text that is this node's content: its value or its label.
+    pub fn content_text(&self) -> Option<&str> {
+        match self.content {
+            Content::Value => self.value.as_deref(),
+            Content::Label => self.label.as_deref(),
+        }
+    }
 }
 
 /// The answer to one [`InspectRequest`].
@@ -207,7 +244,7 @@ pub fn redact_node(node: &mut InspectedNode, audience: Audience) {
         .value
         .take()
         .and_then(|value| sensitivity.present(&value, audience));
-    if !node.content_in_value {
+    if node.content == Content::Label {
         node.label = node
             .label
             .take()
@@ -227,12 +264,12 @@ mod tests {
     fn contact() -> InspectedNode {
         InspectedNode {
             id: "t:contact".into(),
-            durable: true,
+            identity: Identity::Durable,
             role: "list_item".into(),
             label: Some("Ada Lovelace".into()),
             value: None,
             sensitivity: Sensitivity::Personal,
-            content_in_value: false,
+            content: Content::Label,
             bounds: Some(SurfaceRect {
                 x: 0.0,
                 y: 0.0,
@@ -240,9 +277,8 @@ mod tests {
                 height: 10.0,
             }),
             visible: None,
-            described: true,
-            focused: false,
-            disabled: false,
+            pixels: Pixels::Described,
+            state: NodeState::default(),
             children: Vec::new(),
             reference: Some(ResourceRef::whole(
                 "contacts.person",
@@ -270,13 +306,14 @@ mod tests {
             label: Some("Password".into()),
             value: Some("hunter2".into()),
             sensitivity: Sensitivity::Secret,
-            content_in_value: true,
+            content: Content::Value,
             reference: None,
             ..contact()
         };
         redact_node(&mut node, Audience::LocalSession);
         assert_eq!(node.value, None);
         assert_eq!(node.label.as_deref(), Some("Password"));
+        assert_eq!(node.content_text(), None);
         assert!(node.bounds.is_some());
     }
 

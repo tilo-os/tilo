@@ -180,7 +180,7 @@ fn the_shell_inspects_a_live_app_through_the_broker() {
         .find(|node| node.id.as_str() == "t:save")
         .expect("the button under its stable id");
     assert_eq!(save.role, "button");
-    assert!(save.durable);
+    assert_eq!(save.identity, ui::inspect::Identity::Durable);
     let password = by_label(&tree, "Password");
     assert_eq!(password.sensitivity, Sensitivity::Secret);
     assert_eq!(password.value, None);

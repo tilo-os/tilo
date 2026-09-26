@@ -245,7 +245,7 @@ impl CapnpBrokerState {
             .membership
             .as_ref()
             .ok_or_else(|| "the broker has no workspace authority".to_string())?;
-        {
+        let decision = {
             let tree = membership.read();
             let workspace = tree
                 .desktop
@@ -254,9 +254,12 @@ impl CapnpBrokerState {
                 .find(|workspace| workspace.room.to_string() == route.cluster_id)
                 .ok_or_else(|| "the application's workspace is no longer hosted".to_string())?;
             let actor = workspace.actor_for_person(&caller.person);
-            if workspace.decide(&actor, &ResourceRef::Workspace, Verb::Read) != CapDecision::Allow {
-                return Err("the caller may not read this room".into());
-            }
+            let decision = workspace.decide(&actor, &ResourceRef::Workspace, Verb::Read);
+            drop(tree);
+            decision
+        };
+        if decision != CapDecision::Allow {
+            return Err("the caller may not read this room".into());
         }
         let request = InspectRequest::new(query, caller.audience);
         let request_json = serde_json::to_string(&request)
