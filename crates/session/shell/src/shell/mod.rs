@@ -20,6 +20,7 @@
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
+pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
 pub(crate) mod capture_surface;
