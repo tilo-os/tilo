@@ -573,109 +573,115 @@ mod tests {
     }
 
     #[test]
-    fn hud_lays_out_copy_and_every_swatch() {
-        let hud = draw_hud(
-            true,
-            false,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(hud.is_shown());
-        // Every swatch + Copy + Note is a hittable button.
-        let highlights: Vec<usize> = hud
-            .buttons()
-            .iter()
-            .filter_map(|(_, a)| {
-                if let HudAction::Highlight(i) = a {
-                    Some(*i)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
-        assert!(
-            hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
-            "Copy present"
-        );
-        assert!(
-            hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
-            "Note present"
-        );
-        assert!(
-            !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
-            "no delete without a mark"
-        );
+    fn hud_layout_places_every_control_inside_bounds() {
+        // Case `hud_lays_out_copy_and_every_swatch`.
+        {
+            let hud = draw_hud(
+                true,
+                false,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(hud.is_shown());
+            // Every swatch + Copy + Note is a hittable button.
+            let highlights: Vec<usize> = hud
+                .buttons()
+                .iter()
+                .filter_map(|(_, a)| {
+                    if let HudAction::Highlight(i) = a {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(highlights, vec![0, 1, 2], "one hit per swatch, in order");
+            assert!(
+                hud.buttons().iter().any(|(_, a)| *a == HudAction::Copy),
+                "Copy present"
+            );
+            assert!(
+                hud.buttons().iter().any(|(_, a)| *a == HudAction::Note),
+                "Note present"
+            );
+            assert!(
+                !hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete),
+                "no delete without a mark"
+            );
+        }
+
+        // Case `delete_appears_only_when_asked`.
+        {
+            let hud = draw_hud(
+                true,
+                true,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
+        }
+
+        // Case `hud_stays_inside_bounds_when_anchor_is_at_an_edge`.
+        {
+            let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // Anchor jammed into the top-left corner: the bar must not spill out.
+            let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
+            let r = hud.rect();
+            assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
+            assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
+            assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
+            assert!(
+                r.y1 <= bounds.y1 + 0.01,
+                "bottom edge kept in bounds: {r:?}"
+            );
+        }
+
+        // Case `hud_floats_below_when_there_is_no_room_above`.
+        {
+            let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
+            // Anchor near the top → the bar drops below it rather than off-screen.
+            let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
+            assert!(
+                hud.rect().y0 >= 10.0,
+                "bar sits at/below the anchor near the top"
+            );
+        }
     }
 
     #[test]
-    fn delete_appears_only_when_asked() {
-        let hud = draw_hud(
-            true,
-            true,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        assert!(hud.buttons().iter().any(|(_, a)| *a == HudAction::Delete));
-    }
+    fn hud_hits_controls_and_latches_marker_drags() {
+        // Case `hit_returns_the_control_under_the_point`.
+        {
+            let hud = draw_hud(
+                true,
+                false,
+                Point::new(400.0, 300.0),
+                Rect::new(0.0, 0.0, 800.0, 600.0),
+            );
+            let copy = hud
+                .buttons()
+                .iter()
+                .find(|(_, a)| *a == HudAction::Copy)
+                .unwrap()
+                .0;
+            assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
+            assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
+        }
 
-    #[test]
-    fn hit_returns_the_control_under_the_point() {
-        let hud = draw_hud(
-            true,
-            false,
-            Point::new(400.0, 300.0),
-            Rect::new(0.0, 0.0, 800.0, 600.0),
-        );
-        let copy = hud
-            .buttons()
-            .iter()
-            .find(|(_, a)| *a == HudAction::Copy)
-            .unwrap()
-            .0;
-        assert_eq!(hud.hit(copy.center()), Some(HudAction::Copy));
-        assert_eq!(hud.hit(Point::new(5.0, 5.0)), None);
-    }
-
-    #[test]
-    fn hud_stays_inside_bounds_when_anchor_is_at_an_edge() {
-        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Anchor jammed into the top-left corner: the bar must not spill out.
-        let hud = draw_hud(true, true, Point::new(2.0, 2.0), bounds);
-        let r = hud.rect();
-        assert!(r.x0 >= bounds.x0, "left edge kept in bounds: {r:?}");
-        assert!(r.x1 <= bounds.x1 + 0.01, "right edge kept in bounds: {r:?}");
-        assert!(r.y0 >= bounds.y0, "top edge kept in bounds: {r:?}");
-        assert!(
-            r.y1 <= bounds.y1 + 0.01,
-            "bottom edge kept in bounds: {r:?}"
-        );
-    }
-
-    #[test]
-    fn hud_floats_below_when_there_is_no_room_above() {
-        let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
-        // Anchor near the top → the bar drops below it rather than off-screen.
-        let hud = draw_hud(true, false, Point::new(400.0, 10.0), bounds);
-        assert!(
-            hud.rect().y0 >= 10.0,
-            "bar sits at/below the anchor near the top"
-        );
-    }
-
-    #[test]
-    fn marker_drag_latches_moved_past_threshold() {
-        let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
-        // A grab keeps the offset so the first tiny move doesn't jump.
-        let o = d.update((101.0, 101.0));
-        assert!(!d.moved(), "a sub-threshold nudge is still a click");
-        assert!(
-            (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
-            "origin tracks pointer minus grab offset"
-        );
-        let o2 = d.update((130.0, 130.0));
-        assert!(d.moved(), "a real drag latches moved");
-        assert!(o2.0 > o.0 && o2.1 > o.1);
-        assert_eq!(d.id, "n1");
+        // Case `marker_drag_latches_moved_past_threshold`.
+        {
+            let mut d = MarkerDrag::begin("n1", (100.0, 100.0), (90.0, 95.0));
+            // A grab keeps the offset so the first tiny move doesn't jump.
+            let o = d.update((101.0, 101.0));
+            assert!(!d.moved(), "a sub-threshold nudge is still a click");
+            assert!(
+                (o.0 - 91.0).abs() < 1e-6 && (o.1 - 96.0).abs() < 1e-6,
+                "origin tracks pointer minus grab offset"
+            );
+            let o2 = d.update((130.0, 130.0));
+            assert!(d.moved(), "a real drag latches moved");
+            assert!(o2.0 > o.0 && o2.1 > o.1);
+            assert_eq!(d.id, "n1");
+        }
     }
 }

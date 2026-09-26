@@ -339,7 +339,15 @@ impl ActionContract {
 mod tests {
     use super::*;
 
+    /// Risk levels keep their compact wire discriminants and a broker-owned job identity is not a
+    /// second application result.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_contract_keeps_wire_discriminants_and_one_job_identity() {
+        risk_level_keeps_existing_compact_wire_discriminants();
+        broker_owned_job_identity_is_not_a_second_application_result();
+    }
+
     fn risk_level_keeps_existing_compact_wire_discriminants() {
         // `RiskLevel` appears in recorded action contracts. Postcard encodes
         // enum variants by ordinal, so the old values are a compatibility
@@ -364,7 +372,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn broker_owned_job_identity_is_not_a_second_application_result() {
         assert!(
             ResultSpec::Job

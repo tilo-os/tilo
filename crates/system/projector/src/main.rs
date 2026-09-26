@@ -1698,23 +1698,114 @@ mod tests {
     }
 
     #[test]
-    fn fcast_discovery_record_preserves_endpoint_and_identity() {
-        let device = into_projection_device(info(ProtocolType::FCast));
-        assert_eq!(device.protocol, ProjectionProtocol::FCast);
-        assert_eq!(device.id, "FCast:receiver-42");
-        assert_eq!(device.addresses, ["192.0.2.40"]);
-        assert_eq!(device.port, 46899);
-        assert_eq!(device.modes, [ProjectionMode::Mirror]);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn discovery_records_share_the_broker_contract_and_stay_bounded() {
+        // Phase `fcast_discovery_record_preserves_endpoint_and_identity`.
+        {
+            let device = into_projection_device(info(ProtocolType::FCast));
+            assert_eq!(device.protocol, ProjectionProtocol::FCast);
+            assert_eq!(device.id, "FCast:receiver-42");
+            assert_eq!(device.addresses, ["192.0.2.40"]);
+            assert_eq!(device.port, 46899);
+            assert_eq!(device.modes, [ProjectionMode::Mirror]);
+        }
+        // Phase `chromecast_discovery_record_uses_the_same_broker_contract`.
+        {
+            let mut cast = info(ProtocolType::Chromecast);
+            cast.port = 8009;
+            let device = into_projection_device(cast);
+            assert_eq!(device.protocol, ProjectionProtocol::Chromecast);
+            assert_eq!(device.id, "Google Cast:receiver-42");
+            assert_eq!(device.port, 8009);
+        }
+        // Phase `zero_length_discovery_is_bounded_and_json_serialisable`.
+        {
+            let devices = discover(Duration::ZERO).expect("empty bounded discovery");
+            serde_json::to_string(&devices).expect("projection discovery JSON");
+        }
+        // Phase `local_mdns_receivers_exercise_three_real_discovery_browsers`.
+        {
+            let daemon = ServiceDaemon::new().expect("mDNS simulator daemon");
+            let suffix = std::process::id();
+            let fcast_name = format!("Tilo FCast simulator {suffix}");
+            let cast_name = format!("Tilo Cast simulator {suffix}");
+            let airplay_name = format!("Tilo AirPlay simulator {suffix}");
 
-    #[test]
-    fn chromecast_discovery_record_uses_the_same_broker_contract() {
-        let mut cast = info(ProtocolType::Chromecast);
-        cast.port = 8009;
-        let device = into_projection_device(cast);
-        assert_eq!(device.protocol, ProjectionProtocol::Chromecast);
-        assert_eq!(device.id, "Google Cast:receiver-42");
-        assert_eq!(device.port, 8009);
+            let fcast = ServiceInfo::new(
+                "_fcast._tcp.local.",
+                &fcast_name,
+                &format!("tilo-fcast-{suffix}.local."),
+                "",
+                46899,
+                HashMap::from([("id".to_owned(), format!("fcast-{suffix}"))]),
+            )
+            .expect("FCast simulator record")
+            .enable_addr_auto();
+            let cast = ServiceInfo::new(
+                "_googlecast._tcp.local.",
+                &format!("tilo-cast-{suffix}"),
+                &format!("tilo-cast-{suffix}.local."),
+                "",
+                8009,
+                HashMap::from([
+                    ("id".to_owned(), format!("cast-{suffix}")),
+                    ("fn".to_owned(), cast_name.clone()),
+                ]),
+            )
+            .expect("Google Cast simulator record")
+            .enable_addr_auto();
+            let airplay = ServiceInfo::new(
+                AIRPLAY_SERVICE,
+                &airplay_name,
+                &format!("tilo-airplay-{suffix}.local."),
+                "",
+                7000,
+                HashMap::from([
+                    ("deviceid".to_owned(), format!("airplay-{suffix}")),
+                    ("model".to_owned(), "AudioAccessory6,1".to_owned()),
+                    ("features".to_owned(), "0x5A7FFFF7,0x1E".to_owned()),
+                ]),
+            )
+            .expect("AirPlay simulator record")
+            .enable_addr_auto();
+            daemon.register(fcast).expect("register FCast simulator");
+            daemon.register(cast).expect("register Cast simulator");
+            daemon
+                .register(airplay)
+                .expect("register AirPlay simulator");
+            std::thread::sleep(Duration::from_millis(300));
+
+            let devices = discover(Duration::from_secs(3)).expect("discover simulated receivers");
+            let _ = daemon.shutdown();
+
+            assert!(
+                devices.iter().any(|device| {
+                    device.name == fcast_name
+                        && device.protocol == ProjectionProtocol::FCast
+                        && device.port == 46899
+                }),
+                "FCast simulator missing from {devices:?}"
+            );
+            assert!(
+                devices.iter().any(|device| {
+                    device.name == cast_name
+                        && device.protocol == ProjectionProtocol::Chromecast
+                        && device.port == 8009
+                }),
+                "Google Cast simulator missing from {devices:?}"
+            );
+            assert!(
+                devices.iter().any(|device| {
+                    device.name == airplay_name
+                        && device.protocol == ProjectionProtocol::AirPlay
+                        && device.port == 7000
+                }),
+                "AirPlay simulator missing from {devices:?}"
+            );
+        }
     }
 
     fn request(port: u16, path: &str) -> Vec<u8> {
@@ -1758,389 +1849,402 @@ mod tests {
     }
 
     #[test]
-    fn simulated_fcast_receiver_accepts_the_production_connect_and_hls_load() {
-        const VERSION_OPCODE: u8 = 11;
-        const PLAY_OPCODE: u8 = 1;
-        let listener =
-            TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind FCast simulator");
-        let port = listener.local_addr().expect("simulator address").port();
-        let receiver = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept FCast sender");
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .expect("receiver timeout");
-            let (opcode, hello) = read_fcast_packet(&mut stream);
-            assert_eq!(opcode, VERSION_OPCODE);
-            let hello: serde_json::Value = serde_json::from_slice(&hello).expect("version JSON");
-            assert_eq!(hello["version"], 4);
-            // Version 2 deliberately avoids TLS and gives the simulator a
-            // compact, inspectable URL-load packet while still exercising the
-            // SDK's production negotiation state machine.
-            write_fcast_packet(&mut stream, VERSION_OPCODE, br#"{"version":2}"#);
-            let (opcode, play) = read_fcast_packet(&mut stream);
-            assert_eq!(opcode, PLAY_OPCODE);
-            let play: serde_json::Value = serde_json::from_slice(&play).expect("play JSON");
-            assert_eq!(play["container"], "application/vnd.apple.mpegurl");
-            assert_eq!(
-                play["url"],
-                "http://127.0.0.1:43210/0123456789abcdef/live.m3u8"
-            );
-        });
-
-        let context = fcast_sender_sdk::context::CastContext::new().expect("Cast context");
-        let device = context.create_device_from_info(DeviceInfo {
-            name: "FCast simulator".to_owned(),
-            protocol: ProtocolType::FCast,
-            addresses: vec![IpAddr::v4(127, 0, 0, 1)],
-            port,
-            txt_records: HashMap::new(),
-        });
-        let (connected_tx, connected_rx) = mpsc::channel();
-        let (faults, _fault_rx) = mpsc::channel();
-        device
-            .connect(
-                Some(ApplicationInfo {
-                    name: "tilo-projector".to_owned(),
-                    version: env!("CARGO_PKG_VERSION").to_owned(),
-                    display_name: "Tilo Screen Projection".to_owned(),
-                }),
-                Arc::new(SessionEvents {
-                    connected: Mutex::new(Some(connected_tx)),
-                    faults,
-                }),
-                0,
-            )
-            .expect("connect to simulator");
-        connected_rx
-            .recv_timeout(Duration::from_secs(5))
-            .expect("connected event")
-            .expect("successful connection");
-        device
-            .load(
-                LoadRequest::Url {
-                    content_type: "application/vnd.apple.mpegurl".to_owned(),
-                    url: "http://127.0.0.1:43210/0123456789abcdef/live.m3u8".to_owned(),
-                    resume_position: None,
-                    speed: None,
-                    volume: None,
-                    metadata: None,
-                    request_headers: None,
-                },
-                None,
-            )
-            .expect("load projection URL");
-        receiver.join().expect("FCast simulator assertions");
-    }
-
-    #[test]
-    fn media_server_serves_hls_without_exposing_other_runtime_files() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-projector-http-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        fs::create_dir_all(&root).expect("create fixture directory");
-        fs::write(root.join("live.m3u8"), b"#EXTM3U\nsegment-00001.ts\n").expect("write playlist");
-        fs::write(root.join("segment-00001.ts"), b"transport-stream").expect("write segment");
-        fs::write(root.join("session.pid"), b"secret").expect("write private fixture");
-        let stop = Arc::new(AtomicBool::new(false));
-        let token = "0123456789abcdef";
-        let (port, thread) = start_http_server(
-            root.clone(),
-            stop.clone(),
-            std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-            token.to_owned(),
-            Arc::new(MediaTelemetry::default()),
-        )
-        .expect("HTTP server");
-
-        let playlist =
-            String::from_utf8(request(port, &format!("/{token}/live.m3u8"))).expect("HTTP text");
-        assert!(playlist.starts_with("HTTP/1.1 200 OK"));
-        assert!(playlist.contains("Content-Type: application/vnd.apple.mpegurl"));
-        assert!(playlist.ends_with("#EXTM3U\nsegment-00001.ts\n"));
-        let segment = String::from_utf8(request(port, &format!("/{token}/segment-00001.ts")))
-            .expect("HTTP text");
-        assert!(segment.contains("Content-Type: video/mp2t"));
-        assert!(segment.ends_with("transport-stream"));
-        assert!(
-            String::from_utf8(request(port, "/wrong/live.m3u8"))
-                .expect("HTTP text")
-                .starts_with("HTTP/1.1 400 Bad Request"),
-            "a guessed playlist URL must not expose the stream"
-        );
-        let traversal = String::from_utf8(request(port, "/../session.pid")).expect("HTTP text");
-        assert!(traversal.starts_with("HTTP/1.1 400 Bad Request"));
-        let private = String::from_utf8(request(port, "/session.pid")).expect("HTTP text");
-        assert!(private.starts_with("HTTP/1.1 400 Bad Request"));
-
-        stop.store(true, Ordering::Release);
-        thread.join().expect("join HTTP server");
-        fs::remove_dir_all(root).expect("remove fixture directory");
-    }
-
-    #[test]
-    fn link_feedback_scales_continuously_without_crossing_the_display_ceiling() {
-        let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
-        let current = CaptureProfile::new(1920, 1080, 60, 10_000);
-        let reduced = adapt_capture_profile(current, ceiling, 3_000_000, 300_000);
-        assert_eq!((reduced.max_width, reduced.max_height), (1440, 810));
-        assert!(reduced.bitrate_kbps < current.bitrate_kbps);
-
-        let raised = adapt_capture_profile(current, ceiling, 30_000_000, 20_000);
-        assert_eq!((raised.max_width, raised.max_height), (2560, 1440));
-        assert!(raised.bitrate_kbps <= ceiling.bitrate_kbps);
-
-        assert_eq!(
-            adapt_capture_profile(ceiling, ceiling, 50_000_000, 20_000),
-            ceiling
-        );
-    }
-
-    #[test]
-    fn real_h264_frames_are_muxed_into_a_playable_hls_playlist() {
-        if Command::new("gst-inspect-1.0")
-            .args(["h264parse", "hlssink2"])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_err()
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn fcast_receivers_load_hls_served_without_other_runtime_files() {
+        // Phase `simulated_fcast_receiver_accepts_the_production_connect_and_hls_load`.
         {
-            panic!("the test host is missing the packaged GStreamer inspection tool");
+            const VERSION_OPCODE: u8 = 11;
+            const PLAY_OPCODE: u8 = 1;
+            let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+                .expect("bind FCast simulator");
+            let port = listener.local_addr().expect("simulator address").port();
+            let receiver = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("accept FCast sender");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .expect("receiver timeout");
+                let (opcode, hello) = read_fcast_packet(&mut stream);
+                assert_eq!(opcode, VERSION_OPCODE);
+                let hello: serde_json::Value =
+                    serde_json::from_slice(&hello).expect("version JSON");
+                assert_eq!(hello["version"], 4);
+                // Version 2 deliberately avoids TLS and gives the simulator a
+                // compact, inspectable URL-load packet while still exercising the
+                // SDK's production negotiation state machine.
+                write_fcast_packet(&mut stream, VERSION_OPCODE, br#"{"version":2}"#);
+                let (opcode, play) = read_fcast_packet(&mut stream);
+                assert_eq!(opcode, PLAY_OPCODE);
+                let play: serde_json::Value = serde_json::from_slice(&play).expect("play JSON");
+                assert_eq!(play["container"], "application/vnd.apple.mpegurl");
+                assert_eq!(
+                    play["url"],
+                    "http://127.0.0.1:43210/0123456789abcdef/live.m3u8"
+                );
+            });
+
+            let context = fcast_sender_sdk::context::CastContext::new().expect("Cast context");
+            let device = context.create_device_from_info(DeviceInfo {
+                name: "FCast simulator".to_owned(),
+                protocol: ProtocolType::FCast,
+                addresses: vec![IpAddr::v4(127, 0, 0, 1)],
+                port,
+                txt_records: HashMap::new(),
+            });
+            let (connected_tx, connected_rx) = mpsc::channel();
+            let (faults, _fault_rx) = mpsc::channel();
+            device
+                .connect(
+                    Some(ApplicationInfo {
+                        name: "tilo-projector".to_owned(),
+                        version: env!("CARGO_PKG_VERSION").to_owned(),
+                        display_name: "Tilo Screen Projection".to_owned(),
+                    }),
+                    Arc::new(SessionEvents {
+                        connected: Mutex::new(Some(connected_tx)),
+                        faults,
+                    }),
+                    0,
+                )
+                .expect("connect to simulator");
+            connected_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("connected event")
+                .expect("successful connection");
+            device
+                .load(
+                    LoadRequest::Url {
+                        content_type: "application/vnd.apple.mpegurl".to_owned(),
+                        url: "http://127.0.0.1:43210/0123456789abcdef/live.m3u8".to_owned(),
+                        resume_position: None,
+                        speed: None,
+                        volume: None,
+                        metadata: None,
+                        request_headers: None,
+                    },
+                    None,
+                )
+                .expect("load projection URL");
+            receiver.join().expect("FCast simulator assertions");
         }
-        for element in ["h264parse", "hlssink2"] {
+        // Phase `media_server_serves_hls_without_exposing_other_runtime_files`.
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-projector-http-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            fs::create_dir_all(&root).expect("create fixture directory");
+            fs::write(root.join("live.m3u8"), b"#EXTM3U\nsegment-00001.ts\n")
+                .expect("write playlist");
+            fs::write(root.join("segment-00001.ts"), b"transport-stream").expect("write segment");
+            fs::write(root.join("session.pid"), b"secret").expect("write private fixture");
+            let stop = Arc::new(AtomicBool::new(false));
+            let token = "0123456789abcdef";
+            let (port, thread) = start_http_server(
+                root.clone(),
+                stop.clone(),
+                std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+                token.to_owned(),
+                Arc::new(MediaTelemetry::default()),
+            )
+            .expect("HTTP server");
+
+            let playlist = String::from_utf8(request(port, &format!("/{token}/live.m3u8")))
+                .expect("HTTP text");
+            assert!(playlist.starts_with("HTTP/1.1 200 OK"));
+            assert!(playlist.contains("Content-Type: application/vnd.apple.mpegurl"));
+            assert!(playlist.ends_with("#EXTM3U\nsegment-00001.ts\n"));
+            let segment = String::from_utf8(request(port, &format!("/{token}/segment-00001.ts")))
+                .expect("HTTP text");
+            assert!(segment.contains("Content-Type: video/mp2t"));
+            assert!(segment.ends_with("transport-stream"));
             assert!(
-                Command::new("gst-inspect-1.0")
-                    .arg(element)
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .status()
-                    .expect("inspect GStreamer element")
-                    .success(),
-                "required GStreamer element {element} is unavailable"
+                String::from_utf8(request(port, "/wrong/live.m3u8"))
+                    .expect("HTTP text")
+                    .starts_with("HTTP/1.1 400 Bad Request"),
+                "a guessed playlist URL must not expose the stream"
+            );
+            let traversal = String::from_utf8(request(port, "/../session.pid")).expect("HTTP text");
+            assert!(traversal.starts_with("HTTP/1.1 400 Bad Request"));
+            let private = String::from_utf8(request(port, "/session.pid")).expect("HTTP text");
+            assert!(private.starts_with("HTTP/1.1 400 Bad Request"));
+
+            stop.store(true, Ordering::Release);
+            thread.join().expect("join HTTP server");
+            fs::remove_dir_all(root).expect("remove fixture directory");
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn link_feedback_and_h264_muxing_produce_a_playable_bounded_stream() {
+        // Phase `link_feedback_scales_continuously_without_crossing_the_display_ceiling`.
+        {
+            let ceiling = CaptureProfile::new(2560, 1440, 60, 15_000);
+            let current = CaptureProfile::new(1920, 1080, 60, 10_000);
+            let reduced = adapt_capture_profile(current, ceiling, 3_000_000, 300_000);
+            assert_eq!((reduced.max_width, reduced.max_height), (1440, 810));
+            assert!(reduced.bitrate_kbps < current.bitrate_kbps);
+
+            let raised = adapt_capture_profile(current, ceiling, 30_000_000, 20_000);
+            assert_eq!((raised.max_width, raised.max_height), (2560, 1440));
+            assert!(raised.bitrate_kbps <= ceiling.bitrate_kbps);
+
+            assert_eq!(
+                adapt_capture_profile(ceiling, ceiling, 50_000_000, 20_000),
+                ceiling
             );
         }
-
-        let root = std::env::temp_dir().join(format!(
-            "tilo-projector-hls-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-        paths.clear_markers();
-        // Large enough for every hardware encoder's minimum frame size.
-        let size: u32 = 256;
-        let mut pipeline =
-            HlsPipeline::start(&paths, false).expect("start production HLS pipeline");
-        // Projection receivers take H.264 only: hardware when the machine
-        // has it, Cisco's openh264 through GStreamer otherwise.
-        let mut encoder = tilo_callstream::VideoEncoder::with_options(
-            tilo_callstream::StreamCodec::H264,
-            size,
-            size,
-            30,
-            1_000_000,
-            30,
-            true,
-        )
-        .expect("an H.264 encoder (hardware, or the openh264 GStreamer plugin)");
-        let mut rgba = vec![0u8; (size * size * 4) as usize];
-        for frame_index in 0..75u64 {
-            let luma = u8::try_from(frame_index).unwrap_or(u8::MAX);
-            for pixel in rgba.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&[luma, 96, 180, 255]);
+        // Phase `real_h264_frames_are_muxed_into_a_playable_hls_playlist`.
+        {
+            if Command::new("gst-inspect-1.0")
+                .args(["h264parse", "hlssink2"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .is_err()
+            {
+                panic!("the test host is missing the packaged GStreamer inspection tool");
             }
-            let unit = encoder
-                .encode_unit(&rgba, frame_index * 33)
-                .expect("encode projection frame")
-                .expect("one unit per frame");
-            pipeline
-                .push(&VideoPacket {
-                    width: size,
-                    height: size,
-                    presentation_time_us: frame_index * 33_333,
-                    keyframe: unit.keyframe,
-                    annex_b: unit.data,
-                })
-                .expect("push projection frame");
-            std::thread::sleep(Duration::from_millis(34));
-        }
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !paths.playlist.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        let playlist = fs::read_to_string(&paths.playlist).expect("generated HLS playlist");
-        assert!(
-            playlist.starts_with("#EXTM3U"),
-            "unexpected playlist: {playlist}"
-        );
-        assert!(
-            playlist.contains("segment-"),
-            "playlist has no media segment"
-        );
-        assert!(
-            fs::read_dir(&root)
-                .expect("read HLS output")
-                .flatten()
-                .any(|entry| entry.file_name().to_string_lossy().ends_with(".ts")),
-            "HLS pipeline wrote no MPEG-TS segment"
-        );
-        drop(pipeline);
-        fs::remove_dir_all(root).expect("remove HLS fixture directory");
-    }
+            for element in ["h264parse", "hlssink2"] {
+                assert!(
+                    Command::new("gst-inspect-1.0")
+                        .arg(element)
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .status()
+                        .expect("inspect GStreamer element")
+                        .success(),
+                    "required GStreamer element {element} is unavailable"
+                );
+            }
 
-    #[test]
-    fn airplay_process_readiness_and_disconnect_are_hardware_free() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-projector-airplay-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-        paths.clear_markers();
-        let sender = root.join("airplay-sender-simulator");
-        fs::write(
-            &sender,
-            b"#!/bin/sh\n[ \"$DOUBLETAKE_CODE\" = \"4821\" ] || exit 7\ntrap 'exit 0' TERM INT\necho 'screen capture started' >&2\necho 'mirror session ready (data port: 7001)' >&2\nwhile :; do sleep 1; done\n",
-        )
-        .expect("write AirPlay simulator");
-        fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
-            .expect("make simulator executable");
-        let worker_paths = paths.clone();
-        let sender_path = sender.display().to_string();
-        let session = std::thread::spawn(move || {
-            run_airplay_process(&sender_path, &[], &worker_paths, Some("4821"))
-        });
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !paths.ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
-        }
-        assert!(paths.ready.exists(), "AirPlay readiness was not published");
-        fs::write(&paths.stop, b"stop").expect("request AirPlay disconnect");
-        session
-            .join()
-            .expect("join AirPlay session")
-            .expect("clean AirPlay disconnect");
-        assert!(!paths.ready.exists());
-        assert!(!paths.stop.exists());
-        fs::remove_dir_all(root).expect("remove AirPlay fixture directory");
-    }
-
-    #[test]
-    fn airplay_pairing_credentials_use_persistent_private_storage() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-projector-state-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let path = airplay_credentials_path_from(Some(root.clone().into_os_string()), None, None)
-            .expect("persistent credential path");
-        assert_eq!(path, root.join("airplay-credentials.json"));
-        assert_eq!(
-            fs::metadata(&root)
-                .expect("state metadata")
-                .permissions()
-                .mode()
-                & 0o777,
-            0o700
-        );
-        fs::remove_dir_all(root).expect("remove state fixture");
-    }
-
-    #[test]
-    fn miracast_process_readiness_and_disconnect_are_hardware_free() {
-        let root = std::env::temp_dir().join(format!(
-            "tilo-projector-miracast-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let paths = SessionPaths::for_root(root.clone()).expect("session paths");
-        paths.clear_markers();
-        let sender = root.join("miracast-sender-simulator");
-        fs::write(
-            &sender,
-            b"#!/bin/sh\ntrap 'exit 0' TERM INT\necho 'PLAY accepted; media stream started.'\nwhile :; do sleep 1; done\n",
-        )
-        .expect("write Miracast simulator");
-        fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
-            .expect("make simulator executable");
-        let worker_paths = paths.clone();
-        let sender_path = sender.display().to_string();
-        let session = std::thread::spawn(move || {
-            run_external_process(
-                &sender_path,
-                &[],
-                &worker_paths,
-                &["PLAY accepted; media stream started."],
-                "Miracast",
-                None,
+            let root = std::env::temp_dir().join(format!(
+                "tilo-projector-hls-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let paths = SessionPaths::for_root(root.clone()).expect("session paths");
+            paths.clear_markers();
+            // Large enough for every hardware encoder's minimum frame size.
+            let size: u32 = 256;
+            let mut pipeline =
+                HlsPipeline::start(&paths, false).expect("start production HLS pipeline");
+            // Projection receivers take H.264 only: hardware when the machine
+            // has it, Cisco's openh264 through GStreamer otherwise.
+            let mut encoder = tilo_callstream::VideoEncoder::with_options(
+                tilo_callstream::StreamCodec::H264,
+                size,
+                size,
+                30,
+                1_000_000,
+                30,
+                true,
             )
-        });
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !paths.ready.exists() && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(20));
+            .expect("an H.264 encoder (hardware, or the openh264 GStreamer plugin)");
+            let mut rgba = vec![0u8; (size * size * 4) as usize];
+            for frame_index in 0..75u64 {
+                let luma = u8::try_from(frame_index).unwrap_or(u8::MAX);
+                for pixel in rgba.chunks_exact_mut(4) {
+                    pixel.copy_from_slice(&[luma, 96, 180, 255]);
+                }
+                let unit = encoder
+                    .encode_unit(&rgba, frame_index * 33)
+                    .expect("encode projection frame")
+                    .expect("one unit per frame");
+                pipeline
+                    .push(&VideoPacket {
+                        width: size,
+                        height: size,
+                        presentation_time_us: frame_index * 33_333,
+                        keyframe: unit.keyframe,
+                        annex_b: unit.data,
+                    })
+                    .expect("push projection frame");
+                std::thread::sleep(Duration::from_millis(34));
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !paths.playlist.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let playlist = fs::read_to_string(&paths.playlist).expect("generated HLS playlist");
+            assert!(
+                playlist.starts_with("#EXTM3U"),
+                "unexpected playlist: {playlist}"
+            );
+            assert!(
+                playlist.contains("segment-"),
+                "playlist has no media segment"
+            );
+            assert!(
+                fs::read_dir(&root)
+                    .expect("read HLS output")
+                    .flatten()
+                    .any(|entry| entry.file_name().to_string_lossy().ends_with(".ts")),
+                "HLS pipeline wrote no MPEG-TS segment"
+            );
+            drop(pipeline);
+            fs::remove_dir_all(root).expect("remove HLS fixture directory");
         }
-        assert!(paths.ready.exists(), "Miracast readiness was not published");
-        fs::write(&paths.stop, b"stop").expect("request Miracast disconnect");
-        session
-            .join()
-            .expect("join Miracast session")
-            .expect("clean Miracast disconnect");
-        assert!(!paths.ready.exists());
-        assert!(!paths.stop.exists());
-        fs::remove_dir_all(root).expect("remove Miracast fixture directory");
     }
 
     #[test]
-    fn external_sender_arguments_select_portal_capture_audio_and_exact_receiver() {
-        let airplay = airplay_command_args(
-            "[2001:db8::7]",
-            7000,
-            false,
-            DisplayStreamPolicy {
-                adaptive: true,
-                resolution_limit: DisplayResolutionLimit::P2160,
-                max_fps: 60,
-            },
-            Path::new("/state/pairing.json"),
-        );
-        assert!(airplay.windows(2).any(|a| a == ["-target", "2001:db8::7"]));
-        assert!(airplay.windows(2).any(|a| a == ["-port", "7000"]));
-        assert!(airplay.windows(2).any(|a| a == ["-hwaccel", "openh264"]));
-        assert!(airplay.iter().any(|a| a == "-no-audio"));
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn airplay_miracast_and_external_senders_run_without_hardware() {
+        // Phase `airplay_process_readiness_and_disconnect_are_hardware_free`.
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-projector-airplay-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let paths = SessionPaths::for_root(root.clone()).expect("session paths");
+            paths.clear_markers();
+            let sender = root.join("airplay-sender-simulator");
+            fs::write(
+                &sender,
+                b"#!/bin/sh\n[ \"$DOUBLETAKE_CODE\" = \"4821\" ] || exit 7\ntrap 'exit 0' TERM INT\necho 'screen capture started' >&2\necho 'mirror session ready (data port: 7001)' >&2\nwhile :; do sleep 1; done\n",
+            )
+            .expect("write AirPlay simulator");
+            fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
+                .expect("make simulator executable");
+            let worker_paths = paths.clone();
+            let sender_path = sender.display().to_string();
+            let session = std::thread::spawn(move || {
+                run_airplay_process(&sender_path, &[], &worker_paths, Some("4821"))
+            });
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !paths.ready.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(paths.ready.exists(), "AirPlay readiness was not published");
+            fs::write(&paths.stop, b"stop").expect("request AirPlay disconnect");
+            session
+                .join()
+                .expect("join AirPlay session")
+                .expect("clean AirPlay disconnect");
+            assert!(!paths.ready.exists());
+            assert!(!paths.stop.exists());
+            fs::remove_dir_all(root).expect("remove AirPlay fixture directory");
+        }
+        // Phase `airplay_pairing_credentials_use_persistent_private_storage`.
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-projector-state-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let path =
+                airplay_credentials_path_from(Some(root.clone().into_os_string()), None, None)
+                    .expect("persistent credential path");
+            assert_eq!(path, root.join("airplay-credentials.json"));
+            assert_eq!(
+                fs::metadata(&root)
+                    .expect("state metadata")
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            fs::remove_dir_all(root).expect("remove state fixture");
+        }
+        // Phase `miracast_process_readiness_and_disconnect_are_hardware_free`.
+        {
+            let root = std::env::temp_dir().join(format!(
+                "tilo-projector-miracast-{}-{:?}",
+                std::process::id(),
+                std::thread::current().id()
+            ));
+            let paths = SessionPaths::for_root(root.clone()).expect("session paths");
+            paths.clear_markers();
+            let sender = root.join("miracast-sender-simulator");
+            fs::write(
+                &sender,
+                b"#!/bin/sh\ntrap 'exit 0' TERM INT\necho 'PLAY accepted; media stream started.'\nwhile :; do sleep 1; done\n",
+            )
+            .expect("write Miracast simulator");
+            fs::set_permissions(&sender, fs::Permissions::from_mode(0o700))
+                .expect("make simulator executable");
+            let worker_paths = paths.clone();
+            let sender_path = sender.display().to_string();
+            let session = std::thread::spawn(move || {
+                run_external_process(
+                    &sender_path,
+                    &[],
+                    &worker_paths,
+                    &["PLAY accepted; media stream started."],
+                    "Miracast",
+                    None,
+                )
+            });
+            let deadline = Instant::now() + Duration::from_secs(3);
+            while !paths.ready.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            assert!(paths.ready.exists(), "Miracast readiness was not published");
+            fs::write(&paths.stop, b"stop").expect("request Miracast disconnect");
+            session
+                .join()
+                .expect("join Miracast session")
+                .expect("clean Miracast disconnect");
+            assert!(!paths.ready.exists());
+            assert!(!paths.stop.exists());
+            fs::remove_dir_all(root).expect("remove Miracast fixture directory");
+        }
+        // Phase `external_sender_arguments_select_portal_capture_audio_and_exact_receiver`.
+        {
+            let airplay = airplay_command_args(
+                "[2001:db8::7]",
+                7000,
+                false,
+                DisplayStreamPolicy {
+                    adaptive: true,
+                    resolution_limit: DisplayResolutionLimit::P2160,
+                    max_fps: 60,
+                },
+                Path::new("/state/pairing.json"),
+            );
+            assert!(airplay.windows(2).any(|a| a == ["-target", "2001:db8::7"]));
+            assert!(airplay.windows(2).any(|a| a == ["-port", "7000"]));
+            assert!(airplay.windows(2).any(|a| a == ["-hwaccel", "openh264"]));
+            assert!(airplay.iter().any(|a| a == "-no-audio"));
 
-        let miracast = miracast_command_args(
-            "02:00:00:00:00:09".to_owned(),
-            true,
-            DisplayStreamPolicy {
-                adaptive: true,
-                resolution_limit: DisplayResolutionLimit::P720,
-                max_fps: 60,
-            },
-        );
-        assert!(
-            miracast
-                .windows(2)
-                .any(|a| a == ["--wfd-peer", "02:00:00:00:00:09"])
-        );
-        assert!(
-            miracast
-                .windows(2)
-                .any(|a| a == ["--wfd-capture-backend", "portal"])
-        );
-        assert!(
-            miracast
-                .windows(2)
-                .any(|a| a == ["--wfd-media-pipeline", "ffmpeg"])
-        );
-        assert!(miracast.windows(2).any(|a| a == ["--fps", "60"]));
-        assert!(!miracast.iter().any(|a| a == "--wfd-no-audio"));
-    }
-
-    #[test]
-    fn zero_length_discovery_is_bounded_and_json_serialisable() {
-        let devices = discover(Duration::ZERO).expect("empty bounded discovery");
-        serde_json::to_string(&devices).expect("projection discovery JSON");
+            let miracast = miracast_command_args(
+                "02:00:00:00:00:09".to_owned(),
+                true,
+                DisplayStreamPolicy {
+                    adaptive: true,
+                    resolution_limit: DisplayResolutionLimit::P720,
+                    max_fps: 60,
+                },
+            );
+            assert!(
+                miracast
+                    .windows(2)
+                    .any(|a| a == ["--wfd-peer", "02:00:00:00:00:09"])
+            );
+            assert!(
+                miracast
+                    .windows(2)
+                    .any(|a| a == ["--wfd-capture-backend", "portal"])
+            );
+            assert!(
+                miracast
+                    .windows(2)
+                    .any(|a| a == ["--wfd-media-pipeline", "ffmpeg"])
+            );
+            assert!(miracast.windows(2).any(|a| a == ["--fps", "60"]));
+            assert!(!miracast.iter().any(|a| a == "--wfd-no-audio"));
+        }
     }
 
     #[tokio::test]
@@ -2156,86 +2260,5 @@ mod tests {
         assert_eq!(receiver.id, "Miracast:02:00:00:00:00:09");
         assert_eq!(receiver.addresses, ["02:00:00:00:00:09"]);
         assert!(receiver.detail.contains("87%"));
-    }
-
-    #[test]
-    fn local_mdns_receivers_exercise_three_real_discovery_browsers() {
-        let daemon = ServiceDaemon::new().expect("mDNS simulator daemon");
-        let suffix = std::process::id();
-        let fcast_name = format!("Tilo FCast simulator {suffix}");
-        let cast_name = format!("Tilo Cast simulator {suffix}");
-        let airplay_name = format!("Tilo AirPlay simulator {suffix}");
-
-        let fcast = ServiceInfo::new(
-            "_fcast._tcp.local.",
-            &fcast_name,
-            &format!("tilo-fcast-{suffix}.local."),
-            "",
-            46899,
-            HashMap::from([("id".to_owned(), format!("fcast-{suffix}"))]),
-        )
-        .expect("FCast simulator record")
-        .enable_addr_auto();
-        let cast = ServiceInfo::new(
-            "_googlecast._tcp.local.",
-            &format!("tilo-cast-{suffix}"),
-            &format!("tilo-cast-{suffix}.local."),
-            "",
-            8009,
-            HashMap::from([
-                ("id".to_owned(), format!("cast-{suffix}")),
-                ("fn".to_owned(), cast_name.clone()),
-            ]),
-        )
-        .expect("Google Cast simulator record")
-        .enable_addr_auto();
-        let airplay = ServiceInfo::new(
-            AIRPLAY_SERVICE,
-            &airplay_name,
-            &format!("tilo-airplay-{suffix}.local."),
-            "",
-            7000,
-            HashMap::from([
-                ("deviceid".to_owned(), format!("airplay-{suffix}")),
-                ("model".to_owned(), "AudioAccessory6,1".to_owned()),
-                ("features".to_owned(), "0x5A7FFFF7,0x1E".to_owned()),
-            ]),
-        )
-        .expect("AirPlay simulator record")
-        .enable_addr_auto();
-        daemon.register(fcast).expect("register FCast simulator");
-        daemon.register(cast).expect("register Cast simulator");
-        daemon
-            .register(airplay)
-            .expect("register AirPlay simulator");
-        std::thread::sleep(Duration::from_millis(300));
-
-        let devices = discover(Duration::from_secs(3)).expect("discover simulated receivers");
-        let _ = daemon.shutdown();
-
-        assert!(
-            devices.iter().any(|device| {
-                device.name == fcast_name
-                    && device.protocol == ProjectionProtocol::FCast
-                    && device.port == 46899
-            }),
-            "FCast simulator missing from {devices:?}"
-        );
-        assert!(
-            devices.iter().any(|device| {
-                device.name == cast_name
-                    && device.protocol == ProjectionProtocol::Chromecast
-                    && device.port == 8009
-            }),
-            "Google Cast simulator missing from {devices:?}"
-        );
-        assert!(
-            devices.iter().any(|device| {
-                device.name == airplay_name
-                    && device.protocol == ProjectionProtocol::AirPlay
-                    && device.port == 7000
-            }),
-            "AirPlay simulator missing from {devices:?}"
-        );
     }
 }

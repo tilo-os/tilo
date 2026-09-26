@@ -922,208 +922,220 @@ impl Default for LibraryPrefs {
 mod tests {
     use super::*;
 
+    /// Colour, annotation, theme, mode, font, sort and composition values round-trip with stable names and defaults.
     #[test]
-    fn hicolor_round_trips() {
-        for c in HiColor::ALL {
-            assert_eq!(HiColor::from_str(c.as_str()), c);
-        }
-    }
-
-    #[test]
-    fn annokind_round_trips() {
-        for k in [AnnoKind::Bookmark, AnnoKind::Highlight, AnnoKind::Note] {
-            assert_eq!(AnnoKind::from_str(k.as_str()), k);
-        }
-    }
-
-    #[test]
-    fn read_theme_round_trips() {
-        for t in ReadTheme::ALL {
-            assert_eq!(ReadTheme::from_str(t.as_str()), t);
-        }
-    }
-
-    #[test]
-    fn read_mode_round_trips_and_defaults_to_paged() {
-        for m in ReadMode::ALL {
-            assert_eq!(ReadMode::from_str(m.as_str()), m);
-        }
-        assert_eq!(ReadMode::from_str("nonsense"), ReadMode::Paged);
-        assert_eq!(
-            Settings::default().mode,
-            ReadMode::Paged,
-            "readers open paged by default"
-        );
-        assert_eq!(ReadMode::TwoUp.page_stride(), 2, "a spread turns two pages");
-        assert_eq!(ReadMode::Paged.page_stride(), 1);
-        assert!(ReadMode::Continuous.is_continuous());
-        assert!(!ReadMode::Paged.is_continuous());
-    }
-
-    #[test]
-    fn font_kind_round_trips_including_named() {
-        for k in [
-            FontKind::Default,
-            FontKind::Serif,
-            FontKind::Mono,
-            FontKind::Named("Literata".into()),
-        ] {
-            assert_eq!(FontKind::from_code(&k.as_code()), k);
-        }
-    }
-
-    #[test]
-    fn default_fonts_are_shown_and_unique() {
-        let f = default_fonts();
-        assert!(
-            f.iter().any(|e| e.kind == FontKind::Serif),
-            "a serif face ships by default"
-        );
-        assert!(
-            f.iter().all(|e| e.shown),
-            "the built-in fonts all show in quick settings"
-        );
-        let ids: std::collections::HashSet<_> = f.iter().map(|e| &e.id).collect();
-        assert_eq!(ids.len(), f.len(), "font ids are unique");
-    }
-
-    #[test]
-    fn block_plain_text_concats_spans() {
-        let b = Block::Paragraph {
-            spans: vec![
-                Span::plain("Hello "),
-                Span {
-                    text: "world".into(),
-                    math: None,
-                    bold: true,
-                    italic: false,
-                    code: false,
-                    space_before: false,
-                },
-            ],
-        };
-        assert_eq!(b.plain_text(), "Hello world");
-    }
-
-    #[test]
-    fn settings_body_size_scales() {
-        let s = Settings {
-            font_scale: 1.5,
-            ..Default::default()
-        };
-        assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
-    }
-
-    #[test]
-    fn composition_style_has_stable_storage_names() {
-        assert_eq!(CompositionStyle::Book.as_str(), "book");
-        assert_eq!(
-            CompositionStyle::from_str("ragged"),
-            CompositionStyle::Ragged
-        );
-        assert_eq!(
-            CompositionStyle::from_str("unknown"),
-            CompositionStyle::Book,
-            "unknown persisted values retain the book-quality default"
-        );
-    }
-
-    #[test]
-    fn scheme_from_dark_bg_derives_light_ink_and_contrasting_accent() {
-        let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
-        assert!(s.dark, "a dark background yields a dark scheme");
-        assert!(
-            luminance(s.ink) > 0.7,
-            "ink is a light off-white on a dark paper"
-        );
-        assert_eq!(s.page, [0x12, 0x14, 0x1C], "paper is the given background");
-        // The accent must stand clearly apart from the paper in luminance.
-        assert!(
-            (luminance(s.accent) - luminance(s.page)).abs() > 0.2,
-            "accent contrasts with the paper",
-        );
-    }
-
-    #[test]
-    fn scheme_from_light_bg_derives_dark_ink() {
-        let s = ColorScheme::from_bg("u2", "Paper", [0xF3, 0xEE, 0xE2]);
-        assert!(!s.dark, "a light background yields a light scheme");
-        assert!(luminance(s.ink) < 0.3, "ink is near-black on a light paper");
-    }
-
-    #[test]
-    fn scheme_derived_parts_sit_between_page_and_ink() {
-        let s = ColorScheme::from_bg("u3", "Warm", [0x20, 0x1C, 0x18]);
-        let (page, edge, ink, dim, _rule, _code) = s.palette_parts();
-        assert_eq!(page, s.page);
-        assert_eq!(ink, s.ink);
-        // Derived tones are genuine blends, never equal to an endpoint.
-        assert_ne!(edge, page);
-        assert_ne!(dim, ink);
-    }
-
-    #[test]
-    fn library_sort_round_trips() {
-        for s in LibrarySort::ALL {
-            assert_eq!(LibrarySort::from_str(s.as_str()), s);
-        }
-    }
-
-    #[test]
-    fn progress_is_read_at_the_end() {
-        assert!(
-            !Progress {
-                fraction: 0.5,
-                ..Default::default()
+    fn model_enums_round_trip_with_stable_defaults() {
+        // --- phase: hicolor_round_trips ---
+        {
+            for c in HiColor::ALL {
+                assert_eq!(HiColor::from_str(c.as_str()), c);
             }
-            .is_read()
-        );
-        assert!(
-            Progress {
-                fraction: 1.0,
-                ..Default::default()
+        }
+
+        // --- phase: annokind_round_trips ---
+        {
+            for k in [AnnoKind::Bookmark, AnnoKind::Highlight, AnnoKind::Note] {
+                assert_eq!(AnnoKind::from_str(k.as_str()), k);
             }
-            .is_read()
-        );
+        }
+
+        // --- phase: read_theme_round_trips ---
+        {
+            for t in ReadTheme::ALL {
+                assert_eq!(ReadTheme::from_str(t.as_str()), t);
+            }
+        }
+
+        // --- phase: read_mode_round_trips_and_defaults_to_paged ---
+        {
+            for m in ReadMode::ALL {
+                assert_eq!(ReadMode::from_str(m.as_str()), m);
+            }
+            assert_eq!(ReadMode::from_str("nonsense"), ReadMode::Paged);
+            assert_eq!(
+                Settings::default().mode,
+                ReadMode::Paged,
+                "readers open paged by default"
+            );
+            assert_eq!(ReadMode::TwoUp.page_stride(), 2, "a spread turns two pages");
+            assert_eq!(ReadMode::Paged.page_stride(), 1);
+            assert!(ReadMode::Continuous.is_continuous());
+            assert!(!ReadMode::Paged.is_continuous());
+        }
+
+        // --- phase: font_kind_round_trips_including_named ---
+        {
+            for k in [
+                FontKind::Default,
+                FontKind::Serif,
+                FontKind::Mono,
+                FontKind::Named("Literata".into()),
+            ] {
+                assert_eq!(FontKind::from_code(&k.as_code()), k);
+            }
+        }
+
+        // --- phase: default_fonts_are_shown_and_unique ---
+        {
+            let f = default_fonts();
+            assert!(
+                f.iter().any(|e| e.kind == FontKind::Serif),
+                "a serif face ships by default"
+            );
+            assert!(
+                f.iter().all(|e| e.shown),
+                "the built-in fonts all show in quick settings"
+            );
+            let ids: std::collections::HashSet<_> = f.iter().map(|e| &e.id).collect();
+            assert_eq!(ids.len(), f.len(), "font ids are unique");
+        }
+
+        // --- phase: composition_style_has_stable_storage_names ---
+        {
+            assert_eq!(CompositionStyle::Book.as_str(), "book");
+            assert_eq!(
+                CompositionStyle::from_str("ragged"),
+                CompositionStyle::Ragged
+            );
+            assert_eq!(
+                CompositionStyle::from_str("unknown"),
+                CompositionStyle::Book,
+                "unknown persisted values retain the book-quality default"
+            );
+        }
+
+        // --- phase: library_sort_round_trips ---
+        {
+            for s in LibrarySort::ALL {
+                assert_eq!(LibrarySort::from_str(s.as_str()), s);
+            }
+        }
     }
 
+    /// Block plain text concatenates spans, body size scales with settings, and progress reads as finished at the end.
     #[test]
-    fn dark_scheme_is_neutral_not_brown() {
-        let dark = default_schemes()
-            .into_iter()
-            .find(|s| s.id == "dark")
-            .unwrap();
-        // Warm (red ≥ blue) but only barely — a genuine charcoal, not a sepia.
-        assert!(dark.page[0] >= dark.page[2], "kept faintly warm");
-        assert!(dark.page[0] - dark.page[2] <= 6, "not a brown/sepia paper");
-        assert!(luminance(dark.page) < 0.2, "still a dark page");
+    fn reading_values_derive_from_content_and_settings() {
+        // --- phase: block_plain_text_concats_spans ---
+        {
+            let b = Block::Paragraph {
+                spans: vec![
+                    Span::plain("Hello "),
+                    Span {
+                        text: "world".into(),
+                        math: None,
+                        bold: true,
+                        italic: false,
+                        code: false,
+                        space_before: false,
+                    },
+                ],
+            };
+            assert_eq!(b.plain_text(), "Hello world");
+        }
+
+        // --- phase: settings_body_size_scales ---
+        {
+            let s = Settings {
+                font_scale: 1.5,
+                ..Default::default()
+            };
+            assert!((s.body_size() - Settings::BASE_SIZE * 1.5).abs() < 0.01);
+        }
+
+        // --- phase: progress_is_read_at_the_end ---
+        {
+            assert!(
+                !Progress {
+                    fraction: 0.5,
+                    ..Default::default()
+                }
+                .is_read()
+            );
+            assert!(
+                Progress {
+                    fraction: 1.0,
+                    ..Default::default()
+                }
+                .is_read()
+            );
+        }
     }
 
+    /// Schemes derive contrasting ink and accents from their paper, stay neutral in dark, maximal in high contrast, and recompute on slot changes.
     #[test]
-    fn high_contrast_builtin_is_maximal_contrast() {
-        let hc = default_schemes()
-            .into_iter()
-            .find(|s| s.id == "high-contrast")
-            .unwrap();
-        assert!(
-            hc.builtin && hc.dark,
-            "high contrast ships as a dark built-in"
-        );
-        assert!(luminance(hc.page) < 0.02, "a true-black page");
-        assert!(luminance(hc.ink) > 0.98, "white ink");
-        // It is a first-class built-in tint: the ReadTheme enum round-trips its id.
-        assert_eq!(ReadTheme::from_str(&hc.id), ReadTheme::HighContrast);
-        assert_eq!(ReadTheme::HighContrast.as_str(), "high-contrast");
-    }
+    fn scheme_palettes_derive_contrasting_parts() {
+        // --- phase: scheme_from_dark_bg_derives_light_ink_and_contrasting_accent ---
+        {
+            let s = ColorScheme::from_bg("u1", "Midnight", [0x12, 0x14, 0x1C]);
+            assert!(s.dark, "a dark background yields a dark scheme");
+            assert!(
+                luminance(s.ink) > 0.7,
+                "ink is a light off-white on a dark paper"
+            );
+            assert_eq!(s.page, [0x12, 0x14, 0x1C], "paper is the given background");
+            // The accent must stand clearly apart from the paper in luminance.
+            assert!(
+                (luminance(s.accent) - luminance(s.page)).abs() > 0.2,
+                "accent contrasts with the paper",
+            );
+        }
 
-    #[test]
-    fn set_slot_recomputes_dark_from_paper() {
-        let mut s = default_schemes()[0].clone(); // Light
-        assert!(!s.dark);
-        s.set_slot(0, [0x10, 0x10, 0x12]); // paint the paper dark
-        assert!(
-            s.dark,
-            "editing the page to a dark colour flips the scheme dark"
-        );
+        // --- phase: scheme_from_light_bg_derives_dark_ink ---
+        {
+            let s = ColorScheme::from_bg("u2", "Paper", [0xF3, 0xEE, 0xE2]);
+            assert!(!s.dark, "a light background yields a light scheme");
+            assert!(luminance(s.ink) < 0.3, "ink is near-black on a light paper");
+        }
+
+        // --- phase: scheme_derived_parts_sit_between_page_and_ink ---
+        {
+            let s = ColorScheme::from_bg("u3", "Warm", [0x20, 0x1C, 0x18]);
+            let (page, edge, ink, dim, _rule, _code) = s.palette_parts();
+            assert_eq!(page, s.page);
+            assert_eq!(ink, s.ink);
+            // Derived tones are genuine blends, never equal to an endpoint.
+            assert_ne!(edge, page);
+            assert_ne!(dim, ink);
+        }
+
+        // --- phase: dark_scheme_is_neutral_not_brown ---
+        {
+            let dark = default_schemes()
+                .into_iter()
+                .find(|s| s.id == "dark")
+                .unwrap();
+            // Warm (red ≥ blue) but only barely — a genuine charcoal, not a sepia.
+            assert!(dark.page[0] >= dark.page[2], "kept faintly warm");
+            assert!(dark.page[0] - dark.page[2] <= 6, "not a brown/sepia paper");
+            assert!(luminance(dark.page) < 0.2, "still a dark page");
+        }
+
+        // --- phase: high_contrast_builtin_is_maximal_contrast ---
+        {
+            let hc = default_schemes()
+                .into_iter()
+                .find(|s| s.id == "high-contrast")
+                .unwrap();
+            assert!(
+                hc.builtin && hc.dark,
+                "high contrast ships as a dark built-in"
+            );
+            assert!(luminance(hc.page) < 0.02, "a true-black page");
+            assert!(luminance(hc.ink) > 0.98, "white ink");
+            // It is a first-class built-in tint: the ReadTheme enum round-trips its id.
+            assert_eq!(ReadTheme::from_str(&hc.id), ReadTheme::HighContrast);
+            assert_eq!(ReadTheme::HighContrast.as_str(), "high-contrast");
+        }
+
+        // --- phase: set_slot_recomputes_dark_from_paper ---
+        {
+            let mut s = default_schemes()[0].clone(); // Light
+            assert!(!s.dark);
+            s.set_slot(0, [0x10, 0x10, 0x12]); // paint the paper dark
+            assert!(
+                s.dark,
+                "editing the page to a dark colour flips the scheme dark"
+            );
+        }
     }
 }

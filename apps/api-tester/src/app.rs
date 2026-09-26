@@ -4138,7 +4138,19 @@ impl ApiTesterApp {
 mod tests {
     use super::*;
 
+    /// The request builder's derived state: placeholder highlighting, active
+    /// environment resolution, the outgoing URL, tab counts and loading a saved
+    /// request, each on a fresh app.
     #[test]
+    fn request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests() {
+        value_spans_highlight_each_closed_placeholder();
+        env_vars_resolve_from_active_environment();
+        outgoing_substitutes_environment_into_url();
+        loading_a_saved_request_swaps_the_builder();
+        tab_count_reflects_enabled_rows();
+    }
+
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn value_spans_highlight_each_closed_placeholder() {
         let texts = |value: &str| -> Vec<(String, bool)> {
             ApiTesterApp::value_spans(value, [1, 2, 3])
@@ -4167,10 +4179,22 @@ mod tests {
         );
     }
 
+    /// The navigation rail: token spacing, one retained row per nav entry, every
+    /// row reachable at large text, focus surviving row replacement, and
+    /// activation of the named item.
+    #[test]
+    fn navigation_rail_rows_keep_rhythm_reachability_and_focus() {
+        rail_controls_share_one_token_gap();
+        demo_builds_nav_rows_for_collections_and_history();
+        scaled_rail_keeps_every_users_request_before_history();
+        composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild();
+        composition_long_displayed_navigation_activates_the_named_item();
+    }
+
     /// The rail's stacked controls share one rhythm step (HIG §7b): the
     /// named gap is the `s2` token, and every stacked pair in the computed
     /// layout is separated by exactly that step.
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn rail_controls_share_one_token_gap() {
         let mut app = ApiTesterApp::new();
         let rail_gap = app.rail_row_gap;
@@ -4228,7 +4252,16 @@ mod tests {
         ApiTesterApp::new_demo()
     }
 
+    /// The live constructor fabricates nothing, the demo constructor seeds a full
+    /// workspace, and a seeded workspace survives a CRDT round trip.
     #[test]
+    fn constructors_start_live_empty_demo_seeded_and_persist_through_crdt() {
+        demo_app_has_seeded_workspace();
+        live_app_starts_empty();
+        persist_then_adopt_round_trips_through_crdt();
+    }
+
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn demo_app_has_seeded_workspace() {
         let a = ApiTesterApp::new_demo();
         assert!(!a.collections.is_empty());
@@ -4237,7 +4270,7 @@ mod tests {
         assert!(a.response.is_some());
     }
 
-    #[test]
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn live_app_starts_empty() {
         let a = ApiTesterApp::new();
         assert!(a.collections.is_empty(), "no fabricated collections");
@@ -4249,7 +4282,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn env_vars_resolve_from_active_environment() {
         let a = app();
         let vars = a.env_vars();
@@ -4259,7 +4292,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn outgoing_substitutes_environment_into_url() {
         let a = app();
         let out = a.outgoing();
@@ -4269,7 +4302,7 @@ mod tests {
         assert!(!out.url.contains("sort="));
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn loading_a_saved_request_swaps_the_builder() {
         let mut a = app();
         a.load_request(0, 2);
@@ -4279,7 +4312,7 @@ mod tests {
         assert_eq!(a.selected, Some((0, 2)));
     }
 
-    #[test]
+    /// Case of `request_builder_resolves_environment_highlights_placeholders_and_loads_saved_requests`.
     fn tab_count_reflects_enabled_rows() {
         let a = app();
         assert_eq!(a.tab_count(RequestTab::Params), 2);
@@ -4287,7 +4320,7 @@ mod tests {
         assert_eq!(a.tab_count(RequestTab::Auth), 1);
     }
 
-    #[test]
+    /// Case of `constructors_start_live_empty_demo_seeded_and_persist_through_crdt`.
     fn persist_then_adopt_round_trips_through_crdt() {
         let a = app();
         let mut doc = AutoCommit::new();
@@ -4301,11 +4334,23 @@ mod tests {
         assert_eq!(b.collections.len(), a.collections.len());
     }
 
+    /// Visible commands either dispatch the canonical action (affordance ==
+    /// `ActionSpec`) or stay device-local without touching document heads; each
+    /// case uses a fresh app and document.
+    #[test]
+    fn ui_commands_dispatch_canonical_actions_or_stay_device_local() {
+        selecting_environment_dispatches_the_set_active_action();
+        visible_workspace_management_commands_use_canonical_actions();
+        folding_a_collection_is_device_local_and_emits_no_document_change();
+        visible_context_menus_open_real_request_and_environment_workflows();
+        composition_view_commands_never_change_document_heads_or_leave_hidden_rects();
+    }
+
     /// The environment picker is wired through the action host: selecting a new
     /// environment dispatches exactly the [`SetActiveEnvironment`] the Ctrl+K
     /// "activate" spec would build (affordance == `ActionSpec`), and the choice
     /// lands in the shared document. Drives the real reconcile path.
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn selecting_environment_dispatches_the_set_active_action() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4344,7 +4389,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_workspace_management_commands_use_canonical_actions() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4390,7 +4435,7 @@ mod tests {
         assert_eq!(set_variable.type_id, API_TESTER_ACTION_TYPE);
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn folding_a_collection_is_device_local_and_emits_no_document_change() {
         let mut a = ApiTesterApp::new_demo();
         let mut doc = AutoCommit::new();
@@ -4403,7 +4448,7 @@ mod tests {
         assert!(a.collapsed.contains(&0));
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn demo_builds_nav_rows_for_collections_and_history() {
         let a = app();
         // At least the collection headers + the seeded history entries.
@@ -4414,7 +4459,7 @@ mod tests {
         assert_eq!(a.nav_rows.len(), a.nav_meta.len());
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn scaled_rail_keeps_every_users_request_before_history() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -4481,7 +4526,18 @@ mod tests {
         );
     }
 
+    /// Request and response chrome geometry at phone, overlay and desktop widths.
     #[test]
+    fn request_and_response_chrome_adapts_between_phone_and_desktop() {
+        compact_tab_strip_reserves_no_overlapping_hint_space();
+        desktop_request_controls_keep_save_and_overflow_visible();
+        phone_url_bar_gives_the_endpoint_a_full_second_row();
+        compact_response_chrome_gets_a_separate_switcher_row();
+        wide_response_chrome_keeps_the_inline_switcher();
+        overlay_hamburger_is_square_and_kv_indicator_scales_with_text();
+    }
+
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn compact_tab_strip_reserves_no_overlapping_hint_space() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 400.0, 844.0);
@@ -4496,7 +4552,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn desktop_request_controls_keep_save_and_overflow_visible() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 1440.0, 900.0);
@@ -4521,7 +4577,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn visible_context_menus_open_real_request_and_environment_workflows() {
         let mut a = app();
         let doc = AutoCommit::new();
@@ -4564,7 +4620,7 @@ mod tests {
         assert_eq!(a.environment_actions.selected(), "Environment actions");
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn phone_url_bar_gives_the_endpoint_a_full_second_row() {
         let mut a = app();
         a.rect = Rect::new(0.0, 0.0, 390.0, 844.0);
@@ -4580,7 +4636,7 @@ mod tests {
         assert!(layout.tab_strip.y0 >= layout.url.y1 + 8.0);
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn compact_response_chrome_gets_a_separate_switcher_row() {
         let mut a = app();
         a.response = Some(http::sample_response());
@@ -4603,7 +4659,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn wide_response_chrome_keeps_the_inline_switcher() {
         let mut a = app();
         a.response = Some(http::sample_response());
@@ -4614,7 +4670,17 @@ mod tests {
         assert!(layout.resp_view.y0 < layout.resp_status.y1);
     }
 
+    /// The `ResourceProvider` surface: Send performs a real HTTP round trip and
+    /// reports worker completion exactly once, and a late record resolves by
+    /// one indexed lookup.
     #[test]
+    fn resource_provider_sends_for_real_and_resolves_exact_records() {
+        resource_send_performs_a_real_http_round_trip();
+        resource_send_reports_worker_completion_instead_of_queue_success();
+        resource_provider_resolves_a_late_record_without_scanning_the_workspace();
+    }
+
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     #[expect(
         clippy::too_many_lines,
         reason = "end-to-end scenario that reads top-to-bottom"
@@ -4750,7 +4816,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     fn resource_send_reports_worker_completion_instead_of_queue_success() {
         let mut a = app();
         let invocation = tilo_actions::InvocationId::new();
@@ -4772,7 +4838,16 @@ mod tests {
             "terminal delivery is at most once"
         );
     }
+    /// Key/value rows size to wrapped content, keep glyphs inside their rows and
+    /// drive the automatic editor height without overriding a manual preference.
     #[test]
+    fn kv_table_rows_fit_their_content_and_drive_the_editor_height() {
+        composition_auto_height_tracks_rows_and_auth_fields_without_changing_manual_preference();
+        composition_long_kv_glyphs_fit_allocated_rows();
+        composition_long_tables_share_wrapped_height_and_centered_indicators();
+    }
+
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -4813,7 +4888,7 @@ mod tests {
         assert_eq!(a.compute_layout().editor.height(), 410.0);
     }
 
-    #[test]
+    /// Case of `ui_commands_dispatch_canonical_actions_or_stay_device_local`.
     fn composition_view_commands_never_change_document_heads_or_leave_hidden_rects() {
         let mut a = app();
         let mut doc = AutoCommit::new();
@@ -4845,7 +4920,7 @@ mod tests {
         );
         assert_eq!(doc.get_heads(), heads);
     }
-    #[test]
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -4887,7 +4962,7 @@ mod tests {
     /// The overlay hamburger is as wide as the row's controls are tall at
     /// every text scale (a 36px slab beside a 52px picker read as a broken
     /// button), and the KV enable box scales with the text it toggles.
-    #[test]
+    /// Case of `request_and_response_chrome_adapts_between_phone_and_desktop`.
     fn overlay_hamburger_is_square_and_kv_indicator_scales_with_text() {
         for scale in [1.0f32, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
@@ -4931,7 +5006,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn composition_same_count_nav_replacement_keeps_old_focus_alive_until_rebuild() {
         let mut app = app();
         let mut tree = TaffyTree::new();
@@ -5009,7 +5084,7 @@ mod tests {
         app
     }
 
-    #[test]
+    /// Case of `kv_table_rows_fit_their_content_and_drive_the_editor_height`.
     #[expect(
         clippy::float_cmp,
         reason = "layout values are compared for exact reproduction, not approximate equality"
@@ -5086,7 +5161,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `navigation_rail_rows_keep_rhythm_reachability_and_focus`.
     fn composition_long_displayed_navigation_activates_the_named_item() {
         use ui::headless::Driver;
         for (width, height, scale) in [(480, 900, 1.0), (800, 900, 2.0)] {
@@ -5137,8 +5212,16 @@ mod tests {
         }
     }
 
+    /// Manual capture tool: writes PNG and target JSON for the named routes and
+    /// the long-content routes.
     #[test]
-    #[ignore = "writes long-content route captures for review; set API_TESTER_CAPTURE_DIR"]
+    #[ignore = "writes named route and long-content route captures for review; set API_TESTER_CAPTURE_DIR"]
+    fn composition_capture_named_and_long_content_routes() {
+        composition_long_content_capture_routes();
+        composition_capture_routes();
+    }
+
+    /// Case of `composition_capture_named_and_long_content_routes`.
     fn composition_long_content_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
@@ -5189,8 +5272,7 @@ mod tests {
         }
     }
 
-    #[test]
-    #[ignore = "writes named route captures for review; set API_TESTER_CAPTURE_DIR"]
+    /// Case of `composition_capture_named_and_long_content_routes`.
     fn composition_capture_routes() {
         use ui::headless::Driver;
         let directory = std::path::PathBuf::from(std::env::var("API_TESTER_CAPTURE_DIR").unwrap());
@@ -5259,7 +5341,7 @@ mod tests {
         }
     }
 
-    #[test]
+    /// Case of `resource_provider_sends_for_real_and_resolves_exact_records`.
     fn resource_provider_resolves_a_late_record_without_scanning_the_workspace() {
         let mut a = app();
         let mut collection = Collection::new("Load test");

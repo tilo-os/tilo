@@ -618,21 +618,25 @@ fn format_compact(value: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn layout_covers_each_positive_item_once() {
-        let mut map = Treemap::new(vec![
-            TreemapItem::new("a", "A", 3.0),
-            TreemapItem::new("b", "B", 2.0),
-            TreemapItem::new("c", "C", 1.0),
-        ]);
-        map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
-        assert_eq!(map.layout().len(), 3);
-    }
-    #[test]
-    fn invalid_values_are_omitted() {
-        let map = Treemap::new(vec![
-            TreemapItem::new("a", "A", f64::NAN),
-            TreemapItem::new("b", "B", -2.0),
-        ]);
-        assert!(map.valid_items().is_empty());
+    fn treemap_layout_covers_positive_items_once_and_omits_invalid() {
+        // Case `layout_covers_each_positive_item_once`.
+        {
+            let mut map = Treemap::new(vec![
+                TreemapItem::new("a", "A", 3.0),
+                TreemapItem::new("b", "B", 2.0),
+                TreemapItem::new("c", "C", 1.0),
+            ]);
+            map.rect = Rect::new(0.0, 0.0, 600.0, 300.0);
+            assert_eq!(map.layout().len(), 3);
+        }
+
+        // Case `invalid_values_are_omitted`.
+        {
+            let map = Treemap::new(vec![
+                TreemapItem::new("a", "A", f64::NAN),
+                TreemapItem::new("b", "B", -2.0),
+            ]);
+            assert!(map.valid_items().is_empty());
+        }
     }
 }

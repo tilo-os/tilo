@@ -343,88 +343,89 @@ mod tests {
     use super::*;
 
     #[test]
-    fn health_uses_matching_kernel_capacity_units() {
-        let dir = tempfile::tempdir().unwrap();
-        for (name, value) in [
-            ("capacity", "61"),
-            ("status", "Discharging"),
-            ("energy_full", "40000000"),
-            ("energy_full_design", "50000000"),
-        ] {
-            std::fs::write(dir.path().join(name), value).unwrap();
+    fn battery_health_and_charge_caps_follow_the_kernel_contract() {
+        // Phase `health_uses_matching_kernel_capacity_units`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            for (name, value) in [
+                ("capacity", "61"),
+                ("status", "Discharging"),
+                ("energy_full", "40000000"),
+                ("energy_full_design", "50000000"),
+            ] {
+                std::fs::write(dir.path().join(name), value).unwrap();
+            }
+            let info = BatteryInfo::from_battery_dir(dir.path(), false);
+            assert_eq!(info.health_percent(), Some(80));
+            assert_eq!(info.summary(), "61% · On battery");
         }
-        let info = BatteryInfo::from_battery_dir(dir.path(), false);
-        assert_eq!(info.health_percent(), Some(80));
-        assert_eq!(info.summary(), "61% · On battery");
+        // Phase `vendor_charge_cap_is_normalized`.
+        {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
+            let info = BatteryInfo::from_battery_dir(dir.path(), true);
+            assert_eq!(info.charge_limit, Some(80));
+        }
+        // Phase `charge_cap_rejects_values_outside_the_service_contract`.
+        {
+            assert!(set_charge_limit(49).is_err());
+            assert!(set_charge_limit(101).is_err());
+        }
+        // Phase `ideapad_conservation_mode_is_exposed_as_discrete_choices`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let path = root
+                .path()
+                .join("devices/platform/VPC2004:00/conservation_mode");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "1\n").unwrap();
+            let cap = charge_capability_from(root.path()).unwrap();
+            assert_eq!(cap.backend, ChargeCapBackend::ConservationMode);
+            assert_eq!(cap.current, 60);
+            assert_eq!(cap.choices, vec![60, 100]);
+        }
     }
 
     #[test]
-    fn vendor_charge_cap_is_normalized() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("charge_stop_threshold"), "80\n").unwrap();
-        let info = BatteryInfo::from_battery_dir(dir.path(), true);
-        assert_eq!(info.charge_limit, Some(80));
-    }
-
-    #[test]
-    fn charge_cap_rejects_values_outside_the_service_contract() {
-        assert!(set_charge_limit(49).is_err());
-        assert!(set_charge_limit(101).is_err());
-    }
-
-    #[test]
-    fn capability_does_not_depend_on_battery_name() {
-        let root = tempfile::tempdir().unwrap();
-        let battery = root.path().join("class/power_supply/CMB1");
-        std::fs::create_dir_all(&battery).unwrap();
-        std::fs::write(battery.join("type"), "Battery\n").unwrap();
-        std::fs::write(battery.join("charge_control_end_threshold"), "85\n").unwrap();
-        std::fs::write(battery.join("charge_control_start_threshold"), "80\n").unwrap();
-        let cap = charge_capability_from(root.path()).unwrap();
-        assert_eq!(cap.current, 85);
-        assert_eq!(cap.backend, ChargeCapBackend::PowerSupply);
-        assert!(cap.supports_start_threshold);
-        assert!(cap.choices.contains(&85));
-    }
-
-    #[test]
-    fn mixed_multi_battery_contract_is_not_presented_as_one_control() {
-        let root = tempfile::tempdir().unwrap();
-        for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
-            let battery = root.path().join("class/power_supply").join(name);
+    fn battery_capabilities_are_per_device_and_enumerate_every_supply() {
+        // Phase `capability_does_not_depend_on_battery_name`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            let battery = root.path().join("class/power_supply/CMB1");
             std::fs::create_dir_all(&battery).unwrap();
             std::fs::write(battery.join("type"), "Battery\n").unwrap();
-            std::fs::write(battery.join("charge_control_end_threshold"), limit).unwrap();
+            std::fs::write(battery.join("charge_control_end_threshold"), "85\n").unwrap();
+            std::fs::write(battery.join("charge_control_start_threshold"), "80\n").unwrap();
+            let cap = charge_capability_from(root.path()).unwrap();
+            assert_eq!(cap.current, 85);
+            assert_eq!(cap.backend, ChargeCapBackend::PowerSupply);
+            assert!(cap.supports_start_threshold);
+            assert!(cap.choices.contains(&85));
         }
-        assert!(charge_capability_from(root.path()).is_none());
-    }
-
-    #[test]
-    fn ideapad_conservation_mode_is_exposed_as_discrete_choices() {
-        let root = tempfile::tempdir().unwrap();
-        let path = root
-            .path()
-            .join("devices/platform/VPC2004:00/conservation_mode");
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, "1\n").unwrap();
-        let cap = charge_capability_from(root.path()).unwrap();
-        assert_eq!(cap.backend, ChargeCapBackend::ConservationMode);
-        assert_eq!(cap.current, 60);
-        assert_eq!(cap.choices, vec![60, 100]);
-    }
-
-    #[test]
-    fn enumerates_multiple_batteries_and_ups_without_serials() {
-        let root = tempfile::tempdir().unwrap();
-        for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {
-            let p = root.path().join(id);
-            std::fs::create_dir_all(&p).unwrap();
-            std::fs::write(p.join("type"), kind).unwrap();
-            std::fs::write(p.join("capacity"), cap).unwrap();
-            std::fs::write(p.join("status"), "Discharging").unwrap();
+        // Phase `mixed_multi_battery_contract_is_not_presented_as_one_control`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            for (name, limit) in [("BAT-main", "80"), ("CMB-aux", "90")] {
+                let battery = root.path().join("class/power_supply").join(name);
+                std::fs::create_dir_all(&battery).unwrap();
+                std::fs::write(battery.join("type"), "Battery\n").unwrap();
+                std::fs::write(battery.join("charge_control_end_threshold"), limit).unwrap();
+            }
+            assert!(charge_capability_from(root.path()).is_none());
         }
-        let d = power_devices_from(root.path());
-        assert_eq!(d.len(), 2);
-        assert_eq!(d[1].kind, PowerSupplyKind::Ups);
+        // Phase `enumerates_multiple_batteries_and_ups_without_serials`.
+        {
+            let root = tempfile::tempdir().unwrap();
+            for (id, kind, cap) in [("BAT1", "Battery", "70"), ("ups0", "UPS", "95")] {
+                let p = root.path().join(id);
+                std::fs::create_dir_all(&p).unwrap();
+                std::fs::write(p.join("type"), kind).unwrap();
+                std::fs::write(p.join("capacity"), cap).unwrap();
+                std::fs::write(p.join("status"), "Discharging").unwrap();
+            }
+            let d = power_devices_from(root.path());
+            assert_eq!(d.len(), 2);
+            assert_eq!(d[1].kind, PowerSupplyKind::Ups);
+        }
     }
 }

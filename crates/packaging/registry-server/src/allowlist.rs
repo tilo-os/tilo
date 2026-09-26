@@ -142,76 +142,75 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_toml_roundtrip() {
-        let empty = PublisherAllowlist::empty();
-        let s = empty.to_toml().unwrap();
-        let back = PublisherAllowlist::from_toml(&s).unwrap();
-        assert_eq!(back, empty);
-    }
-
-    #[test]
-    fn single_publisher_roundtrip() {
-        let mut al = PublisherAllowlist::empty();
-        al.upsert(PublisherRow {
-            pubkey_hex: "aa".repeat(32),
-            can_add_new: true,
-            note: "acme".into(),
-        });
-        let s = al.to_toml().unwrap();
-        let back = PublisherAllowlist::from_toml(&s).unwrap();
-        assert_eq!(back, al);
-    }
-
-    #[test]
-    fn upsert_replaces_existing() {
-        let mut al = PublisherAllowlist::empty();
-        assert!(!al.upsert(PublisherRow {
-            pubkey_hex: "aa".repeat(32),
-            can_add_new: false,
-            note: String::new(),
-        }));
-        assert!(al.upsert(PublisherRow {
-            pubkey_hex: "aa".repeat(32),
-            can_add_new: true,
-            note: "later".into(),
-        }));
-        assert_eq!(al.publishers.len(), 1);
-        assert!(al.publishers[0].can_add_new);
-        assert_eq!(al.publishers[0].note, "later");
-    }
-
-    #[test]
-    fn get_finds_by_raw_bytes() {
-        let mut al = PublisherAllowlist::empty();
-        al.upsert(PublisherRow {
-            pubkey_hex: "de".repeat(32),
-            can_add_new: true,
-            note: String::new(),
-        });
-        assert!(al.get(&[0xde; 32]).is_some());
-        assert!(al.get(&[0x00; 32]).is_none());
-    }
-
-    #[test]
-    fn all_pubkey_bytes_skips_bad_hex() {
-        // If a hand-edited toml has junk in one row, the good rows
-        // still surface — matches the "prefer availability" bias
-        // for a public registry.
-        let al = PublisherAllowlist {
-            publishers: vec![
-                PublisherRow {
-                    pubkey_hex: "zzzz".into(),
-                    can_add_new: false,
-                    note: String::new(),
-                },
-                PublisherRow {
-                    pubkey_hex: "11".repeat(32),
-                    can_add_new: true,
-                    note: String::new(),
-                },
-            ],
-        };
-        let keys = al.all_pubkey_bytes();
-        assert_eq!(keys, vec![[0x11; 32]]);
+    fn allowlist_round_trips_upserts_and_looks_up_publishers() {
+        // phase: empty_toml_roundtrip
+        {
+            let empty = PublisherAllowlist::empty();
+            let s = empty.to_toml().unwrap();
+            let back = PublisherAllowlist::from_toml(&s).unwrap();
+            assert_eq!(back, empty);
+        }
+        // phase: single_publisher_roundtrip
+        {
+            let mut al = PublisherAllowlist::empty();
+            al.upsert(PublisherRow {
+                pubkey_hex: "aa".repeat(32),
+                can_add_new: true,
+                note: "acme".into(),
+            });
+            let s = al.to_toml().unwrap();
+            let back = PublisherAllowlist::from_toml(&s).unwrap();
+            assert_eq!(back, al);
+        }
+        // phase: upsert_replaces_existing
+        {
+            let mut al = PublisherAllowlist::empty();
+            assert!(!al.upsert(PublisherRow {
+                pubkey_hex: "aa".repeat(32),
+                can_add_new: false,
+                note: String::new(),
+            }));
+            assert!(al.upsert(PublisherRow {
+                pubkey_hex: "aa".repeat(32),
+                can_add_new: true,
+                note: "later".into(),
+            }));
+            assert_eq!(al.publishers.len(), 1);
+            assert!(al.publishers[0].can_add_new);
+            assert_eq!(al.publishers[0].note, "later");
+        }
+        // phase: get_finds_by_raw_bytes
+        {
+            let mut al = PublisherAllowlist::empty();
+            al.upsert(PublisherRow {
+                pubkey_hex: "de".repeat(32),
+                can_add_new: true,
+                note: String::new(),
+            });
+            assert!(al.get(&[0xde; 32]).is_some());
+            assert!(al.get(&[0x00; 32]).is_none());
+        }
+        // phase: all_pubkey_bytes_skips_bad_hex
+        {
+            // If a hand-edited toml has junk in one row, the good rows
+            // still surface — matches the "prefer availability" bias
+            // for a public registry.
+            let al = PublisherAllowlist {
+                publishers: vec![
+                    PublisherRow {
+                        pubkey_hex: "zzzz".into(),
+                        can_add_new: false,
+                        note: String::new(),
+                    },
+                    PublisherRow {
+                        pubkey_hex: "11".repeat(32),
+                        can_add_new: true,
+                        note: String::new(),
+                    },
+                ],
+            };
+            let keys = al.all_pubkey_bytes();
+            assert_eq!(keys, vec![[0x11; 32]]);
+        }
     }
 }

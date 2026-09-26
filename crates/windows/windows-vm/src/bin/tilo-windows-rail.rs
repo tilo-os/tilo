@@ -343,61 +343,61 @@ mod tests {
     use super::*;
 
     #[test]
-    fn xauthority_record_never_places_cookie_in_command_arguments() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("authority");
-        write_xauthority(&path, 1234).unwrap();
-        let bytes = fs::read(path).unwrap();
-        assert_eq!(&bytes[0..2], &u16::MAX.to_be_bytes());
-        assert!(bytes.windows(4).any(|window| window == b"1234"));
-        assert!(
-            bytes
-                .windows(b"MIT-MAGIC-COOKIE-1".len())
-                .any(|window| window == b"MIT-MAGIC-COOKIE-1")
-        );
-        assert_eq!(bytes.len(), 48);
-    }
-
-    #[test]
-    fn launch_directory_cleanup_is_narrow() {
-        let directory = tempfile::tempdir().unwrap();
-        let launch = directory.path().join("launch-test");
-        fs::create_dir(&launch).unwrap();
-        fs::write(launch.join("Xauthority"), b"test").unwrap();
-        remove_private_launch_root(&launch);
-        assert!(!launch.exists());
-        assert!(directory.path().exists());
-    }
-
-    #[test]
-    fn private_read_only_argument_never_reaches_freerdp() {
-        let drive = windows_vm::portal_lease_root().join("rail-test/TILO01");
-        let command = free_rdp_command(&["/v:guest".into()], std::slice::from_ref(&drive));
-        assert_eq!(command.get_program(), OsStr::new(BWRAP));
-        let arguments = command.get_args().collect::<Vec<_>>();
-        assert!(arguments.windows(3).any(|window| {
-            window
-                == [
-                    OsStr::new("--ro-bind"),
-                    drive.as_os_str(),
-                    drive.as_os_str(),
-                ]
-        }));
-        assert!(!arguments.iter().any(|argument| {
-            argument
-                .to_string_lossy()
-                .starts_with(READ_ONLY_DRIVE_PREFIX)
-        }));
-    }
-
-    #[test]
-    fn caller_cannot_name_an_ambient_read_only_path() {
-        assert!(
-            split_private_arguments(vec![
-                "--tilo-read-only-drive=/home/user".into(),
-                "/v:guest".into(),
-            ])
-            .is_err()
-        );
+    fn rail_launches_keep_cookies_and_private_paths_out_of_argv() {
+        // Phase `xauthority_record_never_places_cookie_in_command_arguments`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("authority");
+            write_xauthority(&path, 1234).unwrap();
+            let bytes = fs::read(path).unwrap();
+            assert_eq!(&bytes[0..2], &u16::MAX.to_be_bytes());
+            assert!(bytes.windows(4).any(|window| window == b"1234"));
+            assert!(
+                bytes
+                    .windows(b"MIT-MAGIC-COOKIE-1".len())
+                    .any(|window| window == b"MIT-MAGIC-COOKIE-1")
+            );
+            assert_eq!(bytes.len(), 48);
+        }
+        // Phase `launch_directory_cleanup_is_narrow`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let launch = directory.path().join("launch-test");
+            fs::create_dir(&launch).unwrap();
+            fs::write(launch.join("Xauthority"), b"test").unwrap();
+            remove_private_launch_root(&launch);
+            assert!(!launch.exists());
+            assert!(directory.path().exists());
+        }
+        // Phase `private_read_only_argument_never_reaches_freerdp`.
+        {
+            let drive = windows_vm::portal_lease_root().join("rail-test/TILO01");
+            let command = free_rdp_command(&["/v:guest".into()], std::slice::from_ref(&drive));
+            assert_eq!(command.get_program(), OsStr::new(BWRAP));
+            let arguments = command.get_args().collect::<Vec<_>>();
+            assert!(arguments.windows(3).any(|window| {
+                window
+                    == [
+                        OsStr::new("--ro-bind"),
+                        drive.as_os_str(),
+                        drive.as_os_str(),
+                    ]
+            }));
+            assert!(!arguments.iter().any(|argument| {
+                argument
+                    .to_string_lossy()
+                    .starts_with(READ_ONLY_DRIVE_PREFIX)
+            }));
+        }
+        // Phase `caller_cannot_name_an_ambient_read_only_path`.
+        {
+            assert!(
+                split_private_arguments(vec![
+                    "--tilo-read-only-drive=/home/user".into(),
+                    "/v:guest".into(),
+                ])
+                .is_err()
+            );
+        }
     }
 }

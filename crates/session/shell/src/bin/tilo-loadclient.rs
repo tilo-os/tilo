@@ -433,41 +433,42 @@ mod linux {
         }
 
         #[test]
-        fn opts_defaults_are_windowed_720p_ten_seconds() {
-            let o = Opts::parse(v(&[]));
-            assert!(!o.fullscreen);
-            assert_eq!((o.width, o.height), (1280, 720));
-            assert_eq!(o.seconds, 10.0);
-            assert_eq!(o.app_id, "tilo-loadclient");
-        }
-
-        #[test]
-        fn opts_parse_fullscreen_size_and_duration() {
-            let o = Opts::parse(v(&[
-                "--fullscreen",
-                "--size",
-                "1600x900",
-                "--seconds",
-                "3.5",
-                "--app-id",
-                "bench",
-            ]));
-            assert!(o.fullscreen, "--fullscreen must set the fullscreen request");
-            assert_eq!((o.width, o.height), (1600, 900));
-            assert_eq!(o.seconds, 3.5);
-            assert_eq!(o.app_id, "bench");
-        }
-
-        #[test]
-        fn opts_reject_degenerate_values_and_keep_defaults() {
-            // A zero-area size or non-positive duration would make the client
-            // useless as load; fall back rather than crash the harness.
-            let o = Opts::parse(v(&["--size", "0x900", "--seconds", "0"]));
-            assert_eq!((o.width, o.height), (1280, 720));
-            assert_eq!(o.seconds, 10.0);
-            let garbage = Opts::parse(v(&["--size", "nonsense", "--seconds", "nonsense"]));
-            assert_eq!((garbage.width, garbage.height), (1280, 720));
-            assert_eq!(garbage.seconds, 10.0);
+        fn load_client_options_default_parse_and_reject_degenerate_values() {
+            // Phase `opts_defaults_are_windowed_720p_ten_seconds`.
+            {
+                let o = Opts::parse(v(&[]));
+                assert!(!o.fullscreen);
+                assert_eq!((o.width, o.height), (1280, 720));
+                assert_eq!(o.seconds, 10.0);
+                assert_eq!(o.app_id, "tilo-loadclient");
+            }
+            // Phase `opts_parse_fullscreen_size_and_duration`.
+            {
+                let o = Opts::parse(v(&[
+                    "--fullscreen",
+                    "--size",
+                    "1600x900",
+                    "--seconds",
+                    "3.5",
+                    "--app-id",
+                    "bench",
+                ]));
+                assert!(o.fullscreen, "--fullscreen must set the fullscreen request");
+                assert_eq!((o.width, o.height), (1600, 900));
+                assert_eq!(o.seconds, 3.5);
+                assert_eq!(o.app_id, "bench");
+            }
+            // Phase `opts_reject_degenerate_values_and_keep_defaults`.
+            {
+                // A zero-area size or non-positive duration would make the client
+                // useless as load; fall back rather than crash the harness.
+                let o = Opts::parse(v(&["--size", "0x900", "--seconds", "0"]));
+                assert_eq!((o.width, o.height), (1280, 720));
+                assert_eq!(o.seconds, 10.0);
+                let garbage = Opts::parse(v(&["--size", "nonsense", "--seconds", "nonsense"]));
+                assert_eq!((garbage.width, garbage.height), (1280, 720));
+                assert_eq!(garbage.seconds, 10.0);
+            }
         }
     }
 }

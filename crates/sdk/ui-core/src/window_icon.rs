@@ -115,55 +115,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_icon_builds() {
-        assert!(
-            default_icon().is_some(),
-            "generated Tilo default icon must build"
-        );
-    }
+    fn window_icons_build_decode_or_refuse_their_source() {
+        // Case `default_icon_builds`.
+        {
+            assert!(
+                default_icon().is_some(),
+                "generated Tilo default icon must build"
+            );
+        }
 
-    #[test]
-    fn default_icon_has_opaque_centre_and_clear_corner() {
-        const SIZE: u32 = 128;
-        let rgba = render_default(SIZE);
-        let at = |x: u32, y: u32| {
-            let i = ((y * SIZE + x) * 4) as usize;
-            [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
-        };
-        assert_eq!(
-            at(SIZE / 2, SIZE / 2)[3],
-            255,
-            "centre pixel must be opaque"
-        );
-        assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
-    }
+        // Case `default_icon_has_opaque_centre_and_clear_corner`.
+        {
+            const SIZE: u32 = 128;
+            let rgba = render_default(SIZE);
+            let at = |x: u32, y: u32| {
+                let i = ((y * SIZE + x) * 4) as usize;
+                [rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3]]
+            };
+            assert_eq!(
+                at(SIZE / 2, SIZE / 2)[3],
+                255,
+                "centre pixel must be opaque"
+            );
+            assert_eq!(at(0, 0)[3], 0, "extreme corner must be transparent");
+        }
 
-    #[test]
-    fn load_bytes_decodes_a_png() {
-        let mut buf = std::io::Cursor::new(Vec::new());
-        let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
-        image::DynamicImage::ImageRgba8(img)
-            .write_to(&mut buf, image::ImageFormat::Png)
-            .expect("encode png");
-        assert!(
-            load_bytes(&buf.into_inner()).is_some(),
-            "a valid PNG must decode into an icon"
-        );
-    }
+        // Case `load_bytes_decodes_a_png`.
+        {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            let img = image::RgbaImage::from_pixel(8, 8, image::Rgba([10, 20, 30, 255]));
+            image::DynamicImage::ImageRgba8(img)
+                .write_to(&mut buf, image::ImageFormat::Png)
+                .expect("encode png");
+            assert!(
+                load_bytes(&buf.into_inner()).is_some(),
+                "a valid PNG must decode into an icon"
+            );
+        }
 
-    #[test]
-    fn load_bytes_rejects_garbage() {
-        assert!(
-            load_bytes(b"not an image").is_none(),
-            "undecodable bytes must not yield an icon"
-        );
-    }
+        // Case `load_bytes_rejects_garbage`.
+        {
+            assert!(
+                load_bytes(b"not an image").is_none(),
+                "undecodable bytes must not yield an icon"
+            );
+        }
 
-    #[test]
-    fn load_path_of_missing_file_is_none() {
-        assert!(
-            load_path(std::path::Path::new("/nonexistent/tilo-icon.png")).is_none(),
-            "a missing icon file must not panic and must yield None"
-        );
+        // Case `load_path_of_missing_file_is_none`.
+        {
+            assert!(
+                load_path(std::path::Path::new("/nonexistent/tilo-icon.png")).is_none(),
+                "a missing icon file must not panic and must yield None"
+            );
+        }
     }
 }

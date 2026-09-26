@@ -81,55 +81,59 @@ mod tests {
         ]
     }
 
+    /// The combobox shows all on an empty query, filters case-insensitively as you type, clamps the highlight and resets on close.
     #[test]
-    fn empty_query_shows_all() {
-        let o = opts();
-        assert_eq!(filter_options(&o, ""), vec![0, 1, 2, 3]);
-        assert_eq!(filter_options(&o, "   "), vec![0, 1, 2, 3]);
-    }
+    fn combobox_filters_and_clamps_its_highlight() {
+        // --- phase: empty_query_shows_all ---
+        {
+            let o = opts();
+            assert_eq!(filter_options(&o, ""), vec![0, 1, 2, 3]);
+            assert_eq!(filter_options(&o, "   "), vec![0, 1, 2, 3]);
+        }
 
-    #[test]
-    fn filter_is_case_insensitive_substring() {
-        let o = opts();
-        // "ALPINE" matches nginx + redis (both alpine), in original order.
-        assert_eq!(filter_options(&o, "ALPINE"), vec![0, 2]);
-        // partial registry match
-        assert_eq!(filter_options(&o, "example.test"), vec![3]);
-        // no match → empty
-        assert!(filter_options(&o, "mariadb").is_empty());
-    }
+        // --- phase: filter_is_case_insensitive_substring ---
+        {
+            let o = opts();
+            // "ALPINE" matches nginx + redis (both alpine), in original order.
+            assert_eq!(filter_options(&o, "ALPINE"), vec![0, 2]);
+            // partial registry match
+            assert_eq!(filter_options(&o, "example.test"), vec![3]);
+            // no match → empty
+            assert!(filter_options(&o, "mariadb").is_empty());
+        }
 
-    #[test]
-    fn filter_narrows_as_you_type() {
-        let o = opts();
-        // Typing progressively narrows the candidate set.
-        let by_n = filter_options(&o, "n"); // nginx (nginx) only? 'n' also in 'registry'... check substrings
-        let by_ng = filter_options(&o, "ng"); // only nginx
-        assert!(by_ng.len() <= by_n.len(), "more chars never widen the set");
-        assert_eq!(by_ng, vec![0], "'ng' uniquely matches nginx");
-    }
+        // --- phase: filter_narrows_as_you_type ---
+        {
+            let o = opts();
+            // Typing progressively narrows the candidate set.
+            let by_n = filter_options(&o, "n"); // nginx (nginx) only? 'n' also in 'registry'... check substrings
+            let by_ng = filter_options(&o, "ng"); // only nginx
+            assert!(by_ng.len() <= by_n.len(), "more chars never widen the set");
+            assert_eq!(by_ng, vec![0], "'ng' uniquely matches nginx");
+        }
 
-    #[test]
-    fn highlight_clamps_to_filtered_len() {
-        let mut s = ComboState::default();
-        s.move_highlight(5, 3); // past the end
-        assert_eq!(s.highlight, 2, "clamped to last index");
-        assert!(s.open, "navigation opens the dropdown");
-        s.move_highlight(-10, 3);
-        assert_eq!(s.highlight, 0, "clamped to first index");
-        // empty list parks at 0 without panicking.
-        s.move_highlight(1, 0);
-        assert_eq!(s.highlight, 0);
-    }
+        // --- phase: highlight_clamps_to_filtered_len ---
+        {
+            let mut s = ComboState::default();
+            s.move_highlight(5, 3); // past the end
+            assert_eq!(s.highlight, 2, "clamped to last index");
+            assert!(s.open, "navigation opens the dropdown");
+            s.move_highlight(-10, 3);
+            assert_eq!(s.highlight, 0, "clamped to first index");
+            // empty list parks at 0 without panicking.
+            s.move_highlight(1, 0);
+            assert_eq!(s.highlight, 0);
+        }
 
-    #[test]
-    fn close_resets() {
-        let mut s = ComboState {
-            open: true,
-            highlight: 2,
-        };
-        s.close();
-        assert!(!s.open);
-        assert_eq!(s.highlight, 0);
+        // --- phase: close_resets ---
+        {
+            let mut s = ComboState {
+                open: true,
+                highlight: 2,
+            };
+            s.close();
+            assert!(!s.open);
+            assert_eq!(s.highlight, 0);
+        }
     }
 }

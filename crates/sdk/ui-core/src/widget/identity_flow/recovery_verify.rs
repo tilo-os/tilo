@@ -891,170 +891,178 @@ mod tests {
     }
 
     #[test]
-    fn tab_walks_slots_in_ascending_position_order_not_storage_order() {
-        // Positions stored in whatever order Fisher-Yates picked
-        // ([13, 12, 23], not ascending) — Tab must still walk visually.
-        let positions = [13usize, 12, 23];
+    fn recovery_verify_blanks_walk_and_lay_out_in_reading_order() {
+        fn tab_walks_slots_in_ascending_position_order_not_storage_order() {
+            // Positions stored in whatever order Fisher-Yates picked
+            // ([13, 12, 23], not ascending) — Tab must still walk visually.
+            let positions = [13usize, 12, 23];
 
-        assert_eq!(
-            next_slot_in_visual_order(0, &positions, false),
-            2,
-            "Tab from pos 13 should land on pos 23",
-        );
-        assert_eq!(
-            next_slot_in_visual_order(0, &positions, true),
-            1,
-            "Shift+Tab from pos 13 should land on pos 12",
-        );
-        assert_eq!(
-            next_slot_in_visual_order(2, &positions, false),
-            1,
-            "Tab from largest pos should wrap to smallest",
-        );
-        assert_eq!(
-            next_slot_in_visual_order(1, &positions, true),
-            2,
-            "Shift+Tab from smallest pos should wrap to largest",
-        );
-    }
-
-    #[test]
-    fn challenge_is_some_after_seed() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        assert!(s.challenge().is_some());
-    }
-
-    #[test]
-    fn is_correct_true_for_matching_answers() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.seed_challenge([1, 12, 24]);
-        let words: Vec<String> = fixture_mnemonic()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect();
-        s.set_answer(0, &words[0]);
-        s.set_answer(1, &words[11]);
-        s.set_answer(2, &words[23]);
-        assert!(s.is_correct());
-    }
-
-    #[test]
-    fn is_correct_false_for_wrong_word() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.seed_challenge([1, 12, 24]);
-        s.set_answer(0, "nope");
-        s.set_answer(1, "abstract");
-        s.set_answer(2, "actual");
-        assert!(!s.is_correct());
-    }
-
-    #[test]
-    fn reseed_clears_answers_and_picks_new_challenge() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.set_answer(0, "stale");
-        s.set_answer(1, "stale");
-        s.set_answer(2, "stale");
-        s.focus_slot(1, &mut None);
-        s.reseed();
-        for i in 0..3 {
-            assert!(s.answer(i).unwrap().is_empty());
-        }
-        assert!(s.challenge().is_some());
-        assert_eq!(
-            s.focused_slot(),
-            Some(1),
-            "picking different blanks keeps the keyboard in the same slot"
-        );
-    }
-
-    #[test]
-    fn failed_attempt_flag_sticky_until_user_types() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.seed_challenge([1, 12, 24]);
-        s.set_answer(0, "wrong");
-        s.set_answer(1, "wrong");
-        s.set_answer(2, "wrong");
-        assert!(!s.is_correct());
-        // Manually flip the flag the way the click handler would.
-        s.last_attempt_failed = true;
-        assert!(s.last_attempt_failed());
-        // Editing any slot clears the flag.
-        s.set_answer(0, "");
-        assert!(!s.last_attempt_failed());
-    }
-
-    /// Tab reaches the blanks through the host's focus order, which is the
-    /// `children()` order and the node order: ascending word position, not
-    /// storage order. Each blank is named for the word it asks for.
-    #[test]
-    fn children_and_nodes_walk_the_blanks_in_reading_order() {
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.seed_challenge([13, 12, 23]);
-        let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
-        assert_eq!(
-            ids,
-            vec![BLANK_INPUT_IDS[1], BLANK_INPUT_IDS[0], BLANK_INPUT_IDS[2]],
-            "children walk positions 12, 13, 23"
-        );
-        let names: Vec<String> = s
-            .children()
-            .iter()
-            .filter_map(|c| c.accessibility()?.name)
-            .collect();
-        assert_eq!(names, vec!["Word 12", "Word 13", "Word 23"]);
-
-        let mut taffy = TaffyTree::<()>::new();
-        let mut node_map = HashMap::new();
-        let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let leaves = taffy.children(node).unwrap();
-        assert_eq!(leaves.len(), 3, "one node per blank");
-        assert_eq!(
-            leaves[0],
-            s.slot_nodes[1].unwrap(),
-            "first Tab stop is word 12"
-        );
-        assert_eq!(leaves[1], s.slot_nodes[0].unwrap());
-        assert_eq!(leaves[2], s.slot_nodes[2].unwrap());
-        for leaf in &leaves {
-            assert!(
-                node_map.contains_key(leaf),
-                "every blank is registered for the host"
+            assert_eq!(
+                next_slot_in_visual_order(0, &positions, false),
+                2,
+                "Tab from pos 13 should land on pos 23",
+            );
+            assert_eq!(
+                next_slot_in_visual_order(0, &positions, true),
+                1,
+                "Shift+Tab from pos 13 should land on pos 12",
+            );
+            assert_eq!(
+                next_slot_in_visual_order(2, &positions, false),
+                1,
+                "Tab from largest pos should wrap to smallest",
+            );
+            assert_eq!(
+                next_slot_in_visual_order(1, &positions, true),
+                2,
+                "Shift+Tab from smallest pos should wrap to largest",
             );
         }
-        assert!(
-            s.children().iter().all(|c| c.is_focusable()),
-            "every blank is a Tab stop"
-        );
+
+        /// Tab reaches the blanks through the host's focus order, which is the
+        /// `children()` order and the node order: ascending word position, not
+        /// storage order. Each blank is named for the word it asks for.
+        fn children_and_nodes_walk_the_blanks_in_reading_order() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.seed_challenge([13, 12, 23]);
+            let ids: Vec<&str> = s.children().iter().filter_map(|c| c.test_id()).collect();
+            assert_eq!(
+                ids,
+                vec![BLANK_INPUT_IDS[1], BLANK_INPUT_IDS[0], BLANK_INPUT_IDS[2]],
+                "children walk positions 12, 13, 23"
+            );
+            let names: Vec<String> = s
+                .children()
+                .iter()
+                .filter_map(|c| c.accessibility()?.name)
+                .collect();
+            assert_eq!(names, vec!["Word 12", "Word 13", "Word 23"]);
+
+            let mut taffy = TaffyTree::<()>::new();
+            let mut node_map = HashMap::new();
+            let node = s.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+            let leaves = taffy.children(node).unwrap();
+            assert_eq!(leaves.len(), 3, "one node per blank");
+            assert_eq!(
+                leaves[0],
+                s.slot_nodes[1].unwrap(),
+                "first Tab stop is word 12"
+            );
+            assert_eq!(leaves[1], s.slot_nodes[0].unwrap());
+            assert_eq!(leaves[2], s.slot_nodes[2].unwrap());
+            for leaf in &leaves {
+                assert!(
+                    node_map.contains_key(leaf),
+                    "every blank is registered for the host"
+                );
+            }
+            assert!(
+                s.children().iter().all(|c| c.is_focusable()),
+                "every blank is a Tab stop"
+            );
+        }
+
+        /// The blanks sit in the cells the share screen shows the same words
+        /// in: one control tall, in the word column of their grid cell.
+        fn plan_places_each_blank_in_its_words_grid_cell() {
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let body = Rect::new(100.0, 200.0, 740.0, 200.0);
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.seed_challenge([1, 12, 24]);
+            let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert!((plan.grid.height() - 6.0 * 34.0).abs() < 1e-9);
+            let grid = WordGrid::new(plan.grid, 34.0, &mut tr, &theme);
+            for (slot, pos1) in [1usize, 12, 24].iter().enumerate() {
+                let (_, word) = grid.cell(pos1 - 1, &theme);
+                assert_eq!(plan.slots[slot], word, "slot {slot} sits in cell {pos1}");
+                assert_eq!(plan.slots[slot].height(), 34.0);
+            }
+            assert!(plan.slots[0].y0 < plan.slots[1].y0 && plan.slots[1].y0 < plan.slots[2].y0);
+            assert!(plan.error.is_none());
+            s.last_attempt_failed = true;
+            let failed = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
+            assert!(failed.error.is_some(), "a failed attempt gets its own row");
+        }
+
+        tab_walks_slots_in_ascending_position_order_not_storage_order();
+        children_and_nodes_walk_the_blanks_in_reading_order();
+        plan_places_each_blank_in_its_words_grid_cell();
     }
 
-    /// The blanks sit in the cells the share screen shows the same words
-    /// in: one control tall, in the word column of their grid cell.
     #[test]
-    fn plan_places_each_blank_in_its_words_grid_cell() {
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let body = Rect::new(100.0, 200.0, 740.0, 200.0);
-        let mut s = RecoveryVerifyScreen::new();
-        s.seed_mnemonic(fixture_mnemonic());
-        s.seed_challenge([1, 12, 24]);
-        let plan = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert!((plan.grid.height() - 6.0 * 34.0).abs() < 1e-9);
-        let grid = WordGrid::new(plan.grid, 34.0, &mut tr, &theme);
-        for (slot, pos1) in [1usize, 12, 24].iter().enumerate() {
-            let (_, word) = grid.cell(pos1 - 1, &theme);
-            assert_eq!(plan.slots[slot], word, "slot {slot} sits in cell {pos1}");
-            assert_eq!(plan.slots[slot].height(), 34.0);
+    fn recovery_verify_challenge_answers_and_retry_state() {
+        fn challenge_is_some_after_seed() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            assert!(s.challenge().is_some());
         }
-        assert!(plan.slots[0].y0 < plan.slots[1].y0 && plan.slots[1].y0 < plan.slots[2].y0);
-        assert!(plan.error.is_none());
-        s.last_attempt_failed = true;
-        let failed = s.plan(Rows::new(body), 34.0, &mut tr, &theme);
-        assert!(failed.error.is_some(), "a failed attempt gets its own row");
+
+        fn is_correct_true_for_matching_answers() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.seed_challenge([1, 12, 24]);
+            let words: Vec<String> = fixture_mnemonic()
+                .split_whitespace()
+                .map(str::to_string)
+                .collect();
+            s.set_answer(0, &words[0]);
+            s.set_answer(1, &words[11]);
+            s.set_answer(2, &words[23]);
+            assert!(s.is_correct());
+        }
+
+        fn is_correct_false_for_wrong_word() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.seed_challenge([1, 12, 24]);
+            s.set_answer(0, "nope");
+            s.set_answer(1, "abstract");
+            s.set_answer(2, "actual");
+            assert!(!s.is_correct());
+        }
+
+        fn reseed_clears_answers_and_picks_new_challenge() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.set_answer(0, "stale");
+            s.set_answer(1, "stale");
+            s.set_answer(2, "stale");
+            s.focus_slot(1, &mut None);
+            s.reseed();
+            for i in 0..3 {
+                assert!(s.answer(i).unwrap().is_empty());
+            }
+            assert!(s.challenge().is_some());
+            assert_eq!(
+                s.focused_slot(),
+                Some(1),
+                "picking different blanks keeps the keyboard in the same slot"
+            );
+        }
+
+        fn failed_attempt_flag_sticky_until_user_types() {
+            let mut s = RecoveryVerifyScreen::new();
+            s.seed_mnemonic(fixture_mnemonic());
+            s.seed_challenge([1, 12, 24]);
+            s.set_answer(0, "wrong");
+            s.set_answer(1, "wrong");
+            s.set_answer(2, "wrong");
+            assert!(!s.is_correct());
+            // Manually flip the flag the way the click handler would.
+            s.last_attempt_failed = true;
+            assert!(s.last_attempt_failed());
+            // Editing any slot clears the flag.
+            s.set_answer(0, "");
+            assert!(!s.last_attempt_failed());
+        }
+
+        challenge_is_some_after_seed();
+        is_correct_true_for_matching_answers();
+        is_correct_false_for_wrong_word();
+        reseed_clears_answers_and_picks_new_challenge();
+        failed_attempt_flag_sticky_until_user_types();
     }
 }

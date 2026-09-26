@@ -34,7 +34,7 @@ fn require_raster_worker(path: &std::path::Path) {
 }
 
 #[test]
-fn production_open_completes_visual_work() {
+fn capture_waits_for_production_visual_work_and_fails_when_unfinished() {
     let content = ContentStore::memory();
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/sample.pdf");
     require_raster_worker(&path);
@@ -93,16 +93,15 @@ fn production_open_completes_visual_work() {
     harness
         .wait_for_visuals(Duration::from_secs(15))
         .expect("arrival of imported bytes completes page rendering");
-}
 
-#[test]
-fn unfinished_visual_work_fails_capture() {
-    let mut harness = FrameHarness::new_with_theme(
-        ui::State::new(),
-        pdf_viewer::app_root_loading(),
-        (1280, 800),
-        ui::theme::Theme::dark(),
-    )
-    .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
-    assert!(harness.wait_for_visuals(Duration::from_millis(5)).is_err());
+    {
+        let mut harness = FrameHarness::new_with_theme(
+            ui::State::new(),
+            pdf_viewer::app_root_loading(),
+            (1280, 800),
+            ui::theme::Theme::dark(),
+        )
+        .with_records(ui::RecordSet::in_memory(), automerge::AutoCommit::new());
+        assert!(harness.wait_for_visuals(Duration::from_millis(5)).is_err());
+    }
 }

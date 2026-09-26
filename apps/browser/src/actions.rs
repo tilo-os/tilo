@@ -356,134 +356,142 @@ mod tests {
         }
     }
 
+    /// Concurrent first bookmark actions from empty or legacy documents merge rows and tags.
     #[test]
-    fn concurrent_first_bookmark_actions_from_empty_doc_merge_distinct_rows() {
-        let mut seed = Doc::new();
-        seed.put(&ROOT, "seed", true).unwrap();
-        seed.commit();
-        let mut left = Doc::load(&seed.save()).unwrap();
-        let mut right = Doc::load(&seed.save()).unwrap();
-        add("https://one.example", "a").apply(&mut left).unwrap();
-        left.commit();
-        add("https://two.example", "b").apply(&mut right).unwrap();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-        let rows = bookmarks_from_doc(&left).unwrap();
-        assert!(rows.contains("https://one.example/"));
-        assert!(rows.contains("https://two.example/"));
-    }
-
-    #[test]
-    fn concurrent_remove_only_tombstones_observed_tags() {
-        let mut doc = Doc::new();
-        add("https://example.test", "old").apply(&mut doc).unwrap();
-        doc.commit();
-        let mut left = Doc::load(&doc.save()).unwrap();
-        let mut right = Doc::load(&doc.save()).unwrap();
-        let tags = observed_bookmark_tags(&left, "https://example.test");
-        BrowserAction::RemoveBookmark {
-            url: "https://example.test".into(),
-            observed_tags: tags,
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn concurrent_first_bookmark_actions_merge_rows_tags_and_legacy_data() {
+        // Phase `concurrent_first_bookmark_actions_from_empty_doc_merge_distinct_rows`.
+        {
+            let mut seed = Doc::new();
+            seed.put(&ROOT, "seed", true).unwrap();
+            seed.commit();
+            let mut left = Doc::load(&seed.save()).unwrap();
+            let mut right = Doc::load(&seed.save()).unwrap();
+            add("https://one.example", "a").apply(&mut left).unwrap();
+            left.commit();
+            add("https://two.example", "b").apply(&mut right).unwrap();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+            let rows = bookmarks_from_doc(&left).unwrap();
+            assert!(rows.contains("https://one.example/"));
+            assert!(rows.contains("https://two.example/"));
         }
-        .apply(&mut left)
-        .unwrap();
-        left.commit();
-        add("https://example.test", "new")
-            .apply(&mut right)
-            .unwrap();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-        assert!(
-            bookmarks_from_doc(&left)
-                .unwrap()
-                .contains("https://example.test/")
-        );
-    }
 
-    #[test]
-    fn concurrent_adds_for_the_same_new_bookmark_preserve_both_tags() {
-        let mut seed = Doc::new();
-        seed.put(&ROOT, "seed", true).unwrap();
-        seed.commit();
-        let mut left = Doc::load(&seed.save()).unwrap();
-        let mut right = Doc::load(&seed.save()).unwrap();
-
-        add("https://example.test", "left")
+        // Phase `concurrent_remove_only_tombstones_observed_tags`.
+        {
+            let mut doc = Doc::new();
+            add("https://example.test", "old").apply(&mut doc).unwrap();
+            doc.commit();
+            let mut left = Doc::load(&doc.save()).unwrap();
+            let mut right = Doc::load(&doc.save()).unwrap();
+            let tags = observed_bookmark_tags(&left, "https://example.test");
+            BrowserAction::RemoveBookmark {
+                url: "https://example.test".into(),
+                observed_tags: tags,
+            }
             .apply(&mut left)
             .unwrap();
-        left.commit();
-        add("https://example.test", "right")
-            .apply(&mut right)
+            left.commit();
+            add("https://example.test", "new")
+                .apply(&mut right)
+                .unwrap();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+            assert!(
+                bookmarks_from_doc(&left)
+                    .unwrap()
+                    .contains("https://example.test/")
+            );
+        }
+
+        // Phase `concurrent_adds_for_the_same_new_bookmark_preserve_both_tags`.
+        {
+            let mut seed = Doc::new();
+            seed.put(&ROOT, "seed", true).unwrap();
+            seed.commit();
+            let mut left = Doc::load(&seed.save()).unwrap();
+            let mut right = Doc::load(&seed.save()).unwrap();
+
+            add("https://example.test", "left")
+                .apply(&mut left)
+                .unwrap();
+            left.commit();
+            add("https://example.test", "right")
+                .apply(&mut right)
+                .unwrap();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+
+            assert_eq!(
+                observed_bookmark_tags(&left, "https://example.test"),
+                vec!["left", "right"],
+                "a later observed-remove must be able to tombstone every concurrent add"
+            );
+        }
+
+        // Phase `concurrent_first_actions_migrate_legacy_rows_and_merge_distinct_urls`.
+        {
+            let mut seed = Doc::new();
+            seed.put(
+                &ROOT,
+                LEGACY_BOOKMARKS_PATH,
+                r#"[{"url":"https://legacy.example","title":"Legacy"}]"#,
+            )
             .unwrap();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
+            seed.commit();
+            let mut left = Doc::load(&seed.save()).unwrap();
+            let mut right = Doc::load(&seed.save()).unwrap();
 
-        assert_eq!(
-            observed_bookmark_tags(&left, "https://example.test"),
-            vec!["left", "right"],
-            "a later observed-remove must be able to tombstone every concurrent add"
-        );
-    }
+            add("https://one.example", "left").apply(&mut left).unwrap();
+            left.commit();
+            add("https://two.example", "right")
+                .apply(&mut right)
+                .unwrap();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
 
-    #[test]
-    fn concurrent_first_actions_migrate_legacy_rows_and_merge_distinct_urls() {
-        let mut seed = Doc::new();
-        seed.put(
-            &ROOT,
-            LEGACY_BOOKMARKS_PATH,
-            r#"[{"url":"https://legacy.example","title":"Legacy"}]"#,
-        )
-        .unwrap();
-        seed.commit();
-        let mut left = Doc::load(&seed.save()).unwrap();
-        let mut right = Doc::load(&seed.save()).unwrap();
+            let rows = bookmarks_from_doc(&left).unwrap();
+            assert!(rows.contains("https://legacy.example/"));
+            assert!(rows.contains("https://one.example/"));
+            assert!(rows.contains("https://two.example/"));
+        }
 
-        add("https://one.example", "left").apply(&mut left).unwrap();
-        left.commit();
-        add("https://two.example", "right")
-            .apply(&mut right)
+        // Phase `concurrent_first_actions_migrate_legacy_rows_and_merge_same_url_tags`.
+        {
+            let mut seed = Doc::new();
+            seed.put(
+                &ROOT,
+                LEGACY_BOOKMARKS_PATH,
+                r#"[{"url":"https://legacy.example","title":"Legacy"}]"#,
+            )
             .unwrap();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
+            seed.commit();
+            let mut left = Doc::load(&seed.save()).unwrap();
+            let mut right = Doc::load(&seed.save()).unwrap();
 
-        let rows = bookmarks_from_doc(&left).unwrap();
-        assert!(rows.contains("https://legacy.example/"));
-        assert!(rows.contains("https://one.example/"));
-        assert!(rows.contains("https://two.example/"));
-    }
+            add("https://same.example", "left")
+                .apply(&mut left)
+                .unwrap();
+            left.commit();
+            add("https://same.example", "right")
+                .apply(&mut right)
+                .unwrap();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
 
-    #[test]
-    fn concurrent_first_actions_migrate_legacy_rows_and_merge_same_url_tags() {
-        let mut seed = Doc::new();
-        seed.put(
-            &ROOT,
-            LEGACY_BOOKMARKS_PATH,
-            r#"[{"url":"https://legacy.example","title":"Legacy"}]"#,
-        )
-        .unwrap();
-        seed.commit();
-        let mut left = Doc::load(&seed.save()).unwrap();
-        let mut right = Doc::load(&seed.save()).unwrap();
-
-        add("https://same.example", "left")
-            .apply(&mut left)
-            .unwrap();
-        left.commit();
-        add("https://same.example", "right")
-            .apply(&mut right)
-            .unwrap();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-
-        assert_eq!(
-            observed_bookmark_tags(&left, "https://same.example"),
-            vec!["left", "right"]
-        );
-        assert!(
-            bookmarks_from_doc(&left)
-                .unwrap()
-                .contains("https://legacy.example/")
-        );
+            assert_eq!(
+                observed_bookmark_tags(&left, "https://same.example"),
+                vec!["left", "right"]
+            );
+            assert!(
+                bookmarks_from_doc(&left)
+                    .unwrap()
+                    .contains("https://legacy.example/")
+            );
+        }
     }
 
     #[test]

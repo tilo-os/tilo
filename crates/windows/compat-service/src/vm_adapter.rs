@@ -1245,263 +1245,267 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_portal_projection_is_fully_denied() {
-        let grants = DenyAllVmPortalAuthority
-            .grants_for("app", "workspace", &CapabilityPlan::empty())
-            .unwrap();
-        assert!(!grants.network);
-        assert!(!grants.clipboard);
-        assert!(!grants.microphone);
-        assert!(grants.portal_documents.is_empty());
-    }
+    fn portal_projections_are_denied_by_default_and_exact_for_leases() {
+        // Phase `default_portal_projection_is_fully_denied`.
+        {
+            let grants = DenyAllVmPortalAuthority
+                .grants_for("app", "workspace", &CapabilityPlan::empty())
+                .unwrap();
+            assert!(!grants.network);
+            assert!(!grants.clipboard);
+            assert!(!grants.microphone);
+            assert!(grants.portal_documents.is_empty());
+        }
+        // Phase `canonical_rail_projection_keeps_exact_nethosts_for_the_lease_broker`.
+        {
+            use windows_vm::CapabilityBroker as _;
 
-    #[test]
-    fn canonical_rail_projection_keeps_exact_nethosts_for_the_lease_broker() {
-        use windows_vm::CapabilityBroker as _;
+            let authority =
+                CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
+            let capabilities = CapabilityPlan {
+                devices: vec!["clipboard".to_string(), "microphone".to_string()],
+                allow_network: true,
+                net_hosts: vec!["example.test".to_string()],
+                ro_paths: vec!["/tmp/document".into()],
+                ..CapabilityPlan::empty()
+            };
+            let grants = authority
+                .grants_for("app", "workspace", &capabilities)
+                .unwrap();
+            assert!(grants.clipboard && grants.microphone);
+            assert!(grants.network);
+            assert_eq!(grants.network_hosts, vec!["example.test"]);
+            assert!(grants.portal_documents.is_empty());
 
-        let authority =
-            CanonicalRailPortalAuthority::new(windows_vm::ApplicationPresentation::NativeRail);
-        let capabilities = CapabilityPlan {
-            devices: vec!["clipboard".to_string(), "microphone".to_string()],
-            allow_network: true,
-            net_hosts: vec!["example.test".to_string()],
-            ro_paths: vec!["/tmp/document".into()],
-            ..CapabilityPlan::empty()
-        };
-        let grants = authority
-            .grants_for("app", "workspace", &capabilities)
-            .unwrap();
-        assert!(grants.clipboard && grants.microphone);
-        assert!(grants.network);
-        assert_eq!(grants.network_hosts, vec!["example.test"]);
-        assert!(grants.portal_documents.is_empty());
-
-        // The actual host-only address belongs to libvirt, not a unit test
-        // process. Exercise the non-network portions here; GuestNetworkProxy
-        // has its own loopback listener tests and production fails closed if
-        // the dedicated address is not available.
-        let grants = windows_vm::VmLaunchGrants {
-            network: false,
-            network_hosts: Vec::new(),
-            ..grants
-        };
-        let lease = CanonicalRailCapabilityBroker::default()
-            .materialize(&windows_vm::LaunchRequest {
-                workspace_id: "workspace".to_string(),
-                application_id: "published.app".to_string(),
-                grants,
-            })
-            .unwrap();
-        assert!(lease.clipboard && lease.microphone);
-        assert!(!lease.network && lease.shares.is_empty());
-    }
-
-    #[test]
-    fn app_focused_broker_materializes_an_explicit_empty_lease() {
-        use windows_vm::CapabilityBroker as _;
-        let broker = DenyAllVmCapabilityBroker::default();
-        let lease = broker
-            .materialize(&windows_vm::LaunchRequest {
-                workspace_id: "workspace".to_string(),
-                application_id: "published.app".to_string(),
-                grants: windows_vm::VmLaunchGrants::default(),
-            })
-            .unwrap();
-        lease.validate().unwrap();
-        assert!(!lease.network && !lease.clipboard && !lease.microphone);
-        assert!(lease.shares.is_empty());
-    }
-
-    #[test]
-    fn shared_session_summary_comes_from_materialized_broker_resources() {
-        use windows_vm::CapabilityBroker as _;
-
-        struct Broker;
-        impl windows_vm::CapabilityBroker for Broker {
-            fn materialize(
-                &self,
-                _: &windows_vm::LaunchRequest,
-            ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
-                Ok(windows_vm::BrokeredLaunch {
-                    lease_id: "server-lease".to_string(),
-                    network: false,
-                    network_binding: None,
-                    clipboard: true,
-                    microphone: false,
-                    shares: vec![windows_vm::ShareBinding {
-                        drive_name: "TILO1".to_string(),
-                        portal_document_id: "portal-document".to_string(),
-                        host_path: windows_vm::portal_lease_root()
-                            .join("server-lease/portal-document"),
-                        read_only: true,
-                    }],
+            // The actual host-only address belongs to libvirt, not a unit test
+            // process. Exercise the non-network portions here; GuestNetworkProxy
+            // has its own loopback listener tests and production fails closed if
+            // the dedicated address is not available.
+            let grants = windows_vm::VmLaunchGrants {
+                network: false,
+                network_hosts: Vec::new(),
+                ..grants
+            };
+            let lease = CanonicalRailCapabilityBroker::default()
+                .materialize(&windows_vm::LaunchRequest {
+                    workspace_id: "workspace".to_string(),
+                    application_id: "published.app".to_string(),
+                    grants,
                 })
+                .unwrap();
+            assert!(lease.clipboard && lease.microphone);
+            assert!(!lease.network && lease.shares.is_empty());
+        }
+        // Phase `app_focused_broker_materializes_an_explicit_empty_lease`.
+        {
+            use windows_vm::CapabilityBroker as _;
+            let broker = DenyAllVmCapabilityBroker::default();
+            let lease = broker
+                .materialize(&windows_vm::LaunchRequest {
+                    workspace_id: "workspace".to_string(),
+                    application_id: "published.app".to_string(),
+                    grants: windows_vm::VmLaunchGrants::default(),
+                })
+                .unwrap();
+            lease.validate().unwrap();
+            assert!(!lease.network && !lease.clipboard && !lease.microphone);
+            assert!(lease.shares.is_empty());
+        }
+        // Phase `a_portal_cannot_project_ungranted_network_or_microphone`.
+        {
+            let result = validate_portal_projection(
+                &windows_vm::VmLaunchGrants {
+                    network_hosts: vec!["example.test".to_string()],
+                    network: true,
+                    clipboard: false,
+                    microphone: true,
+                    portal_documents: Vec::new(),
+                },
+                &CapabilityPlan::empty(),
+            );
+            assert!(matches!(
+                result,
+                Err(windows_vm::LaunchError::BrokerEscalated("network"))
+            ));
+
+            let result = validate_portal_projection(
+                &windows_vm::VmLaunchGrants {
+                    network_hosts: Vec::new(),
+                    network: false,
+                    clipboard: false,
+                    microphone: true,
+                    portal_documents: Vec::new(),
+                },
+                &CapabilityPlan::empty(),
+            );
+            assert!(matches!(
+                result,
+                Err(windows_vm::LaunchError::BrokerEscalated("microphone"))
+            ));
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn guest_identities_and_statuses_stay_host_owned_and_workspace_scoped() {
+        // Phase `shared_session_summary_comes_from_materialized_broker_resources`.
+        {
+            use windows_vm::CapabilityBroker as _;
+
+            struct Broker;
+            impl windows_vm::CapabilityBroker for Broker {
+                fn materialize(
+                    &self,
+                    _: &windows_vm::LaunchRequest,
+                ) -> Result<windows_vm::BrokeredLaunch, windows_vm::LaunchError> {
+                    Ok(windows_vm::BrokeredLaunch {
+                        lease_id: "server-lease".to_string(),
+                        network: false,
+                        network_binding: None,
+                        clipboard: true,
+                        microphone: false,
+                        shares: vec![windows_vm::ShareBinding {
+                            drive_name: "TILO1".to_string(),
+                            portal_document_id: "portal-document".to_string(),
+                            host_path: windows_vm::portal_lease_root()
+                                .join("server-lease/portal-document"),
+                            read_only: true,
+                        }],
+                    })
+                }
+
+                fn revoke(&self, _: &str) {}
             }
 
-            fn revoke(&self, _: &str) {}
-        }
-
-        let tracker = VmSharedSessionTracker::default();
-        tracker.register_catalog(&windows_vm::Catalog {
-            generation: 1,
-            applications: vec![windows_vm::PublishedApplication {
-                id: "published.app".to_string(),
-                display_name: "Published app".to_string(),
-                remote_app_alias: "published.app".to_string(),
-                icon_sha256: None,
-                associations: Vec::new(),
-                uninstall_available: false,
-            }],
-        });
-        let broker = SharedSessionCapabilityBroker::new(Broker, tracker.clone());
-        let request = windows_vm::LaunchRequest {
-            workspace_id: "workspace".to_string(),
-            application_id: "published.app".to_string(),
-            grants: windows_vm::VmLaunchGrants {
-                network_hosts: Vec::new(),
-                network: false,
-                clipboard: true,
-                microphone: false,
-                portal_documents: vec![windows_vm::PortalDocumentGrant {
-                    handle: "portal-document".to_string(),
-                    access: windows_vm::PortalDocumentAccess::ReadOnly,
+            let tracker = VmSharedSessionTracker::default();
+            tracker.register_catalog(&windows_vm::Catalog {
+                generation: 1,
+                applications: vec![windows_vm::PublishedApplication {
+                    id: "published.app".to_string(),
+                    display_name: "Published app".to_string(),
+                    remote_app_alias: "published.app".to_string(),
+                    icon_sha256: None,
+                    associations: Vec::new(),
+                    uninstall_available: false,
                 }],
-            },
-        };
-        let lease = broker.materialize(&request).unwrap();
-        let summary = tracker.summary();
-        assert!(summary.active);
-        assert_eq!(
-            summary.effective_grants,
-            vec![
-                VmSharedSessionGrantKind::AudioPlayback,
-                VmSharedSessionGrantKind::Clipboard,
-                VmSharedSessionGrantKind::PortalFilesReadOnly,
-            ]
-        );
-        assert_eq!(
-            summary.contributors,
-            vec![VmSharedSessionContributor {
-                published_application_id: "published.app".to_string(),
-                display_name: "Published app".to_string(),
-            }]
-        );
-        broker.revoke(&lease.lease_id);
-        assert_eq!(tracker.summary(), VmSharedSessionLeaseSummary::default());
-    }
+            });
+            let broker = SharedSessionCapabilityBroker::new(Broker, tracker.clone());
+            let request = windows_vm::LaunchRequest {
+                workspace_id: "workspace".to_string(),
+                application_id: "published.app".to_string(),
+                grants: windows_vm::VmLaunchGrants {
+                    network_hosts: Vec::new(),
+                    network: false,
+                    clipboard: true,
+                    microphone: false,
+                    portal_documents: vec![windows_vm::PortalDocumentGrant {
+                        handle: "portal-document".to_string(),
+                        access: windows_vm::PortalDocumentAccess::ReadOnly,
+                    }],
+                },
+            };
+            let lease = broker.materialize(&request).unwrap();
+            let summary = tracker.summary();
+            assert!(summary.active);
+            assert_eq!(
+                summary.effective_grants,
+                vec![
+                    VmSharedSessionGrantKind::AudioPlayback,
+                    VmSharedSessionGrantKind::Clipboard,
+                    VmSharedSessionGrantKind::PortalFilesReadOnly,
+                ]
+            );
+            assert_eq!(
+                summary.contributors,
+                vec![VmSharedSessionContributor {
+                    published_application_id: "published.app".to_string(),
+                    display_name: "Published app".to_string(),
+                }]
+            );
+            broker.revoke(&lease.lease_id);
+            assert_eq!(tracker.summary(), VmSharedSessionLeaseSummary::default());
+        }
+        // Phase `published_guest_identity_is_mapped_to_host_owned_opaque_ids`.
+        {
+            let entry = vm_entry_id("guest-word");
+            let app = vm_app_id("guest-word");
+            assert!(entry.starts_with("windows-vm-"));
+            assert!(app.starts_with("so.tilo.windows.vm."));
+            assert_ne!(entry, "guest-word");
+            assert_ne!(app, "guest-word");
+            assert_eq!(entry, vm_entry_id("guest-word"));
+            assert_ne!(entry, vm_entry_id("guest-excel"));
+        }
+        // Phase `workspace_b_cannot_observe_or_publish_workspace_a_candidates`.
+        {
+            let operation =
+                windows_vm::InstallationOperationId::parse("installer-operation-a").unwrap();
+            let candidate = windows_vm::DiscoveredApplication {
+                id: "guest-app".to_string(),
+                display_name: "Guest app".to_string(),
+                product_name: None,
+                publisher: None,
+                version: None,
+                uninstall: None,
+            };
+            let candidate_entry = vm_candidate_entry_id(&operation, &candidate.id);
+            let active = ActiveVmInstallation {
+                workspace_id: "workspace-a".to_string(),
+                operation,
+                generation: 1,
+                candidates: BTreeMap::from([(candidate_entry.clone(), candidate)]),
+                status: VmInstallation {
+                    detail: "Running".to_string(),
+                    phase: VmInstallationPhase::Running,
+                    exit_code: None,
+                    candidates: Vec::new(),
+                },
+            };
 
-    #[test]
-    fn a_portal_cannot_project_ungranted_network_or_microphone() {
-        let result = validate_portal_projection(
-            &windows_vm::VmLaunchGrants {
-                network_hosts: vec!["example.test".to_string()],
-                network: true,
-                clipboard: false,
-                microphone: true,
-                portal_documents: Vec::new(),
-            },
-            &CapabilityPlan::empty(),
-        );
-        assert!(matches!(
-            result,
-            Err(windows_vm::LaunchError::BrokerEscalated("network"))
-        ));
+            assert!(active.status_for("workspace-a").is_some());
+            assert!(
+                active
+                    .candidate_for("workspace-a", &candidate_entry)
+                    .is_some()
+            );
+            assert!(active.status_for("workspace-b").is_none());
+            assert!(
+                active
+                    .candidate_for("workspace-b", &candidate_entry)
+                    .is_none()
+            );
+        }
+        // Phase `guest_uninstall_status_preserves_running_and_failed_state`.
+        {
+            let operation =
+                windows_vm::UninstallationOperationId::parse("uninstall-operation-a").unwrap();
+            let running = vm_uninstallation_from_guest(
+                "windows-vm-entry",
+                &windows_vm::UninstallationStatus {
+                    operation_id: operation.clone(),
+                    state: windows_vm::InstallationState::Running,
+                    exit_code: None,
+                    catalog_generation: None,
+                },
+            );
+            assert_eq!(running.phase, VmInstallationPhase::Running);
+            assert!(running.detail.contains("running"));
 
-        let result = validate_portal_projection(
-            &windows_vm::VmLaunchGrants {
-                network_hosts: Vec::new(),
-                network: false,
-                clipboard: false,
-                microphone: true,
-                portal_documents: Vec::new(),
-            },
-            &CapabilityPlan::empty(),
-        );
-        assert!(matches!(
-            result,
-            Err(windows_vm::LaunchError::BrokerEscalated("microphone"))
-        ));
-    }
-
-    #[test]
-    fn published_guest_identity_is_mapped_to_host_owned_opaque_ids() {
-        let entry = vm_entry_id("guest-word");
-        let app = vm_app_id("guest-word");
-        assert!(entry.starts_with("windows-vm-"));
-        assert!(app.starts_with("so.tilo.windows.vm."));
-        assert_ne!(entry, "guest-word");
-        assert_ne!(app, "guest-word");
-        assert_eq!(entry, vm_entry_id("guest-word"));
-        assert_ne!(entry, vm_entry_id("guest-excel"));
-    }
-
-    #[test]
-    fn workspace_b_cannot_observe_or_publish_workspace_a_candidates() {
-        let operation =
-            windows_vm::InstallationOperationId::parse("installer-operation-a").unwrap();
-        let candidate = windows_vm::DiscoveredApplication {
-            id: "guest-app".to_string(),
-            display_name: "Guest app".to_string(),
-            product_name: None,
-            publisher: None,
-            version: None,
-            uninstall: None,
-        };
-        let candidate_entry = vm_candidate_entry_id(&operation, &candidate.id);
-        let active = ActiveVmInstallation {
-            workspace_id: "workspace-a".to_string(),
-            operation,
-            generation: 1,
-            candidates: BTreeMap::from([(candidate_entry.clone(), candidate)]),
-            status: VmInstallation {
-                detail: "Running".to_string(),
-                phase: VmInstallationPhase::Running,
-                exit_code: None,
-                candidates: Vec::new(),
-            },
-        };
-
-        assert!(active.status_for("workspace-a").is_some());
-        assert!(
-            active
-                .candidate_for("workspace-a", &candidate_entry)
-                .is_some()
-        );
-        assert!(active.status_for("workspace-b").is_none());
-        assert!(
-            active
-                .candidate_for("workspace-b", &candidate_entry)
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn guest_uninstall_status_preserves_running_and_failed_state() {
-        let operation =
-            windows_vm::UninstallationOperationId::parse("uninstall-operation-a").unwrap();
-        let running = vm_uninstallation_from_guest(
-            "windows-vm-entry",
-            &windows_vm::UninstallationStatus {
-                operation_id: operation.clone(),
-                state: windows_vm::InstallationState::Running,
-                exit_code: None,
-                catalog_generation: None,
-            },
-        );
-        assert_eq!(running.phase, VmInstallationPhase::Running);
-        assert!(running.detail.contains("running"));
-
-        let failed = vm_uninstallation_from_guest(
-            "windows-vm-entry",
-            &windows_vm::UninstallationStatus {
-                operation_id: operation,
-                state: windows_vm::InstallationState::Failed,
-                exit_code: Some(1),
-                catalog_generation: None,
-            },
-        );
-        assert_eq!(failed.phase, VmInstallationPhase::Failed);
-        assert_eq!(failed.exit_code, Some(1));
-        assert!(failed.detail.contains("retry"));
+            let failed = vm_uninstallation_from_guest(
+                "windows-vm-entry",
+                &windows_vm::UninstallationStatus {
+                    operation_id: operation,
+                    state: windows_vm::InstallationState::Failed,
+                    exit_code: Some(1),
+                    catalog_generation: None,
+                },
+            );
+            assert_eq!(failed.phase, VmInstallationPhase::Failed);
+            assert_eq!(failed.exit_code, Some(1));
+            assert!(failed.detail.contains("retry"));
+        }
     }
 }

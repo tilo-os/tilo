@@ -7,16 +7,24 @@
 //! the palette reaches exactly what an agent, a peer or the MCP bridge
 //! reaches, with the same authority checks — and a run shows up as a broker
 //! job like any other background action.
+//!
+//! While the palette searches inside one resource
+//! ([`SearchResourceScope`]), it offers instead the shortcuts that run on
+//! that resource as quick actions: those whose first input takes resources
+//! of its kind ([`quick_action_input`]). Such a row runs the shortcut with
+//! the resource bound to that input.
 
 use std::rc::Rc;
 
+use serde_json::{Map, Value};
 use tilo_actions::remote::{
     ActionHost as _, Caller, CatalogueQuery, CatalogueRow, InvokeArgument, InvokeRequest,
     MAX_CATALOGUE_PAGE, PendingPoll, RemoteActionTarget, workspace_provider,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_automation::SHORTCUTS_APP_ID;
+use tilo_automation::{SHORTCUTS_APP_ID, quick_action_arguments, quick_action_input};
 
+use crate::shell::chrome_state::SearchResourceScope;
 use crate::shell::collab_broker::AppActionBroker;
 use crate::shell::remote_actions::BrokerActionHost;
 use crate::shell::search::action_api::ActionError;
@@ -37,7 +45,38 @@ impl ShortcutsProvider {
     }
 
     fn result(&self, caller: &Caller, row: CatalogueRow, score: i32) -> Option<SearchResult> {
+        self.row_result(caller, row, score, None)
+    }
+
+    /// The row running shortcut `row` on the resource the palette searches
+    /// in, when it runs on resources of that kind.
+    fn quick_action(
+        &self,
+        caller: &Caller,
+        row: CatalogueRow,
+        within: &SearchResourceScope,
+        score: i32,
+    ) -> Option<SearchResult> {
+        let descriptor = row.action.as_ref()?;
+        let input = quick_action_input(&descriptor.params, &within.kind)?;
+        let bound = QuickAction {
+            label: within.label.clone(),
+            arguments: quick_action_arguments(input, &within.resource),
+        };
+        self.row_result(caller, row, score, Some(&bound))
+    }
+
+    fn row_result(
+        &self,
+        caller: &Caller,
+        row: CatalogueRow,
+        score: i32,
+        quick: Option<&QuickAction>,
+    ) -> Option<SearchResult> {
         let descriptor = row.action?;
+        let bound = quick
+            .map(|quick| quick.arguments.clone())
+            .unwrap_or_default();
         let broker = self.broker.clone();
         let caller = caller.clone();
         let target = RemoteActionTarget {
@@ -54,13 +93,17 @@ impl ShortcutsProvider {
                   args: &tilo_actions::ActionArgs|
                   -> Result<ActionReceipt, ActionError> {
                 let invocation = InvocationId::new();
+                let mut arguments = bound.clone();
+                if !args.is_empty() {
+                    arguments.extend(args.to_json());
+                }
                 let request = InvokeRequest {
                     invocation,
                     target: target.clone(),
-                    argument: if args.is_empty() {
+                    argument: if arguments.is_empty() {
                         InvokeArgument::None
                     } else {
-                        InvokeArgument::Json(args.to_json())
+                        InvokeArgument::Json(arguments)
                     },
                     context: None,
                     confirmation: None,
@@ -83,6 +126,19 @@ impl ShortcutsProvider {
             },
         );
         let open = Rc::clone(&invoke);
+        let (subtitle, params) = match quick {
+            // The bound input is not asked for again.
+            Some(quick) => (
+                Some(format!("Run on {}", quick.label)),
+                descriptor
+                    .params
+                    .iter()
+                    .filter(|param| !quick.arguments.contains_key(param.name.as_ref()))
+                    .cloned()
+                    .collect(),
+            ),
+            None => (descriptor.description.clone(), descriptor.params.clone()),
+        };
         Some(SearchResult {
             kind: ResourceKind::Action,
             operation_kind: descriptor.kind,
@@ -92,10 +148,17 @@ impl ShortcutsProvider {
                 descriptor.address.resource, descriptor.address.action
             ),
             title: descriptor.action_label.clone(),
-            subtitle: descriptor.description.clone(),
-            badge: Some("Shortcut".into()),
+            subtitle,
+            badge: Some(
+                if quick.is_some() {
+                    "Quick action"
+                } else {
+                    "Shortcut"
+                }
+                .into(),
+            ),
             score,
-            params: descriptor.params.clone(),
+            params,
             contract: Some(descriptor.contract),
             on_open: Rc::new(move |doc, root, chrome, args| {
                 open(doc, root, chrome, args).map(drop)
@@ -104,6 +167,13 @@ impl ShortcutsProvider {
             on_begin_invoke: None,
         })
     }
+}
+
+/// A resource bound to a shortcut's first input.
+struct QuickAction {
+    /// The resource's label, for the row.
+    label: String,
+    arguments: Map<String, Value>,
 }
 
 impl SearchProvider for ShortcutsProvider {
@@ -147,6 +217,7 @@ impl SearchProvider for ShortcutsProvider {
             return Vec::new();
         };
         let needle = ctx.needle.trim().to_lowercase();
+        let within = ctx.chrome.search_resource_scope.clone();
         page.rows
             .into_iter()
             .filter(|row| row.app_id == SHORTCUTS_APP_ID)
@@ -166,8 +237,152 @@ impl SearchProvider for ShortcutsProvider {
                 } else {
                     return None;
                 };
-                self.result(&caller, row, score)
+                match &within {
+                    Some(resource) => self.quick_action(&caller, row, resource, score),
+                    None => self.result(&caller, row, score),
+                }
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{Duration, Instant};
+
+    use automerge::AutoCommit;
+    use tilo_actions::params::{ActionParam, ParamType};
+    use tilo_automation::{Binding, Shortcut};
+
+    use super::*;
+    use crate::shell::chrome_state::{Chrome, ChromeState};
+    use crate::shell::state::{Workspace, WorkspaceId, WorkspaceTree};
+
+    /// A workspace the local person owns, holding a shortcut that runs on
+    /// one file and hands the file back as its output, and one that takes
+    /// nothing.
+    fn chrome_with_file_shortcut() -> Chrome {
+        let mut workspace = Workspace::new(WorkspaceId(1), "Quick actions");
+        let owner = crate::shell::state::local_user_id_for_room(&workspace.room);
+        let on_file = Shortcut {
+            id: "archive-file".into(),
+            name: "Archive a file".into(),
+            inputs: vec![
+                ActionParam::required("file", ParamType::Resource, "The file")
+                    .of_resource_kind("files.entry"),
+                ActionParam::optional("note", ParamType::Text, "Why"),
+            ],
+            steps: Vec::new(),
+            output: Some(Binding::Input("file".into())),
+            grant: Vec::new(),
+            triggers: Vec::new(),
+            consents: Vec::new(),
+            saved_by: Some(owner.clone()),
+        };
+        let mut plain = on_file.clone();
+        plain.id = "tidy".into();
+        plain.name = "Tidy".into();
+        plain.inputs.clear();
+        plain.output = None;
+        workspace.owner = Some(owner);
+        workspace.shortcuts = vec![on_file, plain];
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        tree.desktop.active = WorkspaceId(1);
+        ChromeState::new_with_handle(tree.shared())
+    }
+
+    fn scope(kind: &str) -> SearchResourceScope {
+        SearchResourceScope {
+            peer_id: 7,
+            cluster_id: "room".into(),
+            app_id: "so.tilo.files".into(),
+            resource: format!("{kind}:0123"),
+            label: "receipt.pdf".into(),
+            kind: kind.into(),
+        }
+    }
+
+    fn query(provider: &ShortcutsProvider, chrome: &Chrome) -> Vec<SearchResult> {
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        provider.query(SearchContext {
+            needle: "",
+            wanted: &[ResourceKind::Action],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &automerge::ROOT,
+        })
+    }
+
+    fn ids(results: &[SearchResult]) -> Vec<String> {
+        let mut ids: Vec<String> = results.iter().map(|row| row.id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    #[test]
+    fn a_resource_offers_the_shortcuts_that_run_on_its_kind_only() {
+        let chrome = chrome_with_file_shortcut();
+        let broker =
+            crate::shell::collab_broker_capnp::CapnpBrokerState::test_broker_with_membership(
+                chrome.borrow().tree_handle(),
+            );
+        let provider = ShortcutsProvider::new(broker.clone());
+        let everything = ids(&query(&provider, &chrome));
+        assert!(
+            everything.contains(&"shortcuts.shortcut:archive-file#run".to_string())
+                && everything.contains(&"shortcuts.shortcut:tidy#run".to_string()),
+            "outside a resource every shortcut is listed: {everything:?}"
+        );
+
+        chrome.borrow_mut().search_resource_scope = Some(scope("calendar.event"));
+        assert!(
+            query(&provider, &chrome).is_empty(),
+            "an event is offered no file shortcut"
+        );
+
+        chrome.borrow_mut().search_resource_scope = Some(scope("files.entry.image"));
+        let offered = query(&provider, &chrome);
+        assert_eq!(ids(&offered), ["shortcuts.shortcut:archive-file#run"]);
+        let row = &offered[0];
+        assert_eq!(row.badge.as_deref(), Some("Quick action"));
+        assert_eq!(row.subtitle.as_deref(), Some("Run on receipt.pdf"));
+        assert_eq!(
+            row.params
+                .iter()
+                .map(|param| param.name.as_ref())
+                .collect::<Vec<_>>(),
+            ["note"],
+            "the file is bound, not asked for"
+        );
+
+        let invoke = row.on_invoke.clone().expect("the row runs");
+        let mut doc = AutoCommit::new();
+        let receipt = invoke(
+            &mut doc,
+            &automerge::ROOT,
+            &chrome,
+            &tilo_actions::ActionArgs::none(),
+        )
+        .expect("the quick action starts");
+        let job = receipt.broker_invocation_id.expect("a broker job");
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let output = loop {
+            match broker.status(job) {
+                Some(InvocationUpdate::Succeeded { output, .. }) => break output,
+                Some(InvocationUpdate::Failed { error, .. }) => {
+                    panic!("the quick action failed: {}", error.message)
+                }
+                _ => {}
+            }
+            assert!(Instant::now() < deadline, "the quick action never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert_eq!(
+            output.value,
+            Some(serde_json::json!("files.entry.image:0123")),
+            "the run received the resource through its first input"
+        );
     }
 }

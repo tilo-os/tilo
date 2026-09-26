@@ -524,68 +524,6 @@ mod tests {
     }
 
     #[test]
-    fn udev_classification_requires_joystick_and_rejects_hybrid_input() {
-        assert!(is_exclusive_controller(
-            "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
-        ));
-        assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
-        for hybrid in [
-            "ID_INPUT_KEYBOARD=1",
-            "ID_INPUT_MOUSE=1",
-            "ID_INPUT_TOUCHPAD=1",
-            "ID_INPUT_TOUCHSCREEN=1",
-            "ID_INPUT_TABLET=1",
-        ] {
-            assert!(!is_exclusive_controller(&format!(
-                "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
-            )));
-        }
-    }
-
-    #[test]
-    fn stick_calibration_scales_asymmetrically_and_applies_deadzone() {
-        let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
-            .expect("valid calibration");
-        assert_eq!(axis.center, 100);
-        assert_eq!(axis.normalize(-100), i16::MIN);
-        assert_eq!(axis.normalize(300), i16::MAX);
-        assert_eq!(axis.normalize(89), 0);
-        assert_eq!(axis.normalize(112), 0);
-        assert!(axis.normalize(50) < 0);
-        assert!(axis.normalize(200) > 0);
-    }
-
-    #[test]
-    fn trigger_calibration_uses_zero_as_neutral() {
-        let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
-            .expect("valid calibration");
-        assert_eq!(trigger.normalize(0), 0);
-        assert_eq!(trigger.normalize(255), i16::MAX);
-        assert!((16_300..=16_500).contains(&trigger.normalize(128)));
-    }
-
-    #[test]
-    fn invalid_axis_calibration_fails_closed() {
-        assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
-        assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
-    }
-
-    #[test]
-    fn hats_are_clamped_to_fixed_typed_range() {
-        for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
-            let normalized = raw.signum() as i8;
-            assert!((-1..=1).contains(&normalized));
-            assert!(
-                ForwardedGamepadEvent::Hat {
-                    x: normalized,
-                    y: -normalized,
-                }
-                .is_valid()
-            );
-        }
-    }
-
-    #[test]
     fn forwarded_virtual_gamepads_are_not_room_hardware() {
         assert!(is_forwarded_gamepad(
             Some(FORWARDED_GAMEPAD_VENDOR),
@@ -608,10 +546,70 @@ mod tests {
     }
 
     #[test]
-    fn kernel_codes_map_only_to_fixed_schema() {
-        assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
-        assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
-        assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
-        assert_eq!(gamepad_button(0xffff), None);
+    fn physical_gamepads_classify_and_calibrate_into_the_fixed_schema() {
+        // Phase `udev_classification_requires_joystick_and_rejects_hybrid_input`.
+        {
+            assert!(is_exclusive_controller(
+                "E:ID_INPUT=1\nE:ID_INPUT_JOYSTICK=1\n"
+            ));
+            assert!(!is_exclusive_controller("E:ID_INPUT=1\n"));
+            for hybrid in [
+                "ID_INPUT_KEYBOARD=1",
+                "ID_INPUT_MOUSE=1",
+                "ID_INPUT_TOUCHPAD=1",
+                "ID_INPUT_TOUCHSCREEN=1",
+                "ID_INPUT_TABLET=1",
+            ] {
+                assert!(!is_exclusive_controller(&format!(
+                    "E:ID_INPUT_JOYSTICK=1\nE:{hybrid}\n"
+                )));
+            }
+        }
+        // Phase `stick_calibration_scales_asymmetrically_and_applies_deadzone`.
+        {
+            let axis = AxisCalibration::from_abs_info(abs_info(-100, 300, 12), AxisKind::Stick)
+                .expect("valid calibration");
+            assert_eq!(axis.center, 100);
+            assert_eq!(axis.normalize(-100), i16::MIN);
+            assert_eq!(axis.normalize(300), i16::MAX);
+            assert_eq!(axis.normalize(89), 0);
+            assert_eq!(axis.normalize(112), 0);
+            assert!(axis.normalize(50) < 0);
+            assert!(axis.normalize(200) > 0);
+        }
+        // Phase `trigger_calibration_uses_zero_as_neutral`.
+        {
+            let trigger = AxisCalibration::from_abs_info(abs_info(0, 255, 0), AxisKind::Trigger)
+                .expect("valid calibration");
+            assert_eq!(trigger.normalize(0), 0);
+            assert_eq!(trigger.normalize(255), i16::MAX);
+            assert!((16_300..=16_500).contains(&trigger.normalize(128)));
+        }
+        // Phase `invalid_axis_calibration_fails_closed`.
+        {
+            assert!(AxisCalibration::from_abs_info(abs_info(4, 4, 0), AxisKind::Stick).is_err());
+            assert!(AxisCalibration::from_abs_info(abs_info(5, 4, 0), AxisKind::Trigger).is_err());
+        }
+        // Phase `hats_are_clamped_to_fixed_typed_range`.
+        {
+            for raw in [i32::MIN, -2, -1, 0, 1, 2, i32::MAX] {
+                let normalized = raw.signum() as i8;
+                assert!((-1..=1).contains(&normalized));
+                assert!(
+                    ForwardedGamepadEvent::Hat {
+                        x: normalized,
+                        y: -normalized,
+                    }
+                    .is_valid()
+                );
+            }
+        }
+        // Phase `kernel_codes_map_only_to_fixed_schema`.
+        {
+            assert_eq!(gamepad_button(BTN_SOUTH), Some(GamepadButton::South));
+            assert_eq!(gamepad_button(BTN_MODE), Some(GamepadButton::Guide));
+            assert_eq!(gamepad_button(30), None, "keyboard A must never escape");
+            assert_eq!(gamepad_button(0xffff), None);
+        }
     }
 }

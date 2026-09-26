@@ -952,99 +952,97 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn rgba_image_is_encoded_as_lossless_png() {
-        let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
-        let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
-        let decoded = crate::png::decode_rgba8(&png).expect("complete PNG");
-        assert_eq!((decoded.width, decoded.height), (2, 1));
-        assert_eq!(decoded.rgba, rgba);
+    fn clipboard_images_encode_as_bounded_lossless_png() {
+        // phase: rgba_image_is_encoded_as_lossless_png
+        {
+            let rgba = [0xff, 0x00, 0x80, 0xff, 0x10, 0x20, 0x30, 0x40];
+            let png = encode_png(2, 1, &rgba).expect("valid RGBA image");
+            let decoded = crate::png::decode_rgba8(&png).expect("complete PNG");
+            assert_eq!((decoded.width, decoded.height), (2, 1));
+            assert_eq!(decoded.rgba, rgba);
+        }
+        // phase: png_encoding_rejects_invalid_dimensions_and_oversized_input
+        {
+            assert!(encode_png(0, 1, &[]).is_none());
+            assert!(encode_png(1, 1, &[]).is_none());
+            assert!(encode_png(usize::MAX, 1, &[0; 4]).is_none());
+            assert!(encode_png(MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1, 1, &[0; 4]).is_none());
+        }
     }
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn png_encoding_rejects_invalid_dimensions_and_oversized_input() {
-        assert!(encode_png(0, 1, &[]).is_none());
-        assert!(encode_png(1, 1, &[]).is_none());
-        assert!(encode_png(usize::MAX, 1, &[0; 4]).is_none());
-        assert!(encode_png(MAX_CLIPBOARD_IMAGE_INPUT_BYTES / 4 + 1, 1, &[0; 4]).is_none());
-    }
+    fn clipboard_transfers_are_single_flight_bounded_and_mime_exact() {
+        // phase: external_readers_are_single_flight_but_targets_are_independent
+        {
+            use std::sync::atomic::AtomicBool;
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn external_readers_are_single_flight_but_targets_are_independent() {
-        use std::sync::atomic::AtomicBool;
+            let clipboard = AtomicBool::new(false);
+            let primary = AtomicBool::new(false);
+            assert!(begin_external_refresh(&clipboard));
+            assert!(!begin_external_refresh(&clipboard));
+            assert!(begin_external_refresh(&primary));
+            clipboard.store(false, std::sync::atomic::Ordering::Release);
+            assert!(begin_external_refresh(&clipboard));
+        }
+        // phase: bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback
+        {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
+            let owner = std::thread::spawn(move || {
+                // Answer only once the reader is waiting, so the budget is what
+                // bounds the wait rather than the answer already being queued.
+                request_rx.recv().unwrap();
+                let _ = tx.send(Some("fresh".to_string()));
+            });
+            request_tx.send(()).unwrap();
+            assert_eq!(
+                recv_bounded(&rx, crate::time::Duration::from_secs(30)),
+                Some(Some("fresh".to_string()))
+            );
+            owner.join().unwrap();
 
-        let clipboard = AtomicBool::new(false);
-        let primary = AtomicBool::new(false);
-        assert!(begin_external_refresh(&clipboard));
-        assert!(!begin_external_refresh(&clipboard));
-        assert!(begin_external_refresh(&primary));
-        clipboard.store(false, std::sync::atomic::Ordering::Release);
-        assert!(begin_external_refresh(&clipboard));
-    }
+            let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
+            assert_eq!(
+                recv_bounded(&rx, crate::time::Duration::from_millis(1)),
+                None,
+                "a slow external owner must not make paste return an unrelated cached value"
+            );
+        }
+        // phase: shutdown_join_is_bounded_when_a_protocol_worker_is_stuck
+        {
+            // The worker stays blocked until this test releases it, so a
+            // `join_bounded` that returns at all has given up on its own budget.
+            let (release, stuck) = std::sync::mpsc::channel::<()>();
+            let worker = std::thread::spawn(move || {
+                let _ = stuck.recv();
+            });
+            assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
+            drop(release);
 
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn bounded_result_wait_returns_fresh_data_and_times_out_without_stale_fallback() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let (request_tx, request_rx) = std::sync::mpsc::channel::<()>();
-        let owner = std::thread::spawn(move || {
-            // Answer only once the reader is waiting, so the budget is what
-            // bounds the wait rather than the answer already being queued.
-            request_rx.recv().unwrap();
-            let _ = tx.send(Some("fresh".to_string()));
-        });
-        request_tx.send(()).unwrap();
-        assert_eq!(
-            recv_bounded(&rx, crate::time::Duration::from_secs(30)),
-            Some(Some("fresh".to_string()))
-        );
-        owner.join().unwrap();
+            let finished = std::thread::spawn(|| {});
+            assert!(
+                join_bounded(finished, crate::time::Duration::from_secs(30)),
+                "a worker that exits is joined within the budget"
+            );
+        }
+        // phase: source_payload_rejects_unadvertised_mime_without_falling_back_to_text
+        {
+            use image_worker_impl::SourcePayload;
 
-        let (_tx, rx) = std::sync::mpsc::channel::<Option<String>>();
-        assert_eq!(
-            recv_bounded(&rx, crate::time::Duration::from_millis(1)),
-            None,
-            "a slow external owner must not make paste return an unrelated cached value"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn shutdown_join_is_bounded_when_a_protocol_worker_is_stuck() {
-        // The worker stays blocked until this test releases it, so a
-        // `join_bounded` that returns at all has given up on its own budget.
-        let (release, stuck) = std::sync::mpsc::channel::<()>();
-        let worker = std::thread::spawn(move || {
-            let _ = stuck.recv();
-        });
-        assert!(!join_bounded(worker, crate::time::Duration::from_millis(2)));
-        drop(release);
-
-        let finished = std::thread::spawn(|| {});
-        assert!(
-            join_bounded(finished, crate::time::Duration::from_secs(30)),
-            "a worker that exits is joined within the budget"
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn source_payload_rejects_unadvertised_mime_without_falling_back_to_text() {
-        use image_worker_impl::SourcePayload;
-
-        let payload = SourcePayload {
-            image: Some(Arc::from([1u8, 2, 3].as_slice())),
-            text: Some(Arc::from(b"caption".as_slice())),
-        };
-        assert_eq!(
-            payload.bytes_for_mime("image/png").as_deref(),
-            Some(&[1, 2, 3][..])
-        );
-        assert_eq!(
-            payload.bytes_for_mime("text/plain").as_deref(),
-            Some(&b"caption"[..])
-        );
-        assert!(payload.bytes_for_mime("application/octet-stream").is_none());
+            let payload = SourcePayload {
+                image: Some(Arc::from([1u8, 2, 3].as_slice())),
+                text: Some(Arc::from(b"caption".as_slice())),
+            };
+            assert_eq!(
+                payload.bytes_for_mime("image/png").as_deref(),
+                Some(&[1, 2, 3][..])
+            );
+            assert_eq!(
+                payload.bytes_for_mime("text/plain").as_deref(),
+                Some(&b"caption"[..])
+            );
+            assert!(payload.bytes_for_mime("application/octet-stream").is_none());
+        }
     }
 }

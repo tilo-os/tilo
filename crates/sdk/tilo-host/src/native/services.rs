@@ -136,6 +136,8 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             window_no_activate: std::env::var("TILO_PROFILE_WINDOW_NO_ACTIVATE").as_deref()
                 == Ok("1"),
         },
+        dev_session: path("TILO_DEV_SESSION"),
+        ui_graph_dir: path("TILO_UI_GRAPH_DIR"),
     }
 }
 
@@ -467,28 +469,30 @@ mod tests {
         );
     }
 
-    /// Copy → paste must round-trip within the process even with no system
-    /// clipboard (the headless test env), and equally when a real clipboard
-    /// is present.
     #[test]
-    fn native_clipboard_round_trips_with_or_without_a_system_clipboard() {
-        let clipboard = NativeClipboard::default();
-        let payload = "https://example.com/feed.xml";
-        clipboard.set_text(ClipboardTarget::Clipboard, payload);
-        assert_eq!(
-            clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-            Some(payload)
-        );
-    }
-
-    #[test]
-    fn native_services_resolve_one_shared_clipboard() {
-        let a = services(None);
-        let b = services(Some("so.tilo.example"));
-        assert!(std::ptr::addr_eq(
-            Arc::as_ptr(&a.clipboard),
-            Arc::as_ptr(&b.clipboard)
-        ));
-        assert_eq!(a.clipboard.name(), "native");
+    fn native_services_share_one_round_tripping_clipboard() {
+        // phase: native_clipboard_round_trips_with_or_without_a_system_clipboard
+        // Copy → paste must round-trip within the process even with no system
+        // clipboard (the headless test env), and equally when a real clipboard
+        // is present.
+        {
+            let clipboard = NativeClipboard::default();
+            let payload = "https://example.com/feed.xml";
+            clipboard.set_text(ClipboardTarget::Clipboard, payload);
+            assert_eq!(
+                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
+                Some(payload)
+            );
+        }
+        // phase: native_services_resolve_one_shared_clipboard
+        {
+            let a = services(None);
+            let b = services(Some("so.tilo.example"));
+            assert!(std::ptr::addr_eq(
+                Arc::as_ptr(&a.clipboard),
+                Arc::as_ptr(&b.clipboard)
+            ));
+            assert_eq!(a.clipboard.name(), "native");
+        }
     }
 }

@@ -3160,33 +3160,114 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
-        let queue = Arc::new(WorkerQueue {
+    fn queue() -> Arc<WorkerQueue> {
+        Arc::new(WorkerQueue {
             state: Mutex::new(QueueState::default()),
             ready: Condvar::new(),
+        })
+    }
+
+    fn open_request(id: u64, path: &str) -> OpenRequest {
+        OpenRequest {
+            id,
+            path: path.into(),
+        }
+    }
+
+    fn open(id: u64, path: &str) -> RasterCommand {
+        RasterCommand::OpenPath(open_request(id, path))
+    }
+
+    fn text(document_id: u64, page: usize) -> TextRequest {
+        TextRequest { document_id, page }
+    }
+
+    #[test]
+    fn inputs_and_results_are_bounded_before_allocation() {
+        let file = tempfile::NamedTempFile::new().expect("temporary source");
+        std::fs::write(file.path(), b"12345").expect("write source");
+        let error = read_file_bounded(file.path(), 4).expect_err("source exceeds cap");
+        assert!(error.to_string().contains("opens files up to"));
+
+        // (width, height, valid)
+        for (w, h, valid) in [
+            (612.0, 792.0, true),
+            (f64::NAN, 792.0, false),
+            (0.0, 792.0, false),
+            (MAX_PAGE_EDGE_POINTS + 1.0, 792.0, false),
+        ] {
+            assert_eq!(valid_page_size(w, h), valid, "page size {w}x{h}");
+        }
+
+        let bucket = Rasterizer::bucket_for_page(4_096, (612.0, 20_000.0))
+            .expect("a tall but valid page still gets a bounded raster");
+        let pixels = f64::from(bucket) * f64::from(bucket) * 20_000.0 / 612.0;
+        assert!(pixels <= MAX_RASTER_PIXELS * 1.01);
+
+        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
+        assert_eq!(next_open_request_id(&counter), Ok(u64::MAX - 1));
+        assert_eq!(
+            next_open_request_id(&counter),
+            Err(RasterSubmitError::Exhausted)
+        );
+
+        // Result payloads are byte bounded.
+        let request = RenderRequest {
+            document_id: 1,
+            page: 0,
+            target_width: 4_096,
+        };
+        let oversized_image = PenikoImage {
+            data: Blob::new(Arc::new(vec![0; MAX_PENDING_RESULT_BYTES + 1])),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: 4_097,
+            height: 2_048,
+        };
+        assert!(matches!(
+            bound_page_event(RasterEvent::Rendered {
+                request,
+                image: Some(oversized_image),
+            }),
+            RasterEvent::RenderFailed { .. }
+        ));
+        let oversized_text = Arc::new(PageText {
+            text: "x".repeat(MAX_PENDING_RESULT_BYTES + 1),
+            chars: Vec::new(),
+            layer: None,
+            map: None,
         });
+        assert!(matches!(
+            bound_page_event(RasterEvent::TextExtracted {
+                request: text(1, 0),
+                text: oversized_text,
+            }),
+            RasterEvent::TextFailed { .. }
+        ));
+    }
+
+    #[test]
+    fn a_tile_batch_replaces_stale_tiles_and_keeps_its_priority_order() {
+        let queue = queue();
         let handle = test_handle(Arc::clone(&queue), 1);
         let other = test_handle(Arc::clone(&queue), 2);
+        let batch = |document_id, tiles| TileBatch { document_id, tiles };
         // The first viewport, then a scroll: the new batch names what is on
         // screen now, nearest the centre first.
         handle
-            .request_tiles(TileBatch {
-                document_id: 7,
-                tiles: vec![tile(7, 12, 0, 0), tile(7, 12, 1, 0), tile(7, 12, 2, 0)],
-            })
+            .request_tiles(batch(
+                7,
+                vec![tile(7, 12, 0, 0), tile(7, 12, 1, 0), tile(7, 12, 2, 0)],
+            ))
             .expect("first batch");
         handle
-            .request_tiles(TileBatch {
-                document_id: 7,
-                tiles: vec![tile(7, 12, 1, 5), tile(7, 12, 1, 0), tile(7, 12, 1, 5)],
-            })
+            .request_tiles(batch(
+                7,
+                vec![tile(7, 12, 1, 5), tile(7, 12, 1, 0), tile(7, 12, 1, 5)],
+            ))
             .expect("second batch");
         other
-            .request_tiles(TileBatch {
-                document_id: 9,
-                tiles: vec![tile(9, 8, 0, 0)],
-            })
+            .request_tiles(batch(9, vec![tile(9, 8, 0, 0)]))
             .expect("another window");
         // A whole-page placeholder is served before any tile.
         handle
@@ -3214,91 +3295,42 @@ mod tests {
         drop(state);
         // An empty batch cancels whatever is still queued.
         handle
-            .request_tiles(TileBatch {
-                document_id: 7,
-                tiles: vec![tile(7, 12, 3, 3)],
-            })
+            .request_tiles(batch(7, vec![tile(7, 12, 3, 3)]))
             .expect("third batch");
-        handle
-            .request_tiles(TileBatch {
-                document_id: 7,
-                tiles: Vec::new(),
-            })
-            .expect("cancel");
+        handle.request_tiles(batch(7, Vec::new())).expect("cancel");
         let mut state = queue.state.lock().unwrap();
         assert!(next_page_work(&mut state).is_none());
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn bounded_reader_rejects_growth_past_its_cap() {
-        let file = tempfile::NamedTempFile::new().expect("temporary source");
-        std::fs::write(file.path(), b"12345").expect("write source");
-        let error = read_file_bounded(file.path(), 4).expect_err("source exceeds cap");
-        assert!(error.to_string().contains("opens files up to"));
-    }
-
-    #[test]
-    fn page_size_validation_rejects_non_finite_and_extreme_boxes() {
-        assert!(valid_page_size(612.0, 792.0));
-        assert!(!valid_page_size(f64::NAN, 792.0));
-        assert!(!valid_page_size(0.0, 792.0));
-        assert!(!valid_page_size(MAX_PAGE_EDGE_POINTS + 1.0, 792.0));
-    }
-
-    #[test]
-    fn raster_bucket_respects_page_pixel_budget() {
-        let bucket = Rasterizer::bucket_for_page(4_096, (612.0, 20_000.0))
-            .expect("a tall but valid page still gets a bounded raster");
-        let pixels = f64::from(bucket) * f64::from(bucket) * 20_000.0 / 612.0;
-        assert!(pixels <= MAX_RASTER_PIXELS * 1.01);
-    }
-
-    #[test]
-    fn owner_queue_coalesces_latest_open_and_page_requests() {
-        // Build the endpoint without starting its worker so this test can
+    fn owner_queue_coalesces_requests_and_keeps_only_the_latest_open_and_plan() {
+        // Build the endpoint without starting its worker so the test can
         // inspect exactly what a busy owner will receive.
-        let handle = test_handle(
-            Arc::new(WorkerQueue {
-                state: Mutex::new(QueueState::default()),
-                ready: Condvar::new(),
-            }),
-            1,
-        );
-        let first = OpenRequest {
-            id: 1,
-            path: "first.pdf".into(),
-        };
-        let latest = OpenRequest {
-            id: 2,
-            path: "latest.pdf".into(),
-        };
+        let handle = test_handle(queue(), 1);
+        let first = open_request(1, "first.pdf");
+        let latest = open_request(2, "latest.pdf");
         handle
             .enqueue(RasterCommand::OpenPath(first.clone()))
             .expect("queue first open");
+        for (width, why) in [
+            (101, "queue first render"),
+            (110, "coalesce nearby zoom bucket"),
+        ] {
+            handle
+                .request_render(RenderRequest {
+                    document_id: first.id,
+                    page: 3,
+                    target_width: width,
+                })
+                .expect(why);
+        }
         handle
-            .request_render(RenderRequest {
-                document_id: first.id,
-                page: 3,
-                target_width: 101,
-            })
-            .expect("queue first render");
-        handle
-            .request_render(RenderRequest {
-                document_id: first.id,
-                page: 3,
-                target_width: 110,
-            })
-            .expect("coalesce nearby zoom bucket");
-        handle
-            .request_text(TextRequest {
-                document_id: first.id,
-                page: 3,
-            })
+            .request_text(text(first.id, 3))
             .expect("queue stale text");
         handle
             .enqueue(RasterCommand::OpenPath(latest.clone()))
             .expect("replace queued open");
-
         let state = handle.session.queue.state.lock().expect("queue lock");
         assert_ne!(first.id, latest.id);
         assert_eq!(state.open.get(&1), Some(&latest));
@@ -3313,21 +3345,109 @@ mod tests {
         assert!(state.renders.is_empty(), "new open clears stale paints");
         assert!(state.texts.is_empty(), "new open clears stale text");
         drop(state);
+
+        // Nearby page requests coalesce without an open in between.
+        let handle = test_handle(queue(), 1);
+        let request = RenderRequest {
+            document_id: 2,
+            page: 3,
+            target_width: 101,
+        };
+        handle.request_render(request).expect("queue first render");
+        handle
+            .request_render(RenderRequest {
+                target_width: 110,
+                ..request
+            })
+            .expect("coalesce nearby zoom bucket");
+        handle.request_text(text(2, 3)).expect("queue text");
+        handle.request_text(text(2, 3)).expect("coalesce text");
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert_eq!(state.renders.len(), 1);
+        assert!(matches!(
+            &state.renders[0].command,
+            RasterCommand::Render(RenderRequest { target_width, .. })
+                if *target_width == RasterBackend::bucket_for(101)
+        ));
+        assert_eq!(state.texts.len(), 1);
+        drop(state);
+
+        // Link reads share the page queue, coalesce, and are cleared by a plan edit.
+        let handle = test_handle(queue(), 1);
+        let request = LinksRequest {
+            document_id: 2,
+            page: 0,
+        };
+        handle.request_links(request).expect("queue links");
+        handle.request_links(request).expect("coalesce links");
+        handle
+            .request_text(text(2, 0))
+            .expect("text for the same page is distinct work");
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert_eq!(state.texts.len(), 2);
+        assert!(matches!(
+            &state.texts[0].command,
+            RasterCommand::Links(queued) if *queued == request
+        ));
+        drop(state);
+        // Results for one page coalesce; text and links for it do not.
+        let links = |n: usize| RasterEvent::LinksRead {
+            request,
+            links: Arc::new(
+                (0..n)
+                    .map(|_| PageLink {
+                        rect: PtRect::new(0.0, 0.0, 1.0, 1.0),
+                        target: LinkTarget::Page { page: 0, at: None },
+                    })
+                    .collect(),
+            ),
+        };
+        assert!(same_page_result(&links(1), &links(2)));
+        assert!(!same_page_result(
+            &links(1),
+            &RasterEvent::TextFailed {
+                request: text(2, 0),
+                error: String::new(),
+            }
+        ));
+        handle
+            .reconcile_page_plan(ReconcileRequest {
+                document_id: 2,
+                plan: Vec::new(),
+            })
+            .expect("queue plan");
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert!(state.texts.is_empty(), "a plan edit drops stale link reads");
+        drop(state);
+
+        // Only the latest collaborative page plan is kept.
+        let handle = test_handle(queue(), 1);
+        let plan = |id: &str| ReconcileRequest {
+            document_id: 7,
+            plan: vec![PagePlanEntry {
+                id: id.into(),
+                source_page: 1,
+                imported: None,
+                rotation: 0,
+            }],
+        };
+        handle
+            .reconcile_page_plan(plan("first"))
+            .expect("queue first plan");
+        handle
+            .reconcile_page_plan(plan("latest"))
+            .expect("replace queued plan");
+        let state = handle.session.queue.state.lock().expect("queue lock");
+        assert_eq!(state.reconcile_order.len(), 1);
+        assert_eq!(state.reconciles.get(&1), Some(&plan("latest")));
+        drop(state);
     }
 
+    #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn open_ids_fail_closed_at_the_counter_boundary() {
-        let counter = std::sync::atomic::AtomicU64::new(u64::MAX - 1);
-        assert_eq!(next_open_request_id(&counter), Ok(u64::MAX - 1));
-        assert_eq!(
-            next_open_request_id(&counter),
-            Err(RasterSubmitError::Exhausted)
-        );
-    }
-
-    #[test]
-    fn unavailable_worker_surfaces_its_startup_error() {
-        let queue = Arc::new(WorkerQueue {
+    fn sessions_are_isolated_and_settlements_bounded_per_session() {
+        // An unavailable worker surfaces its startup error.
+        let failed = Arc::new(WorkerQueue {
             state: Mutex::new(QueueState {
                 closing_sessions: HashSet::from([1]),
                 start_error: Some("thread creation denied".to_string()),
@@ -3335,85 +3455,52 @@ mod tests {
             }),
             ready: Condvar::new(),
         });
-        let handle = test_handle(queue, 1);
         assert_eq!(
-            handle.request_text(TextRequest {
-                document_id: 1,
-                page: 0,
-            }),
+            test_handle(failed, 1).request_text(text(1, 0)),
             Err(RasterSubmitError::Unavailable(
                 "thread creation denied".to_string()
             ))
         );
-    }
 
-    #[test]
-    fn closing_one_session_does_not_block_another() {
-        let queue = Arc::new(WorkerQueue {
-            state: Mutex::new(QueueState::default()),
-            ready: Condvar::new(),
-        });
-        let first = test_handle(Arc::clone(&queue), 1);
-        let second = test_handle(Arc::clone(&queue), 2);
+        // Closing one session does not block another.
+        let shared = queue();
+        let first = test_handle(Arc::clone(&shared), 1);
+        let second = test_handle(Arc::clone(&shared), 2);
         first
-            .enqueue(RasterCommand::OpenPath(OpenRequest {
-                id: 1,
-                path: "first.pdf".into(),
-            }))
+            .enqueue(open(1, "first.pdf"))
             .expect("first session queues open");
         second
-            .enqueue(RasterCommand::OpenPath(OpenRequest {
-                id: 2,
-                path: "second.pdf".into(),
-            }))
+            .enqueue(open(2, "second.pdf"))
             .expect("second session queues open");
         first.shutdown();
         second
-            .request_text(TextRequest {
-                document_id: 2,
-                page: 0,
-            })
+            .request_text(text(2, 0))
             .expect("second session remains usable");
-        let state = queue.state.lock().expect("queue lock");
+        let state = shared.state.lock().expect("queue lock");
         assert!(!state.open.contains_key(&1));
         assert!(state.open.contains_key(&2));
         assert!(state.texts.iter().any(|queued| queued.session_id == 2));
         drop(state);
-    }
 
-    #[test]
-    fn dropped_session_purges_undrained_open_settlements() {
-        let queue = Arc::new(WorkerQueue {
-            state: Mutex::new(QueueState::default()),
-            ready: Condvar::new(),
-        });
+        // A dropped session purges its undrained open settlements.
+        let shared = queue();
         {
-            let first = test_handle(Arc::clone(&queue), 1);
+            let first = test_handle(Arc::clone(&shared), 1);
             for id in 1..=8 {
                 first
-                    .enqueue(RasterCommand::OpenPath(OpenRequest {
-                        id,
-                        path: format!("{id}.pdf").into(),
-                    }))
+                    .enqueue(open(id, &format!("{id}.pdf")))
                     .expect("queue transient open");
             }
             assert!(!first.drain_events().is_empty());
             // Queue one more settlement and intentionally do not drain it.
             first
-                .enqueue(RasterCommand::OpenPath(OpenRequest {
-                    id: 9,
-                    path: "undrained.pdf".into(),
-                }))
+                .enqueue(open(9, "undrained.pdf"))
                 .expect("queue undrained open");
         }
-        let second = test_handle(Arc::clone(&queue), 2);
-        second
-            .enqueue(RasterCommand::OpenPath(OpenRequest {
-                id: 10,
-                path: "next.pdf".into(),
-            }))
+        test_handle(Arc::clone(&shared), 2)
+            .enqueue(open(10, "next.pdf"))
             .expect("dropped session cannot consume another session's capacity");
-        let state = queue.state.lock().expect("queue lock");
+        let state = shared.state.lock().expect("queue lock");
         assert!(
             state
                 .open_events
@@ -3421,32 +3508,21 @@ mod tests {
                 .all(|queued| queued.session_id != 1)
         );
         drop(state);
-    }
 
-    #[test]
-    fn open_settlements_are_bounded_per_session_without_losing_the_current_completion() {
-        let queue = Arc::new(WorkerQueue {
-            state: Mutex::new(QueueState::default()),
-            ready: Condvar::new(),
-        });
-        let handle = test_handle(Arc::clone(&queue), 1);
+        // Open settlements are bounded per session without losing the current completion.
+        let shared = queue();
+        let handle = test_handle(Arc::clone(&shared), 1);
         for id in 1..=63 {
             handle
-                .enqueue(RasterCommand::OpenPath(OpenRequest {
-                    id,
-                    path: format!("{id}.pdf").into(),
-                }))
+                .enqueue(open(id, &format!("{id}.pdf")))
                 .expect("settlement capacity reserves the current open");
         }
         assert!(matches!(
-            handle.enqueue(RasterCommand::OpenPath(OpenRequest {
-                id: 64,
-                path: "overflow.pdf".into(),
-            })),
+            handle.enqueue(open(64, "overflow.pdf")),
             Err(RasterSubmitError::QueueFull)
         ));
         let current = {
-            let mut state = queue.state.lock().expect("queue lock");
+            let mut state = shared.state.lock().expect("queue lock");
             assert_eq!(
                 session_settlement_count(&state, 1),
                 MAX_PENDING_OPEN_SETTLEMENTS.saturating_sub(2)
@@ -3456,7 +3532,7 @@ mod tests {
             current
         };
         push_event(
-            &queue,
+            &shared,
             1,
             RasterEvent::OpenFailed {
                 request: current.clone(),
@@ -3468,44 +3544,27 @@ mod tests {
             events.last(),
             Some(RasterEvent::OpenFailed { request, .. }) if request == &current
         ));
-    }
 
-    #[test]
-    fn a_full_hidden_session_cannot_block_another_sessions_settlement() {
-        let queue = Arc::new(WorkerQueue {
-            state: Mutex::new(QueueState::default()),
-            ready: Condvar::new(),
-        });
-        {
-            let mut state = queue.state.lock().expect("queue lock");
-            state
-                .open_events
-                .extend((0..MAX_PENDING_OPEN_SETTLEMENTS).map(|id| QueuedEvent {
-                    session_id: 1,
-                    event: RasterEvent::OpenFailed {
-                        request: OpenRequest {
-                            id: id as u64,
-                            path: "hidden.pdf".into(),
-                        },
-                        error: "fixture".into(),
-                    },
-                }));
-        }
-        let visible = test_handle(Arc::clone(&queue), 2);
+        // A full hidden session cannot block another session's settlement.
+        let shared = queue();
+        shared.state.lock().expect("queue lock").open_events.extend(
+            (0..MAX_PENDING_OPEN_SETTLEMENTS).map(|id| QueuedEvent {
+                session_id: 1,
+                event: RasterEvent::OpenFailed {
+                    request: open_request(id as u64, "hidden.pdf"),
+                    error: "fixture".into(),
+                },
+            }),
+        );
+        let visible = test_handle(Arc::clone(&shared), 2);
         visible
-            .enqueue(RasterCommand::OpenPath(OpenRequest {
-                id: 900,
-                path: "visible.pdf".into(),
-            }))
+            .enqueue(open(900, "visible.pdf"))
             .expect("another session remains admissible");
         push_event(
-            &queue,
+            &shared,
             2,
             RasterEvent::OpenFailed {
-                request: OpenRequest {
-                    id: 900,
-                    path: "visible.pdf".into(),
-                },
+                request: open_request(900, "visible.pdf"),
                 error: "fixture".into(),
             },
         );
@@ -3538,188 +3597,5 @@ mod tests {
             std::fs::read(&destination).expect("destination contents"),
             b"safe export"
         );
-    }
-
-    #[test]
-    fn result_payloads_are_byte_bounded() {
-        let request = RenderRequest {
-            document_id: 1,
-            page: 0,
-            target_width: 4_096,
-        };
-        let oversized_image = PenikoImage {
-            data: Blob::new(Arc::new(vec![0; MAX_PENDING_RESULT_BYTES + 1])),
-            format: ImageFormat::Rgba8,
-            alpha_type: ImageAlphaType::Alpha,
-            width: 4_097,
-            height: 2_048,
-        };
-        assert!(matches!(
-            bound_page_event(RasterEvent::Rendered {
-                request,
-                image: Some(oversized_image),
-            }),
-            RasterEvent::RenderFailed { .. }
-        ));
-        let oversized_text = Arc::new(PageText {
-            text: "x".repeat(MAX_PENDING_RESULT_BYTES + 1),
-            chars: Vec::new(),
-            layer: None,
-            map: None,
-        });
-        assert!(matches!(
-            bound_page_event(RasterEvent::TextExtracted {
-                request: TextRequest {
-                    document_id: 1,
-                    page: 0,
-                },
-                text: oversized_text,
-            }),
-            RasterEvent::TextFailed { .. }
-        ));
-    }
-
-    #[test]
-    fn owner_queue_coalesces_nearby_page_requests() {
-        let handle = test_handle(
-            Arc::new(WorkerQueue {
-                state: Mutex::new(QueueState::default()),
-                ready: Condvar::new(),
-            }),
-            1,
-        );
-        let request = RenderRequest {
-            document_id: 2,
-            page: 3,
-            target_width: 101,
-        };
-        handle.request_render(request).expect("queue first render");
-        handle
-            .request_render(RenderRequest {
-                target_width: 110,
-                ..request
-            })
-            .expect("coalesce nearby zoom bucket");
-        handle
-            .request_text(TextRequest {
-                document_id: request.document_id,
-                page: 3,
-            })
-            .expect("queue text");
-        handle
-            .request_text(TextRequest {
-                document_id: request.document_id,
-                page: 3,
-            })
-            .expect("coalesce text");
-
-        let state = handle.session.queue.state.lock().expect("queue lock");
-        assert_eq!(state.renders.len(), 1);
-        assert!(matches!(
-            &state.renders[0].command,
-            RasterCommand::Render(RenderRequest { target_width, .. })
-                if *target_width == RasterBackend::bucket_for(101)
-        ));
-        assert_eq!(state.texts.len(), 1);
-        drop(state);
-    }
-
-    #[test]
-    fn link_reads_share_the_page_queue_coalesce_and_are_cleared_by_a_plan_edit() {
-        let handle = test_handle(
-            Arc::new(WorkerQueue {
-                state: Mutex::new(QueueState::default()),
-                ready: Condvar::new(),
-            }),
-            1,
-        );
-        let request = LinksRequest {
-            document_id: 2,
-            page: 0,
-        };
-        handle.request_links(request).expect("queue links");
-        handle.request_links(request).expect("coalesce links");
-        handle
-            .request_text(TextRequest {
-                document_id: 2,
-                page: 0,
-            })
-            .expect("text for the same page is distinct work");
-        let state = handle.session.queue.state.lock().expect("queue lock");
-        assert_eq!(state.texts.len(), 2);
-        assert!(matches!(
-            &state.texts[0].command,
-            RasterCommand::Links(queued) if *queued == request
-        ));
-        drop(state);
-        // Results for one page coalesce; text and links for it do not.
-        let links = |n: usize| RasterEvent::LinksRead {
-            request,
-            links: Arc::new(
-                (0..n)
-                    .map(|_| PageLink {
-                        rect: PtRect::new(0.0, 0.0, 1.0, 1.0),
-                        target: LinkTarget::Page { page: 0, at: None },
-                    })
-                    .collect(),
-            ),
-        };
-        assert!(same_page_result(&links(1), &links(2)));
-        assert!(!same_page_result(
-            &links(1),
-            &RasterEvent::TextFailed {
-                request: TextRequest {
-                    document_id: 2,
-                    page: 0,
-                },
-                error: String::new(),
-            }
-        ));
-        handle
-            .reconcile_page_plan(ReconcileRequest {
-                document_id: 2,
-                plan: Vec::new(),
-            })
-            .expect("queue plan");
-        let state = handle.session.queue.state.lock().expect("queue lock");
-        assert!(state.texts.is_empty(), "a plan edit drops stale link reads");
-        drop(state);
-    }
-
-    #[test]
-    fn owner_queue_keeps_only_the_latest_collaborative_page_plan() {
-        let handle = test_handle(
-            Arc::new(WorkerQueue {
-                state: Mutex::new(QueueState::default()),
-                ready: Condvar::new(),
-            }),
-            1,
-        );
-        let first = ReconcileRequest {
-            document_id: 7,
-            plan: vec![PagePlanEntry {
-                id: "first".into(),
-                source_page: 1,
-                imported: None,
-                rotation: 0,
-            }],
-        };
-        let latest = ReconcileRequest {
-            document_id: 7,
-            plan: vec![PagePlanEntry {
-                id: "latest".into(),
-                source_page: 1,
-                imported: None,
-                rotation: 0,
-            }],
-        };
-        handle.reconcile_page_plan(first).expect("queue first plan");
-        handle
-            .reconcile_page_plan(latest.clone())
-            .expect("replace queued plan");
-        let state = handle.session.queue.state.lock().expect("queue lock");
-        assert_eq!(state.reconcile_order.len(), 1);
-        assert_eq!(state.reconciles.get(&1), Some(&latest));
-        drop(state);
     }
 }

@@ -403,6 +403,9 @@ pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
 
+mod speakers;
+pub use speakers::*;
+
 /// Maximum encoded size of one Nearby Send control command or reply. Transfer
 /// bytes never use this lane; the shell's existing resumable object transport
 /// owns payload delivery.
@@ -914,6 +917,43 @@ impl ChannelHandle {
             return Err(NotAvailable::Capnp(capnp::Error::failed(
                 "invalid Wi-Fi continuity reply".into(),
             )));
+        }
+        Ok(decoded)
+    }
+
+    /// Ask the shell's speaker-group authority from the authenticated
+    /// Settings route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the command or reply violates its wire
+    /// contract, serialization fails, or the local broker request fails.
+    pub async fn speaker_command(
+        &self,
+        app_id: &str,
+        command: &SpeakerCommand,
+    ) -> Result<SpeakerReply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        if !command.valid() {
+            return Err(failed("invalid speaker command".into()));
+        }
+        let command_json = serde_json::to_vec(command)
+            .map_err(|error| failed(format!("encode speaker command: {error}")))?;
+        if command_json.len() > MAX_SPEAKER_WIRE_BYTES {
+            return Err(failed("speaker command exceeds wire bound".into()));
+        }
+        let mut request = self.inner.speaker_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_SPEAKER_WIRE_BYTES {
+            return Err(failed("speaker reply exceeds wire bound".into()));
+        }
+        let decoded: SpeakerReply = serde_json::from_slice(bytes)
+            .map_err(|error| failed(format!("decode speaker reply: {error}")))?;
+        if !decoded.valid() {
+            return Err(failed("invalid speaker reply".into()));
         }
         Ok(decoded)
     }
@@ -2758,145 +2798,92 @@ mod tests {
     }
 
     #[test]
-    fn nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque() {
-        let command = NearbyTransferCommand::Send {
-            target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-            source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
-        };
-        assert!(command.valid());
-        let encoded = serde_json::to_vec(&command).expect("encode nearby command");
-        assert!(encoded.len() < MAX_NEARBY_TRANSFER_WIRE_BYTES);
-        assert_eq!(
-            serde_json::from_slice::<NearbyTransferCommand>(&encoded).expect("decode command"),
-            command
-        );
-
-        assert!(
-            !NearbyTransferCommand::Send {
+    fn nearby_transfer_contract_is_bounded_and_rejects_impossible_progress() {
+        // phase: nearby_transfer_contract_is_bounded_and_path_bytes_are_opaque
+        {
+            let command = NearbyTransferCommand::Send {
                 target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-                source_path: vec![b'a', 0, b'b'],
-            }
-            .valid()
-        );
-        assert!(
-            NearbyTransferCommand::Decide {
-                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-                accept: true,
-                destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
-                remember_for_session: true,
-            }
-            .valid()
-        );
-        assert!(
-            !NearbyTransferCommand::Decide {
-                handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
-                accept: true,
-                destination: None,
-                remember_for_session: false,
-            }
-            .valid()
-        );
-        assert!(
-            !NearbyTransferCommand::Send {
-                target: NearbyTargetHandle::from_issued_bytes([7; 16]),
-                source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
-            }
-            .valid()
-        );
-    }
+                source_path: vec![b'/', b't', b'm', b'p', b'/', 0xff],
+            };
+            assert!(command.valid());
+            let encoded = serde_json::to_vec(&command).expect("encode nearby command");
+            assert!(encoded.len() < MAX_NEARBY_TRANSFER_WIRE_BYTES);
+            assert_eq!(
+                serde_json::from_slice::<NearbyTransferCommand>(&encoded).expect("decode command"),
+                command
+            );
 
-    #[test]
-    fn nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress() {
-        let target = NearbyTransferTarget {
-            handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
-            label: "Travel laptop".into(),
-            online: true,
-        };
-        let transfer = NearbyTransferStatus {
-            handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
-            name: "Photos".into(),
-            device_label: target.label.clone(),
-            direction: NearbyTransferDirection::Sending,
-            phase: NearbyTransferPhase::Transferring,
-            transferred_bytes: 20,
-            total_bytes: 100,
-        };
-        let reply = NearbyTransferReply::Snapshot {
-            snapshot: NearbyTransferSnapshot {
-                targets: vec![target],
-                destinations: vec![NearbyTransferDestination {
-                    handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
-                    label: "Workspace files".into(),
-                    remembered_for_session: false,
-                }],
-                transfers: vec![transfer.clone()],
-            },
-        };
-        assert!(reply.valid());
-
-        let mut impossible = transfer;
-        impossible.transferred_bytes = 101;
-        assert!(
-            !NearbyTransferReply::Snapshot {
-                snapshot: NearbyTransferSnapshot {
-                    targets: Vec::new(),
-                    destinations: Vec::new(),
-                    transfers: vec![impossible],
-                },
-            }
-            .valid()
-        );
-    }
-
-    #[test]
-    fn wifi_continuity_contract_is_bounded_and_redacts_secrets() {
-        let command = WifiContinuityCommand::Share {
-            ssid: "Studio".into(),
-            security: PortableWifiSecurity::Wpa3,
-            password: "correct horse battery staple".into(),
-        };
-        assert!(command.valid());
-        assert!(!format!("{command:?}").contains("correct horse"));
-        let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
-        assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
-        assert_eq!(
-            serde_json::from_slice::<WifiContinuityCommand>(&encoded)
-                .expect("decode Wi-Fi command"),
-            command
-        );
-
-        assert!(
-            !WifiContinuityCommand::Share {
-                ssid: "Studio".into(),
-                security: PortableWifiSecurity::Wpa2,
-                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-            }
-            .valid()
-        );
-        assert!(
-            !WifiContinuityReply::Password {
-                password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
-            }
-            .valid()
-        );
-    }
-
-    #[test]
-    fn saved_wifi_profile_reference_requires_an_exact_local_uuid() {
-        assert!(
-            WifiContinuityCommand::ShareSavedProfile {
-                profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
-            }
-            .valid()
-        );
-        for invalid in [
-            "profile-name",
-            "../../secret",
-            "12345678-1234-1234-1234-123456789abz",
-        ] {
             assert!(
-                !WifiContinuityCommand::ShareSavedProfile {
-                    profile_uuid: invalid.into(),
+                !NearbyTransferCommand::Send {
+                    target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                    source_path: vec![b'a', 0, b'b'],
+                }
+                .valid()
+            );
+            assert!(
+                NearbyTransferCommand::Decide {
+                    handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                    accept: true,
+                    destination: Some(NearbyDestinationHandle::from_issued_bytes([9; 16])),
+                    remember_for_session: true,
+                }
+                .valid()
+            );
+            assert!(
+                !NearbyTransferCommand::Decide {
+                    handle: NearbyTransferHandle::from_issued_bytes([8; 16]),
+                    accept: true,
+                    destination: None,
+                    remember_for_session: false,
+                }
+                .valid()
+            );
+            assert!(
+                !NearbyTransferCommand::Send {
+                    target: NearbyTargetHandle::from_issued_bytes([7; 16]),
+                    source_path: vec![b'a'; MAX_NEARBY_TRANSFER_PATH_BYTES + 1],
+                }
+                .valid()
+            );
+        }
+        // phase: nearby_transfer_snapshot_rejects_unbounded_or_impossible_progress
+        {
+            let target = NearbyTransferTarget {
+                handle: NearbyTargetHandle::from_issued_bytes([3; 16]),
+                label: "Travel laptop".into(),
+                online: true,
+            };
+            let transfer = NearbyTransferStatus {
+                handle: NearbyTransferHandle::from_issued_bytes([4; 16]),
+                name: "Photos".into(),
+                device_label: target.label.clone(),
+                direction: NearbyTransferDirection::Sending,
+                phase: NearbyTransferPhase::Transferring,
+                transferred_bytes: 20,
+                total_bytes: 100,
+            };
+            let reply = NearbyTransferReply::Snapshot {
+                snapshot: NearbyTransferSnapshot {
+                    targets: vec![target],
+                    destinations: vec![NearbyTransferDestination {
+                        handle: NearbyDestinationHandle::from_issued_bytes([5; 16]),
+                        label: "Workspace files".into(),
+                        remembered_for_session: false,
+                    }],
+                    transfers: vec![transfer.clone()],
+                },
+            };
+            assert!(reply.valid());
+
+            let mut impossible = transfer;
+            impossible.transferred_bytes = 101;
+            assert!(
+                !NearbyTransferReply::Snapshot {
+                    snapshot: NearbyTransferSnapshot {
+                        targets: Vec::new(),
+                        destinations: Vec::new(),
+                        transfers: vec![impossible],
+                    },
                 }
                 .valid()
             );
@@ -2904,65 +2891,127 @@ mod tests {
     }
 
     #[test]
-    fn action_directory_resource_presentation_round_trips() {
-        let mut message = capnp::message::Builder::new_default();
+    fn wifi_continuity_is_bounded_redacted_and_bound_to_a_local_profile() {
+        // phase: wifi_continuity_contract_is_bounded_and_redacts_secrets
         {
-            let mut page = message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
-            page.set_revision("r1");
-            page.set_exhausted(true);
-            let mut rows = page.init_rows(1);
-            let mut row = rows.reborrow().get(0);
-            row.set_resource("totp:mail");
-            row.set_resource_kind("totp");
-            row.set_resource_label("Mail code");
-            row.set_resource_presentation_json(r#"{"detail":"expires in 18 s","badge":"438 291"}"#);
+            let command = WifiContinuityCommand::Share {
+                ssid: "Studio".into(),
+                security: PortableWifiSecurity::Wpa3,
+                password: "correct horse battery staple".into(),
+            };
+            assert!(command.valid());
+            assert!(!format!("{command:?}").contains("correct horse"));
+            let encoded = serde_json::to_vec(&command).expect("encode Wi-Fi command");
+            assert!(encoded.len() < MAX_WIFI_CONTINUITY_WIRE_BYTES);
+            assert_eq!(
+                serde_json::from_slice::<WifiContinuityCommand>(&encoded)
+                    .expect("decode Wi-Fi command"),
+                command
+            );
+
+            assert!(
+                !WifiContinuityCommand::Share {
+                    ssid: "Studio".into(),
+                    security: PortableWifiSecurity::Wpa2,
+                    password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+                }
+                .valid()
+            );
+            assert!(
+                !WifiContinuityReply::Password {
+                    password: "x".repeat(MAX_WIFI_PASSWORD_BYTES + 1),
+                }
+                .valid()
+            );
         }
-        let reader = message
-            .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
-            .expect("page reader");
-        let decoded = decode_action_directory_page(reader).expect("page decodes");
-        assert_eq!(
-            decoded.rows[0].resource_presentation_json,
-            r#"{"detail":"expires in 18 s","badge":"438 291"}"#
-        );
+        // phase: saved_wifi_profile_reference_requires_an_exact_local_uuid
+        {
+            assert!(
+                WifiContinuityCommand::ShareSavedProfile {
+                    profile_uuid: "12345678-1234-1234-1234-123456789abc".into(),
+                }
+                .valid()
+            );
+            for invalid in [
+                "profile-name",
+                "../../secret",
+                "12345678-1234-1234-1234-123456789abz",
+            ] {
+                assert!(
+                    !WifiContinuityCommand::ShareSavedProfile {
+                        profile_uuid: invalid.into(),
+                    }
+                    .valid()
+                );
+            }
+        }
     }
 
     #[test]
-    fn exported_view_metadata_round_trips() {
-        let mut message = capnp::message::Builder::new_default();
+    fn action_directory_and_view_metadata_round_trip() {
+        // phase: action_directory_resource_presentation_round_trips
         {
-            let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
-            action.set_resource("notes:brief");
-            action.set_action("show-editor");
-            let mut view = action.init_view();
-            view.set_id("editor");
-            view.set_label("Editor");
-            view.set_description("Edit this note");
-            view.set_open_action("show-editor");
-            view.set_primary(true);
-            let mut mount = view.init_mount();
-            mount.set_action("mount-editor");
-            mount.set_capability_param("slot_capability");
-            mount.set_view_param("slot_view");
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut page =
+                    message.init_root::<collab_capnp::action_directory_page::Builder<'_>>();
+                page.set_revision("r1");
+                page.set_exhausted(true);
+                let mut rows = page.init_rows(1);
+                let mut row = rows.reborrow().get(0);
+                row.set_resource("totp:mail");
+                row.set_resource_kind("totp");
+                row.set_resource_label("Mail code");
+                row.set_resource_presentation_json(
+                    r#"{"detail":"expires in 18 s","badge":"438 291"}"#,
+                );
+            }
+            let reader = message
+                .get_root_as_reader::<collab_capnp::action_directory_page::Reader<'_>>()
+                .expect("page reader");
+            let decoded = decode_action_directory_page(reader).expect("page decodes");
+            assert_eq!(
+                decoded.rows[0].resource_presentation_json,
+                r#"{"detail":"expires in 18 s","badge":"438 291"}"#
+            );
         }
-        let reader = message
-            .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
-            .expect("action reader");
-        let decoded = decode_exported_action(reader).expect("action decodes");
-        assert_eq!(
-            decoded.view,
-            Some(ExportedView {
-                id: "editor".into(),
-                label: "Editor".into(),
-                description: Some("Edit this note".into()),
-                open_action: "show-editor".into(),
-                primary: true,
-                mount: Some(ExportedViewMount {
-                    action: "mount-editor".into(),
-                    capability_param: "slot_capability".into(),
-                    view_param: "slot_view".into(),
-                }),
-            })
-        );
+        // phase: exported_view_metadata_round_trips
+        {
+            let mut message = capnp::message::Builder::new_default();
+            {
+                let mut action = message.init_root::<collab_capnp::exported_action::Builder<'_>>();
+                action.set_resource("notes:brief");
+                action.set_action("show-editor");
+                let mut view = action.init_view();
+                view.set_id("editor");
+                view.set_label("Editor");
+                view.set_description("Edit this note");
+                view.set_open_action("show-editor");
+                view.set_primary(true);
+                let mut mount = view.init_mount();
+                mount.set_action("mount-editor");
+                mount.set_capability_param("slot_capability");
+                mount.set_view_param("slot_view");
+            }
+            let reader = message
+                .get_root_as_reader::<collab_capnp::exported_action::Reader<'_>>()
+                .expect("action reader");
+            let decoded = decode_exported_action(reader).expect("action decodes");
+            assert_eq!(
+                decoded.view,
+                Some(ExportedView {
+                    id: "editor".into(),
+                    label: "Editor".into(),
+                    description: Some("Edit this note".into()),
+                    open_action: "show-editor".into(),
+                    primary: true,
+                    mount: Some(ExportedViewMount {
+                        action: "mount-editor".into(),
+                        capability_param: "slot_capability".into(),
+                        view_param: "slot_view".into(),
+                    }),
+                })
+            );
+        }
     }
 }

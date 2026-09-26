@@ -32,7 +32,7 @@ use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::{TypedPeer, document_mutation};
 
 const APP: &str = "so.tilo.word-processor";

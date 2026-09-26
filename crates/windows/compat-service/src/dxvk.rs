@@ -578,350 +578,359 @@ mod tests {
     }
 
     #[test]
-    fn managed_prefix_is_exact_and_cannot_be_redirected() {
-        assert!(validate_prefix(Some(OsStr::new(PREFIX))).is_ok());
-        for value in [
-            None,
-            Some(OsStr::new("/tmp/prefix")),
-            Some(OsStr::new("/run/tilo/capsule/prefix/../home")),
-        ] {
-            assert!(validate_prefix(value).is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn managed_prefixes_and_leases_are_exact_and_initialize_per_architecture() {
+        // Phase `managed_prefix_is_exact_and_cannot_be_redirected`.
+        {
+            assert!(validate_prefix(Some(OsStr::new(PREFIX))).is_ok());
+            for value in [
+                None,
+                Some(OsStr::new("/tmp/prefix")),
+                Some(OsStr::new("/run/tilo/capsule/prefix/../home")),
+            ] {
+                assert!(validate_prefix(value).is_err());
+            }
+            assert_eq!(NATIVE_OVERRIDES, "d3d8,d3d9,d3d10core,d3d11,dxgi=n");
         }
-        assert_eq!(NATIVE_OVERRIDES, "d3d8,d3d9,d3d10core,d3d11,dxgi=n");
-    }
-
-    #[test]
-    fn lease_drop_unlocks_even_while_its_open_file_description_is_duplicated() {
-        let fixture = Fixture::new();
-        let lease = fixture
-            .prepare(WineMode::Win32, || {
-                fixture.initialize(WineMode::Win32);
-                Ok(())
-            })
-            .unwrap();
-        let duplicate = lease.directory.try_clone().unwrap();
-        let contend = || FileLock::try_exclusive(open_directory(&fixture.prefix).unwrap());
-        assert!(matches!(contend(), Err(TryLockError::WouldBlock)));
-        drop(lease);
-        drop(contend().unwrap());
-        assert!(
-            duplicate.metadata().unwrap().is_dir(),
-            "duplicate remains open after explicit lease release"
-        );
-    }
-
-    #[test]
-    fn fresh_and_existing_prefixes_request_distinct_wineboot_actions() {
-        let fixture = Fixture::new();
-        let action = Cell::new(None);
-        drop(
-            prepare_at(
+        // Phase `lease_drop_unlocks_even_while_its_open_file_description_is_duplicated`.
+        {
+            let fixture = Fixture::new();
+            let lease = fixture
+                .prepare(WineMode::Win32, || {
+                    fixture.initialize(WineMode::Win32);
+                    Ok(())
+                })
+                .unwrap();
+            let duplicate = lease.directory.try_clone().unwrap();
+            let contend = || FileLock::try_exclusive(open_directory(&fixture.prefix).unwrap());
+            assert!(matches!(contend(), Err(TryLockError::WouldBlock)));
+            drop(lease);
+            drop(contend().unwrap());
+            assert!(
+                duplicate.metadata().unwrap().is_dir(),
+                "duplicate remains open after explicit lease release"
+            );
+        }
+        // Phase `fresh_and_existing_prefixes_request_distinct_wineboot_actions`.
+        {
+            let fixture = Fixture::new();
+            let action = Cell::new(None);
+            drop(
+                prepare_at(
+                    WineMode::Win32,
+                    &fixture.prefix,
+                    &fixture.payload,
+                    &fixture.metadata,
+                    |requested| {
+                        action.set(Some(requested));
+                        fixture.initialize(WineMode::Win32);
+                        Ok(())
+                    },
+                )
+                .unwrap(),
+            );
+            assert_eq!(action.get(), Some(PrefixAction::Initialize));
+            assert_eq!(PrefixAction::Initialize.wineboot_argument(), "-i");
+            fs::write(&fixture.metadata, b"updated Wine build").unwrap();
+            let _lease = prepare_at(
                 WineMode::Win32,
                 &fixture.prefix,
                 &fixture.payload,
                 &fixture.metadata,
                 |requested| {
                     action.set(Some(requested));
-                    fixture.initialize(WineMode::Win32);
                     Ok(())
                 },
             )
-            .unwrap(),
-        );
-        assert_eq!(action.get(), Some(PrefixAction::Initialize));
-        assert_eq!(PrefixAction::Initialize.wineboot_argument(), "-i");
-        fs::write(&fixture.metadata, b"updated Wine build").unwrap();
-        let _lease = prepare_at(
-            WineMode::Win32,
-            &fixture.prefix,
-            &fixture.payload,
-            &fixture.metadata,
-            |requested| {
-                action.set(Some(requested));
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(action.get(), Some(PrefixAction::Update));
-        assert_eq!(PrefixAction::Update.wineboot_argument(), "-u");
-    }
-
-    #[test]
-    fn initializes_correct_architecture_and_allows_simultaneous_ready_leases() {
-        for mode in [WineMode::Win32, WineMode::Win64] {
+            .unwrap();
+            assert_eq!(action.get(), Some(PrefixAction::Update));
+            assert_eq!(PrefixAction::Update.wineboot_argument(), "-u");
+        }
+        // Phase `initializes_correct_architecture_and_allows_simultaneous_ready_leases`.
+        {
+            for mode in [WineMode::Win32, WineMode::Win64] {
+                let fixture = Fixture::new();
+                let first = fixture
+                    .prepare(mode, || {
+                        fixture.initialize(mode);
+                        Ok(())
+                    })
+                    .unwrap();
+                let second = fixture
+                    .prepare(mode, || panic!("ready prefix must not reboot"))
+                    .unwrap();
+                for &(architecture, destination) in mode.destinations() {
+                    for name in DLLS {
+                        assert_eq!(
+                            fs::read(fixture.installed(destination, name)).unwrap(),
+                            fs::read(fixture.payload.join(architecture).join(name)).unwrap()
+                        );
+                    }
+                }
+                if mode == WineMode::Win32 {
+                    assert!(!fixture.prefix.join("drive_c/windows/syswow64").exists());
+                }
+                drop((first, second));
+            }
+        }
+        // Phase `source_version_change_waits_for_all_existing_leases`.
+        {
             let fixture = Fixture::new();
             let first = fixture
-                .prepare(mode, || {
-                    fixture.initialize(mode);
-                    Ok(())
-                })
-                .unwrap();
-            let second = fixture
-                .prepare(mode, || panic!("ready prefix must not reboot"))
-                .unwrap();
-            for &(architecture, destination) in mode.destinations() {
-                for name in DLLS {
-                    assert_eq!(
-                        fs::read(fixture.installed(destination, name)).unwrap(),
-                        fs::read(fixture.payload.join(architecture).join(name)).unwrap()
-                    );
-                }
-            }
-            if mode == WineMode::Win32 {
-                assert!(!fixture.prefix.join("drive_c/windows/syswow64").exists());
-            }
-            drop((first, second));
-        }
-    }
-
-    #[test]
-    fn source_version_change_waits_for_all_existing_leases() {
-        let fixture = Fixture::new();
-        let first = fixture
-            .prepare(WineMode::Win64, || {
-                fixture.initialize(WineMode::Win64);
-                Ok(())
-            })
-            .unwrap();
-        let second = fixture.prepare(WineMode::Win64, || panic!()).unwrap();
-        fs::write(&fixture.metadata, "wine-core\t11.1\tx86_64\n").unwrap();
-        let callback = Cell::new(false);
-        let attempt = || {
-            callback.set(true);
-            Ok(())
-        };
-        assert_eq!(
-            fixture
-                .prepare(WineMode::Win64, attempt)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        drop(first);
-        assert_eq!(
-            fixture
-                .prepare(WineMode::Win64, attempt)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WouldBlock
-        );
-        assert!(!callback.get());
-        drop(second);
-        let _updated = fixture.prepare(WineMode::Win64, attempt).unwrap();
-        assert!(callback.get());
-    }
-
-    #[test]
-    fn changed_dll_is_repaired_even_with_valid_generation_hint() {
-        let fixture = Fixture::new();
-        drop(
-            fixture
-                .prepare(WineMode::Win32, || {
-                    fixture.initialize(WineMode::Win32);
-                    Ok(())
-                })
-                .unwrap(),
-        );
-        let target = fixture.installed("system32", "d3d11.dll");
-        fs::write(&target, b"corrupt").unwrap();
-        let callback = Cell::new(false);
-        let _lease = fixture
-            .prepare(WineMode::Win32, || {
-                callback.set(true);
-                Ok(())
-            })
-            .unwrap();
-        assert!(callback.get());
-        assert_eq!(
-            fs::read(target).unwrap(),
-            fs::read(fixture.payload.join("x32/d3d11.dll")).unwrap()
-        );
-    }
-
-    #[test]
-    fn replacing_symlink_and_hardlink_dlls_does_not_write_external_targets() {
-        for use_symlink in [false, true] {
-            let fixture = Fixture::new();
-            fixture.initialize(WineMode::Win32);
-            let outside = fixture.temporary.path().join("grant.txt");
-            fs::write(&outside, b"external data must survive").unwrap();
-            let target = fixture.installed("system32", "dxgi.dll");
-            if use_symlink {
-                symlink(&outside, &target).unwrap();
-            } else {
-                fs::hard_link(&outside, &target).unwrap();
-            }
-            let _lease = fixture
-                .prepare(WineMode::Win32, || {
-                    assert!(!target.exists());
-                    assert!(!target.is_symlink());
-                    assert_eq!(fs::read(&outside).unwrap(), b"external data must survive");
-                    Ok(())
-                })
-                .unwrap();
-            assert_eq!(fs::read(&outside).unwrap(), b"external data must survive");
-            assert!(!target.is_symlink());
-            assert_eq!(fs::metadata(&target).unwrap().nlink(), 1);
-            assert_eq!(
-                fs::read(target).unwrap(),
-                fs::read(fixture.payload.join("x32/dxgi.dll")).unwrap()
-            );
-        }
-    }
-
-    #[test]
-    fn redirected_directory_is_rejected_before_wineboot() {
-        for component in ["drive_c", "drive_c/windows", "drive_c/windows/system32"] {
-            let fixture = Fixture::new();
-            let outside = fixture.temporary.path().join("outside");
-            fs::create_dir(&outside).unwrap();
-            let destination = fixture.prefix.join(component);
-            fs::create_dir_all(destination.parent().unwrap()).unwrap();
-            symlink(&outside, destination).unwrap();
-            assert!(
-                fixture
-                    .prepare(WineMode::Win32, || panic!(
-                        "must not initialize redirected prefix"
-                    ))
-                    .is_err()
-            );
-            assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
-        }
-    }
-
-    #[test]
-    fn registry_links_and_wrong_architecture_are_rejected_before_initialization() {
-        let fixture = Fixture::new();
-        fixture.initialize(WineMode::Win64);
-        assert!(fixture.prepare(WineMode::Win32, || panic!()).is_err());
-        let registry = fixture.prefix.join("system.reg");
-        let outside = fixture.temporary.path().join("registry-grant");
-        fs::hard_link(&registry, &outside).unwrap();
-        assert!(fixture.prepare(WineMode::Win64, || panic!()).is_err());
-        fs::remove_file(&registry).unwrap();
-        symlink(&outside, &registry).unwrap();
-        assert!(fixture.prepare(WineMode::Win64, || panic!()).is_err());
-    }
-
-    #[test]
-    fn callback_success_without_initialization_is_not_readiness() {
-        let fixture = Fixture::new();
-        assert!(fixture.prepare(WineMode::Win64, || Ok(())).is_err());
-        assert!(!fixture.prefix.join(GENERATION_FILE).exists());
-        assert!(
-            fixture
-                .prepare(WineMode::Win64, || Err(io::Error::other("wineboot failed")))
-                .is_err()
-        );
-        assert!(!fixture.prefix.join(GENERATION_FILE).exists());
-        // Failure releases the exclusive lock, permitting a later retry.
-        drop(
-            fixture
                 .prepare(WineMode::Win64, || {
                     fixture.initialize(WineMode::Win64);
                     Ok(())
                 })
-                .unwrap(),
-        );
-    }
-
-    #[test]
-    fn marker_does_not_prove_registry_initialization() {
-        let fixture = Fixture::new();
-        drop(
-            fixture
-                .prepare(WineMode::Win32, || {
-                    fixture.initialize(WineMode::Win32);
-                    Ok(())
-                })
-                .unwrap(),
-        );
-        fs::remove_file(fixture.prefix.join("system.reg")).unwrap();
-        let called = Cell::new(false);
-        let _lease = fixture
-            .prepare(WineMode::Win32, || {
-                called.set(true);
-                fixture.initialize(WineMode::Win32);
+                .unwrap();
+            let second = fixture.prepare(WineMode::Win64, || panic!()).unwrap();
+            fs::write(&fixture.metadata, "wine-core\t11.1\tx86_64\n").unwrap();
+            let callback = Cell::new(false);
+            let attempt = || {
+                callback.set(true);
                 Ok(())
-            })
-            .unwrap();
-        assert!(called.get());
+            };
+            assert_eq!(
+                fixture
+                    .prepare(WineMode::Win64, attempt)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            drop(first);
+            assert_eq!(
+                fixture
+                    .prepare(WineMode::Win64, attempt)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(!callback.get());
+            drop(second);
+            let _updated = fixture.prepare(WineMode::Win64, attempt).unwrap();
+            assert!(callback.get());
+        }
     }
 
     #[test]
-    fn immutable_payload_links_are_rejected() {
-        let fixture = Fixture::new();
-        let source = fixture.payload.join("x32/dxgi.dll");
-        fs::remove_file(&source).unwrap();
-        symlink(fixture.payload.join("x64/dxgi.dll"), source).unwrap();
-        assert!(fixture.prepare(WineMode::Win32, || panic!()).is_err());
-    }
-
-    #[test]
-    fn fifo_leaf_is_replaced_without_blocking() {
-        let fixture = Fixture::new();
-        drop(
-            fixture
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn dll_repairs_never_follow_links_or_redirected_directories() {
+        // Phase `changed_dll_is_repaired_even_with_valid_generation_hint`.
+        {
+            let fixture = Fixture::new();
+            drop(
+                fixture
+                    .prepare(WineMode::Win32, || {
+                        fixture.initialize(WineMode::Win32);
+                        Ok(())
+                    })
+                    .unwrap(),
+            );
+            let target = fixture.installed("system32", "d3d11.dll");
+            fs::write(&target, b"corrupt").unwrap();
+            let callback = Cell::new(false);
+            let _lease = fixture
                 .prepare(WineMode::Win32, || {
+                    callback.set(true);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(callback.get());
+            assert_eq!(
+                fs::read(target).unwrap(),
+                fs::read(fixture.payload.join("x32/d3d11.dll")).unwrap()
+            );
+        }
+        // Phase `replacing_symlink_and_hardlink_dlls_does_not_write_external_targets`.
+        {
+            for use_symlink in [false, true] {
+                let fixture = Fixture::new();
+                fixture.initialize(WineMode::Win32);
+                let outside = fixture.temporary.path().join("grant.txt");
+                fs::write(&outside, b"external data must survive").unwrap();
+                let target = fixture.installed("system32", "dxgi.dll");
+                if use_symlink {
+                    symlink(&outside, &target).unwrap();
+                } else {
+                    fs::hard_link(&outside, &target).unwrap();
+                }
+                let _lease = fixture
+                    .prepare(WineMode::Win32, || {
+                        assert!(!target.exists());
+                        assert!(!target.is_symlink());
+                        assert_eq!(fs::read(&outside).unwrap(), b"external data must survive");
+                        Ok(())
+                    })
+                    .unwrap();
+                assert_eq!(fs::read(&outside).unwrap(), b"external data must survive");
+                assert!(!target.is_symlink());
+                assert_eq!(fs::metadata(&target).unwrap().nlink(), 1);
+                assert_eq!(
+                    fs::read(target).unwrap(),
+                    fs::read(fixture.payload.join("x32/dxgi.dll")).unwrap()
+                );
+            }
+        }
+        // Phase `redirected_directory_is_rejected_before_wineboot`.
+        {
+            for component in ["drive_c", "drive_c/windows", "drive_c/windows/system32"] {
+                let fixture = Fixture::new();
+                let outside = fixture.temporary.path().join("outside");
+                fs::create_dir(&outside).unwrap();
+                let destination = fixture.prefix.join(component);
+                fs::create_dir_all(destination.parent().unwrap()).unwrap();
+                symlink(&outside, destination).unwrap();
+                assert!(
+                    fixture
+                        .prepare(WineMode::Win32, || panic!(
+                            "must not initialize redirected prefix"
+                        ))
+                        .is_err()
+                );
+                assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+            }
+        }
+        // Phase `registry_links_and_wrong_architecture_are_rejected_before_initialization`.
+        {
+            let fixture = Fixture::new();
+            fixture.initialize(WineMode::Win64);
+            assert!(fixture.prepare(WineMode::Win32, || panic!()).is_err());
+            let registry = fixture.prefix.join("system.reg");
+            let outside = fixture.temporary.path().join("registry-grant");
+            fs::hard_link(&registry, &outside).unwrap();
+            assert!(fixture.prepare(WineMode::Win64, || panic!()).is_err());
+            fs::remove_file(&registry).unwrap();
+            symlink(&outside, &registry).unwrap();
+            assert!(fixture.prepare(WineMode::Win64, || panic!()).is_err());
+        }
+        // Phase `immutable_payload_links_are_rejected`.
+        {
+            let fixture = Fixture::new();
+            let source = fixture.payload.join("x32/dxgi.dll");
+            fs::remove_file(&source).unwrap();
+            symlink(fixture.payload.join("x64/dxgi.dll"), source).unwrap();
+            assert!(fixture.prepare(WineMode::Win32, || panic!()).is_err());
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each phase keeps one former test's body verbatim"
+    )]
+    fn readiness_requires_real_initialization_and_temporaries_are_safe() {
+        // Phase `callback_success_without_initialization_is_not_readiness`.
+        {
+            let fixture = Fixture::new();
+            assert!(fixture.prepare(WineMode::Win64, || Ok(())).is_err());
+            assert!(!fixture.prefix.join(GENERATION_FILE).exists());
+            assert!(
+                fixture
+                    .prepare(WineMode::Win64, || Err(io::Error::other("wineboot failed")))
+                    .is_err()
+            );
+            assert!(!fixture.prefix.join(GENERATION_FILE).exists());
+            // Failure releases the exclusive lock, permitting a later retry.
+            drop(
+                fixture
+                    .prepare(WineMode::Win64, || {
+                        fixture.initialize(WineMode::Win64);
+                        Ok(())
+                    })
+                    .unwrap(),
+            );
+        }
+        // Phase `marker_does_not_prove_registry_initialization`.
+        {
+            let fixture = Fixture::new();
+            drop(
+                fixture
+                    .prepare(WineMode::Win32, || {
+                        fixture.initialize(WineMode::Win32);
+                        Ok(())
+                    })
+                    .unwrap(),
+            );
+            fs::remove_file(fixture.prefix.join("system.reg")).unwrap();
+            let called = Cell::new(false);
+            let _lease = fixture
+                .prepare(WineMode::Win32, || {
+                    called.set(true);
                     fixture.initialize(WineMode::Win32);
                     Ok(())
                 })
-                .unwrap(),
-        );
-        let target = fixture.installed("system32", "dxgi.dll");
-        fs::remove_file(&target).unwrap();
-        let name = CString::new(target.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: name is a live NUL-terminated temporary fixture path.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-        let _lease = fixture.prepare(WineMode::Win32, || Ok(())).unwrap();
-        assert!(fs::metadata(target).unwrap().is_file());
-    }
-
-    #[test]
-    fn stale_temporary_name_is_retained_and_a_new_file_is_created() {
-        let fixture = Fixture::new();
-        let stale = fixture
-            .prefix
-            .join(format!(".tilo-dxvk-{}-0", std::process::id()));
-        fs::write(&stale, b"left by an interrupted prior invocation").unwrap();
-        let directory = open_directory(&fixture.prefix).unwrap();
-        let (mut file, name) = create_temporary(&directory, &AtomicU64::new(0)).unwrap();
-        file.write_all(b"new private data").unwrap();
-        assert_eq!(
-            name.to_str().unwrap(),
-            format!(".tilo-dxvk-{}-1", std::process::id())
-        );
-        assert_eq!(
-            fs::read(&stale).unwrap(),
-            b"left by an interrupted prior invocation"
-        );
-        assert_eq!(
-            fs::read(fixture.prefix.join(name.to_str().unwrap())).unwrap(),
-            b"new private data"
-        );
-    }
-
-    #[test]
-    fn temporary_collision_retries_are_bounded_and_preserve_foreign_files() {
-        let fixture = Fixture::new();
-        for index in 0..128 {
-            fs::write(
-                fixture
-                    .prefix
-                    .join(format!(".tilo-dxvk-{}-{index}", std::process::id())),
-                b"retained",
-            )
-            .unwrap();
+                .unwrap();
+            assert!(called.get());
         }
-        let directory = open_directory(&fixture.prefix).unwrap();
-        assert_eq!(
-            create_temporary(&directory, &AtomicU64::new(0))
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::AlreadyExists
-        );
-        for entry in fs::read_dir(&fixture.prefix).unwrap() {
-            assert_eq!(fs::read(entry.unwrap().path()).unwrap(), b"retained");
+        // Phase `fifo_leaf_is_replaced_without_blocking`.
+        {
+            let fixture = Fixture::new();
+            drop(
+                fixture
+                    .prepare(WineMode::Win32, || {
+                        fixture.initialize(WineMode::Win32);
+                        Ok(())
+                    })
+                    .unwrap(),
+            );
+            let target = fixture.installed("system32", "dxgi.dll");
+            fs::remove_file(&target).unwrap();
+            let name = CString::new(target.as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: name is a live NUL-terminated temporary fixture path.
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            let _lease = fixture.prepare(WineMode::Win32, || Ok(())).unwrap();
+            assert!(fs::metadata(target).unwrap().is_file());
+        }
+        // Phase `stale_temporary_name_is_retained_and_a_new_file_is_created`.
+        {
+            let fixture = Fixture::new();
+            let stale = fixture
+                .prefix
+                .join(format!(".tilo-dxvk-{}-0", std::process::id()));
+            fs::write(&stale, b"left by an interrupted prior invocation").unwrap();
+            let directory = open_directory(&fixture.prefix).unwrap();
+            let (mut file, name) = create_temporary(&directory, &AtomicU64::new(0)).unwrap();
+            file.write_all(b"new private data").unwrap();
+            assert_eq!(
+                name.to_str().unwrap(),
+                format!(".tilo-dxvk-{}-1", std::process::id())
+            );
+            assert_eq!(
+                fs::read(&stale).unwrap(),
+                b"left by an interrupted prior invocation"
+            );
+            assert_eq!(
+                fs::read(fixture.prefix.join(name.to_str().unwrap())).unwrap(),
+                b"new private data"
+            );
+        }
+        // Phase `temporary_collision_retries_are_bounded_and_preserve_foreign_files`.
+        {
+            let fixture = Fixture::new();
+            for index in 0..128 {
+                fs::write(
+                    fixture
+                        .prefix
+                        .join(format!(".tilo-dxvk-{}-{index}", std::process::id())),
+                    b"retained",
+                )
+                .unwrap();
+            }
+            let directory = open_directory(&fixture.prefix).unwrap();
+            assert_eq!(
+                create_temporary(&directory, &AtomicU64::new(0))
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            for entry in fs::read_dir(&fixture.prefix).unwrap() {
+                assert_eq!(fs::read(entry.unwrap().path()).unwrap(), b"retained");
+            }
         }
     }
 }

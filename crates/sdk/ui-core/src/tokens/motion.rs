@@ -192,20 +192,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn durations_expose_std_duration_helpers() {
-        let d = Durations::default();
-        assert_eq!(d.fast(), Duration::from_millis(130));
-        assert_eq!(d.base(), Duration::from_millis(210));
-        assert_eq!(d.slow(), Duration::from_millis(400));
-    }
+    fn motion_springs_have_their_documented_damping() {
+        // phase: durations_expose_std_duration_helpers
+        {
+            let d = Durations::default();
+            assert_eq!(d.fast(), Duration::from_millis(130));
+            assert_eq!(d.base(), Duration::from_millis(210));
+            assert_eq!(d.slow(), Duration::from_millis(400));
+        }
+        // phase: snappy_is_lightly_underdamped
+        {
+            // ζ = c / (2 sqrt(k m)); snappy should sit just under 1.0 so it
+            // settles fast with a barely-visible overshoot.
+            let p = SpringPresets::default().snappy;
+            let zeta = p.damping / (2.0 * (p.stiffness * p.mass).sqrt());
+            assert!(zeta > 0.8 && zeta < 1.0, "snappy ζ = {zeta}");
+        }
+        // phase: heavy_is_critically_damped_and_settles_promptly
+        // "Weight without wobble" means ζ must reach exactly 1.0 — anything
+        // below and the spring crosses its target, the bouncy reading this
+        // preset exists to avoid.
+        //
+        // The settle bound is measured by stepping the real integrator rather
+        // than derived from ω, so a change to how `Spring` integrates can't
+        // quietly lengthen it.
+        {
+            let p = SpringPresets::default();
+            let z = zeta(p.heavy);
+            assert!((z - 1.0).abs() < 1e-3, "heavy ζ = {z}, must be 1.0");
+            assert!(
+                p.heavy.mass > p.snappy.mass,
+                "heavy must carry more mass than snappy, not just more stiffness"
+            );
 
-    #[test]
-    fn snappy_is_lightly_underdamped() {
-        // ζ = c / (2 sqrt(k m)); snappy should sit just under 1.0 so it
-        // settles fast with a barely-visible overshoot.
-        let p = SpringPresets::default().snappy;
-        let zeta = p.damping / (2.0 * (p.stiffness * p.mass).sqrt());
-        assert!(zeta > 0.8 && zeta < 1.0, "snappy ζ = {zeta}");
+            // Full-scale step through the production integrator at 120 Hz.
+            let mut s = crate::animation::Spring::new(0.0, p.heavy);
+            s.set_target(1.0);
+            let dt = 1.0 / 120.0;
+            let mut elapsed = 0.0_f32;
+            while !s.is_settled() && elapsed < 2.0 {
+                s.step(dt);
+                elapsed += dt;
+            }
+            assert!(
+                (0.10..=0.30).contains(&elapsed),
+                "heavy must settle within 0.10-0.30 s, took {elapsed:.3} s"
+            );
+
+            // Critical damping is a claim about the path, not just the
+            // endpoint: it must approach from one side and never cross.
+            let mut s = crate::animation::Spring::new(0.0, p.heavy);
+            s.set_target(1.0);
+            for _ in 0..240 {
+                s.step(dt);
+                assert!(s.value() <= 1.0 + 1e-4, "overshot to {}", s.value());
+            }
+        }
+        // phase: tracking_is_critically_damped_and_stiffer_than_snappy
+        // The follow preset trades the other way: also critical, but stiff
+        // enough that the lag it introduces stays a cue and never becomes
+        // latency.
+        {
+            let p = SpringPresets::default();
+            let z = zeta(p.tracking);
+            assert!((z - 1.0).abs() < 1e-3, "tracking ζ = {z}, must be 1.0");
+            assert!(
+                omega(p.tracking) > 2.0 * omega(p.snappy),
+                "tracking must be far stiffer than a settle spring: ω = {}",
+                omega(p.tracking)
+            );
+        }
     }
 
     fn zeta(p: SpringParams) -> f32 {
@@ -216,120 +272,66 @@ mod tests {
         (p.stiffness / p.mass).sqrt()
     }
 
-    /// "Weight without wobble" means ζ must reach exactly 1.0 — anything
-    /// below and the spring crosses its target, the bouncy reading this
-    /// preset exists to avoid.
-    ///
-    /// The settle bound is measured by stepping the real integrator rather
-    /// than derived from ω, so a change to how `Spring` integrates can't
-    /// quietly lengthen it.
     #[test]
-    fn heavy_is_critically_damped_and_settles_promptly() {
-        let p = SpringPresets::default();
-        let z = zeta(p.heavy);
-        assert!((z - 1.0).abs() < 1e-3, "heavy ζ = {z}, must be 1.0");
-        assert!(
-            p.heavy.mass > p.snappy.mass,
-            "heavy must carry more mass than snappy, not just more stiffness"
-        );
+    fn rubber_banding_stiffens_and_retargeting_preserves_motion() {
+        // phase: rubber_band_starts_soft_and_stiffens_without_bound
+        // The resistance curve's two load-bearing properties: it starts at
+        // 1:1 with the input (so an end gives before it resists) and it is
+        // bounded (so the surface can never be dragged somewhere it does
+        // not belong), with resistance growing the whole way between.
+        {
+            let limit = 18.0;
+            assert_eq!(rubber_band(0.0, limit), 0.0);
+            assert_eq!(rubber_band(-5.0, limit), 0.0);
 
-        // Full-scale step through the production integrator at 120 Hz.
-        let mut s = crate::animation::Spring::new(0.0, p.heavy);
-        s.set_target(1.0);
-        let dt = 1.0 / 120.0;
-        let mut elapsed = 0.0_f32;
-        while !s.is_settled() && elapsed < 2.0 {
-            s.step(dt);
-            elapsed += dt;
-        }
-        assert!(
-            (0.10..=0.30).contains(&elapsed),
-            "heavy must settle within 0.10-0.30 s, took {elapsed:.3} s"
-        );
-
-        // Critical damping is a claim about the path, not just the
-        // endpoint: it must approach from one side and never cross.
-        let mut s = crate::animation::Spring::new(0.0, p.heavy);
-        s.set_target(1.0);
-        for _ in 0..240 {
-            s.step(dt);
-            assert!(s.value() <= 1.0 + 1e-4, "overshot to {}", s.value());
-        }
-    }
-
-    /// The follow preset trades the other way: also critical, but stiff
-    /// enough that the lag it introduces stays a cue and never becomes
-    /// latency.
-    #[test]
-    fn tracking_is_critically_damped_and_stiffer_than_snappy() {
-        let p = SpringPresets::default();
-        let z = zeta(p.tracking);
-        assert!((z - 1.0).abs() < 1e-3, "tracking ζ = {z}, must be 1.0");
-        assert!(
-            omega(p.tracking) > 2.0 * omega(p.snappy),
-            "tracking must be far stiffer than a settle spring: ω = {}",
-            omega(p.tracking)
-        );
-    }
-
-    /// The resistance curve's two load-bearing properties: it starts at
-    /// 1:1 with the input (so an end gives before it resists) and it is
-    /// bounded (so the surface can never be dragged somewhere it does
-    /// not belong), with resistance growing the whole way between.
-    #[test]
-    fn rubber_band_starts_soft_and_stiffens_without_bound() {
-        let limit = 18.0;
-        assert_eq!(rubber_band(0.0, limit), 0.0);
-        assert_eq!(rubber_band(-5.0, limit), 0.0);
-
-        // First contact is nearly free: a small pull is nearly 1:1.
-        let tiny = rubber_band(0.2, limit);
-        assert!(
-            tiny > 0.18 && tiny < 0.2,
-            "first contact should barely resist, got {tiny}"
-        );
-
-        // Every additional unit of input buys strictly less movement
-        // than the one before it, all the way out.
-        let mut prev_gain = f32::INFINITY;
-        let mut prev = 0.0;
-        for step in 1_u16..=400 {
-            let d = f32::from(step);
-            let v = rubber_band(d, limit);
-            let gain = v - prev;
+            // First contact is nearly free: a small pull is nearly 1:1.
+            let tiny = rubber_band(0.2, limit);
             assert!(
-                gain > 0.0,
-                "resistance must never become a hard stop (d = {d})"
+                tiny > 0.18 && tiny < 0.2,
+                "first contact should barely resist, got {tiny}"
             );
-            assert!(
-                gain < prev_gain,
-                "resistance must grow monotonically (d = {d})"
-            );
-            assert!(v < limit, "overscroll must stay under the limit (d = {d})");
-            prev_gain = gain;
-            prev = v;
-        }
-        // Far out, the surface has all but stopped moving.
-        assert!(rubber_band(1.0e4, limit) > limit * 0.99);
-    }
 
-    /// A spring mid-flight must be able to change its constants without
-    /// losing where it is or how fast it is going — that hand-off is
-    /// what lets a drag's momentum carry into the release settle.
-    #[test]
-    fn set_params_preserves_value_and_velocity() {
-        use crate::animation::Spring;
-        let presets = SpringPresets::default();
-        let mut s = Spring::new(0.0, presets.tracking);
-        s.set_target(40.0);
-        for _ in 0..10 {
-            s.step(1.0 / 60.0);
+            // Every additional unit of input buys strictly less movement
+            // than the one before it, all the way out.
+            let mut prev_gain = f32::INFINITY;
+            let mut prev = 0.0;
+            for step in 1_u16..=400 {
+                let d = f32::from(step);
+                let v = rubber_band(d, limit);
+                let gain = v - prev;
+                assert!(
+                    gain > 0.0,
+                    "resistance must never become a hard stop (d = {d})"
+                );
+                assert!(
+                    gain < prev_gain,
+                    "resistance must grow monotonically (d = {d})"
+                );
+                assert!(v < limit, "overscroll must stay under the limit (d = {d})");
+                prev_gain = gain;
+                prev = v;
+            }
+            // Far out, the surface has all but stopped moving.
+            assert!(rubber_band(1.0e4, limit) > limit * 0.99);
         }
-        let (v, vel) = (s.value(), s.velocity());
-        assert!(vel.abs() > 1.0, "spring should be moving before the swap");
-        s.set_params(presets.heavy);
-        assert_eq!(s.value(), v);
-        assert_eq!(s.velocity(), vel);
-        assert_eq!(s.params().mass, presets.heavy.mass);
+        // phase: set_params_preserves_value_and_velocity
+        // A spring mid-flight must be able to change its constants without
+        // losing where it is or how fast it is going — that hand-off is
+        // what lets a drag's momentum carry into the release settle.
+        {
+            use crate::animation::Spring;
+            let presets = SpringPresets::default();
+            let mut s = Spring::new(0.0, presets.tracking);
+            s.set_target(40.0);
+            for _ in 0..10 {
+                s.step(1.0 / 60.0);
+            }
+            let (v, vel) = (s.value(), s.velocity());
+            assert!(vel.abs() > 1.0, "spring should be moving before the swap");
+            s.set_params(presets.heavy);
+            assert_eq!(s.value(), v);
+            assert_eq!(s.velocity(), vel);
+            assert_eq!(s.params().mass, presets.heavy.mass);
+        }
     }
 }

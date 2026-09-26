@@ -44,17 +44,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sample_view_opens_on_png_header() {
+    fn initial_views_are_sample_png_or_honest_empty_state() {
+        // Sample view: opens on the PNG header.
         let v = sample_view();
         assert_eq!(&v.model().bytes()[..4], &[0x89, 0x50, 0x4E, 0x47]);
         assert!(v.model().len() > 32);
         // Cursor parks on the IHDR width field, inspector in big-endian.
         assert_eq!(v.model().cursor(), 0x10);
         assert_eq!(v.model().endian(), crate::model::Endian::Big);
-    }
 
-    #[test]
-    fn view_for_missing_path_is_the_empty_state_not_a_fake_buffer() {
+        // Missing path: the empty state, not a fake buffer.
         let v = view_for_path(Path::new("/nonexistent/definitely-not-here.bin"));
         assert!(
             !v.has_file(),

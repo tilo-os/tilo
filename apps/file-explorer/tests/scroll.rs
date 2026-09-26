@@ -300,12 +300,20 @@ fn assert_scrolls_via_wheel(mode: ViewMode) {
     );
 }
 
+/// List and grid wheel scrolling, the list thumb drag, and the opt-in
+/// (`SCROLL_SHOT_DIR`) before/after renders — each phase on a fresh directory.
 #[test]
+fn long_directories_scroll_by_wheel_and_thumb_with_optional_shots() {
+    list_scrolls_with_the_mouse_wheel();
+    grid_scrolls_with_the_mouse_wheel();
+    list_scrolls_by_dragging_the_scrollbar_thumb();
+    scroll_before_after_shots();
+}
+
 fn list_scrolls_with_the_mouse_wheel() {
     assert_scrolls_via_wheel(ViewMode::List);
 }
 
-#[test]
 fn grid_scrolls_with_the_mouse_wheel() {
     assert_scrolls_via_wheel(ViewMode::Grid);
 }
@@ -314,7 +322,6 @@ fn grid_scrolls_with_the_mouse_wheel() {
 /// scrolled to the bottom, into two PNGs. Opt-in via `SCROLL_SHOT_DIR` (needs
 /// a GPU/software-wgpu path) so the standard `cargo test` run stays fast and
 /// display-free; the driven-scroll asserts above are the always-on proof.
-#[test]
 fn scroll_before_after_shots() {
     let Ok(dir_out) = std::env::var("SCROLL_SHOT_DIR") else {
         return;
@@ -339,7 +346,6 @@ fn scroll_before_after_shots() {
     }
 }
 
-#[test]
 fn list_scrolls_by_dragging_the_scrollbar_thumb() {
     let dir = dir_with_files(160);
     let mut h = Harness::new(dir.path(), ViewMode::List, 1000.0, 600.0);

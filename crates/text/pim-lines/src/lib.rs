@@ -364,167 +364,165 @@ mod tests {
     }
 
     #[test]
-    fn folding_respects_the_octet_budget_and_utf8_boundaries() {
-        for line in [
-            format!("NOTE:{}", "x".repeat(200)),
-            format!("SUMMARY:Planning {}", "界".repeat(40)),
-            format!("NOTE:{}", "é".repeat(80)),
-            format!("NOTE:{}", "🎉".repeat(50)),
-        ] {
-            let out = folded(&line);
-            assert!(out.ends_with("\r\n"));
-            let physical: Vec<&str> = out.trim_end_matches("\r\n").split("\r\n").collect();
-            assert!(physical.len() > 1, "long line must fold");
-            for (index, part) in physical.iter().enumerate() {
-                assert!(part.len() <= FOLD_OCTETS, "{} octets: {part:?}", part.len());
-                assert_eq!(index > 0, part.starts_with(' '));
+    fn folding_and_unfolding_respect_octet_budgets_and_continuations() {
+        // Phase `folding_respects_the_octet_budget_and_utf8_boundaries`.
+        {
+            for line in [
+                format!("NOTE:{}", "x".repeat(200)),
+                format!("SUMMARY:Planning {}", "界".repeat(40)),
+                format!("NOTE:{}", "é".repeat(80)),
+                format!("NOTE:{}", "🎉".repeat(50)),
+            ] {
+                let out = folded(&line);
+                assert!(out.ends_with("\r\n"));
+                let physical: Vec<&str> = out.trim_end_matches("\r\n").split("\r\n").collect();
+                assert!(physical.len() > 1, "long line must fold");
+                for (index, part) in physical.iter().enumerate() {
+                    assert!(part.len() <= FOLD_OCTETS, "{} octets: {part:?}", part.len());
+                    assert_eq!(index > 0, part.starts_with(' '));
+                }
+                assert_eq!(unfold(&out), vec![line.clone(), String::new()]);
             }
-            assert_eq!(unfold(&out), vec![line.clone(), String::new()]);
         }
-    }
-
-    #[test]
-    fn folding_fills_each_line_exactly() {
-        let out = folded(&"a".repeat(75 + 74 + 1));
-        assert_eq!(
-            out,
-            format!("{}\r\n {}\r\n a\r\n", "a".repeat(75), "a".repeat(74))
-        );
-        assert_eq!(folded("SHORT:x"), "SHORT:x\r\n");
-    }
-
-    #[test]
-    fn unfolding_accepts_lf_tab_and_leading_continuations() {
-        let text = "SUMMARY:Hello Wo\r\n rld\nNOTE:a\n\tb\r\n";
-        assert_eq!(unfold(text), vec!["SUMMARY:Hello World", "NOTE:ab", ""]);
-        assert_eq!(unfold(" orphan\r\n"), vec![" orphan", ""]);
-    }
-
-    #[test]
-    fn bounded_unfolding_absorbs_every_continuation_of_an_oversized_line() {
-        let text = format!(
-            "FN:ok\r\nNOTE:{}\r\n more\r\n NOTE:smuggled\r\nEND:VCARD\r\n",
-            "x".repeat(20)
-        );
-        let lines = unfold_bounded(&text, 16);
-        assert_eq!(
-            lines,
-            vec![
-                Unfolded::Line("FN:ok".into()),
-                Unfolded::Oversized,
-                Unfolded::Line("END:VCARD".into()),
-                Unfolded::Line(String::new()),
-            ]
-        );
-        let accumulated = unfold_bounded("NOTE:0123456789\r\n 0123456789\r\n", 16);
-        assert_eq!(accumulated[0], Unfolded::Oversized);
-    }
-
-    #[test]
-    fn content_lines_parse_groups_params_and_values() {
-        let line = ContentLine::parse("item1.tel;type=WORK,voice;PREF=1:+1 555").unwrap();
-        assert_eq!(line.group.as_deref(), Some("item1"));
-        assert_eq!(line.name, "TEL");
-        assert_eq!(line.params[0].name, "TYPE");
-        assert_eq!(line.params[0].values, vec!["WORK", "voice"]);
-        assert_eq!(line.param_value("pref").as_deref(), Some("1"));
-        assert_eq!(line.value, "+1 555");
-
-        let bare = ContentLine::parse("TEL;WORK;HOME:1").unwrap();
-        assert_eq!(bare.params.len(), 2);
-        assert!(bare.params.iter().all(|param| param.values.is_empty()));
-    }
-
-    #[test]
-    fn quoted_parameters_may_contain_delimiters() {
-        let line = ContentLine::parse(
-            "ATTENDEE;CN=\"Doe, Jane; PhD\";DELEGATED-FROM=\"mailto:a@example.com\":mailto:jane@example.com",
-        )
-        .unwrap();
-        assert_eq!(line.param_value("CN").as_deref(), Some("Doe, Jane; PhD"));
-        assert_eq!(
-            line.param_value("DELEGATED-FROM").as_deref(),
-            Some("mailto:a@example.com")
-        );
-        assert_eq!(line.value, "mailto:jane@example.com");
-
-        let list = ContentLine::parse("TEL;TYPE=\"voice,home\",\"cell\":x").unwrap();
-        assert_eq!(list.params[0].values, vec!["voice,home", "cell"]);
-
-        assert!(ContentLine::parse("X;CN=\"open:value").is_none());
-        assert!(ContentLine::parse("no separator").is_none());
-        assert!(ContentLine::parse(":value").is_none());
-    }
-
-    #[test]
-    fn parameter_values_round_trip_through_quoting_and_caret_encoding() {
-        for value in [
-            "Sam Example",
-            "Doe, Jane",
-            "a;b:c",
-            "say \"hi\"",
-            "two\nlines",
-            "caret ^ here",
-            "Europe/Berlin",
-        ] {
-            let mut out = String::new();
-            write_property(
-                &mut out,
-                "ATTENDEE",
-                &[("CN", value)],
-                "mailto:x@example.com",
+        // Phase `folding_fills_each_line_exactly`.
+        {
+            let out = folded(&"a".repeat(75 + 74 + 1));
+            assert_eq!(
+                out,
+                format!("{}\r\n {}\r\n a\r\n", "a".repeat(75), "a".repeat(74))
             );
-            let logical = unfold(&out);
-            let line = ContentLine::parse(&logical[0]).unwrap();
-            assert_eq!(line.param_value("CN").as_deref(), Some(value), "{out}");
-            assert_eq!(line.value, "mailto:x@example.com");
+            assert_eq!(folded("SHORT:x"), "SHORT:x\r\n");
         }
-        assert!(matches!(
-            encode_param_value("Sam Example"),
-            Cow::Borrowed(_)
-        ));
-        assert_eq!(encode_param_value("Doe, Jane"), "\"Doe, Jane\"");
-        assert_eq!(decode_param_value("^x^"), "^x^");
+        // Phase `unfolding_accepts_lf_tab_and_leading_continuations`.
+        {
+            let text = "SUMMARY:Hello Wo\r\n rld\nNOTE:a\n\tb\r\n";
+            assert_eq!(unfold(text), vec!["SUMMARY:Hello World", "NOTE:ab", ""]);
+            assert_eq!(unfold(" orphan\r\n"), vec![" orphan", ""]);
+        }
+        // Phase `bounded_unfolding_absorbs_every_continuation_of_an_oversized_line`.
+        {
+            let text = format!(
+                "FN:ok\r\nNOTE:{}\r\n more\r\n NOTE:smuggled\r\nEND:VCARD\r\n",
+                "x".repeat(20)
+            );
+            let lines = unfold_bounded(&text, 16);
+            assert_eq!(
+                lines,
+                vec![
+                    Unfolded::Line("FN:ok".into()),
+                    Unfolded::Oversized,
+                    Unfolded::Line("END:VCARD".into()),
+                    Unfolded::Line(String::new()),
+                ]
+            );
+            let accumulated = unfold_bounded("NOTE:0123456789\r\n 0123456789\r\n", 16);
+            assert_eq!(accumulated[0], Unfolded::Oversized);
+        }
     }
 
     #[test]
-    fn text_escaping_round_trips_and_normalises_crlf() {
-        let text = "Note: with, punctuation; back\\slash\nnewline";
-        let escaped = escape_text(text);
-        assert_eq!(
-            escaped,
-            "Note: with\\, punctuation\\; back\\\\slash\\nnewline"
-        );
-        assert_eq!(unescape_text(&escaped), text);
-        assert_eq!(escape_text("a\r\nb"), "a\\nb");
-        assert_eq!(unescape_text("A\\NB\\"), "A\nB");
-    }
+    fn content_lines_parse_and_round_trip_params_escapes_and_structure() {
+        // Phase `content_lines_parse_groups_params_and_values`.
+        {
+            let line = ContentLine::parse("item1.tel;type=WORK,voice;PREF=1:+1 555").unwrap();
+            assert_eq!(line.group.as_deref(), Some("item1"));
+            assert_eq!(line.name, "TEL");
+            assert_eq!(line.params[0].name, "TYPE");
+            assert_eq!(line.params[0].values, vec!["WORK", "voice"]);
+            assert_eq!(line.param_value("pref").as_deref(), Some("1"));
+            assert_eq!(line.value, "+1 555");
 
-    #[test]
-    fn structured_values_split_only_on_unescaped_delimiters() {
-        assert_eq!(
-            split_unescaped("Doe\\;Smith;Jane;;;", ';'),
-            vec!["Doe\\;Smith", "Jane", "", "", ""]
-        );
-        assert_eq!(split_unescaped("a\\\\,b", ','), vec!["a\\\\", "b"]);
-        assert_eq!(split_unescaped("", ','), vec![""]);
-    }
+            let bare = ContentLine::parse("TEL;WORK;HOME:1").unwrap();
+            assert_eq!(bare.params.len(), 2);
+            assert!(bare.params.iter().all(|param| param.values.is_empty()));
+        }
+        // Phase `quoted_parameters_may_contain_delimiters`.
+        {
+            let line = ContentLine::parse(
+                "ATTENDEE;CN=\"Doe, Jane; PhD\";DELEGATED-FROM=\"mailto:a@example.com\":mailto:jane@example.com",
+            )
+            .unwrap();
+            assert_eq!(line.param_value("CN").as_deref(), Some("Doe, Jane; PhD"));
+            assert_eq!(
+                line.param_value("DELEGATED-FROM").as_deref(),
+                Some("mailto:a@example.com")
+            );
+            assert_eq!(line.value, "mailto:jane@example.com");
 
-    #[test]
-    fn strict_documents_require_crlf_and_valid_lines() {
-        let ok = "BEGIN:VCALENDAR\r\nSUMMARY:a\r\n b\r\nEND:VCALENDAR\r\n";
-        let lines = parse_strict(ok).unwrap();
-        assert!(lines[0].begins("vcalendar"));
-        assert_eq!(lines[1].value, "ab");
-        assert!(lines[2].ends("VCALENDAR"));
-        for bad in [
-            "BEGIN:VCALENDAR\nEND:VCALENDAR\n",
-            "BEGIN:VCALENDAR\r\nEND:VCALENDAR",
-            "BEGIN:VCALENDAR\r\n\r\nEND:VCALENDAR\r\n",
-            " BEGIN:VCALENDAR\r\n",
-            "BEGIN:VCALENDAR\r\nSUMMARY:a\rb\r\n",
-        ] {
-            assert!(parse_strict(bad).is_none(), "{bad:?}");
+            let list = ContentLine::parse("TEL;TYPE=\"voice,home\",\"cell\":x").unwrap();
+            assert_eq!(list.params[0].values, vec!["voice,home", "cell"]);
+
+            assert!(ContentLine::parse("X;CN=\"open:value").is_none());
+            assert!(ContentLine::parse("no separator").is_none());
+            assert!(ContentLine::parse(":value").is_none());
+        }
+        // Phase `parameter_values_round_trip_through_quoting_and_caret_encoding`.
+        {
+            for value in [
+                "Sam Example",
+                "Doe, Jane",
+                "a;b:c",
+                "say \"hi\"",
+                "two\nlines",
+                "caret ^ here",
+                "Europe/Berlin",
+            ] {
+                let mut out = String::new();
+                write_property(
+                    &mut out,
+                    "ATTENDEE",
+                    &[("CN", value)],
+                    "mailto:x@example.com",
+                );
+                let logical = unfold(&out);
+                let line = ContentLine::parse(&logical[0]).unwrap();
+                assert_eq!(line.param_value("CN").as_deref(), Some(value), "{out}");
+                assert_eq!(line.value, "mailto:x@example.com");
+            }
+            assert!(matches!(
+                encode_param_value("Sam Example"),
+                Cow::Borrowed(_)
+            ));
+            assert_eq!(encode_param_value("Doe, Jane"), "\"Doe, Jane\"");
+            assert_eq!(decode_param_value("^x^"), "^x^");
+        }
+        // Phase `text_escaping_round_trips_and_normalises_crlf`.
+        {
+            let text = "Note: with, punctuation; back\\slash\nnewline";
+            let escaped = escape_text(text);
+            assert_eq!(
+                escaped,
+                "Note: with\\, punctuation\\; back\\\\slash\\nnewline"
+            );
+            assert_eq!(unescape_text(&escaped), text);
+            assert_eq!(escape_text("a\r\nb"), "a\\nb");
+            assert_eq!(unescape_text("A\\NB\\"), "A\nB");
+        }
+        // Phase `structured_values_split_only_on_unescaped_delimiters`.
+        {
+            assert_eq!(
+                split_unescaped("Doe\\;Smith;Jane;;;", ';'),
+                vec!["Doe\\;Smith", "Jane", "", "", ""]
+            );
+            assert_eq!(split_unescaped("a\\\\,b", ','), vec!["a\\\\", "b"]);
+            assert_eq!(split_unescaped("", ','), vec![""]);
+        }
+        // Phase `strict_documents_require_crlf_and_valid_lines`.
+        {
+            let ok = "BEGIN:VCALENDAR\r\nSUMMARY:a\r\n b\r\nEND:VCALENDAR\r\n";
+            let lines = parse_strict(ok).unwrap();
+            assert!(lines[0].begins("vcalendar"));
+            assert_eq!(lines[1].value, "ab");
+            assert!(lines[2].ends("VCALENDAR"));
+            for bad in [
+                "BEGIN:VCALENDAR\nEND:VCALENDAR\n",
+                "BEGIN:VCALENDAR\r\nEND:VCALENDAR",
+                "BEGIN:VCALENDAR\r\n\r\nEND:VCALENDAR\r\n",
+                " BEGIN:VCALENDAR\r\n",
+                "BEGIN:VCALENDAR\r\nSUMMARY:a\rb\r\n",
+            ] {
+                assert!(parse_strict(bad).is_none(), "{bad:?}");
+            }
         }
     }
 }

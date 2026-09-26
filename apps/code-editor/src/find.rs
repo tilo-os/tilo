@@ -1036,6 +1036,15 @@ mod tests {
     }
 
     #[test]
+    fn matches_are_in_document_order_and_navigation_wraps() {
+        // Each phase computes its own matches; no state is shared.
+        matches_are_found_across_lines_in_document_order();
+        an_empty_query_matches_nothing();
+        next_starts_from_the_caret_and_wraps();
+        prev_steps_backwards_and_wraps();
+        navigation_on_no_matches_is_none_rather_than_a_panic();
+    }
+
     fn matches_are_found_across_lines_in_document_order() {
         let text = "let foo = 1;\nfn bar() {}\n// foo again foo\n";
         let m = matches_in(text, &q("foo"));
@@ -1066,12 +1075,10 @@ mod tests {
         );
     }
 
-    #[test]
     fn an_empty_query_matches_nothing() {
         assert!(matches_in("anything at all", &q("")).is_empty());
     }
 
-    #[test]
     fn next_starts_from_the_caret_and_wraps() {
         let text = "a\nb a\nc a\n";
         let m = matches_in(text, &q("a"));
@@ -1084,7 +1091,6 @@ mod tests {
         assert_eq!(next_from(&m, 99, 0), Some(0));
     }
 
-    #[test]
     fn prev_steps_backwards_and_wraps() {
         let text = "a\nb a\nc a\n";
         let m = matches_in(text, &q("a"));
@@ -1092,13 +1098,19 @@ mod tests {
         assert_eq!(prev_from(&m, 0, 0), Some(2), "wraps to the last match");
     }
 
-    #[test]
     fn navigation_on_no_matches_is_none_rather_than_a_panic() {
         assert_eq!(next_from(&[], 0, 0), None);
         assert_eq!(prev_from(&[], 0, 0), None);
     }
 
     #[test]
+    fn find_bar_reports_its_query_options_and_status() {
+        // Each phase builds a fresh bar.
+        the_bar_reports_its_query_and_options();
+        a_multiline_selection_does_not_seed_the_query();
+        the_status_readout_says_what_is_true();
+    }
+
     fn the_bar_reports_its_query_and_options() {
         let mut bar = FindBar::new();
         bar.open(false, Some("needle"));
@@ -1114,7 +1126,6 @@ mod tests {
         assert!(bar.take_events().contains(&FindEvent::QueryChanged));
     }
 
-    #[test]
     fn a_multiline_selection_does_not_seed_the_query() {
         // Ctrl+F with a paragraph selected should open an empty find, not a
         // query containing newlines that can never match a line.
@@ -1123,7 +1134,6 @@ mod tests {
         assert_eq!(bar.query().needle, "");
     }
 
-    #[test]
     fn the_status_readout_says_what_is_true() {
         let mut bar = FindBar::new();
         bar.open(false, None);
@@ -1141,6 +1151,13 @@ mod tests {
     }
 
     #[test]
+    fn find_bar_controls_emit_actions_close_and_are_addressable() {
+        // Each phase builds a fresh bar.
+        the_transport_and_replace_controls_emit_their_actions();
+        closing_hides_the_bar_and_collapses_its_height();
+        the_bar_is_addressable_by_name_for_headless_driving();
+    }
+
     fn the_transport_and_replace_controls_emit_their_actions() {
         let mut bar = FindBar::new();
         bar.open(true, Some("a"));
@@ -1162,7 +1179,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn closing_hides_the_bar_and_collapses_its_height() {
         let mut bar = FindBar::new();
         assert_eq!(bar.height(), 0.0, "hidden bar takes no space");
@@ -1180,7 +1196,6 @@ mod tests {
         assert!(bar.take_events().contains(&FindEvent::Close));
     }
 
-    #[test]
     fn the_bar_is_addressable_by_name_for_headless_driving() {
         let bar = FindBar::new();
         assert_eq!(Widget::test_id(&bar), Some("find-bar"));

@@ -797,101 +797,109 @@ fn sample_postgres_logs() -> Vec<String> {
 mod tests {
     use super::*;
 
+    /// Status strings normalise, memory renders in IEC units and memory fractions clamp.
     #[test]
-    fn status_parse_normalises_common_strings() {
-        assert_eq!(
-            ContainerStatus::parse("Up 4 hours"),
-            ContainerStatus::Running
-        );
-        assert_eq!(ContainerStatus::parse("running"), ContainerStatus::Running);
-        assert_eq!(
-            ContainerStatus::parse("Exited (0) 2 days ago"),
-            ContainerStatus::Exited
-        );
-        assert_eq!(ContainerStatus::parse("created"), ContainerStatus::Created);
-        assert_eq!(ContainerStatus::parse("paused"), ContainerStatus::Paused);
-        assert_eq!(ContainerStatus::parse("garbage"), ContainerStatus::Dead);
-    }
+    fn status_and_memory_values_normalise() {
+        // --- phase: status_parse_normalises_common_strings ---
+        {
+            assert_eq!(
+                ContainerStatus::parse("Up 4 hours"),
+                ContainerStatus::Running
+            );
+            assert_eq!(ContainerStatus::parse("running"), ContainerStatus::Running);
+            assert_eq!(
+                ContainerStatus::parse("Exited (0) 2 days ago"),
+                ContainerStatus::Exited
+            );
+            assert_eq!(ContainerStatus::parse("created"), ContainerStatus::Created);
+            assert_eq!(ContainerStatus::parse("paused"), ContainerStatus::Paused);
+            assert_eq!(ContainerStatus::parse("garbage"), ContainerStatus::Dead);
+        }
 
-    #[test]
-    fn mem_bytes_render_with_iec_binary_units() {
-        // Container memory is base-1024, so it must wear IEC binary units.
-        assert_eq!(ui::format::bytes(512), "512 B");
-        assert_eq!(ui::format::bytes(2048), "2.0 KiB");
-        assert_eq!(ui::format::bytes(5 * 1024 * 1024), "5.0 MiB");
-        assert_eq!(ui::format::bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
-    }
+        // --- phase: mem_bytes_render_with_iec_binary_units ---
+        {
+            // Container memory is base-1024, so it must wear IEC binary units.
+            assert_eq!(ui::format::bytes(512), "512 B");
+            assert_eq!(ui::format::bytes(2048), "2.0 KiB");
+            assert_eq!(ui::format::bytes(5 * 1024 * 1024), "5.0 MiB");
+            assert_eq!(ui::format::bytes(3 * 1024 * 1024 * 1024), "3.0 GiB");
+        }
 
-    #[test]
-    fn sample_engine_is_populated_and_consistent() {
-        let e = sample_engine();
-        assert!(
-            e.running_count() >= 3,
-            "sample has several running containers"
-        );
-        assert!(e.stopped_count() >= 2, "sample has stopped containers too");
-        assert!(!e.images.is_empty());
-        assert!(!e.distroboxes.is_empty());
-        // Each running container should carry some logs for the detail view.
-        for c in e.containers.iter().filter(|c| c.status.is_running()) {
-            assert!(!c.logs.is_empty(), "{} has no sample logs", c.name);
+        // --- phase: mem_fraction_is_clamped ---
+        {
+            let mut s = Stats {
+                mem_bytes: 200,
+                mem_limit_bytes: 100,
+                ..Stats::default()
+            };
+            assert_eq!(s.mem_fraction(), 1.0);
+            s.mem_limit_bytes = 0;
+            assert_eq!(s.mem_fraction(), 0.0);
         }
     }
 
+    /// The sample engine is populated and consistent with volumes and references, and containers and volumes are searchable.
     #[test]
-    fn container_search_matches_name_and_image() {
-        let e = sample_engine();
-        let nginx = e
-            .containers
-            .iter()
-            .find(|c| c.name == "web-frontend")
-            .unwrap();
-        assert!(nginx.matches("nginx"));
-        assert!(nginx.matches("web"));
-        assert!(!nginx.matches("postgres"));
-        assert!(nginx.matches(""));
-    }
+    fn sample_engine_is_consistent_and_searchable() {
+        // --- phase: sample_engine_is_populated_and_consistent ---
+        {
+            let e = sample_engine();
+            assert!(
+                e.running_count() >= 3,
+                "sample has several running containers"
+            );
+            assert!(e.stopped_count() >= 2, "sample has stopped containers too");
+            assert!(!e.images.is_empty());
+            assert!(!e.distroboxes.is_empty());
+            // Each running container should carry some logs for the detail view.
+            for c in e.containers.iter().filter(|c| c.status.is_running()) {
+                assert!(!c.logs.is_empty(), "{} has no sample logs", c.name);
+            }
+        }
 
-    #[test]
-    fn sample_engine_has_volumes_and_references() {
-        let e = sample_engine();
-        assert!(!e.volumes.is_empty(), "sample carries named volumes");
-        // image_references feeds the create combobox dropdown.
-        let refs = e.image_references();
-        assert!(refs.iter().any(|r| r.contains("nginx")), "{refs:?}");
-        // sorted + deduped
-        let mut sorted = refs.clone();
-        sorted.sort();
-        assert_eq!(refs, sorted, "references come back sorted");
-        // volume names feed the volume picker.
-        let names = e.volume_names();
-        assert!(names.contains(&"pgdata".to_string()));
-    }
+        // --- phase: container_search_matches_name_and_image ---
+        {
+            let e = sample_engine();
+            let nginx = e
+                .containers
+                .iter()
+                .find(|c| c.name == "web-frontend")
+                .unwrap();
+            assert!(nginx.matches("nginx"));
+            assert!(nginx.matches("web"));
+            assert!(!nginx.matches("postgres"));
+            assert!(nginx.matches(""));
+        }
 
-    #[test]
-    fn volume_search_matches_name() {
-        let v = Volume {
-            name: "pgdata".into(),
-            driver: "local".into(),
-            mountpoint: "/x".into(),
-            created: "now".into(),
-            in_use_by: 1,
-        };
-        assert!(v.matches("pg"));
-        assert!(v.matches("local"));
-        assert!(!v.matches("redis"));
-        assert!(v.matches(""));
-    }
+        // --- phase: sample_engine_has_volumes_and_references ---
+        {
+            let e = sample_engine();
+            assert!(!e.volumes.is_empty(), "sample carries named volumes");
+            // image_references feeds the create combobox dropdown.
+            let refs = e.image_references();
+            assert!(refs.iter().any(|r| r.contains("nginx")), "{refs:?}");
+            // sorted + deduped
+            let mut sorted = refs.clone();
+            sorted.sort();
+            assert_eq!(refs, sorted, "references come back sorted");
+            // volume names feed the volume picker.
+            let names = e.volume_names();
+            assert!(names.contains(&"pgdata".to_string()));
+        }
 
-    #[test]
-    fn mem_fraction_is_clamped() {
-        let mut s = Stats {
-            mem_bytes: 200,
-            mem_limit_bytes: 100,
-            ..Stats::default()
-        };
-        assert_eq!(s.mem_fraction(), 1.0);
-        s.mem_limit_bytes = 0;
-        assert_eq!(s.mem_fraction(), 0.0);
+        // --- phase: volume_search_matches_name ---
+        {
+            let v = Volume {
+                name: "pgdata".into(),
+                driver: "local".into(),
+                mountpoint: "/x".into(),
+                created: "now".into(),
+                in_use_by: 1,
+            };
+            assert!(v.matches("pg"));
+            assert!(v.matches("local"));
+            assert!(!v.matches("redis"));
+            assert!(v.matches(""));
+        }
     }
 }

@@ -61,171 +61,175 @@ ext  = []
 }
 
 #[test]
-fn cli_pack_then_verify() {
-    let workdir = tempfile::tempdir().unwrap();
-    let payload_dir = workdir.path().join("payload");
-    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-    std::fs::write(payload_dir.join("bin/hello"), b"#!/bin/sh\necho hi\n").unwrap();
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario, one labelled phase per merged case"
+)]
+fn cli_pack_inspect_unpack_and_verify_round_trip() {
+    // phase: cli_pack_then_verify
+    {
+        let workdir = tempfile::tempdir().unwrap();
+        let payload_dir = workdir.path().join("payload");
+        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+        std::fs::write(payload_dir.join("bin/hello"), b"#!/bin/sh\necho hi\n").unwrap();
 
-    // Manifest with a placeholder identity — pack will patch
-    // it to the generated key's public hex.
-    let manifest_path = workdir.path().join("manifest.toml");
-    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+        // Manifest with a placeholder identity — pack will patch
+        // it to the generated key's public hex.
+        let manifest_path = workdir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
 
-    let tapp = workdir.path().join("example.tapp");
-    let out = Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run tilo-app-package pack");
-    assert!(
-        out.status.success(),
-        "pack failed: stdout={:?} stderr={:?}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(tapp.exists(), "tapp was not written");
+        let tapp = workdir.path().join("example.tapp");
+        let out = Command::new(bin_path())
+            .args([
+                "pack",
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--payload",
+                payload_dir.to_str().unwrap(),
+                "-o",
+                tapp.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run tilo-app-package pack");
+        assert!(
+            out.status.success(),
+            "pack failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(tapp.exists(), "tapp was not written");
 
-    let out = Command::new(bin_path())
-        .args(["verify", tapp.to_str().unwrap()])
-        .output()
-        .expect("run tilo-app-package verify");
-    assert!(
-        out.status.success(),
-        "verify failed: stdout={:?} stderr={:?}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("verifies and publisher is trusted"),
-        "verify output: {stdout}"
-    );
-}
-
-#[test]
-fn cli_pack_rejects_oversized_app_atomically() {
-    let workdir = tempfile::tempdir().unwrap();
-    let payload_dir = workdir.path().join("payload");
-    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-    std::fs::write(
-        payload_dir.join("bin/hello"),
-        vec![0x5a; usize::try_from(tilo_app_package::MAX_APP_UNPACKED_BYTES - 1024).unwrap()],
-    )
-    .unwrap();
-    let manifest_path = workdir.path().join("manifest.toml");
-    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
-    let tapp = workdir.path().join("example.tapp");
-    std::fs::write(&tapp, b"previous valid release").unwrap();
-
-    let out = Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ])
-        .output()
-        .expect("run tilo-app-package pack");
-    assert!(!out.status.success(), "oversized tapp unexpectedly packed");
-    assert!(
-        String::from_utf8_lossy(&out.stderr).contains("application tapp is"),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        std::fs::read(&tapp).unwrap(),
-        b"previous valid release",
-        "a rejected build must not replace the prior release artifact"
-    );
-}
-
-#[test]
-fn cli_inspect_lists_payload() {
-    let workdir = tempfile::tempdir().unwrap();
-    let payload_dir = workdir.path().join("payload");
-    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-    std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
-    let manifest_path = workdir.path().join("manifest.toml");
-    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
-
-    let tapp = workdir.path().join("example.tapp");
-    Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ])
-        .status()
-        .expect("pack");
-
-    let out = Command::new(bin_path())
-        .args(["inspect", tapp.to_str().unwrap()])
-        .output()
-        .expect("inspect");
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("package-id: tapp:"), "inspect: {stdout}");
-    assert!(stdout.contains("archive-size:"), "inspect: {stdout}");
-    assert!(
-        stdout.contains("payload-size: 3 bytes"),
-        "inspect: {stdout}"
-    );
-    assert!(stdout.contains("package-overhead:"), "inspect: {stdout}");
-    assert!(stdout.contains("bin/hello"), "inspect: {stdout}");
-}
-
-#[test]
-fn cli_unpack_round_trips() {
-    let workdir = tempfile::tempdir().unwrap();
-    let payload_dir = workdir.path().join("payload");
-    std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
-    std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
-    let manifest_path = workdir.path().join("manifest.toml");
-    std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
-    let tapp = workdir.path().join("example.tapp");
-    Command::new(bin_path())
-        .args([
-            "pack",
-            "--manifest",
-            manifest_path.to_str().unwrap(),
-            "--payload",
-            payload_dir.to_str().unwrap(),
-            "-o",
-            tapp.to_str().unwrap(),
-        ])
-        .status()
+        let out = Command::new(bin_path())
+            .args(["verify", tapp.to_str().unwrap()])
+            .output()
+            .expect("run tilo-app-package verify");
+        assert!(
+            out.status.success(),
+            "verify failed: stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("verifies and publisher is trusted"),
+            "verify output: {stdout}"
+        );
+    }
+    // phase: cli_pack_rejects_oversized_app_atomically
+    {
+        let workdir = tempfile::tempdir().unwrap();
+        let payload_dir = workdir.path().join("payload");
+        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+        std::fs::write(
+            payload_dir.join("bin/hello"),
+            vec![0x5a; usize::try_from(tilo_app_package::MAX_APP_UNPACKED_BYTES - 1024).unwrap()],
+        )
         .unwrap();
+        let manifest_path = workdir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+        let tapp = workdir.path().join("example.tapp");
+        std::fs::write(&tapp, b"previous valid release").unwrap();
 
-    let dest = workdir.path().join("dest");
-    let out = Command::new(bin_path())
-        .args([
-            "unpack",
-            "--dest",
-            dest.to_str().unwrap(),
-            tapp.to_str().unwrap(),
-        ])
-        .output()
-        .unwrap();
-    assert!(out.status.success(), "unpack: {out:?}");
-    assert!(dest.join("bin/hello").exists());
-    assert!(dest.join("manifest.toml").exists());
-    let body = std::fs::read(dest.join("bin/hello")).unwrap();
-    assert_eq!(body, b"hi\n");
+        let out = Command::new(bin_path())
+            .args([
+                "pack",
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--payload",
+                payload_dir.to_str().unwrap(),
+                "-o",
+                tapp.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run tilo-app-package pack");
+        assert!(!out.status.success(), "oversized tapp unexpectedly packed");
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("application tapp is"),
+            "stderr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::fs::read(&tapp).unwrap(),
+            b"previous valid release",
+            "a rejected build must not replace the prior release artifact"
+        );
+    }
+    // phase: cli_inspect_lists_payload
+    {
+        let workdir = tempfile::tempdir().unwrap();
+        let payload_dir = workdir.path().join("payload");
+        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+        std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
+        let manifest_path = workdir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+
+        let tapp = workdir.path().join("example.tapp");
+        Command::new(bin_path())
+            .args([
+                "pack",
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--payload",
+                payload_dir.to_str().unwrap(),
+                "-o",
+                tapp.to_str().unwrap(),
+            ])
+            .status()
+            .expect("pack");
+
+        let out = Command::new(bin_path())
+            .args(["inspect", tapp.to_str().unwrap()])
+            .output()
+            .expect("inspect");
+        assert!(out.status.success());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(stdout.contains("package-id: tapp:"), "inspect: {stdout}");
+        assert!(stdout.contains("archive-size:"), "inspect: {stdout}");
+        assert!(
+            stdout.contains("payload-size: 3 bytes"),
+            "inspect: {stdout}"
+        );
+        assert!(stdout.contains("package-overhead:"), "inspect: {stdout}");
+        assert!(stdout.contains("bin/hello"), "inspect: {stdout}");
+    }
+    // phase: cli_unpack_round_trips
+    {
+        let workdir = tempfile::tempdir().unwrap();
+        let payload_dir = workdir.path().join("payload");
+        std::fs::create_dir_all(payload_dir.join("bin")).unwrap();
+        std::fs::write(payload_dir.join("bin/hello"), b"hi\n").unwrap();
+        let manifest_path = workdir.path().join("manifest.toml");
+        std::fs::write(&manifest_path, sample_manifest_with(&"00".repeat(32))).unwrap();
+        let tapp = workdir.path().join("example.tapp");
+        Command::new(bin_path())
+            .args([
+                "pack",
+                "--manifest",
+                manifest_path.to_str().unwrap(),
+                "--payload",
+                payload_dir.to_str().unwrap(),
+                "-o",
+                tapp.to_str().unwrap(),
+            ])
+            .status()
+            .unwrap();
+
+        let dest = workdir.path().join("dest");
+        let out = Command::new(bin_path())
+            .args([
+                "unpack",
+                "--dest",
+                dest.to_str().unwrap(),
+                tapp.to_str().unwrap(),
+            ])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "unpack: {out:?}");
+        assert!(dest.join("bin/hello").exists());
+        assert!(dest.join("manifest.toml").exists());
+        let body = std::fs::read(dest.join("bin/hello")).unwrap();
+        assert_eq!(body, b"hi\n");
+    }
 }
 
 #[test]

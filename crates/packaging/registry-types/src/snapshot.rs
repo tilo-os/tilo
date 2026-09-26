@@ -572,103 +572,103 @@ mod tests {
     }
 
     #[test]
-    fn exact_snapshot_verifies_and_tamper_fails() {
-        let (mut snapshot, owner) = fixture();
-        verify_snapshot(
-            &snapshot,
-            &hex::encode(owner.verifying_key().to_bytes()),
-            15,
-        )
-        .unwrap();
-        snapshot.entries[0]
-            .name
-            .0
-            .get_mut("en")
-            .unwrap()
-            .push_str(" hijacked");
-        assert_eq!(
+    fn snapshot_verification_fails_closed() {
+        // phase: exact_snapshot_verifies_and_tamper_fails
+        {
+            let (mut snapshot, owner) = fixture();
             verify_snapshot(
                 &snapshot,
                 &hex::encode(owner.verifying_key().to_bytes()),
-                15
-            ),
-            Err(SnapshotError::OwnerSignature)
-        );
-    }
+                15,
+            )
+            .unwrap();
+            snapshot.entries[0]
+                .name
+                .0
+                .get_mut("en")
+                .unwrap()
+                .push_str(" hijacked");
+            assert_eq!(
+                verify_snapshot(
+                    &snapshot,
+                    &hex::encode(owner.verifying_key().to_bytes()),
+                    15
+                ),
+                Err(SnapshotError::OwnerSignature)
+            );
+        }
+        // phase: expired_and_unauthorized_snapshots_fail_closed
+        {
+            let (mut snapshot, owner) = fixture();
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            assert_eq!(
+                verify_snapshot(&snapshot, &owner_hex, 21),
+                Err(SnapshotError::Freshness)
+            );
+            snapshot.publishers.clear();
+            sign_snapshot(&mut snapshot, &owner).unwrap();
+            assert_eq!(
+                verify_snapshot(&snapshot, &owner_hex, 15),
+                Err(SnapshotError::UnauthorizedPublisher)
+            );
+        }
+        // phase: oversized_authorization_set_fails_even_with_valid_owner_signature
+        {
+            let (mut snapshot, owner) = fixture();
+            snapshot.publishers = (0..=MAX_SNAPSHOT_PUBLISHERS)
+                .map(|index| PublisherAuthorization {
+                    pubkey_hex: format!("{index:064x}"),
+                    can_add_new: false,
+                })
+                .collect();
+            sign_snapshot(&mut snapshot, &owner).unwrap();
+            assert_eq!(
+                verify_snapshot(
+                    &snapshot,
+                    &hex::encode(owner.verifying_key().to_bytes()),
+                    15
+                ),
+                Err(SnapshotError::Oversize)
+            );
+        }
+        // phase: delegated_snapshot_is_root_scoped_and_time_bounded
+        {
+            let (mut snapshot, owner) = fixture();
+            let channel = SigningKey::from_bytes(&[9; 32]);
+            let mut authorization = ChannelAuthorization {
+                protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
+                generation: 1,
+                channel_pubkey_hex: hex::encode(channel.verifying_key().to_bytes()),
+                not_before_unix: 5,
+                expires_at_unix: 30,
+                max_snapshot_validity_seconds: 15,
+                max_snapshot_entries: 10,
+                publishers: snapshot.publishers.clone(),
+                owner_signature_hex: String::new(),
+            };
+            sign_channel_authorization(&mut authorization, &owner).unwrap();
+            sign_snapshot_delegated(&mut snapshot, &channel, authorization.clone()).unwrap();
+            let owner_hex = hex::encode(owner.verifying_key().to_bytes());
+            verify_snapshot(&snapshot, &owner_hex, 15).unwrap();
 
-    #[test]
-    fn expired_and_unauthorized_snapshots_fail_closed() {
-        let (mut snapshot, owner) = fixture();
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        assert_eq!(
-            verify_snapshot(&snapshot, &owner_hex, 21),
-            Err(SnapshotError::Freshness)
-        );
-        snapshot.publishers.clear();
-        sign_snapshot(&mut snapshot, &owner).unwrap();
-        assert_eq!(
-            verify_snapshot(&snapshot, &owner_hex, 15),
-            Err(SnapshotError::UnauthorizedPublisher)
-        );
-    }
+            let mut widened = snapshot.clone();
+            widened.publishers.push(PublisherAuthorization {
+                pubkey_hex: "ab".repeat(32),
+                can_add_new: true,
+            });
+            sign_snapshot_delegated(&mut widened, &channel, authorization.clone()).unwrap();
+            assert_eq!(
+                verify_snapshot(&widened, &owner_hex, 15),
+                Err(SnapshotError::ChannelAuthorization)
+            );
 
-    #[test]
-    fn oversized_authorization_set_fails_even_with_valid_owner_signature() {
-        let (mut snapshot, owner) = fixture();
-        snapshot.publishers = (0..=MAX_SNAPSHOT_PUBLISHERS)
-            .map(|index| PublisherAuthorization {
-                pubkey_hex: format!("{index:064x}"),
-                can_add_new: false,
-            })
-            .collect();
-        sign_snapshot(&mut snapshot, &owner).unwrap();
-        assert_eq!(
-            verify_snapshot(
-                &snapshot,
-                &hex::encode(owner.verifying_key().to_bytes()),
-                15
-            ),
-            Err(SnapshotError::Oversize)
-        );
-    }
-
-    #[test]
-    fn delegated_snapshot_is_root_scoped_and_time_bounded() {
-        let (mut snapshot, owner) = fixture();
-        let channel = SigningKey::from_bytes(&[9; 32]);
-        let mut authorization = ChannelAuthorization {
-            protocol: CHANNEL_AUTHORIZATION_PROTOCOL,
-            generation: 1,
-            channel_pubkey_hex: hex::encode(channel.verifying_key().to_bytes()),
-            not_before_unix: 5,
-            expires_at_unix: 30,
-            max_snapshot_validity_seconds: 15,
-            max_snapshot_entries: 10,
-            publishers: snapshot.publishers.clone(),
-            owner_signature_hex: String::new(),
-        };
-        sign_channel_authorization(&mut authorization, &owner).unwrap();
-        sign_snapshot_delegated(&mut snapshot, &channel, authorization.clone()).unwrap();
-        let owner_hex = hex::encode(owner.verifying_key().to_bytes());
-        verify_snapshot(&snapshot, &owner_hex, 15).unwrap();
-
-        let mut widened = snapshot.clone();
-        widened.publishers.push(PublisherAuthorization {
-            pubkey_hex: "ab".repeat(32),
-            can_add_new: true,
-        });
-        sign_snapshot_delegated(&mut widened, &channel, authorization.clone()).unwrap();
-        assert_eq!(
-            verify_snapshot(&widened, &owner_hex, 15),
-            Err(SnapshotError::ChannelAuthorization)
-        );
-
-        let mut forged = authorization;
-        forged.max_snapshot_entries = 100;
-        sign_snapshot_delegated(&mut snapshot, &channel, forged).unwrap();
-        assert_eq!(
-            verify_snapshot(&snapshot, &owner_hex, 15),
-            Err(SnapshotError::ChannelAuthorization)
-        );
+            let mut forged = authorization;
+            forged.max_snapshot_entries = 100;
+            sign_snapshot_delegated(&mut snapshot, &channel, forged).unwrap();
+            assert_eq!(
+                verify_snapshot(&snapshot, &owner_hex, 15),
+                Err(SnapshotError::ChannelAuthorization)
+            );
+        }
     }
 }
