@@ -213,7 +213,7 @@ fn pull_peak_windows(
                 saw_any = true;
             }
             None => {
-                if decode_ended(&appsink, &pipeline) {
+                if appsink.is_eos() {
                     break;
                 }
             }
@@ -223,20 +223,6 @@ fn pull_peak_windows(
         windows.push(acc);
     }
     (saw_any && !windows.is_empty()).then_some(windows)
-}
-
-/// Whether a decode that has no sample ready has finished: it reached EOS,
-/// or it failed. A pipeline that failed -- no decodable stream, or no audio
-/// pad for the branch to link -- never reaches EOS, so without the error
-/// check it would hold the worker for the whole [`DECODE_BUDGET`] before
-/// answering the same absence.
-#[cfg(feature = "decode")]
-fn decode_ended(appsink: &gstreamer_app::AppSink, pipeline: &gstreamer::Pipeline) -> bool {
-    use gstreamer::prelude::*;
-    appsink.is_eos()
-        || pipeline
-            .bus()
-            .is_some_and(|bus| bus.pop_filtered(&[gstreamer::MessageType::Error]).is_some())
 }
 
 /// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
