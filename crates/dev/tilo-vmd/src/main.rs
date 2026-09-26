@@ -74,6 +74,16 @@ enum Command {
         #[arg(long, value_parser = parse_extent, requires = "extent")]
         touch_extent: Option<(u32, u32)>,
     },
+    /// Install distribution packages into the VM's /usr with its package
+    /// manager (a transient overlay on bootc images); output streams.
+    InstallPackages {
+        /// Seconds before the install is stopped (exit 124).
+        #[arg(long, default_value_t = tilo_vm_protocol::INSTALL_TIMEOUT_SECONDS)]
+        timeout: u64,
+        /// Package names, e.g. xterm zenity.
+        #[arg(required = true)]
+        packages: Vec<String>,
+    },
     /// Give the slot's outputs these modes and scales through the display
     /// settings, as the Settings app does (run by tilo-vmd as the slot user).
     DisplayApply {
@@ -142,6 +152,35 @@ fn exit(ok: bool) -> ExitCode {
         ExitCode::SUCCESS
     } else {
         ExitCode::FAILURE
+    }
+}
+
+fn install_packages(packages: &[String], timeout: u64) -> ExitCode {
+    let argv = match tilo_vmd::packages::install_argv(packages, std::path::Path::exists) {
+        Ok(argv) => argv,
+        Err(error) => {
+            eprintln!("tilo-vmd: {error}");
+            return ExitCode::from(126);
+        }
+    };
+    let Some((program, flags)) = argv.split_first() else {
+        return ExitCode::from(126);
+    };
+    eprintln!("tilo-vmd: {}", argv.join(" "));
+    let mut command = std::process::Command::new(program);
+    command.args(flags);
+    match tilo_vmd::exec::run_bounded(
+        command,
+        std::time::Duration::from_secs(timeout),
+        16 << 20,
+        std::io::stdout(),
+        std::io::stderr(),
+    ) {
+        Ok(ended) => ExitCode::from(ended.code()),
+        Err(error) => {
+            eprintln!("tilo-vmd: could not run {program}: {error}");
+            ExitCode::from(126)
+        }
     }
 }
 
@@ -255,5 +294,6 @@ fn main() -> ExitCode {
             }
         },
         Command::DisplayApply { outputs, timeout } => display_apply(&outputs, timeout),
+        Command::InstallPackages { timeout, packages } => install_packages(&packages, timeout),
     }
 }
