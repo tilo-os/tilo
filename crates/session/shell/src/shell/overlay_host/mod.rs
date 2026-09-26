@@ -8665,6 +8665,7 @@ impl ShellOverlayHost {
         // on Edit instead of inheriting stale focus from a previous open.
         if !self.qs_was_open {
             self.qs_root.reset_focus();
+            self.refresh_quick_settings_summaries();
         }
         self.qs_was_open = true;
         self.qs_transition = ui::Transition::open();
@@ -14576,6 +14577,14 @@ impl ShellOverlayHost {
                 // policy; opening it as a fallback would silently change the
                 // meaning of this personal/device-settings action.
             }
+            RootAction::OpenPrivacy => {
+                // The same destination as the `settings.privacy.open` action:
+                // the active workspace's app grants and enforced access.
+                let mut st = chrome.borrow_mut();
+                st.quick_settings.nav_stack = vec![crate::shell::quick_settings::QsLevel::Root];
+                st.open_workspace_settings(crate::shell::workspace_settings::WsTab::Permissions);
+                st.bump();
+            }
             RootAction::OpenPowerMenu => {
                 let mut st = chrome.borrow_mut();
                 self.power_menu.open();
@@ -19250,8 +19259,26 @@ impl ShellOverlayHost {
             self.qs_refresh.kick_fast();
             self.qs_refresh.kick_firmware();
             self.qs_root.reset_focus();
+            self.refresh_quick_settings_summaries();
         }
         self.qs_was_open = open;
+    }
+
+    /// Counts the root page shows on its Devices and Clipboard rows. Read
+    /// once per opening: both panes re-read their full lists on entry.
+    fn refresh_quick_settings_summaries(&self) {
+        let personal_devices = self
+            .device_fabric_call(DeviceFabricUiAction::Snapshot)
+            .ok()
+            .map(|view| view.devices.len());
+        let clipboard_items = self
+            .clipboard_manager_call(ClipboardManagerAction::Snapshot)
+            .len();
+        if let Some(chrome) = self.chrome.as_ref() {
+            let mut st = chrome.borrow_mut();
+            st.quick_settings.personal_devices = personal_devices;
+            st.quick_settings.clipboard_items = clipboard_items;
+        }
     }
 
     /// The quick-settings dropdown: no scrim, so it reads as a dropdown
