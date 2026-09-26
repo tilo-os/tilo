@@ -369,11 +369,112 @@ fn change_boundary(marks: &[MarkSpan], offset: usize) -> RangeBoundary<'_> {
     }
 }
 
+/// `snap` as a writer that cannot reproduce kept inline elements shows it: the placeholder
+/// character of each one without visible text (see [`crate::schema::KEPT_INLINE_MARKS`]) is
+/// left out, the marks moving with the text. Kept elements with visible text stay as their
+/// text. Borrows `snap` unchanged when it holds no such placeholder.
+pub fn without_kept_placeholders(
+    snap: &crate::snapshot::DocSnapshot,
+) -> std::borrow::Cow<'_, crate::snapshot::DocSnapshot> {
+    use std::borrow::Cow;
+    match without_kept_placeholders_in(&snap.blocks) {
+        Cow::Borrowed(_) => Cow::Borrowed(snap),
+        Cow::Owned(blocks) => {
+            let mut out = snap.clone();
+            out.blocks = blocks;
+            Cow::Owned(out)
+        }
+    }
+}
+
+/// [`without_kept_placeholders`] for a block sequence.
+pub fn without_kept_placeholders_in(blocks: &[BlockView]) -> std::borrow::Cow<'_, [BlockView]> {
+    use std::borrow::Cow;
+    if !blocks.iter().any(|b| !kept_placeholders(b).is_empty()) {
+        return Cow::Borrowed(blocks);
+    }
+    let mut out = blocks.to_vec();
+    for b in &mut out {
+        let removed = kept_placeholders(b);
+        if removed.is_empty() {
+            continue;
+        }
+        // A position moves back by the placeholders before it.
+        let shift = |p: usize| p.saturating_sub(removed.partition_point(|&r| r < p));
+        b.text = b
+            .text
+            .chars()
+            .enumerate()
+            .filter(|(i, _)| removed.binary_search(i).is_err())
+            .map(|(_, c)| c)
+            .collect();
+        b.marks = std::mem::take(&mut b.marks)
+            .into_iter()
+            .map(|m| MarkSpan {
+                start: shift(m.start),
+                end: shift(m.end),
+                ..m
+            })
+            .filter(|m| m.end > m.start)
+            .collect();
+    }
+    Cow::Owned(out)
+}
+
+/// The character offsets of `b`'s placeholders that stand for kept inline elements, ascending.
+fn kept_placeholders(b: &BlockView) -> Vec<usize> {
+    if !b.text.contains(crate::schema::FIELD_PLACEHOLDER) {
+        return Vec::new();
+    }
+    let kept: Vec<&MarkSpan> = b
+        .marks
+        .iter()
+        .filter(|m| crate::schema::KEPT_INLINE_MARKS.contains(&m.name.as_str()))
+        .collect();
+    b.text
+        .chars()
+        .enumerate()
+        .filter(|&(i, c)| {
+            c == crate::schema::FIELD_PLACEHOLDER && kept.iter().any(|m| m.start <= i && i < m.end)
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::document::MarkValue;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn kept_placeholders_are_left_out_and_marks_move() {
+        let p = crate::schema::FIELD_PLACEHOLDER;
+        let mut b = block("paragraph", &format!("a{p}b{p}c"));
+        let mark = |name: &str, start, end| MarkSpan {
+            start,
+            end,
+            name: name.into(),
+            value: MarkValue::Str("x".into()),
+        };
+        // A kept drawing, a note reference (which stays), and bold over "b…c".
+        b.marks = vec![
+            mark(crate::schema::MARK_DOCX_XML, 1, 2),
+            mark(crate::schema::MARK_NOTE_REF, 3, 4),
+            mark("strong", 2, 5),
+        ];
+        let blocks = [b];
+        let out = without_kept_placeholders_in(&blocks);
+        assert_eq!(out[0].text, format!("ab{p}c"));
+        assert_eq!(out[0].marks.len(), 2);
+        assert_eq!((out[0].marks[0].start, out[0].marks[0].end), (2, 3));
+        assert_eq!((out[0].marks[1].start, out[0].marks[1].end), (1, 4));
+        let plain = [block("paragraph", "plain")];
+        assert!(matches!(
+            without_kept_placeholders_in(&plain),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
 
     fn block(kind: &str, text: &str) -> BlockView {
         BlockView {

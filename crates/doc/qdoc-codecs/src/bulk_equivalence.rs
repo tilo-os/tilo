@@ -259,6 +259,32 @@ fn office_features_import_alike() {
 fn fixture_documents_import_alike() {
     assert_paths_agree("sample.docx", &DocxCodec, SAMPLE_DOCX);
     assert_paths_agree("sample.odt", &OdtCodec, SAMPLE_ODT);
+    // LibreOffice-written documents full of content kept verbatim, merged cells and styles.
+    for (name, docx, odt) in [
+        (
+            "lo-structure",
+            include_bytes!("../../fixtures/lo-structure.docx").as_slice(),
+            include_bytes!("../../fixtures/lo-structure.odt").as_slice(),
+        ),
+        (
+            "lo-annotations",
+            include_bytes!("../../fixtures/lo-annotations.docx").as_slice(),
+            include_bytes!("../../fixtures/lo-annotations.odt").as_slice(),
+        ),
+        (
+            "lo-fields",
+            include_bytes!("../../fixtures/lo-fields.docx").as_slice(),
+            include_bytes!("../../fixtures/lo-fields.odt").as_slice(),
+        ),
+        (
+            "lo-drawings",
+            include_bytes!("../../fixtures/lo-drawings.docx").as_slice(),
+            include_bytes!("../../fixtures/lo-drawings.odt").as_slice(),
+        ),
+    ] {
+        assert_paths_agree(&format!("{name}.docx"), &DocxCodec, docx);
+        assert_paths_agree(&format!("{name}.odt"), &OdtCodec, odt);
+    }
 }
 
 /// The one-walk span reader agrees with automerge's own `text` and `marks` on every text object

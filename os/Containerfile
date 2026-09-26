@@ -341,7 +341,10 @@ FROM ${BASE_REF} AS builder
 #     resolve symbols transitively; absent, ld reports them as `needed by
 #     ... not found` and then buries that in hundreds of undefined references
 #     to gst_*/epoxy_*/manette_*. Runtime packages are enough — no -devel
-#     needed, because nothing here compiles against their headers.
+#     needed, because nothing here compiles against their headers. The engine
+#     decodes JPEG XL (libjxl, colour-managed through lcms2) and speaks through
+#     flite; shell links the same engine when the browser is built, because
+#     both share one Cargo invocation.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
         rust cargo sccache capnproto \
         gcc gcc-c++ make cmake perl perl-FindBin python3 git \
@@ -355,6 +358,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         glib2-devel libsoup3-devel \
         atk at-spi2-atk gstreamer1 gstreamer1-plugins-base \
         hyphen libavif libepoxy libmanette libxslt \
+        flite lcms2 libjxl \
         nasm \
         gstreamer1-devel gstreamer1-plugins-base-devel \
     && dnf clean all
@@ -1448,7 +1452,8 @@ RUN chmod 0755 /usr/libexec/tilo/airplay-encrypted-session-test.sh \
 # This list has to cover every DT_NEEDED entry of libWPEWebKit-2.0.so or the
 # browser dies at exec with a loader error. atk/at-spi2-atk/libmanette/libxslt
 # are there because the engine is built with accessibility, gamepad and XSLT
-# support; they arrive via no other package in this image.
+# support, libjxl and flite because it decodes JPEG XL and synthesises speech;
+# they arrive via no other package in this image.
 #
 # Copies nothing under TILO_WITH_BROWSER=0 (the stage is an empty /wpe then). The
 # dnf list below still runs: those are ordinary frozen-repo packages that cost
@@ -1462,6 +1467,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     hyphen \
     woff2 \
     lcms2 \
+    libjxl \
+    flite \
     openjpeg2 \
     libavif \
     libwebp \
@@ -2261,6 +2268,7 @@ COPY --from=public-trust / /run/tilo-public-trust/
 COPY keys/cosign.pub keys/tpm2-pcr-signing.public.pem \
     os/dev/development-trust.py os/dev/install-public-trust.py os/dev/hardware_profile.py \
     os/etc/containers/policy.json os/etc/containers/registries.d/code.podesta.ai.yaml \
+    os/etc/containers/registries.d/code.tilo.so.yaml \
     /run/tilo-trust-inputs/
 RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/run/tilo-build-tools/openssl,ro \
     mkdir -p /run/tilo-official-trust /run/tilo-trust-tools /etc/containers/registries.d \
@@ -2268,6 +2276,7 @@ RUN --mount=type=bind,from=public-trust-tools,source=/usr/bin/openssl,target=/ru
  && cp -a /run/tilo-trust-inputs/*.py /run/tilo-trust-tools/ \
  && cp -a /run/tilo-trust-inputs/policy.json /etc/containers/policy.json \
  && cp -a /run/tilo-trust-inputs/code.podesta.ai.yaml /etc/containers/registries.d/code.podesta.ai.yaml \
+ && cp -a /run/tilo-trust-inputs/code.tilo.so.yaml /etc/containers/registries.d/code.tilo.so.yaml \
  && PATH="/run/tilo-build-tools:$PATH" python3 /run/tilo-trust-tools/install-public-trust.py \
       --source /run/tilo-public-trust --official /run/tilo-official-trust \
       --destination /usr/share/tilo --mode "$TILO_PUBLIC_TRUST_MODE" \

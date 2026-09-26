@@ -12,13 +12,18 @@
 //! - the package's relationships, parts and content types.
 //!
 //! On export the section's `default` references are replaced by qdoc's, `w:cols` by the
-//! model's column setting, and every header/footer relationship the new `w:sectPr` no longer
-//! references is removed together with its part, that part's relationships and its
-//! content-type override. Section breaks inside the body (`w:sectPr` in a paragraph's
-//! `w:pPr`) are not modeled: the document exports as a single section.
+//! model's column setting, and every header/footer relationship no exported `w:sectPr`
+//! references any more is removed together with its part, that part's relationships and its
+//! content-type override.
+//!
+//! Section breaks inside the body (a `w:sectPr` in a paragraph's `w:pPr`) are kept verbatim
+//! with their paragraph (see `paragraph`), including their own page setup and columns. Their
+//! header/footer references get the same treatment as the final section's — `default` points
+//! at qdoc's header/footer (the model has one for the whole document), `first`/`even` stay
+//! while their part does — so every section shows the document's header and footer.
 
 use super::container::DocxContainer;
-use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, normalize_target};
+use super::headers::{ExportedParts, FOOTER_REL_ID, HEADER_REL_ID, KeptRegions, normalize_target};
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
 use std::collections::BTreeSet;
@@ -211,7 +216,11 @@ fn split_sectpr(xml: &str) -> (Option<String>, Vec<Child>) {
 }
 
 /// Remove every top-level `tag` element of `xml` for which `drop` holds.
-fn remove_elements(xml: &str, tag: &[u8], mut drop: impl FnMut(&BytesStart) -> bool) -> String {
+pub(super) fn remove_elements(
+    xml: &str,
+    tag: &[u8],
+    mut drop: impl FnMut(&BytesStart) -> bool,
+) -> String {
     let mut reader = Reader::from_str(xml);
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut open: Option<usize> = None;
@@ -347,6 +356,49 @@ pub(super) struct SectionPlan {
     pub header_part: Option<String>,
     /// The part qdoc's footer is written to, when there is a footer.
     pub footer_part: Option<String>,
+    /// The `first`/`even` header/footer relationships kept (they still resolve).
+    kept_refs: BTreeSet<String>,
+}
+
+impl SectionPlan {
+    /// The header/footer references a rebuilt `w:sectPr` starts with: qdoc's `default` pair,
+    /// then the kept ones of `children` (`first`/`even`, and the `default` ones of a region
+    /// whose original part is kept).
+    fn references(&self, children: &[Child]) -> String {
+        let mut inner = String::new();
+        if self.header_part.is_some() {
+            let _ = write!(
+                inner,
+                r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#
+            );
+        }
+        if self.footer_part.is_some() {
+            let _ = write!(
+                inner,
+                r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#
+            );
+        }
+        for ch in children {
+            if let Some(r) = &ch.reference
+                && self.kept_refs.contains(&r.id)
+            {
+                inner.push_str(&ch.raw);
+            }
+        }
+        inner
+    }
+
+    /// A section break's `w:sectPr` inside the body, for this export: its header/footer
+    /// references rebuilt like the final section's, everything else (page setup, columns) kept.
+    pub fn section_break(&self, xml: &str) -> String {
+        let (open, children) = split_sectpr(xml);
+        let mut inner = self.references(&children);
+        for ch in children.iter().filter(|ch| ch.reference.is_none()) {
+            inner.push_str(&ch.raw);
+        }
+        let open = open.unwrap_or_else(|| "<w:sectPr>".to_string());
+        format!("{open}{inner}</w:sectPr>")
+    }
 }
 
 /// Rebuild the section properties around qdoc's header/footer and columns, and prune `c`
@@ -355,50 +407,44 @@ pub(super) struct SectionPlan {
 pub(super) fn plan(
     c: &mut DocxContainer,
     original: Option<&str>,
+    section_breaks: &[&str],
     parts: &ExportedParts,
+    keep: KeptRegions,
     cols: &str,
 ) -> SectionPlan {
     let rels = document_rels(c);
     let (open, children) = original.map(split_sectpr).unwrap_or_default();
 
-    // A `first`/`even` reference stays only while its relationship and part are still there.
+    // A `first`/`even` reference, of the final section or a section break, stays only while
+    // its relationship and part are still there.
     let resolves = |kind: Kind, id: &str| {
         rels.iter()
             .any(|r| r.id == id && r.kind == Some(kind) && !r.external && c.get(&r.part).is_some())
     };
-    let kept_refs: Vec<&Child> = children
+    let break_children: Vec<Child> = section_breaks
         .iter()
-        .filter(|ch| {
-            ch.reference
-                .as_ref()
-                .is_some_and(|r| !r.is_default && resolves(r.kind, &r.id))
-        })
+        .flat_map(|xml| split_sectpr(xml).1)
         .collect();
-    let keep: BTreeSet<String> = kept_refs
+    let kept_default = |kind: Kind| match kind {
+        Kind::Header => keep.header,
+        Kind::Footer => keep.footer,
+    };
+    let kept_refs: BTreeSet<String> = children
         .iter()
-        .filter_map(|ch| ch.reference.as_ref().map(|r| r.id.clone()))
+        .chain(&break_children)
+        .filter_map(|ch| ch.reference.as_ref())
+        .filter(|r| (!r.is_default || kept_default(r.kind)) && resolves(r.kind, &r.id))
+        .map(|r| r.id.clone())
         .collect();
-    prune_header_footer_rels(c, &rels, &keep);
+    prune_header_footer_rels(c, &rels, &kept_refs);
 
-    let header_part = parts.header.as_ref().map(|_| free_part_name(c, "header"));
-    let footer_part = parts.footer.as_ref().map(|_| free_part_name(c, "footer"));
-
-    let mut inner = String::new();
-    if header_part.is_some() {
-        let _ = write!(
-            inner,
-            r#"<w:headerReference w:type="default" r:id="{HEADER_REL_ID}"/>"#
-        );
-    }
-    if footer_part.is_some() {
-        let _ = write!(
-            inner,
-            r#"<w:footerReference w:type="default" r:id="{FOOTER_REL_ID}"/>"#
-        );
-    }
-    for ch in &kept_refs {
-        inner.push_str(&ch.raw);
-    }
+    let mut plan = SectionPlan {
+        sectpr: String::new(),
+        header_part: parts.header.as_ref().map(|_| free_part_name(c, "header")),
+        footer_part: parts.footer.as_ref().map(|_| free_part_name(c, "footer")),
+        kept_refs,
+    };
+    let mut inner = plan.references(&children);
     let mut cols_written = cols.is_empty();
     for ch in children
         .iter()
@@ -414,16 +460,12 @@ pub(super) fn plan(
         inner.push_str(cols);
     }
 
-    let sectpr = match (open, inner.is_empty()) {
+    plan.sectpr = match (open, inner.is_empty()) {
         (Some(open), _) => format!("{open}{inner}</w:sectPr>"),
         (None, true) if original.is_none() => String::new(),
         (None, _) => format!("<w:sectPr>{inner}</w:sectPr>"),
     };
-    SectionPlan {
-        sectpr,
-        header_part,
-        footer_part,
-    }
+    plan
 }
 
 /// The `Relationship` element wiring `part` (a `word/…` name) in the document rels.
@@ -471,7 +513,14 @@ mod tests {
             header: Some(Vec::new()),
             footer: None,
         };
-        let plan = plan(&mut c, Some(original), &parts, r#"<w:cols w:num="2"/>"#);
+        let plan = plan(
+            &mut c,
+            Some(original),
+            &[],
+            &parts,
+            KeptRegions::default(),
+            r#"<w:cols w:num="2"/>"#,
+        );
         assert_eq!(
             plan.sectpr,
             concat!(

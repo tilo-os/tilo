@@ -132,6 +132,22 @@ class ReconcileTests(unittest.TestCase):
         self.assertEqual(forge.closed, [1])
         self.assertEqual(forge.scheduled, [])
 
+    def test_a_close_does_not_depend_on_the_token_writing_issues(self):
+        calls = []
+
+        class NoIssueWrite(reconcile.Forge):
+            def call(self, path, method="GET", payload=None):
+                calls.append((method, path))
+                if path.startswith("/issues/"):
+                    raise reconcile.ReconcileError(f"{method} {path}: HTTP 403")
+                return None
+
+        forge = NoIssueWrite("https://forge.invalid", "qos/qos", "token", dry_run=False)
+        forge.close(7, "obsolete")
+        self.assertEqual(calls, [("PATCH", "/pulls/7"), ("POST", "/issues/7/comments")])
+        forge.schedule_merge(7)  # a refused schedule is a warning, not a failure
+        self.assertEqual(calls[-1], ("POST", "/pulls/7/merge"))
+
     def test_a_pin_without_a_source_revision_is_obsolete(self):
         self.assertEqual(reconcile.classify(None, self.commits["a"]), "obsolete")
         self.assertEqual(reconcile.classify(self.commits["a"], self.commits["a"]), "obsolete")

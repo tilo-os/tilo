@@ -304,6 +304,8 @@ impl Layout {
 /// somewhere to surface without a signature change.
 pub fn render_pdf(snap: &DocSnapshot, content: &dyn ContentSource) -> Result<Vec<u8>, DocPdfError> {
     let mut layout = Layout::new();
+    // Kept inline elements without visible text (drawings, formulas) have no text to lay out.
+    let snap = qdoc::export::without_kept_placeholders(snap);
 
     for block in &snap.blocks {
         render_block(&mut layout, content, block);

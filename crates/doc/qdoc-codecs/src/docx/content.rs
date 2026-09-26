@@ -8,6 +8,7 @@ use super::styles::{
     StyleRegistry, attr_val, line_spacing_from_spacing, map_jc, mark_from_rpr_child,
 };
 use crate::format::CodecError;
+use crate::preserve::{ATTR_FORMAT, MARK_DOCX_XML};
 use qdoc::document::MarkValue;
 use qdoc::model::DocMut;
 use qdoc::schema::{FIELD_PLACEHOLDER, MARK_COMMENT, MARK_NOTE_REF};
@@ -86,10 +87,40 @@ struct DrawingState {
 
 /// The docx-id → qdoc-id lookup tables [`BodyState::handle_empty`] resolves footnote/endnote/
 /// comment references against.
-struct RefMaps<'a> {
-    foot: &'a BTreeMap<String, String>,
-    end: &'a BTreeMap<String, String>,
-    comment: &'a BTreeMap<String, String>,
+pub(crate) struct RefMaps<'a> {
+    pub foot: &'a BTreeMap<String, String>,
+    pub end: &'a BTreeMap<String, String>,
+    pub comment: &'a BTreeMap<String, String>,
+    pub links: &'a BTreeMap<String, String>,
+}
+
+/// Build an `rId → URL` map of the external hyperlink relationships in
+/// `word/_rels/document.xml.rels`, which `w:hyperlink r:id` references.
+pub(crate) fn build_link_map(container: &DocxContainer) -> BTreeMap<String, String> {
+    let mut out = BTreeMap::new();
+    let Some(rels) = container
+        .get("word/_rels/document.xml.rels")
+        .and_then(|b| std::str::from_utf8(b).ok())
+    else {
+        return out;
+    };
+    let mut reader = Reader::from_str(rels);
+    while let Ok(ev) = reader.read_event() {
+        match ev {
+            Event::Empty(e) | Event::Start(e) if e.name().as_ref() == b"Relationship" => {
+                let is_link = attr_val(&e, b"Type").is_some_and(|t| t.ends_with("/hyperlink"));
+                if is_link
+                    && attr_val(&e, b"TargetMode").as_deref() == Some("External")
+                    && let (Some(id), Some(target)) = (attr_val(&e, b"Id"), attr_val(&e, b"Target"))
+                {
+                    out.insert(id, target);
+                }
+            }
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    out
 }
 
 /// All per-parse mutable state for [`parse_body`]'s event loop, bundled so the loop can be split
@@ -112,6 +143,7 @@ struct BodyState {
     p_style: Option<String>,
     p_align: Option<String>,
     p_numid: Option<String>,
+    p_ilvl: i64,
     p_line_spacing: Option<f64>,
 
     // Run marks are collected for `w:rPr` and applied over the run's text range at `</w:r>`.
@@ -152,9 +184,398 @@ struct BodyState {
 
     // In-progress `w:drawing`; becomes its own `image` block at `</w:drawing>`, replacing the enclosing empty paragraph.
     drawing: Option<DrawingState>,
+    // Byte offset of the in-progress `w:drawing`, so a drawing that is not a resolvable image is kept verbatim.
+    drawing_pos: usize,
+
+    // Inside a `w:p` (body or table cell): unmodeled children become inline atoms.
+    in_para: bool,
+    // An image split the current paragraph: content after it continues in a new paragraph block.
+    continue_para: bool,
+    // Paragraphs opened so far in the current table cell; the second and later are joined by `\n`.
+    cell_paras: usize,
+    // Byte offset of the current `w:r`, and the verbatim `w:rPr` of that run (start offset while open).
+    run_pos: usize,
+    rpr_start: usize,
+    rpr_xml: String,
+    // In-progress verbatim capture of an unmodeled inline element or complex field.
+    inline: Option<InlineCapture>,
+    // (block, char index, verbatim XML) of each inline atom, marked once all text is in.
+    atoms: Vec<(String, usize, usize, String)>,
+
+    // The table cell being read, and the open vertical merges: grid column → (the merge's
+    // first cell, rows it spans so far).
+    cell: CellState,
+    merges: BTreeMap<usize, (String, i64)>,
+
+    // The current `w:pPr`'s unmodeled children, verbatim; element depth inside it and the
+    // start of the direct child being read.
+    ppr_kept: String,
+    ppr_depth: usize,
+    ppr_child: Option<(usize, Vec<u8>)>,
+    // The current `w:pPr`'s `w:pStyle`, kept only when the model does not use the style.
+    ppr_style: Option<String>,
+    // (block, start, end, kept run properties) of runs with unmodeled run properties.
+    rpr_marks: Vec<(String, usize, usize, String)>,
+
+    // The current table's `w:tblPr`/`w:tblGrid` and row's `w:trPr`, until a cell takes them;
+    // the start, name and depth of the table/row/cell properties element being read.
+    table_pr: Option<String>,
+    table_grid: Option<String>,
+    row_pr: Option<String>,
+    table_part: Option<(usize, Vec<u8>, usize)>,
+}
+
+/// What the body parser tracks about the table cell being read.
+#[derive(Default)]
+struct CellState {
+    /// The cell's block, while it has one (a cell continuing a vertical merge has none).
+    id: Option<String>,
+    /// The block before the cell's own, to fall back to when the cell turns out to be covered.
+    prev: Option<String>,
+    /// Grid columns the cell spans (`w:gridSpan`).
+    span: usize,
+    /// The cell takes part in a vertical merge (`w:vMerge`).
+    merged: bool,
+}
+
+/// List-item attr holding the imported `w:numId`, reused on export while the item still
+/// numbers the same way.
+pub(super) const ATTR_NUM: &str = "docx_num";
+
+/// Paragraph children the body parser models; any other child of a `w:p` is kept verbatim as
+/// an inline atom.
+const PARA_MODELED: &[&[u8]] = &[
+    b"w:pPr",
+    b"w:r",
+    b"w:ins",
+    b"w:del",
+    b"w:hyperlink",
+    b"w:bookmarkStart",
+    b"w:bookmarkEnd",
+    b"w:commentRangeStart",
+    b"w:commentRangeEnd",
+    // Spell-check state: regenerated by the application, carrying nothing to keep.
+    b"w:proofErr",
+];
+
+/// Run children the body parser models (`w:br` and `w:fldChar` are decided per element); any
+/// other child of a `w:r` is kept verbatim, wrapped in a run with that run's properties, as an
+/// inline atom.
+const RUN_MODELED: &[&[u8]] = &[
+    b"w:rPr",
+    b"w:t",
+    b"w:delText",
+    b"w:tab",
+    b"w:cr",
+    b"w:footnoteReference",
+    b"w:endnoteReference",
+    b"w:drawing",
+    // Regenerated from the comment's range on export.
+    b"w:commentReference",
+    // A layout cache of where the application last broke the page.
+    b"w:lastRenderedPageBreak",
+];
+
+/// An in-progress verbatim capture of paragraph content the model does not represent.
+///
+/// A single element (a `w:sdt`, `m:oMath`, a run holding a `w:sym`, …) is captured from its
+/// start tag to its end tag. A complex field (`w:fldChar` begin … end) is captured whole — its
+/// instruction and its result — from the run holding `begin` to the run holding `end`. When it
+/// crosses the end of an element opened before it (the paragraph, a `w:ins`, a hyperlink), the
+/// part captured so far becomes one atom there and the capture resumes with the next paragraph
+/// content, so each atom is well-formed on its own and the pieces re-emit in order.
+struct InlineCapture {
+    /// Start offset of the segment being captured; `None` between the segments of a field.
+    start: Option<usize>,
+    /// Element depth inside the segment.
+    depth: i32,
+    /// `<w:r>` + the run's properties, when the segment started inside a run; closed with `</w:r>`.
+    prefix: Option<String>,
+    /// Open complex fields (`begin` minus `end`).
+    field: i32,
+    /// The segment started at its run's start tag, so the run's end is consumed with it.
+    owns_run: bool,
+}
+
+/// `begin`/`end` of a `w:fldChar` as a field-depth change.
+fn field_delta(e: &BytesStart) -> i32 {
+    match attr_val(e, b"w:fldCharType").as_deref() {
+        Some("begin") => 1,
+        Some("end") => -1,
+        _ => 0,
+    }
 }
 
 impl BodyState {
+    /// After an image split the paragraph, open the block that carries the rest of its content.
+    fn ensure_continuation(&mut self, doc: &mut DocMut) {
+        if self.cur.is_none() && self.continue_para && self.in_para {
+            self.continue_para = false;
+            self.start_block(doc, "paragraph");
+            self.run_start = 0;
+        }
+    }
+
+    /// Record `raw` as an inline atom at the current position: its visible text (or one
+    /// placeholder when it shows none, see `preserve::covered_text`), covered by a mark holding
+    /// the element verbatim.
+    fn push_atom(&mut self, doc: &mut DocMut, raw: String) {
+        self.ensure_continuation(doc);
+        if let Some(b) = self.cur.clone() {
+            let idx = self.cur_len;
+            self.append(doc, &crate::preserve::covered_text(&raw, MARK_DOCX_XML));
+            self.atoms.push((b, idx, self.cur_len, raw));
+        }
+    }
+
+    /// Whether an element starting here is paragraph content the model does not represent.
+    fn is_unmodeled_para_child(&self, name: &[u8]) -> bool {
+        self.in_para
+            && !self.in_run
+            && !self.in_ppr
+            && self.drawing.is_none()
+            && !PARA_MODELED.contains(&name)
+    }
+
+    /// Whether an element starting here is run content the model does not represent.
+    fn is_unmodeled_run_child(&self, e: &BytesStart) -> bool {
+        if !self.in_run || self.in_char_props || self.in_t || self.drawing.is_some() {
+            return false;
+        }
+        match e.name().as_ref() {
+            // A page or column break is layout, not a line break in the text.
+            b"w:br" => attr_val(e, b"w:type").is_some_and(|t| t != "textWrapping"),
+            name => !RUN_MODELED.contains(&name),
+        }
+    }
+
+    /// Start keeping an unmodeled element verbatim: an empty element is an atom right away, a
+    /// start tag opens a capture that [`Self::handle_inline`] closes at its end tag.
+    fn begin_atom(&mut self, raw_tag: &str, pos_before: usize, is_start: bool, doc: &mut DocMut) {
+        let prefix = self.in_run.then(|| format!("<w:r>{}", self.rpr_xml));
+        if is_start {
+            self.inline = Some(InlineCapture {
+                start: Some(pos_before),
+                depth: 1,
+                prefix,
+                field: 0,
+                owns_run: false,
+            });
+        } else {
+            let mut raw = prefix.clone().unwrap_or_default();
+            raw.push_str(raw_tag);
+            if prefix.is_some() {
+                raw.push_str("</w:r>");
+            }
+            self.push_atom(doc, raw);
+        }
+    }
+
+    /// A `w:fldChar begin` in a run: capture the whole field. Starting at the run's own start
+    /// tag when nothing of the run has been read into the text yet keeps the run intact.
+    fn begin_field(&mut self, pos_before: usize, is_start: bool) {
+        let owns_run = self.cur_len == self.run_start;
+        let inner = i32::from(is_start);
+        self.inline = Some(if owns_run {
+            InlineCapture {
+                start: Some(self.run_pos),
+                depth: inner.saturating_add(1),
+                prefix: None,
+                field: 1,
+                owns_run: true,
+            }
+        } else {
+            InlineCapture {
+                start: Some(pos_before),
+                depth: inner,
+                prefix: Some(format!("<w:r>{}", self.rpr_xml)),
+                field: 1,
+                owns_run: false,
+            }
+        });
+    }
+
+    /// Close the current capture segment at byte `end` into an inline atom.
+    fn flush_inline(&mut self, s: &str, end: usize, doc: &mut DocMut) {
+        let Some(cap) = self.inline.as_mut() else {
+            return;
+        };
+        let Some(start) = cap.start.take() else {
+            return;
+        };
+        let prefix = cap.prefix.take();
+        let owns_run = std::mem::take(&mut cap.owns_run);
+        let mut raw = prefix.clone().unwrap_or_default();
+        raw.push_str(s.get(start..end).unwrap_or_default());
+        if prefix.is_some() {
+            raw.push_str("</w:r>");
+        }
+        if owns_run {
+            self.in_run = false;
+            self.in_char_props = false;
+            self.in_t = false;
+            self.run_marks.clear();
+        }
+        self.push_atom(doc, raw);
+    }
+
+    /// While an inline capture is open, consume events into it. Returns `false` for events the
+    /// regular handlers must see: everything outside a field's segments, and the end tag of an
+    /// element opened before the segment (which closes the segment first).
+    fn handle_inline(
+        &mut self,
+        s: &str,
+        pos_before: usize,
+        pos_after: usize,
+        ev: &Event,
+        doc: &mut DocMut,
+    ) -> bool {
+        let opens_segment = match ev {
+            Event::Start(e) | Event::Empty(e) => {
+                self.in_para && !self.in_ppr && !self.in_run && e.name().as_ref() != b"w:pPr"
+            }
+            _ => false,
+        };
+        let Some(cap) = self.inline.as_mut() else {
+            return false;
+        };
+        if cap.start.is_none() {
+            if !opens_segment {
+                return false;
+            }
+            cap.start = Some(pos_before);
+            cap.depth = 0;
+        }
+        match ev {
+            Event::Start(e) => {
+                cap.depth = cap.depth.saturating_add(1);
+                if e.name().as_ref() == b"w:fldChar" {
+                    cap.field = cap.field.saturating_add(field_delta(e)).max(0);
+                }
+            }
+            Event::Empty(e) => {
+                if e.name().as_ref() == b"w:fldChar" {
+                    cap.field = cap.field.saturating_add(field_delta(e)).max(0);
+                }
+            }
+            Event::End(_) => {
+                if cap.depth == 0 {
+                    let done = cap.field == 0;
+                    self.flush_inline(s, pos_before, doc);
+                    if done {
+                        self.inline = None;
+                    }
+                    return false;
+                }
+                cap.depth = cap.depth.saturating_sub(1);
+                if cap.depth == 0 && cap.field == 0 {
+                    self.flush_inline(s, pos_after, doc);
+                    self.inline = None;
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// Keep an unmodeled element verbatim (or start capturing a complex field) when `e` is
+    /// one; `true` when it was.
+    fn begin_unmodeled(
+        &mut self,
+        e: &BytesStart,
+        raw: &str,
+        pos_before: usize,
+        is_start: bool,
+        doc: &mut DocMut,
+    ) -> bool {
+        if self.in_run
+            && !self.in_char_props
+            && e.name().as_ref() == b"w:fldChar"
+            && field_delta(e) > 0
+        {
+            self.begin_field(pos_before, is_start);
+            return true;
+        }
+        if self.is_unmodeled_run_child(e) || self.is_unmodeled_para_child(e.name().as_ref()) {
+            self.begin_atom(raw, pos_before, is_start, doc);
+            return true;
+        }
+        false
+    }
+
+    /// A `w:hyperlink`: remember its target + start index; the `link` mark applies at its end.
+    /// An external link's `r:id` names a relationship holding the URL; a cross-reference
+    /// (`w:anchor="name"`) points inside the document.
+    fn open_hyperlink(&mut self, e: &BytesStart, maps: &RefMaps) {
+        let target = match (attr_val(e, b"r:id"), attr_val(e, b"w:anchor")) {
+            (Some(rid), _) if maps.links.contains_key(&rid) => maps.links.get(&rid).cloned(),
+            (_, Some(anchor)) => Some(format!("{}{anchor}", qdoc::schema::CROSS_REF_PREFIX)),
+            _ => None,
+        };
+        if let Some(target) = target {
+            self.hyperlink = Some((target, self.cur.clone(), self.cur_len));
+        }
+    }
+
+    /// A `w:gridSpan` in the current cell's properties: the cell spans that many grid columns.
+    fn grid_span(&mut self, e: &BytesStart, doc: &mut DocMut) {
+        let span = attr_val(e, b"w:val")
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .clamp(1, 1024);
+        self.cell.span = span;
+        if let (Some(id), Ok(n)) = (self.cur.as_deref(), i64::try_from(span))
+            && n > 1
+        {
+            doc.set_attr(id, "colspan", n);
+        }
+    }
+
+    /// At a run's end: its unmodeled run properties ride on its text as a mark, joined with
+    /// the previous run's when they are the same and adjacent.
+    fn keep_run_props(&mut self) {
+        let Some(b) = self.cur.as_ref() else {
+            return;
+        };
+        if self.rpr_xml.is_empty() || self.run_start >= self.cur_len {
+            return;
+        }
+        let kept = super::paragraph::kept_run_props(&self.rpr_xml);
+        if kept.is_empty() {
+            return;
+        }
+        if let Some(last) = self.rpr_marks.last_mut()
+            && last.0 == *b
+            && last.2 == self.run_start
+            && last.3 == kept
+        {
+            last.2 = self.cur_len;
+            return;
+        }
+        self.rpr_marks
+            .push((b.clone(), self.run_start, self.cur_len, kept));
+    }
+
+    /// A `w:vMerge` in the current cell's properties: `restart` opens a vertical merge at this
+    /// grid column; otherwise the cell continues the merge above it, so it adds a row to that
+    /// merge's first cell and has no block of its own.
+    fn vertical_merge(&mut self, e: &BytesStart, doc: &mut DocMut) {
+        self.cell.merged = true;
+        let Some(id) = self.cur.clone() else {
+            return;
+        };
+        if attr_val(e, b"w:val").as_deref() == Some("restart") {
+            self.merges.insert(self.tcol, (id, 1));
+        } else if let Some((first, rows)) = self.merges.get_mut(&self.tcol) {
+            *rows = rows.saturating_add(1);
+            doc.set_attr(first, "rowspan", *rows);
+            doc.remove_block(&id);
+            self.cur = None;
+            self.cell.id = None;
+            self.prev = self.cell.prev.clone();
+        }
+    }
+
     /// Opens a fresh top-level block anchored after the previous one, and makes it current.
     fn start_block(&mut self, doc: &mut DocMut, kind: &str) -> String {
         let id = doc.insert_block(self.prev.as_deref(), kind);
@@ -165,6 +586,7 @@ impl BodyState {
     }
 
     fn append(&mut self, doc: &mut DocMut, txt: &str) {
+        self.ensure_continuation(doc);
         if let Some(b) = self.cur.as_deref()
             && !txt.is_empty()
         {
@@ -184,11 +606,126 @@ impl BodyState {
         self.cur_para_marks.clear();
     }
 
+    /// Inside a table, collect the table's, rows' and cells' properties verbatim (see
+    /// `paragraph::ATTR_TBLPR`). Only observes: the regular handlers still see every event.
+    fn observe_table(
+        &mut self,
+        ev: &Event,
+        s: &str,
+        pos_before: usize,
+        pos_after: usize,
+        doc: &mut DocMut,
+    ) {
+        if self.table_id.is_none() || self.in_para {
+            return;
+        }
+        let is_part = |e: &BytesStart| {
+            matches!(
+                e.name().as_ref(),
+                b"w:tblPr" | b"w:tblGrid" | b"w:trPr" | b"w:tcPr"
+            )
+        };
+        match ev {
+            Event::Start(e) => match self.table_part.as_mut() {
+                Some(part) => part.2 = part.2.saturating_add(1),
+                None if is_part(e) => {
+                    self.table_part = Some((pos_before, e.name().as_ref().to_vec(), 0));
+                }
+                None => {}
+            },
+            Event::Empty(e) if self.table_part.is_none() && is_part(e) => {
+                let raw = s.get(pos_before..pos_after).unwrap_or_default();
+                self.keep_table_part(e.name().as_ref(), raw, doc);
+            }
+            Event::End(_) => match self.table_part.take() {
+                Some((start, name, 0)) => {
+                    let raw = s.get(start..pos_after).unwrap_or_default();
+                    self.keep_table_part(&name, raw, doc);
+                }
+                Some((start, name, depth)) => {
+                    self.table_part = Some((start, name, depth.saturating_sub(1)));
+                }
+                None => {}
+            },
+            _ => {}
+        }
+    }
+
+    fn keep_table_part(&mut self, name: &[u8], raw: &str, doc: &mut DocMut) {
+        match name {
+            b"w:tblPr" | b"w:tblGrid" if !super::paragraph::is_informative_table_part(raw) => {}
+            b"w:tblPr" => self.table_pr = Some(raw.to_string()),
+            b"w:tblGrid" => self.table_grid = Some(raw.to_string()),
+            b"w:trPr" => self.row_pr = Some(raw.to_string()),
+            _ => {
+                let kept = super::paragraph::kept_cell_props(raw);
+                if !kept.is_empty()
+                    && let Some(id) = self.cell.id.as_deref()
+                {
+                    doc.set_attr(id, super::paragraph::ATTR_TCPR, kept.as_str());
+                }
+            }
+        }
+    }
+
+    /// Inside a `w:pPr`, collect the direct children the model does not represent, verbatim.
+    /// Only observes: the regular handlers still see every event.
+    fn observe_ppr(&mut self, ev: &Event, s: &str, pos_before: usize, pos_after: usize) {
+        if !self.in_ppr {
+            return;
+        }
+        match ev {
+            Event::Start(e) => {
+                if self.ppr_depth == 0 {
+                    self.ppr_child = Some((pos_before, e.name().as_ref().to_vec()));
+                }
+                self.ppr_depth = self.ppr_depth.saturating_add(1);
+            }
+            Event::Empty(e) if self.ppr_depth == 0 => {
+                let raw = s.get(pos_before..pos_after).unwrap_or_default();
+                if e.name().as_ref() == b"w:pStyle" {
+                    self.ppr_style = Some(raw.to_string());
+                } else if let Some(kept) =
+                    super::paragraph::kept_child(e, raw, self.table_id.is_some())
+                {
+                    self.ppr_kept.push_str(&kept);
+                }
+            }
+            Event::End(_) if self.ppr_depth > 0 => {
+                self.ppr_depth = self.ppr_depth.saturating_sub(1);
+                if self.ppr_depth == 0
+                    && let Some((start, name)) = self.ppr_child.take()
+                    && name != b"w:numPr"
+                {
+                    self.ppr_kept
+                        .push_str(s.get(start..pos_after).unwrap_or_default());
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Finalise the paragraph's properties: pick the block kind (`list_item`/heading/paragraph), set attrs, stash whole-block marks.
     fn finalize_ppr(&mut self, doc: &mut DocMut, reg: &StyleRegistry) {
         let Some(id) = self.cur.clone() else {
             return;
         };
+        // The unmodeled properties ride on the block verbatim; the style reference only when
+        // the model did not take it up (as a heading or lifted named style) — a list item's
+        // always, as the model has no paragraph style for it.
+        let mut kept = std::mem::take(&mut self.ppr_kept);
+        let style = self.ppr_style.take();
+        let used_style = self.p_numid.is_none()
+            && self.p_style.as_deref().is_some_and(|s| {
+                reg.heading_level(s).is_some()
+                    || (reg.is_named_para(s) && reg.style_props(s).is_some())
+            });
+        if let Some(style) = style.filter(|_| !used_style) {
+            kept.insert_str(0, &style);
+        }
+        if !kept.is_empty() {
+            doc.set_attr(&id, super::paragraph::ATTR_PPR, kept.as_str());
+        }
         // Line spacing rides as `line_spacing` regardless of block kind; a direct `w:spacing` wins over inheriting from the style.
         let line_spacing = self.p_line_spacing.or_else(|| {
             self.p_style
@@ -203,6 +740,11 @@ impl BodyState {
             doc.set_kind(&id, "list_item");
             let ordered = reg.num_ordered.get(&numid).copied().unwrap_or(false);
             doc.set_attr(&id, "ordered", ordered);
+            doc.set_attr(&id, ATTR_NUM, numid.as_str());
+            // 0-based nesting depth, only when nested (as the other codecs do).
+            if self.p_ilvl > 0 {
+                doc.set_attr(&id, "level", self.p_ilvl);
+            }
             // Numbering fidelity (ordered lists only): preserve format + start so the list re-exports intact.
             if ordered && let Some(def) = reg.num_def.get(&numid) {
                 if let Some(f) = def.num_format
@@ -279,6 +821,7 @@ impl BodyState {
                     let raw = s.get(*start..pos_after).unwrap_or_default().to_string();
                     let id = self.start_block(doc, "fidelity");
                     doc.set_attr(&id, "xml", raw.as_str());
+                    doc.set_attr(&id, ATTR_FORMAT, "docx");
                     self.cur = None;
                     self.capture = None;
                 }
@@ -296,6 +839,8 @@ impl BodyState {
         doc: &mut DocMut,
         image_map: &BTreeMap<String, Vec<u8>>,
         inputs: &mut ContentInputs,
+        s: &str,
+        pos_after: usize,
     ) -> bool {
         if self.drawing.is_none() {
             return false;
@@ -345,6 +890,20 @@ impl BodyState {
                 }
             }
             Event::End(e) if e.name().as_ref() == b"w:drawing" => {
+                let is_picture = self
+                    .drawing
+                    .as_ref()
+                    .and_then(|dr| dr.rel.as_deref())
+                    .is_some_and(|r| image_map.contains_key(r));
+                if !is_picture {
+                    // Not a picture the model can hold (a shape, chart, text box, linked
+                    // image): keep the drawing verbatim, in its run, where it stood.
+                    self.drawing = None;
+                    let raw = s.get(self.drawing_pos..pos_after).unwrap_or_default();
+                    let atom = format!("<w:r>{}{raw}</w:r>", self.rpr_xml);
+                    self.push_atom(doc, atom);
+                    return true;
+                }
                 if let Some(dr) = self.drawing.take()
                     && let Some(bytes) = dr.rel.as_deref().and_then(|r| image_map.get(r))
                 {
@@ -378,9 +937,11 @@ impl BodyState {
                     if let Some(w) = dr.wrap {
                         doc.set_attr(&id, "wrap", w.as_str());
                     }
-                    // An image block isn't a text container; close it.
+                    // An image block isn't a text container; close it. What follows the image
+                    // in its paragraph continues in a new paragraph block.
                     self.prev = Some(id);
                     self.cur = None;
+                    self.continue_para = self.in_para && self.table_id.is_none();
                 }
                 self.in_run = false;
             }
@@ -391,19 +952,44 @@ impl BodyState {
 
     /// Block-structure and run-open events: headings/paragraphs/lists/tables, tracked-change and
     /// hyperlink openers, and the fidelity-atom capture start for anything unmodeled.
-    fn handle_start(&mut self, e: &BytesStart, doc: &mut DocMut, pos_before: usize) {
+    fn handle_start(
+        &mut self,
+        e: &BytesStart,
+        doc: &mut DocMut,
+        pos_before: usize,
+        maps: &RefMaps,
+    ) {
+        if self.begin_unmodeled(e, "", pos_before, true, doc) {
+            return;
+        }
         match e.name().as_ref() {
             b"w:body" => self.in_body = true,
+            // A paragraph inside a table cell adds to the cell's text, on a new line after the first.
+            b"w:p" if self.table_id.is_some() => {
+                self.in_para = true;
+                if self.cell_paras > 0 {
+                    self.append(doc, "\n");
+                }
+                self.cell_paras = self.cell_paras.saturating_add(1);
+            }
             // A paragraph (outside a table) opens a block; its kind is refined once `w:pPr` closes.
             b"w:p" if self.in_body && self.table_id.is_none() => {
+                self.in_para = true;
+                self.continue_para = false;
                 self.start_block(doc, "paragraph");
                 self.p_style = None;
                 self.p_align = None;
                 self.p_numid = None;
+                self.p_ilvl = 0;
                 self.p_line_spacing = None;
                 self.cur_para_marks.clear();
             }
-            b"w:pPr" if self.table_id.is_none() => self.in_ppr = true,
+            b"w:pPr" if self.in_para => {
+                self.in_ppr = true;
+                self.ppr_kept.clear();
+                self.ppr_style = None;
+                self.ppr_depth = 0;
+            }
             b"w:numPr" if self.in_ppr => self.in_numpr = true,
             // A tracked-change wrapper: create the change record now, remember the start index; the mark applies over `[start, cur_len)` at close.
             b"w:ins" | b"w:del" if self.in_body && self.cur.is_some() => {
@@ -417,25 +1003,22 @@ impl BodyState {
                 let cid = doc.insert_change(kind, &author, &date);
                 self.change = Some((cid, kind, self.cur.clone(), self.cur_len));
             }
-            b"w:hyperlink" if self.in_body && self.cur.is_some() => {
-                // A cross-reference (`w:anchor="name"`): remember target + start index; `r:id`-based external links aren't modeled.
-                if let Some(anchor) = attr_val(e, b"w:anchor") {
-                    self.hyperlink = Some((
-                        format!("{}{anchor}", qdoc::schema::CROSS_REF_PREFIX),
-                        self.cur.clone(),
-                        self.cur_len,
-                    ));
-                }
-            }
+            b"w:hyperlink" if self.in_body && self.cur.is_some() => self.open_hyperlink(e, maps),
             b"w:r" if self.in_body => {
                 self.in_run = true;
                 self.run_start = self.cur_len;
+                self.run_pos = pos_before;
+                self.rpr_xml.clear();
                 self.run_marks.clear();
             }
-            b"w:rPr" if self.in_run => self.in_char_props = true,
+            b"w:rPr" if self.in_run => {
+                self.in_char_props = true;
+                self.rpr_start = pos_before;
+            }
             // An embedded image: begin collecting size/positioning/blip until `</w:drawing>`.
             b"w:drawing" if self.in_body => {
                 self.drawing = Some(DrawingState::default());
+                self.drawing_pos = pos_before;
             }
             // Deleted text in a `<w:del>` run uses `<w:delText>`; treated like `<w:t>` on import.
             b"w:t" | b"w:delText" if self.in_run => self.in_t = true,
@@ -443,11 +1026,25 @@ impl BodyState {
                 self.table_seq = self.table_seq.saturating_add(1);
                 self.table_id = Some(format!("t{}", self.table_seq));
                 self.trow = 0;
+                self.merges.clear();
+                self.table_pr = None;
+                self.table_grid = None;
             }
-            b"w:tr" if self.table_id.is_some() => self.tcol = 0,
+            b"w:tr" if self.table_id.is_some() => {
+                self.tcol = 0;
+                self.row_pr = None;
+            }
             b"w:tc" if self.table_id.is_some() => {
+                self.cell_paras = 0;
+                self.cell = CellState {
+                    id: None,
+                    prev: self.prev.clone(),
+                    span: 1,
+                    merged: false,
+                };
                 if let Some(tid) = self.table_id.clone() {
                     let id = self.start_block(doc, "cell");
+                    self.cell.id = Some(id.clone());
                     doc.set_attr(&id, "table", tid.as_str());
                     if let (Ok(row), Ok(col)) = (i64::try_from(self.trow), i64::try_from(self.tcol))
                     {
@@ -474,8 +1071,15 @@ impl BodyState {
         reg: &StyleRegistry,
         maps: &RefMaps,
         raw: &str,
+        pos_before: usize,
     ) {
+        if self.begin_unmodeled(e, raw, pos_before, false, doc) {
+            return;
+        }
         match e.name().as_ref() {
+            b"w:rPr" if self.in_run => self.rpr_xml = raw.to_string(),
+            b"w:gridSpan" if self.table_id.is_some() => self.grid_span(e, doc),
+            b"w:vMerge" if self.table_id.is_some() => self.vertical_merge(e, doc),
             b"w:p" if self.in_body && self.table_id.is_none() => {
                 self.start_block(doc, "paragraph");
                 self.cur = None;
@@ -488,6 +1092,12 @@ impl BodyState {
                 }
             }
             b"w:numId" if self.in_numpr => self.p_numid = attr_val(e, b"w:val"),
+            b"w:ilvl" if self.in_numpr => {
+                self.p_ilvl = attr_val(e, b"w:val")
+                    .and_then(|v| v.parse::<i64>().ok())
+                    .unwrap_or(0)
+                    .clamp(0, 8);
+            }
             b"w:tab" if self.in_run => self.append(doc, "\t"),
             b"w:br" | b"w:cr" if self.in_run => self.append(doc, "\n"),
             b"w:footnoteReference" | b"w:endnoteReference" if self.in_run => {
@@ -557,6 +1167,7 @@ impl BodyState {
             _ if self.in_body && self.cur.is_none() && self.table_id.is_none() => {
                 let id = self.start_block(doc, "fidelity");
                 doc.set_attr(&id, "xml", raw);
+                doc.set_attr(&id, ATTR_FORMAT, "docx");
                 self.cur = None;
             }
             _ => {}
@@ -565,15 +1176,41 @@ impl BodyState {
 
     /// Closing events: property scope ends, tracked-change/hyperlink/run closes (which anchor
     /// their deferred marks), and paragraph/table-cell/table-row/table closes.
-    fn handle_end(&mut self, e: &BytesEnd, doc: &mut DocMut, reg: &StyleRegistry) {
+    fn handle_end(
+        &mut self,
+        e: &BytesEnd,
+        doc: &mut DocMut,
+        reg: &StyleRegistry,
+        s: &str,
+        pos_after: usize,
+    ) {
         match e.name().as_ref() {
             b"w:body" => self.in_body = false,
             b"w:pPr" if self.table_id.is_none() => {
                 self.in_ppr = false;
                 self.finalize_ppr(doc, reg);
             }
+            b"w:pPr" => {
+                self.in_ppr = false;
+                // A cell's (first) paragraph properties ride on the cell.
+                let kept = self.ppr_style.take().unwrap_or_default() + &self.ppr_kept;
+                if self.cell_paras == 1
+                    && !kept.is_empty()
+                    && let Some(id) = self.cur.as_deref()
+                {
+                    doc.set_attr(id, super::paragraph::ATTR_PPR, kept.as_str());
+                }
+            }
             b"w:numPr" => self.in_numpr = false,
-            b"w:rPr" => self.in_char_props = false,
+            b"w:rPr" => {
+                if self.in_char_props {
+                    self.rpr_xml = s
+                        .get(self.rpr_start..pos_after)
+                        .unwrap_or_default()
+                        .to_string();
+                }
+                self.in_char_props = false;
+            }
             b"w:t" | b"w:delText" => self.in_t = false,
             b"w:ins" | b"w:del" => {
                 // Close the tracked-change wrapper: anchor an `ins`/`del` mark over `[start, cur_len)`.
@@ -585,6 +1222,7 @@ impl BodyState {
             }
             b"w:r" => {
                 self.in_run = false;
+                self.keep_run_props();
                 let marks = std::mem::take(&mut self.run_marks);
                 if let Some(b) = self.cur.as_ref() {
                     for (name, value) in marks {
@@ -609,10 +1247,29 @@ impl BodyState {
             b"w:p" if self.table_id.is_none() => {
                 self.flush_para_marks();
                 self.cur = None;
+                self.in_para = false;
+                self.continue_para = false;
             }
+            b"w:p" => self.in_para = false,
             b"w:tc" if self.table_id.is_some() => {
                 self.cur = None;
-                self.tcol = self.tcol.saturating_add(1);
+                // The table's and the row's properties ride on their first cell with a block.
+                if let Some(id) = self.cell.id.take() {
+                    for (key, value) in [
+                        (super::paragraph::ATTR_TBLPR, self.table_pr.take()),
+                        (super::paragraph::ATTR_TBLGRID, self.table_grid.take()),
+                        (super::paragraph::ATTR_TRPR, self.row_pr.take()),
+                    ] {
+                        if let Some(value) = value {
+                            doc.set_attr(&id, key, value.as_str());
+                        }
+                    }
+                }
+                // A cell that is not part of a vertical merge ends any merge in its column.
+                if !self.cell.merged {
+                    self.merges.remove(&self.tcol);
+                }
+                self.tcol = self.tcol.saturating_add(self.cell.span);
             }
             b"w:tr" if self.table_id.is_some() => self.trow = self.trow.saturating_add(1),
             b"w:tbl" => {
@@ -624,7 +1281,7 @@ impl BodyState {
     }
 
     fn handle_text(&mut self, t: &BytesText, doc: &mut DocMut) -> Result<(), CodecError> {
-        if self.in_t && self.cur.is_some() {
+        if self.in_t && (self.cur.is_some() || self.continue_para) {
             let txt = t
                 .xml10_content()
                 .map_err(|e| CodecError::Parse(format!("text: {e}")))?;
@@ -643,6 +1300,7 @@ impl BodyState {
     }
 
     fn append_text(&mut self, txt: &str, doc: &mut DocMut) {
+        self.ensure_continuation(doc);
         if let Some(b) = self.cur.as_ref()
             && !txt.is_empty()
         {
@@ -668,6 +1326,12 @@ impl BodyState {
         for (b, idx, nid) in self.note_refs {
             let end = idx.saturating_add(1);
             doc.add_mark(&b, idx, end, MARK_NOTE_REF, nid.as_str());
+        }
+        for (b, start, end, xml) in self.atoms {
+            doc.add_mark(&b, start, end, MARK_DOCX_XML, xml.as_str());
+        }
+        for (b, start, end, kept) in self.rpr_marks {
+            doc.add_mark(&b, start, end, super::paragraph::MARK_RPR, kept.as_str());
         }
         // A comment missing its `w:commentRangeEnd` anchors at start, extending to block end.
         for (_docx_id, (cid, b, start)) in std::mem::take(&mut self.open_comments) {
@@ -715,20 +1379,13 @@ impl BodyState {
 pub(crate) fn parse_body(
     document_xml: &[u8],
     reg: &StyleRegistry,
-    foot_map: &BTreeMap<String, String>,
-    end_map: &BTreeMap<String, String>,
-    comment_map: &BTreeMap<String, String>,
+    maps: &RefMaps,
     image_map: &BTreeMap<String, Vec<u8>>,
     doc: &mut DocMut,
     inputs: &mut ContentInputs,
 ) -> Result<(), CodecError> {
     let s = std::str::from_utf8(document_xml).map_err(|e| CodecError::Parse(e.to_string()))?;
     let mut reader = Reader::from_str(s);
-    let maps = RefMaps {
-        foot: foot_map,
-        end: end_map,
-        comment: comment_map,
-    };
     let mut st = BodyState::default();
 
     loop {
@@ -738,20 +1395,25 @@ pub(crate) fn parse_body(
             .map_err(|e| CodecError::Parse(format!("xml: {e}")))?;
         let pos_after = usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX);
 
+        if st.handle_inline(s, pos_before, pos_after, &ev, doc) {
+            continue;
+        }
         if st.handle_capture(s, pos_after, &ev, doc) {
             continue;
         }
-        if st.handle_drawing(&ev, doc, image_map, inputs) {
+        if st.handle_drawing(&ev, doc, image_map, inputs, s, pos_after) {
             continue;
         }
 
+        st.observe_ppr(&ev, s, pos_before, pos_after);
+        st.observe_table(&ev, s, pos_before, pos_after, doc);
         match ev {
-            Event::Start(e) => st.handle_start(&e, doc, pos_before),
+            Event::Start(e) => st.handle_start(&e, doc, pos_before, maps),
             Event::Empty(e) => {
                 let raw = s.get(pos_before..pos_after).unwrap_or_default();
-                st.handle_empty(&e, doc, reg, &maps, raw);
+                st.handle_empty(&e, doc, reg, maps, raw, pos_before);
             }
-            Event::End(e) => st.handle_end(&e, doc, reg),
+            Event::End(e) => st.handle_end(&e, doc, reg, s, pos_after),
             Event::Text(t) => st.handle_text(&t, doc)?,
             Event::GeneralRef(r) => st.handle_general_ref(&r, doc),
             Event::Eof => break,
@@ -1056,6 +1718,105 @@ mod tests {
         assert!(
             raw.starts_with("<w:sdt") && raw.contains("boxed") && raw.ends_with("</w:sdt>"),
             "captured raw: {raw}"
+        );
+    }
+
+    #[test]
+    fn keeps_unmodeled_paragraph_content_inline_through_export() {
+        use super::super::container::DocxContainer;
+        let field = concat!(
+            r#"<w:r><w:fldChar w:fldCharType="begin"/></w:r>"#,
+            r#"<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>"#,
+            r#"<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>7</w:t></w:r>"#,
+            r#"<w:r><w:fldChar w:fldCharType="end"/></w:r>"#,
+        );
+        let sdt = r#"<w:sdt><w:sdtPr><w:tag w:val="t"/></w:sdtPr><w:sdtContent><w:r><w:t>ctl</w:t></w:r></w:sdtContent></w:sdt>"#;
+        let page_break = r#"<w:r><w:rPr><w:b/></w:rPr><w:br w:type="page"/></w:r>"#;
+        let body = format!(
+            r#"<w:p><w:r><w:t xml:space="preserve">page </w:t></w:r>{field}<w:r><w:t xml:space="preserve"> and </w:t></w:r>{sdt}{page_break}<w:r><w:t>end</w:t></w:r></w:p>"#
+        );
+        let mut d = Document::new();
+        DocxCodec
+            .import(
+                &minimal_docx(&body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let p = &d.materialize().blocks[0];
+        let ph = qdoc::schema::FIELD_PLACEHOLDER;
+        // The field and the content control show their text; the page break shows none.
+        assert_eq!(p.text, format!("page 7 and ctl{ph}end"));
+        let atoms = p
+            .marks
+            .iter()
+            .filter(|m| m.name == crate::preserve::MARK_DOCX_XML)
+            .count();
+        assert_eq!(atoms, 3, "{:?}", p.marks);
+
+        // An edit through the model, then export: every piece re-emits verbatim, in place.
+        let id = p.id.clone();
+        d.splice_text(&id, 0, 0, "The ");
+        let out = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let c = DocxContainer::read(&out).unwrap();
+        let xml = String::from_utf8(c.get("word/document.xml").unwrap().to_vec()).unwrap();
+        let at = |needle: &str| {
+            xml.find(needle)
+                .unwrap_or_else(|| panic!("{needle} in {xml}"))
+        };
+        assert!(at("The page") < at(field) && at(field) < at(sdt) && at(sdt) < at(page_break));
+        assert!(at(page_break) < at(">end</w:t>"));
+        let mut again = Document::new();
+        DocxCodec
+            .import(
+                &out,
+                &mut again.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            again.materialize().blocks[0].text,
+            format!("The page 7 and ctl{ph}end")
+        );
+
+        // Editing a kept element's text writes the edited text instead of the element.
+        let at_ctl = "The page 7 and ".chars().count();
+        d.splice_text(&id, at_ctl, 3, "CTL");
+        let out = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let c = DocxContainer::read(&out).unwrap();
+        let xml = String::from_utf8(c.get("word/document.xml").unwrap().to_vec()).unwrap();
+        assert!(
+            !xml.contains("<w:sdt>") && xml.contains(" and CTL</w:t>"),
+            "{xml}"
+        );
+        assert!(xml.contains(field), "the unedited field stays: {xml}");
+    }
+
+    #[test]
+    fn text_after_an_inline_picture_continues_after_it() {
+        let body = concat!(
+            r#"<w:p><w:r><w:t>before</w:t></w:r>"#,
+            r#"<w:r><w:drawing><wp:inline><wp:extent cx="9525" cy="9525"/><a:graphic><a:graphicData><pic:pic><pic:blipFill><a:blip r:embed="rIdMissing"/></pic:blipFill></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>"#,
+            r#"<w:r><w:t>after</w:t></w:r></w:p>"#,
+        );
+        let mut d = Document::new();
+        DocxCodec
+            .import(
+                &minimal_docx(body),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d.materialize();
+        // The picture's part is missing, so the drawing stays verbatim, inline, between the texts.
+        assert_eq!(snap.blocks.len(), 1, "{snap:?}");
+        assert_eq!(
+            snap.blocks[0].text,
+            format!("before{}after", qdoc::schema::FIELD_PLACEHOLDER)
         );
     }
 

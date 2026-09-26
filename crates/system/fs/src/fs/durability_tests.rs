@@ -14,7 +14,6 @@ struct Fixture {
     history: Arc<crate::history::FileHistoryStore>,
     publisher: Arc<crate::record_publisher::RecordPublisher>,
     actor: FileActor,
-    workspace_id: Uuid,
 }
 
 impl Fixture {
@@ -48,7 +47,6 @@ impl Fixture {
             history,
             publisher,
             actor,
-            workspace_id,
         }
     }
 
@@ -78,14 +76,6 @@ impl Fixture {
             .load_all();
         assert!(damaged.is_empty());
         loaded
-    }
-
-    fn record_file(&self, record_id: collab_types::FileRecordId) -> std::path::PathBuf {
-        self.dir
-            .path()
-            .join("records")
-            .join(self.workspace_id.to_string())
-            .join(format!("{}.json", record_id.0))
     }
 
     fn versions(&self, record_id: collab_types::FileRecordId) -> usize {
@@ -142,10 +132,8 @@ async fn a_failed_commit_fails_close_and_never_discards_the_bytes() {
     fs.write_buffer(ino, 0, b"precious bytes").unwrap();
 
     // Make the durable signed publication fail.
-    let record_file = fixture.record_file(record_id);
-    let parked = record_file.with_extension("json.parked");
-    std::fs::rename(&record_file, &parked).unwrap();
-    std::fs::create_dir(&record_file).unwrap();
+    let repository = fs.record_publisher.as_ref().unwrap().repository();
+    repository.fail_writes(true);
 
     assert_eq!(
         fs.flush_inode(ino),
@@ -166,8 +154,7 @@ async fn a_failed_commit_fails_close_and_never_discards_the_bytes() {
     assert!(staged[0].entry.error.is_some());
     assert!(committed_bytes(&fs, ino).await.is_empty());
 
-    std::fs::remove_dir(&record_file).unwrap();
-    std::fs::rename(&parked, &record_file).unwrap();
+    repository.fail_writes(false);
 
     // Any later close retries; success settles the retained buffer.
     let reader = open_handle(&fs, ino, false);

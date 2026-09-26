@@ -52,7 +52,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.podesta.ai/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -157,9 +157,7 @@ jobs:
 
       # The runner provides docker, not podman.
       - name: Set up buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        with:
-          driver: docker-container
+        uses: ./.forgejo/actions/setup-buildx
 
       # The Containerfile runs tools/ci/check-build-env.sh during the build, so a
       # missing native dependency fails here rather than in every later job.
@@ -276,7 +274,7 @@ jobs:
           cache-architecture: ${{ runner.arch }}
       - name: Set up registry inspection
         if: needs.plan.outputs.mode == 'reuse'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: ./.forgejo/actions/setup-buildx
       - name: Resolve the signed promoted native builders
         id: reused
         if: needs.plan.outputs.mode == 'reuse'

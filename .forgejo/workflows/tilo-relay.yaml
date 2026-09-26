@@ -221,7 +221,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: code.podesta.ai/qos/ci-fast@sha256:0421709ebb8da5831b68fa2280fb639f5671df405824caf09fe8ab0a000f0ca3
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.REGISTRY_TOKEN }}
@@ -385,9 +385,8 @@ jobs:
 
       - name: Set up buildx for registry cache export
         id: buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: ./.forgejo/actions/setup-buildx
         with:
-          driver: docker-container
           # The compiler cache is a cluster-local service. The default nested
           # Docker bridge cannot resolve Kubernetes service DNS.
           driver-opts: network=host
