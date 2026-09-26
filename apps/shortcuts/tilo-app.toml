@@ -2,8 +2,8 @@
 #
 # Drafts are CRDT state; saved shortcuts live in the workspace and are
 # reached through the session's action door. The app reads the action
-# catalogue to offer steps; it never invokes another app's action itself:
-# a shortcut runs through the session, as the person, within its grant.
+# catalogue to offer steps. A shortcut runs through the session, as the
+# person, within its grant — never through this app.
 
 [package]
 id       = "so.tilo.shortcuts"
@@ -27,8 +27,11 @@ claim     = "deadbeef"
 signature = ""
 
 # Read the catalogue of actions the person is offered, to build steps from.
+# Invoke is only for asking the agent to draft a shortcut; like any other
+# app's action it is refused until the workspace grants it to Shortcuts.
 [actions]
 query = true
+invoke = true
 
 [sandbox]
 # `net` deliberately absent from `namespaces`: this app opens no
