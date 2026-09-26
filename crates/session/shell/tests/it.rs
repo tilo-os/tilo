@@ -43,6 +43,8 @@ mod compositor_test;
 mod concept_parity_spec;
 #[path = "control_socket_test.rs"]
 mod control_socket_test;
+#[path = "controller_navigation.rs"]
+mod controller_navigation;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
 #[path = "dbus_runtime_context.rs"]
