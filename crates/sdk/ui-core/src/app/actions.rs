@@ -1721,6 +1721,79 @@ impl App {
         Ok(())
     }
 
+    /// Forward an admitted app action whose work is a request to the app's
+    /// own workspace (see [`tilo_actions::remote::WORKSPACE_REQUEST_TYPE`]).
+    /// Like an application launch it reaches the broker as an invocation on
+    /// the room's workspace provider, and the answer — including "this
+    /// workspace does not offer that" — becomes the original invocation's
+    /// terminal state and is reported to the publishing widget.
+    fn forward_workspace_request(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        encoded: &tilo_actions::EncodedAction,
+        invocation: Option<tilo_actions::InvocationId>,
+    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
+        let request: tilo_actions::remote::WorkspaceRequest =
+            serde_json::from_slice(&encoded.payload).map_err(|_| {
+                tilo_actions::DoorError::Failed("invalid workspace request payload".into())
+            })?;
+        if request.resource.is_empty()
+            || request.resource.len() > 256
+            || request.action.is_empty()
+            || request.action.len() > 64
+        {
+            return Err(tilo_actions::DoorError::Failed(
+                "workspace request is out of bounds".into(),
+            ));
+        }
+        if !self.collaboration.manager.is_connected() {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "workspace_unavailable".into(),
+                reason: "This needs the workspace, and the app is not connected to it".into(),
+            });
+        }
+        let Some(room) = self
+            .collaboration
+            .room_manager
+            .as_ref()
+            .unwrap_or(&self.collaboration.manager)
+            .primary_route()
+            .map(|witness| witness.route.cluster_id.to_string())
+        else {
+            return Err(tilo_actions::DoorError::Unavailable {
+                code: "workspace_unavailable".into(),
+                reason: "This needs an admitted workspace route".into(),
+            });
+        };
+        let Some(invocation) = invocation else {
+            return Err(tilo_actions::DoorError::Failed(
+                "workspace request was not admitted by the broker".into(),
+            ));
+        };
+        let request_id = self.take_broker_request_id()?;
+        self.admit_application_launch(request_id, invocation)?;
+        self.actions
+            .workspace_request_sources
+            .insert(request_id, address.clone());
+        let forwarded = tilo_actions::remote::InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: request.target(&room),
+            argument: request.argument,
+            context: None,
+            confirmation: None,
+            revision: None,
+        };
+        self.actions
+            .broker_requests
+            .insert(BrokerReply::Receipt(forwarded.invocation), request_id);
+        self.collaboration
+            .manager
+            .send(CollabRequest::RemoteAction {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(forwarded),
+            });
+        Ok(crate::widget::ResourceOperationStart::Accepted)
+    }
+
     fn invoke_document_resource_action(
         &mut self,
         invocation: &ResourceInvocation<'_>,
@@ -2123,6 +2196,9 @@ impl App {
                 });
             return Ok(crate::widget::ResourceOperationStart::Accepted);
         }
+        if encoded.type_id == tilo_actions::remote::WORKSPACE_REQUEST_TYPE {
+            return self.forward_workspace_request(address, &encoded, invocation);
+        }
         let operation_invocation = invocation.unwrap_or_default();
         if encoded.type_id == crate::a11y_tree::SEMANTIC_OPERATION_TYPE {
             let semantic_result = self.invoke_semantic_operation_encoded(&encoded);
@@ -2333,7 +2409,21 @@ impl App {
             }
         }
         while let Some(intent) = self.root_widget.take_control_invocation() {
-            let local_resources = self.collect_local_resources();
+            let mut local_resources = self.collect_local_resources();
+            // A control may address a row the bounded snapshot omits (a
+            // message deep in a long conversation). Resolve it on demand the
+            // way the invocation door itself does, rather than refusing a
+            // control that is on screen.
+            if tilo_actions::door::resolve(&local_resources, &intent.address).is_none()
+                && let Some(resource) = crate::bound_dispatch::resolve_unbound_resource(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                    &intent.address.resource,
+                )
+                .and_then(|resource| self.filter_resource_for_local_actor(resource))
+            {
+                local_resources.push(resource);
+            }
             let Some(resolved) = tilo_actions::door::resolve(&local_resources, &intent.address)
             else {
                 tracing::warn!(
@@ -2413,6 +2503,12 @@ impl App {
 
         let launches = std::mem::take(&mut self.actions.pending_application_launches);
         let mut changed = false;
+        for (_request_id, source) in std::mem::take(&mut self.actions.workspace_request_sources) {
+            self.root_widget.on_workspace_request_finished(
+                &source,
+                &Err("The workspace disconnected before it answered".into()),
+            );
+        }
         for (_request_id, invocation) in launches {
             let Some(directed) = self.actions.directed_invocations.remove(&invocation) else {
                 continue;

@@ -1389,6 +1389,20 @@ pub trait Widget {
             child.on_control_invocation_result(address, result);
         }
     }
+    /// Report how the workspace answered a request this widget published as
+    /// a [`tilo_actions::remote::WORKSPACE_REQUEST_TYPE`] action — `Err` with
+    /// the workspace's own words when it refused, failed, or does not offer
+    /// the request. The widget shows it; the host has already recorded it on
+    /// the invocation.
+    fn on_workspace_request_finished(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<(), String>,
+    ) {
+        for child in self.children_mut() {
+            child.on_workspace_request_finished(address, result);
+        }
+    }
     /// Recursively inventory action-native and explicitly legacy controls.
     /// Custom widgets that own an [`ActionEmitter`] should prepend its
     /// [`metadata`](ActionEmitter::metadata) to their descendants' inventory.

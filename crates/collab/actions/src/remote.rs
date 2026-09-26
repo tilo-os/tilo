@@ -277,6 +277,72 @@ pub fn application_open_target(room: &str, app_id: &str) -> RemoteActionTarget {
     }
 }
 
+/// Operation type of an app action whose work is a request to the
+/// workspace it runs in rather than to the app itself: the host forwards it
+/// as an invocation of [`WorkspaceRequest::resource`]/[`WorkspaceRequest::action`]
+/// on [`workspace_provider`] for the app's own room, through the same broker
+/// admission, permission and receipt lifecycle as any other invocation. A
+/// request the workspace does not offer fails with the broker's own answer,
+/// so an app never pretends a missing capability succeeded.
+pub const WORKSPACE_REQUEST_TYPE: &str = "tilo.workspace.request";
+
+/// The payload of a [`WORKSPACE_REQUEST_TYPE`] operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct WorkspaceRequest {
+    pub resource: String,
+    pub action: String,
+    #[serde(default)]
+    pub argument: InvokeArgument,
+}
+
+impl WorkspaceRequest {
+    pub fn new(
+        resource: impl Into<String>,
+        action: impl Into<String>,
+        argument: InvokeArgument,
+    ) -> Self {
+        Self {
+            resource: resource.into(),
+            action: action.into(),
+            argument,
+        }
+    }
+
+    /// The target in `room`'s workspace.
+    #[must_use]
+    pub fn target(&self, room: &str) -> RemoteActionTarget {
+        RemoteActionTarget {
+            provider: workspace_provider(room),
+            address: ActionAddress::new(&self.resource, &self.action),
+        }
+    }
+}
+
+/// The room's record index as a resource: the sharing verb of
+/// `docs/architecture/rooms.md`. Both actions take `{"id", "kind"}` and move
+/// no bytes. Removing a reference stops future changes reaching the room; it
+/// cannot recall what a member already synced.
+pub const ROOM_RECORDS_RESOURCE: &str = "room.records";
+pub const ROOM_RECORD_REFERENCE_ACTION: &str = "reference";
+pub const ROOM_RECORD_UNREFERENCE_ACTION: &str = "unreference";
+
+/// Opening a resource another app published, by its stable resource id
+/// (text argument): the workspace invokes that resource's own `open`.
+pub const RESOURCES_RESOURCE: &str = "resources";
+pub const RESOURCE_OPEN_ACTION: &str = "open";
+
+/// Replaying a recorded `session` record (text argument: its record id) in
+/// an ephemeral replay room.
+pub const SESSION_REPLAY_RESOURCE: &str = "session.replay";
+pub const SESSION_REPLAY_ACTION: &str = "replay";
+
+/// A person as the workspace addresses them. `message` opens the direct
+/// room shared with them (text argument: their participant id); `invite`
+/// invites them into the current workspace through the ordinary invite flow.
+pub const PEOPLE_RESOURCE: &str = "people";
+pub const PERSON_MESSAGE_ACTION: &str = "message";
+pub const PERSON_INVITE_ACTION: &str = "invite";
+
 /// Where an invocation stands, as reported to its caller.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ReceiptStatus {

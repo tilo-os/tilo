@@ -69,6 +69,10 @@ pub struct DesktopTree {
     /// the local index yet. Drained by the host.
     #[serde(skip, default)]
     pub room_records_inbound: Vec<(RoomId, String, String)>,
+    /// References a member of the room asked this host to take out of the
+    /// room's index (record id). Drained by the host.
+    #[serde(skip, default)]
+    pub room_records_withdrawn: Vec<(RoomId, String)>,
     /// This tree's own peer salt, overriding the host's process-wide one —
     /// needed when one process holds two trees (e.g. two simulated peers).
     #[serde(skip, default)]
@@ -88,6 +92,7 @@ impl Default for DesktopTree {
             collaborators: Vec::new(),
             room_records_held: HashMap::new(),
             room_records_inbound: Vec::new(),
+            room_records_withdrawn: Vec::new(),
             peer_salt_override: None,
         }
     }

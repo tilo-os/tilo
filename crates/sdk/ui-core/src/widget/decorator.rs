@@ -593,6 +593,15 @@ pub trait Decorator {
             .on_control_invocation_result(address, result);
     }
 
+    fn on_workspace_request_finished(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<(), String>,
+    ) {
+        self.inner_mut()
+            .on_workspace_request_finished(address, result);
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         self.inner().control_action_bindings()
     }
@@ -1366,6 +1375,14 @@ impl<T: Decorator> Widget for T {
         result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
     ) {
         Decorator::on_control_invocation_result(self, address, result);
+    }
+
+    fn on_workspace_request_finished(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<(), String>,
+    ) {
+        Decorator::on_workspace_request_finished(self, address, result);
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {

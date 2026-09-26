@@ -35,6 +35,7 @@
 
 mod delivery;
 mod direct;
+mod record;
 mod reference;
 mod remark;
 
@@ -43,6 +44,10 @@ pub use delivery::{
     resolve_mentions,
 };
 pub use direct::DirectRoom;
+pub use record::{
+    REPORT_RECORD_KIND, RecordAttachment, Redactions, SESSION_RECORD_KIND, SessionLayer,
+    SessionSummary,
+};
 pub use reference::{Referent, ResourceRef, Span, SpanUnit};
 pub use remark::{
     CHAT_ACTION_TYPE, ROOM_CONVERSATION, ReceivedRemark, Remark, Undeliverable, read_chat_action,

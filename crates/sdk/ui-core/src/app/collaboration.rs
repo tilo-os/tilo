@@ -929,6 +929,21 @@ impl App {
         if self.close_broker_result(request_id, &result) {
             return;
         }
+        if let Some(source) = self.actions.workspace_request_sources.remove(&request_id) {
+            let outcome = match &result {
+                Ok((_, tilo_actions::InvocationUpdate::Succeeded { .. })) => Ok(()),
+                Ok((_, tilo_actions::InvocationUpdate::Failed { error, .. })) => {
+                    Err(error.message.clone())
+                }
+                Ok((_, tilo_actions::InvocationUpdate::Cancelled { .. })) => {
+                    Err("The workspace cancelled the request".into())
+                }
+                Ok((_, other)) => Err(format!("The workspace answered {other:?}")),
+                Err(message) => Err(message.clone()),
+            };
+            self.root_widget
+                .on_workspace_request_finished(&source, &outcome);
+        }
         let Some(invocation) = self
             .actions
             .pending_application_launches

@@ -245,6 +245,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.on_control_invocation_result(address, result);
     }
 
+    fn on_workspace_request_finished(
+        &mut self,
+        address: &tilo_actions::ActionAddress,
+        result: &Result<(), String>,
+    ) {
+        self.content.on_workspace_request_finished(address, result);
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending() || self.content.has_pending_control_invocation()
     }

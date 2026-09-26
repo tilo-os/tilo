@@ -23,6 +23,7 @@ use tilo_actions::EncodedAction;
 
 use crate::delivery::{Delivery, Destination, Id, MentionRef, deliver};
 use crate::direct::DirectRoom;
+use crate::record::RecordAttachment;
 use crate::reference::ResourceRef;
 
 /// The registry `type_id` chat registers its action enum under. Matching it is
@@ -44,6 +45,10 @@ pub const ROOM_CONVERSATION: &str = "c_general";
 const REFERENCE_KEY: &str = "reference";
 /// The payload key carrying the routing decision.
 const DELIVERY_KEY: &str = "delivery";
+/// Chat's `attachment` field, and the variant of chat's `Attachment` enum a
+/// record rides in (externally tagged, serde's default).
+const ATTACHMENT_KEY: &str = "attachment";
+const RECORD_VARIANT: &str = "Record";
 
 /// Something said about a resource.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +60,11 @@ pub struct Remark {
     pub mentions: Vec<MentionRef>,
     /// Where the author said it should go, as shown by the selector.
     pub destination: Destination,
+    /// A record shown with the remark — the recording of what happened, or a
+    /// report record — by reference. Posting it shares the record into the
+    /// destination room; see [`crate::record`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment: Option<RecordAttachment>,
 }
 
 impl Remark {
@@ -64,7 +74,15 @@ impl Remark {
             reference,
             mentions: Vec::new(),
             destination,
+            attachment: None,
         }
+    }
+
+    /// The same remark carrying `attachment`.
+    #[must_use]
+    pub fn with_attachment(mut self, attachment: RecordAttachment) -> Self {
+        self.attachment = Some(attachment);
+        self
     }
 
     #[must_use]
@@ -177,7 +195,13 @@ impl Remark {
         fields.insert("ts".into(), json!(ts));
         fields.insert("text".into(), json!(self.text));
         fields.insert("parent".into(), Value::Null);
-        fields.insert("attachment".into(), Value::Null);
+        fields.insert(
+            ATTACHMENT_KEY.into(),
+            self.attachment.as_ref().map_or(Value::Null, |attachment| {
+                json!({ RECORD_VARIANT: serde_json::to_value(attachment)
+                    .expect("RecordAttachment is serializable") })
+            }),
+        );
         // The two fields that make it a remark.
         fields.insert(
             REFERENCE_KEY.into(),
@@ -249,6 +273,8 @@ pub struct ReceivedRemark {
     pub reference: ResourceRef,
     pub delivery: Delivery,
     pub mentions: Vec<MentionRef>,
+    /// The record shown with it, when one was attached.
+    pub attachment: Option<RecordAttachment>,
     pub author: Id,
     pub ts: i64,
 }
@@ -273,12 +299,17 @@ pub fn read_chat_action(encoded: &EncodedAction) -> Option<ReceivedRemark> {
         .get("mentions")
         .and_then(|m| serde_json::from_value(m.clone()).ok())
         .unwrap_or_default();
+    let attachment = fields
+        .get(ATTACHMENT_KEY)
+        .and_then(|a| a.get(RECORD_VARIANT))
+        .and_then(|a| serde_json::from_value(a.clone()).ok());
 
     Some(ReceivedRemark {
         text: fields.get("text")?.as_str()?.to_string(),
         reference,
         delivery,
         mentions,
+        attachment,
         author: fields.get("author")?.as_str()?.to_string(),
         ts: fields.get("ts")?.as_i64()?,
     })
@@ -395,6 +426,35 @@ mod tests {
         assert_eq!(got.mentions, vec![MentionRef::new("u_ada", 0, 4, false)]);
         let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
         assert_eq!(v["SendMessage"]["channel"], json!("c_general"));
+    }
+
+    #[test]
+    fn a_recording_rides_with_the_remark_as_a_record_attachment() {
+        use crate::record::{Redactions, SessionLayer, SessionSummary};
+        let recording = RecordAttachment::session(
+            "uuid:7f0c",
+            "Send fails",
+            "room-me",
+            SessionSummary {
+                apps: vec!["Mail".into()],
+                duration_ms: 30_000,
+                steps: 4,
+                layer: SessionLayer::BelowToolkit,
+                redactions: Redactions::default(),
+                generation: Some(7),
+            },
+        );
+        let encoded = Remark::new("Send does nothing", run_sheet(), general())
+            .with_attachment(recording.clone())
+            .to_chat_action("m_1", "u_me", 42)
+            .unwrap();
+        let v: Value = serde_json::from_slice(&encoded.payload).unwrap();
+        assert_eq!(
+            v["SendMessage"]["attachment"]["Record"]["record"],
+            json!("uuid:7f0c")
+        );
+        let got = read_chat_action(&encoded).unwrap();
+        assert_eq!(got.attachment, Some(recording));
     }
 
     #[test]

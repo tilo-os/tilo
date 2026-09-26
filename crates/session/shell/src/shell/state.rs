@@ -1852,6 +1852,24 @@ impl WorkspaceTree {
         std::mem::take(&mut self.desktop.room_records_inbound)
     }
 
+    /// Ask the host to bring record `id` into `room`'s index — the sharing
+    /// verb, for a caller that does not hold the index itself (an app,
+    /// through the broker). Folded in by the same pass as a peer's reference.
+    pub fn request_room_reference(&mut self, room: RoomId, id: String, kind: String) {
+        self.desktop.room_records_inbound.push((room, id, kind));
+    }
+
+    /// Ask the host to take record `id` out of `room`'s index. Members who
+    /// already synced the record keep what they have.
+    pub fn request_room_unreference(&mut self, room: RoomId, id: String) {
+        self.desktop.room_records_withdrawn.push((room, id));
+    }
+
+    /// Drained by the host, like [`Self::take_inbound_room_records`].
+    pub fn take_withdrawn_room_records(&mut self) -> Vec<(RoomId, String)> {
+        std::mem::take(&mut self.desktop.room_records_withdrawn)
+    }
+
     /// The governance a room document records: owner and capability
     /// list — a peer able to write either controls the whole security
     /// policy. The room's **name** is deliberately not governed. The

@@ -718,9 +718,15 @@ impl RoomRecords {
             }
         }
 
+        let mut withdrew = false;
+        for (room, id) in tree.take_withdrawn_room_records() {
+            if let Some(record) = RecordId::parse(&id) {
+                withdrew |= self.unreference(room, &record);
+            }
+        }
         let inbound = tree.take_inbound_room_records();
         if inbound.is_empty() {
-            return false;
+            return withdrew;
         }
         for (room, id, kind) in inbound {
             let Some(record) = RecordId::parse(&id) else {

@@ -125,6 +125,10 @@ pub(super) struct ActionRuntime {
     >,
     pub(super) pending_application_launches:
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
+    /// The app action behind each forwarded workspace request, so the widget
+    /// that published it learns how the workspace answered.
+    pub(super) workspace_request_sources:
+        std::collections::HashMap<u64, tilo_actions::ActionAddress>,
     /// Requests to the session action host awaiting their answer, keyed by
     /// the answer they expect, to the local request id they correlate with.
     pub(super) broker_requests: std::collections::HashMap<BrokerReply, u64>,
@@ -173,6 +177,7 @@ impl ActionRuntime {
             directed_invocations: std::collections::HashMap::new(),
             local_invocations: std::collections::HashMap::new(),
             pending_application_launches: std::collections::HashMap::new(),
+            workspace_request_sources: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
             next_broker_request_id: Some(0),
             human_interactions: std::collections::HashMap::new(),

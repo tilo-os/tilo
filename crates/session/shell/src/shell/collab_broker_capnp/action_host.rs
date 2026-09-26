@@ -894,6 +894,20 @@ impl CapnpBrokerState {
             let (workspace, _) = self.authorized_launch(caller, room, app_id)?;
             return Ok(self.launch_into(&workspace, actor, app_id, None));
         }
+        if address.resource == tilo_actions::remote::ROOM_RECORDS_RESOURCE {
+            return self.invoke_room_records(
+                caller,
+                actor,
+                room,
+                &address.action,
+                &request.argument,
+            );
+        }
+        if address.resource == tilo_actions::remote::RESOURCES_RESOURCE
+            && address.action == tilo_actions::remote::RESOURCE_OPEN_ACTION
+        {
+            return self.open_published_resource(caller, actor, room, argument, request);
+        }
         if matches!(
             address.action.as_str(),
             crate::shell::state::PROFILE_SAVE_ACTION_ID
@@ -912,6 +926,141 @@ impl CapnpBrokerState {
                 .map_err(refusal);
         }
         Err(ActionHostError::UnknownAction)
+    }
+
+    /// The room's record index as a resource: add or remove a reference —
+    /// the sharing verb of `rooms.md`. A Commenter may share what they post,
+    /// so it needs `Comment` on the room; no bytes move either way. The host
+    /// folds the request into the room's index on its next frame, the same
+    /// pass that folds in a peer's references.
+    fn invoke_room_records(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        action: &str,
+        argument: &tilo_actions::remote::InvokeArgument,
+    ) -> Result<u64, ActionHostError> {
+        let reference = match action {
+            tilo_actions::remote::ROOM_RECORD_REFERENCE_ACTION => true,
+            tilo_actions::remote::ROOM_RECORD_UNREFERENCE_ACTION => false,
+            _ => return Err(ActionHostError::UnknownAction),
+        };
+        let tilo_actions::remote::InvokeArgument::Json(arguments) = argument else {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "a room reference names its record as {\"id\", \"kind\"}".into(),
+            });
+        };
+        let id = arguments
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| ui::record::RecordId::parse(id).is_some())
+            .ok_or_else(|| ActionHostError::InvalidRequest {
+                reason: "the record id is missing or is not one this build can read".into(),
+            })?;
+        let kind = arguments
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .filter(|kind| ui::record::RecordKind::new(*kind).is_valid());
+        if reference && kind.is_none() {
+            return Err(ActionHostError::InvalidRequest {
+                reason: "a reference names the record's kind".into(),
+            });
+        }
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        if workspace.decide(&policy, &ResourceRef::Workspace, Verb::Comment) != CapDecision::Allow {
+            return Err(ActionHostError::NotPermitted);
+        }
+        let Some(membership) = self.membership.as_ref() else {
+            return Err(ActionHostError::Unavailable {
+                reason: "this host keeps no room index".into(),
+            });
+        };
+        {
+            let mut tree = membership.write();
+            if reference {
+                tree.request_room_reference(
+                    workspace.room,
+                    id.to_string(),
+                    kind.unwrap_or_default().to_string(),
+                );
+            } else {
+                tree.request_room_unreference(workspace.room, id.to_string());
+            }
+        }
+        let job = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(job)));
+        self.record_completion(
+            job,
+            actor.id.clone(),
+            tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+        );
+        Ok(job)
+    }
+
+    /// Open a resource another app in this room published, by its stable
+    /// id: the workspace invokes that resource's own `open`, as the caller
+    /// and under the caller's permission, exactly as if they had chosen it
+    /// in the palette. An item no open app publishes is refused in words.
+    fn open_published_resource(
+        &self,
+        caller: &Caller,
+        actor: &BrokerActor,
+        room: &str,
+        argument: Option<&str>,
+        request: &InvokeRequest,
+    ) -> Result<u64, ActionHostError> {
+        let resource = argument
+            .filter(|id| !id.is_empty() && id.len() <= 1024)
+            .ok_or_else(|| ActionHostError::InvalidRequest {
+                reason: "name the resource to open".into(),
+            })?;
+        let (workspace, policy) = self
+            .workspaces_for(caller)
+            .into_iter()
+            .find(|(workspace, _)| workspace.room.to_string() == room)
+            .ok_or(ActionHostError::UnknownAction)?;
+        let (peer_id, action) = self
+            .published_surfaces()
+            .into_iter()
+            .filter(|surface| surface.live && surface.route.cluster_id == room)
+            .find_map(|surface| {
+                let action = surface.actions.iter().find(|action| {
+                    action.resource == resource
+                        && action.action == tilo_actions::remote::RESOURCE_OPEN_ACTION
+                })?;
+                Self::allowed(
+                    &workspace,
+                    &policy,
+                    &surface.app_id,
+                    &action.action,
+                    action.contract.permission,
+                )
+                .then(|| (surface.peer_id, action.clone()))
+            })
+            .ok_or_else(|| ActionHostError::Refused {
+                reason: "no open app in this workspace publishes that item".into(),
+            })?;
+        self.start_invocation_confirmed_for(
+            peer_id,
+            &action.resource,
+            &action.action,
+            None,
+            actor,
+            None,
+            request.context.clone(),
+        )
+        .map(|job| job.id)
+        .map_err(refusal)
     }
 
     /// Launch `app_id` into `workspace`, optionally opening a staged
