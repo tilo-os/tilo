@@ -161,6 +161,22 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
         let _ = pipeline.set_state(gst::State::Null);
         return None;
     };
+    let windows = pull_peak_windows(&appsink, &bus, WINDOW);
+    let _ = pipeline.set_state(gst::State::Null);
+    Some(bucketize(&windows?, buckets))
+}
+
+/// Pull decoded mono S16 samples from `appsink` and reduce each `window` of
+/// them to its peak, until EOS, a pipeline error on `bus`, or the decode
+/// budget. `None` when no samples arrived at all.
+#[cfg(feature = "decode")]
+fn pull_peak_windows(
+    appsink: &gstreamer_app::AppSink,
+    bus: &gstreamer::Bus,
+    window: usize,
+) -> Option<Vec<f32>> {
+    use gstreamer as gst;
+
     let mut windows: Vec<f32> = Vec::new();
     let mut acc = 0.0f32;
     let mut in_window = 0usize;
@@ -188,7 +204,7 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
                         acc = a;
                     }
                     in_window += 1;
-                    if in_window == WINDOW {
+                    if in_window == window {
                         windows.push(acc);
                         acc = 0.0;
                         in_window = 0;
@@ -206,11 +222,7 @@ fn peaks_by_decoding(path: &Path, buckets: usize) -> Option<Vec<f32>> {
     if in_window > 0 {
         windows.push(acc);
     }
-    let _ = pipeline.set_state(gst::State::Null);
-    if !saw_any || windows.is_empty() {
-        return None;
-    }
-    Some(bucketize(&windows, buckets))
+    (saw_any && !windows.is_empty()).then_some(windows)
 }
 
 /// Pure peak computation from WAV bytes (unit-testable on crafted PCM).
