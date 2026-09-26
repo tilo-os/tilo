@@ -181,6 +181,8 @@ mod system_monitor_test;
 mod tilo_e2e_test;
 #[path = "toplevel_configure_states.rs"]
 mod toplevel_configure_states;
+#[path = "toplevel_icon_protocol.rs"]
+mod toplevel_icon_protocol;
 #[path = "transient_sheets.rs"]
 mod transient_sheets;
 #[path = "two_netns_share.rs"]

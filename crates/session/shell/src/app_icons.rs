@@ -3,7 +3,8 @@
 //! A host application names its icon (`Icon=` in its desktop entry); a
 //! window names only its `app_id`. This module turns either into pixels for
 //! the shell's chrome — the tab pill, the palette's application rows, the
-//! tray's fallback — through the freedesktop icon-theme lookup in
+//! tray's fallback — preferring a window's own `xdg_toplevel_icon_v1` icon,
+//! and otherwise through the freedesktop icon-theme lookup in
 //! [`desktop_entry::icon_theme`]. PNGs are decoded and downscaled, SVGs are
 //! rasterised by `resvg` at the device size the chrome paints them at, and
 //! both are cached, since chrome asks every frame.
@@ -264,10 +265,24 @@ pub fn for_window_app_id(app_id: &str) -> Option<AppImage> {
     .and_then(|name| themed(&name))
 }
 
+/// The artwork for window `surface_id`: the icon it set for itself through
+/// `xdg_toplevel_icon_v1`, else its application's.
+pub fn for_window(surface_id: u64, app_id: &str) -> Option<AppImage> {
+    #[cfg(target_os = "linux")]
+    if let Some(own) = crate::compositor::toplevel_icon::app_image(surface_id) {
+        return Some(own);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = surface_id;
+    for_window_app_id(app_id)
+}
+
 /// The artwork a tab for `tile` shows in place of its glyph.
 pub fn for_tile(tile: &crate::shell::state::TileContent) -> Option<AppImage> {
     match tile {
-        crate::shell::state::TileContent::Foreign { app_id, .. } => for_window_app_id(app_id),
+        crate::shell::state::TileContent::Foreign { app_id, surface_id } => {
+            for_window(*surface_id, app_id)
+        }
         _ => None,
     }
 }
