@@ -772,7 +772,89 @@ impl BooksApp {
             selection_highlight: self
                 .sel
                 .and_then(|selection| self.resolve_highlight_plan(selection, HiColor::Yellow)),
+            selection_note: self.selection_note_draft(String::new()),
+            annotations: self.annotations.clone(),
         })
+    }
+
+    /// A note on the live selection, anchored where the toolbar's Note button
+    /// anchors it: the selected span of its first block.
+    fn selection_note_draft(&self, text: String) -> Option<crate::actions::NoteDraft> {
+        let (start, end) = self.sel.filter(|s| !s.is_empty())?.ordered();
+        let end_ch = if end.block == start.block {
+            end.ch.max(start.ch)
+        } else {
+            self.layout
+                .as_ref()
+                .and_then(|layout| layout.blocks.iter().find(|b| b.index == start.block))
+                .map_or(start.ch, |block| block.char_len)
+        };
+        Some(crate::actions::NoteDraft {
+            book_id: self.book_id(),
+            id: Uuid::new_v4(),
+            anchor: AnnotationAnchor {
+                chapter: self.chapter,
+                block: start.block,
+                start: start.ch,
+                end: end_ch,
+                excerpt: self.selection_excerpt(),
+            },
+            color: self.hi_color,
+            text,
+        })
+    }
+
+    /// Select a passage of the open book as a drag would and reveal its page.
+    fn select_passage(
+        &mut self,
+        book_id: &str,
+        chapter: usize,
+        start: (usize, usize),
+        end: (usize, Option<usize>),
+    ) -> Result<(), String> {
+        let index = self
+            .library
+            .iter()
+            .position(|book| book.id == book_id)
+            .ok_or("book is no longer in the library")?;
+        let blocks = self
+            .library
+            .get(index)
+            .and_then(|book| book.chapters.get(chapter))
+            .map(|chapter| &chapter.blocks)
+            .ok_or("chapter is not in this book")?;
+        let chars = |block: usize| blocks.get(block).map(|b| b.plain_text().chars().count());
+        let (start_block, end_block) = (start.0, end.0);
+        let (Some(start_len), Some(end_len)) = (chars(start_block), chars(end_block)) else {
+            return Err("block is not in this chapter".into());
+        };
+        let anchor = DocPos {
+            block: start_block,
+            ch: start.1.min(start_len),
+        };
+        let head = DocPos {
+            block: end_block,
+            ch: end.1.unwrap_or(end_len).min(end_len),
+        };
+        if head.key() <= anchor.key() {
+            return Err("the passage ends before it starts".into());
+        }
+        if self.book_idx != index || self.chapter != chapter {
+            self.book_idx = index;
+            self.chapter = chapter;
+            self.page = 0;
+            self.layout = None;
+            self.last_persisted = None;
+        }
+        self.view = View::Reader;
+        self.composing = None;
+        self.note_composer.close();
+        self.comment_overlay.close();
+        self.sel = Some(TextSel { anchor, head });
+        self.selected_block = Some(anchor.block);
+        self.pending_jump_block = Some(anchor.block);
+        self.dirty = true;
+        Ok(())
     }
 }
 
@@ -2854,29 +2936,9 @@ impl BooksApp {
     fn on_add_note(&mut self, doc: &mut AutoCommit) {
         // A note anchors to the live text selection; the composer
         // floats on-page near the passage rather than a separate screen.
-        let anchor = self.sel.filter(|s| !s.is_empty()).map(|s| {
-            let (start, end) = s.ordered();
-            (start.block, start.ch, end.ch.max(start.ch))
-        });
-        if let Some((block, start, end)) = anchor {
-            let book_id = self.book_id();
-            let excerpt = self.selection_excerpt();
-            let id = Uuid::new_v4();
-            let action = crate::actions::NoteDraft {
-                book_id,
-                id,
-                anchor: AnnotationAnchor {
-                    chapter: self.chapter,
-                    block,
-                    start,
-                    end,
-                    excerpt,
-                },
-                color: self.hi_color,
-                text: String::new(),
-            }
-            .into_action();
-            self.perform_action(doc, &action);
+        if let Some(draft) = self.selection_note_draft(String::new()) {
+            let id = draft.id;
+            self.perform_action(doc, &draft.into_action());
             self.composing = Some(id);
             self.note_composer.open(id, "");
         }
@@ -4744,6 +4806,19 @@ impl Widget for BooksApp {
                 self.last_persisted = None;
                 self.dirty = true;
             }
+            EbookOperation::SelectPassage {
+                book_id,
+                chapter,
+                start_block,
+                start_char,
+                end_block,
+                end_char,
+            } => self.select_passage(
+                &book_id,
+                chapter,
+                (start_block, start_char),
+                (end_block, end_char),
+            )?,
             EbookOperation::OpenBook => {
                 return Err("book open requires the lifecycle-capable operation host".into());
             }
