@@ -6,10 +6,11 @@
 //! Each route's starting state is materialised and written into a new
 //! document with every personal value masked to its shape; each recorded op
 //! is applied to the original and the new document is brought to the same,
-//! masked, state, and that step becomes the duplicate's op. Presence text is
-//! masked the same way; cut steps' interactions are dropped; inspect
-//! keyframes are redacted for leaving the device by each node's declared
-//! sensitivity, and their remaining text masked like everything else.
+//! masked, state, and that step becomes the duplicate's op, carrying the
+//! recorded change's action context redacted the same way. Interactions and
+//! inspect keyframes are first redacted for leaving the device by the
+//! sensitivity their resource or node declares, then their remaining text is
+//! masked like everything else; cut steps' interactions are dropped.
 //!
 //! The duplicate's envelopes are unsigned and cleartext. Replay never
 //! forwards a recorded envelope — it re-frames each mutation onto its own
@@ -22,7 +23,7 @@ use automerge::transaction::Transactable as _;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, ScalarValue, Value};
 use collab_types::document_transfer::{DocumentFrame, DocumentReassembler};
 use collab_types::{DocumentMutation, SignedOp};
-use tilo_actions::{InteractionPhase, InvocationId, SemanticInteraction};
+use tilo_actions::{ActionContext, Audience, InteractionPhase, InvocationId, SemanticInteraction};
 use tilo_automerge::ApplyIncoming as _;
 
 use crate::{
@@ -388,9 +389,12 @@ fn starting_doc(
     Ok(Some(start))
 }
 
+/// An interaction as it may leave: its resource redacted by the sensitivity
+/// the resource declared, then every remaining text masked.
 fn masked_interaction(interaction: &SemanticInteraction, masker: &Masker) -> SemanticInteraction {
-    let mut out = interaction.clone();
+    let mut out = interaction.clone().redacted_for(Audience::BeyondDevice);
     out.resource.label = masker.mask(&out.resource.label);
+    out.resource.id = masker.mask(&out.resource.id);
     out.phase = match &interaction.phase {
         InteractionPhase::Failed { code, message } => InteractionPhase::Failed {
             code: code.clone(),
@@ -413,6 +417,25 @@ fn masked_interaction(interaction: &SemanticInteraction, masker: &Masker) -> Sem
         },
         other => other.clone(),
     };
+    out
+}
+
+/// A recorded change's action context as it may leave: the resource redacted
+/// by its declared sensitivity, then every text it carries masked.
+fn redacted_context(context: ActionContext, masker: &Masker) -> ActionContext {
+    let mut out = context.redacted_for(Audience::BeyondDevice);
+    out.action_label = masker.mask(&out.action_label);
+    if let Some(resource) = out.resource.as_mut() {
+        resource.label = masker.mask(&resource.label);
+        resource.id = masker.mask(&resource.id);
+    }
+    out.purpose = out.purpose.as_deref().map(|purpose| masker.mask(purpose));
+    if let Some(group) = out.group.as_mut() {
+        group.label = masker.mask(&group.label);
+    }
+    for facet in &mut out.facets {
+        facet.value = masker.mask(&facet.value);
+    }
     out
 }
 
@@ -484,7 +507,21 @@ fn replay_op(
     at: crate::Offset,
     masker: &Masker,
 ) -> Result<Vec<TimedEvent>, RedactError> {
+    let before = replayed.src.get_heads();
     replayed.src.load_incoming(bytes).map_err(document_error)?;
+    // What the person did travels with the duplicate's change, redacted as
+    // everything else is; an app's own commit message is left behind.
+    let message = replayed
+        .src
+        .get_changes(&before)
+        .iter()
+        .rev()
+        .find_map(|change| {
+            change
+                .message()
+                .and_then(ActionContext::from_change_message)
+        })
+        .and_then(|context| redacted_context(context, masker).change_message());
     sync(
         &replayed.src,
         &automerge::ROOT,
@@ -493,6 +530,11 @@ fn replay_op(
         masker,
     )
     .map_err(document_error)?;
+    if let Some(message) = message {
+        replayed
+            .dst
+            .commit_with(automerge::transaction::CommitOptions::default().with_message(message));
+    }
     let change = replayed.dst.save_incremental();
     if change.is_empty() {
         return Ok(Vec::new());
@@ -708,6 +750,108 @@ mod tests {
             "undeclared text is masked like any other"
         );
         assert!(!serde_json::to_string(&out).unwrap().contains("Ada"));
+    }
+
+    #[test]
+    fn a_personal_interaction_leaves_redacted_by_declaration_even_when_nothing_masks_it() {
+        let (mut interaction, _) = crate::fixtures::interaction();
+        interaction.resource = tilo_actions::ActionResource {
+            id: "contacts.person:7".into(),
+            kind: "contacts.person".into(),
+            label: "Grace Hopper".into(),
+            sensitivity: tilo_actions::Sensitivity::Personal,
+        };
+        // The review hid nothing: only the declaration protects the name.
+        let out = masked_interaction(&interaction, &Masker::new(Vec::<String>::new()));
+        assert_eq!(out.resource.label, "▮▮▮▮▮ ▮▮▮▮▮▮");
+        assert_eq!(out.resource.id, "contacts.person:7");
+        assert!(!serde_json::to_string(&out).unwrap().contains("Grace"));
+    }
+
+    #[test]
+    fn a_recorded_changes_context_travels_redacted_by_its_declared_sensitivity() {
+        let route = Route::new("so.tilo.contacts", "room-1", "uuid:book");
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "count", 0).unwrap();
+        let start = doc.save();
+        doc.put(automerge::ROOT, "count", 1).unwrap();
+        let context = tilo_actions::ActionContext::for_resource(
+            "Rename contact",
+            "contacts.person:7",
+            "contacts.person",
+            "Grace Hopper",
+        )
+        .with_resource_sensitivity(tilo_actions::Sensitivity::Personal);
+        doc.commit_with(
+            automerge::transaction::CommitOptions::default()
+                .with_message(context.change_message().unwrap()),
+        );
+        let change = doc.save_incremental();
+        let trace = SessionTrace {
+            origin: Origin::Explicit,
+            started_unix_ms: 0,
+            duration: Offset(2),
+            environment: Environment::default(),
+            snapshots: vec![RouteSnapshot {
+                route: route.clone(),
+                from: "me".into(),
+                at: Offset(0),
+                point: SnapshotPoint::Start,
+                frames: vec![op(
+                    &route,
+                    DocumentMutation::Snapshot(start).encode().unwrap(),
+                    0,
+                )],
+            }],
+            timeline: vec![TimedEvent {
+                at: Offset(1),
+                event: Event::Op(DocumentOp {
+                    route: route.clone(),
+                    from: "me".into(),
+                    envelope: op(
+                        &route,
+                        DocumentMutation::Incremental(change).encode().unwrap(),
+                        1,
+                    ),
+                }),
+            }],
+            tags: Vec::new(),
+            layer: SessionLayer::Logic,
+            redactions: Redactions::default(),
+            truncated: false,
+        };
+        let redaction = Redaction {
+            masker: Masker::new(Vec::<String>::new()),
+            cut: HashSet::new(),
+        };
+        let (dup, _) = duplicate(&trace, &redaction).unwrap();
+        let mut replay = AutoCommit::load(&snapshot_bytes(&dup.snapshots[0]).unwrap()).unwrap();
+        let before = replay.get_heads();
+        let Event::Op(op) = &dup.timeline[0].event else {
+            panic!("an op")
+        };
+        replay
+            .load_incoming(&incremental_bytes(&op.envelope).unwrap())
+            .unwrap();
+        let carried = replay
+            .get_changes(&before)
+            .iter()
+            .find_map(|change| {
+                change
+                    .message()
+                    .and_then(tilo_actions::ActionContext::from_change_message)
+            })
+            .expect("the change keeps what the person did");
+        assert_eq!(carried.action_label, "Rename contact");
+        let resource = carried.resource.expect("the resource is kept");
+        assert_eq!(resource.id, "contacts.person:7");
+        assert_eq!(resource.label, "▮▮▮▮▮ ▮▮▮▮▮▮");
+        assert!(!serde_json::to_string(&dup).unwrap().contains("Grace"));
+        for entry in &dup.timeline {
+            if let Event::Op(op) = &entry.event {
+                assert!(!String::from_utf8_lossy(&op.envelope.payload).contains("Grace"));
+            }
+        }
     }
 
     #[test]
