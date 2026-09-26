@@ -29,7 +29,7 @@ pub enum FixedChordAction {
     GlobalSearch,
     LockSession,
     WorkspaceWheel,
-    WirelessDisplay,
+    DisplayLayout,
     CaptureScreenshot,
     PictureInPicture,
     SaveRecentReplay,
@@ -241,9 +241,9 @@ pub static FIXED_CHORDS: &[FixedChordEntry] = &[
         &[chord(ChordKey::Char('s'), SUPER)],
     ),
     entry(
-        FixedChordAction::WirelessDisplay,
-        "shortcut-wireless-display",
-        "Wireless display",
+        FixedChordAction::DisplayLayout,
+        "shortcut-display-layout",
+        "Display layout",
         &[chord(ChordKey::Char('p'), SUPER)],
     ),
     entry(

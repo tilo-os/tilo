@@ -1636,7 +1636,7 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
-    /// The wireless-display picker (`projection_overlay.rs`, Win+P), settled
+    /// The display sheet (`projection_overlay.rs`, Win+P), settled
     /// past its 220 ms slide-in by stepping the frames a live session would.
     fn scene_projection(&mut self) {
         self.with_chrome(|st| {

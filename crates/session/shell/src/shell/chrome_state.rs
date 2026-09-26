@@ -193,7 +193,8 @@ pub struct OverlayFlags {
     /// Pure UI state — the history shown is derived from
     /// `WorkspaceTree::doc`, which is shared and replicated.
     pub room_activity: bool,
-    /// Device-local wireless display picker (Win+P).
+    /// Device-local display sheet (Win+P): desktop layout across attached
+    /// displays, plus wireless receivers.
     pub projection: bool,
     /// Screenshot / recording / arbitrary-region `PiP` selector
     /// (`Super+Shift+S`, or direct `PiP` via `Super+Shift+P`).
