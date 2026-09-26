@@ -52,12 +52,28 @@ def request(env):
     return values
 
 
+def ancestor_cargo_configs(root):
+    """Cargo configuration files the source would inherit from a parent.
+
+    The filesystem root is excluded: the CI builder image installs its
+    toolchain settings (the default native linker) in /.cargo/config.toml so
+    that every job reads them, and that file belongs to the image, not to a
+    checkout of another revision.
+    """
+    found = []
+    for parent in root.resolve().parents:
+        if parent == Path(parent.anchor):
+            continue
+        found.extend(parent / '.cargo' / name for name in ('config', 'config.toml')
+                     if (parent / '.cargo' / name).exists())
+    return found
+
+
 def execute(root, values, outcomes=None):
     # Cargo merges configuration from ancestors. The workflow helper checkout
     # must be a sibling, never a parent supplying another revision's settings.
-    for parent in root.resolve().parents:
-        if any((parent / '.cargo' / name).exists() for name in ('config', 'config.toml')):
-            raise ValueError('source inherits an ancestor Cargo configuration')
+    if ancestor_cargo_configs(root):
+        raise ValueError('source inherits an ancestor Cargo configuration')
     def read(args):
         return subprocess.check_output(args, cwd=root, text=True)
     actual = read(['git', 'rev-parse', 'HEAD']).strip()
