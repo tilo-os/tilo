@@ -4,7 +4,11 @@ name: CI / affected packages
 # and test changed packages, their direct dependants (up to one shard's cost;
 # see REVERSE_TEST_COST_BUDGET) and contract suites. Full native coverage remains
 # mandatory in nightly.yml; this job is the short feedback path.
-# Manual dispatch validates the complete workspace on both native architectures.
+# Queued main push runs are coalesced to the newest (tools/ci/queue_coalesce.py);
+# each main run covers every commit since the last one whose check started, so
+# every main commit is covered by a run of itself or of a later commit.
+# Manual dispatch validates the complete workspace on both native architectures,
+# or, given a base commit, what changed since it.
 on:
   push:
     # Temporary branch triggers while desktop packaging and ARM support are being
@@ -16,6 +20,10 @@ on:
     inputs:
       builder_image:
         description: 'Optional immutable tested builder index (registry.tilo.so/tilo/tilo-builder@sha256:...)'
+        required: false
+        type: string
+      base:
+        description: 'Optional ancestor commit SHA: select what changed since it, as a main push would, instead of the full workspace'
         required: false
         type: string
 
@@ -130,6 +138,10 @@ jobs:
             # complete branch diff against the current integration branch.
             git fetch origin \
               +refs/heads/main:refs/remotes/origin/main
+          elif [ '${{ github.ref }}' = refs/heads/main ]; then
+            # CI receipts are the selection base's fallback evidence when the
+            # runs API is unavailable (tools/ci/check_base.py).
+            git fetch origin '+refs/notes/tilo-check-ci:refs/notes/tilo-check-ci' || true
           else
             base='${{ github.event.pull_request.base.sha }}'
             if [ -z "$base" ] || [ "$base" = "null" ]; then
@@ -153,6 +165,9 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
+          DISPATCH_BASE: ${{ github.event.inputs.base }}
+          # Main only: reads the runs API for the last commit whose check started.
+          FORGEJO_TOKEN: ${{ github.ref == 'refs/heads/main' && secrets.REGISTRY_TOKEN || '' }}
         shell: bash
         run: |
           set -euo pipefail
@@ -160,6 +175,13 @@ jobs:
           selection_args=()
           if [ "$EVENT_NAME" = pull_request ]; then
             selection_args+=(--allow-security-skip)
+          elif [ "$EVENT_NAME" = workflow_dispatch ] && [ -n "$DISPATCH_BASE" ]; then
+            # An explicit base (the lander bisecting a coalesced range) selects
+            # like a main push covering the commits since that base.
+            [[ $DISPATCH_BASE =~ ^[0-9a-f]{40}$ ]] || { echo "::error::base must be a full commit SHA"; exit 1; }
+            git merge-base --is-ancestor "$DISPATCH_BASE" HEAD
+            base=$DISPATCH_BASE
+            selection_args+=(--all-suites)
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.
@@ -171,6 +193,14 @@ jobs:
             # branch pushes and could produce a misleading exact-SHA receipt.
             base=origin/main
             selection_args+=(--full)
+          elif [ "$GITHUB_REF" = refs/heads/main ]; then
+            # Queued main runs are coalesced, so github.event.before may never
+            # have been checked. Cover every commit since the last main commit
+            # whose own check run started; without one, check everything.
+            if ! base=$(python3 tools/ci/check_base.py --head HEAD); then
+              base=HEAD^
+              selection_args+=(--full)
+            fi
           elif [ -z "$base" ] || [ "$base" = "null" ]; then
             base=$PUSH_BEFORE
           fi
@@ -187,9 +217,8 @@ jobs:
           # Every diff-style gate compares with the common ancestor, as package
           # selection does. The pull-request base is main's tip when the event
           # fired; a branch behind it would otherwise be charged with every
-          # Clippy warning main fixed after the branch point. A push to main
-          # extends its previous tip, so there the common ancestor is exactly
-          # github.event.before.
+          # Clippy warning main fixed after the branch point. A main push's base
+          # is a first-parent ancestor, so there the common ancestor is the base.
           base=$(git merge-base "$base" HEAD)
           echo "base=$base" >> "$GITHUB_OUTPUT"
           python3 tools/ci/affected_packages.py --base "$base" --shards 2 "${selection_args[@]}" \
@@ -725,6 +754,9 @@ jobs:
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           AFFECTED_RESULT: ${{ steps.aggregate.outcome }}
+          # The run covers every commit after its selection base.
+          COVERS_FROM: ${{ needs.select.outputs.base }}
         run: >-
           tools/ci/receipt.sh record "$GITHUB_SHA" "$GITHUB_RUN_ID"
           "$SELECT_RESULT" "$SECURITY_RESULT" "$AFFECTED_RESULT" origin
+          "$COVERS_FROM"
