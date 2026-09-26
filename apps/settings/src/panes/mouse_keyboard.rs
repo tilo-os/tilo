@@ -721,7 +721,7 @@ impl MouseKeyboardPane {
         card(
             "Pen & tablet",
             rows(vec![caption(
-                "Absolute pen and tablet mapping follows the selected display connector. Controls appear only when a tablet is attached; pressure curves and button mappings are stored per device.",
+                "A pen maps across every display, or onto the display set for it. Apps with tablet support receive pressure and tilt; other apps see the pen as a pointer, with the tip as the primary button.",
             )]),
         )
     }

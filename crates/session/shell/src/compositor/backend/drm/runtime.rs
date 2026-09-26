@@ -63,7 +63,7 @@ use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
     BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, PointerConstraintRegion,
-    TouchEvent as TiloTouchEvent,
+    TabletPhase, TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -295,6 +295,9 @@ pub struct DrmDispatchState {
     /// Where local motion may take the pointer while a client locks or
     /// confines it.
     pub pointer_constraint: crate::compositor::backend::PointerConstraintRegion,
+    /// The output a pen tablet maps onto (Settings' "Pen & tablet"), by
+    /// connector name or display settings key; `None` spans every output.
+    pub pen_output: Option<String>,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -882,6 +885,7 @@ impl DrmDispatchState {
             hw_cursor: CursorPlanes::default(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
             pointer_constraint: crate::compositor::backend::PointerConstraintRegion::Free,
+            pen_output: load_pen_output(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -2243,9 +2247,71 @@ impl DrmDispatchState {
             | InputEvent::TouchFrame { .. } => {
                 self.handle_libinput_touch_event(event);
             }
-            // Switches (lid, tablet mode) and tablet-tool events are handled elsewhere or not at all; unlike the gestures above they were never advertised to clients, so dropping them promises nothing undelivered.
+            InputEvent::TabletToolAxis { .. }
+            | InputEvent::TabletToolProximity { .. }
+            | InputEvent::TabletToolTip { .. }
+            | InputEvent::TabletToolButton { .. } => {
+                self.handle_libinput_tablet_event(&event);
+            }
+            // Switches (lid, tablet mode) and tablet pads are handled elsewhere or not at all; unlike the tools above they were never advertised to clients, so dropping them promises nothing undelivered.
             _ => {}
         }
+    }
+
+    /// Tablet-tool half of [`Self::handle_libinput_event`]: every axis the
+    /// tool reports, mapped onto the output the pen is tied to.
+    fn handle_libinput_tablet_event(&mut self, event: &InputEvent<LibinputInputBackend>) {
+        use smithay::backend::input::{
+            ProximityState, TabletToolButtonEvent, TabletToolProximityEvent, TabletToolTipEvent,
+            TabletToolTipState,
+        };
+        let Some(target) = super::tablet::pen_target(
+            self.live.iter().map(|output| {
+                (
+                    output.connector_name.as_str(),
+                    output.config_key.as_str(),
+                    output.position,
+                    logical_output_size(output.size, output.transform),
+                )
+            }),
+            self.pen_output.as_deref(),
+        ) else {
+            return;
+        };
+        let input = match event {
+            InputEvent::TabletToolAxis { event } => {
+                super::tablet::tablet_input(event, TabletPhase::Motion, target)
+            }
+            InputEvent::TabletToolProximity { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolProximityEvent::state(event) {
+                    ProximityState::In => TabletPhase::ProximityIn,
+                    ProximityState::Out => TabletPhase::ProximityOut,
+                },
+                target,
+            ),
+            InputEvent::TabletToolTip { event } => super::tablet::tablet_input(
+                event,
+                match TabletToolTipEvent::tip_state(event) {
+                    TabletToolTipState::Down => TabletPhase::TipDown,
+                    TabletToolTipState::Up => TabletPhase::TipUp,
+                },
+                target,
+            ),
+            InputEvent::TabletToolButton { event } => super::tablet::tablet_input(
+                event,
+                TabletPhase::Button {
+                    button: TabletToolButtonEvent::button(event),
+                    pressed: matches!(
+                        TabletToolButtonEvent::button_state(event),
+                        ButtonState::Pressed
+                    ),
+                },
+                target,
+            ),
+            _ => return,
+        };
+        self.push(BackendEvent::Tablet(input));
     }
 
     /// `InputEvent::DeviceAdded`/`DeviceRemoved` half of
@@ -3105,6 +3171,7 @@ impl DrmRuntime {
             );
         }
         self.dispatch.accessibility = accessibility;
+        self.dispatch.pen_output = load_pen_output();
         if accessibility.effective_cursor_size() != previous_cursor_size {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
@@ -3548,6 +3615,14 @@ where
 }
 
 /// Build a `WindowEvent::CursorMoved` for the compositor's input wire. `device_id` is zeroed — the host path never inspects it (mirrors `native::execute_planned_action`).
+fn load_pen_output() -> Option<String> {
+    settings_store::hardware::RichInputConfig::from_section(&settings_store::load_section(
+        super::input_config::SECTION,
+    ))
+    .pen_output
+    .filter(|name| !name.is_empty())
+}
+
 fn cursor_moved_event(x: f64, y: f64) -> WindowEvent {
     WindowEvent::CursorMoved {
         device_id: unsafe { std::mem::zeroed() },
