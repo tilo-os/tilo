@@ -1160,6 +1160,9 @@ pub struct ShellNetwork {
     personal_continuity_counter: Mutex<u64>,
     personal_continuity_fingerprint: Mutex<Option<[u8; 32]>>,
     personal_continuity_path: Option<PathBuf>,
+    /// When each of this person's other devices last moved focus, for the
+    /// "continue from another device" offer.
+    personal_focus_recency: Mutex<crate::shell::continuity_suggestion::FocusRecency>,
     #[cfg(test)]
     continuity_policy_override: Option<crate::shell::continuity_policy::ContinuityPolicySnapshot>,
     /// Convergent same-person device state, persisted separately from app
@@ -1581,6 +1584,11 @@ impl ShellNetwork {
             registered_home_device_ids: Mutex::new(home_device_ids),
             last_home_peer_refresh: Mutex::new(None),
             last_sync_kick: Mutex::new(None),
+            personal_focus_recency: Mutex::new(
+                crate::shell::continuity_suggestion::FocusRecency::seeded(
+                    &persisted_continuity.continuity,
+                ),
+            ),
             personal_continuity: Mutex::new(persisted_continuity.continuity),
             personal_continuity_user,
             personal_continuity_device,
@@ -3136,6 +3144,9 @@ impl ShellNetwork {
         if let Ok(mut continuity) = self.personal_continuity.lock() {
             *continuity = crate::shell::personal_continuity::PersonalContinuity::default();
         }
+        if let Ok(mut recency) = self.personal_focus_recency.lock() {
+            recency.clear();
+        }
         if let Ok(mut fingerprint) = self.personal_continuity_fingerprint.lock() {
             *fingerprint = None;
         }
@@ -3278,6 +3289,39 @@ impl ShellNetwork {
                 continuity: continuity.clone(),
             },
         )
+    }
+
+    /// What chrome needs to offer continuing another device's focused tab:
+    /// each device's focus and when it moved, plus the certified devices of
+    /// this identity with their display labels.
+    pub fn continuity_feed(&self) -> crate::shell::continuity_suggestion::ContinuityFeed {
+        let observations = self
+            .personal_focus_recency
+            .lock()
+            .map(|recency| recency.observations())
+            .unwrap_or_default();
+        let certified = self.certified_secret_recipients();
+        let fabric = self.device_fabric.lock().ok();
+        let devices = certified
+            .into_iter()
+            .filter(|device| self.personal_continuity_device.as_ref() != Some(device))
+            .map(|device| {
+                let label = fabric
+                    .as_ref()
+                    .and_then(|fabric| fabric.snapshots().get(&device))
+                    .map_or_else(
+                        || crate::shell::i18n::t("continuity-other-device"),
+                        |snapshot| snapshot.presence.label.clone(),
+                    );
+                (device, label)
+            })
+            .collect();
+        drop(fabric);
+        crate::shell::continuity_suggestion::ContinuityFeed {
+            local_device: self.personal_continuity_device.clone(),
+            observations,
+            devices,
+        }
     }
 
     /// Return the locally retained, convergent view of this person's devices.
@@ -5276,6 +5320,12 @@ impl ShellNetwork {
             }
             merged = Some(continuity.clone());
         }
+        if changed
+            && let Some(merged) = merged.as_ref()
+            && let Ok(mut recency) = self.personal_focus_recency.lock()
+        {
+            recency.observe(merged, std::time::Instant::now());
+        }
         if changed {
             if !self.enforce_app_continuations_policy() {
                 return true;
@@ -5983,6 +6033,9 @@ pub(crate) fn shell_network_for_test(
         personal_continuity_counter: Mutex::new(0),
         personal_continuity_fingerprint: Mutex::new(None),
         personal_continuity_path: None,
+        personal_focus_recency: Mutex::new(
+            crate::shell::continuity_suggestion::FocusRecency::default(),
+        ),
         continuity_policy_override: Some(
             crate::shell::continuity_policy::ContinuityPolicySnapshot::from_document(
                 serde_json::json!({

@@ -258,6 +258,7 @@ struct CacheFingerprint {
     focused_control: Option<String>,
     clock_activity: Option<(String, u64, bool, bool)>,
     app_tray_revision: u64,
+    continuity: Option<String>,
 }
 
 /// One application tray icon as last painted: where, and what a click on
@@ -552,6 +553,9 @@ pub struct TopBarChrome {
     avatar_stack_rect: Rect,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
+    /// "Continue <app> from <device>": the offer, and its dismiss chip.
+    continuity_rect: Rect,
+    continuity_dismiss_rect: Rect,
     /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
     activity_headline: Option<String>,
@@ -846,6 +850,8 @@ impl TopBarChrome {
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
             sharing_indicator_rect: Rect::ZERO,
+            continuity_rect: Rect::ZERO,
+            continuity_dismiss_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             activity_headline: None,
             activity_unread: 0,
@@ -926,6 +932,7 @@ impl TopBarChrome {
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
             app_tray_revision: crate::tray::Tray::global().revision(),
+            continuity: self.continuity_label(),
         }
     }
 
@@ -1154,6 +1161,8 @@ impl TopBarChrome {
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
+    const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
+    const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
     const CONTROL_REMOVE_CLOCK: &'static str = "topbar:editor:remove-clock";
     const CONTROL_REMOVE_MONITOR: &'static str = "topbar:editor:remove-system-monitor";
     const CONTROL_REMOVE_CALENDAR: &'static str = "topbar:editor:remove-calendar";
@@ -1451,7 +1460,22 @@ impl TopBarChrome {
         if !self.media_indicator_rect.is_zero_area() {
             controls.push(Self::CONTROL_MEDIA);
         }
+        if self.continuity_label().is_some() {
+            controls.push(Self::CONTROL_CONTINUITY);
+            controls.push(Self::CONTROL_CONTINUITY_DISMISS);
+        }
         controls
+    }
+
+    /// The live continuity offer's label. Read from chrome rather than
+    /// cached, so the semantic surface and the next paint agree even before
+    /// a frame has drawn the chip.
+    fn continuity_label(&self) -> Option<String> {
+        let chrome = self.chrome.as_ref()?;
+        let suggestion = chrome.borrow().continuity_suggestion(Instant::now())?;
+        Some(crate::shell::continuity_suggestion::continue_label(
+            &suggestion,
+        ))
     }
 
     fn control_rect(&self, target: &str) -> Rect {
@@ -1481,6 +1505,8 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
+            Self::CONTROL_CONTINUITY => self.continuity_rect,
+            Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
             target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
                 .map_or(Rect::ZERO, |(widget, present)| {
                     self.widget_editor_action_rect(widget, present)
@@ -1548,6 +1574,10 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => "Privacy settings for active capture".into(),
+            Self::CONTROL_CONTINUITY => self
+                .continuity_label()
+                .unwrap_or_else(|| "Top bar control".into()),
+            Self::CONTROL_CONTINUITY_DISMISS => crate::shell::i18n::t("continuity-dismiss"),
             target if Self::editor_widget(target).is_some() => {
                 let Some((widget, present)) = Self::editor_widget(target) else {
                     return "Top bar editor control".into();
@@ -3492,6 +3522,66 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
+    /// A quiet offer to continue the tab another of this person's devices
+    /// just moved to, left of the roster, with its own dismiss chip. It
+    /// yields to the centre band: with no room for a readable label it is
+    /// not drawn at all (the palette still offers it).
+    fn draw_continuity_chip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        label: Option<&str>,
+    ) {
+        use ui::widget::chip::{Chip, ChipLead, ChipStyle};
+
+        self.continuity_rect = Rect::ZERO;
+        self.continuity_dismiss_rect = Rect::ZERO;
+        let Some(label) = label else {
+            return;
+        };
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = 24.0;
+        let right = self.avatar_stack_rect.x0 - f64::from(theme.tokens.spacing.s3);
+        let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
+        let dismiss_w = height;
+        let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
+        let natural = Chip::natural_width_at(label, height, lead, theme, text_renderer);
+        let room = right - dismiss_w - gap - left_limit;
+        // Below this the label elides to a word or two and stops saying
+        // what it offers.
+        if room < 96.0 {
+            return;
+        }
+        let width = natural.min(room);
+        let top = center_y - height / 2.0;
+        self.continuity_dismiss_rect = Rect::new(right - dismiss_w, top, right, top + height);
+        let chip_right = self.continuity_dismiss_rect.x0 - gap;
+        self.continuity_rect = Rect::new(chip_right - width, top, chip_right, top + height);
+        Chip::draw_at(
+            scene,
+            transform,
+            self.continuity_rect,
+            label,
+            lead,
+            ChipStyle::default(),
+            theme,
+            text_renderer,
+        );
+        Chip::draw_at(
+            scene,
+            transform,
+            self.continuity_dismiss_rect,
+            "",
+            ChipLead::Glyph(ui::icons::Icon::X),
+            ChipStyle::default(),
+            theme,
+            text_renderer,
+        );
+    }
+
     /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
     /// bounds or the restored empty-room Invite control. `pos` is
     /// `(center_y, stack_right_x)`.
@@ -3593,6 +3683,19 @@ impl TopBarChrome {
             if let Some(widget) = clicked.and_then(|i| self.configured_center_widget(i)) {
                 self.center_widget = widget;
                 *handled = true;
+                return;
+            }
+        }
+        if let Some(p) = self.last_cursor {
+            let target = if self.continuity_dismiss_rect.contains(p) {
+                Some(Self::CONTROL_CONTINUITY_DISMISS)
+            } else if self.continuity_rect.contains(p) {
+                Some(Self::CONTROL_CONTINUITY)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                *handled = self.activate_continuity_control(target);
                 return;
             }
         }
@@ -3959,6 +4062,12 @@ impl TopBarChrome {
         if self.control_is_disabled(target) {
             return false;
         }
+        if matches!(
+            target,
+            Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
+        ) {
+            return self.activate_continuity_control(target);
+        }
         if Self::editor_widget(target).is_some() {
             return self.activate_editor_control(target);
         }
@@ -4013,6 +4122,21 @@ impl TopBarChrome {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Accepting focuses the offered tab here; dismissing hides the offer
+    /// until that device's focus moves again. Neither happens on its own.
+    fn activate_continuity_control(&self, target: &str) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let mut state = chrome.borrow_mut();
+        let now = Instant::now();
+        if target == Self::CONTROL_CONTINUITY {
+            state.accept_continuity_suggestion(now).is_some()
+        } else {
+            state.dismiss_continuity_suggestion(now).is_some()
         }
     }
 
@@ -4791,6 +4915,14 @@ impl Widget for TopBarChrome {
             (center_y, stack_right_x),
             slot_count,
         );
+        self.draw_continuity_chip(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            fp.continuity.as_deref(),
+        );
         self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
         self.draw_widget_editor(scene, transform, text_renderer, theme);
@@ -4908,6 +5040,11 @@ impl Widget for TopBarChrome {
             (
                 "topbar_sharing_indicator".to_string(),
                 self.sharing_indicator_rect,
+            ),
+            ("topbar_continuity".to_string(), self.continuity_rect),
+            (
+                "topbar_continuity_dismiss".to_string(),
+                self.continuity_dismiss_rect,
             ),
             (
                 "topbar_center_clock".to_string(),
@@ -5133,6 +5270,9 @@ impl Widget for TopBarChrome {
                 .collect::<Vec<_>>()
                 != self.cache_fp.media_key
         {
+            return true;
+        }
+        if self.continuity_label() != self.cache_fp.continuity {
             return true;
         }
         if let Some(started) = self.media_started {

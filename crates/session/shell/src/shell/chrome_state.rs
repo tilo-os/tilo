@@ -703,6 +703,8 @@ pub struct ChromeState {
     strip_viewport: Option<crate::shell::placement::StripViewport>,
     /// Logical desktop bounds from the overlay host's latest layout pass.
     viewport_size: Option<(f64, f64)>,
+    /// The offer to continue a tab from another of this person's devices.
+    continuity_suggestions: crate::shell::continuity_suggestion::ContinuitySuggestions,
 }
 
 #[derive(Debug)]
@@ -818,6 +820,8 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             strip_viewport: None,
             viewport_size: None,
+            continuity_suggestions:
+                crate::shell::continuity_suggestion::ContinuitySuggestions::default(),
             records: RecordStore::in_memory(),
             pending_tab_records: VecDeque::new(),
             failed_tab_records: BTreeMap::new(),
@@ -1338,6 +1342,53 @@ impl ChromeState {
             tree.flush_to_disk();
         }
         self.bump();
+    }
+
+    /// Replace what personal continuity knows about other devices' focus.
+    pub fn set_continuity_feed(
+        &mut self,
+        feed: crate::shell::continuity_suggestion::ContinuityFeed,
+    ) {
+        if self.continuity_suggestions.set_feed(feed) {
+            self.bump();
+        }
+    }
+
+    /// The tab another of this person's devices just moved to, when this
+    /// desktop has it and is not already showing it.
+    pub fn continuity_suggestion(
+        &self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        self.continuity_suggestions.current(&self.tree(), now)
+    }
+
+    /// Focus the offered tab here. Only an explicit accept ever moves focus;
+    /// the offer is retired so it does not return when the person moves on.
+    pub fn accept_continuity_suggestion(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        let suggestion = self.continuity_suggestion(now)?;
+        self.continuity_suggestions.dismiss(&suggestion);
+        self.focus_tab(
+            suggestion.workspace,
+            suggestion.strip,
+            suggestion.group,
+            suggestion.tab,
+        );
+        Some(suggestion)
+    }
+
+    /// Hide the current offer until that device's focus changes again.
+    pub fn dismiss_continuity_suggestion(
+        &mut self,
+        now: std::time::Instant,
+    ) -> Option<crate::shell::continuity_suggestion::ContinuitySuggestion> {
+        let suggestion = self.continuity_suggestion(now)?;
+        self.continuity_suggestions.dismiss(&suggestion);
+        self.bump();
+        Some(suggestion)
     }
 
     /// Routes into the active workspace's first strip/group via
