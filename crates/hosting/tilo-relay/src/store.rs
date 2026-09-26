@@ -537,20 +537,20 @@ impl WorkspaceStore {
     /// strictly increasing `seq` per workspace, so filename order is
     /// delivery order and no two deltas share a file.
     ///
-    /// The queue is bounded by [`MAX_PENDING_ENTRIES_PER_DEVICE`] and
-    /// [`MAX_PENDING_BYTES_PER_DEVICE`]; beyond either the oldest entries
-    /// are dropped (see the module docs for why that is recoverable).
+    /// Returns whether the queue is now over [`MAX_PENDING_ENTRIES_PER_DEVICE`]
+    /// or [`MAX_PENDING_BYTES_PER_DEVICE`]; the caller then compacts it with
+    /// [`Self::compact_pending`]. Nothing is dropped here.
     ///
     /// # Errors
     ///
     /// Returns an error if the per-device pending directory can't be
-    /// created, the atomic write fails, or an evicted entry can't be removed.
+    /// created or the atomic write fails.
     pub fn enqueue_pending(
         &self,
         device_pubkey: &[u8; 32],
         seq: u64,
         bytes: &[u8],
-    ) -> Result<PathBuf, StoreError> {
+    ) -> Result<bool, StoreError> {
         let pending_dir = self.pending_dir_for(device_pubkey);
         fs::create_dir_all(&pending_dir)?;
         let filename = format!("{seq:016x}.delta");
@@ -560,50 +560,70 @@ impl WorkspaceStore {
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
         atomic_file::write(&path, bytes)?;
-        self.account_and_bound(
-            &pending_dir,
-            bytes.len() as u64,
-            self.bounds.pending_entries,
-            self.bounds.pending_bytes,
-        )?;
-        Ok(path)
-    }
-
-    /// Add one just-written entry of `len` bytes to `dir`'s totals and, if
-    /// either bound is now exceeded, remove the oldest `.delta` entries until
-    /// the queue is back under three quarters of both bounds. Evicting a
-    /// batch keeps the directory scan off the per-delta path.
-    #[allow(
-        clippy::significant_drop_tightening,
-        reason = "the totals stay locked through eviction so a concurrent writer cannot count against a queue being trimmed"
-    )]
-    fn account_and_bound(
-        &self,
-        dir: &Path,
-        len: u64,
-        max_entries: u64,
-        max_bytes: u64,
-    ) -> Result<(), StoreError> {
         let mut usage = self
             .usage
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let totals = if let Some(totals) = usage.get_mut(dir) {
+        let totals = if let Some(totals) = usage.get_mut(&pending_dir) {
             totals.entries = totals.entries.saturating_add(1);
-            totals.bytes = totals.bytes.saturating_add(len);
+            totals.bytes = totals.bytes.saturating_add(bytes.len() as u64);
             *totals
         } else {
             // First write since start (or since an external removal): the
             // scan already includes the entry just written.
-            let totals = QueueUsage::of(&sorted_deltas(dir)?);
-            usage.insert(dir.to_path_buf(), totals);
+            let totals = QueueUsage::of(&sorted_deltas(&pending_dir)?);
+            usage.insert(pending_dir, totals);
             totals
         };
-        if totals.entries <= max_entries && totals.bytes <= max_bytes {
-            return Ok(());
+        drop(usage);
+        Ok(
+            totals.entries > self.bounds.pending_entries
+                || totals.bytes > self.bounds.pending_bytes,
+        )
+    }
+
+    /// Bring an over-bound pending queue back under its bounds.
+    ///
+    /// With `document` — one encoded delta carrying the pinned workspace's
+    /// whole document — every queued Automerge change is replaced by that one
+    /// entry, written as `<seq>.delta`. It holds every change it replaces, so
+    /// the device receives no change whose dependencies were dropped. That
+    /// entry does not count against the bounds, or a document larger than
+    /// them would be rewritten on every later enqueue.
+    ///
+    /// Without one (an unpinned workspace holds no authoritative state to
+    /// replace history with) the oldest entries are dropped until the queue
+    /// is under three quarters of both bounds; the same happens to queued
+    /// entries that are not Automerge changes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue can't be listed, read, written or
+    /// trimmed.
+    pub fn compact_pending(
+        &self,
+        device_pubkey: &[u8; 32],
+        document: Option<(u64, &[u8])>,
+    ) -> Result<(), StoreError> {
+        let dir = self.pending_dir_for(device_pubkey);
+        let mut entries = sorted_deltas(&dir)?;
+        let mut replaced = 0u64;
+        if let Some((seq, document)) = document {
+            let mut kept = Vec::with_capacity(entries.len());
+            for (path, len) in entries {
+                if is_automerge_delta(&fs::read(&path)?) {
+                    remove_if_present(&path)?;
+                    replaced = replaced.saturating_add(1);
+                } else {
+                    kept.push((path, len));
+                }
+            }
+            atomic_file::write(&dir.join(format!("{seq:016x}.delta")), document)?;
+            entries = kept;
         }
-        let entries = sorted_deltas(dir)?;
         let mut remaining = QueueUsage::of(&entries);
+        let max_entries = self.bounds.pending_entries;
+        let max_bytes = self.bounds.pending_bytes;
         let target_entries = max_entries.saturating_sub(max_entries / 4);
         let target_bytes = max_bytes.saturating_sub(max_bytes / 4);
         let mut dropped = 0u64;
@@ -611,11 +631,7 @@ impl WorkspaceStore {
             if remaining.entries <= target_entries && remaining.bytes <= target_bytes {
                 break;
             }
-            match fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error.into()),
-            }
+            remove_if_present(&path)?;
             remaining.entries = remaining.entries.saturating_sub(1);
             remaining.bytes = remaining.bytes.saturating_sub(len);
             dropped = dropped.saturating_add(1);
@@ -623,10 +639,14 @@ impl WorkspaceStore {
         tracing::warn!(
             workspace_id = self.workspace_id,
             queue = %dir.display(),
+            replaced,
             dropped,
-            "bounded relay queue overflowed; dropped its oldest entries"
+            "pending queue overflowed; compacted it"
         );
-        usage.insert(dir.to_path_buf(), remaining);
+        self.usage
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(dir, remaining);
         Ok(())
     }
 
@@ -857,6 +877,26 @@ impl WorkspaceStore {
 
 /// The `.delta` entries of `dir`, oldest first, with their sizes. A missing
 /// directory is empty.
+fn remove_if_present(path: &Path) -> Result<(), StoreError> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Every Automerge chunk (document or change) starts with these bytes.
+pub(crate) const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
+
+/// Whether an encoded pending envelope is a `Delta` carrying Automerge
+/// bytes — a change the pinned document also holds.
+fn is_automerge_delta(frame: &[u8]) -> bool {
+    matches!(
+        frame.get(4..).and_then(|payload| crate::frame::decode(payload).ok()),
+        Some(crate::transport::Envelope::Delta { delta, .. }) if delta.starts_with(&AUTOMERGE_MAGIC)
+    )
+}
+
 fn sorted_deltas(dir: &Path) -> Result<Vec<(PathBuf, u64)>, StoreError> {
     let read = match fs::read_dir(dir) {
         Ok(read) => read,
@@ -1037,6 +1077,13 @@ mod tests {
         }
     }
 
+    /// Enqueue as an unpinned workspace does: compact by dropping the oldest.
+    fn enqueue_bounded(store: &WorkspaceStore, peer: &[u8; 32], seq: u64, bytes: &[u8]) {
+        if store.enqueue_pending(peer, seq, bytes).unwrap() {
+            store.compact_pending(peer, None).unwrap();
+        }
+    }
+
     #[test]
     fn pending_queue_drops_its_oldest_entries_beyond_the_entry_bound() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1044,9 +1091,7 @@ mod tests {
         store.set_bounds(small_bounds());
         let peer = [5u8; 32];
         for seq in 0..9u64 {
-            store
-                .enqueue_pending(&peer, seq, format!("delta-{seq}").as_bytes())
-                .unwrap();
+            enqueue_bounded(&store, &peer, seq, format!("delta-{seq}").as_bytes());
         }
         // The ninth entry overflowed the bound of eight: the queue was cut
         // back to three quarters of it, oldest first.
@@ -1066,9 +1111,7 @@ mod tests {
         store.set_bounds(small_bounds());
         let peer = [6u8; 32];
         for seq in 0..3u64 {
-            store
-                .enqueue_pending(&peer, seq, &[u8::try_from(seq).unwrap(); 400])
-                .unwrap();
+            enqueue_bounded(&store, &peer, seq, &[u8::try_from(seq).unwrap(); 400]);
         }
         let kept = store.drain_pending(&peer).unwrap();
         assert_eq!(kept, vec![vec![2u8; 400]], "1200 bytes cut back under 768");
@@ -1081,14 +1124,14 @@ mod tests {
         {
             let store = WorkspaceStore::open(tmp.path(), 10, false).unwrap();
             for seq in 0..6u64 {
-                store.enqueue_pending(&peer, seq, b"x").unwrap();
+                enqueue_bounded(&store, &peer, seq, b"x");
             }
         }
         // A restarted relay counts the six queued before it started.
         let mut store = WorkspaceStore::open(tmp.path(), 10, false).unwrap();
         store.set_bounds(small_bounds());
         for seq in 6..9u64 {
-            store.enqueue_pending(&peer, seq, b"x").unwrap();
+            enqueue_bounded(&store, &peer, seq, b"x");
         }
         assert_eq!(store.count_pending(&peer).unwrap(), 6);
         // A delivered replay acknowledges by removing files; the next
@@ -1097,7 +1140,7 @@ mod tests {
             std::fs::remove_file(entry.path).unwrap();
         }
         for seq in 9..16u64 {
-            store.enqueue_pending(&peer, seq, b"x").unwrap();
+            enqueue_bounded(&store, &peer, seq, b"x");
         }
         assert_eq!(store.count_pending(&peer).unwrap(), 7);
     }

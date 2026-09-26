@@ -36,8 +36,7 @@ pub fn encode_frame(envelope: &Envelope) -> Result<OutboundFrame, postcard::Erro
     crate::frame::encode(envelope).map(Arc::from)
 }
 
-/// Every Automerge chunk (document or change) starts with these bytes.
-const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
+use crate::store::AUTOMERGE_MAGIC;
 
 /// Membership set for a workspace on this relay. Populated by the
 /// admin (`bind-workspace`) via the workspace-directory CRDT and
@@ -498,27 +497,39 @@ impl WorkspaceRuntime {
                 }
             }
         } else {
-            // 3. Store-and-forward for offline members: any pubkey in
-            //    `membership` that is not the author and not subscribed.
+            // 3. Materialize into the pinned doc so the host holds
+            //    authoritative current state (the source for anti-entropy
+            //    resync and for compacting an overflowing pending queue).
+            //    Best-effort and no-op when the workspace is unpinned or the
+            //    bytes are not a raw Automerge delta.
+            self.materialize(raw_delta_bytes);
+            // 4. Store-and-forward for offline members (any pubkey in
+            //    `membership` that is not the author and not subscribed) and
+            //    offline peer relays — the same per-device queue, suppressed
+            //    when the origin is itself a peer relay (echo prevention
+            //    across a chain of relays).
+            let mut overflowing = Vec::new();
             for member in self.membership.devices() {
                 if member == author || self.subscribers.contains_key(member) {
                     continue;
                 }
-                self.store.enqueue_pending(member, seq, &frame)?;
+                if self.store.enqueue_pending(member, seq, &frame)? {
+                    overflowing.push(*member);
+                }
                 queued = queued.saturating_add(1);
             }
-            // 4. Store-and-forward for offline peer relays — the same
-            //    per-device queue. Suppressed when the origin is itself a
-            //    peer relay (echo prevention across a chain of relays).
             if from_role == PeerRole::Device {
                 for pr in &self.known_peer_relays {
                     if pr == author || self.subscribers.contains_key(pr) {
                         continue;
                     }
-                    self.store.enqueue_pending(pr, seq, &frame)?;
+                    if self.store.enqueue_pending(pr, seq, &frame)? {
+                        overflowing.push(*pr);
+                    }
                     queued = queued.saturating_add(1);
                 }
             }
+            self.compact_pending(&overflowing, seq)?;
         }
         // Audit log — best-effort; failure does not block routing.
         let _ = self.store.append_log(&LogEntry {
@@ -528,17 +539,46 @@ impl WorkspaceRuntime {
             authored_at_ns: seq,
             delta_len: raw_delta_bytes.len() as u64,
         });
-        // 5. Materialize into the pinned doc so the host holds
-        //    authoritative current state (the source for anti-entropy
-        //    resync), not just per-peer queues. Runs AFTER fan-out +
-        //    store-and-forward so it can never alter those semantics;
-        //    best-effort and no-op when the workspace is unpinned or the
-        //    bytes are not a raw Automerge delta (a co-edit payload
-        //    wrapper, a non-CRDT test blob, …).
-        if payload.is_none() {
-            self.materialize(raw_delta_bytes);
-        }
         Ok(Fanout { delivered, queued })
+    }
+
+    /// Compact the pending queues of `devices`, which just overflowed. In a
+    /// pinned workspace their queued changes are replaced by one delta
+    /// carrying the whole materialized document — encoded once for all of
+    /// them — so a returning device receives no change whose dependencies
+    /// were dropped. An unpinned workspace has no such state and drops the
+    /// oldest entries instead.
+    fn compact_pending(
+        &mut self,
+        devices: &[[u8; 32]],
+        seq: u64,
+    ) -> Result<(), crate::store::StoreError> {
+        if devices.is_empty() {
+            return Ok(());
+        }
+        let document = match self.doc.as_mut() {
+            Some(doc) => Some(
+                encode_frame(&Envelope::Delta {
+                    workspace_id: self.store.workspace_id(),
+                    author_device_public_key: [0; 32],
+                    authored_at_ns: seq,
+                    delta: doc.save(),
+                    signature: [0; 64],
+                })
+                .map_err(|error| {
+                    crate::store::StoreError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("encode document: {error}"),
+                    ))
+                })?,
+            ),
+            None => None,
+        };
+        for device in devices {
+            self.store
+                .compact_pending(device, document.as_deref().map(|frame| (seq, frame)))?;
+        }
+        Ok(())
     }
 
     /// Drop the front of `channel`'s tail through `through`, which the
@@ -1161,6 +1201,49 @@ mod tests {
         assert_eq!(reopened.tails[&channel].entries.len(), 4);
         assert!(reopened.tails[&channel].has_checkpoint);
         assert_eq!(join(&reopened).get_heads(), doc.get_heads());
+    }
+
+    /// An offline device's pending queue that overflows in a pinned
+    /// workspace is replaced by one whole-document delta, never cut in the
+    /// middle: the device converges with no change waiting for a dependency.
+    #[test]
+    fn an_overflowing_pending_queue_is_replaced_by_the_whole_document() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (writer, offline) = (device(1), device(2));
+        let mut membership = Membership::default();
+        membership.set(vec![writer, offline]);
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 97, true, membership).unwrap();
+        rt.store.set_bounds(crate::store::QueueBounds {
+            pending_entries: 4,
+            pending_bytes: 1024 * 1024,
+        });
+        let mut doc = AutoCommit::new();
+        doc.set_actor(automerge::ActorId::from(b"writer".as_slice()));
+        for n in 0..11 {
+            let delta = edit(&mut doc, n);
+            let env = Envelope::Delta {
+                workspace_id: 97,
+                author_device_public_key: writer,
+                authored_at_ns: 1,
+                delta: delta.clone(),
+                signature: [0; 64],
+            };
+            rt.fanout_delta(&writer, PeerRole::Device, &env, &delta, 1)
+                .unwrap();
+            assert!(rt.store.count_pending(&offline).unwrap() <= 5);
+        }
+        let mut returning = AutoCommit::new();
+        for frame in rt.store.drain_pending(&offline).unwrap() {
+            let Envelope::Delta { delta, .. } = crate::frame::decode(&frame[4..]).unwrap() else {
+                panic!("pending frames are deltas");
+            };
+            returning.load_incoming(&delta).unwrap();
+        }
+        assert!(
+            returning.get_missing_deps(&[]).is_empty(),
+            "no queued change waits for a dependency"
+        );
+        assert_eq!(returning.get_heads(), doc.get_heads());
     }
 
     /// A checkpoint whose author is not a live subscriber here (forwarded,
