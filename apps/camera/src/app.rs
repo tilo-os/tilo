@@ -2707,7 +2707,7 @@ impl Widget for CameraApp {
 
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its metadata action, so it records one undo boundary for it (see
-    /// [`Self::perform_action`]). Rising-edge: cleared on read.
+    /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
         self.actions.take_committed()
     }

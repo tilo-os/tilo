@@ -22,7 +22,7 @@ use crate::model::{ActionKind, StoreItem, StoreSource};
 
 /// Logical px a future list virtualizer can use to reserve a card row.
 ///
-/// The catalogue already bounds every page to [`crate::app::PAGE_SIZE`]; the
+/// The catalogue already bounds every page to `crate::app::PAGE_SIZE`; the
 /// widget tree for that bounded page is deliberately composed up-front so
 /// keyboard traversal and screen-reader order stay exact.
 pub const CARD_HEIGHT: f32 = 96.0;

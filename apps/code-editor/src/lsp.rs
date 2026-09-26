@@ -22,6 +22,16 @@
 //! build time), so the whole module compiles unconditionally; the editor only
 //! *starts* a server when explicitly asked (see `app.rs`), keeping the
 //! hermetic build and `--shots` from ever launching rust-analyzer.
+//!
+//! [`encode`]: crate::lsp::encode
+//! [`MessageReader`]: crate::lsp::MessageReader
+//! [`parse_publish_diagnostics`]: crate::lsp::parse_publish_diagnostics
+//! [`parse_completion`]: crate::lsp::parse_completion
+//! [`parse_hover`]: crate::lsp::parse_hover
+//! [`parse_definition`]: crate::lsp::parse_definition
+//! [`LspDiagnostic`]: crate::lsp::LspDiagnostic
+//! [`CompletionItem`]: crate::lsp::CompletionItem
+//! [`LspClient`]: crate::lsp::LspClient
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};

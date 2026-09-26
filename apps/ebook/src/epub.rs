@@ -13,7 +13,7 @@
 //! We open the ZIP under the shared zip-bomb bounds, resolve `container.xml` →
 //! OPF → metadata, spine and cover through [`bounded_zip::epub`] (the same
 //! resolution the thumbnailer uses), then read each spine document and lower its
-//! XHTML into [`Block`]s via [`crate::xhtml`]. The TOC (nav doc preferred, NCX
+//! XHTML into [`Block`](crate::model::Block)s via [`crate::xhtml`]. The TOC (nav doc preferred, NCX
 //! fallback, parsed with [`roxmltree`]) supplies chapter titles.
 
 use std::collections::HashMap;

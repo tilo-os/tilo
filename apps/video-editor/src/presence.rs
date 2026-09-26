@@ -30,7 +30,7 @@
 //! | one media-bin row | `["ve_media", <media uuid>]` |
 //! | one editable field | `["ve_field", <field name>, <subject uuid>]` |
 //!
-//! The uuid is written out with [`Uuid::to_string`] — its plain hyphenated
+//! The uuid is written out with `Uuid::to_string` — its plain hyphenated
 //! form. Ids are the *document's* ids, identical on every peer, which is what
 //! makes a key mean the same object on both screens; a positional index would
 //! drift the moment someone else inserted a clip. (The accessibility tree
