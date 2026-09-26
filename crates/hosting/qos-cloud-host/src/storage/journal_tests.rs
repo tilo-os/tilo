@@ -702,6 +702,7 @@ fn measure_commit_io() {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(200);
+    let sample_dir = sample.clone();
     let sample = fs::read(std::path::Path::new(&sample).join("state.json")).unwrap();
     let run = |journal: bool, cold: bool| {
         let temp = tempfile::tempdir().unwrap();
@@ -712,6 +713,7 @@ fn measure_commit_io() {
             fs::write(root.join("state.json"), &sample).unwrap();
             fs::set_permissions(root.join("state.json"), fs::Permissions::from_mode(0o600))
                 .unwrap();
+            crate::host_secret::copy_for_test(std::path::Path::new(&sample_dir), &root);
         }
         let body = || {
             // Migrations (if any) commit once on the first open.

@@ -14,7 +14,7 @@ fn delivery_access_actual_lock_busy_then_exact_current_without_rewrite() {
     let (dir, store) = selected();
     let bytes = std::fs::read(dir.path().join("state.json")).unwrap();
     let generation = store.state.generation;
-    let host = store.state.host_secret;
+    let host = store.key().verifying_key();
     assert!(matches!(
         try_open(dir.path(), "agent-admission"),
         Err(AccessError::Busy)
@@ -22,7 +22,7 @@ fn delivery_access_actual_lock_busy_then_exact_current_without_rewrite() {
     drop(store);
     let current = try_open(dir.path(), "agent-admission").unwrap();
     assert_eq!(current.state.generation, generation);
-    assert_eq!(current.state.host_secret, host);
+    assert_eq!(current.key().verifying_key(), host);
     assert_eq!(std::fs::read(dir.path().join("state.json")).unwrap(), bytes);
     assert!(matches!(
         try_open(dir.path(), "agent-admission"),

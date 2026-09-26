@@ -32,9 +32,18 @@ defines the shared signed schema. A bound host certificate is returned in subseq
 challenges and must be reused verbatim. Account login cannot replace a bound root.
 
 Every state transaction holds an OS file lock and atomically fsyncs a private journal
-before exposing success. The journal contains root public key, host device secret,
-certified roster, revocations, native directory and peer state, idempotence receipts,
-and pending replication. No user root secret is stored. Corrupt journals fail closed.
+before exposing success. The journal contains root public key, certified roster,
+revocations, native directory and peer state, idempotence receipts, and pending
+replication. No user root secret is stored. Corrupt journals fail closed.
+
+The host device secret is never in the journal. It is sealed in `host-secret/`
+(a `tilo-seal` envelope bound to the machine identity, under an owner-only local
+key) and opened on every Store load; a tampered or foreign blob, or a Store whose
+sealed secret or key is missing, is refused rather than given a new identity. The
+local key is readable by the state directory's owner and root, so this separates
+the secret from the state and authenticates it, but is not hardware binding.
+Moving a state directory means moving `host-secret/` with it. State written by
+builds that kept the secret inline is refused; reset such a directory.
 Run only one `serve` process per state directory; enrollment commands may run concurrently.
 
 On disk the aggregate is `state.json` (atomically replaced checkpoint) plus

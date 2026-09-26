@@ -36,6 +36,7 @@ pub mod collaboration;
 mod delivery;
 mod desktop_commands;
 pub mod gateway;
+mod host_secret;
 mod https_owner;
 pub mod mesh;
 pub mod model;
@@ -104,6 +105,22 @@ impl StoredPublication {
             bail!("invalid durable publication kind")
         }
         Ok(())
+    }
+}
+/// Every durable publication goes out on the relay co-edit carrier, which
+/// attributes it to this host's device. Only this host's own items may enter
+/// the outbox: an uploaded item keeps its author's provenance on the delivery
+/// carrier and is never relayed as this host. Enforced on every Store commit
+/// and load, so a writer that queues foreign-authored bytes fails before they
+/// become durable instead of being published under the wrong attribution.
+fn ensure_relay_publishable(host: &[u8; 32], publications: &[StoredPublication]) -> Result<()> {
+    if publications
+        .iter()
+        .all(|publication| qos_session_peer::host::relay_publishable(host, &publication.message))
+    {
+        Ok(())
+    } else {
+        bail!("durable publication is not authored by this host")
     }
 }
 fn baseline_publications(messages: Vec<NeighbourMsg>) -> Result<Vec<StoredPublication>> {
@@ -207,7 +224,10 @@ struct State {
     private_agent_ledger: Option<qos_peer_state::owner_commit::PrivateAgentState>,
     machine_id: String,
     room: String,
-    host_secret: [u8; 32],
+    // Sealed apart from the state file (see `host_secret`); never serialized.
+    // Attached by the Store loader before any State is used.
+    #[serde(skip)]
+    host_secret: Option<host_secret::HostSecret>,
     challenge: Option<Challenge>,
     bound: Option<Bound>,
     consumed: BTreeMap<String, (String, serde_json::Value)>,
@@ -237,6 +257,16 @@ struct State {
 
 const fn initial_generation() -> u64 {
     1
+}
+impl State {
+    fn host_secret(&self) -> &host_secret::HostSecret {
+        self.host_secret
+            .as_ref()
+            .expect("Store loader attaches the sealed host secret")
+    }
+    fn host_key(&self) -> SigningKey {
+        self.host_secret().signing_key()
+    }
 }
 /// Which part of a failed save is known to have reached the namespace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -417,9 +447,7 @@ pub(crate) fn shared_transition(
     state: &State,
     now: u64,
 ) -> Result<std::sync::Arc<(StatePeer, StatePeer)>> {
-    let host = SigningKey::from_bytes(&state.host_secret)
-        .verifying_key()
-        .to_bytes();
+    let host = state.host_key().verifying_key().to_bytes();
     let memo = peer_memo::key(state, &host);
     if let Some(found) = memo.as_ref().and_then(|key| peer_memo::lookup(key, now)) {
         return Ok(found);
@@ -437,7 +465,7 @@ pub(crate) fn shared_transition(
 /// Restore the committed peer of `state` at `now` and retire expired
 /// identities' enrollment metadata (the Store's current peer transition).
 fn transition_restore(state: &State, now: u64) -> Result<(StatePeer, StatePeer)> {
-    let key = SigningKey::from_bytes(&state.host_secret);
+    let key = state.host_key();
     #[cfg(test)]
     peer_memo::count_restore();
     let b = state
@@ -588,7 +616,7 @@ impl Store {
         let existed = persisted.is_some();
         let mut migrated = false;
         let mut tip = None;
-        let state = if let Some(persisted) = persisted {
+        let mut state = if let Some(persisted) = persisted {
             let mut value = storage::decode_unique_json(&persisted.bytes)
                 .context("corrupt cloud state; refusing reinitialization")?;
             if mode == StoreOpenMode::ExistingDelivery
@@ -665,15 +693,13 @@ impl Store {
             if mode == StoreOpenMode::ExistingDelivery {
                 bail!("existing delivery Store is missing")
             }
-            let mut secret = [0; 32];
-            rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut secret);
             State {
                 version: STATE_VERSION,
                 delivery: None,
                 private_agent_ledger: None,
                 machine_id: machine.into(),
                 room: uuid::Uuid::new_v4().to_string(),
-                host_secret: secret,
+                host_secret: None,
                 challenge: None,
                 bound: None,
                 consumed: BTreeMap::new(),
@@ -698,6 +724,12 @@ impl Store {
         {
             bail!("persisted machine namespace mismatch")
         }
+        state.host_secret = Some(host_secret::HostSecret::load_or_create(
+            root,
+            machine,
+            !existed,
+            &host_secret::LocalFileKey,
+        )?);
         match (state.private_schema_version()?, &state.private_agent_ledger) {
             (STATE_VERSION, None) => (),
             (AGENT_STATE_VERSION, Some(ledger)) => {
@@ -730,6 +762,7 @@ impl Store {
         for publication in &state.outbox {
             publication.validate()?;
         }
+        ensure_relay_publishable(&state.host_key().verifying_key().to_bytes(), &state.outbox)?;
         delivery::validate(&state, qos_relay::clock::now_ns())?;
         let mut store = Self {
             policy_time: None,
@@ -783,11 +816,11 @@ impl Store {
     fn action_key(&self) -> iroh::SecretKey {
         iroh::SecretKey::from_bytes(&blake3::derive_key(
             "tilo cloud actions endpoint v1",
-            &self.state.host_secret,
+            self.state.host_secret().expose(),
         ))
     }
     fn key(&self) -> SigningKey {
-        SigningKey::from_bytes(&self.state.host_secret)
+        self.state.host_key()
     }
     fn ensure_reconciled(&self) -> Result<()> {
         if let Some(failure) = self.failed_commit.get() {
@@ -842,6 +875,7 @@ impl Store {
         collaboration::compact_member_responses(&mut state.membership_responses);
         // Membership challenges are process-local; drop legacy ones.
         state.membership_challenges.clear();
+        ensure_relay_publishable(&self.key().verifying_key().to_bytes(), &state.outbox)?;
         delivery::prepare_commit(&self.state, &mut state, self.policy_now_ns()?)?;
         let prepare_us = qos_action_broker::agent_timing::us(began);
         let published = self.publish_prepared(state);

@@ -61,8 +61,10 @@ fn replay_digest(state: &State, store: StoreGeneration, replay: &ReplayCommit) -
 
 fn intern(
     delivery: &mut DeliveryState,
+    host: &[u8; 32],
     publications: &[StoredPublication],
 ) -> Result<Vec<PublicationRef>> {
+    crate::ensure_relay_publishable(host, publications)?;
     let mut retained = Vec::new();
     for publication in publications {
         publication.validate()?;
@@ -151,7 +153,11 @@ pub(crate) fn prepare_commit(before: &State, next: &mut State, now: u64) -> Resu
             old.policy_lineage
         };
         delivery.policy_revision = policy;
-        let references = intern(delivery, &publications)?;
+        let references = intern(
+            delivery,
+            &next_peer.authority().device_public_key,
+            &publications,
+        )?;
         delivery.ledger.resolved_through = next.generation;
         let mut created = None;
         if !references.is_empty() {
@@ -256,8 +262,9 @@ impl Store {
             transport_hint: None,
         };
         // Preserve pending relay bytes, but never invent receipts/history for previously drained work.
-        intern(&mut delivery, &self.state.outbox)?;
-        delivery.baseline = intern(&mut delivery, &baseline)?;
+        let host = peer.authority().device_public_key;
+        intern(&mut delivery, &host, &self.state.outbox)?;
+        delivery.baseline = intern(&mut delivery, &host, &baseline)?;
         let empty = StatePeer::new(
             &self.state.room,
             peer.authority().clone(),

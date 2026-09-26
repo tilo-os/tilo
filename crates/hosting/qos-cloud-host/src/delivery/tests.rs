@@ -65,6 +65,13 @@ fn delivery_v6_literal_v4_v5_open_preserves_bytes_and_private_selection() {
     ] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("state.json");
+        let sealed = crate::host_secret::HostSecret::load_or_create(
+            dir.path(),
+            "delivery-literal",
+            true,
+            &crate::host_secret::LocalFileKey,
+        )
+        .unwrap();
         std::fs::write(&path, bytes).unwrap();
         #[cfg(unix)]
         {
@@ -74,7 +81,7 @@ fn delivery_v6_literal_v4_v5_open_preserves_bytes_and_private_selection() {
         let store = Store::open(dir.path(), "delivery-literal").unwrap();
         assert_eq!(store.state.version, version);
         assert_eq!(store.state.room, "11111111-2222-4333-8444-555555555555");
-        assert_eq!(store.state.host_secret, [1; 32]);
+        assert_eq!(store.state.host_secret().expose(), sealed.expose());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert!(matches!(
             (&store.state.private_agent_ledger, version),
@@ -101,7 +108,7 @@ fn delivery_v6_explicit_activation_preserves_each_private_schema_and_reopens() {
         }
         let original_private = serde_json::to_value(&store.state.private_agent_ledger).unwrap();
         let original_room = store.state.room.clone();
-        let original_key = store.state.host_secret;
+        let original_key = store.key().verifying_key();
         let generation = store.state.generation;
         store
             .activate_delivery_storage(qos_relay::clock::now_ns())
@@ -113,7 +120,7 @@ fn delivery_v6_explicit_activation_preserves_each_private_schema_and_reopens() {
             original_private
         );
         assert_eq!(store.state.room, original_room);
-        assert_eq!(store.state.host_secret, original_key);
+        assert_eq!(store.key().verifying_key(), original_key);
         let state = serde_json::to_value(&store.state).unwrap();
         assert_eq!(
             state["delivery"]["prior_private_schema"],

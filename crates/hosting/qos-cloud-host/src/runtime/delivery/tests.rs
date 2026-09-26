@@ -37,3 +37,58 @@ fn delivery_runtime_tick_uses_actual_selected_payload_owner_and_preserves_legacy
         }
     }
 }
+
+#[test]
+fn foreign_authored_item_never_enters_the_outbox_or_reaches_the_relay() {
+    for selected in [false, true] {
+        let (dir, mut store, member) = crate::agent_owner_tests::enrolled();
+        if selected {
+            store
+                .activate_delivery_storage(qos_relay::clock::now_ns())
+                .unwrap();
+        }
+        let host = store.key().verifying_key().to_bytes();
+        // A member's own signed upload: valid, but not authored by this host.
+        let upload =
+            crate::durability_tests::document_message(&store, &SigningKey::from_bytes(&[8; 32]));
+        let NeighbourMsg::AppDocument { envelope, .. } = &upload else {
+            panic!("member upload is not an application document");
+        };
+        assert_eq!(envelope.author.as_bytes(), &member);
+        assert_ne!(envelope.author.as_bytes(), &host);
+        assert!(!qos_session_peer::host::relay_publishable(&host, &upload));
+
+        let persisted = std::fs::read(dir.path().join("state.json")).unwrap();
+        let generation = store.state.generation;
+        let mut state = store.state.clone();
+        state
+            .outbox
+            .push(StoredPublication::mutation(upload).unwrap());
+        let error = store.commit(state).unwrap_err();
+        assert!(
+            error.to_string().contains("not authored by this host"),
+            "{error:#}"
+        );
+        assert_eq!(store.state.generation, generation);
+        assert_eq!(
+            std::fs::read(dir.path().join("state.json")).unwrap(),
+            persisted
+        );
+        drop(store);
+
+        let mut store = Store::open(dir.path(), "agent-admission").unwrap();
+        let batch = RelayTickBatch::prepare(&mut store).unwrap();
+        let mut offered = 0;
+        batch
+            .publish(|publication| {
+                offered += 1;
+                assert!(qos_session_peer::host::relay_publishable(
+                    &host,
+                    &publication.message
+                ));
+                Ok(())
+            })
+            .unwrap();
+        assert!(offered > 0, "the host's own publications still go out");
+    }
+}

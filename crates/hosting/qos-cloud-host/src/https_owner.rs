@@ -561,10 +561,7 @@ impl CloudStoreSource {
             && state.machine_id == self.0.machine
             && bound.authority == self.0.authority
             && bound.root == self.0.authority.user_public_key
-            && ed25519_dalek::SigningKey::from_bytes(&state.host_secret)
-                .verifying_key()
-                .to_bytes()
-                == self.0.authority.device_public_key)
+            && state.host_key().verifying_key().to_bytes() == self.0.authority.device_public_key)
         {
             tracing::warn!("Cloud Store identity check denied");
             return Err(CloudDeliveryError::Denied);

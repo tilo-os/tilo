@@ -46,6 +46,9 @@ collab-types = {path="../../collab/collab-types"}
 qos-actions = { package = "tilo-actions", path = "../../collab/actions" }
 qos-relay = { package = "tilo-relay", path = "../tilo-relay" }
 atomic-file = {path="../../system/atomic-file"}
+private-fs = { path = "../../system/private-fs" }
+secret-vault = { path = "../../system/secret-vault" }
+tilo-seal = { path = "../../system/tilo-seal" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 word-processor = {path="../../../apps/word-processor"}
 chat = {path="../../../apps/chat",default-features=false}

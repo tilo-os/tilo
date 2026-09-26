@@ -326,7 +326,7 @@ impl Store {
     /// Private stable seed for the Cloud sender's scope incarnation and
     /// instance: this Store's host secret, machine and room.
     pub(crate) fn sender_seed(&self) -> Vec<u8> {
-        let mut seed = self.state.host_secret.to_vec();
+        let mut seed = self.state.host_secret().expose().to_vec();
         seed.extend_from_slice(self.state.machine_id.as_bytes());
         seed.push(0);
         seed.extend_from_slice(self.state.room.as_bytes());

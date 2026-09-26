@@ -37,6 +37,7 @@ fn replace(dir: &std::path::Path, copy: bool) -> std::path::PathBuf {
         for name in ["state.json", "state.lock"] {
             std::fs::copy(previous.join(name), dir.join(name)).unwrap();
         }
+        crate::host_secret::copy_for_test(&previous, dir);
     }
     previous
 }

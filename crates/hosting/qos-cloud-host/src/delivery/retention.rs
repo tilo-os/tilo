@@ -299,7 +299,11 @@ impl Store {
             policy_revision: policy,
             transport_hint: old.transport_hint.clone(),
         };
-        delivery.baseline = super::intern(&mut delivery, &checkpoint)?;
+        delivery.baseline = super::intern(
+            &mut delivery,
+            &peer.authority().device_public_key,
+            &checkpoint,
+        )?;
         ensure!(!delivery.baseline.is_empty(), "empty certified checkpoint");
         let empty = StatePeer::new(
             &self.state.room,

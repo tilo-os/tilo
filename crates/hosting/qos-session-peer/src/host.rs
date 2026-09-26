@@ -732,7 +732,7 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send(owner, |bytes, kind| {
             let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
-            if !relay_publishable(owner, &message) {
+            if !relay_publishable(&owner.peer().authority().device_public_key, &message) {
                 return Ok(());
             }
             match retention(&message, kind == Retention::Checkpoint) {
@@ -754,10 +754,14 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
 /// from its transport author, so foreign-authored items stay on the delivery
 /// carrier (which keeps original signer provenance). Relay subscribers
 /// converge on the next certified checkpoint, which this host signs.
-fn relay_publishable(owner: &SessionOwner, message: &qos_peer_state::NeighbourMsg) -> bool {
+///
+/// `host_device` is the publishing host's device key. Every host that sends
+/// durable publications over the relay co-edit carrier applies this rule.
+#[must_use]
+pub fn relay_publishable(host_device: &[u8; 32], message: &qos_peer_state::NeighbourMsg) -> bool {
     match message {
         qos_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
-            envelope.author.as_bytes() == &owner.peer().authority().device_public_key
+            envelope.author.as_bytes() == host_device
         }
         _ => true,
     }
@@ -774,7 +778,7 @@ fn publish_committed(owner: &SessionOwner, session: &NativeSubscription) -> Resu
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send_committed(owner, |bytes, kind| {
             let message: qos_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
-            if !relay_publishable(owner, &message) {
+            if !relay_publishable(&owner.peer().authority().device_public_key, &message) {
                 return Ok(());
             }
             match retention(&message, kind == Retention::Checkpoint) {
