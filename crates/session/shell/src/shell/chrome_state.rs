@@ -2418,6 +2418,15 @@ impl ChromeState {
         self.dnd() || self.notifications_auto_quiet()
     }
 
+    /// Whether the person's focus schedule is holding banners at this local
+    /// time.
+    pub fn focus_schedule_on(&self, local_minute: u16, weekday_from_monday: u8) -> bool {
+        self.notification_policy
+            .focus
+            .active_until(local_minute, weekday_from_monday)
+            .is_some()
+    }
+
     /// Why banners are being held, for the status pill: Do Not Disturb, an
     /// automatic hold while presenting or sharing, or the focus schedule and
     /// when it ends. `None` when notifications show normally.
