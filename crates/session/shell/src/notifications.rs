@@ -260,6 +260,9 @@ pub struct IncomingNotification {
     /// communications app. The shell hashes and checks it against its private
     /// Contacts-owned registry before it can affect focus policy.
     pub contact_endpoint: Option<String>,
+    /// The system sound this notification stands for, from its `category`
+    /// hint; `None` when the sender asked for silence (`suppress-sound`).
+    pub sound: Option<settings_store::system_sounds::SystemSoundEvent>,
 }
 
 type ActionTap = Arc<dyn Fn(u32, &str) + Send + Sync + 'static>;
@@ -847,6 +850,28 @@ fn parse_urgency(hints: &HashMap<String, OwnedValue>) -> u8 {
         .unwrap_or(1)
 }
 
+/// The system sound a notification asks for: `None` when the sender set
+/// `suppress-sound`, otherwise the event its `category` hint names.
+#[cfg(any(test, target_os = "linux"))]
+fn parse_notification_sound(
+    hints: &HashMap<String, OwnedValue>,
+) -> Option<settings_store::system_sounds::SystemSoundEvent> {
+    let suppressed = hints
+        .get("suppress-sound")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| bool::try_from(value).ok())
+        .unwrap_or(false);
+    let category = hints
+        .get("category")
+        .and_then(|value| value.try_clone().ok())
+        .and_then(|value| String::try_from(value).ok());
+    (!suppressed).then(|| {
+        settings_store::system_sounds::SystemSoundEvent::for_notification_category(
+            category.as_deref(),
+        )
+    })
+}
+
 #[cfg(any(test, target_os = "linux"))]
 fn parse_badge_count(hints: &HashMap<String, OwnedValue>) -> Option<u32> {
     hints
@@ -1145,6 +1170,7 @@ impl NotificationService {
                 contact_endpoint: (!foreign_identity)
                     .then(|| parse_contact_endpoint(&hints))
                     .flatten(),
+                sound: parse_notification_sound(&hints),
             },
             sharing,
         );
@@ -1656,6 +1682,7 @@ mod tests {
             caller: None,
             badge_count: None,
             contact_endpoint: None,
+            sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
         });
         assert_eq!(b.pending_incoming_len(), 1);
         let drained = b.drain_incoming();
@@ -1707,6 +1734,26 @@ mod tests {
                 ("snooze".to_string(), "Snooze".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn category_and_suppress_sound_hints_pick_the_system_sound() {
+        use settings_store::system_sounds::SystemSoundEvent;
+        let mut hints: HashMap<String, OwnedValue> = HashMap::new();
+        assert_eq!(
+            parse_notification_sound(&hints),
+            Some(SystemSoundEvent::Notification)
+        );
+        hints.insert(
+            "category".into(),
+            OwnedValue::from(zbus::zvariant::Str::from("im.received")),
+        );
+        assert_eq!(
+            parse_notification_sound(&hints),
+            Some(SystemSoundEvent::Message)
+        );
+        hints.insert("suppress-sound".into(), OwnedValue::from(true));
+        assert_eq!(parse_notification_sound(&hints), None);
     }
 
     #[test]

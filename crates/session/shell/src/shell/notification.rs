@@ -1280,6 +1280,7 @@ mod tests {
             caller: Some(PortalCaller::new(WorkspaceId(9), "org.mail")),
             badge_count: None,
             contact_endpoint: None,
+            sound: Some(settings_store::system_sounds::SystemSoundEvent::Notification),
         }
     }
 

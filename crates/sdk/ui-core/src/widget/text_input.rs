@@ -2628,8 +2628,19 @@ impl TextInput {
         if self.multiline && self.multiline_shaped {
             self.single_origin = Point::new(
                 self.rect.x0 + self.ml_left(),
-                self.rect.y0 + ML_PAD_Y - self.scroll_y,
+                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
             );
+        }
+    }
+
+    /// Adopt the paragraph just shaped by [`Self::measure_wrapped_content`]
+    /// for hit-testing and carets, as painting would. A host that skips
+    /// painting an off-screen field keeps its geometry current this way.
+    pub(super) fn adopt_measured_layout(&mut self) {
+        if self.multiline && !self.masked() && self.single_layout.is_some() {
+            self.multiline_shaped = true;
+            self.lines.clear();
+            self.refresh_multiline_origin();
         }
     }
 

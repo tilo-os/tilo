@@ -27,7 +27,7 @@ def validate(args):
     if (not re.fullmatch(r'0|[1-9][0-9]{0,11}', args.epoch)
             or int(args.epoch) > 253402300799):
         raise ValueError('WPE epoch must be canonical Unix seconds through year 9999')
-    if not re.fullmatch(r'code\.tilo\.so/tilo/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
+    if not re.fullmatch(r'registry\.tilo\.so/tilo/tilo-development-wpe-cache-(?:[a-z0-9-]+-)?'
                         + re.escape(args.architecture), args.cache):
         raise ValueError('WPE cache must be a dedicated development repository for this architecture')
     for name in ('base', 'rpms', 'kernel', 'wpe'):

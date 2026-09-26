@@ -1278,6 +1278,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: vec!["so.tilo.notes".into()],
         }];
         let out = p.catalogue_results_for_with_hosts(
@@ -1308,6 +1309,7 @@ mod tests {
             keywords: Vec::new(),
             mime_types: Vec::new(),
             terminal: false,
+            icon: None,
             window_identities: vec![host_id.into()],
         }];
         p.catalogue_results_for_with_hosts(

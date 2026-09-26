@@ -706,6 +706,11 @@ impl WindowGroup {
         self.bar.tabs()
     }
 
+    /// Replace tab `id`'s artwork. `true` when that changed what it paints.
+    pub fn set_tab_icon(&mut self, id: u64, icon: Option<icons::AppImage>) -> bool {
+        self.bar.set_icon(id, icon)
+    }
+
     pub fn active_tab_id(&self) -> u64 {
         self.bar.active_id()
     }

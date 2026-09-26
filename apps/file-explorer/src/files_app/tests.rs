@@ -208,6 +208,438 @@ mod open_with_tests {
                 .any(|label| label == "Paste")
         );
     }
+
+    /// A host route that records what Files asked of it.
+    struct RecordingRoute {
+        apps: Vec<crate::open_with::OpenWithApp>,
+        calls: std::cell::RefCell<Vec<String>>,
+    }
+
+    impl crate::open_with::OpenWithRoute for RecordingRoute {
+        fn candidates(&self, _path: &Path) -> crate::open_with::OpenWithCandidates {
+            self.calls.borrow_mut().push("candidates".into());
+            crate::open_with::OpenWithCandidates {
+                type_label: ".pdf files".into(),
+                apps: self.apps.clone(),
+            }
+        }
+        fn open_with(&self, path: &Path, app_id: &str) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("open {} {app_id}", path.display()));
+            Ok(())
+        }
+        fn set_default(&self, path: &Path, app_id: &str) -> Result<(), String> {
+            self.calls
+                .borrow_mut()
+                .push(format!("default {} {app_id}", path.display()));
+            Ok(())
+        }
+    }
+
+    impl RecordingRoute {
+        fn actions(&self) -> Vec<String> {
+            self.calls
+                .borrow()
+                .iter()
+                .filter(|call| *call != "candidates")
+                .cloned()
+                .collect()
+        }
+    }
+
+    struct ClearRoute;
+    impl Drop for ClearRoute {
+        fn drop(&mut self) {
+            crate::open_with::clear_open_with_route();
+            clear_document_opener();
+        }
+    }
+
+    fn pdf_route() -> (Rc<RecordingRoute>, ClearRoute) {
+        let route = Rc::new(RecordingRoute {
+            apps: vec![
+                crate::open_with::OpenWithApp {
+                    id: "org.gnome.Evince.desktop".into(),
+                    name: "Evince".into(),
+                    is_default: true,
+                },
+                crate::open_with::OpenWithApp {
+                    id: "so.tilo.pdf-viewer".into(),
+                    name: "PDF Viewer".into(),
+                    is_default: false,
+                },
+            ],
+            calls: std::cell::RefCell::default(),
+        });
+        crate::open_with::set_open_with_route(route.clone());
+        (route, ClearRoute)
+    }
+
+    fn menu_labels(menu: &ContextMenu) -> Vec<String> {
+        menu.items()
+            .iter()
+            .filter_map(|item| item.label().map(str::to_string))
+            .collect()
+    }
+
+    fn pdf_widget() -> FileExplorerWidget {
+        let mut w = FileExplorerWidget::new();
+        w.current_path = PathBuf::from("/docs");
+        w.entries = vec![file_entry("slides.pdf"), file_entry("notes.txt")];
+        w.selection.select_only(0);
+        w
+    }
+
+    #[test]
+    fn open_with_lists_the_default_first_and_opens_exactly_the_chosen_app() {
+        let (route, _clear) = pdf_route();
+        // Choosing an app never goes through activation's opener or the
+        // standalone desktop handler.
+        set_document_opener(|path| panic!("activation opener used for {}", path.display()));
+        let mut w = pdf_widget();
+        w.open_context_menu(Point::new(40.0, 40.0));
+        assert!(menu_labels(&w.context_menu).contains(&"Open With".to_string()));
+
+        w.open_open_with_submenu(Point::new(200.0, 40.0));
+        assert_eq!(
+            menu_labels(&w.submenu),
+            vec!["Evince (default)", "PDF Viewer", "Other Application…"]
+        );
+        let viewer = w.submenu_commands[1].clone().expect("an app row");
+        assert_eq!(
+            viewer,
+            FileCommand::OpenWith {
+                path: PathBuf::from("/docs/slides.pdf"),
+                app_id: "so.tilo.pdf-viewer".into(),
+                always: false,
+            }
+        );
+        w.apply_command(viewer);
+        assert_eq!(
+            route.actions(),
+            vec!["open /docs/slides.pdf so.tilo.pdf-viewer"]
+        );
+        assert_eq!(w.status, None, "a successful open reports nothing");
+    }
+
+    #[test]
+    fn always_use_makes_the_app_the_default_before_opening() {
+        let (route, _clear) = pdf_route();
+        let mut w = pdf_widget();
+        w.apply_command(FileCommand::OpenWith {
+            path: PathBuf::from("/docs/slides.pdf"),
+            app_id: "so.tilo.pdf-viewer".into(),
+            always: true,
+        });
+        assert_eq!(
+            route.actions(),
+            vec![
+                "default /docs/slides.pdf so.tilo.pdf-viewer",
+                "open /docs/slides.pdf so.tilo.pdf-viewer",
+            ]
+        );
+        assert_eq!(w.status.as_deref(), Some("PDF Viewer now opens .pdf files"));
+    }
+
+    #[test]
+    fn open_with_is_offered_only_for_one_regular_file() {
+        let (_route, _clear) = pdf_route();
+        let mut w = pdf_widget();
+        w.entries.push(Entry {
+            is_dir: true,
+            ..file_entry("Folder")
+        });
+        w.selection.select_only(2);
+        assert_eq!(w.open_with_subject(), None, "folders open in Files");
+        w.selection.select_only(0);
+        w.selection.toggle(1);
+        assert_eq!(w.open_with_subject(), None, "one file at a time");
+    }
+
+    #[test]
+    fn without_a_route_open_with_says_so_and_launches_nothing() {
+        crate::open_with::clear_open_with_route();
+        let mut w = pdf_widget();
+        w.apply_command(FileCommand::OpenWith {
+            path: PathBuf::from("/docs/slides.pdf"),
+            app_id: "so.tilo.pdf-viewer".into(),
+            always: false,
+        });
+        assert!(
+            w.status
+                .as_deref()
+                .is_some_and(|status| status.contains("slides.pdf")),
+            "{:?}",
+            w.status
+        );
+        w.open_open_with_submenu(Point::new(10.0, 10.0));
+        assert_eq!(
+            menu_labels(&w.submenu),
+            vec!["No application opens this file"]
+        );
+    }
+
+    #[test]
+    fn open_with_is_a_typed_action_on_file_resources() {
+        let (route, _clear) = pdf_route();
+        let mut w = pdf_widget();
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
+        let spec = ui::tilo_actions::door::resolve(
+            &resources,
+            &ui::tilo_actions::ActionAddress::new(&entry_id, "open-with"),
+        )
+        .expect("file resources publish open-with");
+        let app = spec
+            .params()
+            .iter()
+            .find(|param| param.name == "app")
+            .expect("an app parameter");
+        assert_eq!(
+            app.choices
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            vec!["org.gnome.Evince.desktop", "so.tilo.pdf-viewer"]
+        );
+        let mut refused = serde_json::Map::new();
+        refused.insert("app".into(), "rm.desktop".into());
+        assert!(spec.build_json(&refused).is_err(), "only a candidate binds");
+
+        let mut args = serde_json::Map::new();
+        args.insert("app".into(), "so.tilo.pdf-viewer".into());
+        args.insert("always".into(), true.into());
+        let encoded = spec.build_json(&args).unwrap();
+        assert!(
+            Widget::invoke_resource_operation(
+                &mut w,
+                spec.kind,
+                &encoded.type_id,
+                &encoded.payload,
+                &doc,
+                &automerge::ROOT,
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            route.actions(),
+            vec![
+                "default /docs/slides.pdf so.tilo.pdf-viewer",
+                "open /docs/slides.pdf so.tilo.pdf-viewer",
+            ]
+        );
+        let folder = crate::search_provider::entry_resource_id(Path::new("/docs/notes.txt"));
+        assert!(
+            ui::tilo_actions::door::resolve(
+                &resources,
+                &ui::tilo_actions::ActionAddress::new(&folder, "open-with:so.tilo.pdf-viewer"),
+            )
+            .is_none(),
+            "per-app rows are only published for the chooser's file"
+        );
+    }
+
+    #[test]
+    fn other_application_searches_every_app_to_open_once_or_always() {
+        let (route, _clear) = pdf_route();
+        let mut w = pdf_widget();
+        w.apply_command(FileCommand::OpenWithOther);
+        assert!(w.app_chooser_open(), "the shared palette opens");
+        assert!(Widget::traps_focus(&w), "and owns the keyboard");
+        let rows: Vec<(String, Option<String>)> = w
+            .app_chooser
+            .visible_entries()
+            .into_iter()
+            .map(|row| (row.label.clone(), row.group.clone()))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Evince".to_string(), Some("Open once".to_string())),
+                ("PDF Viewer".to_string(), Some("Open once".to_string())),
+                (
+                    "Evince".to_string(),
+                    Some("Always use for .pdf files".to_string())
+                ),
+                (
+                    "PDF Viewer".to_string(),
+                    Some("Always use for .pdf files".to_string())
+                ),
+            ]
+        );
+        // Picking a row resolves through the published resource, exactly as
+        // the application host dispatches a palette selection.
+        let doc = automerge::AutoCommit::new();
+        let resources = Widget::resources(&w, &doc);
+        let entry_id = crate::search_provider::entry_resource_id(Path::new("/docs/slides.pdf"));
+        let spec = ui::tilo_actions::door::resolve(
+            &resources,
+            &ui::tilo_actions::ActionAddress::new(
+                &entry_id,
+                "always-open-with:org.gnome.Evince.desktop",
+            ),
+        )
+        .expect("the chooser's rows are real actions");
+        let encoded = spec.build_json(&serde_json::Map::new()).unwrap();
+        Widget::invoke_resource_operation(
+            &mut w,
+            spec.kind,
+            &encoded.type_id,
+            &encoded.payload,
+            &doc,
+            &automerge::ROOT,
+        )
+        .unwrap();
+        assert_eq!(
+            route.actions(),
+            vec![
+                "default /docs/slides.pdf org.gnome.Evince.desktop",
+                "open /docs/slides.pdf org.gnome.Evince.desktop",
+            ]
+        );
+        assert!(!w.app_chooser_open(), "a pick closes the chooser");
+    }
+
+    #[test]
+    fn candidates_are_asked_once_per_type_per_listing() {
+        let (route, _clear) = pdf_route();
+        let w = pdf_widget();
+        let doc = automerge::AutoCommit::new();
+        let _ = Widget::resources(&w, &doc);
+        let _ = Widget::resources(&w, &doc);
+        let asked = route
+            .calls
+            .borrow()
+            .iter()
+            .filter(|call| *call == "candidates")
+            .count();
+        assert_eq!(asked, 2, "one ask for .pdf and one for .txt, then cached");
+    }
+
+    fn displayed_names(w: &FileExplorerWidget) -> Vec<String> {
+        w.displayed_entries()
+            .iter()
+            .map(|entry| entry.name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn recent_lists_what_you_opened_newest_first_and_survives_a_restart() {
+        let config = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(folder.path().join(name), name).unwrap();
+        }
+        set_document_opener(|_| Ok(()));
+        let _clear = ClearRoute;
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        w.navigate(folder.path().to_path_buf());
+        assert_eq!(displayed_names(&w), vec!["a.txt", "b.txt", "c.txt"]);
+        let mut runner = RecRunner::default();
+        for name in ["b.txt", "a.txt", "c.txt", "a.txt"] {
+            let index = displayed_names(&w)
+                .iter()
+                .position(|candidate| candidate == name)
+                .unwrap();
+            assert!(w.open_entry(index, &mut runner).unwrap());
+        }
+        assert!(runner.opened.is_empty(), "the host opened every file");
+
+        w.apply_command(FileCommand::Navigate(crate::recent::location()));
+        assert!(w.error.is_none(), "{:?}", w.error);
+        assert_eq!(
+            displayed_names(&w),
+            vec!["a.txt", "c.txt", "b.txt"],
+            "recency order, not the folder's name sort"
+        );
+        assert_eq!(
+            crate::breadcrumbs::breadcrumb_components(&w.current_path, None, &[])
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<_>>(),
+            vec!["Recent"]
+        );
+
+        let reopened =
+            FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        assert_eq!(
+            reopened
+                .recent_entries()
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["a.txt", "c.txt", "b.txt"]
+        );
+    }
+
+    #[test]
+    fn recent_forgets_deleted_files_and_on_request() {
+        let config = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        for name in ["keep.txt", "gone.txt", "drop.txt"] {
+            std::fs::write(folder.path().join(name), name).unwrap();
+        }
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        for name in ["keep.txt", "gone.txt", "drop.txt"] {
+            w.note_recent(&folder.path().join(name), crate::recent::RecentUse::Changed);
+        }
+        std::fs::remove_file(folder.path().join("gone.txt")).unwrap();
+        w.navigate(crate::recent::location());
+        assert_eq!(displayed_names(&w), vec!["drop.txt", "keep.txt"]);
+
+        w.selection.select_only(0);
+        w.open_context_menu(Point::new(20.0, 20.0));
+        let labels = menu_labels(&w.context_menu);
+        assert!(
+            labels.contains(&"Open Containing Folder".to_string()),
+            "{labels:?}"
+        );
+        assert!(labels.contains(&"Remove from Recent".to_string()));
+        assert!(!labels.contains(&"New Folder".to_string()), "{labels:?}");
+        assert!(!labels.contains(&"Paste".to_string()));
+
+        w.apply_command(FileCommand::ForgetRecent(folder.path().join("drop.txt")));
+        assert_eq!(displayed_names(&w), vec!["keep.txt"]);
+        assert!(folder.path().join("drop.txt").exists(), "the file stays");
+
+        w.apply_command(FileCommand::NewFolder);
+        assert_eq!(
+            w.status.as_deref(),
+            Some("Recent is not a folder; open one to add files")
+        );
+
+        w.selection.select_only(0);
+        w.apply_command(FileCommand::RevealInFolder(folder.path().join("keep.txt")));
+        assert_eq!(w.current_path, folder.path());
+        let selected = w.selection.primary().unwrap();
+        assert_eq!(w.displayed_entries()[selected].name, "keep.txt");
+    }
+
+    #[test]
+    fn a_rename_keeps_the_file_in_recent() {
+        let config = tempfile::tempdir().unwrap();
+        let folder = tempfile::tempdir().unwrap();
+        std::fs::write(folder.path().join("draft.txt"), "x").unwrap();
+        let mut w = FileExplorerWidget::with_persistence(Some(config.path().to_path_buf()), None);
+        w.navigate(folder.path().to_path_buf());
+        w.note_recent(
+            &folder.path().join("draft.txt"),
+            crate::recent::RecentUse::Opened,
+        );
+        w.selection.select_only(0);
+        w.begin_rename();
+        w.set_rename_buffer("final.txt".into());
+        assert!(w.commit_rename());
+        assert_eq!(
+            w.recent_entries()
+                .iter()
+                .map(|entry| entry.name.clone())
+                .collect::<Vec<_>>(),
+            vec!["final.txt"]
+        );
+    }
 }
 
 /// Tests for the real command-application paths — the things a user actually
@@ -4217,6 +4649,7 @@ mod injected_startup_tests {
         HostedFileServices {
             thumbnails: None,
             document_opener: None,
+            open_with: None,
         }
     }
 

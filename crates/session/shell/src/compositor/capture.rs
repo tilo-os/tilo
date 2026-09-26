@@ -22,6 +22,7 @@ use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
+    ScreenshotSendTarget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
@@ -90,6 +91,12 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// "Send…" chose a target for the saved screenshot; the compositor
+    /// routes it over the device fabric or into the workspace.
+    ScreenshotSendRequested {
+        path: PathBuf,
+        target: ScreenshotSendTarget,
+    },
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -608,6 +615,16 @@ impl CaptureExecutor {
                     ScreenshotCommand::CopyLast => self
                         .copy_last_screenshot(frame_builder)
                         .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::SendLast(target) => {
+                        self.last_screenshot.clone().map_or_else(
+                            || {
+                                CaptureOutcome::Failed(
+                                    "there is no saved screenshot to send".into(),
+                                )
+                            },
+                            |path| CaptureOutcome::ScreenshotSendRequested { path, target },
+                        )
+                    }
                 }
             } else if let Some(command) = intent.replay_command {
                 match command {
@@ -1189,6 +1206,7 @@ impl CaptureExecutor {
                 let copied = ui::clipboard_copy_image(width as usize, height as usize, &rgba);
                 if copied {
                     frame_builder.set_capture_screenshot_finished(true, width, height, preview);
+                    play_shutter(frame_builder);
                     Ok(CaptureOutcome::Copied { width, height })
                 } else {
                     Err("the clipboard refused image data".into())
@@ -1208,6 +1226,7 @@ impl CaptureExecutor {
                     tracing::warn!(path = %path.display(), "screenshot saved but not copied");
                 }
                 frame_builder.set_capture_screenshot_finished(false, width, height, preview);
+                play_shutter(frame_builder);
                 Ok(CaptureOutcome::Saved(path))
             }
             CaptureDestination::FloatingWindow => {
@@ -1215,6 +1234,14 @@ impl CaptureExecutor {
             }
         }
     }
+}
+
+/// The shutter sound for a screenshot the person just took.
+fn play_shutter(frame_builder: &mut FrameBuilder) {
+    frame_builder.with_chrome(|chrome| {
+        let _ =
+            chrome.play_system_sound(settings_store::system_sounds::SystemSoundEvent::Screenshot);
+    });
 }
 
 fn refresh_mirror(

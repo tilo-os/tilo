@@ -25,6 +25,18 @@ struct RouteState {
     revision: u64,
 }
 
+/// Process-local route history, exported so a dev reload can put the same
+/// screen back. Unknown names are rejected by [`RouteHandle::adopt_stack`].
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RouteSnapshot {
+    /// Older screens, oldest first.
+    pub past: Vec<String>,
+    /// The screen that was showing.
+    pub current: String,
+    /// Screens reachable with Forward, nearest last.
+    pub future: Vec<String>,
+}
+
 /// A cloneable controller for one router's process-local route stack.
 ///
 /// Route changes are presentation state: they do not mutate the app document,
@@ -216,6 +228,48 @@ impl RouteHandle {
         } else {
             Err(RouteError::UnknownRoute(route.to_owned()))
         }
+    }
+
+    /// Export the history for a same-process-session reload.
+    #[must_use]
+    pub fn export_stack(&self) -> RouteSnapshot {
+        let state = self.state.borrow();
+        RouteSnapshot {
+            past: state.stack.past().to_vec(),
+            current: state.stack.current().clone(),
+            future: state.stack.future().to_vec(),
+        }
+    }
+
+    /// Replace the history when every name is still registered.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RouteError::UnknownRoute`] or
+    /// [`RouteError::RevisionExhausted`] without changing history.
+    pub fn adopt_stack(&self, snapshot: &RouteSnapshot) -> Result<bool, RouteError> {
+        for route in snapshot
+            .past
+            .iter()
+            .chain(std::iter::once(&snapshot.current))
+            .chain(snapshot.future.iter())
+        {
+            self.require_known(route)?;
+        }
+        let mut state = self.state.borrow_mut();
+        if state.stack.past() == snapshot.past.as_slice()
+            && state.stack.current() == &snapshot.current
+            && state.stack.future() == snapshot.future.as_slice()
+        {
+            return Ok(false);
+        }
+        advance_revision(&mut state.revision)?;
+        state.stack = NavStack::from_parts(
+            snapshot.past.clone(),
+            snapshot.current.clone(),
+            snapshot.future.clone(),
+        );
+        Ok(true)
     }
 
     fn snapshot(&self) -> RouteState {
@@ -478,6 +532,14 @@ impl Widget for Router {
 
     fn needs_idle_sync(&self) -> bool {
         self.handle.snapshot().revision != self.seen.revision || self.child.needs_idle_sync()
+    }
+
+    fn dev_route(&self) -> Option<RouteSnapshot> {
+        Some(self.handle.export_stack())
+    }
+
+    fn restore_dev_route(&mut self, route: &RouteSnapshot) -> bool {
+        self.handle.adopt_stack(route).unwrap_or(false)
     }
 
     fn draw_with_presence(

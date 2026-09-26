@@ -617,6 +617,96 @@ pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
 /// to every touchpad through libinput's send-events mode.
 pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 
+/// How a clickpad (a touchpad whose whole surface is the button) decides
+/// which button a physical press means. libinput decides per device which of
+/// these it supports; the compositor asks only for a supported one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadClickMethod {
+    /// The bottom strip is split into left, middle and right button areas.
+    Areas,
+    /// One finger is a left click, two a right click, three a middle click,
+    /// wherever they rest.
+    Clickfinger,
+    /// Whatever libinput picks for the device (areas on most PC clickpads,
+    /// finger count on Apple-style ones). Also what an unknown value reads
+    /// as, so one odd string never discards the rest of the section.
+    #[default]
+    #[serde(other)]
+    Default,
+}
+
+impl TouchpadClickMethod {
+    pub const ALL: [Self; 3] = [Self::Default, Self::Areas, Self::Clickfinger];
+}
+
+/// When a touchpad produces scrolling instead of pointer motion.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TouchpadScrollMethod {
+    /// One finger along the right or bottom edge scrolls.
+    Edge,
+    /// Two fingers moving together scroll; also what an unknown value reads
+    /// as.
+    #[default]
+    #[serde(other)]
+    TwoFinger,
+}
+
+impl TouchpadScrollMethod {
+    pub const ALL: [Self; 2] = [Self::TwoFinger, Self::Edge];
+}
+
+/// `input` key for the scroll-distance multiplier applied to wheel and
+/// finger scrolling alike.
+pub const SCROLL_SPEED_KEY: &str = "scroll_speed";
+/// Slowest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MIN: f64 = 0.25;
+/// Fastest scroll multiplier the Settings slider can reach.
+pub const SCROLL_SPEED_MAX: f64 = 4.0;
+
+/// Clamp a persisted scroll multiplier into the supported range; anything
+/// non-finite is the neutral `1.0`.
+pub fn clamp_scroll_speed(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(SCROLL_SPEED_MIN, SCROLL_SPEED_MAX)
+    } else {
+        1.0
+    }
+}
+
+/// The scroll multiplier for a `0.0 … 1.0` slider position. The scale is
+/// logarithmic so the midpoint is exactly `1.0` and halving feels as large a
+/// step as doubling.
+pub fn scroll_speed_from_slider(position: f64) -> f64 {
+    let position = if position.is_finite() {
+        position.clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let span = SCROLL_SPEED_MAX.log2();
+    clamp_scroll_speed((span * (2.0 * position - 1.0)).exp2())
+}
+
+/// The slider position for a persisted multiplier; the inverse of
+/// [`scroll_speed_from_slider`].
+pub fn scroll_speed_to_slider(speed: f64) -> f64 {
+    let span = SCROLL_SPEED_MAX.log2();
+    f64::midpoint(clamp_scroll_speed(speed).log2() / span, 1.0).clamp(0.0, 1.0)
+}
+
+/// Default bounce-keys window: a second press of the same key this soon
+/// after its release is treated as a bounce, not a keystroke.
+pub const BOUNCE_KEYS_DEFAULT_DELAY_MS: u32 = 300;
+/// Shortest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MIN_DELAY_MS: u32 = 50;
+/// Longest bounce-keys window Settings offers.
+pub const BOUNCE_KEYS_MAX_DELAY_MS: u32 = 1_000;
+
+fn default_scroll_speed() -> f64 {
+    1.0
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent input-device toggles serialised by field name; consumers in other \
@@ -654,6 +744,12 @@ pub struct RichInputConfig {
     pub keyboard_layouts: Vec<String>,
     pub compose_key: Option<String>,
     pub touchpad_gestures: bool,
+    pub touchpad_click_method: TouchpadClickMethod,
+    pub touchpad_scroll_method: TouchpadScrollMethod,
+    /// Scroll-distance multiplier for wheels and touchpads, within
+    /// [`SCROLL_SPEED_MIN`] … [`SCROLL_SPEED_MAX`].
+    #[serde(default = "default_scroll_speed")]
+    pub scroll_speed: f64,
     pub pen_output: Option<String>,
 }
 
@@ -679,6 +775,9 @@ impl Default for RichInputConfig {
             keyboard_layouts: vec!["us".into()],
             compose_key: None,
             touchpad_gestures: true,
+            touchpad_click_method: TouchpadClickMethod::Default,
+            touchpad_scroll_method: TouchpadScrollMethod::TwoFinger,
+            scroll_speed: default_scroll_speed(),
             pen_output: None,
         }
     }
@@ -788,6 +887,20 @@ impl RichInputConfig {
             .get("compose_key")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
+        // Likewise for the touchpad choices: each is read on its own so one
+        // unexpected value only resets itself.
+        config.touchpad_click_method = section
+            .get("touchpad_click_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.touchpad_scroll_method = section
+            .get("touchpad_scroll_method")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_default();
+        config.scroll_speed = section
+            .get(SCROLL_SPEED_KEY)
+            .and_then(serde_json::Value::as_f64)
+            .map_or(1.0, clamp_scroll_speed);
         config.normalise_sources();
         config
     }
@@ -889,6 +1002,41 @@ pub enum ShortcutAction {
     ResizeWider,
     /// Bring back the most recently closed tab in the current workspace.
     ReopenClosedTab,
+    /// Focus the Nth window group of the current strip (Super+1 … Super+9).
+    FocusGroup1,
+    FocusGroup2,
+    FocusGroup3,
+    FocusGroup4,
+    FocusGroup5,
+    FocusGroup6,
+    FocusGroup7,
+    FocusGroup8,
+    FocusGroup9,
+    OpenFiles,
+    OpenTerminal,
+    ClipboardHistory,
+    Notifications,
+    ToggleFullscreen,
+    ToggleMagnifier,
+    PowerMenu,
+}
+
+impl ShortcutAction {
+    /// The strip position a `FocusGroupN` action selects, counting from 0.
+    pub fn focus_group_index(self) -> Option<usize> {
+        Some(match self {
+            Self::FocusGroup1 => 0,
+            Self::FocusGroup2 => 1,
+            Self::FocusGroup3 => 2,
+            Self::FocusGroup4 => 3,
+            Self::FocusGroup5 => 4,
+            Self::FocusGroup6 => 5,
+            Self::FocusGroup7 => 6,
+            Self::FocusGroup8 => 7,
+            Self::FocusGroup9 => 8,
+            _ => return None,
+        })
+    }
 }
 
 /// Desktop-navigation preferences consumed directly by the shell.
@@ -918,13 +1066,24 @@ pub enum QuickSettingsControl {
     AirplaneMode,
     MobileData,
     DoNotDisturb,
+    /// Stop a convertible's screen following the device. Shown only where
+    /// an accelerometer exists.
+    RotationLock,
 }
 
 impl QuickSettingsControl {
     /// A small, useful surface for a typical laptop.  Airplane mode and Do
     /// Not Disturb are available extras, not always-visible destinations:
     /// the compact root must still fit a small display with a VPN present.
-    pub const DEFAULT: [Self; 4] = [Self::Wifi, Self::Bluetooth, Self::Vpn, Self::NightLight];
+    /// Rotation lock is hidden on machines that cannot rotate, so it costs
+    /// room only on a convertible.
+    pub const DEFAULT: [Self; 5] = [
+        Self::Wifi,
+        Self::Bluetooth,
+        Self::Vpn,
+        Self::NightLight,
+        Self::RotationLock,
+    ];
 
     /// Wi-Fi remains reachable even after customisation: it is the recovery
     /// path for connecting a newly installed desktop to a network.
@@ -1258,6 +1417,7 @@ impl KeyChord {
             "enter" => "Enter",
             "escape" => "Escape",
             "space" => "Space",
+            "delete" => "Delete",
             "f1" => "F1",
             other => other,
         };
@@ -1398,6 +1558,18 @@ impl Default for ShortcutConfig {
                 key: key.to_string(),
             }
         }
+        fn ctrl_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Ctrl".to_string()]),
+                key: key.to_string(),
+            }
+        }
+        fn super_alt_chord(key: &str) -> KeyChord {
+            KeyChord {
+                modifiers: BTreeSet::from(["Alt".to_string(), "Super".to_string()]),
+                key: key.to_string(),
+            }
+        }
         let bindings = [
             (ShortcutAction::Search, super_chord("k")),
             (ShortcutAction::WorkspaceOverview, super_chord("tab")),
@@ -1431,6 +1603,28 @@ impl Default for ShortcutConfig {
             // Browsers' reopen-closed-tab chord, on the desktop's own
             // modifier; plain Super+T keeps adding a tab.
             (ShortcutAction::ReopenClosedTab, super_shift_chord("t")),
+            (ShortcutAction::FocusGroup1, super_chord("1")),
+            (ShortcutAction::FocusGroup2, super_chord("2")),
+            (ShortcutAction::FocusGroup3, super_chord("3")),
+            (ShortcutAction::FocusGroup4, super_chord("4")),
+            (ShortcutAction::FocusGroup5, super_chord("5")),
+            (ShortcutAction::FocusGroup6, super_chord("6")),
+            (ShortcutAction::FocusGroup7, super_chord("7")),
+            (ShortcutAction::FocusGroup8, super_chord("8")),
+            (ShortcutAction::FocusGroup9, super_chord("9")),
+            (ShortcutAction::OpenFiles, super_chord("e")),
+            (ShortcutAction::OpenTerminal, ctrl_alt_chord("t")),
+            (ShortcutAction::ClipboardHistory, super_chord("v")),
+            // Super+N already opens an app as an adjacent window, so the
+            // notification list takes Windows' other Action Center key.
+            (ShortcutAction::Notifications, super_chord("a")),
+            (ShortcutAction::ToggleFullscreen, super_chord("f")),
+            // GNOME's and Windows' magnifier keys (Super+Alt+8, Super+Plus)
+            // — the second is already the resize-wider default.
+            (ShortcutAction::ToggleMagnifier, super_alt_chord("8")),
+            // The session action sheet: the chord every PC user tries when
+            // something has hung.
+            (ShortcutAction::PowerMenu, ctrl_alt_chord("delete")),
         ]
         .into_iter()
         .collect();
@@ -1932,6 +2126,39 @@ mod tests {
         );
         assert!(cfg.validate().is_ok(), "no other default claims the chord");
     }
+
+    #[test]
+    fn standard_desktop_chords_have_their_conventional_defaults() {
+        let cfg = ShortcutConfig::default();
+        let shown = |action| cfg.bindings[&action].display();
+        for (n, action) in [
+            ShortcutAction::FocusGroup1,
+            ShortcutAction::FocusGroup2,
+            ShortcutAction::FocusGroup3,
+            ShortcutAction::FocusGroup4,
+            ShortcutAction::FocusGroup5,
+            ShortcutAction::FocusGroup6,
+            ShortcutAction::FocusGroup7,
+            ShortcutAction::FocusGroup8,
+            ShortcutAction::FocusGroup9,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(shown(action), format!("Super+{}", n + 1));
+            assert_eq!(action.focus_group_index(), Some(n));
+        }
+        assert_eq!(shown(ShortcutAction::OpenFiles), "Super+e");
+        assert_eq!(shown(ShortcutAction::OpenTerminal), "Ctrl+Alt+t");
+        assert_eq!(shown(ShortcutAction::ClipboardHistory), "Super+v");
+        assert_eq!(shown(ShortcutAction::Notifications), "Super+a");
+        assert_eq!(shown(ShortcutAction::ToggleFullscreen), "Super+f");
+        assert_eq!(shown(ShortcutAction::ToggleMagnifier), "Super+Alt+8");
+        assert_eq!(shown(ShortcutAction::PowerMenu), "Ctrl+Alt+Delete");
+        assert_eq!(ShortcutAction::OpenFiles.focus_group_index(), None);
+        assert!(cfg.validate().is_ok(), "no two defaults share a chord");
+    }
+
     #[test]
     fn shortcut_conflicts_are_rejected_without_overwriting() {
         let mut cfg = ShortcutConfig::default();
@@ -2082,7 +2309,7 @@ mod tests {
     #[test]
     fn desktop_navigation_defaults_are_complete_and_conflict_free() {
         let cfg = ShortcutConfig::default();
-        assert_eq!(cfg.bindings.len(), 22);
+        assert_eq!(cfg.bindings.len(), 38);
         let unique: BTreeSet<_> = cfg.bindings.values().collect();
         assert_eq!(unique.len(), cfg.bindings.len());
         assert_eq!(
@@ -2169,5 +2396,56 @@ mod tests {
         let cfg = RichInputConfig::from_section(&section);
         assert_eq!(cfg.keyboard_layouts, ["us", "de"]);
         assert_eq!(cfg.active_source_index(), 1);
+    }
+
+    #[test]
+    fn touchpad_click_and_scroll_choices_round_trip_through_the_section() {
+        let config = RichInputConfig {
+            touchpad_click_method: TouchpadClickMethod::Clickfinger,
+            touchpad_scroll_method: TouchpadScrollMethod::Edge,
+            scroll_speed: 2.0,
+            ..Default::default()
+        };
+        let section = serde_json::to_value(&config)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .clone();
+        assert_eq!(section["touchpad_click_method"], "clickfinger");
+        assert_eq!(section["touchpad_scroll_method"], "edge");
+        let back = RichInputConfig::from_section(&section);
+        assert_eq!(back.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(back.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert!((back.scroll_speed - 2.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn unknown_touchpad_choices_reset_only_themselves() {
+        let section = serde_json::json!({
+            "touchpad_click_method": "three_finger_magic",
+            "touchpad_scroll_method": "sideways",
+            "scroll_speed": 99.0,
+            "tap_to_click": false
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let cfg = RichInputConfig::from_section(&section);
+        assert_eq!(cfg.touchpad_click_method, TouchpadClickMethod::Default);
+        assert_eq!(cfg.touchpad_scroll_method, TouchpadScrollMethod::TwoFinger);
+        assert!((cfg.scroll_speed - SCROLL_SPEED_MAX).abs() < f64::EPSILON);
+        assert!(!cfg.tap_to_click, "the rest of the section survives");
+    }
+
+    #[test]
+    fn scroll_slider_midpoint_is_neutral_and_the_mapping_inverts() {
+        assert!((scroll_speed_from_slider(0.5) - 1.0).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(0.0) - SCROLL_SPEED_MIN).abs() < 1e-12);
+        assert!((scroll_speed_from_slider(1.0) - SCROLL_SPEED_MAX).abs() < 1e-12);
+        for position in [0.0, 0.1, 0.25, 0.5, 0.8, 1.0] {
+            let back = scroll_speed_to_slider(scroll_speed_from_slider(position));
+            assert!((back - position).abs() < 1e-9, "{position} -> {back}");
+        }
+        assert!((clamp_scroll_speed(f64::NAN) - 1.0).abs() < f64::EPSILON);
     }
 }

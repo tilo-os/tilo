@@ -15,6 +15,12 @@
 //! sleep, a step asking for confirmation runs unattended only when its
 //! saver consented in advance, and revoking the saver's membership or
 //! deleting the shortcut stops its triggers.
+//!
+//! Applications reach the door under their own identity: the shortcuts app
+//! reads the catalogue it declared and uses its own library, but cannot
+//! invoke another app's action itself, and an app that declared nothing is
+//! refused the catalogue. An application opening starts
+//! a shortcut with the application's id bound as its input.
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -29,8 +35,9 @@ use serde_json::{Map, Value, json};
 use shell::shell::automation_triggers::{Firing, ManualClock, TriggerEvent, TriggerHost, armed};
 use shell::shell::state::WorkspaceAuthority as _;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
-    MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionTarget, workspace_provider,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, InvokeArgument,
+    InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus, RemoteActionMessage,
+    RemoteActionTarget, workspace_provider,
 };
 use tilo_actions::{
     ActionAddress, ActionContext, ActionContract, ActionOutput, ActionParam, InvocationId,
@@ -52,6 +59,12 @@ const FIXTURE_HANDLE: &str = "drafts";
 const RECORD: &str = "file:drafts.qdoc";
 const INBOX: &str = "fixture.drafts:inbox";
 const DEADLINE: Duration = Duration::from_secs(20);
+/// Devices the owner runs applications on, each connecting as the owner.
+const SHORTCUTS_HANDLE: &str = "shortcuts-app";
+const SILENT_HANDLE: &str = "silent-app";
+const INVOKER_HANDLE: &str = "invoker-app";
+const SILENT_APP: &str = "so.tilo.fixture-silent";
+const INVOKER_APP: &str = "so.tilo.fixture-invoker";
 /// A member of the room who is not its owner.
 const BOB: &str = "person:bob";
 /// The person a fixture compositor session acts for.
@@ -164,7 +177,15 @@ fn spawn_broker(
     let broker = shell::shell::collab_broker::spawn_native_harness(
         path.to_path_buf(),
         std::sync::Arc::clone(&membership),
-        vec![device_key(FIXTURE_HANDLE).verifying_key().to_bytes()],
+        [
+            FIXTURE_HANDLE,
+            SHORTCUTS_HANDLE,
+            SILENT_HANDLE,
+            INVOKER_HANDLE,
+        ]
+        .iter()
+        .map(|handle| device_key(handle).verifying_key().to_bytes())
+        .collect(),
     )
     .expect("bind the collaboration service");
     (broker, membership)
@@ -480,6 +501,28 @@ impl Door {
         trigger: &TriggerSpec,
         run: RunId,
     ) -> Result<u64, ActionHostError> {
+        self.fire_with(person, shortcut, trigger, run, Map::new())
+    }
+
+    /// Start the run `firing` asks for, as `person`, with its payload.
+    fn fire_firing(&self, person: &str, firing: &Firing) -> Result<u64, ActionHostError> {
+        self.fire_with(
+            person,
+            &firing.shortcut,
+            &firing.trigger,
+            firing.run,
+            firing.inputs.clone(),
+        )
+    }
+
+    fn fire_with(
+        &self,
+        person: &str,
+        shortcut: &str,
+        trigger: &TriggerSpec,
+        run: RunId,
+        inputs: Map<String, Value>,
+    ) -> Result<u64, ActionHostError> {
         self.broker
             .app_action_broker()
             .expect("the action broker")
@@ -489,6 +532,7 @@ impl Door {
                 shortcut,
                 trigger,
                 run,
+                inputs,
             )
     }
 
@@ -946,14 +990,80 @@ fn a_chord_the_desktop_owns_cannot_start_a_shortcut() {
         other => panic!("a fixed desktop chord must be refused: {other:?}"),
     }
     let watching = triggered_draft(
-        "on-open",
-        vec![TriggerSpec::AppOpened {
-            app_id: FIXTURE.into(),
+        "on-network",
+        vec![TriggerSpec::NetworkChanged {
+            network: None,
+            connected: Some(true),
         }],
     );
     assert!(
         matches!(door.save(&watching), Err(ActionHostError::Refused { .. })),
-        "only keyboard and schedule triggers can be saved"
+        "network triggers cannot be saved yet"
+    );
+}
+
+#[test]
+fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let mut on_open = publish_draft("on-open", &["draft", "publish"]);
+    on_open.inputs = vec![ActionParam::required(
+        "app_id",
+        ParamType::Text,
+        "The application that opened",
+    )];
+    on_open.steps[0] = invoke_step(
+        "draft",
+        "draft",
+        &[("title", Binding::Input("app_id".into()))],
+    );
+    on_open.triggers = vec![TriggerSpec::AppOpened {
+        app_id: FIXTURE.into(),
+    }];
+    door.save(&on_open)
+        .expect("a required input every trigger gives may be required");
+
+    let mut mistyped = on_open.clone();
+    mistyped.id = "mistyped".into();
+    mistyped.inputs[0].ty = ParamType::Integer;
+    match door.save(&mistyped) {
+        Err(ActionHostError::Refused { reason }) => {
+            assert!(reason.contains("`app_id` is integer"), "{reason}");
+        }
+        other => panic!("an input typed against its trigger is refused: {other:?}"),
+    }
+
+    let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
+    let observe = |triggers: &mut TriggerHost, running: &[&str]| {
+        let running: std::collections::BTreeSet<String> =
+            running.iter().map(ToString::to_string).collect();
+        let tree = door.membership.read();
+        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let fired = triggers.observe(TriggerEvent::Apps(&running), &armed);
+        drop(tree);
+        fired
+    };
+    assert!(
+        observe(&mut triggers, &["so.tilo.notes"]).is_empty(),
+        "what is already running when the session starts did not just open"
+    );
+    let fired = observe(&mut triggers, &["so.tilo.notes", FIXTURE]);
+    assert_eq!(fired.len(), 1, "{fired:?}");
+    assert_eq!(fired[0].inputs.get("app_id"), Some(&json!(FIXTURE)));
+    assert!(observe(&mut triggers, &["so.tilo.notes", FIXTURE]).is_empty());
+
+    let job = door
+        .fire_firing(&owner, &fired[0])
+        .expect("the trigger starts the shortcut");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["draft", "publish"]);
+    assert_eq!(
+        door.app.served[0].1.get("title"),
+        Some(&json!(FIXTURE)),
+        "the opened app's id reached the step through the shortcut's input"
     );
 }
 
@@ -1183,4 +1293,273 @@ fn revoking_the_savers_membership_or_deleting_the_shortcut_stops_its_triggers() 
         door.fire(BOB, "bobs", &schedule, RunId::new()),
         Err(ActionHostError::UnknownAction)
     ));
+}
+
+/// An application the owner is using, connected as itself.
+struct AppConnection {
+    manager: CollaborationManager,
+    next_correlation: u64,
+}
+
+impl AppConnection {
+    fn connect(socket: &Path, app_id: &str, device: &str) -> Self {
+        let stream = UnixStream::connect(socket).expect("connect to the collaboration service");
+        let manager = CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            app_id,
+            ROOM,
+            Some(format!("file:{device}.qdoc")),
+            None,
+            endpoint_identity(device),
+        )
+        .expect("start the collaboration client");
+        Self {
+            manager,
+            next_correlation: 1,
+        }
+    }
+
+    /// Send `message` and wait for the answer `answered` picks out, serving
+    /// the fixture meanwhile.
+    fn ask(
+        &mut self,
+        door: &mut Door,
+        message: RemoteActionMessage,
+        answered: impl Fn(&RemoteActionMessage) -> bool,
+    ) -> RemoteActionMessage {
+        self.manager.send(CollabRequest::RemoteAction { message });
+        loop {
+            assert!(Instant::now() < door.deadline, "the door never answered");
+            door.app.pump();
+            for event in self.manager.poll() {
+                if let CollabEvent::RemoteAction { message } = event
+                    && answered(&message)
+                {
+                    return message;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the result is the door's answer; a malformed answer fails the test"
+    )]
+    fn catalogue(&mut self, door: &mut Door) -> Result<CataloguePage, ActionHostError> {
+        let correlation = self.next_correlation;
+        self.next_correlation = self.next_correlation.wrapping_add(1);
+        let answer = self.ask(
+            door,
+            RemoteActionMessage::CatalogueRequest {
+                correlation,
+                query: CatalogueQuery {
+                    max_results: MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            },
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::CatalogueResponse { correlation: answered, .. }
+                        if *answered == correlation
+                )
+            },
+        );
+        match answer {
+            RemoteActionMessage::CatalogueResponse { result, .. } => result,
+            other => panic!("not a catalogue answer: {other:?}"),
+        }
+    }
+
+    fn invoke(
+        &mut self,
+        door: &mut Door,
+        target: RemoteActionTarget,
+        arguments: &Value,
+    ) -> ReceiptStatus {
+        let invocation = InvocationId::new();
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        let answer = self.ask(
+            door,
+            RemoteActionMessage::Invoke(InvokeRequest {
+                invocation,
+                target,
+                argument: if arguments.is_empty() {
+                    InvokeArgument::None
+                } else {
+                    InvokeArgument::Json(arguments)
+                },
+                context: None,
+                confirmation: None,
+                revision: None,
+            }),
+            |message| {
+                matches!(
+                    message,
+                    RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation
+                )
+            },
+        );
+        match answer {
+            RemoteActionMessage::Receipt(receipt) => receipt.status,
+            other => panic!("not a receipt: {other:?}"),
+        }
+    }
+}
+
+/// The door with declared access: the shortcuts app may read the
+/// catalogue, the invoker may also invoke, the silent app declared nothing.
+fn door_with_declared_access() -> Door {
+    let door = Door::open();
+    door.broker
+        .app_action_broker()
+        .expect("the action broker")
+        .set_app_action_access(std::sync::Arc::new(|app: &str| {
+            shell::shell::app_action_access::ActionAccess {
+                query: app == SHORTCUTS_APP_ID || app == INVOKER_APP,
+                invoke: app == INVOKER_APP,
+            }
+        }));
+    door
+}
+
+fn fixture_draft(door: &Door) -> RemoteActionTarget {
+    answer(door.host.query(
+        &door.owner,
+        CatalogueQuery {
+            max_results: MAX_CATALOGUE_PAGE,
+            ..CatalogueQuery::default()
+        },
+    ))
+    .expect("catalogue")
+    .rows
+    .iter()
+    .find(|row| {
+        row.app_id == FIXTURE
+            && row
+                .action
+                .as_ref()
+                .is_some_and(|descriptor| descriptor.address.action == "draft")
+    })
+    .and_then(tilo_actions::remote::CatalogueRow::target)
+    .expect("the fixture offers `draft`")
+}
+
+fn library(action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: workspace_provider(&ROOM.to_string()),
+        address: ActionAddress::new("shortcuts", action),
+    }
+}
+
+#[test]
+fn an_app_that_declared_nothing_is_refused_the_catalogue() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut silent = AppConnection::connect(&socket, SILENT_APP, SILENT_HANDLE);
+    assert_eq!(
+        silent.catalogue(&mut door).map(|page| page.rows.len()),
+        Err(ActionHostError::NotPermitted),
+        "reading the catalogue needs `[actions] query`"
+    );
+    let draft = fixture_draft(&door);
+    assert!(matches!(
+        silent.invoke(&mut door, draft, &json!({"title": "x"})),
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted
+        }
+    ));
+    assert!(door.app.served.is_empty(), "nothing ran");
+}
+
+#[test]
+fn the_shortcuts_app_uses_its_library_but_cannot_invoke_another_app_itself() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut shortcuts = AppConnection::connect(&socket, SHORTCUTS_APP_ID, SHORTCUTS_HANDLE);
+
+    let page = shortcuts
+        .catalogue(&mut door)
+        .expect("the shortcuts app declared `[actions] query`");
+    assert!(
+        page.rows.iter().any(|row| row.app_id == FIXTURE),
+        "it reads what the person using it is offered"
+    );
+
+    let draft = fixture_draft(&door);
+    match shortcuts.invoke(&mut door, draft, &json!({"title": "x"})) {
+        ReceiptStatus::Rejected {
+            error: ActionHostError::NotPermitted,
+        } => {}
+        other => panic!("another app's action is not the shortcuts app's to invoke: {other:?}"),
+    }
+    assert!(door.app.served.is_empty(), "the fixture was never reached");
+
+    // Its own library is its own, used as the person.
+    let saved = publish_draft("from-the-app", &["draft", "publish"]);
+    let arguments = json!({ "shortcut": serde_json::to_value(&saved).unwrap() });
+    match shortcuts.invoke(&mut door, library("create"), &arguments) {
+        ReceiptStatus::Completed { .. } => {}
+        other => panic!("the shortcuts app saves through its own library: {other:?}"),
+    }
+    match shortcuts.invoke(&mut door, library("list"), &json!({})) {
+        ReceiptStatus::Completed { output } => {
+            let listed: Vec<Shortcut> =
+                serde_json::from_value(output.value.expect("the library")).unwrap();
+            assert_eq!(listed.len(), 1);
+            assert_eq!(listed[0].steps, saved.steps);
+            assert_eq!(
+                listed[0].saved_by.as_deref(),
+                Some(owner_principal().as_str()),
+                "saved as the person using the app, not as the app"
+            );
+        }
+        other => panic!("the library lists: {other:?}"),
+    }
+}
+
+#[test]
+fn an_app_that_may_invoke_still_needs_the_workspace_to_grant_it() {
+    let mut door = door_with_declared_access();
+    let socket = door.dir.path().join("collab.sock");
+    let mut invoker = AppConnection::connect(&socket, INVOKER_APP, INVOKER_HANDLE);
+    let draft = fixture_draft(&door);
+
+    match invoker.invoke(&mut door, draft.clone(), &json!({"title": "x"})) {
+        ReceiptStatus::Rejected { .. } => {}
+        other => panic!("an ungranted app is refused: {other:?}"),
+    }
+    assert!(door.app.served.is_empty(), "nothing ran");
+
+    let owner = owner_principal();
+    door.membership
+        .write()
+        .desktop
+        .workspaces
+        .get_mut(0)
+        .expect("the room")
+        .grant_as(
+            &owner,
+            ui::permissions::CapOverride::grant(
+                ui::permissions::Subject::app(INVOKER_APP),
+                ui::permissions::Scope::App(FIXTURE.to_string()),
+                ui::permissions::Verb::Write,
+            ),
+        )
+        .expect("the owner grants the invoker the fixture");
+    if let ReceiptStatus::Rejected { error } =
+        invoker.invoke(&mut door, draft, &json!({"title": "Granted"}))
+    {
+        panic!("a granted app is admitted: {error:?}");
+    }
+    while door.app.served.is_empty() {
+        assert!(
+            Instant::now() < door.deadline,
+            "the fixture was never reached"
+        );
+        door.app.pump();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(door.app.served[0].0, "draft");
 }

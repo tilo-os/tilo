@@ -92,7 +92,13 @@ impl Drop for MountedProcess {
     }
 }
 
-fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], owner: bool) {
+fn install_identity(
+    root: &Path,
+    root_seed: [u8; 32],
+    device_seed: [u8; 32],
+    owner: bool,
+    clock_now_ms: u64,
+) {
     let paths = IdentityPaths::under(root);
     paths.ensure_directories().unwrap();
     let root_key = SigningKey::from_bytes(&root_seed);
@@ -101,7 +107,11 @@ fn install_identity(root: &Path, root_seed: [u8; 32], device_seed: [u8; 32], own
     if owner {
         write_signing_key(&paths.user_privkey, &root_key).unwrap();
     }
-    let issued_at_ns = tilo_clock::unix_now_ns().saturating_sub(1_000_000_000);
+    // The processes validate certificates against the clock files, not the
+    // wall clock, so issue them relative to that clock.
+    let issued_at_ns = clock_now_ms
+        .saturating_mul(1_000_000)
+        .saturating_sub(1_000_000_000);
     let mut cert = DeviceCert {
         user_public_key: root_key.verifying_key().to_bytes(),
         device_public_key: device_key.verifying_key().to_bytes(),
@@ -402,9 +412,21 @@ async fn separate_process_exact_share_evicts_restarts_and_rehydrates() {
     // The real processes advertise their Iroh identities beyond this guest.
     // Keep concurrent CI runs distinct while binding assertions to these keys.
     let host_seed: [u8; 32] = rand::random();
-    install_identity(&host_identity, rand::random(), host_seed, true);
-    install_identity(&viewer_identity, rand::random(), rand::random(), false);
-    install_identity(&loss_identity, rand::random(), rand::random(), false);
+    install_identity(&host_identity, rand::random(), host_seed, true, clock_now);
+    install_identity(
+        &viewer_identity,
+        rand::random(),
+        rand::random(),
+        false,
+        clock_now,
+    );
+    install_identity(
+        &loss_identity,
+        rand::random(),
+        rand::random(),
+        false,
+        clock_now,
+    );
     let host_device = SigningKey::from_bytes(&host_seed)
         .verifying_key()
         .to_bytes();

@@ -505,6 +505,12 @@ impl AppActionBroker {
     }
 
     /// The broker state behind this facade, for the action host.
+    /// Read what each application declared on the action door from
+    /// `resolver` instead of the installed manifests.
+    pub fn set_app_action_access(&self, resolver: crate::shell::app_action_access::AccessResolver) {
+        self.state.set_app_action_access(resolver);
+    }
+
     pub(crate) fn state(&self) -> &Arc<CapnpBrokerState> {
         &self.state
     }
@@ -552,9 +558,10 @@ impl AppActionBroker {
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run)
+            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
     }
 
     pub fn statuses_generation(&self) -> u64 {

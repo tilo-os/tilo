@@ -27,15 +27,22 @@ use crate::support::ratchet::{
 ///  - theme.rs (the single source of truth for literal color values)
 ///  - tokens/** (palette sub-modules — the token origin, not token consumers)
 ///  - presence/render.rs (the HSL helper intentionally encodes per-user hue math)
-///  - tests/** and `#[cfg(test)]` modules inside a src file (test fixtures —
-///    see `support::ratchet::test_module_spans`)
+///  - tests/**, `*_tests.rs`, and `#[cfg(test)]` modules inside a src file
+///    (test fixtures — see `support::ratchet::test_module_spans`). Path-based
+///    test modules extracted beside production code use the `*_tests.rs`
+///    suffix so they stay out of the ratchet the same way inline test bodies do.
 fn is_exempt(path: &Path) -> bool {
     let s = path.to_string_lossy();
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
     s.contains("/theme.rs")
         || s.contains("/tokens/")
         || s.contains("/presence/render.rs")
         || s.contains("/tests/")
-        || path.file_name().is_some_and(|name| name == "tests.rs")
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
 }
 
 fn walk(root: &Path, out: &mut Vec<PathBuf>) {

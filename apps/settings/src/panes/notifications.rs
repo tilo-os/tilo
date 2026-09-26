@@ -435,14 +435,14 @@ impl NotificationsPane {
                 ),
                 value_row(
                     "Notification sounds",
-                    match media::notification_sound::sound_backend() {
-                        media::notification_sound::SoundBackend::Libcanberra => {
+                    match media::event_sound::sound_backend() {
+                        media::event_sound::SoundBackend::Libcanberra => {
                             "Available through the session sound theme"
                         }
-                        media::notification_sound::SoundBackend::PipeWire => {
+                        media::event_sound::SoundBackend::PipeWire => {
                             "Available through the PipeWire session route"
                         }
-                        media::notification_sound::SoundBackend::Unavailable => {
+                        media::event_sound::SoundBackend::Unavailable => {
                             "Unavailable: install libcanberra or PipeWire sound tools"
                         }
                     },

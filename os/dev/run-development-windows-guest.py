@@ -124,7 +124,7 @@ def main():
         (evidence / "signing-receipt.json").write_text(json.dumps(public, indent=2) + "\n")
         recipe = work / "Containerfile.signed-wine"
         recipe.write_text("FROM scratch\nCOPY signed-wine /signed-wine\n")
-        tag = "code.tilo.so/tilo/tilo-development-wine:" + suffix
+        tag = "registry.tilo.so/tilo/tilo-development-wine:" + suffix
         build(tag, recipe, {}, export)
         selected["DEVELOPMENT_WINE_REF"] = publish(tag)
         selected["DEVELOPMENT_WINE_KEY_SHA256"] = key
@@ -132,13 +132,13 @@ def main():
     build_args = {key: selected[key] for key in (
         "WINDOWS_GUEST_BUILDROOT_REF", "DEVELOPMENT_WINE_REF", "DEVELOPMENT_WINE_KEY_SHA256")}
     if not selected["WINDOWS_GUEST_RPMS_REF"]:
-        tag = "code.tilo.so/tilo/tilo-development-windows-guest-rpms:" + suffix
+        tag = "registry.tilo.so/tilo/tilo-development-windows-guest-rpms:" + suffix
         build(tag, "os/Containerfile.windows-guest-rpms", build_args)
         selected["WINDOWS_GUEST_RPMS_REF"] = publish(tag)
         retain()
     run("python3", "os/dev/fetch-windows-guest-assets.py", str(work / "assets"))
     build_args["WINDOWS_GUEST_RPMS_REF"] = selected["WINDOWS_GUEST_RPMS_REF"]
-    tag = "code.tilo.so/tilo/tilo-development-windows-guest:" + suffix
+    tag = "registry.tilo.so/tilo/tilo-development-windows-guest:" + suffix
     build(tag, "os/Containerfile.windows-guest", build_args,
           extra=("--build-context", f"github-assets={work / 'assets'}"))
     guest = publish(tag)

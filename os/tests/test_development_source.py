@@ -50,7 +50,7 @@ class IdentityTests(unittest.TestCase):
         source.inputs(self.reference, self.repository + ':test', 'aarch64', self.revision)
 
     def test_retained_registry_target_matches_native_source_architecture(self):
-        repository = 'code.tilo.so/tilo/tilo-development'
+        repository = 'registry.tilo.so/tilo/tilo-development'
         for architecture in ('aarch64', 'x86_64'):
             source.inputs(repository + '@' + self.digest, repository + ':development-' + architecture,
                           architecture, self.revision)

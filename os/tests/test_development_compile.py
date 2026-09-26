@@ -64,7 +64,7 @@ class CompileBoundaries(unittest.TestCase):
     def test_kernel_pin_selects_native_architecture_and_explicit_candidate(self):
         x86 = 'registry.tilo.so/tilo/tilo-kernel@sha256:' + '1' * 64
         arm = 'registry.tilo.so/tilo/tilo-kernel@sha256:' + '2' * 64
-        candidate = 'code.tilo.so/tilo/tilo-development-kernel-aarch64@sha256:' + '3' * 64
+        candidate = 'registry.tilo.so/tilo/tilo-development-kernel-aarch64@sha256:' + '3' * 64
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary)
             (repo / 'os').mkdir()
@@ -388,7 +388,7 @@ class CompileBoundaries(unittest.TestCase):
         inputs = {'architecture': 'x86_64', 'epoch': '0', 'wpe_buildroot': WPE}
         receipt = {'schema': 1, 'purpose': 'tilo-development-wpe-completed-stage',
             'production_signed': False, 'inputs': inputs,
-            'reference': 'code.tilo.so/tilo/tilo-development-wpe-stage-x86_64@sha256:' + 'a' * 64,
+            'reference': 'registry.tilo.so/tilo/tilo-development-wpe-stage-x86_64@sha256:' + 'a' * 64,
             'config_digest': 'sha256:' + 'b' * 64,
             'build': {'jobs': 6, 'revision': REVISION, 'run_id': '1', 'attempt': '1',
                       'source_completed_stage_id': 'sha256:' + 'c' * 64}}
