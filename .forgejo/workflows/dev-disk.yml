@@ -379,7 +379,7 @@ jobs:
         if: needs.plan.outputs.checkpoint == ''
         run: |
           set -euo pipefail
-          candidate="code.podesta.ai/qos/tilo-vm:build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$ARCH"
+          candidate="code.podesta.ai/qos/tilo-vm:build-candidate-${SOURCE_REVISION:0:12}-$BASE_TRUST-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$ARCH"
           digest_file=$(mktemp /var/tmp/tilo-vm-build-digest.XXXXXX)
           podman push --digestfile "$digest_file" "$DEV_IMAGE" "docker://$candidate"
           digest=$(tr -d '[:space:]' < "$digest_file")
