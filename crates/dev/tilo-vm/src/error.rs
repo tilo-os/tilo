@@ -193,6 +193,10 @@ pub enum CliError {
     Busy { what: String },
     #[error("{0}")]
     InvalidInput(String),
+    #[error("no app set named '{set}'")]
+    UnknownAppSet { set: String, known: Vec<String> },
+    #[error("installing the {set} apps into VM '{vm}' failed")]
+    PackagesFailed { set: String, vm: String },
     #[error("the kernel build failed")]
     KernelBuild { log: String },
     #[error("VM '{vm}' runs kernel {running}, not the {expected} just installed ({detail})")]
@@ -408,6 +412,13 @@ impl CliError {
             Self::Busy { .. } => {
                 "wait for the other command to finish and retry, or pass --force to go ahead anyway".into()
             }
+            Self::UnknownAppSet { known, .. } => format!(
+                "pick one of: {}   (tilo-vm slot apps list shows what each installs)",
+                known.join(", ")
+            ),
+            Self::PackagesFailed { .. } => {
+                "the package manager's output above names the cause; the VM needs network access to the distribution's mirrors (tilo-vm vm ssh -- dnf repolist checks it), then rerun the install".into()
+            }
             Self::InvalidInput(_) => {
                 "e.g. tilo-vm input key ctrl+alt+t   |   input type 'hello'   |   input click left --at 400 300   |   input touch tap 400 300   |   input gamepad press a   (each device: tilo-vm input <key|touch|pen|gamepad> --help; text beyond a US layout: tilo-vm control type '<text>')".into()
             }
@@ -469,7 +480,9 @@ impl CliError {
             | Self::MissingInImage { .. } => "swapping",
             Self::LowDisk { .. } | Self::NoSpace { .. } => "storage",
             Self::ImageRefused { .. } | Self::BaseOlder { .. } | Self::NotBootc { .. } => "images",
-            Self::InvalidInput(_) => "driving",
+            Self::InvalidInput(_) | Self::UnknownAppSet { .. } | Self::PackagesFailed { .. } => {
+                "driving"
+            }
             Self::KernelBuild { .. } | Self::KernelNotRunning { .. } => "kernel",
             Self::ScenarioMedium { .. } | Self::Scenario { .. } | Self::NeedsWorktree { .. } => {
                 "scenarios"
@@ -761,6 +774,14 @@ mod tests {
                 what: "the VM".into(),
             },
             CliError::InvalidInput("bad".into()),
+            CliError::UnknownAppSet {
+                set: "x".into(),
+                known: vec!["verification".into()],
+            },
+            CliError::PackagesFailed {
+                set: "verification".into(),
+                vm: "dev".into(),
+            },
             CliError::ImageRefused {
                 image: "localhost/tilo:latest".into(),
                 problem: "is not a dev image".into(),
@@ -820,6 +841,8 @@ mod tests {
                 | CliError::MissingInImage { .. }
                 | CliError::Busy { .. }
                 | CliError::InvalidInput(_)
+                | CliError::UnknownAppSet { .. }
+                | CliError::PackagesFailed { .. }
                 | CliError::ImageRefused { .. }
                 | CliError::BaseOlder { .. }
                 | CliError::UnknownVm { .. }

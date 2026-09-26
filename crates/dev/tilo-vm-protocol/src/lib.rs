@@ -1006,9 +1006,49 @@ pub fn valid_slot_name(name: &str) -> bool {
         && !name.ends_with('-')
 }
 
+/// Distribution package names travel on a root command line, so only the
+/// characters package names use get through: `gtk4-devel-tools`, `libfoo++`,
+/// `python3.13`. No option can start one.
+pub fn valid_package_name(name: &str) -> bool {
+    let bytes = name.as_bytes();
+    (1..=128).contains(&bytes.len())
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'+'))
+}
+
+/// How long `tilo-vmd install-packages` may take by default.
+pub const INSTALL_TIMEOUT_SECONDS: u64 = 1800;
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn package_names_cannot_smuggle_options_or_shell() {
+        for good in [
+            "xterm",
+            "gtk4-devel-tools",
+            "libstdc++",
+            "python3.13",
+            "a_b",
+        ] {
+            assert!(valid_package_name(good), "{good}");
+        }
+        for bad in [
+            "",
+            "-y",
+            "--installroot=/",
+            "a b",
+            "a;b",
+            "$(x)",
+            "a/b",
+            "*",
+        ] {
+            assert!(!valid_package_name(bad), "{bad}");
+        }
+    }
 
     #[test]
     fn request_line_is_flat_json_rpc() {
