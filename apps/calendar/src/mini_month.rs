@@ -275,7 +275,8 @@ mod tests {
     }
 
     #[test]
-    fn targets_match_the_six_week_grid_and_month_controls() {
+    fn layout_tracks_the_sidebar_exposes_grid_targets_and_hides_when_crowded() {
+        // Targets match the six-week grid and month controls.
         let anchor = date(2026, 9, 15);
         let sidebar = Rect::new(20.0, 10.0, 272.0, 810.0);
         let targets = MiniMonth::layout(sidebar, 200.0).unwrap().targets(anchor);
@@ -291,10 +292,8 @@ mod tests {
             targets[43].1,
             Outcome::SelectDate(date::month_grid(anchor)[41])
         );
-    }
 
-    #[test]
-    fn layout_tracks_the_sidebar_instead_of_caching_first_frame_geometry() {
+        // Layout tracks the sidebar instead of caching first-frame geometry.
         let first = MiniMonth::layout(Rect::new(0.0, 0.0, 252.0, 800.0), 100.0)
             .unwrap()
             .day_cell(0);
@@ -305,10 +304,8 @@ mod tests {
         assert!(resized.x0 > first.x0);
         assert!(resized.width() > first.width());
         assert!(resized.y0 > first.y0);
-    }
 
-    #[test]
-    fn crowded_sidebar_hides_the_component() {
+        // A crowded sidebar hides the component.
         let sidebar = Rect::new(0.0, 0.0, 252.0, 800.0);
         assert!(MiniMonth::layout(sidebar, 100.0).is_some());
         assert!(MiniMonth::layout(sidebar, MiniMonth::content_limit(sidebar)).is_none());

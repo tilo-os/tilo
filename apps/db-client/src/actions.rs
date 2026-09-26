@@ -414,160 +414,168 @@ mod tests {
         ],
     }
 
-    /// `AddConnection` through the real `Action::apply` path writes the profile
-    /// into `root["connections"]` and it reads back with every field intact.
+    /// Connection actions write, replay idempotently, rename and tombstone profiles, and passwords never enter the document.
     #[test]
-    fn add_connection_writes_the_profile_to_the_doc() {
-        let mut doc = AutoCommit::new();
-        let p = profile();
-        add_connection_action(&p).apply(&mut doc).unwrap();
+    fn connection_actions_persist_profiles_without_secrets() {
+        // --- phase: add_connection_writes_the_profile_to_the_doc ---
+        // `AddConnection` through the real `Action::apply` path writes the profile
+        // into `root["connections"]` and it reads back with every field intact.
+        {
+            let mut doc = AutoCommit::new();
+            let p = profile();
+            add_connection_action(&p).apply(&mut doc).unwrap();
 
-        let conns = ConnectionsDoc::read(&doc);
-        assert_eq!(conns.len(), 1);
-        let c = &conns[0];
-        assert_eq!(c.id, p.id);
-        assert_eq!(c.name, "Analytics");
-        assert_eq!(c.engine, Engine::Postgres);
-        assert_eq!(c.host, "db.internal");
-        assert_eq!(c.port, 6543);
-        assert_eq!(c.database, "analytics");
-        assert_eq!(c.user, "reader");
+            let conns = ConnectionsDoc::read(&doc);
+            assert_eq!(conns.len(), 1);
+            let c = &conns[0];
+            assert_eq!(c.id, p.id);
+            assert_eq!(c.name, "Analytics");
+            assert_eq!(c.engine, Engine::Postgres);
+            assert_eq!(c.host, "db.internal");
+            assert_eq!(c.port, 6543);
+            assert_eq!(c.database, "analytics");
+            assert_eq!(c.user, "reader");
+        }
+
+        // --- phase: password_never_enters_the_document ---
+        // The password is NEVER written to the shared document: it is `#[serde(skip)]`
+        // and the add builder drops it, so the read-back profile carries an empty
+        // password and no document key anywhere holds the secret.
+        {
+            let mut doc = AutoCommit::new();
+            let p = profile();
+            assert_eq!(
+                p.password, "s3cret",
+                "precondition: the profile has a secret"
+            );
+            add_connection_action(&p).apply(&mut doc).unwrap();
+
+            // Read-back password is empty.
+            let conns = ConnectionsDoc::read(&doc);
+            assert!(
+                conns[0].password.is_empty(),
+                "read-back profile has no password"
+            );
+
+            // And the raw serialized document contains the secret nowhere.
+            let bytes = doc.save();
+            assert!(
+                !bytes.windows(6).any(|w| w == b"s3cret"),
+                "the saved document must not contain the plaintext password"
+            );
+        }
+
+        // --- phase: add_is_idempotent_on_replay ---
+        // Add is idempotent under replay: applying the same `AddConnection` twice
+        // (as a peer merge or an executor replay might) leaves exactly one row.
+        {
+            let mut doc = AutoCommit::new();
+            let action = add_connection_action(&profile());
+            action.apply(&mut doc).unwrap();
+            action.apply(&mut doc).unwrap();
+            assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
+        }
+
+        // --- phase: remove_connection_keeps_a_stable_tombstone ---
+        // `RemoveConnection` hides exactly the addressed profile while retaining
+        // its stable CRDT row as a tombstone for concurrent peers.
+        {
+            let mut doc = AutoCommit::new();
+            let a = profile();
+            let mut b = ConnectionProfile::new("Shop", Engine::MySql);
+            b.host = "mysql.staging".into();
+            add_connection_action(&a).apply(&mut doc).unwrap();
+            add_connection_action(&b).apply(&mut doc).unwrap();
+            assert_eq!(ConnectionsDoc::read(&doc).len(), 2);
+
+            remove_connection_action(a.id).apply(&mut doc).unwrap();
+            let left = ConnectionsDoc::read(&doc);
+            assert_eq!(left.len(), 1);
+            assert_eq!(left[0].id, b.id, "the other profile survives removal");
+            let list = ConnectionsDoc::list(&doc).expect("connection list exists");
+            assert_eq!(doc.length(&list), 2, "removed row remains a tombstone");
+            let (_, removed_row) = ConnectionsDoc::find(&doc, a.id).expect("tombstone keeps id");
+            assert!(
+                matches!(
+                    doc.get(&removed_row, "removed"),
+                    Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
+                ),
+                "tombstone records removal without deleting the row"
+            );
+        }
+
+        // --- phase: rename_connection_updates_the_name ---
+        // `RenameConnection` updates the addressed profile's name in place.
+        {
+            let mut doc = AutoCommit::new();
+            let p = profile();
+            add_connection_action(&p).apply(&mut doc).unwrap();
+            rename_connection_action(p.id, "Prod analytics")
+                .apply(&mut doc)
+                .unwrap();
+            assert_eq!(ConnectionsDoc::read(&doc)[0].name, "Prod analytics");
+        }
     }
 
-    /// The password is NEVER written to the shared document: it is `#[serde(skip)]`
-    /// and the add builder drops it, so the read-back profile carries an empty
-    /// password and no document key anywhere holds the secret.
+    /// Saved-query actions keep a tombstone that revives its id, and concurrent saves converge without losing rows.
     #[test]
-    fn password_never_enters_the_document() {
-        let mut doc = AutoCommit::new();
-        let p = profile();
-        assert_eq!(
-            p.password, "s3cret",
-            "precondition: the profile has a secret"
-        );
-        add_connection_action(&p).apply(&mut doc).unwrap();
+    fn saved_query_actions_tombstone_and_converge() {
+        // --- phase: saved_query_actions_keep_a_tombstone_and_revive_its_id ---
+        {
+            let mut doc = AutoCommit::new();
+            let id = Uuid::new_v4();
+            save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+                .apply(&mut doc)
+                .unwrap();
+            remove_query_action(id).apply(&mut doc).unwrap();
+            assert!(crate::doc::SavedQueriesDoc::read(&doc).is_empty());
 
-        // Read-back password is empty.
-        let conns = ConnectionsDoc::read(&doc);
-        assert!(
-            conns[0].password.is_empty(),
-            "read-back profile has no password"
-        );
+            save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
+                .apply(&mut doc)
+                .unwrap();
+            let queries = crate::doc::SavedQueriesDoc::read(&doc);
+            assert_eq!(queries.len(), 1);
+            assert_eq!(queries[0].id, id);
+            let list = crate::doc::SavedQueriesDoc::list(&doc).expect("query list exists");
+            assert_eq!(doc.length(&list), 1, "revival must not duplicate a row");
+        }
 
-        // And the raw serialized document contains the secret nowhere.
-        let bytes = doc.save();
-        assert!(
-            !bytes.windows(6).any(|w| w == b"s3cret"),
-            "the saved document must not contain the plaintext password"
-        );
-    }
+        // --- phase: concurrent_saved_queries_converge_without_losing_stable_rows ---
+        {
+            let mut base = AutoCommit::new().with_actor(ActorId::from([1; 16].as_slice()));
+            // Establish the collaborative collection and a common Automerge
+            // history before peers make independent inserts, just as an invited
+            // collaborator would.
+            save_query_action(Uuid::new_v4(), "Shared seed", "SELECT 1")
+                .apply(&mut base)
+                .unwrap();
+            base.commit();
+            let mut left = base.fork().with_actor(ActorId::from([2; 16].as_slice()));
+            let mut right = base.fork().with_actor(ActorId::from([3; 16].as_slice()));
+            let left_id = Uuid::new_v4();
+            let right_id = Uuid::new_v4();
 
-    /// Add is idempotent under replay: applying the same `AddConnection` twice
-    /// (as a peer merge or an executor replay might) leaves exactly one row.
-    #[test]
-    fn add_is_idempotent_on_replay() {
-        let mut doc = AutoCommit::new();
-        let action = add_connection_action(&profile());
-        action.apply(&mut doc).unwrap();
-        action.apply(&mut doc).unwrap();
-        assert_eq!(ConnectionsDoc::read(&doc).len(), 1);
-    }
-
-    #[test]
-    fn saved_query_actions_keep_a_tombstone_and_revive_its_id() {
-        let mut doc = AutoCommit::new();
-        let id = Uuid::new_v4();
-        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
-            .apply(&mut doc)
+            save_query_action(left_id, "Daily totals", "SELECT count(*) FROM orders")
+                .apply(&mut left)
+                .unwrap();
+            save_query_action(
+                right_id,
+                "Recent customers",
+                "SELECT * FROM customers LIMIT 10",
+            )
+            .apply(&mut right)
             .unwrap();
-        remove_query_action(id).apply(&mut doc).unwrap();
-        assert!(crate::doc::SavedQueriesDoc::read(&doc).is_empty());
+            left.commit();
+            right.commit();
+            left.merge_incoming(&mut right).unwrap();
+            let mut merged_left = left.fork();
+            right.merge_incoming(&mut merged_left).unwrap();
 
-        save_query_action(id, "Daily totals", "SELECT count(*) FROM orders")
-            .apply(&mut doc)
-            .unwrap();
-        let queries = crate::doc::SavedQueriesDoc::read(&doc);
-        assert_eq!(queries.len(), 1);
-        assert_eq!(queries[0].id, id);
-        let list = crate::doc::SavedQueriesDoc::list(&doc).expect("query list exists");
-        assert_eq!(doc.length(&list), 1, "revival must not duplicate a row");
-    }
-
-    #[test]
-    fn concurrent_saved_queries_converge_without_losing_stable_rows() {
-        let mut base = AutoCommit::new().with_actor(ActorId::from([1; 16].as_slice()));
-        // Establish the collaborative collection and a common Automerge
-        // history before peers make independent inserts, just as an invited
-        // collaborator would.
-        save_query_action(Uuid::new_v4(), "Shared seed", "SELECT 1")
-            .apply(&mut base)
-            .unwrap();
-        base.commit();
-        let mut left = base.fork().with_actor(ActorId::from([2; 16].as_slice()));
-        let mut right = base.fork().with_actor(ActorId::from([3; 16].as_slice()));
-        let left_id = Uuid::new_v4();
-        let right_id = Uuid::new_v4();
-
-        save_query_action(left_id, "Daily totals", "SELECT count(*) FROM orders")
-            .apply(&mut left)
-            .unwrap();
-        save_query_action(
-            right_id,
-            "Recent customers",
-            "SELECT * FROM customers LIMIT 10",
-        )
-        .apply(&mut right)
-        .unwrap();
-        left.commit();
-        right.commit();
-        left.merge_incoming(&mut right).unwrap();
-        let mut merged_left = left.fork();
-        right.merge_incoming(&mut merged_left).unwrap();
-
-        let visible = crate::doc::SavedQueriesDoc::read(&left);
-        assert_eq!(visible.len(), 3);
-        assert!(visible.iter().any(|query| query.id == left_id));
-        assert!(visible.iter().any(|query| query.id == right_id));
-        assert_eq!(left.get_heads(), right.get_heads(), "two peers converge");
-    }
-
-    /// `RemoveConnection` hides exactly the addressed profile while retaining
-    /// its stable CRDT row as a tombstone for concurrent peers.
-    #[test]
-    fn remove_connection_keeps_a_stable_tombstone() {
-        let mut doc = AutoCommit::new();
-        let a = profile();
-        let mut b = ConnectionProfile::new("Shop", Engine::MySql);
-        b.host = "mysql.staging".into();
-        add_connection_action(&a).apply(&mut doc).unwrap();
-        add_connection_action(&b).apply(&mut doc).unwrap();
-        assert_eq!(ConnectionsDoc::read(&doc).len(), 2);
-
-        remove_connection_action(a.id).apply(&mut doc).unwrap();
-        let left = ConnectionsDoc::read(&doc);
-        assert_eq!(left.len(), 1);
-        assert_eq!(left[0].id, b.id, "the other profile survives removal");
-        let list = ConnectionsDoc::list(&doc).expect("connection list exists");
-        assert_eq!(doc.length(&list), 2, "removed row remains a tombstone");
-        let (_, removed_row) = ConnectionsDoc::find(&doc, a.id).expect("tombstone keeps id");
-        assert!(
-            matches!(
-                doc.get(&removed_row, "removed"),
-                Ok(Some((Value::Scalar(value), _))) if value.as_ref() == &ScalarValue::Boolean(true)
-            ),
-            "tombstone records removal without deleting the row"
-        );
-    }
-
-    /// `RenameConnection` updates the addressed profile's name in place.
-    #[test]
-    fn rename_connection_updates_the_name() {
-        let mut doc = AutoCommit::new();
-        let p = profile();
-        add_connection_action(&p).apply(&mut doc).unwrap();
-        rename_connection_action(p.id, "Prod analytics")
-            .apply(&mut doc)
-            .unwrap();
-        assert_eq!(ConnectionsDoc::read(&doc)[0].name, "Prod analytics");
+            let visible = crate::doc::SavedQueriesDoc::read(&left);
+            assert_eq!(visible.len(), 3);
+            assert!(visible.iter().any(|query| query.id == left_id));
+            assert!(visible.iter().any(|query| query.id == right_id));
+            assert_eq!(left.get_heads(), right.get_heads(), "two peers converge");
+        }
     }
 }

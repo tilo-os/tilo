@@ -380,49 +380,50 @@ mod tests {
     }
 
     #[test]
-    fn parses_dfid_name_and_range_records() {
-        let mut fid = Vec::new();
-        fid.push(INFO_DFID_NAME);
-        fid.push(0);
-        let handle = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        let name = b"hello\0\0\0";
-        let len = 4 + 8 + 8 + handle.len() + name.len();
-        fid.extend_from_slice(&u16::try_from(len).unwrap().to_ne_bytes());
-        fid.extend_from_slice(&[0u8; 8]);
-        fid.extend_from_slice(&u32::try_from(handle.len()).unwrap().to_ne_bytes());
-        fid.extend_from_slice(&7i32.to_ne_bytes());
-        fid.extend_from_slice(&handle);
-        fid.extend_from_slice(name);
-        let mut range = vec![INFO_RANGE, 0];
-        range.extend_from_slice(&24u16.to_ne_bytes());
-        range.extend_from_slice(&0u32.to_ne_bytes());
-        range.extend_from_slice(&4096u64.to_ne_bytes());
-        range.extend_from_slice(&512u64.to_ne_bytes());
-        let mut infos = fid;
-        infos.extend_from_slice(&range);
-        let total = u32::try_from(24 + infos.len()).unwrap();
-        let buf = record(total, FAN_CREATE, FAN_NOFD, &infos);
-        let events = parse_events(&buf).unwrap();
-        assert_eq!(events.len(), 1);
-        let ev = &events[0];
-        assert_eq!(ev.mask, FAN_CREATE);
-        assert_eq!(ev.pid, 42);
-        assert!(ev.fd.is_none());
-        let (h, n) = ev.fid(FidKind::Parent).unwrap();
-        assert_eq!(h.bytes, handle);
-        assert_eq!(h.handle_type, 7);
-        assert_eq!(n.unwrap(), "hello");
-        assert_eq!(ev.range(), Some((4096, 512)));
-    }
-
-    #[test]
-    fn rejects_truncated_events() {
-        let buf = record(64, FAN_CREATE, FAN_NOFD, &[]);
-        assert!(parse_events(&buf).is_err());
-    }
-
-    #[test]
-    fn deny_errno_encodes_errno_in_the_top_byte() {
-        assert_eq!(deny_errno(libc::EIO), FAN_DENY | (5 << 24));
+    fn fanotify_records_parse_strictly_and_deny_errno_is_encoded() {
+        // Phase `parses_dfid_name_and_range_records`.
+        {
+            let mut fid = Vec::new();
+            fid.push(INFO_DFID_NAME);
+            fid.push(0);
+            let handle = [1u8, 2, 3, 4, 5, 6, 7, 8];
+            let name = b"hello\0\0\0";
+            let len = 4 + 8 + 8 + handle.len() + name.len();
+            fid.extend_from_slice(&u16::try_from(len).unwrap().to_ne_bytes());
+            fid.extend_from_slice(&[0u8; 8]);
+            fid.extend_from_slice(&u32::try_from(handle.len()).unwrap().to_ne_bytes());
+            fid.extend_from_slice(&7i32.to_ne_bytes());
+            fid.extend_from_slice(&handle);
+            fid.extend_from_slice(name);
+            let mut range = vec![INFO_RANGE, 0];
+            range.extend_from_slice(&24u16.to_ne_bytes());
+            range.extend_from_slice(&0u32.to_ne_bytes());
+            range.extend_from_slice(&4096u64.to_ne_bytes());
+            range.extend_from_slice(&512u64.to_ne_bytes());
+            let mut infos = fid;
+            infos.extend_from_slice(&range);
+            let total = u32::try_from(24 + infos.len()).unwrap();
+            let buf = record(total, FAN_CREATE, FAN_NOFD, &infos);
+            let events = parse_events(&buf).unwrap();
+            assert_eq!(events.len(), 1);
+            let ev = &events[0];
+            assert_eq!(ev.mask, FAN_CREATE);
+            assert_eq!(ev.pid, 42);
+            assert!(ev.fd.is_none());
+            let (h, n) = ev.fid(FidKind::Parent).unwrap();
+            assert_eq!(h.bytes, handle);
+            assert_eq!(h.handle_type, 7);
+            assert_eq!(n.unwrap(), "hello");
+            assert_eq!(ev.range(), Some((4096, 512)));
+        }
+        // Phase `rejects_truncated_events`.
+        {
+            let buf = record(64, FAN_CREATE, FAN_NOFD, &[]);
+            assert!(parse_events(&buf).is_err());
+        }
+        // Phase `deny_errno_encodes_errno_in_the_top_byte`.
+        {
+            assert_eq!(deny_errno(libc::EIO), FAN_DENY | (5 << 24));
+        }
     }
 }

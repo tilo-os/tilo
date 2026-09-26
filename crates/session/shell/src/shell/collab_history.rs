@@ -255,66 +255,138 @@ mod tests {
     }
 
     #[test]
-    fn history_outlives_the_memory_window_and_a_restart() {
-        let dir = tempfile::tempdir().unwrap();
-        let artifact = ArtifactId::new();
-        let sealed = Some(EncryptionMetadata::content_key(
-            1,
-            ChannelId::new(),
-            ContentRetention::Delta,
-        ));
-        {
-            let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
-            for seq in 1..=10_000 {
-                store.record(&op(artifact, seq, sealed)).unwrap();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn durable_history_survives_restart_torn_tails_and_fills_from_peers() {
+        fn history_outlives_the_memory_window_and_a_restart() {
+            let dir = tempfile::tempdir().unwrap();
+            let artifact = ArtifactId::new();
+            let sealed = Some(EncryptionMetadata::content_key(
+                1,
+                ChannelId::new(),
+                ContentRetention::Delta,
+            ));
+            {
+                let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
+                for seq in 1..=10_000 {
+                    store.record(&op(artifact, seq, sealed)).unwrap();
+                }
+                // Cleartext and single-use MLS messages are not retained.
+                store.record(&op(artifact, 20_000, None)).unwrap();
+                store
+                    .record(&op(
+                        artifact,
+                        20_001,
+                        Some(EncryptionMetadata::mls_application(1, ChannelId::new())),
+                    ))
+                    .unwrap();
             }
-            // Cleartext and single-use MLS messages are not retained.
-            store.record(&op(artifact, 20_000, None)).unwrap();
-            store
-                .record(&op(
-                    artifact,
-                    20_001,
-                    Some(EncryptionMetadata::mls_application(1, ChannelId::new())),
-                ))
-                .unwrap();
+            let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
+            let (newest, exhausted) = store.page_before(artifact, u64::MAX, 100).unwrap();
+            assert_eq!(newest.len(), 100);
+            assert_eq!(newest.first().unwrap().seq, 9_901);
+            assert_eq!(newest.last().unwrap().seq, 10_000);
+            assert!(!exhausted);
+            let (oldest, exhausted) = store.page_before(artifact, 51, 100).unwrap();
+            assert_eq!(oldest.len(), 50);
+            assert_eq!(oldest.first().unwrap().seq, 1);
+            assert!(exhausted);
+            assert_eq!(oldest.first().unwrap().payload, 1_u64.to_le_bytes());
         }
-        let mut store = CollabHistoryStore::open(dir.path().join("history")).unwrap();
-        let (newest, exhausted) = store.page_before(artifact, u64::MAX, 100).unwrap();
-        assert_eq!(newest.len(), 100);
-        assert_eq!(newest.first().unwrap().seq, 9_901);
-        assert_eq!(newest.last().unwrap().seq, 10_000);
-        assert!(!exhausted);
-        let (oldest, exhausted) = store.page_before(artifact, 51, 100).unwrap();
-        assert_eq!(oldest.len(), 50);
-        assert_eq!(oldest.first().unwrap().seq, 1);
-        assert!(exhausted);
-        assert_eq!(oldest.first().unwrap().payload, 1_u64.to_le_bytes());
-    }
 
-    #[test]
-    fn a_torn_tail_is_cut_off_and_appends_continue() {
-        let dir = tempfile::tempdir().unwrap();
-        let artifact = ArtifactId::new();
-        let sealed = Some(EncryptionMetadata::content_key(
-            1,
-            ChannelId::new(),
-            ContentRetention::Checkpoint,
-        ));
-        let root = dir.path().join("history");
-        {
-            let mut store = CollabHistoryStore::open(root.clone()).unwrap();
-            store.record(&op(artifact, 1, sealed)).unwrap();
-            store.record(&op(artifact, 2, sealed)).unwrap();
+        fn a_torn_tail_is_cut_off_and_appends_continue() {
+            let dir = tempfile::tempdir().unwrap();
+            let artifact = ArtifactId::new();
+            let sealed = Some(EncryptionMetadata::content_key(
+                1,
+                ChannelId::new(),
+                ContentRetention::Checkpoint,
+            ));
+            let root = dir.path().join("history");
+            {
+                let mut store = CollabHistoryStore::open(root.clone()).unwrap();
+                store.record(&op(artifact, 1, sealed)).unwrap();
+                store.record(&op(artifact, 2, sealed)).unwrap();
+            }
+            let path = root.join(format!("{}.ops", artifact.0));
+            let mut bytes = fs::read(&path).unwrap();
+            bytes.truncate(bytes.len() - 3);
+            fs::write(&path, bytes).unwrap();
+            let mut store = CollabHistoryStore::open(root).unwrap();
+            store.record(&op(artifact, 3, sealed)).unwrap();
+            let (ops, exhausted) = store.page_before(artifact, u64::MAX, 10).unwrap();
+            assert_eq!(ops.iter().map(|op| op.seq).collect::<Vec<_>>(), [1, 3]);
+            assert!(exhausted);
         }
-        let path = root.join(format!("{}.ops", artifact.0));
-        let mut bytes = fs::read(&path).unwrap();
-        bytes.truncate(bytes.len() - 3);
-        fs::write(&path, bytes).unwrap();
-        let mut store = CollabHistoryStore::open(root).unwrap();
-        store.record(&op(artifact, 3, sealed)).unwrap();
-        let (ops, exhausted) = store.page_before(artifact, u64::MAX, 10).unwrap();
-        assert_eq!(ops.iter().map(|op| op.seq).collect::<Vec<_>>(), [1, 3]);
-        assert!(exhausted);
+
+        /// A device that joined later pages back past its own history: its
+        /// broker asks peers once, keeps only signed content-key ciphertext of
+        /// the requested range, and serves it from durable history.
+        fn peer_history_fills_durable_history_for_later_pages() {
+            let dir = tempfile::tempdir().unwrap();
+            let (key, _) = collab_types::generate_keypair();
+            let artifact = ArtifactId::new();
+            let sealed = Some(EncryptionMetadata::content_key(
+                4,
+                ChannelId::new(),
+                ContentRetention::Delta,
+            ));
+            let mut channels = super::super::collab_core::BrokerChannels {
+                history: Some(CollabHistoryStore::open(dir.path().join("history")).unwrap()),
+                ..Default::default()
+            };
+            for seq in 101..=130 {
+                let envelope = signed(&key, artifact, seq, sealed);
+                channels.record_history(&envelope);
+                channels.state_for(artifact).record_validated_op(envelope);
+            }
+            let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);
+            assert_eq!(page.first().unwrap().seq, 121);
+            assert_eq!(page.len(), 10, "memory and durable copies are not doubled");
+            assert!(!exhausted);
+            let (_, exhausted) = channels.scrollback_page(artifact, 101, 10);
+            assert!(exhausted, "nothing older locally");
+
+            let answer: Vec<SignedOp> = (1..=100)
+                .map(|seq| signed(&key, artifact, seq, sealed))
+                .collect();
+            assert_eq!(
+                channels.accept_peer_history(artifact, &answer),
+                0,
+                "unrequested pages are ignored"
+            );
+            assert!(channels.request_peer_history(artifact, 101));
+            assert!(
+                !channels.request_peer_history(artifact, 101),
+                "an identical fresh request is not repeated"
+            );
+            let mut forged = signed(&key, artifact, 50, sealed);
+            forged.payload.push(0);
+            forged.seq = 99_999;
+            let hostile = vec![
+                forged,
+                signed(&key, artifact, 60, None),
+                signed(&key, ArtifactId::new(), 70, sealed),
+                signed(&key, artifact, 200, sealed),
+            ];
+            assert_eq!(channels.accept_peer_history(artifact, &hostile), 0);
+            assert_eq!(channels.accept_peer_history(artifact, &answer), 100);
+            assert_eq!(
+                channels.accept_peer_history(artifact, &answer),
+                0,
+                "a repeated answer adds nothing"
+            );
+            let (page, exhausted) = channels.scrollback_page(artifact, 101, 500);
+            assert_eq!(page.len(), 100);
+            assert_eq!(page.first().unwrap().seq, 1);
+            assert!(exhausted);
+        }
+
+        history_outlives_the_memory_window_and_a_restart();
+        a_torn_tail_is_cut_off_and_appends_continue();
+        peer_history_fills_durable_history_for_later_pages();
     }
 
     fn signed(
@@ -327,69 +399,5 @@ mod tests {
         envelope.author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
         collab_types::sign_op(&mut envelope, key).unwrap();
         envelope
-    }
-
-    /// A device that joined later pages back past its own history: its
-    /// broker asks peers once, keeps only signed content-key ciphertext of
-    /// the requested range, and serves it from durable history.
-    #[test]
-    fn peer_history_fills_durable_history_for_later_pages() {
-        let dir = tempfile::tempdir().unwrap();
-        let (key, _) = collab_types::generate_keypair();
-        let artifact = ArtifactId::new();
-        let sealed = Some(EncryptionMetadata::content_key(
-            4,
-            ChannelId::new(),
-            ContentRetention::Delta,
-        ));
-        let mut channels = super::super::collab_core::BrokerChannels {
-            history: Some(CollabHistoryStore::open(dir.path().join("history")).unwrap()),
-            ..Default::default()
-        };
-        for seq in 101..=130 {
-            let envelope = signed(&key, artifact, seq, sealed);
-            channels.record_history(&envelope);
-            channels.state_for(artifact).record_validated_op(envelope);
-        }
-        let (page, exhausted) = channels.scrollback_page(artifact, 131, 10);
-        assert_eq!(page.first().unwrap().seq, 121);
-        assert_eq!(page.len(), 10, "memory and durable copies are not doubled");
-        assert!(!exhausted);
-        let (_, exhausted) = channels.scrollback_page(artifact, 101, 10);
-        assert!(exhausted, "nothing older locally");
-
-        let answer: Vec<SignedOp> = (1..=100)
-            .map(|seq| signed(&key, artifact, seq, sealed))
-            .collect();
-        assert_eq!(
-            channels.accept_peer_history(artifact, &answer),
-            0,
-            "unrequested pages are ignored"
-        );
-        assert!(channels.request_peer_history(artifact, 101));
-        assert!(
-            !channels.request_peer_history(artifact, 101),
-            "an identical fresh request is not repeated"
-        );
-        let mut forged = signed(&key, artifact, 50, sealed);
-        forged.payload.push(0);
-        forged.seq = 99_999;
-        let hostile = vec![
-            forged,
-            signed(&key, artifact, 60, None),
-            signed(&key, ArtifactId::new(), 70, sealed),
-            signed(&key, artifact, 200, sealed),
-        ];
-        assert_eq!(channels.accept_peer_history(artifact, &hostile), 0);
-        assert_eq!(channels.accept_peer_history(artifact, &answer), 100);
-        assert_eq!(
-            channels.accept_peer_history(artifact, &answer),
-            0,
-            "a repeated answer adds nothing"
-        );
-        let (page, exhausted) = channels.scrollback_page(artifact, 101, 500);
-        assert_eq!(page.len(), 100);
-        assert_eq!(page.first().unwrap().seq, 1);
-        assert!(exhausted);
     }
 }

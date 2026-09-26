@@ -569,12 +569,44 @@ mod tests {
     use winit::keyboard::{KeyLocation, NativeKeyCode, PhysicalKey};
 
     #[test]
-    fn retained_layout_keeps_the_active_theme_before_first_paint() {
-        let mut popover = opened();
-        let mut taffy = TaffyTree::new();
-        let mut map = HashMap::new();
-        popover.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
-        assert_eq!(popover.layout_theme.text_scale, 2.0);
+    fn menu_pointer_selection_dismissal_and_targets() {
+        // Case `click_on_a_row_selects_it_click_outside_dismisses`.
+        {
+            let mut p = opened();
+            let row2 = p.item_rect(2).expect("published item geometry");
+            assert_eq!(p.item_at(row2.center()), Some(2));
+            assert!(p.item_rect(p.items().len()).is_none());
+            dispatch(&mut p, &cursor_at(row2.center()));
+            assert!(dispatch(&mut p, &left_press()), "row click consumed");
+            assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
+            assert!(!p.is_open());
+
+            // Re-open and click well outside → dismiss, no selection.
+            p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), Some(2));
+            let mut tr = TextRenderer::new();
+            p.place(&mut tr, &Theme::dark());
+            let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
+            dispatch(&mut p, &cursor_at(outside));
+            assert!(dispatch(&mut p, &left_press()), "outside click swallowed");
+            assert!(!p.is_open(), "outside click dismisses");
+            assert_eq!(p.take_selection(), None, "no selection on dismiss");
+        }
+
+        // Case `option_rows_meet_the_shared_touch_target_floor`.
+        {
+            let p = opened();
+            assert!(p.row_rect(0).height() >= 44.0);
+            assert!(p.row_rect(4).height() >= 44.0);
+        }
+
+        // Case `retained_layout_keeps_the_active_theme_before_first_paint`.
+        {
+            let mut popover = opened();
+            let mut taffy = TaffyTree::new();
+            let mut map = HashMap::new();
+            popover.build_layout(&mut taffy, &Theme::dark().with_text_scale(2.0), &mut map);
+            assert_eq!(popover.layout_theme.text_scale, 2.0);
+        }
     }
 
     fn synth_device() -> DeviceId {
@@ -658,191 +690,171 @@ mod tests {
     }
 
     #[test]
-    fn arrow_keys_move_highlight_and_are_consumed() {
-        let mut p = opened();
-        assert_eq!(p.highlighted(), 1, "opens highlighting the selected row");
-        assert!(
-            dispatch(&mut p, &key(NamedKey::ArrowDown)),
-            "ArrowDown consumed"
-        );
-        assert_eq!(p.highlighted(), 2);
-        assert!(
-            dispatch(&mut p, &key(NamedKey::ArrowUp)),
-            "ArrowUp consumed"
-        );
-        assert_eq!(p.highlighted(), 1);
-    }
-
-    #[test]
-    fn home_and_end_jump_to_the_ends() {
-        let mut p = opened();
-        assert!(dispatch(&mut p, &key(NamedKey::End)));
-        assert_eq!(p.highlighted(), 4, "End jumps to the last row");
-        assert!(dispatch(&mut p, &key(NamedKey::Home)));
-        assert_eq!(p.highlighted(), 0, "Home jumps to the first row");
-    }
-
-    #[test]
-    fn highlight_clamps_at_the_ends_without_wrapping() {
-        let mut p = opened();
-        for _ in 0..10 {
-            dispatch(&mut p, &key(NamedKey::ArrowDown));
+    fn menu_keyboard_moves_clamps_selects_and_swallows_keys() {
+        // Case `arrow_keys_move_highlight_and_are_consumed`.
+        {
+            let mut p = opened();
+            assert_eq!(p.highlighted(), 1, "opens highlighting the selected row");
+            assert!(
+                dispatch(&mut p, &key(NamedKey::ArrowDown)),
+                "ArrowDown consumed"
+            );
+            assert_eq!(p.highlighted(), 2);
+            assert!(
+                dispatch(&mut p, &key(NamedKey::ArrowUp)),
+                "ArrowUp consumed"
+            );
+            assert_eq!(p.highlighted(), 1);
         }
-        assert_eq!(p.highlighted(), 4, "ArrowDown clamps at the last row");
-        for _ in 0..10 {
-            dispatch(&mut p, &key(NamedKey::ArrowUp));
+
+        // Case `home_and_end_jump_to_the_ends`.
+        {
+            let mut p = opened();
+            assert!(dispatch(&mut p, &key(NamedKey::End)));
+            assert_eq!(p.highlighted(), 4, "End jumps to the last row");
+            assert!(dispatch(&mut p, &key(NamedKey::Home)));
+            assert_eq!(p.highlighted(), 0, "Home jumps to the first row");
         }
-        assert_eq!(p.highlighted(), 0, "ArrowUp clamps at the first row");
-    }
 
-    #[test]
-    fn enter_selects_the_highlight_closes_and_reports_it() {
-        let mut p = opened();
-        dispatch(&mut p, &key(NamedKey::ArrowDown)); // 1 -> 2
-        dispatch(&mut p, &key(NamedKey::ArrowDown)); // 2 -> 3
-        assert!(dispatch(&mut p, &key(NamedKey::Enter)), "Enter consumed");
-        assert!(!p.is_open(), "selecting closes the menu");
-        assert_eq!(
-            p.take_selection(),
-            Some(3),
-            "the chosen index is reported once"
-        );
-        assert_eq!(p.take_selection(), None, "selection drains exactly once");
-        assert_eq!(
-            p.selected(),
-            Some(3),
-            "the applied option sticks as selected"
-        );
-    }
-
-    #[test]
-    fn escape_closes_without_selecting() {
-        let mut p = opened();
-        assert!(dispatch(&mut p, &key(NamedKey::Escape)), "Esc consumed");
-        assert!(!p.is_open());
-        assert_eq!(p.take_selection(), None, "Esc makes no selection");
-    }
-
-    #[test]
-    fn unrelated_keys_are_swallowed_not_leaked() {
-        // Focus capture: any key press while open is consumed so it can't
-        // reach the app behind the overlay. A letter that maps to no action
-        // must still return `handled == true` and leave the menu open.
-        let mut p = opened();
-        assert!(
-            dispatch(&mut p, &char_key("x")),
-            "an unrelated key is swallowed"
-        );
-        assert!(p.is_open(), "a no-op key does not close the menu");
-        assert_eq!(p.take_selection(), None);
-        assert!(
-            dispatch(&mut p, &key(NamedKey::Tab)),
-            "Tab is swallowed too (no focus escape)"
-        );
-        assert!(p.is_open());
-    }
-
-    #[test]
-    fn click_on_a_row_selects_it_click_outside_dismisses() {
-        let mut p = opened();
-        let row2 = p.item_rect(2).expect("published item geometry");
-        assert_eq!(p.item_at(row2.center()), Some(2));
-        assert!(p.item_rect(p.items().len()).is_none());
-        dispatch(&mut p, &cursor_at(row2.center()));
-        assert!(dispatch(&mut p, &left_press()), "row click consumed");
-        assert_eq!(p.take_selection(), Some(2), "clicking a row selects it");
-        assert!(!p.is_open());
-
-        // Re-open and click well outside → dismiss, no selection.
-        p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), Some(2));
-        let mut tr = TextRenderer::new();
-        p.place(&mut tr, &Theme::dark());
-        let outside = Point::new(p.rect().x1 + 80.0, p.rect().y1 + 80.0);
-        dispatch(&mut p, &cursor_at(outside));
-        assert!(dispatch(&mut p, &left_press()), "outside click swallowed");
-        assert!(!p.is_open(), "outside click dismisses");
-        assert_eq!(p.take_selection(), None, "no selection on dismiss");
-    }
-
-    #[test]
-    fn option_rows_meet_the_shared_touch_target_floor() {
-        let p = opened();
-        assert!(p.row_rect(0).height() >= 44.0);
-        assert!(p.row_rect(4).height() >= 44.0);
-    }
-
-    #[test]
-    fn accessibility_reports_menu_with_positioned_items() {
-        use crate::a11y::Role;
-        let p = opened();
-        let node = Widget::accessibility(&p).expect("popover is semantic");
-        assert_eq!(node.role, Role::Menu);
-        assert_eq!(node.name.as_deref(), Some("Refresh interval"));
-        assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
-        assert!(!node.state.hidden, "open menu is visible in the tree");
-        assert_eq!(node.children.len(), 5, "one MenuItem per option");
-        for (i, child) in node.children.iter().enumerate() {
-            assert_eq!(child.role, Role::MenuItem);
-            assert_eq!(child.pos_in_set, Some(i + 1));
-            assert_eq!(child.set_size, Some(5));
+        // Case `highlight_clamps_at_the_ends_without_wrapping`.
+        {
+            let mut p = opened();
+            for _ in 0..10 {
+                dispatch(&mut p, &key(NamedKey::ArrowDown));
+            }
+            assert_eq!(p.highlighted(), 4, "ArrowDown clamps at the last row");
+            for _ in 0..10 {
+                dispatch(&mut p, &key(NamedKey::ArrowUp));
+            }
+            assert_eq!(p.highlighted(), 0, "ArrowUp clamps at the first row");
         }
-        // The highlighted row carries focus; the selected row carries selected.
-        assert!(
-            node.children[1].state.focused,
-            "row 1 opens highlighted (== selected)"
-        );
-        assert!(
-            node.children[1].state.selected,
-            "row 1 is the current selection"
-        );
-        assert!(!node.children[0].state.focused);
+
+        // Case `enter_selects_the_highlight_closes_and_reports_it`.
+        {
+            let mut p = opened();
+            dispatch(&mut p, &key(NamedKey::ArrowDown)); // 1 -> 2
+            dispatch(&mut p, &key(NamedKey::ArrowDown)); // 2 -> 3
+            assert!(dispatch(&mut p, &key(NamedKey::Enter)), "Enter consumed");
+            assert!(!p.is_open(), "selecting closes the menu");
+            assert_eq!(
+                p.take_selection(),
+                Some(3),
+                "the chosen index is reported once"
+            );
+            assert_eq!(p.take_selection(), None, "selection drains exactly once");
+            assert_eq!(
+                p.selected(),
+                Some(3),
+                "the applied option sticks as selected"
+            );
+        }
+
+        // Case `escape_closes_without_selecting`.
+        {
+            let mut p = opened();
+            assert!(dispatch(&mut p, &key(NamedKey::Escape)), "Esc consumed");
+            assert!(!p.is_open());
+            assert_eq!(p.take_selection(), None, "Esc makes no selection");
+        }
+
+        // Case `unrelated_keys_are_swallowed_not_leaked`.
+        {
+            fn unrelated_keys_are_swallowed_not_leaked() {
+                // Focus capture: any key press while open is consumed so it can't
+                // reach the app behind the overlay. A letter that maps to no action
+                // must still return `handled == true` and leave the menu open.
+                let mut p = opened();
+                assert!(
+                    dispatch(&mut p, &char_key("x")),
+                    "an unrelated key is swallowed"
+                );
+                assert!(p.is_open(), "a no-op key does not close the menu");
+                assert_eq!(p.take_selection(), None);
+                assert!(
+                    dispatch(&mut p, &key(NamedKey::Tab)),
+                    "Tab is swallowed too (no focus escape)"
+                );
+                assert!(p.is_open());
+            }
+            unrelated_keys_are_swallowed_not_leaked();
+        }
     }
 
     #[test]
-    fn closed_menu_is_hidden_and_paints_nothing() {
-        use vello_encoding::DrawTag;
-        let mut p = Popover::new().with_items(["a", "b"]);
-        let node = Widget::accessibility(&p).unwrap();
-        assert!(node.state.hidden, "closed menu is hidden from the tree");
-        assert_eq!(node.state.expanded, Some(false));
+    fn menu_visibility_focus_trap_and_semantics() {
+        // Case `accessibility_reports_menu_with_positioned_items`.
+        {
+            use crate::a11y::Role;
+            let p = opened();
+            let node = Widget::accessibility(&p).expect("popover is semantic");
+            assert_eq!(node.role, Role::Menu);
+            assert_eq!(node.name.as_deref(), Some("Refresh interval"));
+            assert_eq!(node.state.expanded, Some(true), "open menu is expanded");
+            assert!(!node.state.hidden, "open menu is visible in the tree");
+            assert_eq!(node.children.len(), 5, "one MenuItem per option");
+            for (i, child) in node.children.iter().enumerate() {
+                assert_eq!(child.role, Role::MenuItem);
+                assert_eq!(child.pos_in_set, Some(i + 1));
+                assert_eq!(child.set_size, Some(5));
+            }
+            // The highlighted row carries focus; the selected row carries selected.
+            assert!(
+                node.children[1].state.focused,
+                "row 1 opens highlighted (== selected)"
+            );
+            assert!(
+                node.children[1].state.selected,
+                "row 1 is the current selection"
+            );
+            assert!(!node.children[0].state.focused);
+        }
 
-        let theme = Theme::dark();
-        let mut tr = TextRenderer::new();
-        let presence = PresenceCtx::default();
-        let mut scene = Scene::new();
-        p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert_eq!(fills, 0, "a closed popover emits no fills");
-    }
+        // Case `closed_menu_is_hidden_and_paints_nothing`.
+        {
+            use vello_encoding::DrawTag;
+            let mut p = Popover::new().with_items(["a", "b"]);
+            let node = Widget::accessibility(&p).unwrap();
+            assert!(node.state.hidden, "closed menu is hidden from the tree");
+            assert_eq!(node.state.expanded, Some(false));
 
-    #[test]
-    fn open_menu_traps_focus_and_captures_input() {
-        let p = opened();
-        assert!(Widget::traps_focus(&p), "open popover traps focus");
-        assert!(
-            Widget::modal_capture(&p).is_some(),
-            "open popover reports modal capture"
-        );
-        let closed = Popover::new();
-        assert!(!Widget::traps_focus(&closed));
-        assert!(Widget::modal_capture(&closed).is_none());
-    }
+            let theme = Theme::dark();
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            p.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            let fills = scene
+                .encoding()
+                .draw_tags
+                .iter()
+                .filter(|t| **t == DrawTag::COLOR)
+                .count();
+            assert_eq!(fills, 0, "a closed popover emits no fills");
+        }
 
-    #[test]
-    fn reopen_lands_the_highlight_on_the_current_selection() {
-        let mut p = opened();
-        p.select(3);
-        assert_eq!(p.take_selection(), Some(3));
-        p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
-        assert_eq!(
-            p.highlighted(),
-            3,
-            "re-opening highlights the applied option"
-        );
+        // Case `open_menu_traps_focus_and_captures_input`.
+        {
+            let p = opened();
+            assert!(Widget::traps_focus(&p), "open popover traps focus");
+            assert!(
+                Widget::modal_capture(&p).is_some(),
+                "open popover reports modal capture"
+            );
+            let closed = Popover::new();
+            assert!(!Widget::traps_focus(&closed));
+            assert!(Widget::modal_capture(&closed).is_none());
+        }
+
+        // Case `reopen_lands_the_highlight_on_the_current_selection`.
+        {
+            let mut p = opened();
+            p.select(3);
+            assert_eq!(p.take_selection(), Some(3));
+            p.open_at(Rect::new(100.0, 40.0, 180.0, 68.0), p.selected());
+            assert_eq!(
+                p.highlighted(),
+                3,
+                "re-opening highlights the applied option"
+            );
+        }
     }
 }

@@ -123,30 +123,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn sdr_default_says_no_pq_no_hlg() {
-        let caps = DisplayCapabilities::sdr_default();
-        assert!(!caps.supports_pq_output);
-        assert!(!caps.supports_hlg_output);
-        assert!(!caps.bt2020_gamut);
-        assert!((caps.max_luminance_nits - 100.0).abs() < f32::EPSILON);
-    }
+    fn hdr_capabilities_pick_the_swapchain_format_only_on_hdr10() {
+        fn sdr_default_says_no_pq_no_hlg() {
+            let caps = DisplayCapabilities::sdr_default();
+            assert!(!caps.supports_pq_output);
+            assert!(!caps.supports_hlg_output);
+            assert!(!caps.bt2020_gamut);
+            assert!((caps.max_luminance_nits - 100.0).abs() < f32::EPSILON);
+        }
 
-    #[test]
-    fn preferred_swapchain_format_absent_on_sdr() {
-        let caps = DisplayCapabilities::sdr_default();
-        assert!(preferred_hdr_swapchain_format(&caps).is_none());
-    }
+        fn preferred_swapchain_format_absent_on_sdr() {
+            let caps = DisplayCapabilities::sdr_default();
+            assert!(preferred_hdr_swapchain_format(&caps).is_none());
+        }
 
-    #[test]
-    fn preferred_swapchain_format_picks_rgb10a2_on_hdr10_baseline() {
-        let caps = DisplayCapabilities::hdr10_baseline();
-        let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 should pick a format");
-        assert!(
-            matches!(
-                fmt,
-                vello::wgpu::TextureFormat::Rgba16Float | vello::wgpu::TextureFormat::Rgb10a2Unorm
-            ),
-            "unexpected fmt {fmt:?}"
-        );
+        fn preferred_swapchain_format_picks_rgb10a2_on_hdr10_baseline() {
+            let caps = DisplayCapabilities::hdr10_baseline();
+            let fmt = preferred_hdr_swapchain_format(&caps).expect("HDR10 should pick a format");
+            assert!(
+                matches!(
+                    fmt,
+                    vello::wgpu::TextureFormat::Rgba16Float
+                        | vello::wgpu::TextureFormat::Rgb10a2Unorm
+                ),
+                "unexpected fmt {fmt:?}"
+            );
+        }
+
+        sdr_default_says_no_pq_no_hlg();
+        preferred_swapchain_format_absent_on_sdr();
+        preferred_swapchain_format_picks_rgb10a2_on_hdr10_baseline();
     }
 }

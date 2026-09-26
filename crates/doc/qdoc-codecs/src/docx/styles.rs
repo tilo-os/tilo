@@ -764,48 +764,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolves_named_heading_and_character_styles() {
-        let xml = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-        <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
-        <w:style w:type="paragraph" w:styleId="MySub"><w:basedOn w:val="Heading1"/></w:style>
-        <w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>
-        </w:styles>"#;
-        let mut reg = StyleRegistry::default();
-        parse_styles(xml, &mut reg);
-        assert_eq!(reg.heading_level("Heading1"), Some(1));
-        assert_eq!(
-            reg.heading_level("MySub"),
-            Some(1),
-            "inherits heading via basedOn"
-        );
-        assert_eq!(reg.para_align("Heading1").as_deref(), Some("center"));
-        assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
-        assert!(
-            reg.para_text_marks("Heading1")
-                .iter()
-                .any(|(n, _)| n == "strong")
-        );
-    }
-
-    #[test]
-    fn heading_level_falls_back_to_well_known_ids() {
-        // No styles.xml registered, but "Heading2" is a recognised id.
-        let reg = StyleRegistry::default();
-        assert_eq!(reg.heading_level("Heading2"), Some(2));
-        assert_eq!(reg.heading_level("Normal"), None);
-    }
-
-    #[test]
-    fn detects_ordered_vs_bulleted_numbering() {
-        let xml = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-        <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>
-        <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>
-        <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
-        <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
-        </w:numbering>"#;
-        let mut reg = StyleRegistry::default();
-        parse_numbering(xml, &mut reg);
-        assert_eq!(reg.num_ordered.get("1"), Some(&false), "bullet → unordered");
-        assert_eq!(reg.num_ordered.get("2"), Some(&true), "decimal → ordered");
+    fn styles_and_numbering_resolve() {
+        // Phase `resolves_named_heading_and_character_styles`.
+        {
+            let xml = br#"<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:style w:type="paragraph" w:styleId="Heading1"><w:name w:val="heading 1"/><w:pPr><w:outlineLvl w:val="0"/><w:jc w:val="center"/></w:pPr><w:rPr><w:b/></w:rPr></w:style>
+            <w:style w:type="paragraph" w:styleId="MySub"><w:basedOn w:val="Heading1"/></w:style>
+            <w:style w:type="character" w:styleId="Strong"><w:rPr><w:b/></w:rPr></w:style>
+            </w:styles>"#;
+            let mut reg = StyleRegistry::default();
+            parse_styles(xml, &mut reg);
+            assert_eq!(reg.heading_level("Heading1"), Some(1));
+            assert_eq!(
+                reg.heading_level("MySub"),
+                Some(1),
+                "inherits heading via basedOn"
+            );
+            assert_eq!(reg.para_align("Heading1").as_deref(), Some("center"));
+            assert!(reg.text_marks("Strong").iter().any(|(n, _)| n == "strong"));
+            assert!(
+                reg.para_text_marks("Heading1")
+                    .iter()
+                    .any(|(n, _)| n == "strong")
+            );
+        }
+        // Phase `heading_level_falls_back_to_well_known_ids`.
+        {
+            // No styles.xml registered, but "Heading2" is a recognised id.
+            let reg = StyleRegistry::default();
+            assert_eq!(reg.heading_level("Heading2"), Some(2));
+            assert_eq!(reg.heading_level("Normal"), None);
+        }
+        // Phase `detects_ordered_vs_bulleted_numbering`.
+        {
+            let xml = br#"<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/></w:lvl></w:abstractNum>
+            <w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/></w:lvl></w:abstractNum>
+            <w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>
+            <w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>
+            </w:numbering>"#;
+            let mut reg = StyleRegistry::default();
+            parse_numbering(xml, &mut reg);
+            assert_eq!(reg.num_ordered.get("1"), Some(&false), "bullet → unordered");
+            assert_eq!(reg.num_ordered.get("2"), Some(&true), "decimal → ordered");
+        }
     }
 }

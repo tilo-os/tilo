@@ -331,57 +331,68 @@ mod tests {
     }
 
     #[test]
-    fn substitute_replaces_known_keeps_unknown() {
+    fn placeholders_substitute_and_are_referenced_in_order() {
+        // Case "known and unknown": known keys are replaced, unknown kept.
         let v = vars(&[("base_url", "https://api.example.com"), ("ver", "v2")]);
         let out = substitute("{{base_url}}/{{ver}}/users/{{missing}}", &v);
-        assert_eq!(out, "https://api.example.com/v2/users/{{missing}}");
-    }
+        assert_eq!(
+            out, "https://api.example.com/v2/users/{{missing}}",
+            "case known and unknown"
+        );
 
-    #[test]
-    fn substitute_tolerates_inner_whitespace() {
+        // Case "inner whitespace": tolerated inside the braces.
         let v = vars(&[("token", "abc")]);
-        assert_eq!(substitute("Bearer {{ token }}", &v), "Bearer abc");
-    }
+        assert_eq!(
+            substitute("Bearer {{ token }}", &v),
+            "Bearer abc",
+            "case inner whitespace"
+        );
 
-    #[test]
-    fn substitute_handles_unicode_around_placeholders() {
+        // Case "unicode": text around placeholders survives.
         let v = vars(&[("name", "wörld")]);
-        assert_eq!(substitute("héllo {{name}} ☃", &v), "héllo wörld ☃");
-    }
+        assert_eq!(
+            substitute("héllo {{name}} ☃", &v),
+            "héllo wörld ☃",
+            "case unicode"
+        );
 
-    #[test]
-    fn referenced_vars_are_deduped_in_order() {
+        // Case "referenced vars": deduped in first-seen order.
         let refs = referenced_vars("{{a}}/{{b}}/{{a}}");
-        assert_eq!(refs, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(
+            refs,
+            vec!["a".to_string(), "b".to_string()],
+            "case referenced vars"
+        );
     }
 
     #[test]
-    fn pretty_json_indents_valid_input() {
+    fn json_is_pretty_printed_and_tokenized_with_matched_blocks() {
+        // Case "pretty": valid input is indented, invalid input rejected.
         let pretty = pretty_json(r#"{"a":1,"b":[2,3]}"#).unwrap();
-        assert!(pretty.contains("\n  \"a\": 1"));
-        assert!(pretty_json("not json").is_none());
-    }
+        assert!(pretty.contains("\n  \"a\": 1"), "case pretty");
+        assert!(pretty_json("not json").is_none(), "case pretty invalid");
 
-    #[test]
-    fn tokenize_classifies_keys_values_numbers_keywords() {
+        // Case "tokenize": classifies keys, values, numbers and keywords.
         let pretty = pretty_json(r#"{"name":"Ada","age":36,"active":true}"#).unwrap();
         let lines = tokenize_json(&pretty);
         // First line opens the object.
-        assert!(lines[0].opens_block);
-        assert_eq!(lines[0].close_line, Some(lines.len() - 1));
+        assert!(lines[0].opens_block, "case tokenize");
+        assert_eq!(lines[0].close_line, Some(lines.len() - 1), "case tokenize");
         // Find the key token "name".
         let key_line = &lines[1];
         assert!(
             key_line
                 .tokens
                 .iter()
-                .any(|t| t.kind == TokenKind::Key && t.text.contains("name"))
+                .any(|t| t.kind == TokenKind::Key && t.text.contains("name")),
+            "case tokenize key"
         );
         assert!(
             key_line
                 .tokens
                 .iter()
-                .any(|t| t.kind == TokenKind::StringValue && t.text.contains("Ada"))
+                .any(|t| t.kind == TokenKind::StringValue && t.text.contains("Ada")),
+            "case tokenize string value"
         );
         // The age line carries a number.
         let has_number = lines.iter().any(|l| {
@@ -389,21 +400,18 @@ mod tests {
                 .iter()
                 .any(|t| t.kind == TokenKind::Number && t.text == "36")
         });
-        assert!(has_number);
+        assert!(has_number, "case tokenize number");
         // The active line carries the `true` keyword.
         let has_keyword = lines.iter().any(|l| {
             l.tokens
                 .iter()
                 .any(|t| t.kind == TokenKind::Keyword && t.text == "true")
         });
-        assert!(has_keyword);
-    }
+        assert!(has_keyword, "case tokenize keyword");
 
-    #[test]
-    fn nested_blocks_track_their_closers() {
+        // Case "nested blocks": every opener resolves a matching closer.
         let pretty = pretty_json(r#"{"outer":{"inner":[1,2]}}"#).unwrap();
         let lines = tokenize_json(&pretty);
-        // The opener line(s) should each resolve a matching closer.
         let openers: Vec<usize> = lines
             .iter()
             .enumerate()
@@ -411,7 +419,10 @@ mod tests {
             .map(|(i, _)| i)
             .collect();
         for o in openers {
-            assert!(lines[o].close_line.is_some(), "opener {o} has no closer");
+            assert!(
+                lines[o].close_line.is_some(),
+                "nested: opener {o} has no closer"
+            );
         }
     }
 }

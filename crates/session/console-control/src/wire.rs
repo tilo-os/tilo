@@ -147,81 +147,81 @@ mod tests {
     use super::*;
 
     #[test]
-    fn served_ops_parse_and_foreign_ops_are_unsupported_not_malformed() {
-        assert!(matches!(
-            parse(r#"{"op":"actions_enumerate"}"#),
-            Ok(Request::Enumerate { query }) if query.is_empty()
-        ));
-        assert!(matches!(
-            parse(r#"{"op":"actions_enumerate","query":"disk"}"#),
-            Ok(Request::Enumerate { query }) if query == "disk"
-        ));
-        let Ok(Request::Invoke { provider, id, args }) = parse(
-            r#"{"op":"actions_invoke","provider":"installer","id":"next@installer","args":{"a":1}}"#,
-        ) else {
-            panic!("invoke did not parse");
-        };
-        assert_eq!(
-            (provider.as_str(), id.as_str()),
-            ("installer", "next@installer")
-        );
-        assert_eq!(args["a"], 1);
-        assert!(matches!(
-            parse(r#"{"op":"actions_invoke","provider":"p","id":"i"}"#),
-            Ok(Request::Invoke { args, .. }) if args.is_empty()
-        ));
-        assert!(matches!(
-            parse(r#"{"op":"state_dump"}"#),
-            Ok(Request::StateDump)
-        ));
-        assert!(matches!(
-            parse(r#"{"op":"click_named","name":"x"}"#),
-            Ok(Request::Unsupported { op }) if op == "click_named"
-        ));
-    }
-
-    #[test]
-    fn malformed_requests_are_refused_with_a_reason() {
-        for line in [
-            "not json",
-            "[1]",
-            r#"{"name":"x"}"#,
-            r#"{"op":3}"#,
-            r#"{"op":"actions_invoke","id":"x"}"#,
-            r#"{"op":"actions_invoke","provider":"p","id":""}"#,
-            r#"{"op":"actions_invoke","provider":"p","id":"i","args":[]}"#,
-            r#"{"op":"actions_enumerate","query":5}"#,
-        ] {
-            assert!(parse(line).is_err(), "accepted {line}");
+    fn wire_requests_parse_or_are_refused_and_envelopes_match_the_compositor() {
+        // Phase `served_ops_parse_and_foreign_ops_are_unsupported_not_malformed`.
+        {
+            assert!(matches!(
+                parse(r#"{"op":"actions_enumerate"}"#),
+                Ok(Request::Enumerate { query }) if query.is_empty()
+            ));
+            assert!(matches!(
+                parse(r#"{"op":"actions_enumerate","query":"disk"}"#),
+                Ok(Request::Enumerate { query }) if query == "disk"
+            ));
+            let Ok(Request::Invoke { provider, id, args }) = parse(
+                r#"{"op":"actions_invoke","provider":"installer","id":"next@installer","args":{"a":1}}"#,
+            ) else {
+                panic!("invoke did not parse");
+            };
+            assert_eq!(
+                (provider.as_str(), id.as_str()),
+                ("installer", "next@installer")
+            );
+            assert_eq!(args["a"], 1);
+            assert!(matches!(
+                parse(r#"{"op":"actions_invoke","provider":"p","id":"i"}"#),
+                Ok(Request::Invoke { args, .. }) if args.is_empty()
+            ));
+            assert!(matches!(
+                parse(r#"{"op":"state_dump"}"#),
+                Ok(Request::StateDump)
+            ));
+            assert!(matches!(
+                parse(r#"{"op":"click_named","name":"x"}"#),
+                Ok(Request::Unsupported { op }) if op == "click_named"
+            ));
         }
-    }
-
-    #[test]
-    fn a_request_seq_is_echoed_and_its_absence_changes_nothing() {
-        assert_eq!(
-            request_seq(r#"{"op":"state_dump","seq":7}"#),
-            Some(json!(7))
-        );
-        assert_eq!(
-            request_seq(r#"{"op":"actions_invoke","provider":"p","id":"a@r","seq":"s"}"#),
-            Some(json!("s"))
-        );
-        assert_eq!(request_seq(r#"{"op":"state_dump","seq":[1]}"#), None);
-        assert_eq!(request_seq(r#"{"op":"state_dump","id":"x"}"#), None);
-        assert_eq!(with_seq(state(&json!({})), None), r#"{"state":{}}"#);
-        let tagged: Value =
-            serde_json::from_str(&with_seq(state(&json!({})), Some(json!(7)))).unwrap();
-        assert_eq!(tagged["seq"], 7);
-        assert!(tagged.get("state").is_some());
-    }
-
-    #[test]
-    fn envelopes_match_the_compositor_socket() {
-        assert_eq!(answer(&json!({"n": 1})), r#"{"answer":{"n":1}}"#);
-        assert_eq!(state(&json!({})), r#"{"state":{}}"#);
-        let err: Value = serde_json::from_str(&error("unknown_action", "no")).unwrap();
-        assert_eq!(err["err"]["code"], "unknown_action");
-        let unsupported: Value = serde_json::from_str(&unsupported("key")).unwrap();
-        assert_eq!(unsupported["err"]["code"], "not_implemented");
+        // Phase `malformed_requests_are_refused_with_a_reason`.
+        {
+            for line in [
+                "not json",
+                "[1]",
+                r#"{"name":"x"}"#,
+                r#"{"op":3}"#,
+                r#"{"op":"actions_invoke","id":"x"}"#,
+                r#"{"op":"actions_invoke","provider":"p","id":""}"#,
+                r#"{"op":"actions_invoke","provider":"p","id":"i","args":[]}"#,
+                r#"{"op":"actions_enumerate","query":5}"#,
+            ] {
+                assert!(parse(line).is_err(), "accepted {line}");
+            }
+        }
+        // Phase `a_request_seq_is_echoed_and_its_absence_changes_nothing`.
+        {
+            assert_eq!(
+                request_seq(r#"{"op":"state_dump","seq":7}"#),
+                Some(json!(7))
+            );
+            assert_eq!(
+                request_seq(r#"{"op":"actions_invoke","provider":"p","id":"a@r","seq":"s"}"#),
+                Some(json!("s"))
+            );
+            assert_eq!(request_seq(r#"{"op":"state_dump","seq":[1]}"#), None);
+            assert_eq!(request_seq(r#"{"op":"state_dump","id":"x"}"#), None);
+            assert_eq!(with_seq(state(&json!({})), None), r#"{"state":{}}"#);
+            let tagged: Value =
+                serde_json::from_str(&with_seq(state(&json!({})), Some(json!(7)))).unwrap();
+            assert_eq!(tagged["seq"], 7);
+            assert!(tagged.get("state").is_some());
+        }
+        // Phase `envelopes_match_the_compositor_socket`.
+        {
+            assert_eq!(answer(&json!({"n": 1})), r#"{"answer":{"n":1}}"#);
+            assert_eq!(state(&json!({})), r#"{"state":{}}"#);
+            let err: Value = serde_json::from_str(&error("unknown_action", "no")).unwrap();
+            assert_eq!(err["err"]["code"], "unknown_action");
+            let unsupported: Value = serde_json::from_str(&unsupported("key")).unwrap();
+            assert_eq!(unsupported["err"]["code"], "not_implemented");
+        }
     }
 }

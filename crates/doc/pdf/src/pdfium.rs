@@ -2354,44 +2354,46 @@ mod tests {
 
     #[test]
     fn generated_ids_are_replaced_and_source_ids_kept() {
-        let source = b"%PDF-1.7 trailer<</ID[<AAAA><BBBB>]>>".to_vec();
-        let mut out = source.clone();
-        out.extend_from_slice(b"\ntrailer<</ID[<AAAA><1234>]>>");
-        let before = out.clone();
-        normalize_trailer_ids(&mut out, &source, &[7; 32]);
-        assert_eq!(out.len(), before.len());
-        assert!(out.starts_with(&source));
-        let tail = &out[source.len()..];
-        assert!(find(tail, b"<AAAA>", 0).is_some(), "source id kept");
-        assert!(find(tail, b"<1234>", 0).is_none(), "generated id replaced");
-        let mut again = before;
-        normalize_trailer_ids(&mut again, &source, &[7; 32]);
-        assert_eq!(out, again, "deterministic");
-    }
-
-    /// Typst (and many writers) use literal strings for `/ID`; pdfium keeps
-    /// the first and appends its own after it.
-    #[test]
-    fn generated_ids_after_a_literal_source_id_are_replaced() {
-        let source = b"%PDF-1.7 trailer<</ID[(X/a\\)b==)(X/a\\)b==)]>>".to_vec();
-        let mut out = source.clone();
-        out.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<9F3A11>]>>");
-        let mut other = source.clone();
-        other.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<07BC2E>]>>");
-        normalize_trailer_ids(&mut out, &source, &[7; 32]);
-        normalize_trailer_ids(&mut other, &source, &[7; 32]);
-        assert_eq!(
-            out, other,
-            "whatever pdfium generated, the result is the same"
-        );
-        let tail = &out[source.len()..];
-        assert!(find(tail, b"(X/a\\)b==)", 0).is_some(), "source id kept");
-        // A generated literal string is replaced too.
-        let mut literal = source.clone();
-        literal.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)(zz(q)z)]>>");
-        let before = literal.len();
-        normalize_trailer_ids(&mut literal, &source, &[7; 32]);
-        assert_eq!(literal.len(), before);
-        assert!(find(&literal[source.len()..], b"zz(q)z", 0).is_none());
+        // Phase `generated_ids_are_replaced_and_source_ids_kept`.
+        {
+            let source = b"%PDF-1.7 trailer<</ID[<AAAA><BBBB>]>>".to_vec();
+            let mut out = source.clone();
+            out.extend_from_slice(b"\ntrailer<</ID[<AAAA><1234>]>>");
+            let before = out.clone();
+            normalize_trailer_ids(&mut out, &source, &[7; 32]);
+            assert_eq!(out.len(), before.len());
+            assert!(out.starts_with(&source));
+            let tail = &out[source.len()..];
+            assert!(find(tail, b"<AAAA>", 0).is_some(), "source id kept");
+            assert!(find(tail, b"<1234>", 0).is_none(), "generated id replaced");
+            let mut again = before;
+            normalize_trailer_ids(&mut again, &source, &[7; 32]);
+            assert_eq!(out, again, "deterministic");
+        }
+        // Phase `generated_ids_after_a_literal_source_id_are_replaced`.
+        // Typst (and many writers) use literal strings for `/ID`; pdfium keeps
+        // the first and appends its own after it.
+        {
+            let source = b"%PDF-1.7 trailer<</ID[(X/a\\)b==)(X/a\\)b==)]>>".to_vec();
+            let mut out = source.clone();
+            out.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<9F3A11>]>>");
+            let mut other = source.clone();
+            other.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)<07BC2E>]>>");
+            normalize_trailer_ids(&mut out, &source, &[7; 32]);
+            normalize_trailer_ids(&mut other, &source, &[7; 32]);
+            assert_eq!(
+                out, other,
+                "whatever pdfium generated, the result is the same"
+            );
+            let tail = &out[source.len()..];
+            assert!(find(tail, b"(X/a\\)b==)", 0).is_some(), "source id kept");
+            // A generated literal string is replaced too.
+            let mut literal = source.clone();
+            literal.extend_from_slice(b"\ntrailer<</ID[(X/a\\)b==)(zz(q)z)]>>");
+            let before = literal.len();
+            normalize_trailer_ids(&mut literal, &source, &[7; 32]);
+            assert_eq!(literal.len(), before);
+            assert!(find(&literal[source.len()..], b"zz(q)z", 0).is_none());
+        }
     }
 }

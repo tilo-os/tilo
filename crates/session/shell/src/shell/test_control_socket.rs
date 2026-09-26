@@ -96,62 +96,65 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     #[test]
-    fn default_lives_under_an_absolute_runtime_dir_only() {
-        assert_eq!(
-            default_socket_path(Some("/run/user/1000".into())),
-            Some(PathBuf::from(
-                "/run/user/1000/tilo-session/test-control.sock"
-            ))
-        );
-        assert_eq!(default_socket_path(Some("run/user".into())), None);
-        assert_eq!(default_socket_path(None), None);
-    }
-
-    #[test]
-    fn bound_socket_is_private_and_reachable() {
-        let runtime = tempfile::tempdir().unwrap();
-        let path = default_socket_path(Some(runtime.path().into())).unwrap();
-
-        let _listener = bind_private(&path).unwrap();
-
-        let dir = std::fs::symlink_metadata(path.parent().unwrap()).unwrap();
-        assert_eq!(dir.permissions().mode() & 0o777, 0o700);
-        let socket = std::fs::symlink_metadata(&path).unwrap();
-        assert!(socket.file_type().is_socket());
-        assert_eq!(socket.permissions().mode() & 0o777, 0o600);
-        assert_eq!(socket.uid(), unsafe { libc::geteuid() });
-        UnixStream::connect(&path).unwrap();
-        // The staging directory is gone.
-        assert_eq!(
-            std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
-            1
-        );
-    }
-
-    #[test]
-    fn a_stale_socket_is_replaced() {
-        let runtime = tempfile::tempdir().unwrap();
-        let path = runtime.path().join("control.sock");
-        drop(bind_private(&path).unwrap());
-        assert!(path.exists());
-
-        let _listener = bind_private(&path).unwrap();
-        UnixStream::connect(&path).unwrap();
-    }
-
-    #[test]
-    fn a_file_or_link_at_the_path_is_left_alone() {
-        let runtime = tempfile::tempdir().unwrap();
-        let file = runtime.path().join("notes.txt");
-        std::fs::write(&file, "keep").unwrap();
-        let link = runtime.path().join("link.sock");
-        std::os::unix::fs::symlink(&file, &link).unwrap();
-
-        for path in [&file, &link] {
-            let error = bind_private(path).unwrap_err();
-            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    fn control_socket_is_private_replaces_only_stale_sockets() {
+        // Phase `default_lives_under_an_absolute_runtime_dir_only`.
+        {
+            assert_eq!(
+                default_socket_path(Some("/run/user/1000".into())),
+                Some(PathBuf::from(
+                    "/run/user/1000/tilo-session/test-control.sock"
+                ))
+            );
+            assert_eq!(default_socket_path(Some("run/user".into())), None);
+            assert_eq!(default_socket_path(None), None);
         }
-        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
-        assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+
+        // Phase `bound_socket_is_private_and_reachable`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = default_socket_path(Some(runtime.path().into())).unwrap();
+
+            let _listener = bind_private(&path).unwrap();
+
+            let dir = std::fs::symlink_metadata(path.parent().unwrap()).unwrap();
+            assert_eq!(dir.permissions().mode() & 0o777, 0o700);
+            let socket = std::fs::symlink_metadata(&path).unwrap();
+            assert!(socket.file_type().is_socket());
+            assert_eq!(socket.permissions().mode() & 0o777, 0o600);
+            assert_eq!(socket.uid(), unsafe { libc::geteuid() });
+            UnixStream::connect(&path).unwrap();
+            // The staging directory is gone.
+            assert_eq!(
+                std::fs::read_dir(path.parent().unwrap()).unwrap().count(),
+                1
+            );
+        }
+
+        // Phase `a_stale_socket_is_replaced`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let path = runtime.path().join("control.sock");
+            drop(bind_private(&path).unwrap());
+            assert!(path.exists());
+
+            let _listener = bind_private(&path).unwrap();
+            UnixStream::connect(&path).unwrap();
+        }
+
+        // Phase `a_file_or_link_at_the_path_is_left_alone`.
+        {
+            let runtime = tempfile::tempdir().unwrap();
+            let file = runtime.path().join("notes.txt");
+            std::fs::write(&file, "keep").unwrap();
+            let link = runtime.path().join("link.sock");
+            std::os::unix::fs::symlink(&file, &link).unwrap();
+
+            for path in [&file, &link] {
+                let error = bind_private(path).unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            }
+            assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+            assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
+        }
     }
 }

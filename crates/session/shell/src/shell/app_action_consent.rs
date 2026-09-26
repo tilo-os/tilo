@@ -1,0 +1,210 @@
+//! Asking the person at this machine before an application uses another
+//! application's action.
+//!
+//! An application that declared `[actions] invoke` still holds nothing in a
+//! workspace until someone grants it. When it reaches for an action it has
+//! no grant for, the broker asks the person who admitted its connection —
+//! on a sheet only the compositor draws — instead of refusing silently. The
+//! answer becomes an ordinary capability (`Principal::App` subject,
+//! `Scope::Action`, the chosen [`Expiry`]) in the workspace's records,
+//! granted by that person. Nobody present means nobody to ask: the request
+//! is refused without a sheet.
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use tokio::sync::oneshot;
+
+use crate::shell::portal_dialog::PortalDialogQueue;
+use crate::shell::state::Expiry;
+
+/// What the person is asked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AppActionConsentRequest {
+    /// Names this one question; the sheet's handle.
+    pub handle: String,
+    /// The workspace the grant would be recorded in.
+    pub room: String,
+    /// Who admitted the asking application's connection, and would grant.
+    pub person: String,
+    /// The application asking.
+    pub app_id: String,
+    /// The application whose action it wants to use.
+    pub target_app: String,
+    /// The action's id within `target_app`, as a grant scopes it.
+    pub action: String,
+    /// The action as its publisher labels it.
+    pub action_label: String,
+    pub risk: tilo_actions::RiskLevel,
+    /// Whether each use still asks for confirmation, whatever is granted.
+    pub needs_confirmation: bool,
+}
+
+/// The person's answer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppActionConsent {
+    /// This one call.
+    Once,
+    /// Until this session ends.
+    Session,
+    /// In this workspace until revoked.
+    Always,
+    Deny,
+}
+
+impl AppActionConsent {
+    /// The allowing answers, in the order the sheet offers them: the
+    /// narrowest first, and selected by default.
+    pub const ALLOWING: [Self; 3] = [Self::Once, Self::Session, Self::Always];
+
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Once => "Allow once",
+            Self::Session => "Allow for this session",
+            Self::Always => "Always allow in this workspace",
+            Self::Deny => "Deny",
+        }
+    }
+
+    /// How long the grant this answer records lives; `None` records
+    /// nothing.
+    #[must_use]
+    pub const fn expiry(self) -> Option<Expiry> {
+        match self {
+            Self::Once => Some(Expiry::AfterUse),
+            Self::Session => Some(Expiry::EndOfSession),
+            Self::Always => Some(Expiry::Never),
+            Self::Deny => None,
+        }
+    }
+}
+
+/// How a risk level reads on the sheet.
+#[must_use]
+pub const fn risk_label(risk: tilo_actions::RiskLevel) -> &'static str {
+    match risk {
+        tilo_actions::RiskLevel::None => "Only shows information",
+        tilo_actions::RiskLevel::Low => "Low risk: an ordinary, reversible change",
+        tilo_actions::RiskLevel::Destructive => "Destructive: can delete or overwrite",
+        tilo_actions::RiskLevel::Privileged => "Privileged: crosses a security boundary",
+        tilo_actions::RiskLevel::Sensitive => "Sensitive: reads or exports private data",
+    }
+}
+
+/// Whoever can answer for the person using an application.
+pub trait AppActionConsentPrompter: Send + Sync {
+    /// Put `request` to the person. `None` when nobody is there to answer,
+    /// which refuses the request without asking.
+    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>>;
+}
+
+/// Whether the person a request names is there to answer it.
+pub type Presence = Arc<dyn Fn(&AppActionConsentRequest) -> bool + Send + Sync>;
+
+/// Asks on the compositor's own sheet.
+#[derive(Clone)]
+pub struct SheetPrompter {
+    queue: PortalDialogQueue,
+    present: Presence,
+}
+
+impl SheetPrompter {
+    #[must_use]
+    pub fn new(queue: PortalDialogQueue, present: Presence) -> Self {
+        Self { queue, present }
+    }
+
+    /// This session's prompter: the sheet the session draws, answered
+    /// only by the person sitting at it and only while it is unlocked.
+    #[must_use]
+    pub fn session() -> Self {
+        Self::new(
+            PortalDialogQueue::global(),
+            Arc::new(|request| session_attended() && is_session_person(request)),
+        )
+    }
+}
+
+impl AppActionConsentPrompter for SheetPrompter {
+    fn ask(&self, request: AppActionConsentRequest) -> Option<oneshot::Receiver<AppActionConsent>> {
+        if !(self.present)(&request) {
+            return None;
+        }
+        self.queue.enqueue_action_grant(request).ok()
+    }
+}
+
+/// Whether someone is at this session's unlocked screen. Starts false, so
+/// nothing is asked before the compositor says so.
+static SESSION_ATTENDED: AtomicBool = AtomicBool::new(false);
+
+/// Record whether someone is at this session's unlocked screen.
+pub fn set_session_attended(attended: bool) {
+    SESSION_ATTENDED.store(attended, Ordering::Relaxed);
+}
+
+fn session_attended() -> bool {
+    SESSION_ATTENDED.load(Ordering::Relaxed)
+}
+
+/// Whether `request` names the person this session acts for in its room:
+/// a collaborator's application reaching this broker is not answered on
+/// this screen.
+fn is_session_person(request: &AppActionConsentRequest) -> bool {
+    crate::shell::state::RoomId::parse(&request.room)
+        .is_some_and(|room| crate::shell::state::local_user_id_for_room(&room) == request.person)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(person: &str) -> AppActionConsentRequest {
+        AppActionConsentRequest {
+            handle: "app-action:1".into(),
+            room: uuid::Uuid::nil().to_string(),
+            person: person.into(),
+            app_id: "so.tilo.shortcuts".into(),
+            target_app: "so.tilo.agent".into(),
+            action: "freeform".into(),
+            action_label: "Draft with the agent".into(),
+            risk: tilo_actions::RiskLevel::Low,
+            needs_confirmation: false,
+        }
+    }
+
+    #[test]
+    fn each_answer_records_the_matching_lifetime() {
+        assert_eq!(AppActionConsent::Once.expiry(), Some(Expiry::AfterUse));
+        assert_eq!(
+            AppActionConsent::Session.expiry(),
+            Some(Expiry::EndOfSession)
+        );
+        assert_eq!(AppActionConsent::Always.expiry(), Some(Expiry::Never));
+        assert_eq!(AppActionConsent::Deny.expiry(), None);
+        assert_eq!(AppActionConsent::ALLOWING[0], AppActionConsent::Once);
+    }
+
+    #[test]
+    fn nobody_present_is_never_asked() {
+        let queue = PortalDialogQueue::default();
+        let absent = SheetPrompter::new(queue.clone(), Arc::new(|_| false));
+        assert!(absent.ask(request("person:ada")).is_none());
+        let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
+        assert!(!sheet.pump(), "no sheet was queued");
+    }
+
+    #[test]
+    fn a_present_person_is_asked_on_the_sheet() {
+        let queue = PortalDialogQueue::default();
+        let prompter = SheetPrompter::new(queue.clone(), Arc::new(|_| true));
+        let mut answer = prompter
+            .ask(request("person:ada"))
+            .expect("the person is asked");
+        let mut sheet = crate::shell::portal_dialog::PortalDialogController::new(queue);
+        assert!(sheet.pump());
+        assert!(sheet.cancel(), "dismissing the sheet answers it");
+        assert_eq!(answer.try_recv(), Ok(AppActionConsent::Deny));
+    }
+}

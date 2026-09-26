@@ -119,38 +119,27 @@ fn assert_forwards(label: &str, mut container: Box<dyn Widget>, updates: &Rc<Cel
     );
 }
 
+/// Every container forwards `update` to its child exactly once per pass and
+/// reports the child's change; forwarding also reaches through nesting.
 #[test]
-fn column_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Column", Box::new(Column::new().push(child)), &updates);
-}
+fn containers_forward_update_to_children() {
+    type Wrap = fn(Box<dyn Widget>) -> Box<dyn Widget>;
+    let cases: [(&str, Wrap); 4] = [
+        ("Column", |child| Box::new(Column::new().push(child))),
+        ("Row", |child| Box::new(Row::new().push(child))),
+        ("Stack", |child| Box::new(Stack::new().push(child))),
+        ("Container", |child| {
+            Box::new(Container::new().with_child(child))
+        }),
+    ];
+    for (label, wrap) in cases {
+        let (child, updates) = probe();
+        assert_forwards(label, wrap(child), &updates);
+    }
 
-#[test]
-fn row_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Row", Box::new(Row::new().push(child)), &updates);
-}
-
-#[test]
-fn stack_forwards_update_to_children() {
-    let (child, updates) = probe();
-    assert_forwards("Stack", Box::new(Stack::new().push(child)), &updates);
-}
-
-#[test]
-fn container_forwards_update_to_child() {
-    let (child, updates) = probe();
-    assert_forwards(
-        "Container",
-        Box::new(Container::new().with_child(child)),
-        &updates,
-    );
-}
-
-/// Forwarding has to reach through nesting — the shell's top bar is two
-/// containers deep — and a quiet child must not be reported as a change.
-#[test]
-fn update_reaches_through_nested_containers() {
+    // Case `update_reaches_through_nested_containers`.
+    // Forwarding has to reach through nesting — the shell's top bar is two
+    // containers deep — and a quiet child must not be reported as a change.
     let (child, updates) = probe();
     let mut root: Box<dyn Widget> = Box::new(Stack::new().push(Box::new(
         Column::new().push(Box::new(Row::new().push(child))),

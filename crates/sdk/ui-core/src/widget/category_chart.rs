@@ -561,17 +561,21 @@ mod range_tests {
     use super::safe_range;
 
     #[test]
-    fn positive_bars_keep_a_zero_baseline() {
-        let range = safe_range(0.0, 42.0);
-        assert_eq!(range.0, 0.0);
-        assert!(range.1 > 42.0);
-    }
+    fn bars_keep_the_zero_baseline_for_either_sign() {
+        fn positive_bars_keep_a_zero_baseline() {
+            let range = safe_range(0.0, 42.0);
+            assert_eq!(range.0, 0.0);
+            assert!(range.1 > 42.0);
+        }
 
-    #[test]
-    fn negative_bars_keep_a_zero_ceiling() {
-        let range = safe_range(-42.0, 0.0);
-        assert_eq!(range.1, 0.0);
-        assert!(range.0 < -42.0);
+        fn negative_bars_keep_a_zero_ceiling() {
+            let range = safe_range(-42.0, 0.0);
+            assert_eq!(range.1, 0.0);
+            assert!(range.0 < -42.0);
+        }
+
+        positive_bars_keep_a_zero_baseline();
+        negative_bars_keep_a_zero_ceiling();
     }
 }
 
@@ -1073,51 +1077,55 @@ fn format_compact(value: f64) -> String {
 mod tests {
     use super::*;
     #[test]
-    fn waterfall_range_tracks_cumulative_values() {
-        let chart = CategoryChart::new(
-            vec![Category::new("a", "A"), Category::new("b", "B")],
-            vec![CategorySeries::new("s", "S", Color::WHITE, [10.0, -3.0])],
-        )
-        .layout(CategoryLayout::Waterfall);
-        let range = chart.range();
-        assert!(range.1 >= 10.0);
-    }
+    fn category_ranges_follow_waterfalls_and_hidden_series() {
+        fn waterfall_range_tracks_cumulative_values() {
+            let chart = CategoryChart::new(
+                vec![Category::new("a", "A"), Category::new("b", "B")],
+                vec![CategorySeries::new("s", "S", Color::WHITE, [10.0, -3.0])],
+            )
+            .layout(CategoryLayout::Waterfall);
+            let range = chart.range();
+            assert!(range.1 >= 10.0);
+        }
 
-    #[test]
-    fn hiding_category_series_reflows_groups_and_recomputes_range() {
-        let mut chart = CategoryChart::new(
-            vec![Category::new("a", "A")],
-            vec![
-                CategorySeries::new("small", "Small", Color::WHITE, [10.0]),
-                CategorySeries::new("large", "Large", Color::WHITE, [100.0]),
-            ],
-        );
-        chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
-        let two_series_width = chart.bars()[0].rect.width();
-        assert!(chart.set_series_visible("large", false));
-        let visible = chart.bars();
-        assert_eq!(visible.len(), 1);
-        assert!(visible[0].rect.width() > two_series_width);
-        assert!(chart.range().1 < 100.0);
-        assert_eq!(
-            chart.take_visibility_changed(),
-            Some(("large".to_owned(), false))
-        );
-        assert!(!chart.inspect("large", "a"));
-    }
+        fn hiding_category_series_reflows_groups_and_recomputes_range() {
+            let mut chart = CategoryChart::new(
+                vec![Category::new("a", "A")],
+                vec![
+                    CategorySeries::new("small", "Small", Color::WHITE, [10.0]),
+                    CategorySeries::new("large", "Large", Color::WHITE, [100.0]),
+                ],
+            );
+            chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
+            let two_series_width = chart.bars()[0].rect.width();
+            assert!(chart.set_series_visible("large", false));
+            let visible = chart.bars();
+            assert_eq!(visible.len(), 1);
+            assert!(visible[0].rect.width() > two_series_width);
+            assert!(chart.range().1 < 100.0);
+            assert_eq!(
+                chart.take_visibility_changed(),
+                Some(("large".to_owned(), false))
+            );
+            assert!(!chart.inspect("large", "a"));
+        }
 
-    #[test]
-    fn percent_layout_renormalizes_after_a_series_is_hidden() {
-        let mut chart = CategoryChart::new(
-            vec![Category::new("a", "A")],
-            vec![
-                CategorySeries::new("one", "One", Color::WHITE, [1.0]),
-                CategorySeries::new("three", "Three", Color::WHITE, [3.0]),
-            ],
-        )
-        .layout(CategoryLayout::Percent);
-        chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
-        assert!(chart.set_series_visible("three", false));
-        assert_eq!(chart.bars()[0].display_value, 1.0);
+        fn percent_layout_renormalizes_after_a_series_is_hidden() {
+            let mut chart = CategoryChart::new(
+                vec![Category::new("a", "A")],
+                vec![
+                    CategorySeries::new("one", "One", Color::WHITE, [1.0]),
+                    CategorySeries::new("three", "Three", Color::WHITE, [3.0]),
+                ],
+            )
+            .layout(CategoryLayout::Percent);
+            chart.rect = Rect::new(0.0, 0.0, 400.0, 340.0);
+            assert!(chart.set_series_visible("three", false));
+            assert_eq!(chart.bars()[0].display_value, 1.0);
+        }
+
+        waterfall_range_tracks_cumulative_values();
+        hiding_category_series_reflows_groups_and_recomputes_range();
+        percent_layout_renormalizes_after_a_series_is_hidden();
     }
 }

@@ -2321,74 +2321,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn image_layout_actions_anchor_the_exact_document_object() {
-        let actions = [
-            RichTextAction::SetImageCrop {
-                block: "image-7".into(),
-                left: 250,
-                top: 250,
-                right: 250,
-                bottom: 250,
-            },
-            RichTextAction::SetImageSize {
-                block: "image-7".into(),
-                width: 300,
-                height: 180,
-            },
-            RichTextAction::SetImagePlacement {
-                block: "image-7".into(),
-                anchor: "page".into(),
-                wrap: "none".into(),
-                x: 24,
-                y: 36,
-                page: 0,
-            },
-        ];
+    fn word_actions_anchor_the_exact_document_objects_they_change() {
+        // Case `image_layout_actions_anchor_the_exact_document_object`.
+        {
+            let actions = [
+                RichTextAction::SetImageCrop {
+                    block: "image-7".into(),
+                    left: 250,
+                    top: 250,
+                    right: 250,
+                    bottom: 250,
+                },
+                RichTextAction::SetImageSize {
+                    block: "image-7".into(),
+                    width: 300,
+                    height: 180,
+                },
+                RichTextAction::SetImagePlacement {
+                    block: "image-7".into(),
+                    anchor: "page".into(),
+                    wrap: "none".into(),
+                    x: 24,
+                    y: 36,
+                    page: 0,
+                },
+            ];
 
-        for action in actions {
+            for action in actions {
+                assert_eq!(
+                    word_action_anchor(&action, "unused-focus"),
+                    tilo_actions::InteractionAnchor::Objects {
+                        ids: vec!["image-7".into()],
+                    }
+                );
+            }
+        }
+
+        // Case `comment_actions_anchor_their_shared_document_objects`.
+        {
+            let add = RichTextAction::AddComment {
+                block: "paragraph-7".into(),
+                start: 4,
+                end: 11,
+                author: "Scribe".into(),
+                date: "2026-09-08".into(),
+                text: "Please clarify.".into(),
+            };
             assert_eq!(
-                word_action_anchor(&action, "unused-focus"),
+                word_action_anchor(&add, "unused-focus"),
+                tilo_actions::InteractionAnchor::Text {
+                    region: "document".into(),
+                    ranges: vec![tilo_actions::InteractionTextRange {
+                        block: "paragraph-7".into(),
+                        start: 4,
+                        end: 11,
+                    }],
+                }
+            );
+
+            let reply = RichTextAction::ReplyToComment {
+                comment: "comment-3".into(),
+                author: "Scribe".into(),
+                date: "2026-09-08".into(),
+                text: "Done.".into(),
+            };
+            assert_eq!(
+                word_action_anchor(&reply, "unused-focus"),
                 tilo_actions::InteractionAnchor::Objects {
-                    ids: vec!["image-7".into()],
+                    ids: vec!["comment-3".into()],
                 }
             );
         }
-    }
-
-    #[test]
-    fn comment_actions_anchor_their_shared_document_objects() {
-        let add = RichTextAction::AddComment {
-            block: "paragraph-7".into(),
-            start: 4,
-            end: 11,
-            author: "Scribe".into(),
-            date: "2026-09-08".into(),
-            text: "Please clarify.".into(),
-        };
-        assert_eq!(
-            word_action_anchor(&add, "unused-focus"),
-            tilo_actions::InteractionAnchor::Text {
-                region: "document".into(),
-                ranges: vec![tilo_actions::InteractionTextRange {
-                    block: "paragraph-7".into(),
-                    start: 4,
-                    end: 11,
-                }],
-            }
-        );
-
-        let reply = RichTextAction::ReplyToComment {
-            comment: "comment-3".into(),
-            author: "Scribe".into(),
-            date: "2026-09-08".into(),
-            text: "Done.".into(),
-        };
-        assert_eq!(
-            word_action_anchor(&reply, "unused-focus"),
-            tilo_actions::InteractionAnchor::Objects {
-                ids: vec!["comment-3".into()],
-            }
-        );
     }
 
     fn task_run() -> runtime_collab::TaskRunEnvelope {
@@ -2407,129 +2410,193 @@ mod tests {
     }
 
     #[test]
-    fn task_run_requires_broker_bound_task_context() {
-        assert!(validate_task_run(&task_run()).is_ok());
-        let mut mismatched = task_run();
-        mismatched.action_context = serde_json::json!({
-            "purpose": "Review draft",
-            "group": {"id": "different", "label": "Review draft", "kind": "task"}
-        });
-        assert!(validate_task_run(&mismatched).is_err());
+    fn a_task_run_needs_a_known_version_and_broker_bound_task_context() {
+        // Case `task_run_requires_broker_bound_task_context`.
+        {
+            assert!(validate_task_run(&task_run()).is_ok());
+            let mut mismatched = task_run();
+            mismatched.action_context = serde_json::json!({
+                "purpose": "Review draft",
+                "group": {"id": "different", "label": "Review draft", "kind": "task"}
+            });
+            assert!(validate_task_run(&mismatched).is_err());
+        }
+
+        // Case `task_run_rejects_unknown_protocol_version_before_planning`.
+        {
+            let mut invalid = task_run();
+            invalid.version = 2;
+            assert!(validate_task_run(&invalid).is_err());
+        }
     }
 
     #[test]
-    fn task_run_rejects_unknown_protocol_version_before_planning() {
-        let mut invalid = task_run();
-        invalid.version = 2;
-        assert!(validate_task_run(&invalid).is_err());
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {
+        // Case `a_content_step_uses_only_the_immediately_preceding_application_result`.
+        {
+            let output = tilo_actions::ActionOutput {
+                value: Some(serde_json::json!({"display": "ignored"})),
+                resources: vec![
+                    tilo_actions::content_resource("abc123")
+                        .expect("the producer returned a valid content hash"),
+                ],
+            };
+            let previous = StepOutcome {
+                output,
+                product: Some(surface::Product::Content {
+                    hash: "legacy-derived-product".into(),
+                }),
+            };
+            let planned = serde_json::Map::from_iter([(
+                tilo_actions::PROMPTED_PARAM.to_string(),
+                serde_json::Value::String("model-invented".into()),
+            )]);
+
+            let bound = arguments_for_step(true, &planned, Some(&previous))
+                .expect("one content result binds the next content input");
+            assert_eq!(
+                bound.get(tilo_actions::PROMPTED_PARAM),
+                Some(&serde_json::Value::String("abc123".into())),
+                "the preceding app result must replace model input and its legacy product fallback"
+            );
+            assert!(
+                arguments_for_step(true, &planned, None).is_err(),
+                "a content action cannot reuse an older or invented result"
+            );
+        }
+
+        // Case `a_content_step_refuses_ambiguous_or_wrong_kind_results`.
+        {
+            let ambiguous = StepOutcome {
+                output: tilo_actions::ActionOutput {
+                    value: None,
+                    resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
+                },
+                product: None,
+            };
+            assert!(
+                arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
+                "choosing one of two products would be a model-visible guess"
+            );
+
+            let wrong_kind = StepOutcome {
+                output: tilo_actions::ActionOutput {
+                    value: None,
+                    resources: vec!["files.entry:/tmp/picture.png".into()],
+                },
+                product: None,
+            };
+            assert!(
+                arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
+                "a generic resource address is not proof that content bytes exist"
+            );
+        }
+
+        // Case `a_local_apps_declared_product_can_feed_the_next_content_step`.
+        {
+            let previous = StepOutcome {
+                output: tilo_actions::ActionOutput::default(),
+                product: Some(surface::Product::Content {
+                    hash: "rendered-photo".into(),
+                }),
+            };
+            let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
+                .expect("the app, not the agent, declared the local document's product");
+            assert_eq!(
+                bound.get(tilo_actions::PROMPTED_PARAM),
+                Some(&serde_json::Value::String("rendered-photo".into()))
+            );
+        }
+
+        // Case `repeated_action_ids_remain_distinct_when_arguments_differ`.
+        {
+            let ada = serde_json::Map::from_iter([(
+                "subject".into(),
+                serde_json::Value::String("ada".into()),
+            )]);
+            let lin = serde_json::Map::from_iter([(
+                "subject".into(),
+                serde_json::Value::String("lin".into()),
+            )]);
+            assert_eq!(
+                dispatched_action_key("profile.assign", &ada),
+                dispatched_action_key("profile.assign", &ada)
+            );
+            assert_ne!(
+                dispatched_action_key("profile.assign", &ada),
+                dispatched_action_key("profile.assign", &lin)
+            );
+        }
     }
 
     #[test]
-    fn a_content_step_uses_only_the_immediately_preceding_application_result() {
-        let output = tilo_actions::ActionOutput {
-            value: Some(serde_json::json!({"display": "ignored"})),
-            resources: vec![
-                tilo_actions::content_resource("abc123")
-                    .expect("the producer returned a valid content hash"),
-            ],
-        };
-        let previous = StepOutcome {
-            output,
-            product: Some(surface::Product::Content {
-                hash: "legacy-derived-product".into(),
-            }),
-        };
-        let planned = serde_json::Map::from_iter([(
-            tilo_actions::PROMPTED_PARAM.to_string(),
-            serde_json::Value::String("model-invented".into()),
-        )]);
+    fn a_line_settles_only_once_unchanged_for_the_whole_wait() {
+        // Case `a_zero_settle_never_waits`.
+        {
+            let now = Instant::now();
+            assert!(Session::settled(None, "Scribe: table", now, Duration::ZERO));
+            assert!(Session::settled(
+                Some(&("Scribe: table".to_string(), now)),
+                "Scribe: table",
+                now,
+                Duration::ZERO
+            ));
+        }
 
-        let bound = arguments_for_step(true, &planned, Some(&previous))
-            .expect("one content result binds the next content input");
-        assert_eq!(
-            bound.get(tilo_actions::PROMPTED_PARAM),
-            Some(&serde_json::Value::String("abc123".into())),
-            "the preceding app result must replace model input and its legacy product fallback"
-        );
-        assert!(
-            arguments_for_step(true, &planned, None).is_err(),
-            "a content action cannot reuse an older or invented result"
-        );
-    }
+        // Case `the_first_sight_of_a_line_is_never_settled`.
+        {
+            let now = Instant::now();
+            assert!(!Session::settled(
+                None,
+                "Scribe: table",
+                now,
+                Duration::from_millis(500)
+            ));
+        }
 
-    #[test]
-    fn a_content_step_refuses_ambiguous_or_wrong_kind_results() {
-        let ambiguous = StepOutcome {
-            output: tilo_actions::ActionOutput {
-                value: None,
-                resources: vec!["tilo.content:first".into(), "tilo.content:second".into()],
-            },
-            product: None,
-        };
-        assert!(
-            arguments_for_step(true, &serde_json::Map::new(), Some(&ambiguous)).is_err(),
-            "choosing one of two products would be a model-visible guess"
-        );
+        // Case `a_line_that_changed_since_it_was_last_seen_is_not_settled`.
+        {
+            let now = Instant::now();
+            let watched = ("Scribe: tab".to_string(), now);
+            assert!(!Session::settled(
+                Some(&watched),
+                "Scribe: table",
+                now,
+                Duration::from_millis(500)
+            ));
+        }
 
-        let wrong_kind = StepOutcome {
-            output: tilo_actions::ActionOutput {
-                value: None,
-                resources: vec!["files.entry:/tmp/picture.png".into()],
-            },
-            product: None,
-        };
-        assert!(
-            arguments_for_step(true, &serde_json::Map::new(), Some(&wrong_kind)).is_err(),
-            "a generic resource address is not proof that content bytes exist"
-        );
-    }
-
-    #[test]
-    fn a_local_apps_declared_product_can_feed_the_next_content_step() {
-        let previous = StepOutcome {
-            output: tilo_actions::ActionOutput::default(),
-            product: Some(surface::Product::Content {
-                hash: "rendered-photo".into(),
-            }),
-        };
-        let bound = arguments_for_step(true, &serde_json::Map::new(), Some(&previous))
-            .expect("the app, not the agent, declared the local document's product");
-        assert_eq!(
-            bound.get(tilo_actions::PROMPTED_PARAM),
-            Some(&serde_json::Value::String("rendered-photo".into()))
-        );
-    }
-
-    #[test]
-    fn repeated_action_ids_remain_distinct_when_arguments_differ() {
-        let ada = serde_json::Map::from_iter([(
-            "subject".into(),
-            serde_json::Value::String("ada".into()),
-        )]);
-        let lin = serde_json::Map::from_iter([(
-            "subject".into(),
-            serde_json::Value::String("lin".into()),
-        )]);
-        assert_eq!(
-            dispatched_action_key("profile.assign", &ada),
-            dispatched_action_key("profile.assign", &ada)
-        );
-        assert_ne!(
-            dispatched_action_key("profile.assign", &ada),
-            dispatched_action_key("profile.assign", &lin)
-        );
-    }
-
-    #[test]
-    fn a_zero_settle_never_waits() {
-        let now = Instant::now();
-        assert!(Session::settled(None, "Scribe: table", now, Duration::ZERO));
-        assert!(Session::settled(
-            Some(&("Scribe: table".to_string(), now)),
-            "Scribe: table",
-            now,
-            Duration::ZERO
-        ));
+        // Case `unchanged_text_settles_once_the_wait_has_elapsed_and_not_before`.
+        {
+            let settle = Duration::from_millis(500);
+            let seen = Instant::now();
+            let watched = ("Scribe: table".to_string(), seen);
+            assert!(
+                !Session::settled(
+                    Some(&watched),
+                    "Scribe: table",
+                    seen + Duration::from_millis(499),
+                    settle
+                ),
+                "one millisecond short of the wait must not settle"
+            );
+            assert!(Session::settled(
+                Some(&watched),
+                "Scribe: table",
+                seen + Duration::from_millis(500),
+                settle
+            ));
+            assert!(Session::settled(
+                Some(&watched),
+                "Scribe: table",
+                seen + Duration::from_secs(5),
+                settle
+            ));
+        }
     }
 
     mod handoff_sequences {
@@ -2892,7 +2959,7 @@ mod tests {
             }
         }
 
-        fn assert_no_consumer(observed: &Observation, expected_calls: &[&str]) {
+        fn assert_no_consumer(case: &str, observed: &Observation, expected_calls: &[&str]) {
             assert_eq!(
                 observed
                     .calls
@@ -2900,229 +2967,223 @@ mod tests {
                     .map(|(action, _)| action.as_str())
                     .collect::<Vec<_>>(),
                 expected_calls,
-                "an invalidated or missing product must stop before dispatching Writer"
+                "case {case}: an invalidated or missing product must stop before dispatching Writer"
             );
             assert!(
                 observed.images.is_empty(),
-                "the refusal must not insert an image"
+                "case {case}: the refusal must not insert an image"
             );
             assert!(
                 !observed.instruction.is_empty(),
-                "the instruction must retain the refusal"
+                "case {case}: the instruction must retain the refusal"
             );
         }
 
+        /// Every case runs the real `Session::run_plan` against a fresh broker,
+        /// fresh peers and a fresh document (`run_sequence` builds them all).
         #[test]
-        fn run_plan_replaces_invented_content_with_the_exact_broker_result() {
-            let content = ContentStore::memory();
-            let output = produced(&content);
-            let hash = tilo_actions::content_hash(&output.resources[0])
-                .unwrap()
-                .to_owned();
-            let observed = run_sequence(
-                &content,
-                &output,
-                &content_result(),
-                Between::Nothing,
-                false,
-            );
-            assert_eq!(observed.calls.len(), 2);
-            assert_eq!(observed.calls[0], (PRODUCE.into(), serde_json::Map::new()));
-            assert_eq!(
-                observed.calls[1],
-                (
-                    "place-image".into(),
-                    serde_json::Map::from_iter([(
-                        tilo_actions::PROMPTED_PARAM.into(),
-                        serde_json::Value::String(hash.clone())
-                    ),])
-                )
-            );
-            assert_eq!(observed.images, vec![hash]);
-            assert!(observed.instruction.is_empty());
+        #[allow(
+            clippy::too_many_lines,
+            reason = "each case keeps its own fresh broker fixture and original assertions"
+        )]
+        fn run_plan_hands_on_only_the_exact_content_the_preceding_broker_step_produced() {
+            // Case `run_plan_replaces_invented_content_with_the_exact_broker_result`.
+            {
+                let case = "run_plan_replaces_invented_content_with_the_exact_broker_result";
+                let content = ContentStore::memory();
+                let output = produced(&content);
+                let hash = tilo_actions::content_hash(&output.resources[0])
+                    .unwrap()
+                    .to_owned();
+                let observed = run_sequence(
+                    &content,
+                    &output,
+                    &content_result(),
+                    Between::Nothing,
+                    false,
+                );
+                assert_eq!(observed.calls.len(), 2, "case {case}");
+                assert_eq!(
+                    observed.calls[0],
+                    (PRODUCE.into(), serde_json::Map::new()),
+                    "case {case}"
+                );
+                assert_eq!(
+                    observed.calls[1],
+                    (
+                        "place-image".into(),
+                        serde_json::Map::from_iter([(
+                            tilo_actions::PROMPTED_PARAM.into(),
+                            serde_json::Value::String(hash.clone())
+                        ),])
+                    ),
+                    "case {case}"
+                );
+                assert_eq!(observed.images, vec![hash], "case {case}");
+                assert!(observed.instruction.is_empty(), "case {case}");
+            }
+
+            // Case `run_plan_refuses_missing_broker_content_despite_a_held_photograph`.
+            {
+                let observed = run_sequence(
+                    &ContentStore::memory(),
+                    &ActionOutput::default(),
+                    &ResultSpec::None,
+                    Between::Nothing,
+                    false,
+                );
+                assert_no_consumer(
+                    "run_plan_refuses_missing_broker_content_despite_a_held_photograph",
+                    &observed,
+                    &[PRODUCE],
+                );
+            }
+
+            // Case `run_plan_refuses_wrong_kind_despite_a_held_photograph`.
+            {
+                let observed = run_sequence(
+                    &ContentStore::memory(),
+                    &ActionOutput {
+                        value: None,
+                        resources: vec!["files.entry:fixture".into()],
+                    },
+                    &ResultSpec::Resource {
+                        resource_kind: "files.entry".into(),
+                    },
+                    Between::Nothing,
+                    false,
+                );
+                assert_no_consumer(
+                    "run_plan_refuses_wrong_kind_despite_a_held_photograph",
+                    &observed,
+                    &[PRODUCE],
+                );
+            }
+
+            // Case `run_plan_refuses_ambiguous_broker_content`.
+            {
+                let content = ContentStore::memory();
+                let mut output = produced(&content);
+                output.resources.push(
+                    tilo_actions::content_resource(&"a".repeat(64))
+                        .expect("the duplicate has a valid content hash"),
+                );
+                let observed = run_sequence(
+                    &content,
+                    &output,
+                    &content_result(),
+                    Between::Nothing,
+                    false,
+                );
+                assert_no_consumer(
+                    "run_plan_refuses_ambiguous_broker_content",
+                    &observed,
+                    &[PRODUCE],
+                );
+            }
+
+            // Case `run_plan_invalidates_content_after_a_nonproducing_broker_step`.
+            {
+                let content = ContentStore::memory();
+                let observed = run_sequence(
+                    &content,
+                    &produced(&content),
+                    &content_result(),
+                    Between::BrokerView,
+                    false,
+                );
+                assert_no_consumer(
+                    "run_plan_invalidates_content_after_a_nonproducing_broker_step",
+                    &observed,
+                    &[PRODUCE, "view"],
+                );
+            }
+
+            // Case `run_plan_invalidates_content_after_a_local_photos_edit`.
+            {
+                let case = "run_plan_invalidates_content_after_a_local_photos_edit";
+                let content = ContentStore::memory();
+                let observed = run_sequence(
+                    &content,
+                    &produced(&content),
+                    &content_result(),
+                    Between::LocalRotate,
+                    false,
+                );
+                assert_eq!(
+                    observed.rotation, 1,
+                    "case {case}: the intervening local Document operation must really run"
+                );
+                assert_no_consumer(case, &observed, &[PRODUCE]);
+            }
+
+            // Case `run_plan_invalidates_content_after_a_skipped_duplicate`.
+            {
+                let content = ContentStore::memory();
+                let observed = run_sequence(
+                    &content,
+                    &produced(&content),
+                    &content_result(),
+                    Between::Duplicate,
+                    false,
+                );
+                assert_no_consumer(
+                    "run_plan_invalidates_content_after_a_skipped_duplicate",
+                    &observed,
+                    &[PRODUCE],
+                );
+            }
+
+            // Case `run_plan_stops_after_a_failed_producer`.
+            {
+                let case = "run_plan_stops_after_a_failed_producer";
+                let content = ContentStore::memory();
+                let observed = run_sequence(
+                    &content,
+                    &produced(&content),
+                    &content_result(),
+                    Between::Nothing,
+                    true,
+                );
+                assert_no_consumer(case, &observed, &[PRODUCE]);
+                assert!(
+                    observed.instruction.contains("Producer refused"),
+                    "case {case}"
+                );
+            }
+
+            // Case `run_plan_reports_unavailable_bytes_without_inserting_an_image`.
+            {
+                let case = "run_plan_reports_unavailable_bytes_without_inserting_an_image";
+                let missing = "e".repeat(64);
+                let content = ContentStore::memory();
+                assert!(!content.has(&missing), "case {case}");
+                let observed = run_sequence(
+                    &content,
+                    &ActionOutput {
+                        value: None,
+                        resources: vec![
+                            tilo_actions::content_resource(&missing)
+                                .expect("the missing blob still has a valid content hash"),
+                        ],
+                    },
+                    &content_result(),
+                    Between::Nothing,
+                    false,
+                );
+                assert_eq!(observed.calls.len(), 2, "case {case}");
+                assert_eq!(observed.calls[1].0, "place-image", "case {case}");
+                assert_eq!(
+                    observed.calls[1].1.get(tilo_actions::PROMPTED_PARAM),
+                    Some(&serde_json::Value::String(missing)),
+                    "case {case}"
+                );
+                assert!(observed.images.is_empty(), "case {case}");
+                assert!(
+                    observed.instruction.contains("not available"),
+                    "case {case}"
+                );
+            }
         }
-
-        #[test]
-        fn run_plan_refuses_missing_broker_content_despite_a_held_photograph() {
-            let observed = run_sequence(
-                &ContentStore::memory(),
-                &ActionOutput::default(),
-                &ResultSpec::None,
-                Between::Nothing,
-                false,
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-        }
-
-        #[test]
-        fn run_plan_refuses_wrong_kind_despite_a_held_photograph() {
-            let observed = run_sequence(
-                &ContentStore::memory(),
-                &ActionOutput {
-                    value: None,
-                    resources: vec!["files.entry:fixture".into()],
-                },
-                &ResultSpec::Resource {
-                    resource_kind: "files.entry".into(),
-                },
-                Between::Nothing,
-                false,
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-        }
-
-        #[test]
-        fn run_plan_refuses_ambiguous_broker_content() {
-            let content = ContentStore::memory();
-            let mut output = produced(&content);
-            output.resources.push(
-                tilo_actions::content_resource(&"a".repeat(64))
-                    .expect("the duplicate has a valid content hash"),
-            );
-            let observed = run_sequence(
-                &content,
-                &output,
-                &content_result(),
-                Between::Nothing,
-                false,
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-        }
-
-        #[test]
-        fn run_plan_invalidates_content_after_a_nonproducing_broker_step() {
-            let content = ContentStore::memory();
-            let observed = run_sequence(
-                &content,
-                &produced(&content),
-                &content_result(),
-                Between::BrokerView,
-                false,
-            );
-            assert_no_consumer(&observed, &[PRODUCE, "view"]);
-        }
-
-        #[test]
-        fn run_plan_invalidates_content_after_a_local_photos_edit() {
-            let content = ContentStore::memory();
-            let observed = run_sequence(
-                &content,
-                &produced(&content),
-                &content_result(),
-                Between::LocalRotate,
-                false,
-            );
-            assert_eq!(
-                observed.rotation, 1,
-                "the intervening local Document operation must really run"
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-        }
-
-        #[test]
-        fn run_plan_invalidates_content_after_a_skipped_duplicate() {
-            let content = ContentStore::memory();
-            let observed = run_sequence(
-                &content,
-                &produced(&content),
-                &content_result(),
-                Between::Duplicate,
-                false,
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-        }
-
-        #[test]
-        fn run_plan_stops_after_a_failed_producer() {
-            let content = ContentStore::memory();
-            let observed = run_sequence(
-                &content,
-                &produced(&content),
-                &content_result(),
-                Between::Nothing,
-                true,
-            );
-            assert_no_consumer(&observed, &[PRODUCE]);
-            assert!(observed.instruction.contains("Producer refused"));
-        }
-
-        #[test]
-        fn run_plan_reports_unavailable_bytes_without_inserting_an_image() {
-            let missing = "e".repeat(64);
-            let content = ContentStore::memory();
-            assert!(!content.has(&missing));
-            let observed = run_sequence(
-                &content,
-                &ActionOutput {
-                    value: None,
-                    resources: vec![
-                        tilo_actions::content_resource(&missing)
-                            .expect("the missing blob still has a valid content hash"),
-                    ],
-                },
-                &content_result(),
-                Between::Nothing,
-                false,
-            );
-            assert_eq!(observed.calls.len(), 2);
-            assert_eq!(observed.calls[1].0, "place-image");
-            assert_eq!(
-                observed.calls[1].1.get(tilo_actions::PROMPTED_PARAM),
-                Some(&serde_json::Value::String(missing)),
-            );
-            assert!(observed.images.is_empty());
-            assert!(observed.instruction.contains("not available"));
-        }
-    }
-
-    #[test]
-    fn the_first_sight_of_a_line_is_never_settled() {
-        let now = Instant::now();
-        assert!(!Session::settled(
-            None,
-            "Scribe: table",
-            now,
-            Duration::from_millis(500)
-        ));
-    }
-
-    #[test]
-    fn a_line_that_changed_since_it_was_last_seen_is_not_settled() {
-        let now = Instant::now();
-        let watched = ("Scribe: tab".to_string(), now);
-        assert!(!Session::settled(
-            Some(&watched),
-            "Scribe: table",
-            now,
-            Duration::from_millis(500)
-        ));
-    }
-
-    #[test]
-    fn unchanged_text_settles_once_the_wait_has_elapsed_and_not_before() {
-        let settle = Duration::from_millis(500);
-        let seen = Instant::now();
-        let watched = ("Scribe: table".to_string(), seen);
-        assert!(
-            !Session::settled(
-                Some(&watched),
-                "Scribe: table",
-                seen + Duration::from_millis(499),
-                settle
-            ),
-            "one millisecond short of the wait must not settle"
-        );
-        assert!(Session::settled(
-            Some(&watched),
-            "Scribe: table",
-            seen + Duration::from_millis(500),
-            settle
-        ));
-        assert!(Session::settled(
-            Some(&watched),
-            "Scribe: table",
-            seen + Duration::from_secs(5),
-            settle
-        ));
     }
 }

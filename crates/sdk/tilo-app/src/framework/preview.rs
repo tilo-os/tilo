@@ -390,53 +390,82 @@ mod tests {
     }
 
     #[test]
-    fn a_record_restores_a_past_version_field_by_field_and_item_by_item() {
-        let mut shelf = Replica::<Shelf>::new();
-        shelf.apply(Shelf::RENAME.with("Reading".into())).unwrap();
-        shelf.apply(Shelf::ADD.with("Dune".into())).unwrap();
-        shelf.apply(Shelf::ADD.with("Emma".into())).unwrap();
-        let ids: Vec<Id> = shelf.state().unwrap().books.ids().cloned().collect();
-        let past_heads = shelf.heads();
-        let past = shelf.state().unwrap();
+    fn past_versions_restore_by_record_shape_and_render_read_only() {
+        // phase: a_record_restores_a_past_version_field_by_field_and_item_by_item
+        {
+            let mut shelf = Replica::<Shelf>::new();
+            shelf.apply(Shelf::RENAME.with("Reading".into())).unwrap();
+            shelf.apply(Shelf::ADD.with("Dune".into())).unwrap();
+            shelf.apply(Shelf::ADD.with("Emma".into())).unwrap();
+            let ids: Vec<Id> = shelf.state().unwrap().books.ids().cloned().collect();
+            let past_heads = shelf.heads();
+            let past = shelf.state().unwrap();
 
-        shelf.apply(Shelf::RENAME.with("Done".into())).unwrap();
-        shelf.apply(Shelf::FINISH.with(ids[0].clone())).unwrap();
-        shelf.apply(Shelf::REMOVE.with(ids[1].clone())).unwrap();
-        shelf.apply(Shelf::ADD.with("Ulysses".into())).unwrap();
-        shelf
-            .apply(Shelf::ANNOTATE.with(Some("tidy up".into())))
-            .unwrap();
-        assert_ne!(shelf.state().unwrap(), past);
-
-        restore(&mut shelf, &past_heads);
-        assert_eq!(shelf.state().unwrap(), past);
-        // Item identity survives: the restored books are the same items.
-        assert_eq!(
+            shelf.apply(Shelf::RENAME.with("Done".into())).unwrap();
+            shelf.apply(Shelf::FINISH.with(ids[0].clone())).unwrap();
+            shelf.apply(Shelf::REMOVE.with(ids[1].clone())).unwrap();
+            shelf.apply(Shelf::ADD.with("Ulysses".into())).unwrap();
             shelf
-                .state()
-                .unwrap()
-                .books
-                .ids()
-                .cloned()
-                .collect::<Vec<_>>(),
-            ids
-        );
-    }
+                .apply(Shelf::ANNOTATE.with(Some("tidy up".into())))
+                .unwrap();
+            assert_ne!(shelf.state().unwrap(), past);
 
-    #[test]
-    fn a_resource_without_a_record_shape_has_no_restore_schema() {
-        struct Opaque;
-        impl Resource for Opaque {
-            const KIND: &'static str = "test.opaque";
-            const LABEL: &'static str = "Opaque";
-            type State = ();
-            type Action = <Shelf as Resource>::Action;
-            fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
-                Ok(())
-            }
+            restore(&mut shelf, &past_heads);
+            assert_eq!(shelf.state().unwrap(), past);
+            // Item identity survives: the restored books are the same items.
+            assert_eq!(
+                shelf
+                    .state()
+                    .unwrap()
+                    .books
+                    .ids()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+                ids
+            );
         }
-        assert!(restore_schema::<Opaque>().is_none());
-        assert!(restore_schema::<Shelf>().is_some());
+        // phase: a_resource_without_a_record_shape_has_no_restore_schema
+        {
+            struct Opaque;
+            impl Resource for Opaque {
+                const KIND: &'static str = "test.opaque";
+                const LABEL: &'static str = "Opaque";
+                type State = ();
+                type Action = <Shelf as Resource>::Action;
+                fn read(_: &tilo_resource::Doc) -> Result<(), tilo_resource::ModelError> {
+                    Ok(())
+                }
+            }
+            assert!(restore_schema::<Opaque>().is_none());
+            assert!(restore_schema::<Shelf>().is_some());
+        }
+        // phase: a_past_version_renders_through_the_apps_own_view_read_only
+        {
+            let mut page = Replica::<Page>::new();
+            page.apply(Page::SET_HEADING.with("First draft".into()))
+                .unwrap();
+            let past = page.heads();
+            page.apply(Page::SET_HEADING.with("Final".into())).unwrap();
+            let mut doc = page.doc().clone();
+            let bytes = doc.fork_at(&past).unwrap().save();
+
+            let frozen = AutoCommit::load(&bytes).unwrap();
+            let mut preview = ViewPreview {
+                root: build_root::<PageApp>(Reader::read(&frozen).unwrap(), Editing::ReadOnly),
+                doc: Some(frozen),
+                bounds: Rect::ZERO,
+                view: PreviewView::default(),
+            };
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            preview
+                .layout(Rect::new(10.0, 20.0, 410.0, 320.0), &mut text, &theme)
+                .unwrap();
+            let mut scene = Scene::new();
+            preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
+            assert_eq!(shown(&preview.root), ["First draft"]);
+            assert!(preview.root.get_rect().width() > 0.0);
+        }
     }
 
     fn shown(root: &ResourceRoot<Page>) -> Vec<String> {
@@ -451,33 +480,5 @@ mod tests {
         let mut out = Vec::new();
         visit(root, &mut out);
         out
-    }
-
-    #[test]
-    fn a_past_version_renders_through_the_apps_own_view_read_only() {
-        let mut page = Replica::<Page>::new();
-        page.apply(Page::SET_HEADING.with("First draft".into()))
-            .unwrap();
-        let past = page.heads();
-        page.apply(Page::SET_HEADING.with("Final".into())).unwrap();
-        let mut doc = page.doc().clone();
-        let bytes = doc.fork_at(&past).unwrap().save();
-
-        let frozen = AutoCommit::load(&bytes).unwrap();
-        let mut preview = ViewPreview {
-            root: build_root::<PageApp>(Reader::read(&frozen).unwrap(), Editing::ReadOnly),
-            doc: Some(frozen),
-            bounds: Rect::ZERO,
-            view: PreviewView::default(),
-        };
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        preview
-            .layout(Rect::new(10.0, 20.0, 410.0, 320.0), &mut text, &theme)
-            .unwrap();
-        let mut scene = Scene::new();
-        preview.draw(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        assert_eq!(shown(&preview.root), ["First draft"]);
-        assert!(preview.root.get_rect().width() > 0.0);
     }
 }

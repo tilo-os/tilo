@@ -283,108 +283,110 @@ mod tests {
     use ui::search::SearchProvider;
 
     #[test]
-    fn descriptor_is_stable() {
-        let t = video_searchable_type();
-        assert_eq!(t.id, "tube.video");
-        assert!(t.has_thumbnail);
-    }
-
-    #[test]
-    fn deep_link_round_trips() {
-        let link = SearchHit::watch_link("vid_rust_async");
-        assert_eq!(link, "tube://watch/vid_rust_async");
-        assert_eq!(
-            SearchHit::parse_watch_link(&link).as_deref(),
-            Some("vid_rust_async")
-        );
-        assert!(SearchHit::parse_watch_link("https://evil").is_none());
-    }
-
-    #[test]
-    fn provider_contributes_video_hits() {
-        let backend = OfflineBackend::new();
-        let provider = VideoSearchProvider::new(&backend, false);
-        let hits = provider.query("rust");
-        assert!(!hits.is_empty());
-        assert!(hits.iter().all(|h| h.type_id == VIDEO_TYPE_ID));
-        assert!(
-            hits.iter()
-                .all(|h| h.deep_link.starts_with("tube://watch/"))
-        );
-        assert!(hits.iter().all(|h| !h.thumbnail_seed.is_empty()));
-    }
-
-    #[test]
-    fn palette_hits_combine_videos_and_channels() {
-        let model = crate::sample::model();
-        let backend = OfflineBackend::with_model(model.clone());
-        let provider = VideoSearchProvider::new(&backend, false);
-        // "Low Level" matches the channel "Low Level Learning".
-        let hits = palette_hits(&provider, &model, "Low Level");
-        assert!(
-            hits.iter().any(|h| h.type_id == CHANNEL_TYPE_ID
-                && h.deep_link.starts_with("tube://channel/")),
-            "channel results appear in the palette"
-        );
-    }
-
-    #[test]
-    fn palette_hits_empty_query_is_empty() {
-        let model = crate::sample::model();
-        let backend = OfflineBackend::with_model(model.clone());
-        let provider = VideoSearchProvider::new(&backend, false);
-        assert!(palette_hits(&provider, &model, "   ").is_empty());
-    }
-
-    #[test]
-    fn host_provider_uses_canonical_actions_for_video_playlist_and_history() {
-        let mut model = crate::sample::model();
-        let video_id = model.videos[0].id.clone();
-        model.history.push(video_id.clone());
-        model.playlists.push(crate::model::Playlist {
-            id: "playlist-rust".into(),
-            title: "Rust watchlist".into(),
-            channel_id: model.videos[0].channel_id.clone(),
-            channel_name: model.videos[0].channel_name.clone(),
-            thumbnail_url: String::new(),
-            seed: "playlist-rust".into(),
-            video_count: 1,
-            video_ids: vec![video_id],
-        });
-        let provider = TubeSearchProvider::new(&model);
-        for (query, resource) in [
-            ("compositor", "tube.video:"),
-            ("watchlist", "tube.playlist:"),
-            ("compositor", "tube.history:"),
-        ] {
-            assert!(
-                provider.search(query).iter().any(|hit| {
-                    hit.action_address().is_some_and(|address| {
-                        address.resource.starts_with(resource) && address.action == "open"
-                    })
-                }),
-                "{query:?} exposes a canonical {resource} open action"
+    fn search_type_descriptor_and_deep_links_are_stable() {
+        // Case `descriptor_is_stable`.
+        {
+            let t = video_searchable_type();
+            assert_eq!(t.id, "tube.video");
+            assert!(t.has_thumbnail);
+        }
+        // Case `deep_link_round_trips`.
+        {
+            let link = SearchHit::watch_link("vid_rust_async");
+            assert_eq!(link, "tube://watch/vid_rust_async");
+            assert_eq!(
+                SearchHit::parse_watch_link(&link).as_deref(),
+                Some("vid_rust_async")
             );
+            assert!(SearchHit::parse_watch_link("https://evil").is_none());
         }
     }
 
     #[test]
-    fn provider_applies_dearrow_when_enabled() {
-        let backend = OfflineBackend::new();
-        // vid_rust_async has a DeArrow title in the sample.
-        let plain = VideoSearchProvider::new(&backend, false).query("compositor");
-        let dearrowed = VideoSearchProvider::new(&backend, true).query("compositor");
-        let p = plain
-            .iter()
-            .find(|h| h.deep_link.contains("vid_rust_async"));
-        let d = dearrowed
-            .iter()
-            .find(|h| h.deep_link.contains("vid_rust_async"));
-        if let (Some(p), Some(d)) = (p, d) {
-            assert_ne!(
-                p.title, d.title,
-                "DeArrow should change the contributed title"
+    fn search_providers_contribute_canonical_video_and_channel_hits() {
+        // Case `provider_contributes_video_hits`.
+        {
+            let backend = OfflineBackend::new();
+            let provider = VideoSearchProvider::new(&backend, false);
+            let hits = provider.query("rust");
+            assert!(!hits.is_empty());
+            assert!(hits.iter().all(|h| h.type_id == VIDEO_TYPE_ID));
+            assert!(
+                hits.iter()
+                    .all(|h| h.deep_link.starts_with("tube://watch/"))
             );
+            assert!(hits.iter().all(|h| !h.thumbnail_seed.is_empty()));
+        }
+        // Case `palette_hits_combine_videos_and_channels`.
+        {
+            let model = crate::sample::model();
+            let backend = OfflineBackend::with_model(model.clone());
+            let provider = VideoSearchProvider::new(&backend, false);
+            // "Low Level" matches the channel "Low Level Learning".
+            let hits = palette_hits(&provider, &model, "Low Level");
+            assert!(
+                hits.iter()
+                    .any(|h| h.type_id == CHANNEL_TYPE_ID
+                        && h.deep_link.starts_with("tube://channel/")),
+                "channel results appear in the palette"
+            );
+        }
+        // Case `palette_hits_empty_query_is_empty`.
+        {
+            let model = crate::sample::model();
+            let backend = OfflineBackend::with_model(model.clone());
+            let provider = VideoSearchProvider::new(&backend, false);
+            assert!(palette_hits(&provider, &model, "   ").is_empty());
+        }
+        // Case `host_provider_uses_canonical_actions_for_video_playlist_and_history`.
+        {
+            let mut model = crate::sample::model();
+            let video_id = model.videos[0].id.clone();
+            model.history.push(video_id.clone());
+            model.playlists.push(crate::model::Playlist {
+                id: "playlist-rust".into(),
+                title: "Rust watchlist".into(),
+                channel_id: model.videos[0].channel_id.clone(),
+                channel_name: model.videos[0].channel_name.clone(),
+                thumbnail_url: String::new(),
+                seed: "playlist-rust".into(),
+                video_count: 1,
+                video_ids: vec![video_id],
+            });
+            let provider = TubeSearchProvider::new(&model);
+            for (query, resource) in [
+                ("compositor", "tube.video:"),
+                ("watchlist", "tube.playlist:"),
+                ("compositor", "tube.history:"),
+            ] {
+                assert!(
+                    provider.search(query).iter().any(|hit| {
+                        hit.action_address().is_some_and(|address| {
+                            address.resource.starts_with(resource) && address.action == "open"
+                        })
+                    }),
+                    "{query:?} exposes a canonical {resource} open action"
+                );
+            }
+        }
+        // Case `provider_applies_dearrow_when_enabled`.
+        {
+            let backend = OfflineBackend::new();
+            // vid_rust_async has a DeArrow title in the sample.
+            let plain = VideoSearchProvider::new(&backend, false).query("compositor");
+            let dearrowed = VideoSearchProvider::new(&backend, true).query("compositor");
+            let p = plain
+                .iter()
+                .find(|h| h.deep_link.contains("vid_rust_async"));
+            let d = dearrowed
+                .iter()
+                .find(|h| h.deep_link.contains("vid_rust_async"));
+            if let (Some(p), Some(d)) = (p, d) {
+                assert_ne!(
+                    p.title, d.title,
+                    "DeArrow should change the contributed title"
+                );
+            }
         }
     }
 }

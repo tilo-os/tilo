@@ -112,7 +112,7 @@ pub(in crate::setup) use native::*;
 mod native {
     use super::super::{
         MAX_COLLISIONS, MAX_RECORD, MAX_SCAN, Ownership, PreparationComplete, Provider,
-        checkpoint::Record,
+        checkpoint::Record, working_leaf,
     };
     use super::{allowed_ace, require, windows_cache_path, windows_directory_leaf_supported};
     use crate::setup::internal_download::SelectedManifest;
@@ -1145,10 +1145,9 @@ mod native {
         h.update(COUNTER.fetch_add(1, Ordering::Relaxed).to_le_bytes());
         let digest = h.finalize();
         // Uniqueness only. Exclusive FILE_CREATE supplies the no-adoption boundary.
-        Ok(format!(
-            ".tilo-part-{:032x}",
-            u128::from_le_bytes(digest[..16].try_into().unwrap())
-        ))
+        Ok(working_leaf(u128::from_le_bytes(
+            digest[..16].try_into().unwrap(),
+        )))
     }
     impl CacheRoot {
         pub(in crate::setup) fn bootstrap<'a>(

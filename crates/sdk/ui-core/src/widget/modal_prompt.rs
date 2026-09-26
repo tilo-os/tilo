@@ -353,78 +353,82 @@ mod tests {
     }
 
     #[test]
-    fn typing_into_prompt_updates_the_real_field() {
-        let body = PromptBody::new("Name", "New volume");
-        let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        dispatch(&mut d, &char_event("h"));
-        dispatch(&mut d, &char_event("i"));
-        assert_eq!(
-            d.content().value(),
-            "hi",
-            "keystrokes must land in the embedded TextInput's real value",
-        );
-    }
+    fn prompt_field_is_the_real_editable_input() {
+        // Case `typing_into_prompt_updates_the_real_field`.
+        {
+            let body = PromptBody::new("Name", "New volume");
+            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+            dispatch(&mut d, &char_event("h"));
+            dispatch(&mut d, &char_event("i"));
+            assert_eq!(
+                d.content().value(),
+                "hi",
+                "keystrokes must land in the embedded TextInput's real value",
+            );
+        }
 
-    #[test]
-    fn initial_value_is_selected_for_replace() {
-        let body = PromptBody::new("Name", "").with_initial("old-name");
-        let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        assert_eq!(d.content().value(), "old-name");
-        dispatch(&mut d, &char_event("x"));
-        assert_eq!(
-            d.content().value(),
-            "x",
-            "typing over a selected initial value must replace it",
-        );
-    }
+        // Case `initial_value_is_selected_for_replace`.
+        {
+            let body = PromptBody::new("Name", "").with_initial("old-name");
+            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+            assert_eq!(d.content().value(), "old-name");
+            dispatch(&mut d, &char_event("x"));
+            assert_eq!(
+                d.content().value(),
+                "x",
+                "typing over a selected initial value must replace it",
+            );
+        }
 
-    #[test]
-    fn click_in_field_reaches_the_input() {
-        let body = PromptBody::new("Name", "hint");
-        let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        dispatch(&mut d, &char_event("a"));
-        dispatch(&mut d, &char_event("b"));
-        let center = d.dialog_rect().center();
-        dispatch(&mut d, &cursor_at(center));
-        dispatch(&mut d, &left_press());
-        assert!(
-            d.content().is_focused(),
-            "the field stays focused after an in-box click",
-        );
-        dispatch(&mut d, &char_event("c"));
-        assert!(
-            d.content().value().contains('c'),
-            "typing continues to reach the field after the click",
-        );
-    }
+        // Case `click_in_field_reaches_the_input`.
+        {
+            let body = PromptBody::new("Name", "hint");
+            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+            dispatch(&mut d, &char_event("a"));
+            dispatch(&mut d, &char_event("b"));
+            let center = d.dialog_rect().center();
+            dispatch(&mut d, &cursor_at(center));
+            dispatch(&mut d, &left_press());
+            assert!(
+                d.content().is_focused(),
+                "the field stays focused after an in-box click",
+            );
+            dispatch(&mut d, &char_event("c"));
+            assert!(
+                d.content().value().contains('c'),
+                "typing continues to reach the field after the click",
+            );
+        }
 
-    #[test]
-    fn multiline_prompt_accepts_newlines() {
-        let body = PromptBody::new("Notes", "").multiline(true);
-        let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
-        dispatch(&mut d, &char_event("a"));
-        let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
-        ev.logical_key = Key::Named(NamedKey::Enter);
-        ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
-        ev.location = KeyLocation::Standard;
-        ev.state = ElementState::Pressed;
-        ev.repeat = false;
-        ev.text = None;
-        // The dialog itself does not intercept Enter (only Escape), so it
-        // forwards to the multiline field, which inserts a newline.
-        dispatch(
-            &mut d,
-            &WindowEvent::KeyboardInput {
-                device_id: synth_device(),
-                event: ev,
-                is_synthetic: false,
-            },
-        );
-        dispatch(&mut d, &char_event("b"));
-        assert_eq!(
-            d.content().value(),
-            "a\nb",
-            "Enter in a multiline prompt inserts a newline",
-        );
+        // Case `multiline_prompt_accepts_newlines`.
+        {
+            let body = PromptBody::new("Notes", "").multiline(true);
+            let mut d = laid_out(body, Rect::new(0.0, 0.0, 800.0, 600.0));
+            dispatch(&mut d, &char_event("a"));
+            let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+            ev.logical_key = Key::Named(NamedKey::Enter);
+            ev.physical_key =
+                PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+            ev.location = KeyLocation::Standard;
+            ev.state = ElementState::Pressed;
+            ev.repeat = false;
+            ev.text = None;
+            // The dialog itself does not intercept Enter (only Escape), so it
+            // forwards to the multiline field, which inserts a newline.
+            dispatch(
+                &mut d,
+                &WindowEvent::KeyboardInput {
+                    device_id: synth_device(),
+                    event: ev,
+                    is_synthetic: false,
+                },
+            );
+            dispatch(&mut d, &char_event("b"));
+            assert_eq!(
+                d.content().value(),
+                "a\nb",
+                "Enter in a multiline prompt inserts a newline",
+            );
+        }
     }
 }

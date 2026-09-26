@@ -446,43 +446,6 @@ mod tests {
         r
     }
 
-    #[test]
-    fn open_and_save_publish_direct_paths_as_confirmed_jobs() {
-        let resources = provide_resources(&HexResourceCtx {
-            label: "x.bin".into(),
-            cursor: 0,
-            len: 1,
-            selection: None,
-            has_file: true,
-            can_undo: false,
-            can_redo: false,
-        });
-        for id in ["open", "save"] {
-            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
-            assert_eq!(spec.params()[0].name, "path");
-            assert!(matches!(
-                spec.contract.execution,
-                ExecutionMode::Background { cancellable: true }
-            ));
-            assert_eq!(spec.contract.result, ResultSpec::Job);
-            assert!(!matches!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            ));
-            let args = serde_json::json!({"path": "/tmp/x.bin"})
-                .as_object()
-                .unwrap()
-                .clone();
-            let encoded = spec.build_json(&args).unwrap();
-            assert!(matches!(
-                decode_operation(HEX_EDITOR_OPERATION_TYPE, &encoded.payload)
-                    .unwrap()
-                    .unwrap(),
-                HexOperation::Open { path: Some(_) } | HexOperation::Save { path: Some(_) }
-            ));
-        }
-    }
-
     /// A view with a real local buffer plus the framework document required by
     /// the resource-provider trait. The bytes remain outside that document.
     fn open_view(bytes: &[u8]) -> (HexView, AutoCommit) {
@@ -491,22 +454,6 @@ mod tests {
         let root = automerge::ROOT;
         view.sync(&mut doc, &root);
         (view, doc)
-    }
-
-    /// Ctrl+K on the editor yields one `hex_editor.document` root exporting the
-    /// byte-edit actions at the cursor. Drives the real resource hook.
-    #[test]
-    fn ctrl_k_publishes_the_document_resource() {
-        let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
-        view.model_mut().move_to(1, false);
-        let resources = Widget::resources(&view, &doc);
-        assert_eq!(resources.len(), 1, "one open buffer");
-        let root = &resources[0];
-        assert_eq!(root.kind, "hex_editor.document");
-        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
-        assert!(ids.contains(&"insert-byte"), "{ids:?}");
-        assert!(ids.contains(&"overwrite-byte"), "{ids:?}");
-        assert!(ids.contains(&"delete-byte"), "{ids:?}");
     }
 
     /// A buffer open with the cursor on its second byte, so every byte-edit
@@ -527,10 +474,69 @@ mod tests {
         palette: ["Insert byte", "Overwrite byte", "Delete byte"],
     }
 
-    /// The empty state still publishes the file-open effect, while buffer-only
-    /// commands remain explicitly unavailable.
+    /// The document resource's action set follows the buffer state: open/save
+    /// jobs, the byte edits at the cursor, the empty state, and a selection.
     #[test]
-    fn empty_state_publishes_no_resources() {
+    fn document_resource_actions_follow_buffer_state() {
+        // Open and save publish direct paths as confirmed jobs.
+        let resources = provide_resources(&HexResourceCtx {
+            label: "x.bin".into(),
+            cursor: 0,
+            len: 1,
+            selection: None,
+            has_file: true,
+            can_undo: false,
+            can_redo: false,
+        });
+        for id in ["open", "save"] {
+            let spec = resources[0].actions.iter().find(|a| a.id == id).unwrap();
+            assert_eq!(spec.params()[0].name, "path", "case {id}");
+            assert!(
+                matches!(
+                    spec.contract.execution,
+                    ExecutionMode::Background { cancellable: true }
+                ),
+                "case {id}"
+            );
+            assert_eq!(spec.contract.result, ResultSpec::Job, "case {id}");
+            assert!(
+                !matches!(
+                    spec.contract.confirmation,
+                    tilo_actions::ConfirmationPolicy::None
+                ),
+                "case {id}"
+            );
+            let args = serde_json::json!({"path": "/tmp/x.bin"})
+                .as_object()
+                .unwrap()
+                .clone();
+            let encoded = spec.build_json(&args).unwrap();
+            assert!(
+                matches!(
+                    decode_operation(HEX_EDITOR_OPERATION_TYPE, &encoded.payload)
+                        .unwrap()
+                        .unwrap(),
+                    HexOperation::Open { path: Some(_) } | HexOperation::Save { path: Some(_) }
+                ),
+                "case {id}"
+            );
+        }
+
+        // Ctrl+K on the editor yields one `hex_editor.document` root exporting
+        // the byte-edit actions at the cursor. Drives the real resource hook.
+        let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
+        view.model_mut().move_to(1, false);
+        let resources = Widget::resources(&view, &doc);
+        assert_eq!(resources.len(), 1, "one open buffer");
+        let root = &resources[0];
+        assert_eq!(root.kind, "hex_editor.document");
+        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.contains(&"insert-byte"), "{ids:?}");
+        assert!(ids.contains(&"overwrite-byte"), "{ids:?}");
+        assert!(ids.contains(&"delete-byte"), "{ids:?}");
+
+        // The empty state still publishes the file-open effect, while
+        // buffer-only commands remain explicitly unavailable.
         let view = HexView::empty();
         let doc = AutoCommit::new();
         let resources = Widget::resources(&view, &doc);
@@ -548,11 +554,8 @@ mod tests {
                 .find(|action| action.id == "save")
                 .is_some_and(|action| !action.contract.availability.is_available())
         );
-    }
 
-    /// A selection swaps the single-byte delete for a whole-range one.
-    #[test]
-    fn selection_exports_a_range_delete() {
+        // A selection swaps the single-byte delete for a whole-range one.
         let (mut view, doc) = open_view(&(0u8..=15).collect::<Vec<_>>());
         view.model_mut().move_to(2, false);
         view.model_mut().move_to(5, true); // select 2..=5
@@ -565,9 +568,11 @@ mod tests {
         );
     }
 
-    /// Legacy raw-byte envelopes are rejected by the collaboration executor.
+    /// Raw-byte actions are device-local: the collaboration executor refuses
+    /// them and none of them (overwrite, insert, delete) replays to a peer.
     #[test]
-    fn raw_byte_actions_are_refused_by_the_collaboration_executor() {
+    fn raw_byte_actions_are_local_only() {
+        // Legacy raw-byte envelopes are rejected by the collaboration executor.
         let mut state = ui::State::new();
         state.doc = AutoCommit::new();
         let action = overwrite_bytes_action(1, vec![0xAB]);
@@ -577,33 +582,26 @@ mod tests {
         assert!(
             tilo_actions::dispatch(&mut state.doc, decoded.as_ref(), encoded, &mut tx).is_err()
         );
-    }
 
-    /// A raw-byte action cannot be replayed to another device.
-    #[test]
-    fn raw_byte_action_cannot_replay_to_a_peer() {
+        // A raw-byte insert in the middle — the growth path, not just an
+        // overwrite — cannot be replayed to another device.
         let mut a = AutoCommit::new();
-
-        // An insert in the middle — the growth path, not just an overwrite.
         let action = insert_bytes_action(2, vec![0xCA, 0xFE]);
         let encoded = encode(&action);
-
         assert!(tilo_actions::apply_local(&mut a, &action, encoded).is_err());
-    }
 
-    /// Deletes are likewise local-only operations.
-    #[test]
-    fn local_delete_action_is_not_replicable() {
+        // Deletes are likewise local-only operations.
         let mut a = AutoCommit::new();
-
         let action = delete_bytes_action(3, 4); // drop 3,4,5,6
         let encoded = encode(&action);
         assert!(tilo_actions::apply_local(&mut a, &action, encoded).is_err());
     }
 
-    /// Palette effects and keyboard edits use the same local edit shape.
+    /// Palette specs encode the same local edit as the keyboard and builder
+    /// paths: delete-byte vs the keystroke, overwrite-byte vs the builder.
     #[test]
-    fn palette_and_keystroke_share_a_local_edit_shape() {
+    fn palette_specs_encode_the_same_edit_as_keystrokes_and_builders() {
+        // Palette effects and keyboard edits use the same local edit shape.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(2, false);
 
@@ -627,12 +625,9 @@ mod tests {
             decode_operation(HEX_EDITOR_OPERATION_TYPE, &from_spec.payload).unwrap(),
             Some(operation) if operation == expected
         ));
-    }
 
-    /// The overwrite prompt builds the same action the hex-column keystroke
-    /// does when both target the same byte.
-    #[test]
-    fn overwrite_prompt_matches_the_builder() {
+        // The overwrite prompt builds the same action the hex-column keystroke
+        // does when both target the same byte.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(1, false);
         let resources = Widget::resources(&view, &doc);

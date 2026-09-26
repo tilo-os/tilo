@@ -56,75 +56,77 @@ fn placeholder_group(kind: ui::widget::AppKind, label: &str) -> WindowGroup {
 
 #[test]
 #[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
-fn terminal_first_sync_crdt_cost() {
-    // The actual drop freeze: a terminal's first sync/handle_event lazily
-    // populates its grid into the shared Automerge doc (`init_crdt` ->
-    // `ensure_lines`).
-    use automerge::{AutoCommit, ROOT};
-    use terminal::TerminalWidget;
-    use ui::widget::Widget;
+fn freeze_bench_times_first_sync_and_group_rematerialization() {
+    // Phase `terminal_first_sync_crdt_cost`.
+    {
+        // The actual drop freeze: a terminal's first sync/handle_event lazily
+        // populates its grid into the shared Automerge doc (`init_crdt` ->
+        // `ensure_lines`).
+        use automerge::{AutoCommit, ROOT};
+        use terminal::TerminalWidget;
+        use ui::widget::Widget;
 
-    // Explicit fixture process: a populated PTY without login startup files.
-    let mut command = terminal::CommandBuilder::new("/bin/sh");
-    command.arg("-c");
-    command.arg("printf 'fixture terminal ready\\r\\n$ '");
-    let mut w = TerminalWidget::spawn_command(command).expect("fixture PTY");
-    std::thread::sleep(std::time::Duration::from_millis(300));
+        // Explicit fixture process: a populated PTY without login startup files.
+        let mut command = terminal::CommandBuilder::new("/bin/sh");
+        command.arg("-c");
+        command.arg("printf 'fixture terminal ready\\r\\n$ '");
+        let mut w = TerminalWidget::spawn_command(command).expect("fixture PTY");
+        std::thread::sleep(std::time::Duration::from_millis(300));
 
-    // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
-    let mut doc = AutoCommit::new();
-    let first = ms(|| {
-        Widget::sync(&mut w, &mut doc, &ROOT);
-    });
-    let second = ms(|| {
-        Widget::sync(&mut w, &mut doc, &ROOT);
-    });
-    println!("--- terminal first-sync CRDT populate (the drop freeze) ---");
-    println!("  first  sync (init_crdt): {first:8.2} ms");
-    println!("  second sync (idempotent):{second:8.2} ms");
-}
+        // Fresh shared doc (like the compositor's `test_control_ctx.doc`).
+        let mut doc = AutoCommit::new();
+        let first = ms(|| {
+            Widget::sync(&mut w, &mut doc, &ROOT);
+        });
+        let second = ms(|| {
+            Widget::sync(&mut w, &mut doc, &ROOT);
+        });
+        println!("--- terminal first-sync CRDT populate (the drop freeze) ---");
+        println!("  first  sync (init_crdt): {first:8.2} ms");
+        println!("  second sync (idempotent):{second:8.2} ms");
+    }
 
-#[test]
-#[ignore = "a benchmark that prints timings; run with --ignored --nocapture"]
-fn rematerialize_group_cost() {
-    // Records stay in memory: this measures widget construction, not what a
-    // session writes to disk.
-    let records = ui::record::RecordStore::in_memory();
-    let inputs = shell::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
-    // Warm the OS caches once so we measure steady-state, not first-touch.
-    let _ = to_ui_window_group_with_inputs(
-        &placeholder_group(UiKind::Files, "Files"),
-        &records,
-        &inputs,
-    );
-
-    let files = ms(|| {
+    // Phase `rematerialize_group_cost`.
+    {
+        // Records stay in memory: this measures widget construction, not what a
+        // session writes to disk.
+        let records = ui::record::RecordStore::in_memory();
+        let inputs = shell::shell::hosted_inputs::HostedTileInputs::fixture().unwrap();
+        // Warm the OS caches once so we measure steady-state, not first-touch.
         let _ = to_ui_window_group_with_inputs(
             &placeholder_group(UiKind::Files, "Files"),
             &records,
             &inputs,
         );
-    });
-    let terminal = ms(|| {
-        let _ = to_ui_window_group_with_inputs(
-            &placeholder_group(UiKind::Terminal, "Terminal"),
-            &records,
-            &inputs,
-        );
-    });
-    let notes = ms(|| {
-        let _ = to_ui_window_group_with_inputs(
-            &placeholder_group(
-                UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
-                "Notes",
-            ),
-            &records,
-            &inputs,
-        );
-    });
 
-    println!("--- re-materialize cost (render-thread stall per detached group) ---");
-    println!("  Files group   : {files:8.2} ms");
-    println!("  Terminal group: {terminal:8.2} ms");
-    println!("  Notes group   : {notes:8.2} ms");
+        let files = ms(|| {
+            let _ = to_ui_window_group_with_inputs(
+                &placeholder_group(UiKind::Files, "Files"),
+                &records,
+                &inputs,
+            );
+        });
+        let terminal = ms(|| {
+            let _ = to_ui_window_group_with_inputs(
+                &placeholder_group(UiKind::Terminal, "Terminal"),
+                &records,
+                &inputs,
+            );
+        });
+        let notes = ms(|| {
+            let _ = to_ui_window_group_with_inputs(
+                &placeholder_group(
+                    UiKind::Editor, // routed to a Stub unless "Notes"/"Editor" label
+                    "Notes",
+                ),
+                &records,
+                &inputs,
+            );
+        });
+
+        println!("--- re-materialize cost (render-thread stall per detached group) ---");
+        println!("  Files group   : {files:8.2} ms");
+        println!("  Terminal group: {terminal:8.2} ms");
+        println!("  Notes group   : {notes:8.2} ms");
+    }
 }

@@ -161,62 +161,66 @@ mod tests {
     use crate::shell::remote_capture::runtime::RemoteCaptureFabricRuntime;
 
     #[test]
-    fn owner_changes_only_across_app_or_workspace_focus() {
-        let previous = PhysicalGamepadBinding {
-            app_id: "so.tilo.Camera".into(),
-            workspace_id: "room-a".into(),
-            session_id: "tab-a".into(),
-        };
-        let same_owner = PhysicalGamepadBinding {
-            session_id: "tab-b".into(),
-            ..previous.clone()
-        };
-        let other_app = PhysicalGamepadBinding {
-            app_id: "so.tilo.Calls".into(),
-            ..previous.clone()
-        };
+    fn remote_capture_owner_follows_focus_and_teardown_survives_contention() {
+        fn owner_changes_only_across_app_or_workspace_focus() {
+            let previous = PhysicalGamepadBinding {
+                app_id: "so.tilo.Camera".into(),
+                workspace_id: "room-a".into(),
+                session_id: "tab-a".into(),
+            };
+            let same_owner = PhysicalGamepadBinding {
+                session_id: "tab-b".into(),
+                ..previous.clone()
+            };
+            let other_app = PhysicalGamepadBinding {
+                app_id: "so.tilo.Calls".into(),
+                ..previous.clone()
+            };
 
-        assert_eq!(stale_owner(Some(&previous), Some(&same_owner)), None);
-        assert_eq!(
-            stale_owner(Some(&previous), Some(&other_app)),
-            Some(("so.tilo.Camera".into(), "room-a".into()))
-        );
-        assert_eq!(
-            stale_owner(Some(&previous), None),
-            Some(("so.tilo.Camera".into(), "room-a".into()))
-        );
-        assert_eq!(stale_owner(None, Some(&previous)), None);
-    }
+            assert_eq!(stale_owner(Some(&previous), Some(&same_owner)), None);
+            assert_eq!(
+                stale_owner(Some(&previous), Some(&other_app)),
+                Some(("so.tilo.Camera".into(), "room-a".into()))
+            );
+            assert_eq!(
+                stale_owner(Some(&previous), None),
+                Some(("so.tilo.Camera".into(), "room-a".into()))
+            );
+            assert_eq!(stale_owner(None, Some(&previous)), None);
+        }
 
-    #[test]
-    fn policy_teardown_survives_runtime_lock_contention() {
-        let runtime = Arc::new(Mutex::new(RemoteCaptureFabricRuntime::production(
-            Arc::new(Mutex::new(CaptureBroker::new())),
-        )));
-        let mut integration = RemoteCaptureIntegration::default();
-        integration.install(Arc::clone(&runtime));
-        let mut locked = runtime.lock().unwrap();
-        locked
-            .request(
-                VerifiedAppRegistration::new_verified("so.tilo.Camera", "room-a").unwrap(),
-                DeviceId::new("phone").unwrap(),
-                DeviceId::new("laptop").unwrap(),
-                "Camera".into(),
-                RemoteCaptureProfile::Camera {
-                    format: RemoteVideoFormat::Nv12,
-                    width: 640,
-                    height: 480,
-                    frames_per_second: 30,
-                },
-            )
-            .unwrap();
+        fn policy_teardown_survives_runtime_lock_contention() {
+            let runtime = Arc::new(Mutex::new(RemoteCaptureFabricRuntime::production(
+                Arc::new(Mutex::new(CaptureBroker::new())),
+            )));
+            let mut integration = RemoteCaptureIntegration::default();
+            integration.install(Arc::clone(&runtime));
+            let mut locked = runtime.lock().unwrap();
+            locked
+                .request(
+                    VerifiedAppRegistration::new_verified("so.tilo.Camera", "room-a").unwrap(),
+                    DeviceId::new("phone").unwrap(),
+                    DeviceId::new("laptop").unwrap(),
+                    "Camera".into(),
+                    RemoteCaptureProfile::Camera {
+                        format: RemoteVideoFormat::Nv12,
+                        width: 640,
+                        height: 480,
+                        frames_per_second: 30,
+                    },
+                )
+                .unwrap();
 
-        integration.request_teardown_all();
-        assert!(integration.teardown_all_pending);
-        drop(locked);
-        integration.try_teardown_all();
+            integration.request_teardown_all();
+            assert!(integration.teardown_all_pending);
+            drop(locked);
+            integration.try_teardown_all();
 
-        assert!(!integration.teardown_all_pending);
-        assert!(runtime.lock().unwrap().view().sessions.is_empty());
+            assert!(!integration.teardown_all_pending);
+            assert!(runtime.lock().unwrap().view().sessions.is_empty());
+        }
+
+        owner_changes_only_across_app_or_workspace_focus();
+        policy_teardown_survives_runtime_lock_contention();
     }
 }

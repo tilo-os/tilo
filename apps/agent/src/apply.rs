@@ -751,143 +751,152 @@ mod tests {
         foreign.save_incremental()
     }
 
-    /// A delta belonging to another app's document is refused, and leaves
-    /// nothing behind. The agent joins with an empty app id, so the broker
-    /// hands it every application's frames and this delta is tried against
-    /// the page as a matter of course.
+    /// Whether `apply` and `merge_incremental` say a change happened is the
+    /// broadcast decision, so each must be honest in both directions.
     #[test]
-    fn a_delta_from_another_document_is_refused_and_leaves_nothing_queued() {
-        let delta = a_delta_from_another_apps_document();
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each case keeps its original fixture and assertions"
+    )]
+    fn the_editor_reports_a_change_to_send_exactly_when_the_document_changed() {
+        // Case `a_delta_from_another_document_is_refused_and_leaves_nothing_queued`.
+        // A delta belonging to another app's document is refused, and leaves
+        // nothing behind. The agent joins with an empty app id, so the broker
+        // hands it every application's frames and this delta is tried against
+        // the page as a matter of course.
+        {
+            let delta = a_delta_from_another_apps_document();
 
+            {
+                let mut probe = AutoCommit::new();
+                assert!(
+                    probe.load_incoming(&delta).is_ok(),
+                    "automerge must accept this delta, or the trap this guards \
+                     against does not exist"
+                );
+                assert!(
+                    !probe.get_missing_deps(&[]).is_empty(),
+                    "the delta must be one whose ancestor is missing, or this \
+                     exercises nothing"
+                );
+            }
+
+            let mut ed = Editor::empty("Scribe");
+            let before = ed.missing_ancestors();
+            assert!(
+                !ed.merge_incremental(&delta).expect("merge"),
+                "a delta belonging to another document is not this one's, and \
+                 saying it applied reports an edit that did not happen"
+            );
+            assert_eq!(
+                ed.missing_ancestors(),
+                before,
+                "refusing a foreign delta must leave nothing queued behind it"
+            );
+        }
+
+        // Case `an_edit_the_agent_makes_carries_the_time_it_was_made`.
+        // An edit the agent makes carries the time it was made — a version has
+        // a wall clock only because [`Editor::apply`] routes the commit
+        // through `commit_stamped`.
+        {
+            #[derive(Debug)]
+            struct JustWrites;
+            impl Action for JustWrites {
+                fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                    doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                    Ok(())
+                }
+                fn locus(&self) -> ExecutionLocus {
+                    ExecutionLocus::ClientLocal
+                }
+            }
+
+            let mut ed = Editor::empty("Scribe");
+            ed.apply(&JustWrites)
+                .expect("apply")
+                .expect("a plain write is a change to send");
+
+            let versions = tilo_resource::history::versions(&mut ed.doc);
+            assert!(!versions.is_empty(), "the edit produced no version to date");
+            assert!(
+                versions.iter().all(|v| v.time_ms > 0),
+                "every change the agent writes must carry the time it was \
+                 made: {versions:?}"
+            );
+        }
+
+        // Case `a_change_is_sent_even_when_the_action_read_after_writing`.
+        // A change whose action read after writing is still broadcast. The
+        // probe is checked first, so this proves the condition it claims to
+        // exercise rather than passing against any guard at all.
         {
             let mut probe = AutoCommit::new();
-            assert!(
-                probe.load_incoming(&delta).is_ok(),
-                "automerge must accept this delta, or the trap this guards \
-                 against does not exist"
+            ReadsAfterWriting
+                .apply(&mut probe)
+                .expect("the probe applies");
+            assert_eq!(
+                probe.pending_ops(),
+                0,
+                "the probe must leave nothing pending, or this test is not \
+                 exercising the condition it is about"
             );
-            assert!(
-                !probe.get_missing_deps(&[]).is_empty(),
-                "the delta must be one whose ancestor is missing, or this \
-                 exercises nothing"
+
+            let mut ed = Editor::empty("Scribe");
+            let delta = ed
+                .apply(&ReadsAfterWriting)
+                .expect("apply")
+                .expect("the document changed, so there is a change to send");
+
+            let mut peer = AutoCommit::new();
+            peer.load_incoming(&delta).expect("the delta applies");
+            assert_eq!(
+                peer.get(&ROOT, "note")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("written".to_string()),
+                "the peer never received the change the agent made"
             );
         }
 
-        let mut ed = Editor::empty("Scribe");
-        let before = ed.missing_ancestors();
-        assert!(
-            !ed.merge_incremental(&delta).expect("merge"),
-            "a delta belonging to another document is not this one's, and \
-             saying it applied reports an edit that did not happen"
-        );
-        assert_eq!(
-            ed.missing_ancestors(),
-            before,
-            "refusing a foreign delta must leave nothing queued behind it"
-        );
-    }
-
-    /// An edit the agent makes carries the time it was made — a version has
-    /// a wall clock only because [`Editor::apply`] routes the commit
-    /// through `commit_stamped`.
-    #[test]
-    fn an_edit_the_agent_makes_carries_the_time_it_was_made() {
-        #[derive(Debug)]
-        struct JustWrites;
-        impl Action for JustWrites {
-            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
-                Ok(())
-            }
-            fn locus(&self) -> ExecutionLocus {
-                ExecutionLocus::ClientLocal
-            }
+        // Case `an_action_that_changes_nothing_sends_nothing`.
+        // And the silence is still honest: an action that changes nothing
+        // broadcasts nothing.
+        {
+            let mut ed = Editor::empty("Scribe");
+            assert_eq!(ed.apply(&Nothing).expect("apply"), None);
         }
 
-        let mut ed = Editor::empty("Scribe");
-        ed.apply(&JustWrites)
-            .expect("apply")
-            .expect("a plain write is a change to send");
-
-        let versions = tilo_resource::history::versions(&mut ed.doc);
-        assert!(!versions.is_empty(), "the edit produced no version to date");
-        assert!(
-            versions.iter().all(|v| v.time_ms > 0),
-            "every change the agent writes must carry the time it was \
-             made: {versions:?}"
-        );
-    }
-
-    /// A change whose action read after writing is still broadcast. The
-    /// probe is checked first, so this proves the condition it claims to
-    /// exercise rather than passing against any guard at all.
-    #[test]
-    fn a_change_is_sent_even_when_the_action_read_after_writing() {
-        let mut probe = AutoCommit::new();
-        ReadsAfterWriting
-            .apply(&mut probe)
-            .expect("the probe applies");
-        assert_eq!(
-            probe.pending_ops(),
-            0,
-            "the probe must leave nothing pending, or this test is not \
-             exercising the condition it is about"
-        );
-
-        let mut ed = Editor::empty("Scribe");
-        let delta = ed
-            .apply(&ReadsAfterWriting)
-            .expect("apply")
-            .expect("the document changed, so there is a change to send");
-
-        let mut peer = AutoCommit::new();
-        peer.load_incoming(&delta).expect("the delta applies");
-        assert_eq!(
-            peer.get(&ROOT, "note")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("written".to_string()),
-            "the peer never received the change the agent made"
-        );
-    }
-
-    /// And the silence is still honest: an action that changes nothing
-    /// broadcasts nothing.
-    #[test]
-    fn an_action_that_changes_nothing_sends_nothing() {
-        let mut ed = Editor::empty("Scribe");
-        assert_eq!(ed.apply(&Nothing).expect("apply"), None);
-    }
-
-    /// The ordinary path is unchanged: an action that leaves its ops
-    /// pending is committed, stamped, and sent.
-    #[test]
-    fn an_ordinary_write_is_still_committed_and_sent() {
-        #[derive(Debug)]
-        struct JustWrites;
-        impl Action for JustWrites {
-            fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
-                use automerge::transaction::Transactable;
-                doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
-                Ok(())
+        // Case `an_ordinary_write_is_still_committed_and_sent`.
+        // The ordinary path is unchanged: an action that leaves its ops
+        // pending is committed, stamped, and sent.
+        {
+            #[derive(Debug)]
+            struct JustWrites;
+            impl Action for JustWrites {
+                fn apply(&self, doc: &mut Doc) -> Result<(), ActionError> {
+                    use automerge::transaction::Transactable;
+                    doc.put(&ROOT, "note", ScalarValue::Str("typed".into()))?;
+                    Ok(())
+                }
+                fn locus(&self) -> ExecutionLocus {
+                    ExecutionLocus::ClientLocal
+                }
             }
-            fn locus(&self) -> ExecutionLocus {
-                ExecutionLocus::ClientLocal
-            }
+            let mut ed = Editor::empty("Scribe");
+            let delta = ed
+                .apply(&JustWrites)
+                .expect("apply")
+                .expect("a plain write is a change to send");
+            let mut peer = AutoCommit::new();
+            peer.load_incoming(&delta).expect("the delta applies");
+            assert_eq!(
+                peer.get(&ROOT, "note")
+                    .unwrap()
+                    .and_then(|(v, _)| v.as_str().map(str::to_string)),
+                Some("typed".to_string())
+            );
         }
-        let mut ed = Editor::empty("Scribe");
-        let delta = ed
-            .apply(&JustWrites)
-            .expect("apply")
-            .expect("a plain write is a change to send");
-        let mut peer = AutoCommit::new();
-        peer.load_incoming(&delta).expect("the delta applies");
-        assert_eq!(
-            peer.get(&ROOT, "note")
-                .unwrap()
-                .and_then(|(v, _)| v.as_str().map(str::to_string)),
-            Some("typed".to_string())
-        );
     }
 
     #[test]

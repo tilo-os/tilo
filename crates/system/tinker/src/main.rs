@@ -612,51 +612,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn share_defaults_to_read_only() {
-        let s = parse_share("/data").unwrap();
-        assert_eq!(s.host, PathBuf::from("/data"));
-        assert_eq!(s.guest, PathBuf::from("/data"));
-        assert!(!s.writable);
-    }
-
-    #[test]
-    fn share_rw_suffix_is_honoured_and_stripped() {
-        let s = parse_share("/data:rw").unwrap();
-        assert_eq!(s.host, PathBuf::from("/data"));
-        assert!(s.writable);
-    }
-
-    #[test]
-    fn share_ro_suffix_is_accepted_explicitly() {
-        let s = parse_share("/data:ro").unwrap();
-        assert_eq!(s.host, PathBuf::from("/data"));
-        assert!(!s.writable);
-    }
-
-    #[test]
-    fn relative_shares_are_refused() {
-        // A relative --share would resolve against whatever cwd bwrap happened
-        // to have, which is not something a user can reason about.
-        assert!(parse_share("data").is_err());
-        assert!(parse_share("./data:rw").is_err());
-    }
-
-    #[test]
-    fn scratch_names_do_not_collide() {
-        let d = tempfile::tempdir().unwrap();
-        let s = Store::at(d.path());
-        let first = next_scratch_name(&s).unwrap();
-        s.create(&first, "debian", LayerKind::Ephemeral, vec![])
-            .unwrap();
-        let second = next_scratch_name(&s).unwrap();
-        assert_ne!(first, second);
-    }
-
-    #[test]
-    fn explain_states_the_limits_not_only_the_powers() {
-        let t = explain_text();
-        for required in ["does NOT protect", "kernel", "--share", "discard"] {
-            assert!(t.contains(required), "explain text omits {required:?}");
+    fn share_arguments_default_read_only_and_refuse_relative_paths() {
+        // Phase `share_defaults_to_read_only`.
+        {
+            let s = parse_share("/data").unwrap();
+            assert_eq!(s.host, PathBuf::from("/data"));
+            assert_eq!(s.guest, PathBuf::from("/data"));
+            assert!(!s.writable);
+        }
+        // Phase `share_rw_suffix_is_honoured_and_stripped`.
+        {
+            let s = parse_share("/data:rw").unwrap();
+            assert_eq!(s.host, PathBuf::from("/data"));
+            assert!(s.writable);
+        }
+        // Phase `share_ro_suffix_is_accepted_explicitly`.
+        {
+            let s = parse_share("/data:ro").unwrap();
+            assert_eq!(s.host, PathBuf::from("/data"));
+            assert!(!s.writable);
+        }
+        // Phase `relative_shares_are_refused`.
+        {
+            // A relative --share would resolve against whatever cwd bwrap happened
+            // to have, which is not something a user can reason about.
+            assert!(parse_share("data").is_err());
+            assert!(parse_share("./data:rw").is_err());
+        }
+        // Phase `scratch_names_do_not_collide`.
+        {
+            let d = tempfile::tempdir().unwrap();
+            let s = Store::at(d.path());
+            let first = next_scratch_name(&s).unwrap();
+            s.create(&first, "debian", LayerKind::Ephemeral, vec![])
+                .unwrap();
+            let second = next_scratch_name(&s).unwrap();
+            assert_ne!(first, second);
+        }
+        // Phase `explain_states_the_limits_not_only_the_powers`.
+        {
+            let t = explain_text();
+            for required in ["does NOT protect", "kernel", "--share", "discard"] {
+                assert!(t.contains(required), "explain text omits {required:?}");
+            }
         }
     }
 }

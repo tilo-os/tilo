@@ -1,0 +1,16 @@
+[package]
+name = "fs-content"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The storage daemon's content format: size-tiered FastCDC chunking, BLAKE3 chunk hashes and self-describing HashSeq manifests, with the legacy format still readable."
+
+[dependencies]
+blake3.workspace = true
+fastcdc.workspace = true
+serde.workspace = true
+postcard = { workspace = true, features = ["use-std"] }
+
+[lints]
+workspace = true

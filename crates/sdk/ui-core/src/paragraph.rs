@@ -543,117 +543,122 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
 mod tests {
     use super::*;
 
-    #[test]
-    fn global_composition_avoids_a_tiny_last_line() {
-        let widths = [46.0, 42.0, 45.0, 50.0, 36.0, 47.0, 41.0, 44.0];
-        let boxes: Vec<_> = widths
-            .into_iter()
-            .enumerate()
-            .map(|(index, width)| ParagraphBox::word(width, if index == 0 { 0.0 } else { 10.0 }))
-            .collect();
-        let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
-        assert_eq!(lines.len(), 3);
-        assert!(
-            lines.last().unwrap().natural_width > 90.0,
-            "the optimizer should rebalance earlier lines: {lines:?}"
-        );
-    }
-
-    #[test]
-    fn non_breaking_inline_fragments_stay_with_the_previous_box() {
-        let mut boxes = vec![
-            ParagraphBox::word(70.0, 0.0),
-            ParagraphBox::word(65.0, 10.0),
-            ParagraphBox::word(12.0, 0.0),
-            ParagraphBox::word(60.0, 10.0),
-        ];
-        boxes[2].break_before = false;
-        let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
-        assert!(
-            lines.iter().all(|line| line.start != 2),
-            "punctuation-like fragments cannot begin a line"
-        );
-    }
-
-    #[test]
     #[allow(
         clippy::float_cmp,
         reason = "checks glue_scale actually moved away from the literal 1.0 sentinel; an epsilon comparison would let a barely-adjusted line slip through undetected"
     )]
-    fn justified_lines_fill_the_measure_but_the_last_line_stays_natural() {
-        let boxes: Vec<_> = (0..8)
-            .map(|index| ParagraphBox::word(40.0, if index == 0 { 0.0 } else { 10.0 }))
-            .collect();
-        let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
-        assert!(lines.len() >= 3);
-        assert!(
-            lines[..lines.len() - 1]
-                .iter()
-                .all(|line| line.glue_scale != 1.0)
-        );
-        assert_eq!(lines.last().unwrap().glue_scale, 1.0);
-    }
-
     #[test]
-    fn emergency_composition_never_produces_negative_glue() {
-        let boxes = vec![
-            ParagraphBox::word(95.0, 0.0),
-            ParagraphBox::word(95.0, 10.0),
-            ParagraphBox::word(95.0, 10.0),
-        ];
-        let lines = compose_paragraph(&boxes, ParagraphOptions::new(120.0));
-        assert!(lines.iter().all(|line| line.glue_scale >= 0.2));
-    }
+    fn paragraph_composition_balances_lines_and_keeps_glue_valid() {
+        // Case `global_composition_avoids_a_tiny_last_line`.
+        {
+            let widths = [46.0, 42.0, 45.0, 50.0, 36.0, 47.0, 41.0, 44.0];
+            let boxes: Vec<_> = widths
+                .into_iter()
+                .enumerate()
+                .map(|(index, width)| {
+                    ParagraphBox::word(width, if index == 0 { 0.0 } else { 10.0 })
+                })
+                .collect();
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
+            assert_eq!(lines.len(), 3);
+            assert!(
+                lines.last().unwrap().natural_width > 90.0,
+                "the optimizer should rebalance earlier lines: {lines:?}"
+            );
+        }
 
-    #[test]
-    fn micro_expansion_shares_adjustment_with_interword_glue() {
-        let boxes: Vec<_> = (0..6)
-            .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
-            .collect();
-        let lines = compose_paragraph(&boxes, ParagraphOptions::new(270.0));
-        let first = lines.first().unwrap();
-        assert!((0.98..=1.02).contains(&first.glyph_scale));
-        assert_ne!(first.glyph_scale, 1.0, "micro-expansion should participate");
-        let visual_width = 240.0 * first.glyph_scale + 20.0 * first.glue_scale;
-        assert!((visual_width - 270.0).abs() < 0.1, "line fills exactly");
-        assert_eq!(lines.last().unwrap().glyph_scale, 1.0);
-    }
+        // Case `non_breaking_inline_fragments_stay_with_the_previous_box`.
+        {
+            let mut boxes = vec![
+                ParagraphBox::word(70.0, 0.0),
+                ParagraphBox::word(65.0, 10.0),
+                ParagraphBox::word(12.0, 0.0),
+                ParagraphBox::word(60.0, 10.0),
+            ];
+            boxes[2].break_before = false;
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
+            assert!(
+                lines.iter().all(|line| line.start != 2),
+                "punctuation-like fragments cannot begin a line"
+            );
+        }
 
-    #[test]
-    fn fallback_keeps_a_forbidden_break_group_together() {
-        let mut options = ParagraphOptions::new(1.0);
-        options.space_shrink = 0.0;
-        options.space_stretch = 0.0;
-        let boxes = vec![
-            ParagraphBox::word(10.0, 0.0),
-            ParagraphBox {
-                width: 5.0,
-                glue_before: 0.0,
-                stretch_before: 0.0,
-                shrink_before: 0.0,
-                break_before: false,
-                break_penalty: 0,
-                flagged_break: false,
-                break_width: 0.0,
-                end_protrusion: 0.0,
-            },
-            ParagraphBox::word(10.0, 2.0),
-        ];
-        let lines = compose_paragraph(&boxes, options);
-        assert_eq!((lines[0].start, lines[0].end), (0, 2));
-    }
+        // Case `justified_lines_fill_the_measure_but_the_last_line_stays_natural`.
+        {
+            let boxes: Vec<_> = (0..8)
+                .map(|index| ParagraphBox::word(40.0, if index == 0 { 0.0 } else { 10.0 }))
+                .collect();
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
+            assert!(lines.len() >= 3);
+            assert!(
+                lines[..lines.len() - 1]
+                    .iter()
+                    .all(|line| line.glue_scale != 1.0)
+            );
+            assert_eq!(lines.last().unwrap().glue_scale, 1.0);
+        }
 
-    #[test]
-    fn closing_punctuation_can_protrude_past_the_measure() {
-        let mut boxes: Vec<_> = (0..6)
-            .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
-            .collect();
-        boxes[2].end_protrusion = 10.0;
-        let mut options = ParagraphOptions::new(260.0);
-        options.max_glyph_expansion = 0.0;
-        let lines = compose_paragraph(&boxes, options);
-        assert_eq!(lines[0].end, 3);
-        assert_eq!(lines[0].natural_width, 250.0);
-        assert_eq!(lines[0].glue_scale, 1.5);
+        // Case `emergency_composition_never_produces_negative_glue`.
+        {
+            let boxes = vec![
+                ParagraphBox::word(95.0, 0.0),
+                ParagraphBox::word(95.0, 10.0),
+                ParagraphBox::word(95.0, 10.0),
+            ];
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(120.0));
+            assert!(lines.iter().all(|line| line.glue_scale >= 0.2));
+        }
+
+        // Case `micro_expansion_shares_adjustment_with_interword_glue`.
+        {
+            let boxes: Vec<_> = (0..6)
+                .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
+                .collect();
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(270.0));
+            let first = lines.first().unwrap();
+            assert!((0.98..=1.02).contains(&first.glyph_scale));
+            assert_ne!(first.glyph_scale, 1.0, "micro-expansion should participate");
+            let visual_width = 240.0 * first.glyph_scale + 20.0 * first.glue_scale;
+            assert!((visual_width - 270.0).abs() < 0.1, "line fills exactly");
+            assert_eq!(lines.last().unwrap().glyph_scale, 1.0);
+        }
+
+        // Case `fallback_keeps_a_forbidden_break_group_together`.
+        {
+            let mut options = ParagraphOptions::new(1.0);
+            options.space_shrink = 0.0;
+            options.space_stretch = 0.0;
+            let boxes = vec![
+                ParagraphBox::word(10.0, 0.0),
+                ParagraphBox {
+                    width: 5.0,
+                    glue_before: 0.0,
+                    stretch_before: 0.0,
+                    shrink_before: 0.0,
+                    break_before: false,
+                    break_penalty: 0,
+                    flagged_break: false,
+                    break_width: 0.0,
+                    end_protrusion: 0.0,
+                },
+                ParagraphBox::word(10.0, 2.0),
+            ];
+            let lines = compose_paragraph(&boxes, options);
+            assert_eq!((lines[0].start, lines[0].end), (0, 2));
+        }
+
+        // Case `closing_punctuation_can_protrude_past_the_measure`.
+        {
+            let mut boxes: Vec<_> = (0..6)
+                .map(|index| ParagraphBox::word(80.0, if index == 0 { 0.0 } else { 10.0 }))
+                .collect();
+            boxes[2].end_protrusion = 10.0;
+            let mut options = ParagraphOptions::new(260.0);
+            options.max_glyph_expansion = 0.0;
+            let lines = compose_paragraph(&boxes, options);
+            assert_eq!(lines[0].end, 3);
+            assert_eq!(lines[0].natural_width, 250.0);
+            assert_eq!(lines[0].glue_scale, 1.5);
+        }
     }
 }
