@@ -39,6 +39,7 @@ pub mod mask;
 mod recent;
 mod record;
 pub mod redact;
+pub mod replay;
 
 pub use builder::{Limits, Pushed, TraceBuilder};
 pub use recent::{OpReference, RecentBuffer, RecentEntry, RecentItem};
@@ -58,7 +59,7 @@ pub const REDACTED_FROM_RELATION: &str = "redacted-from";
 /// Record relation from a session to a record it recorded.
 pub const RECORDED_RELATION: &str = "recorded";
 /// Layout version of the `session` map. Readers refuse any other.
-pub const FORMAT_VERSION: u64 = 1;
+pub const FORMAT_VERSION: u64 = 2;
 
 /// Monotonic time since the recording started, in microseconds.
 #[derive(
@@ -231,6 +232,9 @@ pub enum PresenceChange {
     },
     Arrived,
     Left,
+    /// The participant's View subset changed; the subset rides in the
+    /// update's `scope`, as the SDK's `PresenceKey::View`.
+    View,
     Following {
         target: Option<String>,
     },

@@ -514,8 +514,9 @@ mod tests {
             Err(TraceError::AlreadyWritten)
         ));
         let session = session_obj(&doc).expect("session");
-        doc.put(&session, "format", 2_u64).expect("bump");
-        assert!(matches!(read(&doc), Err(TraceError::UnsupportedFormat(2))));
+        let foreign = crate::FORMAT_VERSION + 1;
+        doc.put(&session, "format", foreign).expect("bump");
+        assert!(matches!(read(&doc), Err(TraceError::UnsupportedFormat(v)) if v == foreign));
         assert_eq!(read_summary(&doc), None);
     }
 }
