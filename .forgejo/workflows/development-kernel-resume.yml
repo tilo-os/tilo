@@ -123,9 +123,8 @@ jobs:
           python3 recovery-helpers/os/dev/stage-kernel-checkpoint.py
 
       - name: Set up bounded native BuildKit
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        uses: ./.forgejo/actions/setup-buildx
         with:
-          driver: docker-container
           driver-opts: |
             memory=9g
             memory-swap=9g
