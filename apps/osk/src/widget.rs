@@ -28,6 +28,18 @@
 //! the bar with next-word predictions; tapping a chip commits the word + a
 //! space.
 //!
+//! ## Touch: typing with both thumbs
+//! The key area claims raw touch ([`Widget::claims_raw_touch`]), so every
+//! finger is tracked on its own instead of through the toolkit's single
+//! emulated pointer. A key highlights the moment a finger lands on it and
+//! types when that finger lifts. Rolling two-thumb input types in **press
+//! order**, as iOS does: when a finger lands while another still holds a
+//! key, the held key types at once and its later lift does nothing. So
+//! A-down, B-down, A-up, B-up and A-down, B-down, B-up, A-up both type "ab",
+//! with no key ever dropped or waiting on another finger. Only a finger that
+//! stayed alone on the keys for its whole contact may swipe; once a second
+//! finger lands, the first one's drag is a tap.
+//!
 //! ## Seams
 //! * **Neural swipe:** the decoder is behind the
 //!   [`crate::swipe::SwipeModel`] trait. The shipping model is the geometric
@@ -42,7 +54,7 @@ use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, Touch, TouchPhase, WindowEvent};
 
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Role};
 use ui::icons::{self, Icon};
@@ -161,6 +173,9 @@ pub struct OskWidget {
     suggestion_geom: Vec<(usize, Rect)>,
     /// The suggestion-bar band (drawn even when empty, for a stable chrome).
     suggestion_area: Rect,
+    /// The band the keys fill; touches that start here are tracked per
+    /// finger (see [`Widget::claims_raw_touch`]).
+    key_area: Rect,
 
     // --- interaction state ---
     hovered_key: Option<KeyId>,
@@ -203,6 +218,8 @@ pub struct OskWidget {
     /// While the left button is down, the captured pointer path (logical px).
     /// `Some` between press and release; `None` otherwise.
     gesture_path: Option<Vec<Point>>,
+    /// Fingers currently down on the keys, in press order.
+    fingers: Vec<Finger>,
 
     // --- output ---
     mirror: TextMirror,
@@ -277,6 +294,7 @@ impl OskWidget {
             toolbar_geom: Vec::new(),
             suggestion_geom: Vec::new(),
             suggestion_area: Rect::ZERO,
+            key_area: Rect::ZERO,
             hovered_key: None,
             pressed_key: None,
             hovered_tool: None,
@@ -298,6 +316,7 @@ impl OskWidget {
             next_key: NextKeyCache::default(),
             pointer: None,
             gesture_path: None,
+            fingers: Vec::new(),
             mirror: TextMirror::new(MAX_PENDING_TEXT_BYTES),
             output: VecDeque::new(),
             dropped_outputs: 0,
@@ -578,6 +597,7 @@ impl OskWidget {
         if self.visible != visible {
             self.visible = visible;
             self.structure_dirty = true;
+            self.fingers.clear();
         }
     }
 
@@ -1198,6 +1218,102 @@ impl OskWidget {
         target
     }
 
+    /// One raw finger event on the keys (see the module docs on touch).
+    fn handle_touch(&mut self, touch: &Touch, scale_factor: f64, handled: &mut bool) {
+        let p = Point::new(
+            touch.location.x / scale_factor,
+            touch.location.y / scale_factor,
+        );
+        match touch.phase {
+            TouchPhase::Started => {
+                // Only contacts that began on the keys are ours; the toolkit
+                // turns every other one into pointer events.
+                if !self.claims_raw_touch(p) {
+                    return;
+                }
+                // Press order: a held key types before the new one can.
+                let held: Vec<Finger> = self
+                    .fingers
+                    .iter_mut()
+                    .filter(|f| !f.spent)
+                    .map(|f| {
+                        f.spent = true;
+                        f.clone()
+                    })
+                    .collect();
+                for f in &mut self.fingers {
+                    f.solo = false;
+                }
+                for f in held {
+                    self.type_finger(&f, false);
+                }
+                self.fingers.retain(|f| f.id != touch.id);
+                self.fingers.push(Finger {
+                    id: touch.id,
+                    key: self.key_at(p),
+                    at: p,
+                    path: vec![p],
+                    solo: self.fingers.is_empty(),
+                    spent: false,
+                });
+                *handled = true;
+            }
+            TouchPhase::Moved => {
+                let key = self.key_at(p);
+                let Some(f) = self.fingers.iter_mut().find(|f| f.id == touch.id) else {
+                    return;
+                };
+                f.at = p;
+                f.key = key;
+                if f.path.last().is_none_or(|&l| l.distance(p) > 1.0) {
+                    if f.path.len() < MAX_GESTURE_POINTS {
+                        f.path.push(p);
+                    } else if let Some(last) = f.path.last_mut() {
+                        *last = p;
+                    }
+                }
+                *handled = true;
+            }
+            TouchPhase::Ended => {
+                let Some(i) = self.fingers.iter().position(|f| f.id == touch.id) else {
+                    return;
+                };
+                let mut f = self.fingers.remove(i);
+                f.at = p;
+                if !f.spent {
+                    let may_swipe = f.solo;
+                    self.type_finger(&f, may_swipe);
+                }
+                *handled = true;
+            }
+            TouchPhase::Cancelled => {
+                // The system took the contact back (e.g. a compositor
+                // gesture): it types nothing.
+                let before = self.fingers.len();
+                self.fingers.retain(|f| f.id != touch.id);
+                *handled |= self.fingers.len() != before;
+            }
+        }
+    }
+
+    /// Type what finger `f` pressed: its swipe when it may swipe and its path
+    /// reads as one, otherwise the key under it (resolved to the letter most
+    /// likely meant).
+    fn type_finger(&mut self, f: &Finger, may_swipe: bool) {
+        if may_swipe
+            && crate::swipe::is_swipe(&f.path, self.key_scale())
+            && self.decode_and_apply_swipe(&f.path)
+        {
+            return;
+        }
+        // Hit-test afresh: a layer switch typed by another finger may have
+        // replaced the keys since this one landed.
+        if let Some(id) = self.key_at(f.at) {
+            let target = self.resolve_letter_tap(id, Some(f.at));
+            self.activate_key(target);
+        }
+    }
+
     fn key_at(&self, p: Point) -> Option<KeyId> {
         self.key_geom
             .iter()
@@ -1218,6 +1334,24 @@ impl OskWidget {
             .find(|(_, r)| r.contains(p))
             .map(|(i, _)| *i)
     }
+}
+
+/// One finger on the keys.
+#[derive(Clone, Debug)]
+struct Finger {
+    /// The contact's `Touch::id`.
+    id: u64,
+    /// The key under the finger, highlighted while it is down.
+    key: Option<KeyId>,
+    /// Latest position (logical px).
+    at: Point,
+    /// The path travelled, for swipe decoding.
+    path: Vec<Point>,
+    /// No other finger touched the keys during this contact, so it may swipe.
+    solo: bool,
+    /// Its key already typed because another finger landed; lifting it types
+    /// nothing more.
+    spent: bool,
 }
 
 /// An autocorrection committed at the last word boundary.
@@ -1642,6 +1776,7 @@ impl Widget for OskWidget {
         // Stash the suggestion-bar area so an empty bar can still render its
         // background + hit-test correctly (suggestion_rects is empty then).
         self.suggestion_area = suggestion_area;
+        self.key_area = key_area;
         let geom = {
             let layout = self.current_layout();
             key_rects(layout, key_area, self.shift)
@@ -1765,7 +1900,8 @@ impl Widget for OskWidget {
             let is_action = !matches!(&key.action, KeyAction::Char(_));
             let shift_active = matches!(&key.action, KeyAction::Shift) && shift.is_upper();
             let hovered = self.hovered_key == Some(*id);
-            let pressed = self.pressed_key == Some(*id);
+            let pressed = self.pressed_key == Some(*id)
+                || self.fingers.iter().any(|f| !f.spent && f.key == Some(*id));
             // Letters get a larger glyph; multi-char action labels smaller.
             let font_scale = if Key::is_letter(key) { 0.42 } else { 0.30 };
             // The Shift key's icon fills solid while Caps-Lock is latched, so a
@@ -1809,6 +1945,7 @@ impl Widget for OskWidget {
             return;
         }
         match event {
+            WindowEvent::Touch(touch) => self.handle_touch(touch, scale_factor, handled),
             WindowEvent::CursorMoved { position, .. } => {
                 let p = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.pointer = Some(p);
@@ -1910,6 +2047,10 @@ impl Widget for OskWidget {
             }
             _ => {}
         }
+    }
+
+    fn claims_raw_touch(&self, point: Point) -> bool {
+        self.visible && self.key_area.contains(point)
     }
 
     fn name(&self) -> &'static str {
