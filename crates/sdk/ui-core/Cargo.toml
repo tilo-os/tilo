@@ -76,6 +76,7 @@ xdg-paths = { path = "../../system/xdg-paths" }
 private-fs = { path = "../../system/private-fs" }
 advisory-lock = { path = "../../system/advisory-lock" }
 tilo-ui-graph = { path = "../../dev/ui-graph" }
+tilo-font-catalog = { path = "../font-catalog" }
 atomic-file = { path = "../../system/atomic-file" }
 settings-store = { path = "../../system/settings-store" }
 # Parses the portal's returned file URIs. Non-optional:
@@ -217,7 +218,6 @@ data-encoding.workspace = true
 sha2.workspace = true
 # SIMD compiler fingerprinting and integrity for the private DX12 cache.
 blake3.workspace = true
-toml.workspace = true
 unicode-script = "=0.5.8"
 # Pairing-channel authentication. HMAC binds the round-1 broadcast to
 # the one-time pairing secret; XChaCha20-Poly1305 separately encrypts

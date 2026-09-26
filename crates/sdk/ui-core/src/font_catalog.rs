@@ -1,20 +1,17 @@
 use std::collections::{HashMap, HashSet};
-#[cfg(not(windows))]
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use cosmic_text::{FontSystem, fontdb};
-use serde::Deserialize;
-use sha2::{Digest, Sha256};
+#[cfg(test)]
+use tilo_font_catalog::MANIFEST;
+use tilo_font_catalog::Scope;
 
 mod fallback;
 #[cfg(test)]
 mod tests;
 #[cfg(windows)]
 mod windows;
-
-const MANIFEST: &str = include_str!("../assets/fonts/manifest.toml");
 
 /// Share verified font data across native Windows renderers. Each renderer
 /// keeps its own shaping caches while font bytes and discovery are reused.
@@ -39,13 +36,6 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
     database.as_ref().map(|db| {
         FontSystem::new_with_locale_and_db_and_fallback(locale, db.clone(), fallback::TiloFallback)
     })
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum Scope {
-    Product,
-    Fixture,
 }
 
 #[derive(Clone, Debug)]
@@ -76,32 +66,17 @@ impl FontCatalogError {
     }
 }
 
-#[derive(Deserialize)]
-struct Manifest {
-    schema: u32,
-    font: Vec<Asset>,
-}
-
-#[derive(Deserialize)]
-struct Asset {
-    scope: Scope,
-    file: String,
-    bytes: u64,
-    sha256: String,
-    reserved_aliases: Vec<String>,
-    faces: Vec<Face>,
-}
-
-#[derive(Deserialize)]
-struct Face {
-    index: u32,
-    family: String,
-    post_script_name: String,
-    style: String,
+impl From<tilo_font_catalog::Error> for FontCatalogError {
+    fn from(error: tilo_font_catalog::Error) -> Self {
+        Self {
+            path: error.path,
+            problem: error.problem,
+        }
+    }
 }
 
 pub fn catalog_manifest_sha256() -> String {
-    hex::encode(Sha256::digest(MANIFEST.as_bytes()))
+    tilo_font_catalog::manifest_sha256()
 }
 
 #[cfg(any(test, all(feature = "native", feature = "test-support")))]
@@ -258,23 +233,8 @@ fn verified_bundle(root: &Path, fixtures: bool) -> Result<Arc<VerifiedBundle>, F
     reason = "Bundle verification keeps manifest, size, hash and face validation in one sequence."
 )]
 fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCatalogError> {
-    let manifest_path = root.join("manifest.toml");
-    let shipped =
-        std::fs::read(&manifest_path).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
-    if shipped != MANIFEST.as_bytes() {
-        return Err(FontCatalogError::at(
-            manifest_path,
-            "manifest differs from this Tilo build",
-        ));
-    }
-    let manifest: Manifest =
-        toml::from_str(MANIFEST).map_err(|e| FontCatalogError::at(&manifest_path, e))?;
-    if manifest.schema != 1 {
-        return Err(FontCatalogError::at(
-            manifest_path,
-            "unsupported catalog schema",
-        ));
-    }
+    tilo_font_catalog::check_manifest(root)?;
+    let manifest = tilo_font_catalog::manifest()?;
     let mut db = fontdb::Database::new();
     let mut canonical = HashSet::new();
     let mut reserved = HashSet::new();
@@ -286,24 +246,7 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
         // Only this catalog's canonical faces reserve names. Product mode
         // can still discover an ambient Adwaita as a user-named font.
         reserved.extend(asset.reserved_aliases.iter().map(|s| s.to_lowercase()));
-        let path = root.join(&asset.file);
-        let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
-        if !metadata.is_file() || metadata.len() != asset.bytes {
-            return Err(FontCatalogError::at(
-                &path,
-                format!("expected regular file of {} bytes", asset.bytes),
-            ));
-        }
-        let actual = hash_file(&path)?;
-        if actual != asset.sha256 {
-            return Err(FontCatalogError::at(
-                &path,
-                format!(
-                    "SHA-256 mismatch: expected {}, found {actual}",
-                    asset.sha256
-                ),
-            ));
-        }
+        let path = verify_asset(root, asset)?;
         let ids = db.load_font_source(fontdb::Source::File(path.clone()));
         if ids.len() != asset.faces.len() {
             return Err(FontCatalogError::at(
@@ -347,36 +290,35 @@ fn verify_bundle(root: &Path, fixtures: bool) -> Result<VerifiedBundle, FontCata
     })
 }
 
-#[cfg(windows)]
-fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
-    let file = std::fs::File::open(path).map_err(|error| FontCatalogError::at(path, error))?;
-    windows::digest(file)
-        .map(hex::encode)
-        .map_err(|error| FontCatalogError::at(path, error))
+/// Check one catalog file against its pinned size and SHA-256.
+#[cfg(not(windows))]
+fn verify_asset(
+    root: &Path,
+    asset: &tilo_font_catalog::Asset,
+) -> Result<PathBuf, FontCatalogError> {
+    Ok(asset.verify(root)?)
 }
 
-#[cfg(not(windows))]
-#[allow(
-    clippy::large_stack_arrays,
-    reason = "A single fixed 64 KiB stack buffer bounds memory while streaming each font into SHA-256."
-)]
-fn hash_file(path: &Path) -> Result<String, FontCatalogError> {
-    let mut file = std::fs::File::open(path).map_err(|e| FontCatalogError::at(path, e))?;
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 64 * 1024];
-    loop {
-        let n = file
-            .read(&mut buffer)
-            .map_err(|e| FontCatalogError::at(path, e))?;
-        if n == 0 {
-            break;
-        }
-        let chunk = buffer
-            .get(..n)
-            .ok_or_else(|| FontCatalogError::at(path, "font read exceeded its buffer"))?;
-        hash.update(chunk);
+/// Windows hashes through the platform provider (see [`windows::digest`]).
+#[cfg(windows)]
+fn verify_asset(
+    root: &Path,
+    asset: &tilo_font_catalog::Asset,
+) -> Result<PathBuf, FontCatalogError> {
+    let path = asset.path_in(root)?;
+    let metadata = std::fs::metadata(&path).map_err(|e| FontCatalogError::at(&path, e))?;
+    if !metadata.is_file() || metadata.len() != asset.bytes {
+        return Err(FontCatalogError::at(
+            &path,
+            format!("expected regular file of {} bytes", asset.bytes),
+        ));
     }
-    Ok(hex::encode(hash.finalize()))
+    let file = std::fs::File::open(&path).map_err(|error| FontCatalogError::at(&path, error))?;
+    let actual = windows::digest(file)
+        .map(hex::encode)
+        .map_err(|error| FontCatalogError::at(&path, error))?;
+    asset.check_digest(&path, &actual)?;
+    Ok(path)
 }
 
 ///
