@@ -635,6 +635,15 @@ pub struct State {
     /// Input-method candidate surfaces are similarly transient.  They stay
     /// outside the app tree so a candidate list can never become a tab.
     pub(crate) input_method_popups: Vec<InputMethodPopupSurface>,
+    /// Which trusted input method currently owns the seat; read by the
+    /// input-method and virtual-keyboard global filters.
+    seat_input_method: crate::compositor::input_method::SeatInputMethod,
+    /// Live connections accepted on a trusted input method's private
+    /// display, so the previous owner's can be cut when the seat moves.
+    trusted_input_method_clients: Vec<(
+        ClientId,
+        crate::compositor::input_method::TrustedInputMethod,
+    )>,
     /// The trusted OSK's xdg-toplevel surface, promoted out of the workspace
     /// tree and positioned by [`crate::compositor::frame::FrameBuilder`].
     pub osk_surface: Option<u64>,
@@ -918,12 +927,20 @@ impl State {
         // not. Sandboxed apps only see the public Wayland socket. Even a
         // process spoofing `so.tilo.osk` there cannot bind either privileged
         // global: authorization is immutable per-connection state set by the
-        // dedicated socket acceptor.
+        // dedicated socket acceptor, and only the kind that currently owns
+        // the seat (see `compositor::input_method`) sees them at all.
         let text_input_manager_state = TextInputManagerState::new::<Self>(&display_handle);
+        let seat_input_method = crate::compositor::input_method::SeatInputMethod::default();
         let input_method_manager_state =
-            InputMethodManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            InputMethodManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         let virtual_keyboard_manager_state =
-            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, is_osk_client);
+            VirtualKeyboardManagerState::new::<Self, _>(&display_handle, {
+                let seat_input_method = seat_input_method.clone();
+                move |client| seat_input_method.admits(trusted_input_method(client))
+            });
         // Advertise `wp_color_manager_v1`, before the state literal below since `display_handle` is moved into the struct.
         let color_manager = ColorManagerState::new::<Self>(&display_handle);
         // Advertise `wp_fractional_scale_manager_v1` + `wp_viewporter`
@@ -1013,6 +1030,8 @@ impl State {
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
             input_method_popups: Vec::new(),
+            seat_input_method,
+            trusted_input_method_clients: Vec::new(),
             osk_surface: None,
             pending_floating_toplevels: Vec::new(),
             floating_toplevels: Vec::new(),
@@ -2860,10 +2879,11 @@ pub struct ClientState {
     /// lifecycle. A *socket* privilege, not a flag a client can ask for: the
     /// sandbox launcher bind-mounts only the public socket into a sandbox.
     pub privileged: bool,
-    /// Connection accepted on the compositor-owned OSK socket. This is the
-    /// only credential accepted by the input-method and virtual-keyboard
-    /// global filters; an app-id string is never authority.
-    pub osk: bool,
+    /// Set when the connection was accepted on a trusted input method's
+    /// compositor-owned private display. This is the only credential the
+    /// input-method and virtual-keyboard global filters accept; an app-id
+    /// string is never authority.
+    pub input_method: Option<crate::compositor::input_method::TrustedInputMethod>,
     /// Package identity proven from `SO_PEERCRED` and the compositor's live
     /// launcher registry. `None` denotes an explicitly unconfined host client.
     pub package_id: Option<String>,
@@ -2884,7 +2904,7 @@ impl Default for ClientState {
             compositor_state: CompositorClientState::default(),
             index: NEXT.fetch_add(1, Ordering::Relaxed),
             privileged: false,
-            osk: false,
+            input_method: None,
             package_id: None,
             workspace_id: None,
             enforce_package_id: false,
@@ -2924,17 +2944,25 @@ impl ClientState {
         })
     }
 
-    /// Per-client state for connections accepted on the private OSK socket.
-    pub fn osk_arc() -> Arc<Self> {
+    /// Per-client state for connections accepted on a trusted input
+    /// method's private display.
+    pub fn input_method_arc(
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) -> Arc<Self> {
         Arc::new(Self {
-            osk: true,
+            input_method: Some(kind),
             ..Self::default()
         })
     }
 }
 
-fn is_osk_client(client: &Client) -> bool {
-    client.get_data::<ClientState>().is_some_and(|d| d.osk)
+/// The trusted-input-method credential of `client`, if it has one.
+fn trusted_input_method(
+    client: &Client,
+) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+    client
+        .get_data::<ClientState>()
+        .and_then(|d| d.input_method)
 }
 
 /// Connection-provenance gate for authority-bearing Wayland protocols.
@@ -3244,8 +3272,13 @@ fn trusted_osk_identity(surface: &WlSurface, app_id: Option<&str>) -> bool {
         app_id,
         surface
             .client()
-            .and_then(|client| client.get_data::<ClientState>().map(|data| data.osk))
-            .unwrap_or(false),
+            .and_then(|client| {
+                client
+                    .get_data::<ClientState>()
+                    .map(|data| data.input_method)
+            })
+            .flatten()
+            == Some(crate::compositor::input_method::TrustedInputMethod::OnScreenKeyboard),
     )
 }
 
@@ -3305,6 +3338,28 @@ fn constrain_transient_rect(mut rect: Rect, bounds: Rect) -> Rect {
         rect = rect.with_origin((rect.x0, rect.y0 + dy));
     }
     rect
+}
+
+/// Where a candidate window goes: directly below the text field's caret
+/// rectangle (`caret` is relative to the field's surface at `parent`), left
+/// edges aligned, the way every desktop input method draws it; flipped above
+/// the caret when there is no room below on the output, then kept on it.
+fn candidate_rect(
+    parent: Rect,
+    caret: Rectangle<i32, Logical>,
+    (width, height): (u32, u32),
+    bounds: Rect,
+) -> Rect {
+    let x = parent.x0 + f64::from(caret.loc.x);
+    let caret_top = parent.y0 + f64::from(caret.loc.y);
+    let caret_bottom = caret_top + f64::from(caret.size.h.max(0));
+    let (width, height) = (f64::from(width), f64::from(height));
+    let y = if caret_bottom + height > bounds.y1 && caret_top - height >= bounds.y0 {
+        caret_top - height
+    } else {
+        caret_bottom
+    };
+    constrain_transient_rect(Rect::new(x, y, x + width, y + height), bounds)
 }
 
 /// Convert client-supplied logical popup geometry without allowing an extreme
@@ -3421,6 +3476,46 @@ impl State {
         self.popup_surfaces()
     }
 
+    /// Remember a connection accepted on a trusted input method's display.
+    pub fn register_trusted_input_method_client(
+        &mut self,
+        client: &Client,
+        kind: crate::compositor::input_method::TrustedInputMethod,
+    ) {
+        self.trusted_input_method_clients.push((client.id(), kind));
+    }
+
+    /// The trusted input method kind that owns the seat.
+    pub fn input_method_owner_kind(
+        &self,
+    ) -> Option<crate::compositor::input_method::TrustedInputMethod> {
+        self.seat_input_method.get()
+    }
+
+    /// Hand the seat's input method to `owner` (or nobody). Connections of
+    /// any other trusted kind are disconnected on the spot, releasing the
+    /// single `input-method-v2` slot before the new owner can ask for it; a
+    /// dying process cannot keep the seat.
+    pub fn set_input_method_owner(
+        &mut self,
+        owner: Option<crate::compositor::input_method::TrustedInputMethod>,
+    ) {
+        self.seat_input_method.set(owner);
+        let handle = self.display_handle.clone();
+        self.trusted_input_method_clients.retain(|(id, kind)| {
+            if handle.backend_handle().get_client_data(id.clone()).is_err() {
+                return false;
+            }
+            if Some(*kind) == owner {
+                return true;
+            }
+            handle
+                .backend_handle()
+                .kill_client(id.clone(), DisconnectReason::ConnectionClosed);
+            false
+        });
+    }
+
     /// Candidate windows provided by the privileged input method.  They use
     /// the focused text field as their parent and are clipped to its output,
     /// so a candidate strip cannot escape a multi-monitor desktop.
@@ -3432,15 +3527,8 @@ impl State {
                 let parent = popup.get_parent()?;
                 let parent_id = surface_id(&parent.surface);
                 let parent_rect = self.popup_parent_rect(parent_id, 0)?;
-                let (width, height) = crate::compositor::foreign::store()
+                let size = crate::compositor::foreign::store()
                     .frame_size(surface_id(popup.wl_surface()))?;
-                let location = popup.location();
-                let rect = Rect::new(
-                    parent_rect.x0 + f64::from(location.x),
-                    parent_rect.y0 + f64::from(location.y),
-                    parent_rect.x0 + f64::from(location.x) + f64::from(width),
-                    parent_rect.y0 + f64::from(location.y) + f64::from(height),
-                );
                 let output = self.popup_constraint_output(parent_id);
                 let bounds = Rect::new(
                     f64::from(output.loc.x),
@@ -3450,10 +3538,15 @@ impl State {
                 );
                 Some((
                     surface_id(popup.wl_surface()),
-                    constrain_transient_rect(rect, bounds),
+                    candidate_rect(parent_rect, popup.text_input_rectangle(), size, bounds),
                 ))
             })
             .collect()
+    }
+
+    /// [`Self::input_method_popup_surfaces`] for integration tests.
+    pub fn input_method_popup_surfaces_for_tests(&self) -> Vec<(SurfaceId, Rect)> {
+        self.input_method_popup_surfaces()
     }
 
     pub(crate) fn is_transient_surface(&self, id: SurfaceId) -> bool {
@@ -4839,6 +4932,35 @@ mod osk_identity_tests {
     use super::*;
 
     #[test]
+    fn candidates_sit_below_the_caret_and_flip_above_at_the_output_edge() {
+        let output = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+        let field = Rect::new(100.0, 200.0, 900.0, 1000.0);
+        let caret = Rectangle::new((40, 30).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, caret, (300, 40), output),
+            Rect::new(140.0, 250.0, 440.0, 290.0)
+        );
+        let fits_exactly = Rectangle::new((40, 820).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, fits_exactly, (300, 40), output),
+            Rect::new(140.0, 1040.0, 440.0, 1080.0),
+            "just enough room below: still below"
+        );
+        let near_bottom = Rectangle::new((40, 830).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, near_bottom, (300, 40), output),
+            Rect::new(140.0, 990.0, 440.0, 1030.0),
+            "no room below: flipped above the caret"
+        );
+        let near_right = Rectangle::new((1780, 30).into(), (2, 20).into());
+        assert_eq!(
+            candidate_rect(field, near_right, (300, 40), output),
+            Rect::new(1620.0, 250.0, 1920.0, 290.0),
+            "kept on the output horizontally"
+        );
+    }
+
+    #[test]
     fn only_private_socket_plus_exact_app_id_is_trusted() {
         assert!(osk_identity_is_trusted(Some(OSK_APP_ID), true));
         assert!(!osk_identity_is_trusted(Some(OSK_APP_ID), false));
@@ -4848,8 +4970,12 @@ mod osk_identity_tests {
 
     #[test]
     fn public_clients_never_receive_the_osk_global_credential() {
-        assert!(!ClientState::default().osk);
-        assert!(ClientState::osk_arc().osk);
+        use crate::compositor::input_method::TrustedInputMethod;
+        assert_eq!(ClientState::default().input_method, None);
+        assert_eq!(
+            ClientState::input_method_arc(TrustedInputMethod::OnScreenKeyboard).input_method,
+            Some(TrustedInputMethod::OnScreenKeyboard)
+        );
     }
 
     #[test]

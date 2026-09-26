@@ -1459,9 +1459,7 @@ impl SettingsApp {
                 if prefs.input.keyboard_layouts.contains(&source.id) {
                     return Err("keyboard input source is already active".into());
                 }
-                if prefs.input.keyboard_layouts.len()
-                    >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-                {
+                if !crate::input_sources::has_room_for(&prefs.input.keyboard_layouts, &source.id) {
                     return Err(
                         "the maximum number of keyboard input sources is already active".into(),
                     );

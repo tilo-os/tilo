@@ -517,7 +517,7 @@ impl MouseKeyboardPane {
                     ),
                 ),
                 caption(
-                    "Changes apply to this user session through the compositor. With multiple sources, Alt+Shift switches temporarily; Super+Space remains global search.",
+                    "Changes apply to this user session through the compositor. With multiple layouts, Alt+Shift switches temporarily; Super+Space remains global search.",
                 ),
                 choice_row(
                     "Compose key",
@@ -654,14 +654,15 @@ impl MouseKeyboardPane {
         let available: Vec<String> = self
             .catalog
             .iter()
-            .filter(|entry| !self.last.keyboard_layouts.contains(&entry.id))
+            .filter(|entry| {
+                !self.last.keyboard_layouts.contains(&entry.id)
+                    && crate::input_sources::has_room_for(&self.last.keyboard_layouts, &entry.id)
+            })
             .map(|entry| entry.label.clone())
             .collect();
-        if self.last.keyboard_layouts.len() < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
-            && !available.is_empty()
-        {
+        if !available.is_empty() {
             source_rows.push(choice_row(
-                "Add a language or layout",
+                "Add a language, layout or input method",
                 Box::new(
                     Dropdown::from_state(
                         available.clone(),
@@ -672,11 +673,15 @@ impl MouseKeyboardPane {
                     .with_placeholder("Choose a source"),
                 ),
             ));
-        } else {
+        }
+        if crate::input_sources::layouts_full(&self.last.keyboard_layouts) {
             source_rows.push(caption(
-                "Up to four input sources can be active at once, matching the interoperable XKB group limit.",
+                "Up to four keyboard layouts can be active at once, matching the interoperable XKB group limit.",
             ));
         }
+        source_rows.push(caption(
+            "Input methods (Pinyin, Mozc, Hangul) compose text on your first keyboard layout. While one is active, the on-screen keyboard steps aside.",
+        ));
         card("Input sources", rows(source_rows))
     }
 
@@ -982,10 +987,9 @@ impl MouseKeyboardPane {
             self.pending_add_id = self.source_id(&label);
         }
         if Self::consume_action(state, root, ADD_SOURCE_KEY)
-            && self.last.keyboard_layouts.len()
-                < settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
             && let Some(id) = self.pending_add_id.clone()
             && !self.last.keyboard_layouts.contains(&id)
+            && crate::input_sources::has_room_for(&self.last.keyboard_layouts, &id)
         {
             self.last.keyboard_layouts.push(id.clone());
             self.last.keyboard_layout = id;
