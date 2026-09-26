@@ -250,6 +250,12 @@ pub enum CollabRequest {
         id: u64,
         update: tilo_actions::InvocationUpdate,
     },
+    /// Answer one [`CollabEvent::Inspection`], already redacted for the
+    /// request's audience.
+    CompleteInspection {
+        id: u64,
+        reply: Box<crate::inspect::InspectReply>,
+    },
     /// Terminal receipt for an Effect initiated by this app's local UI.
     RecordLocalEffect {
         address: tilo_actions::ActionAddress,
@@ -482,6 +488,13 @@ pub enum CollabEvent {
     /// most once; the app-side job decides the next safe stopping boundary.
     InvocationCancellation {
         id: u64,
+    },
+    /// One read-checked inspection request addressed to this application
+    /// connection by the session: answer it from the semantic tree with
+    /// [`CollabRequest::CompleteInspection`].
+    Inspection {
+        id: u64,
+        request: Box<crate::inspect::InspectRequest>,
     },
     /// The session's answer to a [`CollabRequest::RemoteAction`].
     RemoteAction {

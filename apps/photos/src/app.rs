@@ -16451,6 +16451,12 @@ impl Widget for PhotosApp {
         Some(self)
     }
 
+    /// Inspecting the photograph addresses the photograph, not the canvas
+    /// that paints it — the same answer the remark surface gets.
+    fn referent(&self) -> Option<&dyn tilo_reference::Referent> {
+        Some(self)
+    }
+
     fn accessibility(&self) -> Option<AccessNode> {
         Some(self.accessibility_tree())
     }

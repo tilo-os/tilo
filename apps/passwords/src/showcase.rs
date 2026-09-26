@@ -6348,7 +6348,7 @@ mod tests {
                 .iter()
                 .find(|node| node.name.as_deref() == Some("Backup password"))
                 .unwrap();
-            assert!(password.state.protected);
+            assert!(password.sensitivity.is_secret());
             assert_eq!(password.value, None);
             assert!(app.perform_semantic_action(
                 "passwords.backup.password",
@@ -6371,7 +6371,7 @@ mod tests {
                 tree.children[0]
                     .children
                     .iter()
-                    .filter(|node| node.state.protected)
+                    .filter(|node| node.sensitivity.is_secret())
                     .all(|node| node.value.is_none())
             );
         }

@@ -602,6 +602,35 @@ impl AppActionBroker {
         self.state.invocations_generation()
     }
 
+    /// Every application connection that answers inspection: the peers
+    /// [`inspect`](Self::inspect) can address.
+    pub fn inspectable_apps(&self) -> Vec<crate::shell::collab_broker_capnp::InspectableApp> {
+        self.state.inspectable_apps()
+    }
+
+    /// Ask application connection `peer_id` what its semantic tree holds —
+    /// the node at a surface point, a node by id, or a bounded subtree — and
+    /// return the job to [`wait`](crate::shell::collab_broker_capnp::InspectionJob::wait)
+    /// on. Coordinates are that app surface's logical pixels.
+    ///
+    /// The broker checks `caller` may read the app's room before the request
+    /// reaches the app, and redacts the answer for `caller.audience` whatever
+    /// the app sent: a secret never arrives, personal content arrives only
+    /// for the local session.
+    ///
+    /// # Errors
+    ///
+    /// When the connection does not answer inspection, the caller may not
+    /// read its room, or the request cannot be delivered.
+    pub fn inspect(
+        &self,
+        peer_id: u64,
+        query: ui::inspect::InspectQuery,
+        caller: &crate::shell::collab_broker_capnp::InspectCaller,
+    ) -> Result<crate::shell::collab_broker_capnp::InspectionJob, String> {
+        self.state.start_inspection(peer_id, query, caller)
+    }
+
     pub fn status_for_actor(&self, id: u64, actor: &str) -> Option<tilo_actions::InvocationUpdate> {
         self.state.invocation_status_for_actor(id, actor)
     }

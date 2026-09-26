@@ -1173,6 +1173,15 @@ pub trait Widget {
         None
     }
 
+    /// What this widget's content is about, for a widget that presents
+    /// document content — the same [`Referent`](tilo_reference::Referent)
+    /// the remark surface asks. Inspection attaches its answer to this
+    /// widget's semantic node, so picking the widget addresses the content
+    /// rather than the control. Default `None`.
+    fn referent(&self) -> Option<&dyn tilo_reference::Referent> {
+        None
+    }
+
     /// Geometry for an immediate-mode semantic child from
     /// [`AccessNode::children`](crate::a11y::AccessNode::children). The path is
     /// its child-index path beneath this widget's accessibility node. Returning

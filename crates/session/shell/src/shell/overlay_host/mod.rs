@@ -1819,6 +1819,9 @@ pub struct ShellOverlayHost {
     /// pixels don't depend on host hardware. See
     /// [`crate::shell::status`].
     status_bridge: Option<crate::shell::status::StatusBridge>,
+    /// The session's application broker, once attached: how chrome reaches
+    /// what live apps publish and what their semantic trees hold.
+    app_action_broker: Option<crate::shell::collab_broker::AppActionBroker>,
     /// Single session-lifetime owner for persistent balance/mono transforms.
     /// Present only in compositor sessions; omitted from shots and unit tests.
     session_audio_policy: Option<crate::shell::session_audio_policy::SessionAudioPolicyOwner>,
@@ -2951,11 +2954,18 @@ impl ShellOverlayHost {
     /// Attach the session's live application action directory after the
     /// collaboration broker has bound. Kept explicit so bare/headless hosts
     /// do not fabricate a broker.
+    /// The attached application broker, for chrome that inspects or invokes
+    /// live apps. `None` in shots and headless tests without a broker.
+    pub fn app_action_broker(&self) -> Option<&crate::shell::collab_broker::AppActionBroker> {
+        self.app_action_broker.as_ref()
+    }
+
     pub fn attach_app_action_broker(
         &mut self,
         broker: crate::shell::collab_broker::AppActionBroker,
     ) {
         self.room_activity.attach_task_broker(broker.clone());
+        self.app_action_broker = Some(broker.clone());
         self.search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::LiveAppActionsProvider::new(broker),
         ));
@@ -3279,6 +3289,7 @@ impl ShellOverlayHost {
             qs_aux_drill_in: DrillInList::default(),
             qs_vpn_pane: QuickSettingsVpnPane::default(),
             status_bridge: None,
+            app_action_broker: None,
             session_audio_policy: None,
             room_activity: inputs.room_activity,
             history_narrator: inputs.history_narrator,

@@ -509,6 +509,10 @@ pub trait Decorator {
         self.inner().accessibility()
     }
 
+    fn referent(&self) -> Option<&dyn tilo_reference::Referent> {
+        self.inner().referent()
+    }
+
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {
         self.inner().synthetic_accessibility_rect(path)
     }
@@ -1294,6 +1298,10 @@ impl<T: Decorator> Widget for T {
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Decorator::accessibility(self)
+    }
+
+    fn referent(&self) -> Option<&dyn tilo_reference::Referent> {
+        Decorator::referent(self)
     }
 
     fn synthetic_accessibility_rect(&self, path: &[usize]) -> Option<vello::kurbo::Rect> {

@@ -1740,7 +1740,11 @@ mod tests {
         assert!(!node.state.multiline, "a single line is not multiline");
         assert!(node.state.focusable);
         assert!(!node.state.focused, "fresh line is not focused");
-        assert!(!node.state.protected, "block text is never a secret field");
+        assert_eq!(
+            node.sensitivity,
+            crate::a11y::Sensitivity::Public,
+            "block text is never a secret field"
+        );
     }
 
     #[test]

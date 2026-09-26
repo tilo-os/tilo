@@ -376,6 +376,9 @@ fn nearby_source_from_grants(
 }
 
 mod action_host;
+mod inspection;
+
+pub use inspection::{INSPECTION_TIMEOUT, InspectCaller, InspectableApp, InspectionJob};
 
 fn nearby_policy_enabled(
     policy: crate::shell::continuity_policy::ContinuityPolicySnapshot,
@@ -1787,6 +1790,8 @@ pub struct CapnpBrokerState {
     action_directory_bridge: ActionDirectoryRequestQueue,
     action_directory_roots: Mutex<HashMap<u64, ActionDirectoryRoot>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
+    /// Directed inspection streams and the requests outstanding on them.
+    inspections: inspection::InspectionRegistry,
     /// Directed invocation stream registered by each application connection.
     invocation_subscribers: Mutex<HashMap<u64, mpsc::UnboundedSender<InvocationEnvelope>>>,
     /// Changes to job discovery and receipts, independent of resource surfaces.
@@ -2767,6 +2772,7 @@ impl CapnpBrokerState {
                 action_directory_bridge: ActionDirectoryRequestQueue { sender: bridge_tx },
                 action_directory_roots: Mutex::new(HashMap::new()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
+                inspections: inspection::InspectionRegistry::default(),
                 invocation_subscribers: Mutex::new(HashMap::new()),
                 invocation_generation: AtomicU64::new(0),
                 pending_invocations: Mutex::new(HashMap::new()),
@@ -4164,6 +4170,7 @@ impl CapnpBrokerState {
         if let Ok(mut subscribers) = self.invocation_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
+        self.inspections.remove_peer(peer_id);
         if let Ok(mut subscribers) = self.task_subscribers.lock() {
             subscribers.remove(&peer_id);
         }
@@ -4531,6 +4538,7 @@ impl CapnpBrokerState {
             | CollabEvent::DocumentSnapshotRequested { .. }
             | CollabEvent::Invocation { .. }
             | CollabEvent::InvocationCancellation { .. }
+            | CollabEvent::Inspection { .. }
             | CollabEvent::RemoteAction { .. }
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::TaskRun(_)
@@ -6505,6 +6513,48 @@ impl channel_handle::Server for CapnpChannelHandle {
         });
         results.get().set_stream(client);
         Promise::ok(())
+    }
+
+    fn subscribe_inspections(
+        self: Rc<Self>,
+        _params: channel_handle::SubscribeInspectionsParams,
+        mut results: channel_handle::SubscribeInspectionsResults,
+    ) -> Promise<(), capnp::Error> {
+        if let Err(error) = self
+            .state
+            .revalidate_admission(&self.route(), &self.verified_identity)
+        {
+            return Promise::err(error);
+        }
+        match self.state.inspections.subscribe(self.peer_id, self.route()) {
+            Ok(server) => {
+                let client: runtime_collab::raw::inspection_stream::Client =
+                    capnp_rpc::new_client(server);
+                results.get().set_stream(client);
+                Promise::ok(())
+            }
+            Err(error) => Promise::err(capnp::Error::failed(error)),
+        }
+    }
+
+    fn complete_inspection(
+        self: Rc<Self>,
+        params: channel_handle::CompleteInspectionParams,
+        _results: channel_handle::CompleteInspectionResults,
+    ) -> Promise<(), capnp::Error> {
+        let state = self.state.clone();
+        let peer_id = self.peer_id;
+        Promise::from_future(async move {
+            let request = params.get()?;
+            state
+                .inspections
+                .complete(
+                    peer_id,
+                    request.get_id(),
+                    request.get_reply_json()?.to_str()?,
+                )
+                .map_err(capnp::Error::failed)
+        })
     }
 
     fn subscribe_task_runs(

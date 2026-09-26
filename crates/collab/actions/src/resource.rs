@@ -435,6 +435,10 @@ pub struct Resource {
     pub kind: String,
     /// Human, localisable label shown in the palette.
     pub label: String,
+    /// How far [`label`](Self::label) may travel. A contact or a message
+    /// is labelled with a person's words, so it is at least
+    /// [`Personal`](crate::Sensitivity::Personal).
+    pub sensitivity: crate::Sensitivity,
     /// Optional shell-rendered metadata used by system search and resource
     /// browsers. Invalid or oversized values are omitted at the boundary.
     pub presentation: Option<ResourcePresentation>,
@@ -451,6 +455,7 @@ impl Resource {
             id: ResourceId::new(id),
             kind: kind.into(),
             label: label.into(),
+            sensitivity: crate::Sensitivity::Public,
             presentation: None,
             children: Vec::new(),
             actions: Vec::new(),
@@ -467,6 +472,13 @@ impl Resource {
     #[must_use]
     pub fn with_action(mut self, action: ActionSpec) -> Self {
         self.actions.push(action);
+        self
+    }
+
+    /// Declare how far this resource's label may travel.
+    #[must_use]
+    pub fn with_sensitivity(mut self, sensitivity: crate::Sensitivity) -> Self {
+        self.sensitivity = sensitivity;
         self
     }
 

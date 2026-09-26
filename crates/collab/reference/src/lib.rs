@@ -35,6 +35,7 @@
 
 mod delivery;
 mod direct;
+pub mod inspect;
 mod record;
 mod reference;
 mod remark;

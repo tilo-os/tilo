@@ -1857,7 +1857,7 @@ mod tests {
             .iter()
             .find(|node| node.name.as_deref() == Some("Secret key"))
             .expect("protected secret field");
-        assert!(secret.state.protected);
+        assert!(secret.sensitivity.is_secret());
         assert!(secret.value.is_none());
         assert!(app.perform_semantic_action(
             "totp.dialog.issuer",

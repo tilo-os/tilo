@@ -100,6 +100,7 @@ pub mod protocol;
 pub mod registry;
 pub mod remote;
 pub mod resource;
+pub mod sensitivity;
 
 pub use action::{
     Action, ActionError, ActionId, Doc, EncodedAction, ExecutionLocus, OperationKind,
@@ -140,6 +141,7 @@ pub use resource::{
     ControlInvocation, FlatAction, KEY_SEP, PROMPTED_PARAM, Resource, ResourceId,
     ResourcePresentation, ResourceProvider, ResourceViewMountSpec, ResourceViewSpec, flatten,
 };
+pub use sensitivity::{Audience, PLACEHOLDER_GLYPH, Sensitivity, placeholder};
 
 #[cfg(test)]
 mod tests {

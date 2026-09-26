@@ -234,6 +234,8 @@ pub use collab_capnp::collab_service::Client as CollabServiceClient;
 #[cfg(feature = "client")]
 pub use collab_capnp::context_stream::Client as ContextStreamClient;
 #[cfg(feature = "client")]
+pub use collab_capnp::inspection_stream::Client as InspectionStreamClient;
+#[cfg(feature = "client")]
 pub use collab_capnp::invocation_stream::Client as InvocationStreamClient;
 #[cfg(feature = "client")]
 pub use collab_capnp::presence_stream::Client as PresenceStreamClient;
@@ -1289,6 +1291,41 @@ impl ChannelHandle {
         })
     }
 
+    /// Open a server-pulled stream of inspection requests the session has
+    /// addressed to *this* application. Like an invocation, a request names
+    /// one connection and has already passed the session's read check.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable or
+    /// drops during the call.
+    pub async fn subscribe_inspections(&self) -> Result<InspectionStream, NotAvailable> {
+        let req = self.inner.subscribe_inspections_request();
+        let reply = req.send().promise.await?;
+        let stream = reply.get()?.get_stream()?;
+        Ok(InspectionStream {
+            inner: Rc::new(stream),
+        })
+    }
+
+    /// Answer one inspection request with a serialized
+    /// `tilo_reference::inspect::InspectReply`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker connection is unavailable,
+    /// drops during the call, or refuses the answer.
+    pub async fn complete_inspection(&self, id: u64, reply_json: &str) -> Result<(), NotAvailable> {
+        let mut req = self.inner.complete_inspection_request();
+        {
+            let mut b = req.get();
+            b.set_id(id);
+            b.set_reply_json(reply_json);
+        }
+        req.send().promise.await?;
+        Ok(())
+    }
+
     /// Subscribe this admitted agent session to broker-addressed task runs.
     /// A person session and an offline agent receive no substitute queue.
     ///
@@ -2045,6 +2082,45 @@ pub struct Invocation {
     /// invocation originated from a leased workspace task. Empty for ordinary
     /// invocations so legacy application callers remain context-neutral.
     pub context_json: String,
+}
+
+/// One inspection request off an [`InspectionStream`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionRequest {
+    /// Echoed back on [`ChannelHandle::complete_inspection`].
+    pub id: u64,
+    /// A serialized `tilo_reference::inspect::InspectRequest`.
+    pub request_json: String,
+}
+
+/// Client-pulled stream of inspection requests addressed to this application.
+#[derive(Clone)]
+#[cfg(feature = "client")]
+pub struct InspectionStream {
+    inner: Rc<InspectionStreamClient>,
+}
+
+#[cfg(feature = "client")]
+impl InspectionStream {
+    /// Pull the next inspection request addressed to this application.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] if the broker disconnects or the request is
+    /// not valid UTF-8.
+    pub async fn read(&self) -> Result<InspectionRequest, NotAvailable> {
+        let reply = self.inner.read_request().send().promise.await?;
+        let r = reply.get()?;
+        let request_json = r
+            .get_request_json()?
+            .to_str()
+            .map(str::to_owned)
+            .map_err(|e| capnp::Error::failed(format!("invalid utf8 inspection request: {e}")))?;
+        Ok(InspectionRequest {
+            id: r.get_id(),
+            request_json,
+        })
+    }
 }
 
 /// Client-pulled stream of invocations addressed to this application.

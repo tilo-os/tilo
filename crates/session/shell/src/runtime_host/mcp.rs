@@ -59,6 +59,12 @@ struct InvokeArgs {
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
+struct InspectArgs {
+    peer_id: u64,
+    query: ui::inspect::InspectQuery,
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StatusArgs {
     invocation_id: String,
 }
@@ -334,8 +340,36 @@ impl McpServer {
                     .map_err(|error| error.to_string())?;
                 self.status(invocation)
             }
+            "qos_inspect" => self.inspect(parse(args)?).await,
             _ => Err("Unknown tool".into()),
         }
+    }
+    /// Read a live application's semantic tree in this bridge's room. An MCP
+    /// client hands what it reads to a model, so the answer is redacted as
+    /// for anything leaving the device.
+    async fn inspect(&self, args: InspectArgs) -> Result<Value, String> {
+        if !self
+            .broker
+            .inspectable_apps()
+            .iter()
+            .any(|app| app.peer_id == args.peer_id && app.room == self.room)
+        {
+            return Err("Unavailable live application instance".into());
+        }
+        let job = self.broker.inspect(
+            args.peer_id,
+            args.query,
+            &crate::shell::collab_broker_capnp::InspectCaller {
+                person: self.actor.clone(),
+                audience: ui::a11y::Audience::BeyondDevice,
+            },
+        )?;
+        let reply = tokio::task::spawn_blocking(move || {
+            job.wait(crate::shell::collab_broker_capnp::INSPECTION_TIMEOUT)
+        })
+        .await
+        .map_err(|error| error.to_string())??;
+        serde_json::to_value(reply).map_err(|error| error.to_string())
     }
     /// The action host every caller shares; this bridge is one more caller.
     fn host(&self) -> BrokerActionHost {
@@ -458,6 +492,7 @@ fn tool_definitions() -> Vec<Value> {
         ("qos_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice",invoke,json!(["peer_id","revision","resource","action","arguments"])),
         ("qos_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"])),
         ("qos_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"])),
+        ("qos_inspect","Read a live application's semantic tree: the node at a surface point with its path (query {\"kind\":\"at\",\"x\":X,\"y\":Y}), one node by stable id ({\"kind\":\"node\",\"id\":ID}) or a subtree ({\"kind\":\"subtree\",\"root\":ID|null,\"depth\":N}). Each node has id, role, label, value, sensitivity, bounds, children and the ResourceRef it stands for; secrets are never included and personal content is a placeholder",json!({"peer_id":integer,"query":{"type":"object"}}),json!(["peer_id","query"])),
     ].into_iter().map(|(name,description,properties,required)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false}})).collect()
 }
 #[cfg(test)]

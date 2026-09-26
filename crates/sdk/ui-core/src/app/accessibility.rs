@@ -363,7 +363,7 @@ impl App {
         };
 
         let (trap_active, order) = self
-            .with_native_presentation(|widget, _, _, taffy| {
+            .with_native_presentation(|widget, _, _, taffy, _| {
                 let trap = find_trap_focusables(root, widget, taffy);
                 if let Some(order) = trap {
                     (true, order)
@@ -1016,7 +1016,7 @@ impl App {
         }
         let mut resources = self.collect_declared_resources();
         resources.extend(self.history_local_resources());
-        self.with_native_presentation(|root, nodes, focused, _| {
+        self.with_native_presentation(|root, nodes, focused, _, _| {
             crate::accesskit_bridge::build_tree_update_with_resources_bound(
                 root, nodes, focused, scale, &resources,
             )
@@ -1123,7 +1123,7 @@ impl App {
                 .into_iter()
                 .find_map(|root| exported.resolve(root, target))?
         } else {
-            self.with_native_presentation(|root, _, _, _| exported.resolve(root, target))
+            self.with_native_presentation(|root, _, _, _, _| exported.resolve(root, target))
                 .ok()
                 .flatten()?
         };
@@ -1284,8 +1284,8 @@ impl App {
         .unwrap_or_default();
         let mut tree = std::mem::take(&mut self.accessibility.semantic_tree);
         let delta = self
-            .with_native_presentation(|root, nodes, focused, _| {
-                tree.refresh_components(root, nodes, focused, &resources, &components)
+            .with_native_presentation(|root, nodes, focused, _, doc| {
+                tree.refresh_components(root, nodes, focused, &resources, &components, Some(doc))
             })
             .unwrap_or_else(|_| {
                 tree.refresh_components(
@@ -1294,6 +1294,7 @@ impl App {
                     self.focused_node,
                     &self.collect_declared_resources(),
                     &components,
+                    Some(&self.state.doc),
                 )
             });
         self.accessibility.semantic_tree = tree;
@@ -1301,6 +1302,34 @@ impl App {
     }
     pub fn semantic_tree(&self) -> &crate::a11y_tree::SemanticTree {
         &self.accessibility.semantic_tree
+    }
+
+    /// Answer an [inspection](crate::inspect) from the freshly refreshed
+    /// semantic tree, redacted for the request's audience. Coordinates are
+    /// this surface's logical pixels, the space widget bounds are laid out in.
+    pub fn inspect(
+        &mut self,
+        request: &crate::inspect::InspectRequest,
+    ) -> crate::inspect::InspectReply {
+        if request.version != crate::inspect::INSPECT_VERSION {
+            return crate::inspect::InspectReply::refused(format!(
+                "inspection version {} is not {}",
+                request.version,
+                crate::inspect::INSPECT_VERSION
+            ));
+        }
+        self.refresh_semantic_tree();
+        self.accessibility.semantic_tree.inspect(request)
+    }
+
+    pub(super) fn answer_inspection(&mut self, id: u64, request: &crate::inspect::InspectRequest) {
+        let reply = self.inspect(request);
+        self.collaboration
+            .manager
+            .send(crate::collaboration::CollabRequest::CompleteInspection {
+                id,
+                reply: Box::new(reply),
+            });
     }
 
     fn invoke_bound_semantic_action(

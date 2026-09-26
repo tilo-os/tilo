@@ -175,6 +175,7 @@ Semantic — how a collaborator, an agent or a script drives an app:
 cargo run -q --bin tilo-control -- actions list                 # what this desktop can do
 cargo run -q --bin tilo-control -- actions invoke PROVIDER ID   # do it: no coordinates
 cargo run -q --bin tilo-control -- state-dump --pretty          # what it believes is on screen
+cargo run -q --bin tilo-control -- inspect tree PEER            # an app's semantic tree (`inspect apps` lists PEERs)
 ```
 
 Input — for when the thing under test *is* the pointer, hit-testing or painting:

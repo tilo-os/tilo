@@ -523,12 +523,12 @@ impl AddAccountPanel {
             |name: &str, value: &str, rect: Rect, focused: bool, protected: bool, target: &str| {
                 let node = AccessNode::new(Role::TextInput)
                     .with_name(name)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(focused)
-                            .protected(protected),
-                    )
+                    .with_state(AccessState::new().focusable(true).focused(focused))
+                    .with_sensitivity(if protected {
+                        ui::a11y::Sensitivity::Secret
+                    } else {
+                        ui::a11y::Sensitivity::Public
+                    })
                     .with_bounds(rect)
                     .with_action_target(target);
                 if protected {

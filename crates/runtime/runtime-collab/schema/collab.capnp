@@ -304,6 +304,24 @@ interface ChannelHandle {
   # derives the caller from this admitted channel and confines it to the
   # channel's room; nothing in the frame names the caller.
   remoteAction @42 (frame :Data) -> (frame :Data);
+
+  # Subscribe to inspection requests the session has addressed to THIS
+  # application: what its semantic tree holds at a surface point, under an
+  # id, or below one to a bounded depth.
+  #
+  # Shaped like `subscribeInvocations` and for the same reason: a request
+  # names one connection, and the session has checked that whoever asked may
+  # read this room before anything reaches the stream. `requestJson` is a
+  # serialized `tilo_reference::inspect::InspectRequest`; its `audience` was set by the
+  # session from the caller, so the app redacts for it rather than for
+  # whoever it thinks is asking.
+  subscribeInspections @43 () -> (stream :InspectionStream);
+
+  # Answer one inspection request. `id` echoes `InspectionStream.read`'s;
+  # `replyJson` is a serialized `tilo_reference::inspect::InspectReply`, already
+  # redacted for the request's audience. The session redacts it again
+  # before handing it on.
+  completeInspection @44 (id :UInt64, replyJson :Text) -> ();
 }
 
 # Application-owned, broker-pulled resource/action directory. A capability is
@@ -735,4 +753,9 @@ struct ScrollbackBatch {
   earliestSeq @1 :UInt64;
   latestSeq   @2 :UInt64;
   done        @3 :Bool;
+}
+
+interface InspectionStream {
+  # Pull the next inspection request addressed to this application.
+  read @0 () -> (id :UInt64, requestJson :Text);
 }

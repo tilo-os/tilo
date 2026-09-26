@@ -918,7 +918,7 @@ fn visit<const BOUND: bool>(
                 active_descendant,
             );
         }
-        if !access_node.state.protected
+        if !access_node.sensitivity.is_secret()
             && let (Some(value), Some(selection)) = (&access_node.value, access_node.text_selection)
         {
             let run_id = text_run_node_id(id);
@@ -1083,10 +1083,16 @@ fn apply_synthetic_bounds(ak: &mut AkNode, access: &AccessNode, scale: f64) {
 /// The widget-independent half of [`apply_semantics`], also shared with
 /// [`visit_synthetic`] (table rows/cells), which has no geometry.
 fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
-    if access.state.protected && matches!(access.role, Role::TextInput | Role::MultilineTextInput) {
+    let secret = access.sensitivity.is_secret();
+    if secret && matches!(access.role, Role::TextInput | Role::MultilineTextInput) {
         ak.set_role(AkRole::PasswordInput);
     }
-    if let Some(name) = &access.name {
+    // A secret node whose name is its content (a revealed one-time code in a
+    // label) keeps that content out of the tree as well; a secret field's
+    // name is only its label.
+    if let Some(name) = &access.name
+        && !(secret && !access.presents_value())
+    {
         ak.set_label(name.clone());
     }
     if let Some(desc) = &access.description {
@@ -1111,10 +1117,8 @@ fn apply_semantics_common(ak: &mut AkNode, access: &AccessNode) {
         Role::Label | Role::StaticText => access.value.as_ref().or(access.name.as_ref()),
         _ => access.value.as_ref(),
     };
-    // Never expose a protected (password) value, even if the widget mistakenly populated one.
-    if !access.state.protected
-        && let Some(value) = value
-    {
+    // Never expose a secret (password) value, even if the widget mistakenly populated one.
+    if !secret && let Some(value) = value {
         ak.set_value(value.clone());
     }
 
@@ -1966,12 +1970,12 @@ mod tests {
     }
 
     #[test]
-    fn protected_value_is_never_exposed() {
+    fn secret_value_is_never_exposed() {
         let pw = TestWidget::new(Some(
             AccessNode::new(Role::TextInput)
                 .with_name("Protected input")
                 .with_value("hunter2")
-                .with_state(AccessState::new().protected(true)),
+                .with_sensitivity(crate::a11y::Sensitivity::Secret),
         ));
         let mut root = TestWidget::new(None).with_child(Box::new(pw));
         let (_taffy, node_map, _root_node) = lay_out(&mut root);
@@ -1982,10 +1986,39 @@ mod tests {
             .find(|(_, n)| n.label() == Some("Protected input"))
             .unwrap();
         assert_eq!(node.role(), AkRole::PasswordInput);
-        assert_eq!(
-            node.value(),
-            None,
-            "protected value must not leak to the AT"
+        assert_eq!(node.value(), None, "secret value must not leak to the AT");
+    }
+
+    #[test]
+    fn secret_label_content_is_never_exposed_but_personal_stays_local() {
+        let code = TestWidget::new(Some(
+            AccessNode::new(Role::Label)
+                .with_name("493 201")
+                .with_sensitivity(crate::a11y::Sensitivity::Secret),
+        ));
+        let contact = TestWidget::new(Some(
+            AccessNode::new(Role::Label)
+                .with_name("Ada Lovelace")
+                .with_sensitivity(crate::a11y::Sensitivity::Personal),
+        ));
+        let mut root = TestWidget::new(None)
+            .with_child(Box::new(code))
+            .with_child(Box::new(contact));
+        let (_taffy, node_map, _root_node) = lay_out(&mut root);
+        let update = build_tree_update(&root, &node_map, None, 1.0);
+        assert!(
+            update
+                .nodes
+                .iter()
+                .all(|(_, n)| n.label() != Some("493 201") && n.value() != Some("493 201")),
+            "a secret label's content must not reach the AT"
+        );
+        assert!(
+            update
+                .nodes
+                .iter()
+                .any(|(_, n)| n.label() == Some("Ada Lovelace")),
+            "personal content is readable by this session's own screen reader"
         );
     }
 
@@ -1997,7 +2030,7 @@ mod tests {
                 AccessNode::new(Role::TextInput)
                     .with_name("Secret")
                     .with_value(secret)
-                    .with_state(AccessState::new().protected(true)),
+                    .with_sensitivity(crate::a11y::Sensitivity::Secret),
             ));
             let (_, node_map, _) = lay_out(&mut root);
             let semantic = build_tree_update(&root, &node_map, None, 1.0);

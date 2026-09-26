@@ -14835,6 +14835,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-font-catalog",
  "tilo-headless-schema",
+ "tilo-reference",
  "tilo-rt",
  "tilo-seal",
  "tilo-startup-metrics",

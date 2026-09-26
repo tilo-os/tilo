@@ -189,6 +189,17 @@ pub enum Command {
     ActionsStatus { invocation_id: u64 },
     /// Request cooperative cancellation for an invocation receipt id.
     ActionsCancel { invocation_id: u64 },
+    /// List the live application connections that answer inspection, by the `peer` id [`Command::Inspect`] addresses.
+    InspectApps,
+    /// Read one application's semantic tree through the collaboration broker: the node at a point of that app's surface, a node by stable semantic id, or a bounded subtree. The same read the pick mode and the session recorder make; the broker checks the local person may read the app's room.
+    ///
+    /// Without `local`, the answer is redacted as for anything leaving the device (personal content becomes a same-length placeholder). With it, personal content is shown as this session sees it. A secret is never included.
+    Inspect {
+        peer: u64,
+        query: ui::inspect::InspectQuery,
+        #[serde(default)]
+        local: bool,
+    },
 }
 
 /// Top-level response envelope: an `ok` payload (per-command shape) or a structured `err`.
@@ -325,6 +336,30 @@ pub trait ControlState {
     /// Returns a human-readable refusal reason whenever the surface cannot be enumerated at all — no live action registry on this control state.
     fn enumerate_actions(&self, _query: &str) -> Result<serde_json::Value, String> {
         Err("no live action registry on this control state".to_string())
+    }
+
+    /// The application connections [`inspect`](Self::inspect) can address.
+    ///
+    /// # Errors
+    ///
+    /// When this control state has no application broker.
+    fn inspectable_apps(&self) -> Result<serde_json::Value, String> {
+        Err("no application broker on this control state".to_string())
+    }
+
+    /// Ask application connection `peer` what its semantic tree holds.
+    ///
+    /// # Errors
+    ///
+    /// When there is no broker, the connection does not answer inspection,
+    /// the local person may not read its room, or the app does not answer.
+    fn inspect(
+        &self,
+        _peer: u64,
+        _query: &ui::inspect::InspectQuery,
+        _local: bool,
+    ) -> Result<serde_json::Value, String> {
+        Err("no application broker on this control state".to_string())
     }
 
     /// Resolve `(provider, id)` against a fresh catalogue and report what it addresses, without invoking it — the validation half of `actions_invoke`, so the transport can refuse instead of planning an invocation that silently does nothing.
@@ -653,6 +688,14 @@ pub fn dispatch_command<S: ControlState>(
         ),
         Command::ActionsCancel { invocation_id } => invocation_control(
             crate::shell::search::providers::live_app_actions::job_cancel_id(*invocation_id),
+        ),
+        Command::InspectApps => (
+            answer_or_err(state.inspectable_apps(), "inspect_failed"),
+            Vec::new(),
+        ),
+        Command::Inspect { peer, query, local } => (
+            answer_or_err(state.inspect(*peer, query, *local), "inspect_failed"),
+            Vec::new(),
         ),
     }
 }

@@ -111,6 +111,19 @@ impl TextInputKind {
     fn checks_spelling(self) -> bool {
         matches!(self, Self::Prose)
     }
+
+    /// What a field of this kind holds unless the app says otherwise: a
+    /// password is a secret, a name, username or address is about a person.
+    fn sensitivity(self) -> crate::a11y::Sensitivity {
+        use crate::a11y::Sensitivity;
+        match self {
+            Self::Password => Sensitivity::Secret,
+            Self::Name | Self::Username | Self::Email => Sensitivity::Personal,
+            Self::Prose | Self::Search | Self::Url | Self::Path | Self::Code | Self::Number => {
+                Sensitivity::Public
+            }
+        }
+    }
 }
 
 fn is_autocorrect_boundary(character: char) -> bool {
@@ -257,6 +270,9 @@ pub struct TextInput {
     local_author: Option<String>,
     /// `self.text` stays the real value; only the render substitutes bullets.
     secret: bool,
+    /// The app's declaration of what this field holds; `None` falls back to
+    /// its [`TextInputKind`]'s. A secret field is always secret.
+    sensitivity: Option<crate::a11y::Sensitivity>,
     disabled: bool,
     kind: TextInputKind,
     /// Prose fields check spelling by default. Purpose-specific wrappers such
@@ -424,6 +440,7 @@ impl TextInput {
             bound_text: None,
             local_author: None,
             secret: false,
+            sensitivity: None,
             disabled: false,
             kind: TextInputKind::Prose,
             spellcheck: None,
@@ -2693,6 +2710,31 @@ impl TextInput {
         self.secret
     }
 
+    /// Declare what this field holds. Call it for a contact, an address, a
+    /// name or a message body ([`Personal`](crate::a11y::Sensitivity::Personal))
+    /// whose [`TextInputKind`] does not already say so, so its contents stay
+    /// in this session and leave the device only as a placeholder. A secret
+    /// field stays secret whatever is declared here.
+    #[must_use]
+    pub fn with_sensitivity(mut self, sensitivity: crate::a11y::Sensitivity) -> Self {
+        self.sensitivity = Some(sensitivity);
+        self
+    }
+
+    pub fn set_sensitivity(&mut self, sensitivity: crate::a11y::Sensitivity) {
+        self.sensitivity = Some(sensitivity);
+    }
+
+    /// The sensitivity this field publishes: secret when masked, else the
+    /// app's declaration, else its kind's.
+    pub fn sensitivity(&self) -> crate::a11y::Sensitivity {
+        if self.secret {
+            crate::a11y::Sensitivity::Secret
+        } else {
+            self.sensitivity.unwrap_or_else(|| self.kind.sensitivity())
+        }
+    }
+
     /// Only meaningful together with `with_secret`.
     #[must_use]
     pub fn with_reveal(mut self, on: bool) -> Self {
@@ -4429,8 +4471,9 @@ impl Widget for TextInput {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, AccessState, Role};
         // A secret (password) input never leaks its value into the a11y tree —
-        // it reports `protected` and a `None` value instead.
-        let value = (!self.secret).then(|| self.text.clone());
+        // it reports `Secret` sensitivity and a `None` value instead.
+        let sensitivity = self.sensitivity();
+        let value = (!sensitivity.is_secret()).then(|| self.text.clone());
         let role = if self.multiline {
             Role::MultilineTextInput
         } else {
@@ -4442,17 +4485,17 @@ impl Widget for TextInput {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
                 disabled: self.effectively_disabled(),
-                protected: self.secret,
                 multiline: self.multiline,
                 ..Default::default()
-            });
+            })
+            .with_sensitivity(sensitivity);
         if !self.id.is_empty() {
             node = node.with_semantic_key(&self.id);
         }
         if self.action.is_none() && self.on_change.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
-        if !self.secret {
+        if !sensitivity.is_secret() {
             node = node.with_text_selection(
                 self.selection_anchor.unwrap_or(self.cursor_pos),
                 self.cursor_pos,
@@ -7158,7 +7201,7 @@ mod tests {
         assert_eq!(node.value.as_deref(), Some("hello"));
         assert!(node.state.focusable, "enabled input is focusable");
         assert!(!node.state.disabled);
-        assert!(!node.state.protected);
+        assert_eq!(node.sensitivity, crate::a11y::Sensitivity::Public);
         assert_eq!(
             node.text_selection,
             Some(AccessibleTextSelection {
@@ -7262,7 +7305,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_secret_input_masks_value_and_sets_protected() {
+    fn accessibility_secret_input_masks_value_and_declares_it_secret() {
         let mut ti = TextInput::new(Vec::new()).with_secret(true);
         ti.text = "hunter2".to_string();
         let node = Widget::accessibility(&ti).unwrap();
@@ -7270,10 +7313,43 @@ mod tests {
             node.value, None,
             "a secret value must not leak into the a11y tree"
         );
-        assert!(node.state.protected, "secret input is marked protected");
+        assert_eq!(
+            node.sensitivity,
+            crate::a11y::Sensitivity::Secret,
+            "secret input is declared secret"
+        );
         assert_eq!(
             node.text_selection, None,
             "selection offsets must not reveal a secret's length"
+        );
+    }
+
+    #[test]
+    fn person_fields_are_personal_by_kind_and_by_declaration() {
+        use crate::a11y::Sensitivity;
+        let mut email = TextInput::new(Vec::new()).with_kind(TextInputKind::Email);
+        email.text = "ada@example.org".to_string();
+        let node = Widget::accessibility(&email).unwrap();
+        assert_eq!(node.sensitivity, Sensitivity::Personal);
+        assert_eq!(
+            node.value.as_deref(),
+            Some("ada@example.org"),
+            "personal content stays readable inside the session"
+        );
+
+        let body = TextInput::new(Vec::new()).with_sensitivity(Sensitivity::Personal);
+        assert_eq!(
+            Widget::accessibility(&body).unwrap().sensitivity,
+            Sensitivity::Personal
+        );
+
+        let masked = TextInput::new(Vec::new())
+            .with_sensitivity(Sensitivity::Public)
+            .with_secret(true);
+        assert_eq!(
+            Widget::accessibility(&masked).unwrap().sensitivity,
+            Sensitivity::Secret,
+            "no declaration lowers a secret field"
         );
     }
 
@@ -8877,9 +8953,10 @@ mod tests {
             node.value, None,
             "revealed value still must not reach the a11y tree"
         );
-        assert!(
-            node.state.protected,
-            "still marked protected while revealed"
+        assert_eq!(
+            node.sensitivity,
+            crate::a11y::Sensitivity::Secret,
+            "still declared secret while revealed"
         );
 
         ti.toggle_reveal();

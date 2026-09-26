@@ -4084,12 +4084,12 @@ fn audit_access_node_contract(node: &AccessNode, path: &str, issues: &mut Vec<Ac
             "replace Role::Unknown with the semantic role exposed to assistive technology",
         );
     }
-    if node.state.protected && node.value.is_some() {
+    if node.sensitivity.is_secret() && node.value.is_some() {
         push_audit_issue(
             issues,
             path,
             "protected-value-exposed",
-            "a protected control must not expose its value",
+            "a secret control must not expose its value",
         );
     }
     match (node.pos_in_set, node.set_size) {
@@ -5327,11 +5327,8 @@ mod tests {
             AccessNode::new(Role::TextInput)
                 .with_action_target("duplicate")
                 .with_value("secret")
-                .with_state(
-                    crate::a11y::AccessState::new()
-                        .focusable(true)
-                        .protected(true),
-                )
+                .with_state(crate::a11y::AccessState::new().focusable(true))
+                .with_sensitivity(crate::a11y::Sensitivity::Secret)
                 .with_level(0),
         ]);
         audit_access_node(&root, "Root[0]", &mut issues);
@@ -5795,8 +5792,8 @@ mod tests {
             "Password"
         );
         assert_eq!(
-            value["root"]["children"][0]["semantics"]["state"]["protected"],
-            true
+            value["root"]["children"][0]["semantics"]["sensitivity"],
+            "secret"
         );
         assert_eq!(value["root"]["children"][1]["test_id"], "save");
         assert!(

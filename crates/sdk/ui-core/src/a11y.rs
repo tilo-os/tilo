@@ -17,10 +17,28 @@
 
 use vello::kurbo::Rect;
 
+pub use tilo_actions::{Audience, Sensitivity};
+
+/// Whether a node with `role` presents its content through its value rather
+/// than its name. Editable and valued controls label themselves with the name;
+/// a plain label or list row *is* its name.
+pub fn presents_value(role: Role, has_value: bool) -> bool {
+    has_value
+        || matches!(
+            role,
+            Role::TextInput
+                | Role::MultilineTextInput
+                | Role::ComboBox
+                | Role::Slider
+                | Role::SpinButton
+                | Role::ProgressBar
+        )
+}
+
 /// A thin subset of AccessKit's 182 roles covering the widgets the toolkit
 /// supports; unknown/rare cases fall back to [`Role::Generic`].
 #[non_exhaustive]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Role {
     Window,
     Dialog,
@@ -127,8 +145,6 @@ pub struct AccessState {
     /// Hidden from view, and should be from the tree.
     pub hidden: bool,
     pub multiline: bool,
-    /// When set, widgets must NOT place the secret in [`AccessNode::value`].
-    pub protected: bool,
 }
 
 impl AccessState {
@@ -173,10 +189,6 @@ impl AccessState {
     }
     pub fn multiline(mut self, v: bool) -> Self {
         self.multiline = v;
-        self
-    }
-    pub fn protected(mut self, v: bool) -> Self {
-        self.protected = v;
         self
     }
     pub fn modal(mut self, v: bool) -> Self {
@@ -246,12 +258,24 @@ pub struct AccessNode {
     /// The primary label a screen reader announces.
     pub name: Option<String>,
     pub description: Option<String>,
-    /// Never populated for [`protected`](AccessState::protected) elements.
+    /// Never populated for [`Secret`](Sensitivity::Secret) elements.
     pub value: Option<String>,
     /// Direction-preserving UTF-8 byte endpoints for editable text. The
     /// AccessKit bridge converts these to grapheme indices in a `TextRun`.
     pub text_selection: Option<AccessibleTextSelection>,
     pub state: AccessState,
+    /// How far this node's presented content may travel: its
+    /// [`value`](Self::value) when it has one (the [`name`](Self::name) is
+    /// then the field's label), otherwise its name. Shared widgets set it for
+    /// their kind — a password field is [`Secret`](Sensitivity::Secret) —
+    /// and apps mark the rest.
+    pub sensitivity: Sensitivity,
+    /// The published [`Resource`](tilo_actions::Resource) this node
+    /// presents — a list row showing a note page, a chip showing a contact.
+    /// Inspection resolves it against the app's resource forest into a
+    /// `tilo_reference::ResourceRef`, the address a remark or a recorded step
+    /// carries instead of the control's name.
+    pub resource: Option<String>,
     /// The `App` watches its spoken text each frame and announces changes at
     /// the given politeness *without* moving focus. `None` = not a live region.
     pub live: Option<Politeness>,
@@ -308,6 +332,8 @@ impl AccessNode {
             value: None,
             text_selection: None,
             state: AccessState::default(),
+            sensitivity: Sensitivity::Public,
+            resource: None,
             live: None,
             set_size: None,
             pos_in_set: None,
@@ -316,6 +342,25 @@ impl AccessNode {
             bounds: None,
             children: Vec::new(),
         }
+    }
+
+    /// Declare how far this node's presented content may travel.
+    pub fn with_sensitivity(mut self, sensitivity: Sensitivity) -> Self {
+        self.sensitivity = sensitivity;
+        self
+    }
+
+    /// Declare the published resource this node presents.
+    pub fn with_resource(mut self, resource: impl Into<String>) -> Self {
+        self.resource = Some(resource.into());
+        self
+    }
+
+    /// Whether [`value`](Self::value) carries the node's presented content
+    /// (so the [`name`](Self::name) is only a label), rather than the name
+    /// itself being the content.
+    pub fn presents_value(&self) -> bool {
+        presents_value(self.role, self.value.is_some())
     }
 
     pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
@@ -592,7 +637,6 @@ mod tests {
         assert_eq!(s.expanded, None);
         assert!(!s.disabled);
         assert!(!s.read_only);
-        assert!(!s.protected);
         assert!(!s.multiline);
         assert_eq!(s, AccessState::new());
     }

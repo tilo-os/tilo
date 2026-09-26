@@ -346,7 +346,7 @@ impl App {
         self.refresh_semantic_tree();
         let mut routes = Vec::new();
         let bindings = self
-            .with_native_presentation(|root, _, _, _| root.control_action_bindings())
+            .with_native_presentation(|root, _, _, _, _| root.control_action_bindings())
             .unwrap_or_default();
         for binding in bindings {
             for path in self

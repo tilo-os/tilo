@@ -212,6 +212,7 @@ pub fn pump(relay: &mut MemoryRelay) {
             | CollabRequest::ClearContinuation { .. }
             | CollabRequest::CompleteInvocation { .. }
             | CollabRequest::UpdateInvocation { .. }
+            | CollabRequest::CompleteInspection { .. }
             | CollabRequest::RecordLocalEffect { .. }
             | CollabRequest::RemoteAction { .. }
             | CollabRequest::ReportTaskRun { .. }

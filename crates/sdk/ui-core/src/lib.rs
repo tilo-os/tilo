@@ -105,6 +105,7 @@ pub mod accesskit_bridge;
 pub mod action_host;
 pub mod action_palette;
 pub mod animation;
+pub mod inspect;
 #[cfg(test)]
 extern crate self as tilo_ui;
 #[cfg(test)]
@@ -305,7 +306,9 @@ pub use virtual_viewport::{
 // `a11y::Role` / `a11y::Action` are reached through the module path to avoid
 // clashing with `permissions::{Role}` / `permissions::Verb`, which are
 // already re-exported at the crate root.
-pub use a11y::{A11ySettings, AccessBounds, AccessNode, AccessState, AccessibleTextSelection};
+pub use a11y::{
+    A11ySettings, AccessBounds, AccessNode, AccessState, AccessibleTextSelection, Sensitivity,
+};
 pub use a11y_tree::{
     SemanticAction, SemanticActionKind, SemanticId, SemanticNode, SemanticTree, TreeDelta,
 };

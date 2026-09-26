@@ -100,6 +100,14 @@ enum Command {
     Community {
         wire: serde_json::Value,
     },
+    /// List the app connections that answer inspection.
+    InspectApps,
+    /// Read one app's semantic tree through the broker.
+    Inspect {
+        peer: u64,
+        query: serde_json::Value,
+        local: bool,
+    },
     Raw {
         json: String,
     },
@@ -233,6 +241,7 @@ fn parse_args(argv: &[String]) -> Result<Invocation, ParseError> {
         "feedback" => parse_feedback_command(&mut iter)?,
         "community" => parse_community_command(&mut iter)?,
         "public-room" => parse_public_room_command(&mut iter)?,
+        "inspect" => parse_inspect_command(&mut iter)?,
         "raw" => {
             let json = iter.next().ok_or_else(|| {
                 ParseError::Usage("raw '<json>' requires the JSON payload".to_string())
@@ -529,6 +538,94 @@ fn parse_feedback_start<'a>(
     ))
 }
 
+const INSPECT_USAGE: &str = "inspect requires `apps`, `at PEER X Y`, `node PEER ID` or \
+     `tree PEER [--root ID] [--depth N]` (try --help)";
+
+/// Parse the `inspect apps|at|node|tree ...` subcommand.
+fn parse_inspect_command<'a>(
+    iter: &mut impl Iterator<Item = &'a String>,
+) -> Result<Command, ParseError> {
+    let verb = iter
+        .next()
+        .map(String::as_str)
+        .ok_or_else(|| ParseError::Usage(INSPECT_USAGE.to_string()))?;
+    if verb == "apps" {
+        if iter.next().is_some() {
+            return Err(ParseError::Usage("inspect apps takes no arguments".into()));
+        }
+        return Ok(Command::InspectApps);
+    }
+    let peer_raw = iter.next().ok_or_else(|| {
+        ParseError::Usage(format!(
+            "inspect {verb} requires the PEER id of an app connection (list them with `inspect apps`)"
+        ))
+    })?;
+    let peer = peer_raw.parse::<u64>().map_err(|_| {
+        ParseError::Usage(format!(
+            "inspect {verb}: `{peer_raw}` is not a PEER id (list them with `inspect apps`)"
+        ))
+    })?;
+    let mut positional: Vec<&String> = Vec::new();
+    let mut local = false;
+    let mut root: Option<String> = None;
+    let mut depth: u16 = 2;
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--local" => local = true,
+            "--root" if verb == "tree" => {
+                root = Some(
+                    iter.next()
+                        .ok_or_else(|| ParseError::Usage("--root requires a semantic id".into()))?
+                        .clone(),
+                );
+            }
+            "--depth" if verb == "tree" => {
+                let raw = iter
+                    .next()
+                    .ok_or_else(|| ParseError::Usage("--depth requires a number".into()))?;
+                depth = raw
+                    .parse()
+                    .map_err(|_| ParseError::Usage(format!("--depth: `{raw}` is not a depth")))?;
+            }
+            flag if flag.starts_with("--") => {
+                return Err(ParseError::Usage(format!(
+                    "inspect {verb}: unknown option `{flag}`"
+                )));
+            }
+            _ => positional.push(arg),
+        }
+    }
+    let query = match (verb, positional.as_slice()) {
+        ("at", [x, y]) => {
+            let coordinate = |raw: &str| {
+                raw.parse::<f64>().map_err(|_| {
+                    ParseError::Usage(format!("inspect at: `{raw}` is not a coordinate"))
+                })
+            };
+            serde_json::json!({"kind": "at", "x": coordinate(x)?, "y": coordinate(y)?})
+        }
+        ("at", _) => {
+            return Err(ParseError::Usage(
+                "inspect at PEER X Y takes a point in that app's surface coordinates".into(),
+            ));
+        }
+        ("node", [id]) => serde_json::json!({"kind": "node", "id": id}),
+        ("node", _) => {
+            return Err(ParseError::Usage(
+                "inspect node PEER ID takes exactly one semantic id".into(),
+            ));
+        }
+        ("tree", []) => serde_json::json!({"kind": "subtree", "root": root, "depth": depth}),
+        ("tree", _) => {
+            return Err(ParseError::Usage(
+                "inspect tree PEER takes only --root ID and --depth N".into(),
+            ));
+        }
+        _ => return Err(ParseError::Usage(INSPECT_USAGE.to_string())),
+    };
+    Ok(Command::Inspect { peer, query, local })
+}
+
 /// Pull the next argv slot and parse it as `f64`. Helper for the
 /// `click-at` / `drag` subcommands so each missing-arg / parse-failure
 /// path reads as one line at the call site.
@@ -638,6 +735,10 @@ fn command_to_wire(cmd: &Command) -> Result<String, ParseError> {
             json!({ "op": "actions_cancel", "invocation_id": invocation_id })
         }
         Command::Community { wire } => wire.clone(),
+        Command::InspectApps => json!({ "op": "inspect_apps" }),
+        Command::Inspect { peer, query, local } => {
+            json!({ "op": "inspect", "peer": peer, "query": query, "local": local })
+        }
         Command::Raw { json } => {
             // Validate here: a `parse_error` from the compositor can't tell
             // the caller whether their shell quoting or the payload was wrong.
@@ -797,6 +898,16 @@ fn print_response(cmd: &Command, response: &serde_json::Value) -> u8 {
             println!("{path}");
         }
         Command::ActionsList { json, .. } => return print_actions_list(response, *json),
+        Command::InspectApps | Command::Inspect { .. } => {
+            let answer = response
+                .get("answer")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&answer).unwrap_or_else(|_| answer.to_string())
+            );
+        }
         Command::ActionsInvoke { .. }
         | Command::ActionsStatus { .. }
         | Command::ActionsCancel { .. }
@@ -877,6 +988,20 @@ fn print_usage() {
          \x20 public-room invite ROOM [--role viewer|commenter] [--expires-in SECONDS]\n\
          \x20                               mint its standing invitation (multi-use, max commenter)\n\
          \x20 public-room status ROOM       a room's channel class and your role in it\n\
+         \x20 inspect apps                  list app connections that answer inspection\n\
+         \x20                               (PEER id, app id, room, record)\n\
+         \x20 inspect at PEER X Y [--local] the semantic node under X,Y (that app's surface\n\
+         \x20                               coordinates, logical px) and its path from the root\n\
+         \x20 inspect node PEER ID [--local]\n\
+         \x20                               one node by stable semantic id (r:…, t:…, …~k:…,\n\
+         \x20                               or a Parent[i]/Child[j] path)\n\
+         \x20 inspect tree PEER [--root ID] [--depth N] [--local]\n\
+         \x20                               a subtree, breadth first (default: window root, depth 2)\n\
+         \x20                               Each node: id, durable, role, label, value, sensitivity,\n\
+         \x20                               bounds, visible, children, reference (ResourceRef).\n\
+         \x20                               Secrets are never shown. Personal content (names,\n\
+         \x20                               addresses, message bodies) is a same-length ▮ placeholder\n\
+         \x20                               unless --local asks for it as this session sees it.\n\
          \x20 raw '<json>'                  passthrough — escape hatch for new commands"
     );
 }
@@ -1207,6 +1332,57 @@ mod tests {
         ])
         .unwrap_err();
         assert!(matches!(error, ParseError::Usage(_)));
+    }
+
+    #[test]
+    fn inspect_queries_reach_the_wire_as_typed_inspect_queries() {
+        let wire = |args: &[&str]| -> serde_json::Value {
+            serde_json::from_str(&command_to_wire(&parse(args).unwrap().command).unwrap()).unwrap()
+        };
+        assert_eq!(wire(&["inspect", "apps"])["op"], "inspect_apps");
+        let at = wire(&["inspect", "at", "7", "12.5", "40"]);
+        assert_eq!(at["op"], "inspect");
+        assert_eq!(at["peer"], 7);
+        assert_eq!(at["local"], false);
+        let query: ui::inspect::InspectQuery = serde_json::from_value(at["query"].clone()).unwrap();
+        assert_eq!(query, ui::inspect::InspectQuery::At { x: 12.5, y: 40.0 });
+        let node = wire(&["inspect", "node", "7", "t:save", "--local"]);
+        assert_eq!(node["local"], true);
+        let query: ui::inspect::InspectQuery =
+            serde_json::from_value(node["query"].clone()).unwrap();
+        assert_eq!(
+            query,
+            ui::inspect::InspectQuery::Node {
+                id: "t:save".into()
+            }
+        );
+        let tree = wire(&["inspect", "tree", "7", "--root", "t:form", "--depth", "3"]);
+        let query: ui::inspect::InspectQuery =
+            serde_json::from_value(tree["query"].clone()).unwrap();
+        assert_eq!(
+            query,
+            ui::inspect::InspectQuery::Subtree {
+                root: Some("t:form".into()),
+                depth: 3
+            }
+        );
+    }
+
+    #[test]
+    fn inspect_explains_a_missing_or_malformed_peer() {
+        for args in [
+            &["inspect"][..],
+            &["inspect", "at"],
+            &["inspect", "at", "seven", "1", "2"],
+            &["inspect", "at", "7", "1"],
+            &["inspect", "tree", "7", "--depth"],
+            &["inspect", "node", "7", "a", "b"],
+        ] {
+            let Err(ParseError::Usage(message)) = parse(args) else {
+                panic!("{args:?} must be a usage error");
+            };
+            assert!(!message.is_empty());
+        }
     }
 
     #[test]

@@ -190,6 +190,10 @@ qdoc = { path = "../../doc/qdoc" }
 # the `App` resource-collection hook build on it to make Ctrl+K scope to the
 # focused app instance's open resources and dispatch their exported actions.
 tilo-actions = { path = "../../collab/actions" }
+# `ResourceRef` names document content a semantic node stands for, and
+# `Referent` is how an app says what its selection is about; inspection
+# answers with both rather than a parallel address.
+tilo-reference = { path = "../../collab/reference" }
 # Window-group widths and drop targets are the desktop model's own types.
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # Direct dep on the Ed25519 implementation `tilo-collab-types` uses so

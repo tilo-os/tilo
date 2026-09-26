@@ -189,11 +189,12 @@ impl ConnectModal {
             let mut node = AccessNode::new(Role::TextInput)
                 .with_name(field.label())
                 .with_action_target(format!("db.modal.field:{}", field.key()))
-                .with_state(
-                    AccessState::new()
-                        .focusable(true)
-                        .protected(field == Field::Password),
-                );
+                .with_state(AccessState::new().focusable(true))
+                .with_sensitivity(match field {
+                    Field::Password => ui::a11y::Sensitivity::Secret,
+                    Field::User => ui::a11y::Sensitivity::Personal,
+                    _ => ui::a11y::Sensitivity::Public,
+                });
             if field != Field::Password {
                 node = node.with_value(input.value());
             }
@@ -998,7 +999,7 @@ mod tests {
         );
         let node = Widget::accessibility(&m.password).expect("text input accessibility node");
         assert_eq!(node.role, Role::TextInput);
-        assert!(node.state.protected);
+        assert_eq!(node.sensitivity, ui::a11y::Sensitivity::Secret);
         assert_eq!(node.value, None, "password never enters the a11y value");
         assert_eq!(m.build_profile().password, "correct horse");
     }

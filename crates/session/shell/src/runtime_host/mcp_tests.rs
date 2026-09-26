@@ -134,7 +134,18 @@ async fn protocol_and_argument_boundaries() {
         .handle(request("tools/list", &json!({})))
         .await
         .unwrap();
-    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(tools["result"]["tools"].as_array().unwrap().len(), 7);
+    assert_eq!(
+        server
+            .handle(call(
+                "qos_inspect",
+                &json!({"peer_id":999,"query":{"kind":"node","id":"t:save"}})
+            ))
+            .await
+            .unwrap()["result"]["isError"],
+        true,
+        "a peer outside this room is not inspectable"
+    );
     for args in [
         json!({"actor":"other"}),
         json!({"workspace":"other"}),

@@ -34,7 +34,7 @@ use std::sync::Arc;
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
 
-use crate::a11y::{AccessNode, AccessState, Action, Role};
+use crate::a11y::{AccessNode, AccessState, Action, Role, Sensitivity};
 use crate::widget::Widget;
 
 type HostedWidget<'a> = (Vec<usize>, &'a dyn Widget);
@@ -56,26 +56,41 @@ pub(crate) struct SemanticOperation {
 }
 
 /// Stable identity of a semantic node, preserved across [`refresh`](SemanticTree::refresh)
-/// as long as the backing widget or resource recurs.
+/// and across structural rebuilds of the widget tree as long as the backing
+/// widget or resource recurs.
 ///
-/// The string form encodes the node's origin so ids never collide between the
-/// widget walk and the resource forest:
+/// The string form encodes the node's origin, in order of precedence, so ids
+/// never collide between the widget walk and the resource forest. A layout
+/// (Taffy) node id is never part of it: those are arena slots reassigned on
+/// every rebuild.
 /// * `"root"` — the synthetic window root.
-/// * `"w<taffy_id>"` — a laid-out widget, keyed by its `taffy::NodeId` (stable
-///   between structural rebuilds, exactly the key the AccessKit bridge uses).
-/// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
-///   widget of its own, keyed by its position under its parent.
 /// * `"r:<resource_id>"` — a resource from the app's action model, keyed by its
 ///   already-stable [`ResourceId`](tilo_actions::ResourceId).
-#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+/// * `"t:<test_id>"` — a widget whose [`Widget::test_id`] is unique in the live
+///   tree. A test id shared by several widgets identifies none of them and
+///   falls through to the forms below.
+/// * `"<parent>~k:<key>"` — a widget with a declared
+///   [`semantic_key`](crate::a11y::AccessNode::semantic_key), or a synthetic
+///   child with an [`AccessNode::key`](crate::a11y::AccessNode::key), keyed
+///   within its semantic parent.
+/// * `"<parent>~<index>"` — a synthetic a11y child (a table row/cell) with no
+///   key, keyed by its position under its parent.
+/// * `"<anchor>/<Name>[<index>]/…"` — any other widget: its widget-tree path
+///   from the nearest ancestor above that has one of the ids above, in the
+///   headless driver's `Parent/Child[index]` form (`index` counts same-named
+///   siblings). With no such ancestor the id is exactly the headless path
+///   (`Column[0]/Button[1]`), so a `tilo-control` target and a semantic id
+///   name the same widget.
+#[derive(Clone, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct SemanticId(pub String);
 
 impl SemanticId {
     fn root() -> Self {
         SemanticId("root".into())
     }
-    fn widget(taffy_id: TaffyNodeId) -> Self {
-        SemanticId(format!("w{}", u64::from(taffy_id)))
+    fn test_id(id: &str) -> Self {
+        SemanticId(format!("t:{id}"))
     }
     fn synthetic(parent: &SemanticId, index: usize) -> Self {
         SemanticId(format!("{}~{}", parent.0, index))
@@ -144,27 +159,44 @@ pub struct SemanticAction {
 pub struct SemanticNode {
     pub id: SemanticId,
     /// Whether this identity is safe to persist outside the current retained
-    /// frame. Layout ids and positional synthetic ids are deliberately not
-    /// durable: exposing them to agents would let a later invocation target a
-    /// different control after the UI is rebuilt.
+    /// frame. Structural paths and positional synthetic ids are deliberately
+    /// not durable: they survive a rebuild of the same structure, but a
+    /// sibling inserted before them shifts them, and exposing them to agents
+    /// would let a later invocation target a different control.
     pub durable_identity: bool,
     pub role: Role,
     /// Already i18n-resolved.
     pub name: Option<String>,
-    /// A field's contents, a slider's readout, etc.
+    /// A field's contents, a slider's readout, etc. Never populated for a
+    /// [`Secret`](Sensitivity::Secret) node.
     pub value: Option<String>,
+    /// How far this node's presented content may travel.
+    pub sensitivity: Sensitivity,
     pub state: AccessState,
     /// `None` for the root and resource nodes. Virtual rows and cells publish
     /// their viewport geometry even though they have no retained widget.
+    /// Window (surface) logical coordinates, already scrolled.
     pub bounds: Option<Rect>,
+    /// The intersection of every ancestor's child clip (a scroll viewport, a
+    /// clipped panel). `None` means unclipped. What of [`bounds`](Self::bounds)
+    /// lies outside it is not on screen.
+    pub clip: Option<Rect>,
     pub actions: Vec<SemanticAction>,
     /// In reading order.
     pub children: Vec<SemanticId>,
     /// So the host can route a [`Verb`](SemanticActionKind::Verb) back to
-    /// the retained widget that owns this node.
+    /// the retained widget that owns this node. A frame-local routing
+    /// address, never identity.
     pub widget_taffy_id: Option<u64>,
     /// Opaque widget-local target for a synthetic child action.
     pub semantic_target: Option<String>,
+    /// The widget's declared [control key](crate::a11y::AccessNode::semantic_key),
+    /// which control bindings name.
+    pub control_key: Option<String>,
+    /// The document content this node stands for: the resource itself for a
+    /// resource node, the declared [`resource`](crate::a11y::AccessNode::resource)
+    /// resolved against the app's resource forest for a widget.
+    pub reference: Option<tilo_reference::ResourceRef>,
 }
 
 impl SemanticNode {
@@ -182,11 +214,52 @@ impl SemanticNode {
             && self.role == other.role
             && self.name == other.name
             && self.value == other.value
+            && self.sensitivity == other.sensitivity
             && self.state == other.state
             && self.bounds == other.bounds
+            && self.clip == other.clip
             && self.actions == other.actions
             && self.children == other.children
             && self.semantic_target == other.semantic_target
+            && self.control_key == other.control_key
+            && self.reference == other.reference
+    }
+
+    /// The part of [`bounds`](Self::bounds) that is on screen, or `None` when
+    /// the node has no geometry or is clipped away entirely.
+    pub fn visible_bounds(&self) -> Option<Rect> {
+        let bounds = self.bounds?;
+        let visible = match self.clip {
+            Some(clip) => bounds.intersect(clip),
+            None => bounds,
+        };
+        (visible.width() > 0.0 && visible.height() > 0.0).then_some(visible)
+    }
+
+    /// Whether [`value`](Self::value) is where this node presents its content,
+    /// so its name is only a label.
+    pub fn presents_value(&self) -> bool {
+        crate::a11y::presents_value(self.role, self.value.is_some())
+    }
+
+    fn window_root(children: Vec<SemanticId>) -> Self {
+        SemanticNode {
+            id: SemanticId::root(),
+            durable_identity: true,
+            role: Role::Window,
+            name: Some("Tilo application window".into()),
+            value: None,
+            sensitivity: Sensitivity::Public,
+            state: AccessState::default(),
+            bounds: None,
+            clip: None,
+            actions: Vec::new(),
+            children,
+            widget_taffy_id: None,
+            semantic_target: None,
+            control_key: None,
+            reference: None,
+        }
     }
 }
 
@@ -242,22 +315,7 @@ impl SemanticTree {
     pub fn new() -> Self {
         let root = SemanticId::root();
         let mut nodes = HashMap::new();
-        nodes.insert(
-            root.clone(),
-            SemanticNode {
-                id: root.clone(),
-                durable_identity: true,
-                role: Role::Window,
-                name: Some("Tilo application window".into()),
-                value: None,
-                state: AccessState::default(),
-                bounds: None,
-                actions: Vec::new(),
-                children: Vec::new(),
-                widget_taffy_id: None,
-                semantic_target: None,
-            },
-        );
+        nodes.insert(root.clone(), SemanticNode::window_root(Vec::new()));
         Self {
             nodes,
             order: vec![root.clone()],
@@ -286,7 +344,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<false>(root, node_map, focused, resources, &[])
+        self.refresh_impl::<false>(root, node_map, focused, resources, &[], None)
     }
     pub(crate) fn refresh_bound(
         &mut self,
@@ -295,7 +353,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, focused, resources, &[])
+        self.refresh_impl::<true>(root, node_map, focused, resources, &[], None)
     }
     pub(crate) fn refresh_components(
         &mut self,
@@ -304,8 +362,9 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
+        doc: Option<&tilo_actions::Doc>,
     ) -> TreeDelta {
-        self.refresh_impl::<true>(root, node_map, focused, resources, components)
+        self.refresh_impl::<true>(root, node_map, focused, resources, components, doc)
     }
     #[cfg(test)]
     pub(crate) fn bound_actions_for_test(
@@ -332,6 +391,7 @@ impl SemanticTree {
         focused: Option<TaffyNodeId>,
         resources: &[Resource],
         components: &[crate::bound_dispatch::BoundResourceSnapshot],
+        doc: Option<&tilo_actions::Doc>,
     ) -> TreeDelta {
         // Reverse map widget *data* pointer -> taffy id, keyed on the thin
         // data address (`*const ()`) rather than the fat `*const dyn Widget`
@@ -345,6 +405,8 @@ impl SemanticTree {
             ptr_to_taffy.insert(w_ptr as *const (), taffy_id);
         }
 
+        let mut identities = IdentityCounts::default();
+        count_identities::<BOUND>(root, 0, &mut identities);
         let mut builder = Build::<BOUND> {
             nodes: HashMap::new(),
             order: Vec::new(),
@@ -354,13 +416,25 @@ impl SemanticTree {
             overlays: Vec::new(),
             ptr_to_taffy: &ptr_to_taffy,
             focused,
+            identities,
+            owners: vec![0],
+            doc,
+            resource_refs: HashMap::new(),
+            declared_resources: Vec::new(),
         };
 
         let root_id = SemanticId::root();
         builder.order.push(root_id.clone());
 
         let mut root_children: Vec<SemanticId> = Vec::new();
-        builder.visit_widget(root, &root_id, &mut root_children);
+        builder.visit_widget(
+            root,
+            &root_id,
+            &mut root_children,
+            "",
+            &mut HashMap::new(),
+            None,
+        );
 
         // Resource affordances hang off the root as their own subtrees.
         for res in resources {
@@ -374,22 +448,10 @@ impl SemanticTree {
             }
         }
 
-        builder.nodes.insert(
-            root_id.clone(),
-            SemanticNode {
-                id: root_id.clone(),
-                durable_identity: true,
-                role: Role::Window,
-                name: Some("Tilo application window".into()),
-                value: None,
-                state: AccessState::default(),
-                bounds: None,
-                actions: Vec::new(),
-                children: root_children,
-                widget_taffy_id: None,
-                semantic_target: None,
-            },
-        );
+        builder
+            .nodes
+            .insert(root_id.clone(), SemanticNode::window_root(root_children));
+        builder.resolve_references();
 
         let delta = self.diff(&builder.nodes);
 
@@ -480,14 +542,9 @@ impl SemanticTree {
                 parents.insert(child.clone(), node.id.clone());
             }
         }
-        let marker = format!("~k:{control_id}");
         let mut paths = self
             .iter()
-            .filter(|node| {
-                node.durable_identity
-                    && !node.id.0.starts_with("r:")
-                    && node.id.0.ends_with(&marker)
-            })
+            .filter(|node| node.durable_identity && node.control_key.as_deref() == Some(control_id))
             .filter_map(|node| {
                 let mut path = vec![node.id.clone()];
                 let mut cursor = node.id.clone();
@@ -733,6 +790,88 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
     }
 }
 
+/// How often each candidate identity occurs this frame, so only an identity
+/// that names exactly one widget is used as one.
+#[derive(Default)]
+struct IdentityCounts {
+    /// Test ids across the live tree, counted on accessible widgets only: a
+    /// forwarding wrapper that reports its inner widget's id without being
+    /// accessible itself does not count against it.
+    test_ids: HashMap<String, usize>,
+    /// Semantic keys per nearest accessible ancestor (by data address; `0`
+    /// for the window root), which is the parent a keyed id is minted under.
+    keys: HashMap<(usize, String), usize>,
+    /// Each widget's semantics as the counting pass read them, so the build
+    /// asks every widget once per refresh. Keyed by data address and name,
+    /// queued in walk order for a wrapper that shares its child's address.
+    access: HashMap<(usize, String), std::collections::VecDeque<Option<AccessNode>>>,
+}
+
+impl IdentityCounts {
+    fn access_of(&mut self, w: &dyn Widget) -> Option<AccessNode> {
+        self.access
+            .get_mut(&(widget_address(w), w.name().to_owned()))
+            .and_then(std::collections::VecDeque::pop_front)
+            .unwrap_or_else(|| w.accessibility())
+    }
+}
+
+fn widget_address(w: &dyn Widget) -> usize {
+    std::ptr::from_ref::<dyn Widget>(w).cast::<()>() as usize
+}
+
+fn count_identities<const BOUND: bool>(w: &dyn Widget, owner: usize, counts: &mut IdentityCounts) {
+    let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
+        return;
+    };
+    let mut child_owner = owner;
+    let access = w.accessibility();
+    counts
+        .access
+        .entry((widget_address(w), w.name().to_owned()))
+        .or_default()
+        .push_back(access.clone());
+    if let Some(access) = access {
+        if let Some(id) = w.test_id().filter(|id| !id.is_empty()) {
+            let count = counts.test_ids.entry(id.to_owned()).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        if let Some(key) = access.semantic_key {
+            let count = counts.keys.entry((owner, key)).or_insert(0);
+            *count = count.saturating_add(1);
+        }
+        child_owner = widget_address(w);
+    }
+    for child in w.children() {
+        count_identities::<BOUND>(child, child_owner, counts);
+    }
+}
+
+/// The next `Name[index]` path segment under `path_base`, counting same-named
+/// siblings exactly as the headless driver's target registry does.
+fn structural_path(
+    w: &dyn Widget,
+    path_base: &str,
+    sibling_counts: &mut HashMap<String, usize>,
+) -> String {
+    let name = w.name();
+    let index = sibling_counts.entry(name.to_owned()).or_insert(0);
+    let current = *index;
+    *index = index.saturating_add(1);
+    if path_base.is_empty() {
+        format!("{name}[{current}]")
+    } else {
+        format!("{path_base}/{name}[{current}]")
+    }
+}
+
+fn intersect_clip(clip: Option<Rect>, child_clip: Option<Rect>) -> Option<Rect> {
+    match (clip, child_clip) {
+        (Some(outer), Some(inner)) => Some(outer.intersect(inner)),
+        (outer, inner) => outer.or(inner),
+    }
+}
+
 /// Separate from [`SemanticTree`] so the retained frame is only replaced
 /// once the new one is fully built (and diffed against).
 struct Build<'a, const BOUND: bool> {
@@ -744,6 +883,20 @@ struct Build<'a, const BOUND: bool> {
     focused: Option<TaffyNodeId>,
     duplicate_ids: Vec<SemanticId>,
     overlays: Vec<crate::view::OpenOverlay>,
+    /// How often each candidate identity occurs this frame.
+    identities: IdentityCounts,
+    /// Data addresses of the accessible widgets above the one being visited,
+    /// innermost last; `0` stands for the window root.
+    owners: Vec<usize>,
+    /// The document a widget's [`Referent`](tilo_reference::Referent) reads
+    /// to say what its content is about. `None` for a bare structural walk.
+    doc: Option<&'a tilo_actions::Doc>,
+    /// Every published resource by id, so a widget that declares the resource
+    /// it presents resolves to the same address the resource node carries.
+    resource_refs: HashMap<String, (tilo_reference::ResourceRef, Sensitivity)>,
+    /// Nodes that declared the resource they present, resolved once the
+    /// whole forest is known.
+    declared_resources: Vec<(SemanticId, String)>,
 }
 
 impl<const BOUND: bool> Build<'_, BOUND> {
@@ -753,13 +906,47 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             self.duplicate_ids.push(id);
         }
     }
+
+    /// Resolve declared widget resources once the whole forest is known.
+    fn resolve_references(&mut self) {
+        for (id, resource) in std::mem::take(&mut self.declared_resources) {
+            if let Some(node) = self.nodes.get_mut(&id) {
+                let resolved = self.resource_refs.get(&resource);
+                node.reference = resolved.map(|(reference, _)| reference.clone());
+                // A row presenting a person's contact is as sensitive as the
+                // contact itself, whatever the row declared.
+                if let Some((_, sensitivity)) = resolved {
+                    node.sensitivity = node.sensitivity.max(*sensitivity);
+                }
+                if node.sensitivity.is_secret() {
+                    node.value = None;
+                }
+            }
+        }
+    }
+
+    fn declare_resource(&mut self, id: &SemanticId, access: &AccessNode) {
+        if let Some(resource) = &access.resource {
+            self.declared_resources.push((id.clone(), resource.clone()));
+        }
+    }
+
     /// A presentational widget (`accessibility() == None`) is collapsed
     /// out and its children reparented — matching the AccessKit bridge.
+    /// `path_base` and `sibling_counts` place the widget in the widget tree
+    /// for its structural id; `clip` is every ancestor's child clip so far.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one widget's identity, geometry and semantics are derived together"
+    )]
     fn visit_widget(
         &mut self,
         w: &dyn Widget,
         semantic_parent: &SemanticId,
         parent_children: &mut Vec<SemanticId>,
+        path_base: &str,
+        sibling_counts: &mut HashMap<String, usize>,
+        clip: Option<Rect>,
     ) {
         let Ok(_entry) = crate::bound_dispatch::enter_traversal::<BOUND>(w) else {
             return;
@@ -768,18 +955,37 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             .ptr_to_taffy
             .get(&std::ptr::from_ref::<dyn Widget>(w).cast::<()>())
             .copied();
-        match w.accessibility() {
+        let path = structural_path(w, path_base, sibling_counts);
+        let child_clip = intersect_clip(clip, w.child_clip_rect());
+        let mut child_counts = HashMap::new();
+        match self.identities.access_of(w) {
             Some(access) => {
-                let id = if let Some(key) = &access.semantic_key {
-                    SemanticId::keyed(semantic_parent, key)
-                } else if let Some(t) = taffy_id {
-                    SemanticId::widget(t)
+                let owner = self.owners.last().copied().unwrap_or(0);
+                let unique_test_id = w
+                    .test_id()
+                    .filter(|id| !id.is_empty() && self.identities.test_ids.get(*id) == Some(&1));
+                let unique_key = access.semantic_key.as_ref().filter(|key| {
+                    let shared = self
+                        .identities
+                        .keys
+                        .get(&(owner, (*key).clone()))
+                        .is_some_and(|count| *count > 1);
+                    if shared {
+                        // Reported once per frame, never used as identity:
+                        // two siblings under one key would each answer to it.
+                        let id = SemanticId::keyed(semantic_parent, key);
+                        if !self.duplicate_ids.contains(&id) {
+                            self.duplicate_ids.push(id);
+                        }
+                    }
+                    !shared
+                });
+                let (id, durable, structural) = if let Some(test_id) = unique_test_id {
+                    (SemanticId::test_id(test_id), true, false)
+                } else if let Some(key) = unique_key {
+                    (SemanticId::keyed(semantic_parent, key), true, false)
                 } else {
-                    // Rare (never laid out); key under the parent so it
-                    // still gets a stable id.
-                    let root = SemanticId::root();
-                    let parent = parent_children.last().unwrap_or(&root);
-                    SemanticId::synthetic(parent, parent_children.len())
+                    (SemanticId(path.clone()), false, true)
                 };
                 if let Some(state) = w.open_overlay() {
                     self.overlays.push(crate::view::OpenOverlay {
@@ -787,6 +993,8 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                         state,
                     });
                 }
+                self.owners.push(widget_address(w));
+                let children_base = if structural { path } else { id.0.clone() };
 
                 let mut children: Vec<SemanticId> = Vec::new();
                 let mut hosted = HostedByIndex::new();
@@ -797,20 +1005,30 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                         let parent_index = path.remove(0);
                         hosted.entry(parent_index).or_default().push((path, child));
                     } else {
-                        self.visit_widget(child, &id, &mut children);
+                        self.visit_widget(
+                            child,
+                            &id,
+                            &mut children,
+                            &children_base,
+                            &mut child_counts,
+                            child_clip,
+                        );
                     }
                 }
                 for (i, synth) in access.children.iter().enumerate() {
                     let child = self.visit_synthetic(
                         &id,
+                        durable,
                         i,
                         synth,
                         taffy_id,
                         hosted.remove(&i).unwrap_or_default(),
+                        child_clip,
                     );
                     children.push(child);
                 }
 
+                self.owners.pop();
                 let mut state = access.state;
                 if let (Some(t), Some(f)) = (taffy_id, self.focused)
                     && t == f
@@ -827,46 +1045,72 @@ impl<const BOUND: bool> Build<'_, BOUND> {
 
                 let node = SemanticNode {
                     id: id.clone(),
-                    durable_identity: access.semantic_key.is_some(),
+                    durable_identity: durable,
                     role: access.role,
                     name: access.name.clone(),
-                    value: if access.state.protected {
+                    value: if access.sensitivity.is_secret() {
                         None
                     } else {
                         access.value.clone()
                     },
+                    sensitivity: access.sensitivity,
                     state,
                     bounds: Some(w.get_rect()),
+                    clip,
                     actions,
                     children,
                     widget_taffy_id: taffy_id.map(u64::from),
                     semantic_target: access.action_target.clone(),
+                    control_key: access.semantic_key.clone(),
+                    reference: if access.resource.is_some() {
+                        None
+                    } else {
+                        self.doc.and_then(|doc| {
+                            w.referent()
+                                .and_then(|referent| referent.selection_reference(doc))
+                        })
+                    },
                 };
+                self.declare_resource(&id, &access);
                 self.order.push(id.clone());
                 self.insert_node(node);
                 parent_children.push(id);
             }
             None => {
                 for child in w.children() {
-                    self.visit_widget(child, semantic_parent, parent_children);
+                    self.visit_widget(
+                        child,
+                        semantic_parent,
+                        parent_children,
+                        &path,
+                        &mut child_counts,
+                        child_clip,
+                    );
                 }
             }
         }
     }
 
     /// A virtual row/cell — has no backing widget, but may carry geometry.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "a synthetic node's identity, owner and clip all come from the walk above it"
+    )]
     fn visit_synthetic(
         &mut self,
         parent: &SemanticId,
+        parent_durable: bool,
         index: usize,
         access: &AccessNode,
         owner: Option<TaffyNodeId>,
         hosted: Vec<HostedWidget<'_>>,
+        clip: Option<Rect>,
     ) -> SemanticId {
         let id = access.key.map_or_else(
             || SemanticId::synthetic(parent, index),
             |key| SemanticId::keyed(parent, key),
         );
+        let durable = access.key.is_some() && parent_durable;
         let semantic_target = access.action_target.as_deref();
         let mut children: Vec<SemanticId> = Vec::new();
         let direct = hosted
@@ -883,34 +1127,35 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             for (i, child) in access.children.iter().enumerate() {
                 let c = self.visit_synthetic(
                     &id,
+                    durable,
                     i,
                     child,
                     owner,
                     nested.remove(&i).unwrap_or_default(),
+                    clip,
                 );
                 children.push(c);
             }
         } else {
+            let mut counts = HashMap::new();
             for child in direct {
-                self.visit_widget(child, &id, &mut children);
+                self.visit_widget(child, &id, &mut children, &id.0, &mut counts, clip);
             }
         }
         let node = SemanticNode {
             id: id.clone(),
-            durable_identity: access.key.is_some()
-                && self
-                    .nodes
-                    .get(parent)
-                    .is_some_and(|node| node.durable_identity),
+            durable_identity: durable,
             role: access.role,
             name: access.name.clone(),
-            value: if access.state.protected {
+            value: if access.sensitivity.is_secret() {
                 None
             } else {
                 access.value.clone()
             },
+            sensitivity: access.sensitivity,
             state: access.state,
             bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
+            clip,
             actions: if semantic_target.is_some() {
                 verbs_for(access)
             } else {
@@ -919,7 +1164,10 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             children,
             widget_taffy_id: semantic_target.and(owner).map(u64::from),
             semantic_target: semantic_target.map(str::to_owned),
+            control_key: None,
+            reference: None,
         };
+        self.declare_resource(&id, access);
         self.order.push(id.clone());
         self.insert_node(node);
         id
@@ -964,6 +1212,10 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             children.push(self.visit_resource(child, binding));
         }
 
+        let reference = tilo_reference::ResourceRef::whole(&res.kind, res.id.as_str(), &res.label);
+        self.resource_refs
+            .entry(res.id.as_str().to_owned())
+            .or_insert_with(|| (reference.clone(), res.sensitivity));
         let node = SemanticNode {
             id: id.clone(),
             // Component semantic addresses remain valid only for this captured lifetime.
@@ -971,12 +1223,16 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             role: Role::Group,
             name: Some(res.label.clone()),
             value: None,
+            sensitivity: res.sensitivity,
             state: AccessState::default(),
             bounds: None,
+            clip: None,
             actions,
             children,
             widget_taffy_id: None,
             semantic_target: None,
+            control_key: None,
+            reference: Some(reference),
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1061,9 +1317,9 @@ mod tests {
             "root + two buttons, got {ids_first:?}"
         );
         assert!(
-            ids_first.iter().any(|id| id.as_str().contains("~k:a"))
-                && ids_first.iter().any(|id| id.as_str().contains("~k:b")),
-            "buttons use their durable widget keys, got {ids_first:?}"
+            ids_first.iter().any(|id| id.as_str() == "t:a")
+                && ids_first.iter().any(|id| id.as_str() == "t:b"),
+            "buttons are identified by their unique test ids, got {ids_first:?}"
         );
 
         let second = tree.refresh(&col, &node_map, None, &[]);
@@ -1085,17 +1341,21 @@ mod tests {
         let deep = SemanticId("root~k:advanced~k:save".into());
         let shallow = SemanticId("root~k:save".into());
         let node = |id: SemanticId, children: Vec<SemanticId>| SemanticNode {
+            control_key: id.0.rsplit("~k:").next().map(str::to_owned),
             id,
             durable_identity: true,
             role: Role::Button,
             name: Some("Save".into()),
             value: None,
+            sensitivity: Sensitivity::Public,
             state: AccessState::default(),
             bounds: Some(Rect::new(0.0, 0.0, 10.0, 10.0)),
+            clip: None,
             actions: Vec::new(),
             children,
             widget_taffy_id: None,
             semantic_target: None,
+            reference: None,
         };
         tree.nodes
             .insert(group.clone(), node(group.clone(), vec![deep.clone()]));
@@ -1136,7 +1396,7 @@ mod tests {
             tree.diff(&rebound_frame).is_empty(),
             "a frame-local routing address is not exported semantic content"
         );
-        assert!(alpha.as_str().contains("~k:alpha"));
+        assert_eq!(alpha.as_str(), "t:alpha");
 
         let mut rebuilt = Column::new()
             .push(Box::new(Button::new("unrelated", "Unrelated", None)))
@@ -1152,6 +1412,278 @@ mod tests {
             "the rebuilt widget is routed through its new layout node"
         );
         assert!(tree.duplicate_ids().is_empty());
+    }
+
+    /// A labelled group with no key of its own, so the widgets below it are
+    /// addressed structurally.
+    struct Panel {
+        label: &'static str,
+        children: Vec<Box<dyn Widget>>,
+    }
+
+    impl Widget for Panel {
+        fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            theme: &Theme,
+            node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+        ) -> taffy::NodeId {
+            let nodes: Vec<taffy::NodeId> = self
+                .children
+                .iter_mut()
+                .map(|child| child.build_layout(taffy, theme, node_map))
+                .collect();
+            let node = taffy
+                .new_with_children(taffy::Style::default(), &nodes)
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+        fn apply_layout(
+            &mut self,
+            taffy: &TaffyTree<()>,
+            node: taffy::NodeId,
+            origin: vello::kurbo::Point,
+        ) {
+            let children = taffy.children(node).unwrap_or_default();
+            for (child, node) in self.children.iter_mut().zip(children) {
+                child.apply_layout(taffy, node, origin);
+            }
+        }
+        fn draw(
+            &mut self,
+            _: &mut vello::Scene,
+            _: vello::kurbo::Affine,
+            _: &mut crate::text_render::TextRenderer,
+            _: &Theme,
+            _: &crate::presence::PresenceCtx,
+        ) {
+        }
+        fn handle_event_ctx(
+            &mut self,
+            _: &winit::event::WindowEvent,
+            _: &mut crate::widget::EventCtx<'_>,
+        ) {
+        }
+        fn name(&self) -> &str {
+            "Panel"
+        }
+        fn get_rect(&self) -> Rect {
+            Rect::ZERO
+        }
+        fn accessibility(&self) -> Option<AccessNode> {
+            Some(AccessNode::new(Role::Group).with_name(self.label))
+        }
+        fn children(&self) -> Vec<&dyn Widget> {
+            self.children.iter().map(AsRef::as_ref).collect()
+        }
+        fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+            self.children
+                .iter_mut()
+                .map(|child| &mut **child as &mut (dyn Widget + '_))
+                .collect()
+        }
+    }
+
+    fn fields() -> Box<dyn Widget> {
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    TextInput::new(Vec::new()).with_accessible_name("First"),
+                ))
+                .push(Box::new(
+                    TextInput::new(Vec::new()).with_accessible_name("Second"),
+                )),
+        )
+    }
+
+    fn ids(tree: &SemanticTree) -> Vec<SemanticId> {
+        tree.iter().map(|node| node.id.clone()).collect()
+    }
+
+    #[test]
+    fn ids_survive_a_structural_rebuild_and_never_name_a_layout_node() {
+        let build = || Panel {
+            label: "Form",
+            children: vec![fields()],
+        };
+        let mut first = build();
+        let first_map = layout(&mut first);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&first, &first_map, None, &[]);
+        let before = ids(&tree);
+
+        // A fresh widget tree in a fresh layout arena: every Taffy node id
+        // is reassigned, and none of the semantic ids may move with them.
+        let mut taffy = TaffyTree::<()>::new();
+        for _ in 0..17 {
+            let _ = taffy.new_leaf(taffy::Style::default());
+        }
+        let mut rebuilt = build();
+        let mut rebuilt_map = HashMap::new();
+        let node = rebuilt.build_layout(&mut taffy, &Theme::dark(), &mut rebuilt_map);
+        rebuilt.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
+        assert!(
+            rebuilt_map.keys().all(|key| !first_map.contains_key(key)),
+            "the rebuild really used different layout nodes"
+        );
+        let delta = tree.refresh(&rebuilt, &rebuilt_map, None, &[]);
+        assert_eq!(ids(&tree), before, "identity survives the rebuild");
+        assert!(
+            delta.added.is_empty() && delta.removed.is_empty(),
+            "{delta:?}"
+        );
+        assert!(
+            before
+                .iter()
+                .all(|id| !id.as_str().starts_with('w') || id.as_str().contains('[')),
+            "no layout-node id is part of identity: {before:?}"
+        );
+        let second = tree.find_by_name("Second").unwrap();
+        assert_eq!(second.id.as_str(), "Panel[0]/Column[0]/TextInput[1]");
+        assert!(!second.durable_identity, "a positional path is not durable");
+    }
+
+    #[test]
+    fn structural_ids_are_unique_among_same_named_siblings_and_match_headless_paths() {
+        let mut panel = Panel {
+            label: "Form",
+            children: vec![fields(), fields()],
+        };
+        let map = layout(&mut panel);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&panel, &map, None, &[]);
+        let inputs: Vec<&str> = tree
+            .iter()
+            .filter(|node| node.role == Role::TextInput)
+            .map(|node| node.id.as_str())
+            .collect();
+        assert_eq!(
+            inputs,
+            [
+                "Panel[0]/Column[0]/TextInput[0]",
+                "Panel[0]/Column[0]/TextInput[1]",
+                "Panel[0]/Column[1]/TextInput[0]",
+                "Panel[0]/Column[1]/TextInput[1]",
+            ]
+        );
+        assert_eq!(
+            tree.duplicate_ids(),
+            [SemanticId("Panel[0]~k:text_input".into())],
+            "the fields' shared fallback key is reported and not used as identity"
+        );
+        let driver = crate::headless::Driver::new(
+            crate::State::new(),
+            Box::new(Panel {
+                label: "Form",
+                children: vec![fields(), fields()],
+            }),
+            (800, 600),
+        );
+        let targets = driver.targets();
+        for id in inputs {
+            assert!(
+                targets.contains_key(id),
+                "semantic id {id} is also a headless target"
+            );
+        }
+    }
+
+    #[test]
+    fn a_shared_test_id_identifies_none_of_its_widgets() {
+        let mut col = Column::new()
+            .push(Box::new(Button::new("save", "Save draft", None)))
+            .push(Box::new(Button::new("save", "Save copy", None)));
+        let map = layout(&mut col);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&col, &map, None, &[]);
+        let draft = tree.find_by_name("Save draft").unwrap();
+        let copy = tree.find_by_name("Save copy").unwrap();
+        assert_ne!(draft.id, copy.id, "both widgets stay addressable");
+        assert_eq!(draft.id.as_str(), "Column[0]/Button[0]");
+        assert_eq!(copy.id.as_str(), "Column[0]/Button[1]");
+        assert!(!draft.durable_identity && !copy.durable_identity);
+        assert_eq!(
+            tree.duplicate_ids(),
+            [SemanticId("root~k:save".into())],
+            "the shared control key is reported, not silently accepted"
+        );
+    }
+
+    #[test]
+    fn a_widget_that_presents_a_resource_carries_its_reference_and_sensitivity() {
+        struct Row;
+        impl Widget for Row {
+            fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _: &Theme,
+                node_map: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+            ) -> taffy::NodeId {
+                let node = taffy.new_leaf(taffy::Style::default()).unwrap();
+                node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+                node
+            }
+            fn apply_layout(
+                &mut self,
+                _: &TaffyTree<()>,
+                _: taffy::NodeId,
+                _: vello::kurbo::Point,
+            ) {
+            }
+            fn draw(
+                &mut self,
+                _: &mut vello::Scene,
+                _: vello::kurbo::Affine,
+                _: &mut crate::text_render::TextRenderer,
+                _: &Theme,
+                _: &crate::presence::PresenceCtx,
+            ) {
+            }
+            fn handle_event_ctx(
+                &mut self,
+                _: &winit::event::WindowEvent,
+                _: &mut crate::widget::EventCtx<'_>,
+            ) {
+            }
+            fn name(&self) -> &str {
+                "Row"
+            }
+            fn get_rect(&self) -> Rect {
+                Rect::new(0.0, 0.0, 10.0, 10.0)
+            }
+            fn accessibility(&self) -> Option<AccessNode> {
+                Some(
+                    AccessNode::new(Role::ListItem)
+                        .with_name("Ada Lovelace")
+                        .with_resource("contacts.person:1"),
+                )
+            }
+        }
+        let resource = Resource::new("contacts.person:1", "contacts.person", "Ada Lovelace")
+            .with_sensitivity(Sensitivity::Personal);
+        let mut row = Row;
+        let map = layout(&mut row);
+        let mut tree = SemanticTree::new();
+        tree.refresh(&row, &map, None, std::slice::from_ref(&resource));
+        let node = tree
+            .iter()
+            .find(|node| node.role == Role::ListItem)
+            .expect("row node");
+        let reference = node.reference.as_ref().expect("resolved reference");
+        assert_eq!(reference.kind, "contacts.person");
+        assert_eq!(reference.id, "contacts.person:1");
+        assert_eq!(
+            node.sensitivity,
+            Sensitivity::Personal,
+            "a row presenting a person is as sensitive as the person"
+        );
+        let resource_node = tree
+            .node(&SemanticId("r:contacts.person:1".into()))
+            .expect("resource node");
+        assert_eq!(resource_node.reference.as_ref(), Some(reference));
     }
 
     #[test]

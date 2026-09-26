@@ -201,7 +201,7 @@ mod phrase {
 /// Compose the spoken phrase for an accessible node — the pure, heavily
 /// unit-tested core of the screen reader.
 ///
-/// Segments join in order: name, value ([`protected`](crate::a11y::AccessState::protected)
+/// Segments join in order: name, value (a [`Secret`](crate::a11y::Sensitivity::Secret) node
 /// contributes "protected" instead), role word, states (dimmed last), then
 /// position-in-set and hierarchy level. Empty segments are dropped.
 ///
@@ -233,7 +233,7 @@ pub fn describe(node: &AccessNode) -> String {
         }
     }
 
-    if node.state.protected {
+    if node.sensitivity.is_secret() {
         parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref()
         && !value.is_empty()
@@ -258,7 +258,7 @@ pub fn describe(node: &AccessNode) -> String {
 /// re-reading the whole label.
 pub fn describe_state(node: &AccessNode) -> String {
     let mut parts: Vec<String> = Vec::new();
-    if node.state.protected {
+    if node.sensitivity.is_secret() {
         parts.push(phrase::protected());
     } else if let Some(value) = node.value.as_deref()
         && !value.is_empty()
@@ -790,7 +790,7 @@ mod tests {
         let node = n(Role::TextInput)
             .with_name("Password")
             .with_value("hunter2")
-            .with_state(AccessState::new().protected(true));
+            .with_sensitivity(crate::a11y::Sensitivity::Secret);
         let phrase = describe(&node);
         assert!(
             !phrase.contains("hunter2"),

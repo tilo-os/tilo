@@ -1651,6 +1651,74 @@ impl ControlState for FrameBuilderControlState<'_> {
         }))
     }
 
+    fn inspectable_apps(&self) -> Result<serde_json::Value, String> {
+        let broker = self
+            .fb
+            .host()
+            .app_action_broker()
+            .cloned()
+            .ok_or_else(|| "this session has no application broker".to_string())?;
+        let apps: Vec<serde_json::Value> = broker
+            .inspectable_apps()
+            .into_iter()
+            .map(|app| {
+                serde_json::json!({
+                    "peer": app.peer_id,
+                    "app_id": app.app_id,
+                    "room": app.room,
+                    "record": app.record,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({ "apps": apps }))
+    }
+
+    /// Inspect through the broker as the local person of the app's room.
+    /// Blocks this control command, never the app, for at most the broker's
+    /// inspection timeout.
+    fn inspect(
+        &self,
+        peer: u64,
+        query: &ui::inspect::InspectQuery,
+        local: bool,
+    ) -> Result<serde_json::Value, String> {
+        use crate::shell::collab_broker_capnp::{INSPECTION_TIMEOUT, InspectCaller};
+        let broker = self
+            .fb
+            .host()
+            .app_action_broker()
+            .cloned()
+            .ok_or_else(|| "this session has no application broker".to_string())?;
+        let app = broker
+            .inspectable_apps()
+            .into_iter()
+            .find(|app| app.peer_id == peer)
+            .ok_or_else(|| {
+                format!("no application connection {peer} answers inspection (see `inspect apps`)")
+            })?;
+        let person = {
+            let chrome = self.fb.chrome();
+            let tree_handle = chrome.tree_handle();
+            drop(chrome);
+            let tree = tree_handle.read();
+            tree.desktop
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.room.to_string() == app.room)
+                .map(|workspace| crate::shell::state::local_user_id_for_room(&workspace.room))
+                .ok_or_else(|| "the application's room is not hosted here".to_string())?
+        };
+        let audience = if local {
+            ui::a11y::Audience::LocalSession
+        } else {
+            ui::a11y::Audience::BeyondDevice
+        };
+        let reply = broker
+            .inspect(peer, query.clone(), &InspectCaller { person, audience })?
+            .wait(INSPECTION_TIMEOUT)?;
+        serde_json::to_value(reply).map_err(|error| error.to_string())
+    }
+
     /// Enumerate the exported action surface through the *same* provider
     /// registry that feeds the Ctrl+K palette — but renders nothing.
     fn enumerate_actions(&self, query: &str) -> Result<serde_json::Value, String> {

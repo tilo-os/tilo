@@ -534,6 +534,9 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             meter.string_capacity(message);
         }
         CollabRequest::UpdateInvocation { update, .. } => serialized_bytes(update, &mut meter),
+        CollabRequest::CompleteInspection { reply, .. } => {
+            serialized_bytes(reply.as_ref(), &mut meter);
+        }
         CollabRequest::RecordLocalEffect { address, update } => {
             meter.string_capacity(&address.resource);
             meter.string_capacity(&address.action);
@@ -783,6 +786,7 @@ fn event_bytes(event: &CollabEvent) -> Option<usize> {
             decrypted_payloads.capacity(),
             &mut meter,
         ),
+        CollabEvent::Inspection { request, .. } => serialized_bytes(request.as_ref(), &mut meter),
         CollabEvent::Invocation {
             resource,
             action,
@@ -2612,6 +2616,7 @@ async fn ensure_sdk_route(
     spawn_context_stream(&channel, spec.clone(), inbound_tx).await;
     spawn_action_stream(&channel, inbound_tx).await;
     spawn_invocation_stream(&channel, inbound_tx).await;
+    spawn_inspection_stream(&channel, inbound_tx).await;
     spawn_realtime_stream(&channel, inbound_tx).await;
     // This intentionally fails quietly for person sessions. An admitted
     // agent gets a separate broker-addressed queue; a document agent never
@@ -2753,6 +2758,48 @@ async fn spawn_action_stream(channel: &runtime_collab::ChannelHandle, inbound_tx
                     from_user_id: action.from_user_id,
                 }) {
                     break;
+                }
+            }
+        });
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "capnp-rpc futures are !Send by design; driven only on the shovel thread's LocalSet"
+)]
+async fn spawn_inspection_stream(
+    channel: &runtime_collab::ChannelHandle,
+    inbound_tx: &InboundBridge,
+) {
+    if let Ok(stream) = channel.subscribe_inspections().await {
+        let tx = inbound_tx.clone();
+        let answer_channel = channel.clone();
+        tokio::task::spawn_local(async move {
+            while let Ok(inspection) = stream.read().await {
+                match serde_json::from_str::<crate::inspect::InspectRequest>(
+                    &inspection.request_json,
+                ) {
+                    Ok(request) => {
+                        if !tx.send_durable(CollabEvent::Inspection {
+                            id: inspection.id,
+                            request: Box::new(request),
+                        }) {
+                            break;
+                        }
+                    }
+                    // The session asked something this toolkit cannot read;
+                    // it gets a refusal rather than silence.
+                    Err(error) => {
+                        let reply = crate::inspect::InspectReply::refused(format!(
+                            "undecodable inspection request: {error}"
+                        ));
+                        if let Ok(json) = serde_json::to_string(&reply) {
+                            let _ = answer_channel
+                                .complete_inspection(inspection.id, &json)
+                                .await;
+                        }
+                    }
                 }
             }
         });
@@ -3640,6 +3687,14 @@ async fn dispatch_sdk_request(
                 tracing::warn!(%error, id, "collab: completing resource/action invocation failed");
             }
         }
+        CollabRequest::CompleteInspection { id, reply } => match serde_json::to_string(&reply) {
+            Ok(json) => {
+                if let Err(error) = route.channel.complete_inspection(id, &json).await {
+                    tracing::warn!(%error, id, "collab: answering an inspection failed");
+                }
+            }
+            Err(error) => tracing::warn!(%error, id, "collab: encoding an inspection failed"),
+        },
         CollabRequest::UpdateInvocation { id, update } => match serde_json::to_string(&update) {
             Ok(json) => {
                 if let Err(error) = route.channel.update_invocation(id, &json).await {

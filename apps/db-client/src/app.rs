@@ -5269,7 +5269,9 @@ mod behavior_tests {
         let dialog = app.accessibility().expect("open modal is accessible");
         assert_eq!(dialog.role, Role::Dialog);
         assert!(dialog.children.iter().any(|node| {
-            node.name.as_deref() == Some("Password") && node.state.protected && node.value.is_none()
+            node.name.as_deref() == Some("Password")
+                && node.sensitivity.is_secret()
+                && node.value.is_none()
         }));
     }
 

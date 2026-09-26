@@ -4317,8 +4317,8 @@ mod tests {
 
         assert_eq!(node.name.as_deref(), Some("Backup passphrase"));
         assert!(
-            node.state.protected,
-            "passphrases must be exposed as protected"
+            node.sensitivity.is_secret(),
+            "passphrases must be declared secret"
         );
     }
 

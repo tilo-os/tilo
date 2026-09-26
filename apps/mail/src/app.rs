@@ -4461,8 +4461,12 @@ impl MailApp {
                 .with_state(AccessState {
                     focusable: true,
                     focused: self.setup_focus == Some(index),
-                    protected: index == 3,
                     ..Default::default()
+                })
+                .with_sensitivity(match index {
+                    3 => ui::a11y::Sensitivity::Secret,
+                    0..=2 => ui::a11y::Sensitivity::Personal,
+                    _ => ui::a11y::Sensitivity::Public,
                 });
             if index != 3 {
                 node = node.with_value(input.value());

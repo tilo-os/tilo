@@ -2062,7 +2062,7 @@ mod tests {
                     && node.name.as_deref() == Some("Password or app password")
             })
             .expect("password field semantics");
-        assert!(password.state.protected);
+        assert!(password.sensitivity.is_secret());
         assert_eq!(
             password.value, None,
             "screen readers must not receive secrets"

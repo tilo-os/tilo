@@ -728,6 +728,7 @@ impl App {
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }
+            CollabEvent::Inspection { id, request } => self.answer_inspection(id, &request),
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
@@ -1124,6 +1125,7 @@ impl App {
             CollabEvent::InvocationCancellation { id } => {
                 self.request_invocation_cancellation(id);
             }
+            CollabEvent::Inspection { id, request } => self.answer_inspection(id, &request),
             CollabEvent::RemoteAction { message } => self.apply_remote_action_answer(message),
             _ => {}
         }
