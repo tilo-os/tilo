@@ -257,14 +257,11 @@ impl Builder<'_> {
         }
     }
 
-    fn keyframe(&mut self, at: Offset, index: usize, route: &Route, answer: &[u8]) {
-        let reply = match InspectReply::decode(answer) {
-            Ok(reply) if reply.refused.is_none() => reply,
-            _ => {
-                self.unreadable.push(index);
-                return;
-            }
-        };
+    fn keyframe(&mut self, at: Offset, index: usize, route: &Route, reply: &InspectReply) {
+        if reply.refused.is_some() {
+            self.unreadable.push(index);
+            return;
+        }
         if self.drafts.is_empty() {
             let app = (self.app_name)(&route.app_id);
             let draft = self.draft(at, Some(route), StepKind::Opened, &app);
@@ -447,7 +444,7 @@ pub fn review_input(trace: &SessionTrace, app_name: &dyn Fn(&str) -> String) -> 
                 }
             }
             Event::Op(op) => builder.edited(entry.at, &op.route),
-            Event::Inspect(frame) => builder.keyframe(entry.at, index, &frame.route, &frame.answer),
+            Event::Inspect(frame) => builder.keyframe(entry.at, index, &frame.route, &frame.reply),
         }
     }
 
@@ -705,7 +702,7 @@ mod tests {
             at: Offset(at),
             event: Event::Inspect(InspectKeyframe {
                 route: Route::new("so.tilo.mail", "room-1", "draft-1"),
-                answer: reply.encode().unwrap(),
+                reply,
             }),
         }
     }
@@ -922,13 +919,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_keyframe_is_reported_not_skipped_silently() {
+    fn a_refused_keyframe_is_reported_not_skipped_silently() {
         let mut recorded = mail();
         recorded.timeline.push(TimedEvent {
             at: Offset(6),
             event: Event::Inspect(InspectKeyframe {
                 route: Route::new("so.tilo.mail", "room-1", ""),
-                answer: b"not an answer".to_vec(),
+                reply: InspectReply::refused("the app could not answer"),
             }),
         });
         assert_eq!(review_input(&recorded, &app_name).unreadable_keyframes, [5]);

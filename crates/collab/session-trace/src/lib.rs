@@ -248,13 +248,29 @@ pub struct PresenceUpdate {
     pub change: PresenceChange,
 }
 
-/// The semantic tree of a surface at one moment, as the Inspect broker
-/// request answers it. The answer's encoding belongs to that request; the
-/// trace carries it opaquely so a keyframe is exactly what was served.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// The semantic tree of an app at one moment, as the broker's Inspect
+/// request answered it: roles, labels, values, sensitivity and surface
+/// bounds of each node, by stable id. Kept as served to the local session;
+/// the redacted duplicate re-redacts it for leaving the device.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct InspectKeyframe {
     pub route: Route,
-    pub answer: Vec<u8>,
+    #[serde(with = "reply_json")]
+    pub reply: tilo_reference::inspect::InspectReply,
+}
+
+impl InspectKeyframe {
+    /// Approximate encoded size of the answer.
+    fn answer_weight(&self) -> usize {
+        self.reply.nodes.iter().fold(0_usize, |sum, node| {
+            sum.saturating_add(128)
+                .saturating_add(node.id.len())
+                .saturating_add(node.role.len())
+                .saturating_add(node.label.as_ref().map_or(0, String::len))
+                .saturating_add(node.value.as_ref().map_or(0, String::len))
+                .saturating_add(node.children.iter().map(String::len).sum::<usize>())
+        })
+    }
 }
 
 /// What happened at one point of the timeline.
@@ -293,8 +309,7 @@ impl Event {
                     _ => 0,
                 }),
             Self::Inspect(frame) => frame
-                .answer
-                .len()
+                .answer_weight()
                 .saturating_add(route_weight(&frame.route)),
         };
         FIXED.saturating_add(variable)
@@ -466,6 +481,30 @@ impl SessionTrace {
             tags: self.tags.clone(),
             truncated: self.truncated,
         }
+    }
+}
+
+/// An Inspect answer travels as its own JSON form, the one the broker
+/// carries (`InspectReply::encode`), which a non-self-describing format
+/// could not read back.
+mod reply_json {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use tilo_reference::inspect::InspectReply;
+
+    pub fn serialize<S: Serializer>(
+        value: &InspectReply,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serde_json::to_string(value)
+            .map_err(serde::ser::Error::custom)?
+            .serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<InspectReply, D::Error> {
+        let json = String::deserialize(deserializer)?;
+        InspectReply::decode(json.as_bytes()).map_err(serde::de::Error::custom)
     }
 }
 

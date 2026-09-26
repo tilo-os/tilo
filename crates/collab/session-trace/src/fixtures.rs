@@ -100,3 +100,29 @@ pub fn interaction() -> (
     };
     (started, failed)
 }
+
+/// An Inspect answer with one personal text field.
+pub fn inspect_reply() -> tilo_reference::inspect::InspectReply {
+    tilo_reference::inspect::InspectReply {
+        target: Some("t:to".into()),
+        nodes: vec![tilo_reference::inspect::InspectedNode {
+            id: "t:to".into(),
+            identity: tilo_reference::inspect::Identity::Durable,
+            role: "text_input".into(),
+            label: Some("To".into()),
+            value: Some("Ada Lovelace".into()),
+            sensitivity: tilo_actions::Sensitivity::Personal,
+            content: tilo_reference::inspect::Content::Value,
+            bounds: None,
+            visible: None,
+            pixels: tilo_reference::inspect::Pixels::Described,
+            state: tilo_reference::inspect::NodeState {
+                focused: true,
+                disabled: false,
+            },
+            children: Vec::new(),
+            reference: None,
+        }],
+        ..tilo_reference::inspect::InspectReply::empty()
+    }
+}

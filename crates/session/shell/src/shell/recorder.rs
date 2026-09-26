@@ -54,6 +54,15 @@ pub const RECENT_BUFFER_SECTION: &str = "feedback";
 pub const RECENT_BUFFER_KEY: &str = "recent_buffer";
 /// How long a capture waits for end-of-window snapshots.
 const CAPTURE_SNAPSHOT_WAIT: Duration = Duration::from_secs(2);
+/// A keyframe is asked of each recorded app at least this often, and kept
+/// only if the tree changed.
+const KEYFRAME_POLL: Duration = Duration::from_secs(2);
+/// A triggered keyframe waits at least this long after the last one.
+const KEYFRAME_MIN_GAP: Duration = Duration::from_millis(250);
+/// Depth of the subtree a keyframe holds.
+const KEYFRAME_DEPTH: u16 = 16;
+/// Keyframes kept while the recorder holds rooms, across all of them.
+const MAX_KEYFRAMES: usize = 1_024;
 /// Sessions kept for review before the oldest is dropped.
 const MAX_AWAITING_REVIEW: usize = 8;
 
@@ -125,6 +134,10 @@ struct Capture {
     finishing: Option<Finishing>,
     /// Latest geometry of each app surface in a held room.
     surfaces: Vec<(String, SurfaceGeometry)>,
+    /// Rooms (and optionally the one app in them) whose semantic tree
+    /// likely changed: a View or overlay moved, an action finished, a frame
+    /// was captured. Their keyframe is asked for sooner.
+    keyframe_triggers: BTreeSet<(String, Option<String>)>,
 }
 
 struct Recording {
@@ -161,6 +174,116 @@ struct Control {
     awaiting_review: Vec<PendingSession>,
     recent_enabled: bool,
     settings_stamp: Option<SystemTime>,
+    /// Inspect keyframes in flight and what was last kept, when the broker
+    /// serves inspection.
+    keyframes: Option<Keyframes>,
+}
+
+/// Semantic-tree keyframes: asked of each inspectable app in a held room,
+/// kept only when the tree changed, on a bounded cadence.
+struct Keyframes {
+    broker: crate::shell::collab_broker::AppActionBroker,
+    pending: Vec<PendingKeyframe>,
+    asked: BTreeMap<Route, Instant>,
+    last: BTreeMap<Route, ui::inspect::InspectReply>,
+    kept: usize,
+}
+
+struct PendingKeyframe {
+    route: Route,
+    job: crate::shell::collab_broker_capnp::InspectionJob,
+    asked: Instant,
+}
+
+impl Keyframes {
+    /// Answers that arrived, kept only where the tree changed.
+    fn collect(&mut self, now: Instant) -> Vec<session_trace::InspectKeyframe> {
+        let mut answered = Vec::new();
+        self.pending
+            .retain(|pending| match pending.job.try_answer() {
+                Some(Ok(reply)) => {
+                    answered.push((pending.route.clone(), reply));
+                    false
+                }
+                Some(Err(error)) => {
+                    tracing::debug!(%error, "recorder: a keyframe was not answered");
+                    false
+                }
+                None => {
+                    now.saturating_duration_since(pending.asked)
+                        < crate::shell::collab_broker_capnp::INSPECTION_TIMEOUT
+                }
+            });
+        let mut keep = Vec::new();
+        for (route, reply) in answered {
+            // A keyframe is a change of structure, not a heartbeat.
+            if self.last.get(&route) == Some(&reply) || self.kept >= MAX_KEYFRAMES {
+                continue;
+            }
+            self.last.insert(route.clone(), reply.clone());
+            self.kept = self.kept.saturating_add(1);
+            keep.push(session_trace::InspectKeyframe { route, reply });
+        }
+        keep
+    }
+
+    fn forget(&mut self) {
+        self.asked.clear();
+        self.last.clear();
+        self.kept = 0;
+    }
+
+    /// Ask each inspectable app in `held` whose keyframe is due: every
+    /// [`KEYFRAME_POLL`], or sooner when a trigger names its room.
+    fn ask(
+        &mut self,
+        held: &[String],
+        triggers: &BTreeSet<(String, Option<String>)>,
+        now: Instant,
+        user: &UserId,
+    ) {
+        let caller = crate::shell::collab_broker_capnp::InspectCaller {
+            person: user.clone(),
+            audience: ui::a11y::Audience::LocalSession,
+        };
+        for app in self.broker.inspectable_apps() {
+            if !held.contains(&app.room) || self.kept >= MAX_KEYFRAMES {
+                continue;
+            }
+            let route = Route::new(app.app_id.clone(), app.room.clone(), app.record.clone());
+            if self.pending.iter().any(|pending| pending.route == route) {
+                continue;
+            }
+            let since = self
+                .asked
+                .get(&route)
+                .map_or(Duration::MAX, |asked| now.saturating_duration_since(*asked));
+            let triggered = triggers.iter().any(|(room, app_id)| {
+                *room == app.room && app_id.as_ref().is_none_or(|id| *id == app.app_id)
+            });
+            if since < KEYFRAME_POLL && !(triggered && since >= KEYFRAME_MIN_GAP) {
+                continue;
+            }
+            self.asked.insert(route.clone(), now);
+            match self.broker.inspect(
+                app.peer_id,
+                ui::inspect::InspectQuery::Subtree {
+                    root: None,
+                    depth: KEYFRAME_DEPTH,
+                },
+                &caller,
+            ) {
+                Ok(job) => self.pending.push(PendingKeyframe {
+                    route,
+                    job,
+                    asked: now,
+                }),
+                Err(error) => {
+                    tracing::debug!(%error, "recorder: could not ask for a keyframe");
+                }
+            }
+        }
+    }
 }
 
 /// The session recorder. One per session; shared by the frame loop and the
@@ -215,7 +338,16 @@ impl Recorder {
             peer_id,
             capture,
             subscription,
-            control: Mutex::new(Control::default()),
+            control: Mutex::new(Control {
+                keyframes: broker.app_action_broker().map(|broker| Keyframes {
+                    broker,
+                    pending: Vec::new(),
+                    asked: BTreeMap::new(),
+                    last: BTreeMap::new(),
+                    kept: 0,
+                }),
+                ..Control::default()
+            }),
             limits,
         })
     }
@@ -245,6 +377,72 @@ impl Recorder {
     /// measure surfaces for it.
     pub fn is_observing(&self) -> bool {
         !self.subscription.rooms().is_empty()
+    }
+
+    /// Ask for a keyframe of the app showing `surface_id` now — the capture
+    /// path calls this with each captured frame so structure and pixels line
+    /// up. A surface outside every held room is ignored.
+    pub fn inspect_now(&self, surface_id: u64) {
+        let target = {
+            let tree = self.tree.read();
+            tree.desktop.workspaces.iter().find_map(|workspace| {
+                workspace
+                    .strips
+                    .iter()
+                    .flat_map(|strip| &strip.window_groups)
+                    .flat_map(|group| &group.tabs)
+                    .find_map(|tab| match &tab.tile {
+                        crate::shell::state::TileContent::Foreign {
+                            app_id,
+                            surface_id: id,
+                        } if *id == surface_id => {
+                            Some((workspace.room.to_string(), Some(app_id.clone())))
+                        }
+                        _ => None,
+                    })
+            })
+        };
+        if let Some(target) = target {
+            lock(&self.capture).keyframe_triggers.insert(target);
+        }
+    }
+
+    /// Collect answered keyframes and ask for the ones that are due.
+    fn pump_keyframes(&self, now: Instant, user: &UserId) {
+        let held = self.subscription.rooms();
+        let triggers = std::mem::take(&mut lock(&self.capture).keyframe_triggers);
+        let mut control = lock(&self.control);
+        let Some(keyframes) = control.keyframes.as_mut() else {
+            return;
+        };
+        let keep = keyframes.collect(now);
+        if held.is_empty() {
+            keyframes.forget();
+        } else {
+            keyframes.ask(&held, &triggers, now, user);
+        }
+        drop(control);
+        if keep.is_empty() {
+            return;
+        }
+        let mut capture = lock(&self.capture);
+        for keyframe in keep {
+            let route = CrdtRoute::record(
+                keyframe.route.app_id.clone(),
+                keyframe.route.room.clone(),
+                keyframe.route.record_id.clone(),
+            );
+            if capture.recent_rooms.contains(&keyframe.route.room)
+                && let Some(recent) = capture.recent.as_mut()
+            {
+                recent.push(now, RecentItem::Inspect(keyframe.clone()));
+            }
+            if let Some(recording) = capture.recording.as_mut()
+                && recording.wants(&route)
+            {
+                recording.builder.push_inspect(now, keyframe);
+            }
+        }
     }
 
     /// Take this frame's measurement of the client surfaces on screen. Only
@@ -605,6 +803,7 @@ impl Recorder {
         changed |= self.follow_active_room(user);
         changed |= self.resync_rooms();
         changed |= self.finish_capture(now);
+        self.pump_keyframes(now, user);
         if let Some(recent) = lock(&self.capture).recent.as_mut() {
             recent.evict(now);
         }
@@ -1041,6 +1240,13 @@ fn record_presence(
     let buffered = capture.recent.is_some() && capture.recent_rooms.contains(&route.cluster_id);
     if !recorded && !buffered {
         return;
+    }
+    let reshaped = matches!(key, PresenceKey::View { .. })
+        || matches!(payload, PresencePayload::Interaction(update) if update.phase.is_terminal());
+    if reshaped {
+        capture
+            .keyframe_triggers
+            .insert((route.cluster_id.clone(), None));
     }
     let Some(update) = presence_update(user, route, key, payload) else {
         return;

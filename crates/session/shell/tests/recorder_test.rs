@@ -438,3 +438,120 @@ fn an_agent_connected_from_this_machine_is_on_the_roster_while_connected() {
     );
     drop(broker);
 }
+
+/// A real `ui::App` whose semantic tree the recorder keyframes.
+fn inspectable_app(socket: &Path) -> ui::App {
+    let stream = UnixStream::connect(socket).unwrap();
+    let manager = CollaborationManager::for_route_fd_with_identity(
+        stream.into_raw_fd(),
+        APP,
+        ROOM,
+        None,
+        Some("ada".into()),
+        identity(),
+    )
+    .unwrap();
+    let root = ui::widget::Column::new()
+        .push(Box::new(ui::widget::Button::new("save", "Save", None)))
+        .push(Box::new(
+            ui::widget::TextInput::local()
+                .with_kind(ui::widget::TextInputKind::Email)
+                .with_initial_value("ada@example.org")
+                .with_accessible_name("Email"),
+        ));
+    let mut app = ui::App::with_collaboration_manager(ui::State::new(), Box::new(root), manager);
+    app.init_layout();
+    app
+}
+
+#[test]
+fn a_recording_keeps_semantic_keyframes_only_when_the_tree_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("collab.sock");
+    let tree = room_tree();
+    let device = SigningKey::from_bytes(&DEVICE_KEY)
+        .verifying_key()
+        .to_bytes();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        Arc::clone(&tree),
+        vec![device],
+    )
+    .unwrap();
+    let recorder = Recorder::attach(&broker, Arc::clone(&tree));
+    let mut app = inspectable_app(&socket);
+    let actions = broker.app_action_broker().unwrap();
+    let deadline = later(Duration::from_secs(10));
+    while actions.inspectable_apps().is_empty() {
+        assert!(
+            Instant::now() < deadline,
+            "the app never answered inspection"
+        );
+        app.pump_collab_presence();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    recorder
+        .start(&[ROOM.to_string()], Vec::new(), &owner())
+        .unwrap();
+    // Longer than one poll interval: the unchanged tree is asked again and
+    // not kept a second time.
+    let settle = later(Duration::from_millis(2_600));
+    while Instant::now() < settle {
+        app.pump_collab_presence();
+        recorder.pump(Instant::now(), &owner());
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let checkout = recorder.stop(&owner()).unwrap();
+    let trace = recorder
+        .take_session(&checkout.id)
+        .unwrap()
+        .trace()
+        .unwrap();
+    let keyframes: Vec<&session_trace::InspectKeyframe> = trace
+        .events()
+        .filter_map(|entry| match &entry.event {
+            Event::Inspect(keyframe) => Some(keyframe),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(keyframes.len(), 1, "an unchanged tree is one keyframe");
+    let keyframe = keyframes[0];
+    assert_eq!(
+        keyframe.route,
+        session_trace::Route::new(APP, ROOM.to_string(), "")
+    );
+    assert!(
+        keyframe
+            .reply
+            .nodes
+            .iter()
+            .any(|node| node.id == "t:save" && node.role == "button"),
+        "the keyframe holds the tree by stable id: {:?}",
+        keyframe.reply
+    );
+    let email = keyframe
+        .reply
+        .nodes
+        .iter()
+        .find(|node| node.label.as_deref() == Some("Email"))
+        .unwrap();
+    assert_eq!(
+        email.value.as_deref(),
+        Some("ada@example.org"),
+        "kept for the local session before review"
+    );
+
+    let redaction = session_trace::redact::Redaction {
+        masker: session_trace::redact::Masker::default(),
+        cut: std::collections::HashSet::new(),
+    };
+    let (duplicate, _) = session_trace::redact::duplicate(&trace, &redaction).unwrap();
+    assert!(
+        !serde_json::to_string(&duplicate)
+            .unwrap()
+            .contains("ada@example.org"),
+        "what leaves the device carries the declared personal value only as a placeholder"
+    );
+    drop(broker);
+}

@@ -8,7 +8,8 @@
 //! is applied to the original and the new document is brought to the same,
 //! masked, state, and that step becomes the duplicate's op. Presence text is
 //! masked the same way; cut steps' interactions are dropped; inspect
-//! keyframes are rewritten by the caller, which owns their encoding.
+//! keyframes are redacted for leaving the device by each node's declared
+//! sensitivity, and their remaining text masked like everything else.
 //!
 //! The duplicate's envelopes are unsigned and cleartext. Replay never
 //! forwards a recorded envelope — it re-frames each mutation onto its own
@@ -153,19 +154,12 @@ impl Masker {
     }
 }
 
-/// Rewrites one inspect keyframe's answer for leaving the device, or drops
-/// it with `None`.
-pub type KeyframeRedactor<'a> = &'a dyn Fn(&Route, &[u8], &Masker) -> Option<Vec<u8>>;
-
 /// What to take out of a session.
-pub struct Redaction<'a> {
+pub struct Redaction {
     /// Values hidden wherever they occur: in documents, presence and labels.
     pub masker: Masker,
     /// Interactions the person cut from the walk-through.
     pub cut: HashSet<InvocationId>,
-    /// Rewrite one inspect keyframe's answer for leaving the device, or drop
-    /// it with `None`. The answer's encoding belongs to the Inspect request.
-    pub keyframe: KeyframeRedactor<'a>,
 }
 
 /// Why a duplicate could not be built.
@@ -184,7 +178,6 @@ pub struct DuplicateReport {
     pub unreadable_ops: u32,
     /// Routes with no readable snapshot, whose ops were left out.
     pub unreadable_routes: u32,
-    pub dropped_keyframes: u32,
 }
 
 fn cleartext(op: &SignedOp) -> bool {
@@ -528,7 +521,7 @@ fn replay_op(
 }
 
 /// A presence update as it may leave, or `None` for a cut step's.
-fn redacted_presence(update: &PresenceUpdate, redaction: &Redaction<'_>) -> Option<PresenceUpdate> {
+fn redacted_presence(update: &PresenceUpdate, redaction: &Redaction) -> Option<PresenceUpdate> {
     let change = match &update.change {
         PresenceChange::Interaction(interaction) => {
             if redaction.cut.contains(&interaction.invocation) {
@@ -551,6 +544,27 @@ fn redacted_presence(update: &PresenceUpdate, redaction: &Redaction<'_>) -> Opti
     })
 }
 
+/// A keyframe as it may leave the device: every node redacted for
+/// `BeyondDevice` by its declared sensitivity, then the text that is left
+/// (labels, values, reference labels) masked like every other text.
+fn redacted_keyframe(keyframe: &crate::InspectKeyframe, masker: &Masker) -> crate::InspectKeyframe {
+    let mut reply = keyframe
+        .reply
+        .clone()
+        .redacted_for(tilo_actions::Audience::BeyondDevice);
+    for node in &mut reply.nodes {
+        node.label = node.label.as_deref().map(|text| masker.mask(text));
+        node.value = node.value.as_deref().map(|text| masker.mask(text));
+        if let Some(reference) = node.reference.as_mut() {
+            reference.label = masker.mask(&reference.label);
+        }
+    }
+    crate::InspectKeyframe {
+        route: keyframe.route.clone(),
+        reply,
+    }
+}
+
 /// Build the redacted duplicate of `trace`.
 ///
 /// # Errors
@@ -558,7 +572,7 @@ fn redacted_presence(update: &PresenceUpdate, redaction: &Redaction<'_>) -> Opti
 /// [`RedactError`] when a readable snapshot's document cannot be loaded.
 pub fn duplicate(
     trace: &SessionTrace,
-    redaction: &Redaction<'_>,
+    redaction: &Redaction,
 ) -> Result<(SessionTrace, DuplicateReport), RedactError> {
     let mut report = DuplicateReport::default();
     let mut replaying: Vec<Replayed> = Vec::new();
@@ -600,16 +614,7 @@ pub fn duplicate(
                 None => continue,
             },
             Event::Inspect(keyframe) => {
-                let Some(answer) =
-                    (redaction.keyframe)(&keyframe.route, &keyframe.answer, &redaction.masker)
-                else {
-                    report.dropped_keyframes = report.dropped_keyframes.saturating_add(1);
-                    continue;
-                };
-                Event::Inspect(crate::InspectKeyframe {
-                    route: keyframe.route.clone(),
-                    answer,
-                })
+                Event::Inspect(redacted_keyframe(keyframe, &redaction.masker))
             }
         };
         timeline.push(TimedEvent {
@@ -672,12 +677,39 @@ mod tests {
         )
     }
 
-    fn no_keyframes(_: &Route, _: &[u8], _: &Masker) -> Option<Vec<u8>> {
-        None
-    }
-
     /// A draft is written to Ada in two edits; the duplicate replays to the
     /// same shape with her name nowhere in any document it carries.
+    #[test]
+    fn a_keyframe_leaves_redacted_by_declaration_and_masked() {
+        let mut reply = crate::fixtures::inspect_reply();
+        let mut heading = reply.nodes[0].clone();
+        heading.id = "t:subject".into();
+        heading.role = "heading".into();
+        heading.label = Some("Note for Ada Lovelace".into());
+        heading.value = None;
+        heading.sensitivity = tilo_actions::Sensitivity::Public;
+        heading.content = tilo_reference::inspect::Content::Label;
+        reply.nodes.push(heading);
+        let keyframe = crate::InspectKeyframe {
+            route: Route::new("so.tilo.mail", "room-1", ""),
+            reply,
+        };
+        let out = redacted_keyframe(&keyframe, &Masker::new(["Ada Lovelace".to_string()]));
+        let personal = &out.reply.nodes[0];
+        assert_ne!(personal.value.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(
+            personal.label.as_deref(),
+            Some("To"),
+            "a field's name stays"
+        );
+        assert_eq!(
+            out.reply.nodes[1].label.as_deref(),
+            Some("Note for ▮▮▮ ▮▮▮▮▮▮▮▮"),
+            "undeclared text is masked like any other"
+        );
+        assert!(!serde_json::to_string(&out).unwrap().contains("Ada"));
+    }
+
     #[test]
     fn the_duplicate_replays_the_window_with_the_value_masked_everywhere() {
         let route = Route::new("so.tilo.mail", "room-1", "uuid:draft");
@@ -733,7 +765,6 @@ mod tests {
         let redaction = Redaction {
             masker: Masker::new(["Ada Lovelace".to_string()]),
             cut: HashSet::new(),
-            keyframe: &no_keyframes,
         };
         let (dup, report) = duplicate(&trace, &redaction).unwrap();
         assert_eq!(report, DuplicateReport::default());

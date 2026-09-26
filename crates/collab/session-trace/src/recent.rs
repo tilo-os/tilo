@@ -46,7 +46,7 @@ impl RecentItem {
     fn weight(&self) -> usize {
         match self {
             Self::Presence(update) => Event::Presence(update.clone()).weight(),
-            Self::Inspect(frame) => frame.answer.len().saturating_add(192),
+            Self::Inspect(frame) => frame.answer_weight().saturating_add(192),
             Self::Op(reference) => reference
                 .from
                 .len()

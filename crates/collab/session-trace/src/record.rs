@@ -432,7 +432,7 @@ mod tests {
             epoch,
             InspectKeyframe {
                 route: notes,
-                answer: vec![9; 16],
+                reply: crate::fixtures::inspect_reply(),
             },
         );
         trace.add_tag("send-fails");
