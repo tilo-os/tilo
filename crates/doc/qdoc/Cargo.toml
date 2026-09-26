@@ -26,9 +26,6 @@ tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
 tilo-resource = { path = "../../sdk/tilo-resource" }
 
-[dev-dependencies]
-proptest.workspace = true
-
 [[test]]
 name = "it"
 path = "tests/it.rs"
