@@ -17,7 +17,7 @@ import time
 sys.dont_write_bytecode = True
 
 SOURCE = '4583a44c4056c67cfd1ebc4f1e02c7fa4aff3ffc'
-BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:5365970de75407269908d486afd076f4a480356333e1b188958cd2dac60345c9'
+BUILDER = 'code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9'
 RPMS = 'code.podesta.ai/qos/tilo-development-rpms-aarch64@sha256:912255637bab849ee5c3f62a963481f0b994576ef08cec8ff4fe4bc4cfb9e02f'
 CHECKPOINT_DIGESTS = {'CHECKPOINT_INITIAL': '0d474c3568ac76c984c85472e924d47007f99cd6aecbf5a0a5656b2f1f4bb750',
                       'CHECKPOINT_DELTA': '59342924ce24301542b6312c82a1aa2c8d5d5430f7b050ce4827c45ddd7153d4'}
