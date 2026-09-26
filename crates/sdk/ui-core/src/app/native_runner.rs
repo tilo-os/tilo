@@ -2674,7 +2674,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         };
         // Benchmarks can keep their own windows above unrelated desktop apps.
         // This does not change normal application window ordering.
-        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1") {
+        let window_attributes = if std::env::var("TILO_PROFILE_WINDOW_FRONT").as_deref() == Ok("1")
+        {
             window_attributes.with_window_level(winit::window::WindowLevel::AlwaysOnTop)
         } else {
             window_attributes
