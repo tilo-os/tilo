@@ -1329,8 +1329,10 @@ impl PageState {
 }
 
 /// Every record whose fields could contain folded `query`: all of them for
-/// browsing, else the smallest complete posting — the whole query as a term,
-/// the rarest of its grams, or a term strictly inside it.
+/// browsing, else the smallest complete posting — the rarest of its grams,
+/// or a term strictly inside it. The whole query's own term posting is not
+/// complete: word segmentation keeps `needle.rs` as one word, so a record
+/// titled `needle.rs` contains `needle` without having it as a term.
 fn field_candidates<'a>(
     inner: &'a SearchCatalogInner,
     query: &str,
@@ -1338,9 +1340,6 @@ fn field_candidates<'a>(
 ) -> Option<CandidateRows<'a>> {
     if query.is_empty() {
         return Some(CandidateRows::Browse(&inner.browse_order));
-    }
-    if let Some(posting) = inner.tokens.get(query) {
-        return Some(CandidateRows::Posting(posting));
     }
     let mut rarest = rarest_posting(&inner.postings, grams)?;
     // A whitespace-delimited term strictly inside the query is a complete
@@ -2752,6 +2751,23 @@ mod tests {
         assert_eq!(session.query_page("share", None, 8, 8).results.len(), 1);
         assert!(catalog.query_page("share", None, 8, 8).results.is_empty());
         assert_eq!(catalog.stats().records, 1);
+    }
+
+    #[test]
+    fn a_query_that_is_a_term_elsewhere_still_finds_it_inside_words() {
+        let catalog = SearchCatalog::new("Documents");
+        for (id, text) in [
+            ("document:1", "needle.rs"),
+            ("document:2", "contains-needle-here"),
+        ] {
+            catalog.upsert(id, text, catalog_hit(id, text)).unwrap();
+        }
+        let page = catalog.query_page("needle", None, 8, 8);
+        assert_eq!(
+            page.results.len(),
+            2,
+            "`needle` is a word of one record and inside a word of the other"
+        );
     }
 
     #[test]
