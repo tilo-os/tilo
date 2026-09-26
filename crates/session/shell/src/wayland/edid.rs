@@ -12,10 +12,14 @@
 //! chromaticity bytes so the compositor reports the display's actual
 //! gamut rather than assuming BT.2020 for every HDR display.
 //!
-//! Not parsed: Detailed Timing Descriptors, monitor names, timings,
-//! `DisplayID`, or the EDID checksum (the parser is defensive against
-//! short/malformed blobs and returns `HdrDisplayInfo::default_sdr()`
-//! rather than panicking, so a bogus checksum just falls back to SDR).
+//! The base block's vendor, product, serial and size fields, plus its
+//! monitor-name and serial-string descriptors, identify the monitor
+//! ([`parse_monitor_identity`]) so a layout can follow it between ports.
+//!
+//! Not parsed: timings, `DisplayID`, or the EDID checksum (the parser is
+//! defensive against short/malformed blobs and returns
+//! `HdrDisplayInfo::default_sdr()` rather than panicking, so a bogus
+//! checksum just falls back to SDR).
 
 use crate::collab::colorimetry::{ColorPrimaries, TransferCharacteristics};
 
@@ -321,6 +325,134 @@ fn parse_hdr_static_metadata_block(body: &[u8], info: &mut HdrDisplayInfo) {
     }
 }
 
+/// The fixed EDID 1.x header every base block starts with.
+const EDID_HEADER: [u8; 8] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00];
+
+/// Who made the monitor, what it is and which one it is.
+///
+/// `None` for a blob too short or without the EDID header: a sink that
+/// reports garbage must not be recognised as some other monitor.
+pub fn parse_monitor_identity(edid: &[u8]) -> Option<settings_store::hardware::MonitorIdentity> {
+    let base = edid
+        .get(..128)
+        .and_then(|b| <&[u8; 128]>::try_from(b).ok())?;
+    if base[..8] != EDID_HEADER {
+        return None;
+    }
+    // EDID 1.4 §3.4: three 5-bit letters, 'A' = 1, big-endian.
+    let vendor = u16::from_be_bytes([base[8], base[9]]);
+    let letter = |shift: u16| {
+        let code = u8::try_from((vendor >> shift) & 0x1F).unwrap_or(0);
+        (1..=26)
+            .contains(&code)
+            .then(|| char::from(b'@'.saturating_add(code)))
+    };
+    let pnp: String = [letter(10), letter(5), letter(0)]
+        .into_iter()
+        .collect::<Option<String>>()
+        .unwrap_or_default();
+    let product = u16::from_le_bytes([base[10], base[11]]);
+    let serial_number = u32::from_le_bytes([base[12], base[13], base[14], base[15]]);
+
+    let mut name = None;
+    let mut serial_text = None;
+    let mut detailed_mm = None;
+    for chunk in base[54..126].chunks_exact(18) {
+        let Ok(descriptor) = <&[u8; 18]>::try_from(chunk) else {
+            continue;
+        };
+        if descriptor[0] != 0 || descriptor[1] != 0 {
+            // EDID 1.4 §3.10.2: a detailed timing carries the image size in
+            // millimetres, more precise than the base block's centimetres.
+            if detailed_mm.is_none() {
+                let width = u32::from(descriptor[12]) | (u32::from(descriptor[14] >> 4) << 8);
+                let height = u32::from(descriptor[13]) | (u32::from(descriptor[14] & 0x0F) << 8);
+                detailed_mm = (width > 0 && height > 0).then_some((width, height));
+            }
+            continue;
+        }
+        let text = descriptor_text(&descriptor[5..]);
+        match descriptor[3] {
+            0xFC => name = name.or(text),
+            0xFF => serial_text = serial_text.or(text),
+            _ => {}
+        }
+    }
+    // Base-block size is in centimetres; zero means "undefined or
+    // projector" (§3.6.2).
+    let base_mm = (base[21] > 0 && base[22] > 0)
+        .then(|| (u32::from(base[21]) * 10, u32::from(base[22]) * 10));
+
+    Some(settings_store::hardware::MonitorIdentity {
+        make: pnp_manufacturer(&pnp).map_or_else(|| pnp.clone(), str::to_owned),
+        model: name.unwrap_or_else(|| {
+            if product == 0 {
+                String::new()
+            } else {
+                format!("0x{product:04x}")
+            }
+        }),
+        serial: serial_text.unwrap_or_else(|| {
+            if serial_number == 0 {
+                String::new()
+            } else {
+                serial_number.to_string()
+            }
+        }),
+        physical_size_mm: detailed_mm.or(base_mm),
+    })
+}
+
+/// A display descriptor's text payload: up to 13 bytes, terminated by a
+/// line feed and padded with spaces (§3.10.3).
+fn descriptor_text(payload: &[u8]) -> Option<String> {
+    let end = payload
+        .iter()
+        .position(|&b| b == b'\n')
+        .unwrap_or(payload.len());
+    let text: String = payload
+        .iter()
+        .take(end)
+        .filter(|b| b.is_ascii_graphic() || **b == b' ')
+        .map(|&b| char::from(b))
+        .collect();
+    let text = text.trim();
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Names for the PNP ids found on most monitors and laptop panels. An id
+/// not listed keeps its three letters, which still identify the maker.
+fn pnp_manufacturer(pnp: &str) -> Option<&'static str> {
+    Some(match pnp {
+        "ACR" => "Acer",
+        "AOC" => "AOC",
+        "APP" => "Apple",
+        "AUO" => "AU Optronics",
+        "AUS" => "ASUS",
+        "BNQ" => "BenQ",
+        "BOE" => "BOE",
+        "CMN" => "Innolux",
+        "DEL" => "Dell",
+        "EIZ" => "EIZO",
+        "GBT" => "Gigabyte",
+        "GSM" => "LG",
+        "HPN" | "HWP" => "HP",
+        "IVM" => "iiyama",
+        "LEN" => "Lenovo",
+        "LGD" => "LG Display",
+        "MSI" => "MSI",
+        "NEC" => "NEC",
+        "PHL" => "Philips",
+        "RHT" => "Red Hat",
+        "SAM" => "Samsung",
+        "SDC" => "Samsung Display",
+        "SHP" => "Sharp",
+        "SNY" => "Sony",
+        "VSC" => "ViewSonic",
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -558,5 +690,56 @@ mod tests {
                 .collect();
             let _ = parse_hdr_display_info(&blob);
         }
+    }
+
+    fn identity_edid() -> [u8; 128] {
+        let mut edid = [0u8; 128];
+        edid[0..8].copy_from_slice(&EDID_HEADER);
+        // "DEL": D=4, E=5, L=12 → 0b0_00100_00101_01100.
+        edid[8] = 0x10;
+        edid[9] = 0xAC;
+        edid[10..12].copy_from_slice(&0x40A4_u16.to_le_bytes());
+        edid[12..16].copy_from_slice(&0x1234_5678_u32.to_le_bytes());
+        edid[21] = 60;
+        edid[22] = 34;
+        // Detailed timing: pixel clock non-zero, image 597 × 336 mm.
+        edid[54] = 0x01;
+        edid[55] = 0x02;
+        // 597 = 0x255, 336 = 0x150: low bytes, then the high nibbles.
+        edid[54 + 12] = 0x55;
+        edid[54 + 13] = 0x50;
+        edid[54 + 14] = 0x21;
+        // Monitor name, then serial string.
+        edid[72 + 3] = 0xFC;
+        edid[72 + 5..72 + 18].copy_from_slice(b"DELL U2720Q\n ");
+        edid[90 + 3] = 0xFF;
+        edid[90 + 5..90 + 18].copy_from_slice(b"7XK2P13\n     ");
+        edid
+    }
+
+    #[test]
+    fn identity_reads_make_model_serial_and_size() {
+        let identity = parse_monitor_identity(&identity_edid()).expect("valid base block");
+        assert_eq!(identity.make, "Dell");
+        assert_eq!(identity.model, "DELL U2720Q");
+        assert_eq!(identity.serial, "7XK2P13");
+        assert_eq!(identity.physical_size_mm, Some((597, 336)));
+        assert_eq!(identity.display_name(), "Dell U2720Q");
+    }
+
+    #[test]
+    fn identity_without_descriptors_falls_back_to_codes() {
+        let mut edid = identity_edid();
+        edid[54..126].fill(0);
+        let identity = parse_monitor_identity(&edid).expect("valid base block");
+        assert_eq!(identity.model, "0x40a4");
+        assert_eq!(identity.serial, "305419896");
+        assert_eq!(identity.physical_size_mm, Some((600, 340)));
+    }
+
+    #[test]
+    fn identity_rejects_blobs_that_are_not_edid() {
+        assert_eq!(parse_monitor_identity(&[0u8; 128]), None);
+        assert_eq!(parse_monitor_identity(&identity_edid()[..100]), None);
     }
 }

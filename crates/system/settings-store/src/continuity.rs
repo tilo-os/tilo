@@ -156,9 +156,10 @@ policies! {
         "tilo.continuity.app_continuations",
         // Connector identities, modes, calibration and staged apply state
         // are meaningful only on the machine that owns the hardware.
-        "tilo.display_outputs.outputs",
+        "tilo.display_profiles.profiles",
         "tilo.display_transaction.id",
         "tilo.display_transaction.state",
+        "tilo.display_transaction.set",
         "tilo.display_transaction.previous",
         "tilo.display_transaction.candidate",
         "tilo.display_transaction.deadline_unix_ms",
@@ -354,7 +355,7 @@ mod tests {
                 "wallpaper_path": "/home/me/private.png",
                 "future_value": "must stay local"
             },
-            "display_outputs": {"outputs": {"DP-1": {"scale": 2.0}}},
+            "display_profiles": {"profiles": {"edid:Dell|DELL U2720Q|7XK2P13": {"config": {}}}},
             "agent_providers": {"config": {"profiles": [{"endpoint": "http://127.0.0.1:8000"}]}},
             "security": {"local_credential": {"pin": "never"}}
         });
@@ -375,10 +376,11 @@ mod tests {
         // apps/settings/src/prefs.rs. Keeping the other writer shapes here
         // makes a new cross-crate leaf fail until its ownership is reviewed.
         let document = serde_json::json!({
-            "display_outputs": {"outputs": {}},
+            "display_profiles": {"profiles": {}},
             "display_transaction": {
                 "id": 1,
                 "state": "requested",
+                "set": {},
                 "previous": {},
                 "candidate": {},
                 "deadline_unix_ms": null,
