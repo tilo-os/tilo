@@ -115,6 +115,18 @@ authorization.
   session expiry, send failure, or focus loss for an application route tears
   down the workers and revokes the route; the Devices surface always exposes
   pending/streaming status and a stop action.
+- **Speaker groups** turn outputs on several devices into one stereo pair,
+  surround set, or set of points around a room. The device that creates a
+  group authors it in its own snapshot, like a display placement; members
+  are named by compositor-minted endpoint selectors, never `PipeWire` ids or
+  names. Each member device asks its own user once ("Join 'Living room' as
+  the right speaker?") and on approval authors a membership bound to the
+  exact group, output and role, so changing any of them asks again. Any of
+  the person's devices may then play to the group: every member admits each
+  session under its own consent and returns a fresh random capability bound
+  to that source and session. Leaving, deleting the group, a role change,
+  the source going offline, or disabling media continuity tears sessions
+  down; disabling media also withdraws the device's memberships.
 - **Universal clipboard** is a content-addressed, de-duplicated 50-item
   history. Entries are explicitly classified as shareable and capped at
   256 KiB. Primary selection, secret fields, and Tilo's secret MIME type never
