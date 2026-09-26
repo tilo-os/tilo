@@ -50,9 +50,10 @@ libc.workspace = true
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
 #
-# rustls with bundled webpki roots avoids an OpenSSL dependency and keeps the
-# TLS stack consistent with reqwest.
-rustypipe = { workspace = true, optional = true, features = ["rustls-tls-webpki-roots"] }
+# rustls without a bundled provider avoids OpenSSL and aws-lc: the client uses
+# the ring provider `tilo_net::install_crypto_provider` installs and the system
+# trust bundle, like the workspace's reqwest.
+rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 
 # Grayjay device sync uses the Noise protocol over TCP. `snow`, `flate2`, and
 # `base64` are gated behind `grayjay-sync`.
