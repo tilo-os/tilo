@@ -206,6 +206,9 @@ def run_references(lines: list[tuple[int, str]]) -> list[tuple[int, str]]:
     for number, line in lines:
         if not re.match(r"RUN\s", line, re.I):
             continue
+        # A context bind mount hands the RUN its file directly; it is not read
+        # from the stage's copy under /build.
+        line = re.sub(r"--mount=type=bind,(?![^ ]*\bfrom=)[^ ]*", "", line)
         for match in BUILD_PATH.finditer(line):
             path = match.group(1).rstrip("/")
             if path.split("/", 1)[0] in NOT_SOURCES or "$" in path or "*" in path:

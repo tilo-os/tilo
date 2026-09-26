@@ -116,6 +116,14 @@ class ImageBuilderInputsTests(unittest.TestCase):
         whole = staged.replace("FROM scratch AS sources\n", "FROM scratch AS sources\nCOPY . /build\n")
         self.assertTrue(any("whole build context" in f for f in self.findings(whole)))
 
+    def test_a_context_bind_mount_needs_no_copy(self) -> None:
+        mounted = NARROW.replace(
+            "RUN --mount=type=cache,target=/build/target sh os/scripts/build.sh",
+            "RUN --mount=type=bind,source=os/scripts/check.sh,target=/run/check.sh bash /run/check.sh\n"
+            "RUN --mount=type=cache,target=/build/target sh os/scripts/build.sh")
+        self.write("os/scripts/check.sh", "#!/bin/sh\n")
+        self.assertEqual(self.findings(mounted), [])
+
     def test_the_repository_passes(self) -> None:
         self.assertEqual([str(f) for f in policy.audit(REPO)], [])
 
