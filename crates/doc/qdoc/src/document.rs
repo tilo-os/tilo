@@ -21,7 +21,17 @@ pub enum DocError {
 /// valued marks (`fontSize`/`fontFamily`/`link`/`color`) carry `Int`/`Str`. `Ord` is derived so
 /// materialization can canonicalise mark order *including the value*, so replicas that merged
 /// concurrent valued marks in different internal orders converge to a byte-identical span list.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    tilo_resource::JsonSchema,
+)]
 pub enum MarkValue {
     Bool(bool),
     Int(i64),
@@ -57,7 +67,9 @@ impl From<&automerge::ScalarValue> for MarkValue {
 }
 
 /// One inline formatting span as seen from the read side.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, tilo_resource::JsonSchema,
+)]
 pub struct MarkSpan {
     pub start: usize,
     pub end: usize,
