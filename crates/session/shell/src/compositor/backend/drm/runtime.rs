@@ -53,13 +53,13 @@ use super::outputs::{ConnectorInfo, DrmOutputKey, OutputRegistry};
 use super::scale::resolve_scale;
 use super::scanout::{
     CardHandle, ConnectorKeyCandidate, ConnectorSnapshot, CursorPlanes, DirectScanoutTargets,
-    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, physical_card_identity,
-    resolve_connector_config_keys,
+    DrmScanout, ScanoutBuild, device_id_from_dev_t, discover_icc_profiles, is_builtin_connector,
+    physical_card_identity, resolve_connector_config_keys,
 };
 use super::session::{SeatTick, SessionAction, SessionState};
 use crate::compositor::backend::layout;
 use crate::compositor::backend::{
-    BackendEvent, GestureEvent, Output, OutputId, TouchEvent as TiloTouchEvent,
+    BackendEvent, GestureEvent, Output, OutputId, OutputIdentity, TouchEvent as TiloTouchEvent,
 };
 
 /// One held repeatable key. Kept independent of xkb translation so timing is
@@ -267,6 +267,8 @@ pub struct DrmDispatchState {
     pub logical_pointer: (f64, f64),
     /// Primary output size (px) — needed to transform libinput's absolute (0..1) coordinates and to clamp relative motion.
     pub output_size: (i32, i32),
+    /// The monitors attached at the last probe — which saved layout applies.
+    pub display_set: settings_store::hardware::DisplaySet,
     /// Hardware-cursor multiplexer across all outputs — one plane per
     /// output whose KMS cursor plane is active. libinput motion handlers
     /// call `move_to(global_x, global_y)`, and [`CursorPlanes`] routes to
@@ -472,6 +474,8 @@ pub struct LiveEntry {
     pub config_key: String,
     pub size: (u32, u32),
     pub physical_mm: Option<(u32, u32)>,
+    /// EDID identity, advertised to clients through `wl_output`.
+    pub monitor: Option<settings_store::hardware::MonitorIdentity>,
     pub crtc: smithay::reexports::drm::control::crtc::Handle,
     /// Top-left in the scene the presenter paints (physical pixels).
     pub position: (i32, i32),
@@ -640,19 +644,41 @@ fn release_masters_for_pause<'a, T: KmsMasterControl + 'a>(
     apply_master_action(active.into_iter().chain(retiring), MasterAction::Release);
 }
 
+/// Every probed connector, as display-set matching sees it.
+fn display_set_of<'a>(
+    snapshots: impl IntoIterator<Item = &'a ConnectorSnapshot>,
+) -> settings_store::hardware::DisplaySet {
+    settings_store::hardware::DisplaySet::of(snapshots.into_iter().map(|snapshot| {
+        settings_store::hardware::AttachedOutput {
+            connector: &snapshot.config_key,
+            connector_label: &snapshot.connector_name,
+            monitor: snapshot.monitor.as_ref(),
+        }
+    }))
+}
+
 /// Probe every retained card, then resolve connector keys over the *whole*
 /// seat before looking up display intent.  Per-card configuration lookup is
 /// wrong for a hybrid laptop because both cards may legitimately have an
 /// `HDMI-A-1`; this one path is shared by startup, hotplug, Settings
 /// publication and transaction validation.
+///
+/// Intent is the layout saved for the attached set of monitors. The set's
+/// key does not depend on connector keys, so the layout found under the raw
+/// labels decides key qualification, and the final keys then place each
+/// remembered monitor.
 fn configured_connectors(
     cards: &BTreeMap<u64, CardHandle>,
-) -> BTreeMap<u64, Vec<ConnectorSnapshot>> {
+) -> (
+    BTreeMap<u64, Vec<ConnectorSnapshot>>,
+    settings_store::hardware::DisplaySet,
+) {
     let mut snapshots: BTreeMap<u64, Vec<_>> = cards
         .iter()
         .map(|(&device_id, card)| (device_id, card.connected()))
         .collect();
-    let config = settings_store::hardware::DisplayConfig::load_effective();
+    let provisional = display_set_of(snapshots.values().flatten());
+    let config = settings_store::hardware::DisplayConfig::load_effective(&provisional);
     let keys = resolve_connector_config_keys(
         snapshots.iter().flat_map(|(&device_id, outputs)| {
             let card_identity = cards
@@ -672,7 +698,7 @@ fn configured_connectors(
     for (&device_id, outputs) in &mut snapshots {
         for output in outputs {
             let raw = output.connector_name.clone();
-            let config_key = keys
+            output.config_key = keys
                 .get(&DrmOutputKey {
                     device: device_id,
                     connector: output.connector_id,
@@ -681,10 +707,15 @@ fn configured_connectors(
                 // Every entry above creates a candidate. Retaining the raw
                 // label is just defensive for a future partial probe.
                 .unwrap_or(raw);
-            CardHandle::apply_output_config(output, config_key, &config);
         }
     }
-    snapshots
+    let set = display_set_of(snapshots.values().flatten());
+    let config = settings_store::hardware::DisplayConfig::load_effective(&set);
+    for output in snapshots.values_mut().flatten() {
+        let config_key = output.config_key.clone();
+        CardHandle::apply_output_config(output, config_key, &config);
+    }
+    (snapshots, set)
 }
 
 /// Build the Settings capability contract from the same topology that chose
@@ -694,7 +725,7 @@ fn display_capabilities(
     cards: &BTreeMap<u64, CardHandle>,
     profiles: &BTreeMap<String, String>,
 ) -> Vec<settings_store::hardware::DisplayOutputSnapshot> {
-    let snapshots = configured_connectors(cards);
+    let (snapshots, _) = configured_connectors(cards);
     let mut outputs: Vec<_> = cards
         .iter()
         .flat_map(|(&device_id, card)| {
@@ -803,6 +834,7 @@ impl DrmDispatchState {
             pointer: (0.0, 0.0),
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
+            display_set: settings_store::hardware::DisplaySet::default(),
             hw_cursor: CursorPlanes::default(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
@@ -912,7 +944,9 @@ impl DrmDispatchState {
         reason: &str,
         removal_ack: Option<(u64, Sender<u64>)>,
     ) {
-        let snapshots = configured_connectors(&self.cards);
+        let (snapshots, display_set) = configured_connectors(&self.cards);
+        let display_set_changed = self.display_set != display_set;
+        self.display_set = display_set;
         let config_keys: BTreeMap<_, _> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -931,7 +965,10 @@ impl DrmDispatchState {
             &mut self.capability_topology,
             config_keys.keys().copied().collect(),
         );
-        let live_config_changed = reconcile_live_config_keys(&mut self.live, &config_keys);
+        // Another set of monitors reads another saved layout even when no
+        // connector needs a modeset (the same port, a different monitor).
+        let live_config_changed =
+            reconcile_live_config_keys(&mut self.live, &config_keys) || display_set_changed;
         let connected: Vec<ConnectedOutput> = snapshots
             .iter()
             .flat_map(|(&device_id, snapshots)| {
@@ -1094,6 +1131,7 @@ impl DrmDispatchState {
                 config_key: build.config_key,
                 size: build.scanout.size(),
                 physical_mm: build.physical_mm,
+                monitor: build.monitor,
                 crtc: build.crtc,
                 position: (0, 0),
                 logical_position: (0, 0),
@@ -1117,14 +1155,23 @@ impl DrmDispatchState {
         entries
     }
 
-    /// Apply configured topology (falling back to side-by-side), re-derive
-    /// scales, and bring the pointer and cursor planes back onto a live
-    /// output. Called after any change to the connector set or display plan.
+    /// Apply the layout saved for the attached monitors, re-derive scales,
+    /// and bring the pointer and cursor planes back onto a live output.
+    /// Called after any change to the connector set or display plan.
     fn relayout_outputs(&mut self) {
-        let config = settings_store::hardware::DisplayConfig::load_effective();
+        let config = settings_store::hardware::DisplayConfig::load_effective(&self.display_set);
+        self.relayout_with(&config);
+    }
+
+    /// Lay out the live outputs from `config`. An output it does not
+    /// mention — every output of a set never arranged before — is placed
+    /// side by side, built-in panel first on the left and externals to its
+    /// right, at the scale its pixel density calls for.
+    fn relayout_with(&mut self, config: &settings_store::hardware::DisplayConfig) {
         self.live.sort_by_key(|l| {
             (
                 !config.outputs.get(&l.config_key).is_some_and(|c| c.primary),
+                !is_builtin_connector(&l.connector_name),
                 l.id.0,
             )
         });
@@ -1149,7 +1196,7 @@ impl DrmDispatchState {
             .iter()
             .map(|entry| layout::logical_extent(entry.size, entry.scale, entry.transform))
             .collect();
-        let positions = self.logical_positions(&config, &logical_sizes);
+        let positions = self.logical_positions(config, &logical_sizes);
         let scene_sizes: Vec<(u32, u32)> = self
             .live
             .iter()
@@ -1172,7 +1219,7 @@ impl DrmDispatchState {
         let logical_pointer = layout::clamp_to_outputs(&self.placements(), self.logical_pointer);
         self.set_pointer_logical(logical_pointer);
 
-        self.output_meta = self.output_meta_for(&config);
+        self.output_meta = self.output_meta_for(config);
         self.rebuild_cursor_routing();
     }
 
@@ -1263,6 +1310,11 @@ impl DrmDispatchState {
                             .filter(|profile| self.color_profiles.contains_key(*profile))
                             .cloned(),
                         refresh_mhz: l.refresh.and_then(crate::compositor::backend::interval_to_mhz),
+                        identity: OutputIdentity::from_monitor(
+                            &l.connector_name,
+                            l.monitor.as_ref(),
+                            l.physical_mm,
+                        ),
                     },
                 )
             })
@@ -2455,6 +2507,7 @@ fn bring_up_all_devices(
     BTreeMap<u64, CardHandle>,
     Option<PathBuf>,
     Vec<ScanoutBuild>,
+    settings_store::hardware::DisplaySet,
 ) {
     let mut cards = BTreeMap::new();
     let mut card_order = Vec::new();
@@ -2491,7 +2544,7 @@ fn bring_up_all_devices(
     // Every card must be open before configuration is selected: a connector
     // name that looked unique on card0 may collide with one on card1. This is
     // the startup counterpart to `rescan_outputs`' card-wide reconciliation.
-    let snapshots = configured_connectors(&cards);
+    let (snapshots, display_set) = configured_connectors(&cards);
     let mut all_builds = Vec::new();
     for (device_id, path) in card_order {
         let Some(card) = cards.get(&device_id) else {
@@ -2520,7 +2573,7 @@ fn bring_up_all_devices(
         }
         all_builds.extend(builds);
     }
-    (cards, primary_gpu, all_builds)
+    (cards, primary_gpu, all_builds, display_set)
 }
 
 /// Register the three loop-wide event sources: session (VT switch), udev
@@ -2647,7 +2700,8 @@ impl DrmRuntime {
         // Retain and drive every usable KMS card.  The CPU bridge renders the
         // combined scene once, then each card scans its own XRGB dumb buffer;
         // no unsafe cross-GPU texture import is needed for this path.
-        let (cards, primary_gpu, scanout_builds) = bring_up_all_devices(&session, &kms_gpus);
+        let (cards, primary_gpu, scanout_builds, display_set) =
+            bring_up_all_devices(&session, &kms_gpus);
         if scanout_builds.is_empty() {
             // `--backend headless` is the explicit display-free mode. A real
             // DRM login that cannot drive a connector must return control to
@@ -2704,6 +2758,7 @@ impl DrmRuntime {
             tx,
             keyboard,
         );
+        dispatch.display_set = display_set;
         // Adopt the connectors already live at startup — the same path a
         // hot-plug takes — and seed the pointer/snapshot; see the helper's
         // doc comment.
@@ -2880,7 +2935,7 @@ impl DrmRuntime {
     /// effective configuration. Validation uses the compositor-published
     /// descriptor set, never values supplied by Settings.
     fn reconcile_display_transaction(&self) {
-        use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+        use settings_store::hardware::{DisplaySet, DisplayTransaction, DisplayTransactionState};
 
         let Some(mut transaction) = DisplayTransaction::load() else {
             return;
@@ -2901,6 +2956,11 @@ impl DrmRuntime {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
                         Some("No compositor-owned DRM capability snapshot is available".into());
+                } else if DisplaySet::of_descriptors(&descriptors).key != transaction.set.key {
+                    transaction.state = DisplayTransactionState::Rejected;
+                    transaction.message = Some(
+                        "The attached displays changed before the arrangement was applied".into(),
+                    );
                 } else if let Err(error) = transaction.candidate.validate_for(&descriptors) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message =
@@ -2919,7 +2979,7 @@ impl DrmRuntime {
                 }
             }
             DisplayTransactionState::ConfirmRequested => {
-                if let Err(error) = transaction.candidate.save() {
+                if let Err(error) = transaction.candidate.save_for(&transaction.set) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message = Some(format!("Could not commit display plan: {error}"));
                 } else {
@@ -2930,7 +2990,7 @@ impl DrmRuntime {
                 let _ = transaction.save();
             }
             DisplayTransactionState::RevertRequested => {
-                if let Err(error) = transaction.previous.save() {
+                if let Err(error) = transaction.previous.save_for(&transaction.set) {
                     transaction.state = DisplayTransactionState::Rejected;
                     transaction.message = Some(format!("Could not restore display plan: {error}"));
                 } else {
@@ -4347,6 +4407,7 @@ mod tests {
             config_key: format!("TEST-{connector}"),
             size,
             physical_mm: mm,
+            monitor: None,
             // Test ids are always small literals; `saturating_add` just
             // avoids a raw `+` clippy can't see is bounded.
             crtc: crtc(id.saturating_add(1)),
@@ -4765,6 +4826,123 @@ mod tests {
         let table = state.output_table();
         assert_eq!(table[0].scale, 1.5);
         assert_eq!(table[1].scale, 1.0);
+    }
+
+    fn named(mut entry: LiveEntry, connector: &str) -> LiveEntry {
+        entry.connector_name = connector.into();
+        entry.config_key = connector.into();
+        entry
+    }
+
+    fn monitor(make: &str, model: &str, serial: &str) -> settings_store::hardware::MonitorIdentity {
+        settings_store::hardware::MonitorIdentity {
+            make: make.into(),
+            model: model.into(),
+            serial: serial.into(),
+            physical_size_mm: None,
+        }
+    }
+
+    #[test]
+    fn an_unarranged_set_puts_the_built_in_panel_left_at_its_own_scale() {
+        let (mut state, _rx) = dispatch_with_channel();
+        // The external monitor enumerated first, yet the laptop panel is
+        // still the leftmost display.
+        state.live = vec![
+            named(entry(0, 10, (2560, 1440), Some((597, 336))), "DP-1"),
+            named(entry(1, 11, (1920, 1080), Some((294, 165))), "eDP-1"),
+        ];
+        state.relayout_with(&settings_store::hardware::DisplayConfig::default());
+        let panel = state
+            .live
+            .iter()
+            .find(|l| l.connector_name == "eDP-1")
+            .unwrap();
+        let external = state
+            .live
+            .iter()
+            .find(|l| l.connector_name == "DP-1")
+            .unwrap();
+        assert_eq!(panel.logical_position, (0, 0));
+        // 1920 px at 1.5 is 1280 logical pixels wide.
+        assert_eq!(external.logical_position, (1280, 0));
+        assert_eq!(panel.scale, 1.5);
+        assert_eq!(external.scale, 1.0);
+    }
+
+    #[test]
+    fn swapping_the_monitor_on_a_port_swaps_to_that_sets_layout() {
+        use settings_store::hardware::{
+            AttachedOutput, DisplayConfig, DisplayProfiles, DisplaySet, OutputConfig,
+        };
+
+        let panel = monitor("BOE", "NE135FBM-N41", "");
+        let office = monitor("Dell", "DELL U2720Q", "7XK2P13");
+        let visitor = monitor("Samsung", "LS27A600U", "H4ZR");
+        let set_with = |external: &settings_store::hardware::MonitorIdentity| {
+            DisplaySet::of([
+                AttachedOutput {
+                    connector: "eDP-1",
+                    connector_label: "eDP-1",
+                    monitor: Some(&panel),
+                },
+                AttachedOutput {
+                    connector: "DP-2",
+                    connector_label: "DP-2",
+                    monitor: Some(external),
+                },
+            ])
+        };
+
+        // At the office the external monitor stands left of the laptop.
+        let mut office_layout = DisplayConfig::default();
+        office_layout.outputs.insert(
+            "DP-2".into(),
+            OutputConfig {
+                x: -2560,
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        office_layout.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 1.25,
+                ..OutputConfig::default()
+            },
+        );
+        let mut profiles = DisplayProfiles::default();
+        profiles.remember(&set_with(&office), &office_layout);
+
+        let (mut state, _rx) = dispatch_with_channel();
+        state.live = vec![
+            named(entry(0, 10, (1920, 1080), Some((294, 165))), "eDP-1"),
+            named(entry(1, 11, (2560, 1440), Some((597, 336))), "DP-2"),
+        ];
+        let at = |state: &DrmDispatchState, connector: &str| {
+            let entry = state
+                .live
+                .iter()
+                .find(|l| l.connector_name == connector)
+                .expect("live output");
+            (entry.logical_position, entry.scale)
+        };
+
+        let office_config = profiles.layout_for(&set_with(&office)).expect("saved");
+        state.relayout_with(&office_config);
+        assert_eq!(at(&state, "DP-2"), ((0, 0), 1.0));
+        assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
+
+        // Someone else's monitor on the same port inherits none of it.
+        let visitor_config = profiles.layout_for(&set_with(&visitor)).unwrap_or_default();
+        state.relayout_with(&visitor_config);
+        assert_eq!(at(&state, "eDP-1"), ((0, 0), 1.5));
+        assert_eq!(at(&state, "DP-2"), ((1280, 0), 1.0));
+
+        // Back at the office, the office arrangement returns.
+        state.relayout_with(&profiles.layout_for(&set_with(&office)).expect("saved"));
+        assert_eq!(at(&state, "DP-2"), ((0, 0), 1.0));
+        assert_eq!(at(&state, "eDP-1"), ((2560, 0), 1.25));
     }
 
     #[test]

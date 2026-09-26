@@ -1766,6 +1766,7 @@ mod tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1920, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             },
         ];
         let (mut paused, mut blanked) = (false, false);

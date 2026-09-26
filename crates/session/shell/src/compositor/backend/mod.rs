@@ -58,6 +58,8 @@ pub struct Output {
     /// `wl_output`, so a client on a 144 Hz monitor beside a 60 Hz panel
     /// paces to 144. `None` falls back to the compositor's pacing rate.
     pub refresh_mhz: Option<u32>,
+    /// What clients are told this output is (`wl_output` name, make, model).
+    pub identity: OutputIdentity,
 }
 
 /// A presentation interval as the millihertz a `wl_output` mode carries.
@@ -78,6 +80,40 @@ pub fn interval_to_mhz(interval: std::time::Duration) -> Option<u32> {
     Some(mhz)
 }
 
+/// The identity a `wl_output` advertises. Backends without real monitor
+/// data leave it empty and the advertiser falls back to generic values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputIdentity {
+    /// Connector name, e.g. `DP-2`; also the `wl_output` name.
+    pub connector: String,
+    pub make: String,
+    pub model: String,
+    pub serial: String,
+    /// Physical image size, zero when unknown.
+    pub physical_mm: (u32, u32),
+}
+
+impl OutputIdentity {
+    /// Identity from a connector and its EDID. EDID size wins over the
+    /// connector-reported one, which some adapters leave at zero.
+    pub fn from_monitor(
+        connector: &str,
+        monitor: Option<&settings_store::hardware::MonitorIdentity>,
+        connector_mm: Option<(u32, u32)>,
+    ) -> Self {
+        Self {
+            connector: connector.to_owned(),
+            make: monitor.map(|m| m.make.clone()).unwrap_or_default(),
+            model: monitor.map(|m| m.model.clone()).unwrap_or_default(),
+            serial: monitor.map(|m| m.serial.clone()).unwrap_or_default(),
+            physical_mm: monitor
+                .and_then(|m| m.physical_size_mm)
+                .or(connector_mm)
+                .unwrap_or((0, 0)),
+        }
+    }
+}
+
 impl Output {
     /// Construct an output at the origin. Convenience for the
     /// single-output backends (winit / headless) so adding the
@@ -93,6 +129,7 @@ impl Output {
             color_profile: None,
             refresh_mhz: None,
             logical_position: (0, 0),
+            identity: OutputIdentity::default(),
         }
     }
 
@@ -393,6 +430,7 @@ mod tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (0, 0),
+                identity: OutputIdentity::default(),
             },
             Output {
                 id: OutputId(1),
@@ -403,6 +441,7 @@ mod tests {
                 color_profile: None,
                 refresh_mhz: None,
                 logical_position: (1920, 0),
+                identity: OutputIdentity::default(),
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).

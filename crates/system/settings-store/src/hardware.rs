@@ -10,6 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use tilo_clock::unix_now_ms;
 
+mod profiles;
+
+pub use profiles::{AttachedOutput, DisplayProfile, DisplayProfiles, DisplaySet};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutputTransform {
@@ -74,6 +78,44 @@ impl OutputMode {
     }
 }
 
+/// What a sink's EDID says it is. Empty strings mean the EDID did not say.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MonitorIdentity {
+    /// Manufacturer name, or its three-letter PNP id when the name is not
+    /// known, e.g. `Dell` or `XYZ`.
+    pub make: String,
+    /// The monitor-name descriptor, else the product code, e.g.
+    /// `DELL U2720Q` or `0x40a4`.
+    pub model: String,
+    /// The serial-string descriptor, else the numeric serial when non-zero.
+    pub serial: String,
+    pub physical_size_mm: Option<(u32, u32)>,
+}
+
+impl MonitorIdentity {
+    /// The name a person recognises, e.g. `Dell U2720Q`. Monitor-name
+    /// descriptors usually already start with the brand, so it is not
+    /// repeated.
+    pub fn display_name(&self) -> String {
+        let make = self.make.trim();
+        let model = self.model.trim();
+        let model_names_make = model
+            .split_whitespace()
+            .next()
+            .is_some_and(|first| first.eq_ignore_ascii_case(make));
+        match (make.is_empty(), model.is_empty()) {
+            (_, true) => make.to_owned(),
+            (true, false) => model.to_owned(),
+            (false, false) if model_names_make => {
+                let rest = model.get(make.len()..).unwrap_or_default();
+                format!("{make}{rest}")
+            }
+            (false, false) => format!("{make} {model}"),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OutputDescriptor {
     /// Collision-free output key used by persisted display intent. This is
@@ -89,6 +131,8 @@ pub struct OutputDescriptor {
     pub hdr: bool,
     pub vrr: bool,
     pub color_profiles: Vec<String>,
+    /// EDID identity, `None` for a sink that exposes no readable EDID.
+    pub monitor: Option<MonitorIdentity>,
 }
 
 impl OutputDescriptor {
@@ -204,6 +248,9 @@ pub enum DisplayTransactionState {
 pub struct DisplayTransaction {
     pub id: u64,
     pub state: DisplayTransactionState,
+    /// The monitors the candidate was arranged for. It applies only while
+    /// exactly this set is attached, and is remembered as its layout.
+    pub set: DisplaySet,
     pub previous: DisplayConfig,
     pub candidate: DisplayConfig,
     pub deadline_unix_ms: Option<u64>,
@@ -215,6 +262,7 @@ impl Default for DisplayTransaction {
         Self {
             id: 0,
             state: DisplayTransactionState::Requested,
+            set: DisplaySet::default(),
             previous: DisplayConfig::default(),
             candidate: DisplayConfig::default(),
             deadline_unix_ms: None,
@@ -229,12 +277,13 @@ impl DisplayTransaction {
     /// # Errors
     ///
     /// Returns an error if the transaction can't be serialised or written.
-    pub fn request(candidate: DisplayConfig) -> std::io::Result<Self> {
+    pub fn request(set: DisplaySet, candidate: DisplayConfig) -> std::io::Result<Self> {
         let now = unix_now_ms();
         let transaction = Self {
             id: now,
             state: DisplayTransactionState::Requested,
-            previous: DisplayConfig::load(),
+            previous: DisplayConfig::load_for(&set),
+            set,
             candidate,
             deadline_unix_ms: None,
             message: None,
@@ -491,22 +540,25 @@ impl DisplayConfig {
         Ok(())
     }
 
-    pub fn load() -> Self {
-        serde_json::from_value(serde_json::Value::Object(super::load_section(
-            "display_outputs",
-        )))
-        .unwrap_or_default()
+    /// The committed layout for this set of monitors, empty for a set never
+    /// arranged before.
+    pub fn load_for(set: &DisplaySet) -> Self {
+        DisplayProfiles::load().layout_for(set).unwrap_or_default()
     }
 
     /// Configuration the compositor should apply right now. A staged
-    /// transaction temporarily overrides committed intent while the user can
-    /// still see and confirm the result; rejection/revert always resolves to
-    /// the last known-good configuration.
-    pub fn load_effective() -> Self {
-        let committed = Self::load();
+    /// transaction for this same set temporarily overrides committed intent
+    /// while the user can still see and confirm the result;
+    /// rejection/revert always resolves to the last known-good
+    /// configuration. A transaction staged for other monitors never applies.
+    pub fn load_effective(set: &DisplaySet) -> Self {
+        let committed = Self::load_for(set);
         let Some(transaction) = DisplayTransaction::load() else {
             return committed;
         };
+        if transaction.set.key != set.key {
+            return committed;
+        }
         match transaction.state {
             DisplayTransactionState::Requested
             | DisplayTransactionState::AwaitingConfirmation
@@ -518,16 +570,15 @@ impl DisplayConfig {
         }
     }
 
+    /// Remember this as the layout for `set`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if `self` can't be serialised or the section can't
-    /// be written.
-    pub fn save(&self) -> std::io::Result<()> {
-        let value = serde_json::to_value(self).map_err(std::io::Error::other)?;
-        super::update_section(
-            "display_outputs",
-            value.as_object().cloned().unwrap_or_default(),
-        )
+    /// Returns an error if the profiles can't be serialised or written.
+    pub fn save_for(&self, set: &DisplaySet) -> std::io::Result<()> {
+        let mut profiles = DisplayProfiles::load();
+        profiles.remember(set, self);
+        profiles.save()
     }
 }
 
@@ -1425,6 +1476,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         }
     }
     #[test]
@@ -1456,6 +1508,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let second = OutputDescriptor {
             connector: "pci:0000:03:00.0/HDMI-A-1".into(),
@@ -1464,6 +1517,7 @@ mod tests {
             hdr: false,
             vrr: false,
             color_profiles: vec![],
+            monitor: None,
         };
         let mut config = DisplayConfig::default();
         config.outputs.insert(
@@ -1580,6 +1634,22 @@ mod tests {
         assert!(transaction.expired(25_000));
         transaction.state = DisplayTransactionState::Confirmed;
         assert!(!transaction.expired(u64::MAX));
+    }
+
+    #[test]
+    fn a_monitor_is_named_by_brand_and_model_once() {
+        let named = |make: &str, model: &str| {
+            MonitorIdentity {
+                make: make.into(),
+                model: model.into(),
+                ..MonitorIdentity::default()
+            }
+            .display_name()
+        };
+        assert_eq!(named("Dell", "DELL U2720Q"), "Dell U2720Q");
+        assert_eq!(named("LG", "27GL850"), "LG 27GL850");
+        assert_eq!(named("", "Q27G2"), "Q27G2");
+        assert_eq!(named("BOE", ""), "BOE");
     }
 
     #[test]
