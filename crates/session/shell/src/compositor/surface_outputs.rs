@@ -117,6 +117,7 @@ mod tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: position,
         }
     }
 

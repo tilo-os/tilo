@@ -17,6 +17,7 @@ pub mod drm;
 #[path = "drm/policy.rs"]
 pub mod drm;
 pub mod headless;
+pub mod layout;
 #[cfg(target_os = "linux")]
 pub mod winit;
 
@@ -31,14 +32,19 @@ pub use crate::shell::render::OutputId;
 #[derive(Clone, Debug)]
 pub struct Output {
     pub id: OutputId,
-    /// Top-left corner of this output in the compositor's combined
-    /// coordinate space. Single-output backends place their one output
-    /// at the origin; the multi-output DRM backend lays connectors out
-    /// side-by-side, so the second monitor sits at e.g. `(1920, 0)`.
-    /// The compositor renders one scene spanning the bounding box of all
-    /// outputs (see [`combined_geometry`]) and each output presents the
-    /// sub-rect at its `position`.
+    /// Top-left corner of this output in the scene: the one texture the
+    /// compositor paints, in physical pixels, spanning the bounding box of
+    /// all outputs (see [`combined_geometry`]). Each output presents the
+    /// sub-rect at its `position`. Derived from [`Self::logical_position`]
+    /// by [`layout::scene_positions`]; see [`layout`] for why the two
+    /// differ once scales do.
     pub position: (i32, i32),
+    /// Top-left corner in the logical desktop layout — the coordinates
+    /// Settings stores, `wl_output`/`zxdg_output_v1` advertise and the
+    /// pointer moves in. Outputs tile edge to edge in
+    /// [`Self::logical_size`] units.
+    pub logical_position: (i32, i32),
+    /// Extent in the scene, in physical pixels (the mode, rotated).
     pub size: (u32, u32),
     pub scale: f32,
     /// Compositor-space orientation. `size` is the post-transform logical
@@ -86,7 +92,13 @@ impl Output {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: (0, 0),
         }
+    }
+
+    /// Extent in the logical layout: the mode over the scale, rotated.
+    pub fn logical_size(&self) -> (u32, u32) {
+        layout::logical_extent(self.physical_size(), f64::from(self.scale), self.transform)
     }
 
     pub fn physical_size(&self) -> (u32, u32) {
@@ -380,6 +392,7 @@ mod tests {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
                 refresh_mhz: None,
+                logical_position: (0, 0),
             },
             Output {
                 id: OutputId(1),
@@ -389,6 +402,7 @@ mod tests {
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
                 refresh_mhz: None,
+                logical_position: (1920, 0),
             },
         ];
         // Combined width = 1920 + 1280 = 3200; height = max(1080, 1024).

@@ -47,6 +47,7 @@ pub enum GlobalChange {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct AdvertisedState {
     pub size: (u32, u32),
+    /// Where clients are told the output sits: its logical position.
     pub position: (i32, i32),
     pub scale: f32,
     pub transform: settings_store::hardware::OutputTransform,
@@ -57,7 +58,7 @@ impl From<&Output> for AdvertisedState {
     fn from(o: &Output) -> Self {
         Self {
             size: o.size,
-            position: o.position,
+            position: o.logical_position,
             scale: o.scale,
             transform: o.transform,
             refresh_mhz: o.refresh_mhz,
@@ -239,14 +240,14 @@ impl OutputGlobals {
                         Some(mode),
                         Some(wayland_transform(out.transform)),
                         Some(Scale::Fractional(f64::from(out.scale))),
-                        Some(out.position.into()),
+                        Some(out.logical_position.into()),
                     );
                     handle.set_preferred(mode);
                     let global = handle.create_global::<D>(dh);
                     tracing::info!(
                         output = id.0,
                         size = ?out.size,
-                        position = ?out.position,
+                        position = ?out.logical_position,
                         scale = out.scale,
                         "wl_output: advertised"
                     );
@@ -271,14 +272,14 @@ impl OutputGlobals {
                         Some(mode),
                         Some(wayland_transform(out.transform)),
                         Some(Scale::Fractional(f64::from(out.scale))),
-                        Some(out.position.into()),
+                        Some(out.logical_position.into()),
                     );
                     live.handle.set_preferred(mode);
                     live.state = AdvertisedState::from(out);
                     tracing::info!(
                         output = id.0,
                         size = ?out.size,
-                        position = ?out.position,
+                        position = ?out.logical_position,
                         scale = out.scale,
                         "wl_output: updated in place"
                     );
@@ -343,6 +344,7 @@ mod tests {
             transform: settings_store::hardware::OutputTransform::Normal,
             color_profile: None,
             refresh_mhz: None,
+            logical_position: position,
         }
     }
 
