@@ -54,6 +54,7 @@ pub enum Category {
     Bluetooth,
     DeviceMesh,
     Sound,
+    Speakers,
     Displays,
     MouseKeyboard,
     KeyboardShortcuts,
@@ -87,6 +88,19 @@ const NETWORK_KEYWORDS: &[&str] = &[
     "proxy",
     "internet",
     "connection",
+];
+const SPEAKERS_KEYWORDS: &[&str] = &[
+    "speakers",
+    "stereo",
+    "stereo pair",
+    "surround",
+    "5.1",
+    "subwoofer",
+    "room",
+    "multiroom",
+    "calibrate",
+    "calibration",
+    "speaker group",
 ];
 const BLUETOOTH_KEYWORDS: &[&str] = &[
     "pair",
@@ -337,6 +351,7 @@ impl Category {
         Category::DeviceMesh,
         // Devices
         Category::Sound,
+        Category::Speakers,
         Category::Displays,
         Category::MouseKeyboard,
         Category::KeyboardShortcuts,
@@ -369,6 +384,7 @@ impl Category {
             Category::Network | Category::Bluetooth => Section::Connectivity,
             Category::DeviceMesh
             | Category::Sound
+            | Category::Speakers
             | Category::Displays
             | Category::MouseKeyboard
             | Category::KeyboardShortcuts
@@ -405,6 +421,7 @@ impl Category {
             Category::Bluetooth => "Bluetooth",
             Category::DeviceMesh => "Devices & Sync",
             Category::Sound => "Sound",
+            Category::Speakers => "Speakers",
             Category::Displays => "Displays",
             Category::MouseKeyboard => "Mouse & Keyboard",
             Category::KeyboardShortcuts => "Keyboard Shortcuts",
@@ -433,6 +450,7 @@ impl Category {
             Category::Bluetooth => "Pair and manage Bluetooth devices",
             Category::DeviceMesh => "Copies, remote access, and server roles",
             Category::Sound => "Output, input, volume, and system sounds",
+            Category::Speakers => "Stereo pairs and room speakers across your devices",
             Category::Displays => "Resolution, scale, arrangement, and brightness",
             Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
             Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
@@ -465,7 +483,7 @@ impl Category {
             Category::Bluetooth => Icon::Bluetooth,
             Category::DeviceMesh | Category::ExternalAccounts => Icon::CloudDownload,
             Category::AgentModels | Category::Appearance => Icon::Sparkles,
-            Category::Sound => Icon::Volume2,
+            Category::Sound | Category::Speakers => Icon::Volume2,
             Category::Displays => Icon::Monitor,
             Category::MouseKeyboard => Icon::Mouse,
             Category::KeyboardShortcuts => Icon::Keyboard,
@@ -495,6 +513,7 @@ impl Category {
             Category::Bluetooth => BLUETOOTH_KEYWORDS,
             Category::DeviceMesh => DEVICE_MESH_KEYWORDS,
             Category::Sound => SOUND_KEYWORDS,
+            Category::Speakers => SPEAKERS_KEYWORDS,
             Category::Displays => DISPLAYS_KEYWORDS,
             Category::MouseKeyboard => MOUSE_KEYBOARD_KEYWORDS,
             Category::TimeDate => TIME_DATE_KEYWORDS,
@@ -542,6 +561,7 @@ impl Category {
             Category::Bluetooth => "bluetooth",
             Category::DeviceMesh => "devices_sync",
             Category::Sound => "sound",
+            Category::Speakers => "speakers",
             Category::Displays => "displays",
             Category::MouseKeyboard => "mouse_keyboard",
             Category::KeyboardShortcuts => "keyboard_shortcuts",

@@ -3445,6 +3445,7 @@ fn handle_spatial_action(
         | PersonalFabricAction::SpeakerGroupSessionOffer { .. }
         | PersonalFabricAction::SpeakerGroupSessionDecision { .. }
         | PersonalFabricAction::SpeakerGroupSessionStop { .. }
+        | PersonalFabricAction::SpeakerIdentify { .. }
         | PersonalFabricAction::RemoteCaptureSignal { .. }
         | PersonalFabricAction::RemoteCaptureChunk { .. }
         | PersonalFabricAction::DeviceHealthProbe { .. }

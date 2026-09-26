@@ -1391,6 +1391,10 @@ pub(crate) fn handle_action(
     let Ok(local) = local_device(network) else {
         return false;
     };
+    if let PersonalFabricAction::SpeakerIdentify { output } = envelope.action {
+        let _ = play_identify_locally(&local, output);
+        return true;
+    }
     let fabric = network.device_fabric();
     let out = {
         let Ok(mut core) = core().lock() else {
@@ -1420,6 +1424,105 @@ pub(crate) fn handle_action(
     }
 }
 
+/// Play the identify sound on `output` of `device`: locally, or by asking
+/// that device to play it on its own output.
+///
+/// # Errors
+///
+/// Returns a message when the device or output is unavailable, a sound
+/// played too recently, or the request cannot be delivered.
+pub fn identify(
+    network: &crate::shell::network::ShellNetwork,
+    device: &DeviceId,
+    output: EndpointSelector,
+) -> Result<(), String> {
+    let local = local_device(network)?;
+    if device == &local {
+        return play_identify_locally(&local, output);
+    }
+    let fabric = network.device_fabric();
+    let offered = fabric.snapshots().get(device).is_some_and(|snapshot| {
+        snapshot.presence.online && snapshot.speakers.output(output).is_some()
+    });
+    if !offered {
+        return Err("that speaker is not available right now".into());
+    }
+    network
+        .send_personal_fabric_action(device, PersonalFabricAction::SpeakerIdentify { output })
+        .map(|_| ())
+}
+
+fn play_identify_locally(local: &DeviceId, output: EndpointSelector) -> Result<(), String> {
+    let sink = resolve_local_output(local, output)
+        .ok_or_else(|| "that output is no longer connected".to_string())?;
+    if !crate::shell::speaker_settings::admit_identify(Instant::now()) {
+        return Err("a speaker is already playing its sound".into());
+    }
+    std::thread::Builder::new()
+        .name("speaker-identify".into())
+        .spawn(move || play_pcm(&sink.name, &identify_chirp()))
+        .map(|_| ())
+        .map_err(|error| format!("could not play the sound: {error}"))
+}
+
+/// Two rising tones with soft edges: short, unmistakable, never loud.
+#[must_use]
+pub fn identify_chirp() -> Vec<i16> {
+    const RATE: f64 = 48_000.0;
+    const TONE: usize = 12_000;
+    let as_f64 = |value: usize| f64::from(u32::try_from(value).unwrap_or(u32::MAX));
+    let tone = move |frequency: f64| {
+        (0..TONE).map(move |index| {
+            let at = as_f64(index);
+            let edge = (at.min(as_f64(TONE.saturating_sub(index))) / 1_200.0).min(1.0);
+            let sample = (std::f64::consts::TAU * frequency * at / RATE).sin() * edge * 0.3;
+            #[expect(
+                clippy::cast_possible_truncation,
+                reason = "the sample is bounded to a third of full scale"
+            )]
+            let value = (sample * f64::from(i16::MAX)) as i16;
+            value
+        })
+    };
+    tone(660.0).chain(tone(990.0)).collect()
+}
+
+fn play_pcm(sink_name: &str, samples: &[i16]) {
+    use std::io::Write as _;
+    let child = std::process::Command::new("pw-play")
+        .args([
+            "--target",
+            sink_name,
+            "--media-type",
+            "Audio",
+            "--media-category",
+            "Playback",
+            "--rate",
+            "48000",
+            "--channels",
+            "1",
+            "--format",
+            "s16",
+            "--raw",
+            "-",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    let Ok(mut child) = child else {
+        return;
+    };
+    if let Some(mut stdin) = child.stdin.take() {
+        let bytes = samples
+            .iter()
+            .flat_map(|sample| sample.to_le_bytes())
+            .collect::<Vec<_>>();
+        let _ = stdin.write_all(&bytes);
+    }
+    let _ = child.wait();
+}
+
 /// Periodic maintenance from the fabric runtime's pump.
 pub(crate) fn pump(network: &crate::shell::network::ShellNetwork, media_enabled: bool) {
     let Ok(local) = local_device(network) else {
@@ -1441,6 +1544,7 @@ pub(crate) fn pump(network: &crate::shell::network::ShellNetwork, media_enabled:
         },
     );
     let _ = send_all(network, out);
+    crate::shell::speaker_settings::pump(network);
 }
 
 fn with_core<T>(

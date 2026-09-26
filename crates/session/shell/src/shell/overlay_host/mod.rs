@@ -1146,7 +1146,8 @@ mod device_fabric_ui_tests {
             .collect();
         assert_eq!(
             device_fabric_pane_rows(&view, &RealtimeContinuityUiView::default()).len(),
-            view.local_media.len() + view.local_outputs.len() + view.devices.len(),
+            // One extra row offers speaker setup once two devices can play.
+            view.local_media.len() + view.local_outputs.len() + view.devices.len() + 1,
             "the pane model must not truncate media, outputs, or devices"
         );
         let tree = WorkspaceTree::bootstrap_demo();
@@ -13875,6 +13876,17 @@ impl ShellOverlayHost {
                     group.name
                 ),
             )),
+            DeviceFabricPaneRow::SpeakerSetup => {
+                if let Some(chrome) = self.chrome.clone() {
+                    {
+                        let mut state = chrome.borrow_mut();
+                        state.overlays.quick_settings = false;
+                        state.bump();
+                    }
+                    (self.app_launcher)(&chrome, "so.tilo.settings", "Settings");
+                }
+                return;
+            }
             DeviceFabricPaneRow::SpeakerMembership(membership) => Some((
                 DeviceFabricUiAction::LeaveSpeakerGroup {
                     group: membership.group,
@@ -17811,6 +17823,12 @@ impl Widget for ShellOverlayHost {
                                                 "Speaker group, {}; select a source first, then activate to play on it",
                                                 speaker_group_summary(&group)
                                             ),
+                                            Vec::new(),
+                                        ),
+                                        DeviceFabricPaneRow::SpeakerSetup => (
+                                            "Set up speakers".into(),
+                                            "Open Settings to use several devices as a stereo pair or room speakers"
+                                                .into(),
                                             Vec::new(),
                                         ),
                                         DeviceFabricPaneRow::SpeakerMembership(membership) => (
@@ -23591,6 +23609,13 @@ impl ShellOverlayHost {
                     group.ready_members() > 0
                         && (self.qs_selected_remote_audio.is_some()
                             || self.qs_selected_media.is_some()),
+                ),
+                DeviceFabricPaneRow::SpeakerSetup => (
+                    "Set up speakers".into(),
+                    "Stereo pair or room speakers · opens Settings → Speakers".into(),
+                    ui::icons::Icon::Volume2,
+                    false,
+                    true,
                 ),
                 DeviceFabricPaneRow::SpeakerMembership(membership) => (
                     format!(

@@ -403,6 +403,9 @@ pub struct ChannelHandle {
     inner: Rc<collab_capnp::channel_handle::Client>,
 }
 
+mod speakers;
+pub use speakers::*;
+
 /// Maximum encoded size of one Nearby Send control command or reply. Transfer
 /// bytes never use this lane; the shell's existing resumable object transport
 /// owns payload delivery.
@@ -914,6 +917,43 @@ impl ChannelHandle {
             return Err(NotAvailable::Capnp(capnp::Error::failed(
                 "invalid Wi-Fi continuity reply".into(),
             )));
+        }
+        Ok(decoded)
+    }
+
+    /// Ask the shell's speaker-group authority from the authenticated
+    /// Settings route.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NotAvailable`] when the command or reply violates its wire
+    /// contract, serialization fails, or the local broker request fails.
+    pub async fn speaker_command(
+        &self,
+        app_id: &str,
+        command: &SpeakerCommand,
+    ) -> Result<SpeakerReply, NotAvailable> {
+        let failed = |message: String| NotAvailable::Capnp(capnp::Error::failed(message));
+        if !command.valid() {
+            return Err(failed("invalid speaker command".into()));
+        }
+        let command_json = serde_json::to_vec(command)
+            .map_err(|error| failed(format!("encode speaker command: {error}")))?;
+        if command_json.len() > MAX_SPEAKER_WIRE_BYTES {
+            return Err(failed("speaker command exceeds wire bound".into()));
+        }
+        let mut request = self.inner.speaker_command_request();
+        request.get().set_app_id(app_id);
+        request.get().set_command_json(&command_json);
+        let reply = request.send().promise.await?;
+        let bytes = reply.get()?.get_reply_json()?;
+        if bytes.len() > MAX_SPEAKER_WIRE_BYTES {
+            return Err(failed("speaker reply exceeds wire bound".into()));
+        }
+        let decoded: SpeakerReply = serde_json::from_slice(bytes)
+            .map_err(|error| failed(format!("decode speaker reply: {error}")))?;
+        if !decoded.valid() {
+            return Err(failed("invalid speaker reply".into()));
         }
         Ok(decoded)
     }
