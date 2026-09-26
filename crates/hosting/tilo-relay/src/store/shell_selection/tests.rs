@@ -165,7 +165,7 @@ pub(crate) fn replay_frames(store: &WorkspaceStore) -> Vec<Envelope> {
     while matches!(discard.step(WorkLimit::default()).unwrap(), Step::More) {}
     result
 }
-fn encoded(frames: Vec<Envelope>) -> Vec<Vec<u8>> {
+fn encoded(frames: &[Envelope]) -> Vec<Vec<u8>> {
     frames
         .iter()
         .map(|frame| crate::transport::encode(frame).unwrap())
@@ -183,7 +183,7 @@ fn receive(
         ..
     } = frame
     else {
-        panic!()
+        return Err("expected a delta frame".to_string());
     };
     let (_, body, _) = parts(CoeditPayload::decode(&delta).unwrap());
     let origin = if retained {
@@ -377,7 +377,8 @@ fn seeded_owner(
     .unwrap();
     peer.install_seed(
         qos_peer_state::SeedState {
-            room_changes: qos_peer_state::seed_room(room, cert, &[cert.clone()]).unwrap(),
+            room_changes: qos_peer_state::seed_room(room, cert, std::slice::from_ref(cert))
+                .unwrap(),
             documents,
         },
         key,
@@ -1854,7 +1855,7 @@ fn staged_commit_barrier_keeps_every_input(barrier: &'static str) -> (Selection,
     assert!(selector.step(WorkLimit::default()).is_err());
     assert_eq!(selected_current(&store), before);
     let mut pins = File::open(selector.staged.join("gc.manifest")).unwrap();
-    let mut retired = 0;
+    let mut retired = 0_usize;
     while let Some(meta) = read_meta(&mut pins).unwrap() {
         assert!(
             store.root.join(meta.source).exists(),
@@ -1866,7 +1867,7 @@ fn staged_commit_barrier_keeps_every_input(barrier: &'static str) -> (Selection,
                 .join(format!("gc-{:016x}.delta", meta.pin))
                 .exists()
         );
-        retired += 1;
+        retired = retired.saturating_add(1);
     }
     drop(fault);
     while matches!(selector.step(WorkLimit::default()).unwrap(), Step::More) {}
@@ -1998,7 +1999,7 @@ fn subscription_replay_falls_back_to_current_when_current_tail_is_a_prerequisite
     .unwrap();
     reopened.enqueue_pending(&[2; 32], 1, &pending).unwrap();
     let mut snapshot = capture(&reopened, WorkLimit::default());
-    let replayed = encoded(drain_replay(
+    let replayed = encoded(&drain_replay(
         &reopened,
         &mut snapshot,
         &ReplayBudget::new(256 * 1024 * 1024),
@@ -2159,7 +2160,7 @@ fn shell_selection_preserves_invalid_foreign_and_unknown_records() {
     retain(&store, &unknown);
     let cp2 = owner.durable_bootstrap_messages(&key, now, 2).unwrap();
     retain_synthetic(&store, &authority, &cp2, true);
-    let frames = encoded(replay_frames(&store));
+    let frames = encoded(&replay_frames(&store));
     for original in [invalid, foreign, unknown] {
         assert!(
             frames.contains(&original),

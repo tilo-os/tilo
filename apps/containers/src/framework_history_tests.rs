@@ -635,11 +635,11 @@ fn published_palette_control(
     driver: &ui::headless::Driver,
     label: &str,
 ) -> (String, Option<String>) {
-    find_semantic(driver, |node| {
+    let node = find_semantic(driver, |node| {
         node.name.as_deref() == Some(label) && node.action_target.is_some()
     })
-    .map(|node| (node.action_target.unwrap(), node.description))
-    .unwrap_or_else(|| panic!("missing published action-palette control {label:?}"))
+    .unwrap_or_else(|| panic!("missing published action-palette control {label:?}"));
+    (node.action_target.unwrap(), node.description)
 }
 
 #[test]

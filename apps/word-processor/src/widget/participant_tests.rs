@@ -513,13 +513,23 @@ fn typed(text: &'static str) -> Step {
 
 type Setup = fn(&mut WordProcessorWidget, &mut ui::State, &[String]);
 
+/// A named scenario: paragraphs, setup, the keystrokes, and the published
+/// primitives they must match.
+type Case = (
+    &'static str,
+    &'static [&'static str],
+    Setup,
+    Vec<Input>,
+    Vec<Step>,
+);
+
 #[test]
 fn keystrokes_match_their_published_primitives() {
     use crate::actions::editing::{
         DeleteDirection, InlineMark, delete, new_paragraph, select_all, toggle_mark,
     };
     let bold: fn() -> Step = || Box::new(|v, d| toggle_mark(v, d, InlineMark::Strong));
-    let cases: Vec<(&str, &[&str], Setup, Vec<Input>, Vec<Step>)> = vec![
+    let cases: Vec<Case> = vec![
         (
             "typing matches type_text",
             &["hello world"],

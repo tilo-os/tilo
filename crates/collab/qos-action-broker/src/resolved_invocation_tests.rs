@@ -197,7 +197,7 @@ async fn resolved_invocation_rpc_retains_actual_original_and_exact_worker() {
             .unwrap();
         let (second, authorize2) = room.join_worker(904).await;
         assert_eq!(
-            state.is_current_host_worker(904, &route, &cert).unwrap(),
+            state.is_current_host_worker(904, route, cert).unwrap(),
             cert.capabilities.can_act_as_host,
             "private registration preserves the actual certificate role"
         );

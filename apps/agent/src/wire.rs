@@ -261,6 +261,51 @@ impl Link {
     }
 }
 
+impl Link {
+    /// Queueing is not acceptance. Wait for the actual correlated RPC result.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the broker refuses the request, the link fails,
+    /// or no correlated reply arrives before the deadline.
+    pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let mut deferred = Vec::new();
+        let result = loop {
+            if std::time::Instant::now() >= deadline {
+                break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
+            }
+            match self.recv(Duration::from_millis(20))? {
+                Some(CollabEvent::EnrolledTaskReply {
+                    request_id: received,
+                    result,
+                }) if received == request_id => break result.map_err(anyhow::Error::msg),
+                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
+                    break Err(anyhow::anyhow!(detail));
+                }
+                Some(event) => {
+                    if deferred.len() >= 128 {
+                        break Err(anyhow::anyhow!("enrolled reply queue exhausted"));
+                    }
+                    deferred.push(event);
+                }
+                None => {}
+            }
+        };
+        self.defer(deferred);
+        result
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'static) -> Link {
+    Link {
+        manager: CollaborationManager::with_peer_transport(transport),
+        pending: VecDeque::new(),
+        last_publication: LastPublication::None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,50 +387,5 @@ mod tests {
             Some(CollabEvent::RemoteCursorMoved { x: 3.0, .. })
         ));
         assert!(take_next_polled(&mut pending, Vec::new()).is_none());
-    }
-}
-
-impl Link {
-    /// Queueing is not acceptance. Wait for the actual correlated RPC result.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the broker refuses the request, the link fails,
-    /// or no correlated reply arrives before the deadline.
-    pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        let mut deferred = Vec::new();
-        let result = loop {
-            if std::time::Instant::now() >= deadline {
-                break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
-            }
-            match self.recv(Duration::from_millis(20))? {
-                Some(CollabEvent::EnrolledTaskReply {
-                    request_id: received,
-                    result,
-                }) if received == request_id => break result.map_err(anyhow::Error::msg),
-                Some(CollabEvent::EnrolledTaskDisconnected { detail }) => {
-                    break Err(anyhow::anyhow!(detail));
-                }
-                Some(event) => {
-                    if deferred.len() >= 128 {
-                        break Err(anyhow::anyhow!("enrolled reply queue exhausted"));
-                    }
-                    deferred.push(event);
-                }
-                None => {}
-            }
-        };
-        self.defer(deferred);
-        result
-    }
-}
-
-#[cfg(test)]
-pub(crate) fn test_link(transport: impl ui::collaboration::PeerTransport + 'static) -> Link {
-    Link {
-        manager: CollaborationManager::with_peer_transport(transport),
-        pending: VecDeque::new(),
-        last_publication: LastPublication::None,
     }
 }

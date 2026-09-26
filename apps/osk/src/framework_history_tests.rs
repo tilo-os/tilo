@@ -1124,10 +1124,6 @@ fn native_app(root: Box<dyn Widget>) -> ui::App {
     app
 }
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one owned-tile scenario proving settle and restore end to end"
-)]
 fn framework_history_native_app_reentrant_ack_preserves_newer_and_unrelated_drafts() {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = ui::record::RecordOwners::new(directory.path().join("profile"));
