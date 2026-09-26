@@ -2461,8 +2461,8 @@ pub mod rich_text_editor;
 pub use rich_text_editor::{RichBlockStyle, RichTextEditor};
 pub mod block_editor;
 pub use block_editor::{
-    Block, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
-    DocumentSelection, TransclusionPreview, legacy_block_id,
+    Block, BlockContent, BlockEditOp, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
+    DocumentSelection, PresenceKeyFn, TransclusionPreview, legacy_block_id,
 };
 pub mod slash_menu;
 pub use slash_menu::SlashMenu;

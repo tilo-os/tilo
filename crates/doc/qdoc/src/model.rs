@@ -2375,6 +2375,27 @@ impl DocMut<'_> {
         let _ = self.doc.put(&attrs, key, value);
     }
 
+    /// Remove a block attribute in `region` (a list item that stops being a
+    /// task, a code line that becomes prose). Absent is the attribute's
+    /// default, so readers need no tombstone value.
+    pub fn remove_attr_in(&mut self, region: Region, block_id: &str, key: &str) {
+        let Some(container) = region_obj(self.doc, self.c, region) else {
+            return;
+        };
+        if self.unstage_attr(&container, block_id, key) {
+            return;
+        }
+        let Some(obj) = block_obj(self.doc, &container, block_id) else {
+            return;
+        };
+        let Ok(Some((Value::Object(ObjType::Map), attrs))) = self.doc.get(&obj, BLOCK_ATTRS) else {
+            return;
+        };
+        if matches!(self.doc.get(&attrs, key), Ok(Some(_))) {
+            let _ = self.doc.delete(&attrs, key);
+        }
+    }
+
     /// Insert a page-number field at `idx` in a region block: splices the
     /// placeholder character and covers it with a `field` mark valued
     /// `page-number`. The field then merges with concurrent text edits and
