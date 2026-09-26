@@ -193,3 +193,37 @@ fn tasks_and_record_references_round_trip() {
     );
     let _ = AppKind::Terminal;
 }
+
+/// Two members bringing the first records into a room at once must not
+/// each make a record map: one would hide the other's references.
+#[test]
+fn two_members_starting_a_rooms_records_share_one_map() {
+    use automerge::{ROOT, ReadDoc};
+    let mut alice = AutoCommit::new();
+    let mut bob = AutoCommit::new();
+    let from_alice = [("rec-a".to_string(), "note".to_string())]
+        .into_iter()
+        .collect();
+    let from_bob = [("rec-b".to_string(), "sheet".to_string())]
+        .into_iter()
+        .collect();
+    project_room_records(&mut alice, &from_alice, None).unwrap();
+    project_room_records(&mut bob, &from_bob, None).unwrap();
+
+    let alice_bytes = alice.save();
+    let bob_bytes = bob.save();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut alice, &bob_bytes).unwrap();
+    tilo_automerge::ApplyIncoming::load_incoming(&mut bob, &alice_bytes).unwrap();
+
+    for peer in [&alice, &bob] {
+        assert_eq!(peer.get_all(ROOT, "records").unwrap().len(), 1, "one map");
+        assert_eq!(
+            room_records_of(peer),
+            vec![
+                ("rec-a".to_string(), "note".to_string()),
+                ("rec-b".to_string(), "sheet".to_string()),
+            ],
+            "both members' references survive"
+        );
+    }
+}

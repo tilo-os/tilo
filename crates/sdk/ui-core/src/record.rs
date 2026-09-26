@@ -958,19 +958,15 @@ pub mod room {
     /// first record into an empty room both apply this one change and end up
     /// holding one index; had each made its own map under the same key, one
     /// map would win and the other's entries would be hidden behind it.
-    fn index_genesis() -> automerge::Change {
+    fn index_genesis() -> Vec<automerge::Change> {
         thread_local! {
-            static GENESIS: automerge::Change = {
+            static GENESIS: Vec<automerge::Change> = {
                 let mut genesis = AutoCommit::new()
                     .with_actor(automerge::ActorId::from(INDEX_GENESIS_ACTOR.as_slice()));
                 let made = genesis.put_object(&ROOT, INDEX, ObjType::Map);
                 debug_assert!(made.is_ok(), "an empty document takes a root map");
                 genesis.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-                genesis
-                    .get_changes(&[])
-                    .into_iter()
-                    .next()
-                    .expect("the genesis document holds its one change")
+                genesis.get_changes(&[])
             };
         }
         GENESIS.with(Clone::clone)
@@ -979,7 +975,9 @@ pub mod room {
     /// Whether `change` is [`index_genesis`], which every room shares and
     /// anyone may bring: it holds nothing but the empty index.
     pub(super) fn is_index_genesis(change: &automerge::Change) -> bool {
-        change.hash() == index_genesis().hash()
+        index_genesis()
+            .iter()
+            .any(|genesis| genesis.hash() == change.hash())
     }
 
     fn made_by_genesis(index: &ObjId) -> bool {
@@ -992,7 +990,7 @@ pub mod room {
         if let Some(id) = index_ro(doc) {
             return Some(id);
         }
-        doc.apply_changes([index_genesis()]).ok()?;
+        tilo_automerge::ApplyIncoming::apply_incoming(doc, index_genesis()).ok()?;
         index_ro(doc)
     }
 

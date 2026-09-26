@@ -799,6 +799,43 @@ pub const ROOM_RECORDS_KEY: &str = "records";
 /// Key of the withdrawal mark on a room record entry.
 pub const ROOM_RECORD_REMOVED_KEY: &str = "removed";
 
+/// The actor that makes every room document's record map. No machine
+/// writes as it; it makes only the change in [`room_records_genesis`].
+const ROOM_RECORDS_GENESIS_ACTOR: [u8; 16] = *b"tilo-room-recs\0\0";
+
+/// The change that makes a room document's record map — byte for byte the
+/// same on every machine, so it hashes the same. Two members who each bring
+/// the first record into a room apply this one change and hold one map;
+/// had each made its own under the same key, one map would win and the
+/// other's references would be hidden behind it.
+fn room_records_genesis() -> Vec<automerge::Change> {
+    use automerge::{ObjType, ROOT, transaction::Transactable};
+    thread_local! {
+        static GENESIS: Vec<automerge::Change> = {
+            let mut genesis = AutoCommit::new()
+                .with_actor(automerge::ActorId::from(ROOM_RECORDS_GENESIS_ACTOR.as_slice()));
+            let made = genesis.put_object(&ROOT, ROOM_RECORDS_KEY, ObjType::Map);
+            debug_assert!(made.is_ok(), "an empty document takes a root map");
+            genesis.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
+            genesis.get_changes(&[])
+        };
+    }
+    GENESIS.with(Clone::clone)
+}
+
+/// The room document's record map, made by [`room_records_genesis`] when
+/// the room has none yet.
+fn room_records_map(doc: &mut AutoCommit) -> Result<automerge::ObjId, automerge::AutomergeError> {
+    use automerge::{ROOT, ReadDoc};
+    if let Some((_, id)) = doc.get(&ROOT, ROOM_RECORDS_KEY)? {
+        return Ok(id);
+    }
+    tilo_automerge::ApplyIncoming::apply_incoming(doc, room_records_genesis())?;
+    doc.get(&ROOT, ROOM_RECORDS_KEY)?.map(|(_, id)| id).ok_or(
+        automerge::AutomergeError::InvalidObjId(ROOM_RECORDS_KEY.into()),
+    )
+}
+
 /// Project a room's record index into that room's replication
 /// document. A room holds a *reference* (id and type), never the
 /// record itself — documents travel per-record over the broker.
@@ -824,7 +861,7 @@ pub fn project_room_records(
     held: &std::collections::BTreeMap<String, String>,
     previous: Option<&std::collections::BTreeMap<String, String>>,
 ) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, transaction::Transactable};
+    use automerge::{ObjType, ReadDoc, transaction::Transactable};
 
     let withdrawn: Vec<&String> = previous
         .map(|previous| {
@@ -837,10 +874,7 @@ pub fn project_room_records(
     if held.is_empty() && withdrawn.is_empty() {
         return Ok(());
     }
-    let records_id = match doc.get(&ROOT, ROOM_RECORDS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None => doc.put_object(&ROOT, ROOM_RECORDS_KEY, ObjType::Map)?,
-    };
+    let records_id = room_records_map(doc)?;
     for (id, kind) in held {
         let entry = match doc.get(&records_id, id.as_str()).ok().flatten() {
             Some((_, obj)) => obj,
