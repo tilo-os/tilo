@@ -16,7 +16,7 @@ on:
         description: Reviewed native tilo-builder@sha256 tools base; architecture is checked before use
         required: true
         type: string
-        default: code.podesta.ai/qos/tilo-builder@sha256:5365970de75407269908d486afd076f4a480356333e1b188958cd2dac60345c9
+        default: code.podesta.ai/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
 
 concurrency:
   group: development-wpe-stage-${{ github.ref }}-${{ inputs.architecture }}
