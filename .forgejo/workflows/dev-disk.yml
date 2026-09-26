@@ -275,39 +275,10 @@ jobs:
           python3 -c 'open("/dev/fuse", "rb").close()'
           sudo -n losetup --find >/dev/null
 
-      # The default nested Podman store sits on the Kata job container's
-      # overlayfs and uses fuse-overlayfs for every large parent layer. On the
-      # ARM disk runner, a disposable ext4 loop volume supports native overlay
-      # instead. A 1 GiB + 20,000-file probe measured a 5-byte child COPY at
-      # 2.69 s on the default store and 0.67 s on this native store. Keep the
-      # sparse backing file and mount for this job only; Kata teardown releases
-      # them after the disk and immutable uploads finish.
-      - name: Use native Podman overlay for ARM dev disk
-        if: matrix.arch == 'aarch64'
-        run: |
-          set -euo pipefail
-          backing="$RUNNER_TEMP/tilo-dev-podman-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.img"
-          root="$RUNNER_TEMP/tilo-dev-podman-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          truncate -s 80G "$backing"
-          sudo -n mkfs.ext4 -F -q -i 32768 "$backing"
-          mkdir -p "$root"
-          loop=$(sudo -n losetup --find --show "$backing")
-          sudo -n mount -t ext4 "$loop" "$root"
-          sudo -n chown "$(id -u):$(id -g)" "$root"
-          printf '[storage]\ndriver="overlay"\ngraphroot="%s/graph"\nrunroot="%s/run"\n' \
-            "$root" "$root" > "$root/storage.conf"
-          export CONTAINERS_STORAGE_CONF="$root/storage.conf"
-          podman info --format json | jq -e --arg graph "$root/graph" '
-            .store.graphDriverName == "overlay"
-            and .store.graphRoot == $graph
-            and .store.graphStatus["Backing Filesystem"] == "extfs"
-          ' >/dev/null
-          test "$(cat "$root/graph/overlay/.has-mount-program")" = false || {
-            echo '::error::Podman did not select native overlay on the ext4 volume'
-            exit 1
-          }
-          echo "CONTAINERS_STORAGE_CONF=$CONTAINERS_STORAGE_CONF" >> "$GITHUB_ENV"
-          echo '::notice::ARM dev disk uses native Podman overlay on disposable ext4 loop volume'
+      # The nested default store would commit every layer through
+      # fuse-overlayfs; os/dev/ci-native-podman-store.sh has the measurements.
+      - name: Use native Podman overlay for the dev disk
+        run: ./os/dev/ci-native-podman-store.sh
 
       - name: Install checksum-pinned Cosign
         uses: ./.forgejo/actions/install-cosign

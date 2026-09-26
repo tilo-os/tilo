@@ -10,6 +10,7 @@ WORKFLOW = ROOT / ".forgejo/workflows/dev-disk.yml"
 OS_RELEASE = ROOT / ".forgejo/workflows/build-image.yml"
 PUBLISH = ROOT / "os/dev/publish-dev-disk.sh"
 CHECK = ROOT / "os/dev/check-dev-vm.sh"
+STORE = ROOT / "os/dev/ci-native-podman-store.sh"
 
 
 def job(source: str, name: str) -> str:
@@ -53,18 +54,20 @@ class DevDiskWorkflowTests(unittest.TestCase):
         self.assertIn("fail-fast: false", build)
         self.assertIn('./os/dev/assert-native-arch.sh "$ARCH"', build)
 
-    def test_arm_disk_build_uses_measured_native_overlay(self) -> None:
+    def test_dev_disk_build_uses_measured_native_overlay(self) -> None:
         build = job(self.source, "build")
         devices = step(build, "Expose guest FUSE and loop devices")
-        native = step(build, "Use native Podman overlay for ARM dev disk")
+        native = step(build, "Use native Podman overlay for the dev disk")
         login = step(build, "Authenticate to the image registry")
         self.assertIn("sudo -n losetup --find >/dev/null", devices)
-        self.assertIn("if: matrix.arch == 'aarch64'", native)
-        self.assertIn('sudo -n mount -t ext4 "$loop" "$root"', native)
-        self.assertIn('export CONTAINERS_STORAGE_CONF="$root/storage.conf"', native)
-        self.assertIn('.store.graphStatus["Backing Filesystem"] == "extfs"', native)
-        self.assertIn('.has-mount-program', native)
-        self.assertIn('>> "$GITHUB_ENV"', native)
+        self.assertIn("./os/dev/ci-native-podman-store.sh", native)
+        self.assertNotIn("if:", native)
+        store = STORE.read_text(encoding="utf-8")
+        self.assertIn('sudo -n mount -t ext4 "$loop" "$root"', store)
+        self.assertIn('export CONTAINERS_STORAGE_CONF="$root/storage.conf"', store)
+        self.assertIn('.store.graphStatus["Backing Filesystem"] == "extfs"', store)
+        self.assertIn('.has-mount-program', store)
+        self.assertIn('>> "$GITHUB_ENV"', store)
         self.assertLess(build.index("Expose guest FUSE"), build.index("Use native Podman overlay"))
         self.assertLess(build.index("Use native Podman overlay"), build.index("Authenticate to the image registry"))
         self.assertIn("podman login", login)
@@ -270,6 +273,13 @@ class OsLaneGatesAndPublishesTheDevDiskTests(unittest.TestCase):
         self.assertIn("./os/dev/build-dev-image.sh", gate)
         # No registry round trip: the base is this lane's own image.
         self.assertIn('podman tag "$first_tag" "$dev_base"', gate)
+        # Kata lanes import, build and install on a native overlay store,
+        # before the image enters Podman at all.
+        self.assertIn('CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"', gate)
+        self.assertLess(
+            gate.index("ci-native-podman-store.sh"),
+            gate.index('"containers-storage:$first_tag"'),
+        )
         self.assertNotIn("podman pull", gate)
         # One install per lane: the prod install only in the other branch.
         dev = gate.index("if [[ $DEV_GATE == true ]]; then")
