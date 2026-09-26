@@ -59,8 +59,9 @@ pub use run::{
     RunTrigger, StepFailure, StepRecord, StepStatus, invocation_id, run,
 };
 pub use shortcut::{
-    AiTransform, Binding, CatchUp, Condition, FocusTransition, Schedule, Selector, Shortcut, Step,
-    StepKind, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
+    AiTransform, Binding, CatchUp, Condition, FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE,
+    FocusTransition, Schedule, ScheduleClaim, Selector, Shortcut, Step, StepKind, TimeOfDay,
+    TriggerSpec, UnattendedConsent, Weekday,
 };
 
 /// Application that publishes shortcuts as runnable actions.
