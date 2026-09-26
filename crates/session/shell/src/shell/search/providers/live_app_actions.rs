@@ -3278,6 +3278,7 @@ mod tests {
                     app_id: "so.tilo.reader".into(),
                     resource: "book:42".into(),
                     label: "Book of Tilo".into(),
+                    kind: "book".into(),
                 })
             );
             let chrome_ref = chrome.borrow();
