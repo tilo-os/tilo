@@ -1304,18 +1304,21 @@ RUN grep -q '^video:' /etc/group || echo "video:x:39:greetd" >> /etc/group; \
 # faces: staged here once, verified file by file against its manifest, and
 # found by fontconfig, the UI toolkit and the PDF helper (which reads it
 # through a read-only Landlock grant) alike. Fedora's static Noto packages
-# would ship the same families a second time, several times larger. Adwaita
-# Sans is not a product font of the catalog, so it stays a package.
-# `fontconfig` is named because the staging below indexes the catalog with it.
-RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
-    fontconfig \
-    adwaita-sans-fonts \
-    && dnf clean all && ${FINALIZE_RPMDB}
-COPY os/usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf
-RUN --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
+# would ship the same families a second time, several times larger, so the
+# snippet installed with the catalog gives it their generic-family defaults.
+# Adwaita Sans is not a product font of the catalog, so it stays a package.
+# `fontconfig` is named because this step indexes the catalog with it.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    --mount=type=bind,source=tools/font-catalog.py,target=/tilo-src/tools/font-catalog.py,ro \
     --mount=type=bind,source=crates/sdk/ui-core/assets/fonts,target=/tilo-src/crates/sdk/ui-core/assets/fonts,ro \
-    python3 /tilo-src/tools/font-catalog.py stage \
+    --mount=type=bind,source=os/usr/share/fontconfig/conf.avail/57-tilo-fonts.conf,target=/tilo-src/57-tilo-fonts.conf,ro \
+    dnf install -y --setopt=reposdir=/repo \
+        fontconfig \
+        adwaita-sans-fonts \
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && python3 /tilo-src/tools/font-catalog.py stage \
         /tilo-src/crates/sdk/ui-core/assets/fonts /usr/share/fonts/tilo --scope product \
+    && install -D -m 0644 /tilo-src/57-tilo-fonts.conf /usr/share/fontconfig/conf.avail/57-tilo-fonts.conf \
     && ln -s ../../../usr/share/fontconfig/conf.avail/57-tilo-fonts.conf /etc/fonts/conf.d/57-tilo-fonts.conf \
     && fc-cache -s \
     && for generic in 'Noto Sans CJK SC' serif monospace emoji; do \
