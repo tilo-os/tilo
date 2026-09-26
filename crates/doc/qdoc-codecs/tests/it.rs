@@ -28,6 +28,8 @@ mod docx_header_footer;
 mod import_memory;
 #[path = "office_entities.rs"]
 mod office_entities;
+#[path = "office_fidelity.rs"]
+mod office_fidelity;
 #[path = "office_roundtrip.rs"]
 mod office_roundtrip;
 #[path = "sheet_roundtrip.rs"]

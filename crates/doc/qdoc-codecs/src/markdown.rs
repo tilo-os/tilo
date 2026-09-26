@@ -676,7 +676,9 @@ pub fn export_views(
     blocks: &[BlockView],
     notes: &[NoteView],
 ) -> Vec<u8> {
-    export_md(properties, blocks, notes).into_bytes()
+    // Kept inline elements without visible text (drawings, formulas) have no Markdown.
+    let blocks = qdoc::export::without_kept_placeholders_in(blocks);
+    export_md(properties, &blocks, notes).into_bytes()
 }
 
 fn export_md(

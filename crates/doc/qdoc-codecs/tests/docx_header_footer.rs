@@ -471,6 +471,21 @@ fn header_texts(d: &Document) -> Vec<String> {
     d.header().into_iter().map(|b| b.text).collect()
 }
 
+const HEADER_EDIT: &str = " (revised)";
+
+/// Edit both page regions through the model: text appended to the header, the footer's first
+/// word made bold (its text and field stay as they were).
+fn edit_regions(d: &mut Document) {
+    let header = d.header_blocks_in_order();
+    let first = header.first().expect("a header block");
+    let len = d.header()[0].text.chars().count();
+    d.splice_header_text(first, len, 0, HEADER_EDIT);
+    let footer = d.footer_blocks_in_order();
+    let first = footer.first().expect("a footer block");
+    d.as_mut()
+        .add_mark_in(qdoc::Region::Footer, first, 0, 3, "strong", true);
+}
+
 /// Import → export → import (twice), asserting the default header and footer text survive
 /// exactly, every exported package is consistent, and `expected_refs` header/footer parts are
 /// referenced from the section.
@@ -525,8 +540,40 @@ fn only_sectpr(document: &str) -> &str {
 }
 
 #[test]
+fn unedited_header_and_footer_keep_their_parts() {
+    // Regions the model holds unedited are written back as imported, parts, relationships and
+    // everything the model does not hold included.
+    let fixture = word_docx_with_first_page_header(true);
+    let exported = export(&import(&fixture));
+    assert_consistent_package(&exported);
+    let parts = parts_of(&exported);
+    let original = parts_of(&fixture);
+    for name in [
+        "word/header1.xml",
+        "word/header2.xml",
+        "word/header3.xml",
+        "word/footer1.xml",
+    ] {
+        assert_eq!(
+            original.iter().find(|(n, _)| n == name),
+            parts.iter().find(|(n, _)| n == name),
+            "{name} kept as it was"
+        );
+    }
+    let document = text_of(&parts, "word/document.xml");
+    assert!(document.contains(r#"r:id="rId8""#) && document.contains(r#"r:id="rId9""#));
+    // The section break keeps its own header too.
+    assert!(document.contains(r#"r:id="rId12""#), "{document}");
+    let d2 = import(&exported);
+    assert_eq!(header_texts(&d2), [HEADER_TEXT]);
+    assert_footer_has_page_field(&d2);
+}
+
+#[test]
 fn first_page_header_and_page_setup_are_carried_through() {
-    let exported = export(&import(&word_docx_with_first_page_header(false)));
+    let mut d = import(&word_docx_with_first_page_header(false));
+    edit_regions(&mut d);
+    let exported = export(&d);
     assert_consistent_package(&exported);
     let parts = parts_of(&exported);
     let document = text_of(&parts, "word/document.xml");
@@ -583,18 +630,28 @@ fn first_page_header_and_page_setup_are_carried_through() {
 }
 
 #[test]
-fn headers_of_unmodeled_sections_are_dropped_cleanly() {
-    // A section break inside the body is not modeled: the document exports as one section,
-    // so the earlier section's header part and relationship must go rather than dangle.
-    let d = import(&word_docx_with_first_page_header(true));
+fn section_break_headers_follow_the_document_header() {
+    // A section break inside the body is kept, but the model has one header and footer for
+    // the whole document: once they are edited, the break's references point at them, and the
+    // earlier section's own header part and relationship go rather than dangle.
+    let mut d = import(&word_docx_with_first_page_header(true));
     assert_eq!(
         header_texts(&d),
         [HEADER_TEXT],
         "the final section's default header is the imported one"
     );
+    edit_regions(&mut d);
     let exported = export(&d);
-    assert_eq!(assert_consistent_package(&exported).len(), 3);
+    let referenced: BTreeSet<String> = assert_consistent_package(&exported).into_iter().collect();
+    assert_eq!(referenced.len(), 3, "{referenced:?}");
     let parts = parts_of(&exported);
+    let document = text_of(&parts, "word/document.xml");
+    assert!(
+        document.contains(
+            r#"<w:pPr><w:sectPr><w:headerReference w:type="default" r:id="rIdQdocHdr"/>"#
+        ),
+        "section break kept, pointing at the document header: {document}"
+    );
     for (name, bytes) in &parts {
         assert!(
             !String::from_utf8_lossy(bytes).contains(SECTION_ONE_HEADER_TEXT),
@@ -607,7 +664,7 @@ fn headers_of_unmodeled_sections_are_dropped_cleanly() {
         "section header rel dropped: {rels}"
     );
     let d2 = import(&exported);
-    assert_eq!(header_texts(&d2), [HEADER_TEXT]);
+    assert_eq!(header_texts(&d2), [format!("{HEADER_TEXT}{HEADER_EDIT}")]);
     assert_footer_has_page_field(&d2);
 }
 

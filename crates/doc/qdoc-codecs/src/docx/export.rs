@@ -4,6 +4,7 @@
 
 use super::container::DocxContainer;
 use crate::format::CodecError;
+use crate::preserve::{MARK_DOCX_XML, merge_root_namespaces};
 use crate::resolved::Resolved;
 use crate::xml_escape::{escape_attr, push_text};
 use qdoc::export::InlinePlan;
@@ -26,9 +27,6 @@ const CONTENT_TYPES_BASE: &str = r#"<?xml version="1.0" encoding="UTF-8" standal
 
 const ROOT_RELS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>"#;
-
-const NUMBERING_XML: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/></w:lvl></w:abstractNum><w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum><w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num><w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num></w:numbering>"#;
 
 const NUMBERING_OVERRIDE: &str = r#"<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>"#;
 const NUMBERING_REL: &str = r#"<Relationship Id="rIdQdocNum" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#;
@@ -106,6 +104,23 @@ fn copy_preserved_parts(
     (flags, original_core, original_app)
 }
 
+/// The header and footer parts `section` writes qdoc's regions to.
+fn region_parts(section: &super::section::SectionPlan) -> Vec<RegionPart> {
+    let header = section.header_part.clone().map(|part| RegionPart {
+        part,
+        rel_id: super::headers::HEADER_REL_ID,
+        rel_type: super::section::HEADER_REL_TYPE,
+        content_type: super::section::HEADER_CONTENT_TYPE,
+    });
+    let footer = section.footer_part.clone().map(|part| RegionPart {
+        part,
+        rel_id: super::headers::FOOTER_REL_ID,
+        rel_type: super::section::FOOTER_REL_TYPE,
+        content_type: super::section::FOOTER_CONTENT_TYPE,
+    });
+    header.into_iter().chain(footer).collect()
+}
+
 /// A header or footer part this export writes, with the relationship that references it.
 struct RegionPart {
     part: String,
@@ -146,6 +161,43 @@ struct Wireups {
     need_footnotes: bool,
     need_endnotes: bool,
     need_comments: bool,
+    /// External link relationships: (id, URL).
+    links: Vec<(String, String)>,
+}
+
+/// Prefix of the relationship ids external links are written under.
+const LINK_REL_PREFIX: &str = "rIdQdocLink";
+
+/// Each distinct external link URL in the body → the relationship id it is written under.
+fn link_relationship_ids(snap: &DocSnapshot) -> BTreeMap<String, String> {
+    let mut urls: BTreeSet<&str> = BTreeSet::new();
+    for b in &snap.blocks {
+        for m in &b.marks {
+            if m.name == qdoc::schema::MARK_LINK
+                && let Some(href) = m.value.as_str()
+                && !href.starts_with(qdoc::schema::CROSS_REF_PREFIX)
+            {
+                urls.insert(href);
+            }
+        }
+    }
+    urls.into_iter()
+        .enumerate()
+        .map(|(i, url)| {
+            (
+                url.to_string(),
+                format!("{LINK_REL_PREFIX}{}", i.saturating_add(1)),
+            )
+        })
+        .collect()
+}
+
+/// The `Relationship` of an external link.
+fn link_relationship_xml(id: &str, url: &str) -> String {
+    format!(
+        r#"<Relationship Id="{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{}" TargetMode="External"/>"#,
+        escape_attr(url)
+    )
 }
 
 /// Builds/extends `[Content_Types].xml` with an `Override`/`Default` for every newly-wired part.
@@ -279,7 +331,8 @@ fn build_document_rels(
         || w.need_footnotes
         || w.need_endnotes
         || w.need_comments
-        || w.has_images)
+        || w.has_images
+        || !w.links.is_empty())
     {
         return;
     }
@@ -304,6 +357,9 @@ fn build_document_rels(
             inner.push_str(COMMENTS_REL);
         }
         inner.push_str(&images.relationships());
+        for (id, url) in &w.links {
+            inner.push_str(&link_relationship_xml(id, url));
+        }
         let rels = format!(
             r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">{inner}</Relationships>"#
@@ -311,6 +367,17 @@ fn build_document_rels(
         c.set("word/_rels/document.xml.rels", rels.into_bytes());
     } else if let Some(rels) = c.get("word/_rels/document.xml.rels") {
         let mut s = String::from_utf8_lossy(rels).into_owned();
+        // Link relationships an earlier export wrote are replaced by this export's.
+        if s.contains(LINK_REL_PREFIX) {
+            s = super::section::remove_elements(&s, b"Relationship", |e| {
+                e.attributes().flatten().any(|a| {
+                    a.key.as_ref() == b"Id" && a.value.starts_with(LINK_REL_PREFIX.as_bytes())
+                })
+            });
+        }
+        for (id, url) in &w.links {
+            inject_before(&mut s, "</Relationships>", &link_relationship_xml(id, url));
+        }
         if w.has_lists && !s.contains("Target=\"numbering.xml\"") {
             inject_before(&mut s, "</Relationships>", NUMBERING_REL);
         }
@@ -407,13 +474,7 @@ fn write_lists_and_styles(
     snap: &Resolved<'_>,
     doc_lang: Option<&str>,
 ) {
-    if has_lists {
-        // Ensures numbering maps numId 1→bullet, 2→decimal plus custom ordered numberings, so format+start round-trip.
-        let xml = if numbering.has_custom() {
-            numbering.numbering_xml()
-        } else {
-            NUMBERING_XML.to_string()
-        };
+    if let Some(xml) = numbering.numbering_xml(has_lists) {
         c.set("word/numbering.xml", xml.into_bytes());
     }
     // Merge referenced CRDT styles into the preserved styles.xml as `w:style` defs; already-declared styles are referenced, not redefined.
@@ -434,7 +495,6 @@ fn write_lists_and_styles(
 pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>, CodecError> {
     let snapshot = doc.materialize();
     let snap = &Resolved::new(&snapshot, content);
-    let hf_parts = super::headers::export_parts(&doc);
     let cols = super::columns::section_columns_xml(&doc).unwrap_or_default();
 
     let mut c = DocxContainer { parts: Vec::new() };
@@ -447,24 +507,40 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         .blocks
         .iter()
         .rev()
-        .find_map(|b| match b.attrs.get("xml") {
-            Some(AttrVal::Str(xml))
-                if b.kind == "fidelity" && super::section::is_section_properties(xml) =>
-            {
-                Some(xml.as_str())
-            }
+        .filter(|b| b.kind == "fidelity")
+        .filter_map(|b| crate::preserve::fidelity_xml(b, "docx"))
+        .find(|xml| super::section::is_section_properties(xml));
+    let section_breaks: Vec<String> = snap
+        .blocks
+        .iter()
+        .filter_map(|b| match b.attrs.get(super::paragraph::ATTR_PPR) {
+            Some(AttrVal::Str(kept)) => super::paragraph::section_break(kept),
             _ => None,
-        });
-    let section = super::section::plan(&mut c, original_sectpr, &hf_parts, &cols);
-    let sectpr = section.sectpr.clone();
+        })
+        .collect();
+    let breaks: Vec<&str> = section_breaks.iter().map(String::as_str).collect();
+    let keep = kept_regions(&doc, &c, &breaks, original_sectpr);
+    let hf_parts = super::headers::export_parts(&doc, keep);
+    let section = super::section::plan(&mut c, original_sectpr, &breaks, &hf_parts, keep, &cols);
+    let numbering = Numbering::new(c.get("word/numbering.xml"), c.get("word/styles.xml"));
+    let root = qdoc::model::preserved_part(
+        doc.doc,
+        doc.c,
+        super::DOCUMENT_ROOT_KEY,
+        &tilo_content::NoContent,
+    )
+    .and_then(|b| String::from_utf8(b).ok());
+    let links = link_relationship_ids(snap);
     let notes = super::notes::export_notes(&doc);
     let comments = super::comments::export_comments(&doc);
     let (document, named_refs, numbering, images) = build_document_xml(
         snap,
-        &sectpr,
+        &section,
+        numbering,
         &notes.id_map,
         &notes.kind_map,
         &comments.id_map,
+        root.as_deref(),
     );
     let has_lists = snap.blocks.iter().any(|b| b.kind == "list_item");
     // A document default language forces styles.xml emission via `<w:docDefaults>`, so the language always has a home.
@@ -474,28 +550,12 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
 
     c.set("word/document.xml", document.into_bytes());
 
-    // Each exported drawing references a synthesised `word/media/imageN.<ext>` relationship part.
+    // Each exported drawing references a synthesised media part, named by its content.
     for img in &images.images {
         c.set(&img.part, img.bytes.clone());
     }
 
-    let mut regions = Vec::new();
-    if let Some(part) = section.header_part.clone() {
-        regions.push(RegionPart {
-            part,
-            rel_id: super::headers::HEADER_REL_ID,
-            rel_type: super::section::HEADER_REL_TYPE,
-            content_type: super::section::HEADER_CONTENT_TYPE,
-        });
-    }
-    if let Some(part) = section.footer_part.clone() {
-        regions.push(RegionPart {
-            part,
-            rel_id: super::headers::FOOTER_REL_ID,
-            rel_type: super::section::FOOTER_REL_TYPE,
-            content_type: super::section::FOOTER_CONTENT_TYPE,
-        });
-    }
+    let regions = region_parts(&section);
     copy_fixed_parts(&mut c, hf_parts, &section, &notes, &comments);
 
     let (wrote_core, wrote_app) = write_doc_props(
@@ -528,6 +588,7 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
         need_footnotes: notes.footnotes_xml.is_some() && !flags.had_footnotes_part,
         need_endnotes: notes.endnotes_xml.is_some() && !flags.had_endnotes_part,
         need_comments: comments.comments_xml.is_some() && !flags.had_comments_part,
+        links: links.into_iter().map(|(url, id)| (id, url)).collect(),
     };
 
     build_content_types(&mut c, &flags, &w, &images);
@@ -535,6 +596,31 @@ pub(crate) fn export(doc: DocRef, content: &dyn ContentSource) -> Result<Vec<u8>
     build_document_rels(&mut c, &flags, &w, &images);
 
     c.write()
+}
+
+/// Which imported default header/footer parts are written back as they are: those whose region
+/// the model still holds unedited (see `headers::region_unchanged`). The parts are found the
+/// way import found them, from the section properties and the carried relationships.
+fn kept_regions(
+    doc: &DocRef,
+    c: &DocxContainer,
+    section_breaks: &[&str],
+    final_sectpr: Option<&str>,
+) -> super::headers::KeptRegions {
+    use qdoc::model::Region;
+    let sections: String = section_breaks.iter().copied().chain(final_sectpr).collect();
+    let (header, footer) = super::headers::resolve_default_parts(
+        sections.as_bytes(),
+        c.get("word/_rels/document.xml.rels"),
+    );
+    let unchanged = |part: Option<String>, region: Region| {
+        part.and_then(|p| c.get(&p))
+            .is_some_and(|xml| super::headers::region_unchanged(xml, region, doc))
+    };
+    super::headers::KeptRegions {
+        header: unchanged(header, Region::Header),
+        footer: unchanged(footer, Region::Footer),
+    }
 }
 
 /// The `<w:docDefaults>` block declaring a document default language, read by
@@ -944,6 +1030,10 @@ struct RunIds<'a, 'b> {
     changes: &'a ChangeIndex<'b>,
     change_ids: &'a BTreeMap<String, i64>,
     bookmark_ids: &'a BTreeMap<String, i64>,
+    /// External link URL → the relationship id it is written under.
+    links: &'a BTreeMap<String, String>,
+    /// The section plan, which section breaks kept in paragraph properties are rebuilt with.
+    section: &'a super::section::SectionPlan,
 }
 
 /// Render a block's text + marks as `<w:r>` runs, starting a new run whenever the active
@@ -1024,31 +1114,72 @@ fn render_runs(text: &str, marks: &[qdoc::document::MarkSpan], ids: &RunIds) -> 
             },
             None => (String::new(), "", false),
         };
-        // A cross-reference wraps the whole run group in `<w:hyperlink w:anchor>`, the outermost wrapper.
-        let (xref_open, xref_close) = match run.cross_reference() {
-            Some(target) => (
+        // A link wraps the whole run group in `<w:hyperlink>`, the outermost wrapper: a
+        // cross-reference by `w:anchor`, an external link by its relationship's `r:id`.
+        let external = run.link.and_then(|href| ids.links.get(href));
+        let (xref_open, xref_close) = match (run.cross_reference(), external) {
+            (Some(target), _) => (
                 format!(r#"<w:hyperlink w:anchor="{}">"#, escape_attr(target)),
                 "</w:hyperlink>",
             ),
-            None => (String::new(), ""),
+            (None, Some(rid)) => (format!(r#"<w:hyperlink r:id="{rid}">"#), "</w:hyperlink>"),
+            (None, None) => (String::new(), ""),
         };
-        let rpr = run_props(&run.marks);
         out.push_str(&xref_open);
         out.push_str(&wrap_open);
-        out.push_str("<w:r>");
-        if !rpr.is_empty() {
-            let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
-        }
-        if is_del {
-            out.push_str(&del_run_content(run.text));
-        } else {
-            out.push_str(&run_content(run.text));
-        }
-        out.push_str("</w:r>");
+        push_run_group(&mut out, run, is_del);
         out.push_str(wrap_close);
         out.push_str(xref_close);
     }
     out
+}
+
+/// A block's `w:pPr`: the `modeled` children plus its alignment and line spacing, merged with
+/// the properties kept verbatim from import.
+fn block_ppr(b: &BlockView, modeled: &[(&[u8], String)], ids: &RunIds) -> String {
+    let mut all = modeled.to_vec();
+    all.push((b"w:jc", jc_xml(b)));
+    all.push((b"w:spacing", spacing_xml(b)));
+    let kept = match b.attrs.get(super::paragraph::ATTR_PPR) {
+        Some(AttrVal::Str(kept)) => Some(kept.as_str()),
+        _ => None,
+    };
+    super::paragraph::ppr_xml(&all, kept, |sectpr| ids.section.section_break(sectpr))
+}
+
+/// The runs of one run group: its text with the modeled and the kept run properties, after
+/// the unmodeled inline element kept verbatim that the text shows, while the text still shows
+/// it unedited (see `preserve::run_content`).
+fn push_run_group(out: &mut String, run: &qdoc::export::InlineRun<'_>, is_del: bool) {
+    let mark = |name: &str| {
+        run.marks
+            .iter()
+            .find(|m| m.name == name)
+            .and_then(|m| m.value.as_str())
+    };
+    let rpr =
+        super::paragraph::run_props_xml(&run_props(&run.marks), mark(super::paragraph::MARK_RPR));
+    let content = crate::preserve::run_content(run.text, &run.marks, MARK_DOCX_XML);
+    if let Some(xml) = content.kept {
+        out.push_str(xml);
+    }
+    if !content.text.is_empty() {
+        push_run(out, &content.text, &rpr, is_del);
+    }
+}
+
+/// One `w:r` of `text` with run properties `rpr`; deleted text uses `w:delText`.
+fn push_run(out: &mut String, text: &str, rpr: &str, is_del: bool) {
+    out.push_str("<w:r>");
+    if !rpr.is_empty() {
+        let _ = write!(out, "<w:rPr>{rpr}</w:rPr>");
+    }
+    if is_del {
+        out.push_str(&del_run_content(text));
+    } else {
+        out.push_str(&run_content(text));
+    }
+    out.push_str("</w:r>");
 }
 
 fn jc_xml(b: &BlockView) -> String {
@@ -1105,71 +1236,200 @@ fn ooxml_num_format(fmt: &str) -> &'static str {
     }
 }
 
-/// Assigns each distinct list numbering a stable `w:numId`; numId 1/2 are the bullet/decimal fallback, custom ids start at 3.
+/// The list numbering an export writes. An imported `word/numbering.xml` is kept whole — its
+/// definitions stay valid for the list items that still match them (see `num_id`) and for
+/// anything else referencing them (numbered heading styles, kept content) — and definitions
+/// for the other list items are added to it, numbered past its own.
 #[derive(Default)]
 struct Numbering {
-    /// `(ordered, format, start)` → assigned numId.
+    /// The imported `word/numbering.xml`.
+    original: Option<String>,
+    /// What each of the original's `w:numId`s numbers: `(ordered, format, start)`.
+    known: BTreeMap<String, (bool, String, i64)>,
+    /// The first id past every `w:abstractNumId`/`w:numId` of the original.
+    base: i64,
+    /// `(ordered, format, start)` → added numId.
     ids: Vec<((bool, String, i64), i64)>,
+    /// The package's styles define `ListParagraph`, the paragraph style Word gives list
+    /// items. Referencing it undefined makes `LibreOffice` drop the items' numbering.
+    list_paragraph_style: bool,
+}
+
+/// What a list item numbers: `(ordered, format, start)`.
+fn list_key(b: &BlockView) -> (bool, String, i64) {
+    let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
+    let fmt = match b.attrs.get("num_format") {
+        Some(AttrVal::Str(s)) => s.clone(),
+        _ => "decimal".to_string(),
+    };
+    let start = match b.attrs.get("num_start") {
+        Some(AttrVal::Int(n)) => *n,
+        _ => 1,
+    };
+    (ordered, fmt, start)
+}
+
+/// The largest numeric value of the attribute `key` (`w:numId=`) in `xml`.
+fn max_attr_value(xml: &str, key: &str) -> Option<i64> {
+    let needle = format!("{key}=\"");
+    xml.match_indices(&needle)
+        .filter_map(|(at, _)| {
+            xml.get(at.saturating_add(needle.len())..)
+                .and_then(|v| v.split('"').next())
+                .and_then(|v| v.parse::<i64>().ok())
+        })
+        .max()
 }
 
 impl Numbering {
-    /// The `w:numId` for a list item, registering a new id if novel; bullet/plain-decimal reuse ids 1/2.
+    fn new(original: Option<&[u8]>, styles: Option<&[u8]>) -> Self {
+        let list_paragraph_style = styles.is_some_and(|s| {
+            s.windows(br#"w:styleId="ListParagraph""#.len())
+                .any(|w| w == br#"w:styleId="ListParagraph""#)
+        });
+        let Some(xml) = original.and_then(|b| std::str::from_utf8(b).ok()) else {
+            return Self {
+                list_paragraph_style,
+                ..Self::default()
+            };
+        };
+        let mut reg = super::styles::StyleRegistry::default();
+        super::styles::parse_numbering(xml.as_bytes(), &mut reg);
+        let known = reg
+            .num_ordered
+            .iter()
+            .map(|(id, ordered)| {
+                let def = reg.num_def.get(id);
+                let fmt = def.and_then(|d| d.num_format).unwrap_or("decimal");
+                let start = def.and_then(|d| d.num_start).unwrap_or(1);
+                (id.clone(), (*ordered, fmt.to_string(), start))
+            })
+            .collect();
+        let base = max_attr_value(xml, "w:abstractNumId")
+            .max(max_attr_value(xml, "w:numId"))
+            .map_or(1, |m| m.saturating_add(1));
+        Self {
+            original: Some(xml.to_string()),
+            known,
+            base,
+            ids: Vec::new(),
+            list_paragraph_style,
+        }
+    }
+
+    /// The paragraph style reference of a list item without one of its own.
+    fn paragraph_style(&self) -> String {
+        if self.list_paragraph_style {
+            r#"<w:pStyle w:val="ListParagraph"/>"#.to_string()
+        } else {
+            String::new()
+        }
+    }
+
+    /// The `w:numId` for a list item: the imported one while it still numbers the item the
+    /// same way, else one added for what the item numbers. Without an imported numbering,
+    /// bullets and plain decimal lists use ids 1/2.
     fn num_id(&mut self, b: &BlockView) -> i64 {
-        let ordered = matches!(b.attrs.get("ordered"), Some(AttrVal::Bool(true)));
-        if !ordered {
-            return 1;
+        let key = list_key(b);
+        if let Some(AttrVal::Str(id)) = b.attrs.get(super::content::ATTR_NUM)
+            && let Some(known) = self.known.get(id)
+            && known.0 == key.0
+            && (!key.0 || (known.1 == key.1 && known.2 == key.2))
+            && let Ok(n) = id.parse::<i64>()
+        {
+            return n;
         }
-        let fmt = match b.attrs.get("num_format") {
-            Some(AttrVal::Str(s)) => s.clone(),
-            _ => "decimal".to_string(),
-        };
-        let start = match b.attrs.get("num_start") {
-            Some(AttrVal::Int(n)) => *n,
-            _ => 1,
-        };
-        if fmt == "decimal" && start == 1 {
-            return 2;
+        if self.original.is_none() {
+            if !key.0 {
+                return 1;
+            }
+            if key.1 == "decimal" && key.2 == 1 {
+                return 2;
+            }
         }
-        let key = (ordered, fmt, start);
         if let Some((_, id)) = self.ids.iter().find(|(k, _)| *k == key) {
             return *id;
         }
+        let first = if self.original.is_some() {
+            self.base
+        } else {
+            3
+        };
         let id = i64::try_from(self.ids.len())
             .unwrap_or(i64::MAX)
-            .saturating_add(3);
+            .saturating_add(first);
         self.ids.push((key, id));
         id
     }
 
-    /// Whether any non-default ordered numbering was registered, so a custom numbering.xml is needed.
-    fn has_custom(&self) -> bool {
-        !self.ids.is_empty()
+    /// An abstract numbering (every level) and the `w:num` naming it, for `id`.
+    fn definition(id: i64, (ordered, fmt, start): &(bool, String, i64)) -> (String, String) {
+        let mut levels = String::new();
+        for level in 0..9_u8 {
+            if *ordered {
+                let nf = ooxml_num_format(fmt);
+                let _ = write!(
+                    levels,
+                    r#"<w:lvl w:ilvl="{level}"><w:start w:val="{start}"/><w:numFmt w:val="{nf}"/><w:lvlText w:val="%{}."/></w:lvl>"#,
+                    level.saturating_add(1)
+                );
+            } else {
+                let _ = write!(
+                    levels,
+                    r#"<w:lvl w:ilvl="{level}"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/></w:lvl>"#
+                );
+            }
+        }
+        (
+            format!(r#"<w:abstractNum w:abstractNumId="{id}">{levels}</w:abstractNum>"#),
+            format!(r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#),
+        )
     }
 
-    /// The full `word/numbering.xml`: bullet (1), decimal-from-1 (2), plus each registered custom numbering.
-    fn numbering_xml(&self) -> String {
+    /// The `word/numbering.xml` to write: `None` when the imported one serves every item
+    /// unchanged (or there are no lists and nothing was imported).
+    fn numbering_xml(&self, has_lists: bool) -> Option<String> {
         let mut abs = String::new();
         let mut nums = String::new();
-        // Fixed: abstract 0 = bullet → numId 1; abstract 1 = decimal → numId 2.
-        abs.push_str(r#"<w:abstractNum w:abstractNumId="0"><w:lvl w:ilvl="0"><w:numFmt w:val="bullet"/><w:lvlText w:val="&#8226;"/></w:lvl></w:abstractNum>"#);
-        abs.push_str(r#"<w:abstractNum w:abstractNumId="1"><w:lvl w:ilvl="0"><w:numFmt w:val="decimal"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#);
-        nums.push_str(r#"<w:num w:numId="1"><w:abstractNumId w:val="0"/></w:num>"#);
-        nums.push_str(r#"<w:num w:numId="2"><w:abstractNumId w:val="1"/></w:num>"#);
-        for ((_, fmt, start), id) in &self.ids {
-            let nf = ooxml_num_format(fmt);
-            let _ = write!(
-                abs,
-                r#"<w:abstractNum w:abstractNumId="{id}"><w:lvl w:ilvl="0"><w:start w:val="{start}"/><w:numFmt w:val="{nf}"/><w:lvlText w:val="%1."/></w:lvl></w:abstractNum>"#
-            );
-            let _ = write!(
-                nums,
-                r#"<w:num w:numId="{id}"><w:abstractNumId w:val="{id}"/></w:num>"#
-            );
+        if self.original.is_none() {
+            if !has_lists {
+                return None;
+            }
+            for (id, key) in [
+                (1, (false, "decimal".to_string(), 1)),
+                (2, (true, "decimal".to_string(), 1)),
+            ] {
+                let (a, n) = Self::definition(id, &key);
+                abs.push_str(&a);
+                nums.push_str(&n);
+            }
         }
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        for (key, id) in &self.ids {
+            let (a, n) = Self::definition(*id, key);
+            abs.push_str(&a);
+            nums.push_str(&n);
+        }
+        match &self.original {
+            None => Some(format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:numbering xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">{abs}{nums}</w:numbering>"#
-        )
+            )),
+            Some(_) if self.ids.is_empty() => None,
+            Some(original) => {
+                // Abstract numberings precede the `w:num`s in `CT_Numbering`.
+                let mut out = original.clone();
+                let nums_at = out
+                    .find("<w:num ")
+                    .or_else(|| out.find("<w:numIdMacAtCleanup"))
+                    .or_else(|| out.rfind("</w:numbering>"))?;
+                out.insert_str(nums_at, &abs);
+                let end = out
+                    .find("<w:numIdMacAtCleanup")
+                    .or_else(|| out.rfind("</w:numbering>"))?;
+                out.insert_str(end, &nums);
+                Some(out)
+            }
+        }
     }
 }
 
@@ -1180,7 +1440,7 @@ const EMU_PER_PX: f64 = 914_400.0 / 96.0;
 struct ExportedImage {
     /// Relationship id (e.g. `rIdImg1`) referenced by the drawing's `a:blip`.
     rel_id: String,
-    /// Package part name, e.g. `word/media/image1.png`.
+    /// Package part name, e.g. `word/media/qdoc-0123456789abcdef.png`.
     part: String,
     /// `Target` written into the document rels (relative to `word/`).
     target: String,
@@ -1225,12 +1485,16 @@ impl ImageExport {
         s
     }
 
-    /// Register an image blob, returning its rel id; stored once per occurrence (each drawing gets its own rel).
+    /// Register an image blob, returning its rel id; each drawing gets its own rel. The part is
+    /// named by the image's content address, so it can never overwrite a different image the
+    /// package carries through (a text box's picture, say) under a name of the `imageN` kind.
     fn add(&mut self, bytes: &[u8]) -> String {
         let n = self.images.len().saturating_add(1);
         let (ext, _) = image_ext_and_media(bytes);
         let rel_id = format!("rIdImg{n}");
-        let target = format!("media/image{n}.{ext}");
+        let hash = tilo_content::hash_bytes(bytes);
+        let short = hash.get(..16).unwrap_or(&hash);
+        let target = format!("media/qdoc-{short}.{ext}");
         self.images.push(ExportedImage {
             rel_id: rel_id.clone(),
             part: format!("word/{target}"),
@@ -1356,40 +1620,114 @@ fn render_table_block(body: &mut String, snap: &Resolved<'_>, i: usize, ids: &Ru
     let Some(cells) = snap.blocks.get(start..i) else {
         return i;
     };
-    let nrows = cells
-        .iter()
-        .map(|c| cell_rc(c).0)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    let ncols = cells
-        .iter()
-        .map(|c| cell_rc(c).1)
-        .max()
-        .unwrap_or(0)
-        .saturating_add(1);
-    body.push_str(r#"<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr><w:tblGrid>"#);
-    for _ in 0..ncols {
-        body.push_str("<w:gridCol/>");
+    // Cells by grid position; the rows below a vertically merged cell hold a continuation
+    // cell as wide as it.
+    let mut at: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
+    let mut continued: BTreeMap<(usize, usize), &BlockView> = BTreeMap::new();
+    let (mut nrows, mut ncols) = (0usize, 0usize);
+    for cell in cells {
+        let (r, c) = cell_rc(cell);
+        let (cols, rows) = (cell_span(cell, "colspan"), cell_span(cell, "rowspan"));
+        at.entry((r, c)).or_insert(cell);
+        for dr in 1..rows {
+            continued.insert((r.saturating_add(dr), c), cell);
+        }
+        nrows = nrows.max(r.saturating_add(rows));
+        ncols = ncols.max(c.saturating_add(cols));
     }
-    body.push_str("</w:tblGrid>");
+    body.push_str("<w:tbl>");
+    push_table_props(body, cells.first(), ncols);
+    // A row's properties ride on its first cell.
+    let mut row_props: BTreeMap<usize, &str> = BTreeMap::new();
+    for cell in cells {
+        if let Some(AttrVal::Str(xml)) = cell.attrs.get(super::paragraph::ATTR_TRPR) {
+            row_props.entry(cell_rc(cell).0).or_insert(xml.as_str());
+        }
+    }
     for r in 0..nrows {
         body.push_str("<w:tr>");
-        for c in 0..ncols {
-            let inner = cells
-                .iter()
-                .find(|cl| cell_rc(cl) == (r, c))
-                .map(|cl| render_runs(&cl.text, &cl.marks, ids))
-                .unwrap_or_default();
-            let _ = write!(
-                body,
-                r#"<w:tc><w:tcPr><w:tcW w:w="0" w:type="auto"/></w:tcPr><w:p>{inner}</w:p></w:tc>"#
+        if let Some(pr) = row_props.get(&r) {
+            body.push_str(pr);
+        }
+        let mut c = 0;
+        while c < ncols {
+            let own = at.get(&(r, c)).copied();
+            // A vertical merge's continuation cells look like its first one.
+            let cell = own.or_else(|| continued.get(&(r, c)).copied());
+            let (span, merge, inner) = if let Some(cl) = own {
+                let merge = if cell_span(cl, "rowspan") > 1 {
+                    r#"<w:vMerge w:val="restart"/>"#
+                } else {
+                    ""
+                };
+                (
+                    cell_span(cl, "colspan"),
+                    merge,
+                    render_runs(&cl.text, &cl.marks, ids),
+                )
+            } else if let Some(first) = cell {
+                (cell_span(first, "colspan"), "<w:vMerge/>", String::new())
+            } else {
+                (1, "", String::new())
+            };
+            let grid_span = if span > 1 {
+                format!(r#"<w:gridSpan w:val="{span}"/>"#)
+            } else {
+                String::new()
+            };
+            let kept = |key: &str| match cell.and_then(|cl| cl.attrs.get(key)) {
+                Some(AttrVal::Str(xml)) => Some(xml.as_str()),
+                _ => None,
+            };
+            let tcpr = super::paragraph::cell_props_xml(
+                &[
+                    (b"w:tcW", super::paragraph::DEFAULT_TCW.to_string()),
+                    (b"w:gridSpan", grid_span),
+                    (b"w:vMerge", merge.to_string()),
+                ],
+                kept(super::paragraph::ATTR_TCPR),
             );
+            let ppr = super::paragraph::ppr_xml(
+                &[],
+                kept(super::paragraph::ATTR_PPR),
+                ToString::to_string,
+            );
+            let _ = write!(body, "<w:tc>{tcpr}<w:p>{ppr}{inner}</w:p></w:tc>");
+            c = c.saturating_add(span);
         }
         body.push_str("</w:tr>");
     }
     body.push_str("</w:tbl>");
     i
+}
+
+/// A table's `w:tblPr` and `w:tblGrid`: the ones kept from import on its `first` cell (the
+/// grid only while it still has a column per grid column), else automatic ones.
+fn push_table_props(body: &mut String, first: Option<&BlockView>, ncols: usize) {
+    let kept = |key: &str| match first.and_then(|c| c.attrs.get(key)) {
+        Some(AttrVal::Str(xml)) => Some(xml.as_str()),
+        _ => None,
+    };
+    body.push_str(kept(super::paragraph::ATTR_TBLPR).unwrap_or(super::paragraph::DEFAULT_TBLPR));
+    if let Some(grid) = kept(super::paragraph::ATTR_TBLGRID)
+        .filter(|grid| super::paragraph::grid_columns(grid) == ncols)
+    {
+        body.push_str(grid);
+        return;
+    }
+    body.push_str("<w:tblGrid>");
+    for _ in 0..ncols {
+        body.push_str("<w:gridCol/>");
+    }
+    body.push_str("</w:tblGrid>");
+}
+
+/// A cell's `colspan`/`rowspan` (1 when absent).
+fn cell_span(b: &BlockView, key: &str) -> usize {
+    match b.attrs.get(key) {
+        Some(AttrVal::Int(n)) if *n > 1 => usize::try_from(*n).unwrap_or(1).min(1024),
+        _ => 1,
+    }
 }
 
 /// Renders one block (or, for `cell`, a whole contiguous table run) into `body`, returning the
@@ -1412,22 +1750,33 @@ fn render_block(
                 Some(AttrVal::Int(n)) => (*n).clamp(1, 6),
                 _ => 1,
             };
+            let style = format!(r#"<w:pStyle w:val="Heading{level}"/>"#);
+            let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
             let _ = write!(
                 body,
-                r#"<w:p><w:pPr><w:pStyle w:val="Heading{level}"/>{}{}</w:pPr>{}</w:p>"#,
-                jc_xml(b),
-                spacing_xml(b),
+                "<w:p>{ppr}{}</w:p>",
                 render_runs(&b.text, &b.marks, ids)
             );
             i.saturating_add(1)
         }
         "list_item" => {
             let numid = numbering.num_id(b);
+            let level = match b.attrs.get("level") {
+                Some(AttrVal::Int(n)) => (*n).clamp(0, 8),
+                _ => 0,
+            };
+            // A list item keeps its own paragraph style when it had one.
+            let style = match b.attrs.get(super::paragraph::ATTR_PPR) {
+                Some(AttrVal::Str(kept)) if super::paragraph::has_style(kept) => String::new(),
+                _ => numbering.paragraph_style(),
+            };
+            let num = format!(
+                r#"<w:numPr><w:ilvl w:val="{level}"/><w:numId w:val="{numid}"/></w:numPr>"#
+            );
+            let ppr = block_ppr(b, &[(b"w:pStyle", style), (b"w:numPr", num)], ids);
             let _ = write!(
                 body,
-                r#"<w:p><w:pPr><w:pStyle w:val="ListParagraph"/><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{numid}"/></w:numPr>{}{}</w:pPr>{}</w:p>"#,
-                jc_xml(b),
-                spacing_xml(b),
+                "<w:p>{ppr}{}</w:p>",
                 render_runs(&b.text, &b.marks, ids)
             );
             i.saturating_add(1)
@@ -1441,7 +1790,7 @@ fn render_block(
         }
         "fidelity" => {
             // Section properties are rebuilt and appended after the last block.
-            if let Some(AttrVal::Str(xml)) = b.attrs.get("xml")
+            if let Some(xml) = crate::preserve::fidelity_xml(b, "docx")
                 && !super::section::is_section_properties(xml)
             {
                 body.push_str(xml);
@@ -1451,20 +1800,14 @@ fn render_block(
         "cell" => render_table_block(body, snap, i, ids),
         _ => {
             // A plain paragraph: a `style` attr emits `<w:pStyle>`; a direct `align` attr still rides as `<w:jc>`.
-            let mut ppr_inner = String::new();
+            let mut style = String::new();
             if let Some(AttrVal::Str(sid)) = b.attrs.get("style")
                 && snap.styles.contains_key(sid)
             {
-                let _ = write!(ppr_inner, r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid));
+                style = format!(r#"<w:pStyle w:val="{}"/>"#, escape_attr(sid));
                 named_refs.insert(sid.clone());
             }
-            ppr_inner.push_str(&jc_xml(b));
-            ppr_inner.push_str(&spacing_xml(b));
-            let ppr = if ppr_inner.is_empty() {
-                String::new()
-            } else {
-                format!("<w:pPr>{ppr_inner}</w:pPr>")
-            };
+            let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
             let _ = write!(
                 body,
                 "<w:p>{ppr}{}</w:p>",
@@ -1478,14 +1821,16 @@ fn render_block(
 /// Build `word/document.xml`, collecting referenced style ids, the numbering plan, and each note id's docx id + kind.
 fn build_document_xml(
     snap: &Resolved<'_>,
-    sectpr: &str,
+    section: &super::section::SectionPlan,
+    mut numbering: Numbering,
     note_ids: &BTreeMap<String, i64>,
     note_kinds: &BTreeMap<String, qdoc::model::NoteKind>,
     comment_ids: &BTreeMap<String, i64>,
+    root: Option<&str>,
 ) -> (String, BTreeSet<String>, Numbering, ImageExport) {
+    let links = &link_relationship_ids(snap);
     let mut body = String::new();
     let mut named_refs: BTreeSet<String> = BTreeSet::new();
-    let mut numbering = Numbering::default();
     let mut imgs = ImageExport::default();
     // Tracked-change ids are assigned from 0 in canonical (sorted) order, independent of comment ids.
     let changes = change_index(snap);
@@ -1495,15 +1840,17 @@ fn build_document_xml(
         .enumerate()
         .map(|(i, c)| (c.id.clone(), index_to_i64(i)))
         .collect();
-    // Bookmark ids are assigned from 0 in sorted-name order so output is deterministic.
+    // Bookmark ids are assigned in sorted-name order so output is deterministic, from the
+    // first id no verbatim-kept bookmark uses.
     let bookmark_ids: BTreeMap<String, i64> = {
+        let base = first_free_bookmark_id(snap);
         let mut names: Vec<String> = snap.bookmarks.iter().map(|bm| bm.name.clone()).collect();
         names.sort();
         names.dedup();
         names
             .into_iter()
             .enumerate()
-            .map(|(i, name)| (name, index_to_i64(i)))
+            .map(|(i, name)| (name, index_to_i64(i).saturating_add(base)))
             .collect()
     };
     let ids = RunIds {
@@ -1513,6 +1860,8 @@ fn build_document_xml(
         changes: &changes,
         change_ids: &change_ids,
         bookmark_ids: &bookmark_ids,
+        links,
+        section,
     };
     let mut i = 0;
     while i < snap.blocks.len() {
@@ -1527,12 +1876,90 @@ fn build_document_xml(
         );
     }
 
+    // The imported document's root keeps its namespace declarations (and `mc:Ignorable`), so
+    // the elements carried through verbatim resolve; the ones this exporter writes are added.
+    let root = root
+        .and_then(|r| merge_root_namespaces(r, "w:document", DOCUMENT_NAMESPACES))
+        .unwrap_or_else(|| {
+            let mut tag = String::from("<w:document");
+            for (prefix, uri) in DOCUMENT_NAMESPACES {
+                let _ = write!(tag, r#" xmlns:{prefix}="{uri}""#);
+            }
+            tag.push('>');
+            tag
+        });
     // sectPr is a direct child of `w:body`, placed after the last block.
     let document = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="{W_NS}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006" xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w10="urn:schemas-microsoft-com:office:word" xmlns:wne="http://schemas.microsoft.com/office/word/2006/wordml"><w:body>{body}{sectpr}</w:body></w:document>"#
+{root}<w:body>{body}{}</w:body></w:document>"#,
+        section.sectpr
     );
     (document, named_refs, numbering, imgs)
+}
+
+/// The namespaces the exported `word/document.xml` declares on its root.
+const DOCUMENT_NAMESPACES: &[(&str, &str)] = &[
+    ("w", W_NS),
+    (
+        "r",
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    ),
+    (
+        "m",
+        "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    ),
+    (
+        "wp",
+        "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    ),
+    (
+        "mc",
+        "http://schemas.openxmlformats.org/markup-compatibility/2006",
+    ),
+    ("o", "urn:schemas-microsoft-com:office:office"),
+    ("v", "urn:schemas-microsoft-com:vml"),
+    ("w10", "urn:schemas-microsoft-com:office:word"),
+    (
+        "wne",
+        "http://schemas.microsoft.com/office/word/2006/wordml",
+    ),
+];
+
+/// The largest `w:id` of a `w:bookmarkStart` inside XML carried through verbatim, so the
+/// bookmarks the exporter numbers itself start above it and never collide.
+fn max_bookmark_id(xml: &str) -> Option<i64> {
+    let mut max = None;
+    let mut rest = xml;
+    while let Some(at) = rest.find("<w:bookmarkStart") {
+        rest = rest.get(at.saturating_add(1)..).unwrap_or_default();
+        let tag = rest
+            .get(..rest.find('>').unwrap_or(rest.len()))
+            .unwrap_or_default();
+        let id = tag
+            .find("w:id=\"")
+            .and_then(|p| tag.get(p.saturating_add(6)..))
+            .and_then(|v| v.split('"').next())
+            .and_then(|v| v.parse::<i64>().ok());
+        max = max.max(id);
+    }
+    max
+}
+
+/// The first bookmark id free of every id used by verbatim XML in `snap`.
+fn first_free_bookmark_id(snap: &DocSnapshot) -> i64 {
+    let verbatim = snap.blocks.iter().flat_map(|b| {
+        let block = crate::preserve::fidelity_xml(b, "docx");
+        let inline = b
+            .marks
+            .iter()
+            .filter(|m| m.name == MARK_DOCX_XML)
+            .filter_map(|m| m.value.as_str());
+        block.into_iter().chain(inline)
+    });
+    verbatim
+        .filter_map(max_bookmark_id)
+        .max()
+        .map_or(0, |m| m.saturating_add(1))
 }
 
 #[cfg(test)]
@@ -1671,7 +2098,10 @@ mod tests {
         );
         let rels = std::str::from_utf8(cont.get("word/_rels/document.xml.rels").unwrap()).unwrap();
         assert!(
-            rels.contains(r#"Target="media/image1.png""#),
+            rels.contains(&format!(
+                r#"Target="media/qdoc-{}.png""#,
+                &tilo_content::hash_bytes(&TINY_PNG)[..16]
+            )),
             "image rel wired: {rels}"
         );
         let ct = std::str::from_utf8(cont.get("[Content_Types].xml").unwrap()).unwrap();
@@ -3074,6 +3504,88 @@ mod tests {
         );
         assert!(out.get("word/document.xml").is_some(), "body regenerated");
         assert_eq!(out.get("word/styles.xml"), c.get("word/styles.xml"));
+    }
+
+    #[test]
+    fn keeps_paragraph_properties_links_merged_cells_and_numbering() {
+        let numbering = concat!(
+            r#"<w:abstractNum w:abstractNumId="7"><w:lvl w:ilvl="0"><w:start w:val="1"/><w:numFmt w:val="decimal"/><w:lvlText w:val="%1)"/></w:lvl></w:abstractNum>"#,
+            r#"<w:num w:numId="9"><w:abstractNumId w:val="7"/></w:num>"#,
+        );
+        let body = concat!(
+            r#"<w:p><w:pPr><w:keepNext/><w:spacing w:before="120" w:line="360" w:lineRule="auto"/><w:ind w:start="720"/></w:pPr>"#,
+            r#"<w:hyperlink r:id="rIdL"><w:r><w:t>site</w:t></w:r></w:hyperlink></w:p>"#,
+            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="1"/><w:numId w:val="9"/></w:numPr></w:pPr><w:r><w:t>item</w:t></w:r></w:p>"#,
+            r#"<w:p><w:pPr><w:sectPr><w:cols w:num="2"/></w:sectPr></w:pPr></w:p>"#,
+            r#"<w:tbl><w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge w:val="restart"/></w:tcPr><w:p><w:r><w:t>big</w:t></w:r></w:p></w:tc>"#,
+            r#"<w:tc><w:p><w:r><w:t>c</w:t></w:r></w:p></w:tc></w:tr>"#,
+            r#"<w:tr><w:tc><w:tcPr><w:gridSpan w:val="2"/><w:vMerge/></w:tcPr><w:p/></w:tc>"#,
+            r#"<w:tc><w:p><w:r><w:t>f</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#,
+        );
+        let mut c = DocxContainer::read(&super::super::container::minimal_docx_numbered(
+            "", numbering, body,
+        ))
+        .unwrap();
+        let rels = String::from_utf8(c.get("word/_rels/document.xml.rels").unwrap().to_vec())
+            .unwrap()
+            .replace(
+                "</Relationships>",
+                r#"<Relationship Id="rIdL" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/?a=1&amp;b=2" TargetMode="External"/></Relationships>"#,
+            );
+        c.set("word/_rels/document.xml.rels", rels.into_bytes());
+        let mut d = Document::new();
+        DocxCodec
+            .import(
+                &c.write().unwrap(),
+                &mut d.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        let snap = d.materialize();
+        assert!(
+            snap.blocks[0].marks.iter().any(|m| m.name == "link"
+                && m.value == MarkValue::Str("https://example.org/?a=1&b=2".into())),
+            "{:?}",
+            snap.blocks[0].marks
+        );
+        assert_eq!(snap.blocks[1].attrs.get("level"), Some(&AttrVal::Int(1)));
+        let big = snap.blocks.iter().find(|b| b.text == "big").unwrap();
+        assert_eq!(big.attrs.get("colspan"), Some(&AttrVal::Int(2)));
+        assert_eq!(big.attrs.get("rowspan"), Some(&AttrVal::Int(2)));
+        let f = snap.blocks.iter().find(|b| b.text == "f").unwrap();
+        assert_eq!(f.attrs.get("col"), Some(&AttrVal::Int(2)), "{:?}", f.attrs);
+
+        let out = DocxCodec
+            .export(d.as_ref(), &tilo_content::NoContent)
+            .unwrap();
+        let c = DocxContainer::read(&out).unwrap();
+        let text = |part: &str| String::from_utf8(c.get(part).unwrap().to_vec()).unwrap();
+        let xml = text("word/document.xml");
+        for kept in [
+            r#"<w:pPr><w:keepNext/><w:spacing w:before="120" w:line="360" w:lineRule="auto"/><w:ind w:start="720"/></w:pPr>"#,
+            r#"<w:numPr><w:ilvl w:val="1"/><w:numId w:val="9"/></w:numPr>"#,
+            r#"<w:sectPr><w:cols w:num="2"/></w:sectPr>"#,
+            r#"<w:gridSpan w:val="2"/><w:vMerge w:val="restart"/>"#,
+            r#"<w:gridSpan w:val="2"/><w:vMerge/>"#,
+            r#"<w:hyperlink r:id="rIdQdocLink1">"#,
+        ] {
+            assert!(xml.contains(kept), "{kept} in {xml}");
+        }
+        assert!(text("word/_rels/document.xml.rels").contains(
+            r#"Id="rIdQdocLink1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://example.org/?a=1&amp;b=2" TargetMode="External""#
+        ));
+        // The imported numbering still numbers the item, so it is kept as it was.
+        assert!(text("word/numbering.xml").contains(r#"<w:lvlText w:val="%1)"/>"#));
+
+        let mut again = Document::new();
+        DocxCodec
+            .import(
+                &out,
+                &mut again.as_mut(),
+                &mut tilo_content::ContentInputs::new(),
+            )
+            .unwrap();
+        assert_eq!(norm(&again.materialize()), norm(&snap));
     }
 
     #[test]

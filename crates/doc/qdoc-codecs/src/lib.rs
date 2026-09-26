@@ -226,7 +226,10 @@ mod tests {
                     .map(|x| (x.start, x.end, x.name.clone()))
                     .collect();
                 m.sort();
-                (b.kind.clone(), b.text.clone(), m, b.attrs.clone())
+                // What a codec keeps for its own export is not part of the canonical model.
+                let mut attrs = b.attrs.clone();
+                attrs.retain(|k, _| !crate::preserve::is_codec_private_attr(k));
+                (b.kind.clone(), b.text.clone(), m, attrs)
             })
             .collect()
     }

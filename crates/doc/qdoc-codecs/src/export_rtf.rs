@@ -20,6 +20,7 @@ const INDENT_TWIPS: i64 = 720;
 /// succeeds: unknown block kinds degrade to a paragraph, image blocks
 /// degrade to their alt text (or are skipped).
 pub fn render_rtf(snap: &DocSnapshot) -> String {
+    let snap = &*qdoc::export::without_kept_placeholders(snap);
     // Pass 1: collect the color table from every `color` mark in the document.
     let mut colors = ColorTable::new();
     collect_colors(&snap.blocks, &mut colors);

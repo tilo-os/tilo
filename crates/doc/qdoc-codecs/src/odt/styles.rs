@@ -11,7 +11,7 @@ use qdoc::schema::{
 use qdoc::snapshot::AttrVal;
 use quick_xml::events::{BytesStart, Event};
 use quick_xml::reader::Reader;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Decode an ODF style name into the qdoc style-id used as the container key:
 /// `LibreOffice` encodes spaces (and other chars) as `_20_`, so `Heading_20_1` becomes `Heading 1`.
@@ -303,6 +303,9 @@ pub(crate) struct StyleRegistry {
     pub list_numbering: HashMap<String, ListNumbering>,
     /// `graphic`-family (frame) style name → the model wrap value, parsed from `style:wrap`.
     pub graphic_wrap: HashMap<String, String>,
+    /// `text`-family styles that say more than their marks: named (character) styles, styles
+    /// derived from one, and styles with text properties the model has no mark for.
+    pub text_extra: HashSet<String>,
 }
 
 impl StyleRegistry {
@@ -493,6 +496,8 @@ struct StyleScratch {
     indent: Option<f64>,
     line_height: Option<f64>,
     graphic_wrap: Option<String>,
+    /// The style's text properties include one no mark represents.
+    text_extra: bool,
 
     list_name: Option<String>,
     list_numbered: bool,
@@ -529,6 +534,7 @@ impl StyleScratch {
                 }
             }
             b"style:text-properties" => {
+                self.text_extra |= has_unmodeled_text_props(e);
                 self.text.extend(marks_from_text_props(e));
                 let f = text_fields(e);
                 if f.size.is_some() {
@@ -602,6 +608,9 @@ impl StyleScratch {
                 if let (Some(n), Some(fam)) = (self.name.take(), self.family.take()) {
                     match fam.as_str() {
                         "text" => {
+                            if from_named_section || self.parent.is_some() || self.text_extra {
+                                reg.text_extra.insert(n.clone());
+                            }
                             if !self.text.is_empty() {
                                 reg.text.insert(n, std::mem::take(&mut self.text));
                             }
@@ -649,6 +658,7 @@ impl StyleScratch {
                 self.indent = None;
                 self.line_height = None;
                 self.graphic_wrap = None;
+                self.text_extra = false;
             }
             b"text:list-style" => {
                 if let Some(n) = self.list_name.take() {
@@ -667,6 +677,46 @@ impl StyleScratch {
             _ => {}
         }
     }
+}
+
+/// Text properties the model has marks for (their Asian/complex-script twins follow them), and
+/// ones that carry nothing to keep (editing-session ids, the underline's width/colour).
+const MODELED_TEXT_PROPS: &[&str] = &[
+    "fo:background-color",
+    "fo:color",
+    "fo:country",
+    "fo:font-family",
+    "fo:font-size",
+    "fo:font-style",
+    "fo:font-weight",
+    "fo:language",
+    "style:font-name",
+    "style:text-line-through-style",
+    "style:text-position",
+    "style:text-underline-style",
+    "style:text-underline-width",
+    "style:text-underline-color",
+    "style:text-line-through-type",
+    "officeooo:rsid",
+    "officeooo:paragraph-rsid",
+];
+
+/// Whether a `style:text-properties` sets anything the model has no mark for.
+fn has_unmodeled_text_props(e: &BytesStart) -> bool {
+    e.attributes().flatten().any(|a| {
+        let key = String::from_utf8_lossy(a.key.as_ref());
+        let base = key
+            .strip_suffix("-asian")
+            .or_else(|| key.strip_suffix("-complex"))
+            .unwrap_or(&key);
+        let base = base
+            .replace("style:language", "fo:language")
+            .replace("style:country", "fo:country")
+            .replace("style:font-style", "fo:font-style")
+            .replace("style:font-weight", "fo:font-weight")
+            .replace("style:font-size", "fo:font-size");
+        !MODELED_TEXT_PROPS.contains(&base.as_str())
+    })
 }
 
 pub(super) fn parse_styles(xml: &[u8], reg: &mut StyleRegistry, from_named_section: bool) {
