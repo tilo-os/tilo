@@ -2129,16 +2129,6 @@ fn post_codec_pack_notices(frame_builder: &mut FrameBuilder) -> bool {
 /// spawned. This keeps the token single-use and binds it to the exact user
 /// action rather than accepting an app-id guess later.
 fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) -> bool {
-    // A host-session launch may resolve to a legacy X11-only program. Keep it
-    // queued during the private bridge's short startup race. Once recovery is
-    // terminally unavailable, drain it with the explicit Wayland-only
-    // environment; Wayland-capable host apps remain usable and an X11-only
-    // child gets the ordinary launcher failure notification.
-    if crate::shell::host_apps::x11_availability()
-        == crate::shell::host_apps::X11Availability::Starting
-    {
-        return false;
-    }
     let requests = crate::shell::host_apps::drain_queued_launches();
     let mut changed = false;
     for request in requests {
@@ -2147,7 +2137,6 @@ fn launch_queued_host_apps(state: &mut State, frame_builder: &mut FrameBuilder) 
             desktop_id = %request.app.desktop_id,
             display_name = %request.app.name,
             placement = ?request.placement,
-            x11 = ?crate::shell::host_apps::x11_availability(),
             request_to_dispatch_us = request.requested_at.elapsed().as_micros(),
             "dispatching user-requested host application launch"
         );
@@ -5031,32 +5020,6 @@ fn bind_and_publish_wayland_socket() -> (
 }
 
 #[cfg(test)]
-fn xwayland_start_follows_public_socket_registration(source: &str) -> bool {
-    let Some(registration) = source.find(".insert_source(listening_socket") else {
-        return false;
-    };
-    let Some(dispatch) = source.find("event_loop.dispatch(park") else {
-        return false;
-    };
-    let Some(start) = source.find("xwayland = Some(super::xwayland::XwaylandSupervisor::start")
-    else {
-        return false;
-    };
-    registration < dispatch && dispatch < start
-}
-
-#[cfg(test)]
-fn xwayland_starting_precedes_frame_pump(source: &str) -> bool {
-    let Some(starting) = source.find("crate::shell::host_apps::set_x11_starting();") else {
-        return false;
-    };
-    let Some(pump) = source.find("frame_builder.pump_apps") else {
-        return false;
-    };
-    starting < pump
-}
-
-#[cfg(test)]
 fn backend_nested_loop_uses_edge_wake(source: &str) -> bool {
     let Some(start) = source.rfind("let backend_event_wake = if let Some(fd) = backend.event_fd()")
     else {
@@ -5543,34 +5506,30 @@ pub fn run() {
         std::process::exit(1);
     }
 
-    // The complete Tilo image deliberately remains Wayland-only. A host
-    // desktop session is a different trust tier: it promises to keep the
-    // distro applications the person already installed usable, including
-    // legacy X11 software, and labels those launches as unconfined.
-    //
-    // Register the public socket source before spawning satellite. Satellite
-    // is a Wayland client and Xwayland does not publish its X socket until
-    // that client has connected and created its private bridge. Starting it
-    // above `insert_source` leaves the worker waiting on a connection this
-    // event loop cannot accept yet; the readiness timeout then kills a
-    // healthy satellite/Xwayland pair on every host login.
-    let xwayland_enabled =
-        super::xwayland::enabled_for(crate::compositor::parse_install_mode_from_args());
-    // Persisted host windows are examined by the first widget pump, before
-    // the event loop's initial socket-dispatch pass below. Publish the
-    // compatibility lifecycle now so those restores defer instead of being
-    // launched without DISPLAY/XAUTHORITY. The actual satellite process still
-    // starts only after calloop has accepted one dispatch cycle.
-    if xwayland_enabled {
-        crate::shell::host_apps::set_x11_starting();
-    }
-    // Do not launch satellite until calloop has had one chance to dispatch the
-    // public socket. Satellite is itself a Wayland client, and merely
-    // registering the listener does not accept its connection; the remaining
-    // startup work below can otherwise consume the whole five-second
-    // readiness budget on a slow host and produce a false X11-unavailable
-    // notification.
-    let mut xwayland: Option<super::xwayland::XwaylandSupervisor> = None;
+    // Legacy X11 software runs through one rootless Xwayland per workspace.
+    // A display is only a listening socket until its first client connects;
+    // xwayland-satellite, itself a client of the public socket registered
+    // above, starts on that connection. The wake ping lets a launch made
+    // outside this loop's tick have its new display watched immediately.
+    let mut xwayland = match calloop::ping::make_ping() {
+        Ok((wake, wake_source)) => {
+            if let Err(error) = event_loop
+                .handle()
+                .insert_source(wake_source, |(), (), _| {})
+            {
+                tracing::warn!(%error, "X11 display wake source unavailable");
+            }
+            Some(super::xwayland::XwaylandSupervisor::start(
+                event_loop.handle(),
+                wake,
+                &socket_name,
+            ))
+        }
+        Err(error) => {
+            tracing::warn!(%error, "X11 apps are unavailable: no loop wake");
+            None
+        }
+    };
 
     // A third display is the input-method trust boundary. The OSK package is
     // sandboxed exactly like any other app, but receives this one socket as
@@ -6197,12 +6156,10 @@ pub fn run() {
             close_requested = true;
             continue;
         }
-        // The bridge is optional, but its published DISPLAY/XAUTHORITY pair
-        // must track its child exactly. Poll before processing launch actions
-        // so an X11/Electron launch in this tick either gets a live bridge or
-        // falls back to the Wayland-only environment.
+        // Poll before processing launch actions so closed workspaces have
+        // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&socket_name, &frame_builder.chrome_handle());
+            xwayland.poll(&frame_builder.chrome_handle());
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
@@ -8512,9 +8469,6 @@ pub fn run() {
         if let Err(err) = event_loop.dispatch(park, &mut state) {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
-        }
-        if xwayland_enabled && xwayland.is_none() {
-            xwayland = Some(super::xwayland::XwaylandSupervisor::start(&socket_name));
         }
         metrics.mark_sleep(t_sleep_start.elapsed());
         metrics.end_tick();
@@ -11168,10 +11122,7 @@ mod vt_chord_tests {
 
 #[cfg(test)]
 mod gesture_wireup_tests {
-    use super::{
-        apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of,
-        xwayland_start_follows_public_socket_registration, xwayland_starting_precedes_frame_pump,
-    };
+    use super::{apply_shell_gesture, backend_nested_loop_uses_edge_wake, refresh_mhz_of};
     use crate::compositor::backend::drm::gestures::GestureAction;
     use crate::compositor::backend::{Backend, BackendEvent, HeadlessBackend, Output, OutputId};
     use crate::compositor::frame::FrameBuilder;
@@ -11245,24 +11196,6 @@ mod gesture_wireup_tests {
         // 59.94 Hz must not round to 60 000 — the whole reason DRM derives its interval from raw mode timing.
         let ntsc = Paced(std::time::Duration::from_nanos(16_683_333));
         assert_eq!(refresh_mhz_of(&ntsc as &dyn Backend), Some(59_940));
-    }
-
-    #[test]
-    fn xwayland_starts_only_after_the_public_wayland_socket_can_accept_clients() {
-        let source = include_str!("native.rs");
-        assert!(
-            xwayland_start_follows_public_socket_registration(source),
-            "satellite is itself a Wayland client; start it only after the public socket is registered and calloop has dispatched once"
-        );
-    }
-
-    #[test]
-    fn xwayland_lifecycle_is_starting_before_restored_apps_are_examined() {
-        let source = include_str!("native.rs");
-        assert!(
-            xwayland_starting_precedes_frame_pump(source),
-            "the first frame pump must see Xwayland Starting and defer persisted host apps until DISPLAY is published"
-        );
     }
 
     #[test]

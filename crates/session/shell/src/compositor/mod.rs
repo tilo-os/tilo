@@ -67,7 +67,7 @@ pub mod tab_binding;
 #[cfg(target_os = "linux")]
 pub mod test_control;
 #[cfg(target_os = "linux")]
-mod xwayland;
+pub(crate) mod xwayland;
 
 /// Which run mode the compositor should boot into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

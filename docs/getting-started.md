@@ -66,7 +66,7 @@ Applications already installed by the distribution or Flatpak remain
 available from Tilo search and keep using the same home-directory data. They are
 shown as **Host Apps** because Tilo does not retroactively sandbox them. Fedora's
 package also installs the rootless Xwayland bridge needed by legacy X11-only
-applications; it is started only inside the add-on Tilo session.
+applications; Tilo starts it on demand, one per workspace.
 
 ## Route 3: install the complete system
 
