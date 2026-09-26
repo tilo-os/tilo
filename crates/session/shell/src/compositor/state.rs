@@ -52,7 +52,9 @@ use smithay::wayland::fractional_scale::{
 use smithay::wayland::output::{OutputHandler, OutputManagerState};
 use smithay::output::Output as SmithayOutput;
 use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
 use smithay::wayland::pointer_gestures::PointerGesturesState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
 use smithay::wayland::tablet_manager::TabletSeatHandler;
 use smithay::wayland::input_method::{
     InputMethodHandler, InputMethodManagerState, PopupSurface as InputMethodPopupSurface,
@@ -78,8 +80,8 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_ext_data_control, delegate_fractional_scale, delegate_idle_inhibit,
-    delegate_output,
-    delegate_input_method_manager, delegate_pointer_gestures, delegate_primary_selection,
+    delegate_output, delegate_input_method_manager, delegate_pointer_constraints,
+    delegate_pointer_gestures, delegate_relative_pointer, delegate_primary_selection,
     delegate_seat, delegate_session_lock, delegate_shm, delegate_text_input_manager,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
     delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
@@ -611,6 +613,12 @@ pub struct State {
     pub cursor_shape_state: CursorShapeManagerState,
     /// The cursor the pointer-focused client asked for.
     pub client_cursor: crate::compositor::client_cursor::ClientCursor,
+    /// `zwp_relative_pointer_manager_v1`: unclamped motion deltas for games.
+    pub relative_pointer_state: RelativePointerManagerState,
+    /// `zwp_pointer_constraints_v1`: lock or confine the pointer, granted
+    /// only as [`crate::compositor::pointer_lock`] allows.
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub pointer_lock: crate::compositor::pointer_lock::PointerLock,
     /// Local-input → client-surface routing state: the live foreign-surface
     /// registry, seat focus bookkeeping, and the queue of foreign toplevels
     /// waiting to be mirrored into the shell chrome's tab tree. Every method lives in [`crate::compositor::client_input`].
@@ -873,6 +881,10 @@ impl State {
     /// The protocol callbacks and the frame builder must share this handle:
     /// otherwise a restored local tab can remain in the rendered tree after
     /// its Wayland surface is adopted and destroyed.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one place creates every protocol global the compositor advertises"
+    )]
     pub fn new_with_workspace_tree(
         loop_handle: LoopHandle<'static, Self>,
         display_handle: DisplayHandle,
@@ -926,6 +938,8 @@ impl State {
         // Advertise touchpad gestures for a bare-TTY session with no host compositor; constructed before the struct literal moves `display_handle`.
         let pointer_gestures_state = PointerGesturesState::new::<Self>(&display_handle);
         let cursor_shape_state = CursorShapeManagerState::new::<Self>(&display_handle);
+        let relative_pointer_state = RelativePointerManagerState::new::<Self>(&display_handle);
+        let pointer_constraints_state = PointerConstraintsState::new::<Self>(&display_handle);
         // Clipboard + primary selection + drag-and-drop, advertised before
         // the struct literal (which moves `display_handle`). Selection
         // *focus* is pushed alongside keyboard focus every tick — see `client_input::sync_keyboard_focus` — since smithay gates `set_selection` on it.
@@ -991,6 +1005,9 @@ impl State {
             pointer_gestures_state,
             cursor_shape_state,
             client_cursor: crate::compositor::client_cursor::ClientCursor::default(),
+            relative_pointer_state,
+            pointer_constraints_state,
+            pointer_lock: crate::compositor::pointer_lock::PointerLock::default(),
             client_input: crate::compositor::client_input::ClientInput::default(),
             popups: Vec::new(),
             popup_manager: PopupManager::default(),
@@ -2139,6 +2156,14 @@ impl State {
         let time = u32::try_from(self.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
         let serial = self.next_serial();
         match action {
+            // A portal session is remote input too: it must not move a
+            // pointer a local client holds locked or confined.
+            RemoteAction::PointerMotionAbsolute { .. }
+            | RemoteAction::PointerMotionRelative { .. }
+                if self.pointer_lock.is_engaged() =>
+            {
+                false
+            }
             RemoteAction::PointerMotionAbsolute { x, y, .. } => {
                 self.remote_pointer_motion_absolute(x, y, serial, time)
             }
@@ -4490,6 +4515,8 @@ delegate_input_method_manager!(State);
 delegate_virtual_keyboard_manager!(State);
 delegate_pointer_gestures!(State);
 delegate_cursor_shape!(State);
+delegate_relative_pointer!(State);
+delegate_pointer_constraints!(State);
 delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);

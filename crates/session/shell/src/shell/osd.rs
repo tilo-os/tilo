@@ -59,6 +59,9 @@ pub enum OsdKind {
     AirplaneMode { on: bool },
     /// The touchpad after its toggle key.
     Touchpad { enabled: bool },
+    /// A client locked or confined the pointer (`held`), or it was just
+    /// released. The caption names the way out.
+    PointerHeld { held: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -125,6 +128,14 @@ impl Osd {
     pub fn mic_mute(muted: bool) -> Self {
         Self {
             kind: OsdKind::MicMute { muted },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
+    pub fn pointer_held(held: bool) -> Self {
+        Self {
+            kind: OsdKind::PointerHeld { held },
             level: 0.0,
             raised_at: Instant::now(),
         }
@@ -199,6 +210,11 @@ impl Osd {
             OsdKind::AirplaneMode { on: false } => "Airplane mode off".to_string(),
             OsdKind::Touchpad { enabled: true } => "Touchpad on".to_string(),
             OsdKind::Touchpad { enabled: false } => "Touchpad off".to_string(),
+            OsdKind::PointerHeld { held: true } => format!(
+                "Pointer held by app · {} releases",
+                crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
+            ),
+            OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
         }
     }
 
@@ -444,6 +460,7 @@ fn draw_glyph(
                 colors.text_dim
             },
         ),
+        OsdKind::PointerHeld { .. } => (ui::icons::Icon::MousePointer2, colors.text_primary),
     };
     ui::icons::draw_icon(
         scene,

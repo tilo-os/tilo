@@ -21,6 +21,8 @@ clap.workspace = true
 hex.workspace = true
 libc.workspace = true
 serde.workspace = true
+# The display settings contract the Settings app uses, for --outputs layouts.
+settings-store = { path = "../../system/settings-store" }
 serde_json.workspace = true
 sha2.workspace = true
 tar.workspace = true

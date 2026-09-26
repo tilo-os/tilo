@@ -6527,6 +6527,22 @@ pub fn run() {
                             spatial_control = None;
                         }
                         session_changed = true;
+                    } else if state.pointer_lock.is_engaged()
+                        && crate::compositor::pointer_lock::is_release_chord(
+                            wev,
+                            test_control_ctx.modifiers,
+                        )
+                    {
+                        // Ctrl+Alt+Esc: always gets the pointer back from a
+                        // game that locked or confined it — ahead of the
+                        // client router, so the game cannot swallow it.
+                        if let Some(change) = state.release_pointer_constraint() {
+                            apply_pointer_constraint_change(backend.as_mut(), change);
+                            frame_builder.with_chrome(|chrome| {
+                                chrome.show_osd(crate::shell::osd::Osd::pointer_held(false));
+                            });
+                        }
+                        session_changed = true;
                     } else if route == PriorityRoute::LockSession {
                         // Super+L locks immediately.
                         for t in session.request_lock(Instant::now()) {
@@ -6641,15 +6657,37 @@ pub fn run() {
                         }
                     }
                 }
-                BackendEvent::RelativePointerMotion { dx, dy } => {
+                BackendEvent::RelativePointerMotion {
+                    dx,
+                    dy,
+                    dx_unaccel,
+                    dy_unaccel,
+                    time_usec,
+                } => {
                     if session.is_locked() {
                         if let Some(network) = peer_sync.as_ref() {
                             end_spatial_control(network, &mut spatial_control);
                         } else {
                             spatial_control = None;
                         }
-                    } else if let Some(network) = peer_sync.as_ref() {
-                        let _ = move_spatial_pointer(&state, network, &mut spatial_control, dx, dy);
+                    } else if state.pointer_lock.is_engaged() {
+                        // A game holding the pointer reads every delta; the
+                        // pointer must not wander onto another device.
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
+                    } else if peer_sync.as_ref().is_some_and(|network| {
+                        move_spatial_pointer(&state, network, &mut spatial_control, dx, dy)
+                    }) {
+                        // The pointer is on an adjacent device.
+                    } else {
+                        state.forward_client_relative_motion(
+                            (dx, dy),
+                            (dx_unaccel, dy_unaccel),
+                            time_usec,
+                        );
                     }
                 }
                 BackendEvent::ModifiersChanged(modifiers) => {
@@ -7370,6 +7408,17 @@ pub fn run() {
             backend.set_pointer_image(image);
             // A software cursor is drawn into the frame, so it needs one.
             injected_redraw_pending = true;
+        }
+        if let Some(change) =
+            client_input::sync_pointer_constraint(&mut state, &frame_builder, session.is_locked())
+        {
+            if change.engaged {
+                frame_builder.with_chrome(|chrome| {
+                    chrome.show_osd(crate::shell::osd::Osd::pointer_held(true));
+                });
+                injected_redraw_pending = true;
+            }
+            apply_pointer_constraint_change(backend.as_mut(), change);
         }
 
         // Per-output HiDPI: tell each client the scale of its current display.
@@ -8832,6 +8881,18 @@ pub fn run() {
 /// mirrors it before raising the transient readout. Quick Settings may be
 /// open while a hardware key is pressed, so waiting for its next device read
 /// would leave the visible slider behind the value in the OSD.
+/// Hand a pointer lock/confinement change to the backend, placing the
+/// pointer where a released lock asked.
+fn apply_pointer_constraint_change(
+    backend: &mut dyn Backend,
+    change: crate::compositor::pointer_lock::ConstraintChange,
+) {
+    backend.set_pointer_constraint(change.region);
+    if let Some((x, y)) = change.warp_to {
+        backend.warp_pointer(x, y);
+    }
+}
+
 fn publish_media_osd(
     chrome: &mut crate::shell::chrome_state::ChromeState,
     osd: crate::shell::osd::Osd,
@@ -8858,7 +8919,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::Transport(_)
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
-        | crate::shell::osd::OsdKind::Touchpad { .. } => {}
+        | crate::shell::osd::OsdKind::Touchpad { .. }
+        | crate::shell::osd::OsdKind::PointerHeld { .. } => {}
     }
 }
 
