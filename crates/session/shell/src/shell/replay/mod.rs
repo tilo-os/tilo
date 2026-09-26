@@ -644,7 +644,8 @@ impl ReplayController {
                 // The same workspace, and so the same windows, in a fresh
                 // room: the apps started there ask for the document and get
                 // it as it was at the target.
-                let workspace = self.with(|replay| Ok(replay.workspace))?;
+                let (workspace, previous) =
+                    self.with(|replay| Ok((replay.workspace, Arc::clone(&replay.peer))))?;
                 let (windows, rekeyed) = {
                     let mut tree = self.tree.write();
                     (
@@ -655,6 +656,8 @@ impl ReplayController {
                 let (closed, room) = rekeyed
                     .ok_or_else(|| TransportError::Room("the replay room is gone".into()))?;
                 let peer = self.admit(room, &trace, &owner, presentation)?;
+                peer.inherit_checkpoints(&previous);
+                drop(previous);
                 peer.rewind(end);
                 let apps = self.with(|replay| {
                     replay.room = room;

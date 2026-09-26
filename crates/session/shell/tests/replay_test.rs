@@ -722,3 +722,123 @@ fn a_recording_checked_against_its_own_replay_is_logic() {
     );
     drop(broker);
 }
+
+/// A trace whose one Notes document counts up: entry `i`, recorded at `i` ms,
+/// sets `count` to `i + 1`.
+fn session_trace_counting_to(room: &str, entries: u64) -> session_trace::SessionTrace {
+    use automerge::transaction::Transactable as _;
+    let mut trace = session_trace_with_one_document(room);
+    let start = trace.snapshots[0].frames[0].payload.clone();
+    let collab_types::DocumentMutation::Snapshot(bytes) =
+        collab_types::DocumentMutation::decode(&start).unwrap()
+    else {
+        panic!("the start is a snapshot");
+    };
+    let mut doc = automerge::AutoCommit::load(&bytes).unwrap();
+    for entry in 0..entries {
+        let heads = doc.get_heads();
+        doc.put(automerge::ROOT, "count", entry.saturating_add(1))
+            .unwrap();
+        let change = doc.save_after(&heads);
+        let envelope = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(change)
+                .encode()
+                .unwrap(),
+            collab_types::ArtifactId(uuid::Uuid::nil()),
+            collab_types::Ed25519PublicKey::from_bytes([1; 32]),
+            collab_types::AttestationId(uuid::Uuid::nil()),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::UNIX_EPOCH,
+            entry.saturating_add(2),
+        );
+        trace.timeline.push(session_trace::TimedEvent {
+            at: session_trace::Offset(entry),
+            event: session_trace::Event::Op(session_trace::DocumentOp {
+                route: session_trace::Route::new(APP, room, ""),
+                from: "ada".into(),
+                envelope,
+            }),
+        });
+    }
+    trace.duration = session_trace::Offset(entries);
+    trace
+}
+
+fn replayed_count(replay: &ReplayController, room: &str) -> Option<u64> {
+    let document = replay
+        .peer()?
+        .document(&session_trace::Route::new(APP, room, ""))?;
+    match automerge::ReadDoc::get(&document, automerge::ROOT, "count").ok()?? {
+        (automerge::Value::Scalar(scalar), _) => match scalar.as_ref() {
+            automerge::ScalarValue::Uint(count) => Some(*count),
+            automerge::ScalarValue::Int(count) => u64::try_from(*count).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// A scrub back starts from the checkpoint the playhead last passed, and
+/// stands exactly where it would had the replay been rebuilt from the start.
+#[test]
+fn a_short_scrub_back_resumes_from_a_checkpoint() {
+    use shell::shell::replay::peer::CHECKPOINT_EVERY;
+
+    let dir = tempfile::tempdir().unwrap();
+    let tree = room_tree();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        dir.path().join("collab.sock"),
+        Arc::clone(&tree),
+        Vec::new(),
+    )
+    .unwrap();
+    let replay = ReplayController::attach(&broker, Arc::clone(&tree));
+    let room = ROOM.to_string();
+    let entries = u64::try_from(CHECKPOINT_EVERY * 3 + 10).unwrap();
+    replay
+        .open(
+            session_trace_counting_to(&room, entries),
+            None,
+            &owner(),
+            Presentation::Offscreen,
+        )
+        .unwrap();
+
+    let end = session_trace::Offset(entries - 1);
+    replay.seek_offset(end).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(entries));
+    let passed = replay.peer().unwrap().checkpoints();
+    assert_eq!(
+        passed,
+        vec![CHECKPOINT_EVERY, CHECKPOINT_EVERY * 2, CHECKPOINT_EVERY * 3],
+        "the playhead leaves a checkpoint every {CHECKPOINT_EVERY} entries"
+    );
+
+    // Back a few entries past the last checkpoint: a new room and peer,
+    // which keeps what the old one passed.
+    let back = u64::try_from(CHECKPOINT_EVERY * 3 + 2).unwrap();
+    replay.seek_offset(session_trace::Offset(back - 1)).unwrap();
+    let peer = replay.peer().unwrap();
+    assert_eq!(
+        peer.checkpoints(),
+        passed,
+        "the checkpoints outlive the reload"
+    );
+    assert_eq!(replayed_count(&replay, &room), Some(back));
+    assert_eq!(
+        peer.rewind(usize::try_from(back).unwrap()),
+        CHECKPOINT_EVERY * 3,
+        "the rebuild starts at the checkpoint just before the target"
+    );
+
+    // Before any checkpoint, it starts from the recording's beginning.
+    replay.seek_offset(session_trace::Offset(4)).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(5));
+    assert_eq!(replay.peer().unwrap().rewind(5), 0);
+
+    // And forward again lands where a straight run would.
+    replay.seek_offset(end).unwrap();
+    assert_eq!(replayed_count(&replay, &room), Some(entries));
+    assert!(replay.close());
+    drop(broker);
+}
