@@ -149,7 +149,10 @@ impl AgentHost {
             .and_then(|call| transform::run(&call, &self.model))
         {
             Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-            Err(error) => InvocationUpdate::Failed { invocation, error },
+            Err(error) => InvocationUpdate::Failed {
+                invocation,
+                error: *error,
+            },
         }
     }
 }

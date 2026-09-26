@@ -89,13 +89,20 @@ pub mod code {
     pub const BUSY: &str = "busy";
 }
 
-fn failure(code: &str, message: impl Into<String>, retryable: bool) -> ActionFailure {
-    ActionFailure {
+/// A typed failure, boxed so results stay small.
+pub type Failure = Box<ActionFailure>;
+
+#[allow(
+    clippy::unnecessary_box_returns,
+    reason = "every fallible transform path returns this; boxed so its results stay small"
+)]
+fn failure(code: &str, message: impl Into<String>, retryable: bool) -> Failure {
+    Box::new(ActionFailure {
         code: code.to_string(),
         message: message.into(),
         details: None,
         retryable,
-    }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -400,14 +407,18 @@ pub struct Call {
     pub input: Option<String>,
 }
 
-fn invalid(message: impl Into<String>) -> ActionFailure {
+#[allow(
+    clippy::unnecessary_box_returns,
+    reason = "feeds the same boxed failure every fallible transform path returns"
+)]
+fn invalid(message: impl Into<String>) -> Failure {
     failure(code::INVALID_ARGUMENTS, message, false)
 }
 
 /// Whether `schema` is one the result could be checked against. Uses the
 /// same schema vocabulary check a published parameter gets, so a caller
 /// cannot ask for a shape the validator would silently weaken.
-fn check_schema(schema: &Value) -> Result<(), ActionFailure> {
+fn check_schema(schema: &Value) -> Result<(), Failure> {
     if serde_json::to_string(schema).map_or(usize::MAX, |text| text.len()) > MAX_SCHEMA_BYTES {
         return Err(failure(
             code::TOO_LARGE,
@@ -424,10 +435,7 @@ fn check_schema(schema: &Value) -> Result<(), ActionFailure> {
     }
 }
 
-fn read_content(
-    address: &str,
-    content: &tilo_content::ContentStore,
-) -> Result<String, ActionFailure> {
+fn read_content(address: &str, content: &tilo_content::ContentStore) -> Result<String, Failure> {
     let hash = address
         .strip_prefix(CONTENT_PREFIX)
         .filter(|hash| tilo_content::valid_hash(hash))
@@ -462,7 +470,7 @@ pub fn bind(
     action: &str,
     arguments: &Map<String, Value>,
     content: &tilo_content::ContentStore,
-) -> Result<Call, ActionFailure> {
+) -> Result<Call, Failure> {
     if !ACTIONS.iter().any(|(known, _, _)| *known == action) {
         return Err(failure(
             code::UNKNOWN_ACTION,
@@ -572,7 +580,7 @@ pub fn bind_wire(
     action: &str,
     argument: Option<&str>,
     content: &tilo_content::ContentStore,
-) -> Result<Call, ActionFailure> {
+) -> Result<Call, Failure> {
     let arguments = match argument {
         None => Map::new(),
         Some(text) => text
@@ -664,7 +672,7 @@ fn first_chars(text: &str, most: usize) -> String {
 /// [`code::MODEL_UNAVAILABLE`] when the model gave no answer,
 /// [`code::TIMED_OUT`] when [`TIMEOUT`] passed, and
 /// [`code::INVALID_OUTPUT`] when both answers failed the shape.
-pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, ActionFailure> {
+pub fn run(call: &Call, model: &dyn TransformModel) -> Result<ActionOutput, Failure> {
     let began = Instant::now();
     let instructions = call.transform.instructions();
     let expected = call.transform.expected();
@@ -741,7 +749,10 @@ pub fn perform(
     let invocation = invocation_of(id);
     match bind_wire(action, argument, content).and_then(|call| run(&call, model)) {
         Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-        Err(error) => InvocationUpdate::Failed { invocation, error },
+        Err(error) => InvocationUpdate::Failed {
+            invocation,
+            error: *error,
+        },
     }
 }
 
@@ -788,7 +799,10 @@ impl TransformService {
         context: Option<&ActionContext>,
     ) -> InvocationUpdate {
         let invocation = invocation_of(id);
-        let failed = |error| InvocationUpdate::Failed { invocation, error };
+        let failed = |error: Failure| InvocationUpdate::Failed {
+            invocation,
+            error: *error,
+        };
         if resource != RESOURCE_ID {
             return failed(failure(
                 code::UNKNOWN_ACTION,
@@ -827,7 +841,10 @@ impl TransformService {
             .spawn(move || {
                 let update = match run(&call, model.as_ref()) {
                     Ok(output) => InvocationUpdate::Succeeded { invocation, output },
-                    Err(error) => InvocationUpdate::Failed { invocation, error },
+                    Err(error) => InvocationUpdate::Failed {
+                        invocation,
+                        error: *error,
+                    },
                 };
                 let _ = finished.send((id, update));
             });
