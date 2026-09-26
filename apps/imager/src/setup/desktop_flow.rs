@@ -1,4 +1,4 @@
-//! UI-facing orchestration for the native qOS Desktop installation.
+//! UI-facing orchestration for the native Tilo Desktop installation.
 //!
 //! Slow host discovery, download, and helper tracking stay on workers. This
 //! coordinator only consumes bounded channel events and publishes explicit UI
@@ -514,7 +514,7 @@ fn launch_live_download(
 ) -> Result<DownloadReceiver, String> {
     let cache = xdg_paths::cache_dir()
         .ok_or("No private cache directory is available for the Desktop package.")?
-        .join("qos-imager-desktop");
+        .join("tilo-imager-desktop");
     let (sender, receiver) = mpsc::channel();
     std::thread::Builder::new()
         .name("desktop-package-download".into())
@@ -552,7 +552,7 @@ mod tests {
             distro_version: "44".into(),
             architecture: "aarch64".into(),
             package_format: PackageFormat::Rpm,
-            url: "https://code.podesta.ai/qos/releases/fixture.rpm".into(),
+            url: "https://code.tilo.so/tilo/releases/fixture.rpm".into(),
             byte_size: 7,
             sha256: sha256.clone(),
             verified_runtime: Some(RuntimeEvidence {

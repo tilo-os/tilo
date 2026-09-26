@@ -12,7 +12,7 @@ use std::path::Path;
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use settings_store::hardware::KeyboardInputSource;
+use settings_store::hardware::{InputMethodEngine, KeyboardInputSource};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CatalogEntry {
@@ -21,6 +21,40 @@ pub(crate) struct CatalogEntry {
 }
 
 pub(crate) fn installed_catalog() -> Vec<CatalogEntry> {
+    let mut entries = installed_layouts();
+    entries.extend(input_method_entries(InputMethodEngine::is_installed));
+    entries
+}
+
+/// Input-method engines (Pinyin, Mozc, Hangul) the image ships, listed with
+/// the layouts: they are chosen, ordered and switched exactly like them.
+fn input_method_entries(installed: impl Fn(InputMethodEngine) -> bool) -> Vec<CatalogEntry> {
+    InputMethodEngine::ALL
+        .into_iter()
+        .filter(|engine| installed(*engine))
+        .map(|engine| CatalogEntry {
+            id: engine.source_id(),
+            label: engine.label().to_string(),
+        })
+        .collect()
+}
+
+/// Whether `id` fits beside `active`: keyboard layouts are bounded by the
+/// XKB group limit, input-method engines are not XKB groups.
+pub(crate) fn has_room_for(active: &[String], id: &str) -> bool {
+    InputMethodEngine::from_source_id(id).is_some() || !layouts_full(active)
+}
+
+/// Whether `active` already holds as many keyboard layouts as XKB groups.
+pub(crate) fn layouts_full(active: &[String]) -> bool {
+    active
+        .iter()
+        .filter(|source| InputMethodEngine::from_source_id(source).is_none())
+        .count()
+        >= settings_store::hardware::MAX_KEYBOARD_INPUT_SOURCES
+}
+
+fn installed_layouts() -> Vec<CatalogEntry> {
     for path in [
         Path::new("/usr/share/X11/xkb/rules/evdev.xml"),
         Path::new("/usr/share/X11/xkb/rules/base.xml"),
@@ -240,5 +274,26 @@ mod tests {
     #[test]
     fn installed_catalog_contains_a_real_us_layout() {
         assert!(installed_catalog().iter().any(|entry| entry.id == "us"));
+    }
+
+    #[test]
+    fn installed_input_method_engines_are_offered_as_sources() {
+        let entries = input_method_entries(|engine| {
+            engine != settings_store::hardware::InputMethodEngine::Mozc
+        });
+        assert_eq!(
+            entries,
+            [
+                CatalogEntry {
+                    id: "ime/pinyin".into(),
+                    label: "Chinese (Simplified) — Pinyin".into(),
+                },
+                CatalogEntry {
+                    id: "ime/hangul".into(),
+                    label: "Korean — Hangul".into(),
+                },
+            ],
+            "an engine the image lacks is not offered"
+        );
     }
 }

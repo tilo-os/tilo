@@ -98,6 +98,16 @@ impl ShellDriver {
         }
     }
 
+    /// Lay the shell out across `outputs` — the displays the live
+    /// compositor would report — rather than one display the size of the
+    /// viewport, so each window group's width is a fraction of its own
+    /// monitor.
+    pub fn set_outputs(&mut self, outputs: &[shell::compositor::backend::Output]) {
+        self.fb
+            .set_output_geometry(shell::compositor::backend::output_geometry(outputs));
+        self.relayout();
+    }
+
     /// Run `compute_layout` + `apply_layout` against the current tree. The
     /// host's animation state is preserved because we don't rebuild the
     /// taffy tree — only the layout pass re-runs.
@@ -228,6 +238,13 @@ impl ShellDriver {
     /// Get the viewport size as (width, height) in logical pixels.
     pub fn viewport(&self) -> (f64, f64) {
         self.fb.viewport()
+    }
+
+    /// The size of the painted scene in physical pixels: what a renderer
+    /// target is sized to. Differs from [`Self::viewport`] once a display
+    /// draws at a scale other than 1.
+    pub fn scene_size(&self) -> (f64, f64) {
+        self.fb.scene_size()
     }
 
     /// Replace the active modifier set. Scenarios call this when they
@@ -407,7 +424,7 @@ impl ShellDriver {
     /// responsible for passing it to a renderer (offscreen or live).
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
-            let (width, height) = self.fb.viewport();
+            let (width, height) = self.fb.scene_size();
             let output = shell::compositor::lock_screen::LockOutput {
                 origin: (0.0, 0.0),
                 size: (width, height),
@@ -1626,7 +1643,7 @@ impl ShellDriver {
         self.step_frames(2);
     }
 
-    /// The wireless-display picker (`projection_overlay.rs`, Win+P), settled
+    /// The display sheet (`projection_overlay.rs`, Win+P), settled
     /// past its 220 ms slide-in by stepping the frames a live session would.
     fn scene_projection(&mut self) {
         self.with_chrome(|st| {
@@ -1648,7 +1665,7 @@ impl ShellDriver {
         // The reply receiver is dropped: a screenshot has nobody to hand the
         // answer to, and the sheet does not care until it is answered.
         let _rx = prompts.enqueue(
-            PortalCaller::new(WorkspaceId(1), "dev.qos.camera"),
+            PortalCaller::new(WorkspaceId(1), "dev.tilo.camera"),
             Capability::Camera {
                 scope: Expiry::EndOfSession,
             },

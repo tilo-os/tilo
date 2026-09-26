@@ -37,6 +37,7 @@ fn raw_ancestry_is_bounded_lossless_and_refuses_normalization() {
 #[cfg(target_os = "linux")]
 mod native {
     use super::super::{native::fixture_acquire, *};
+    use crate::setup::internal_cache::layout;
     use crate::{
         release::InternalRelease,
         setup::{
@@ -58,7 +59,7 @@ mod native {
         let bytes = internal_bundle::tests::bytes(&internal_bundle::tests::fixture());
         let release = InternalRelease::transport_fixture(
             &bytes,
-            "https://code.podesta.ai/releases/manifest.json",
+            "https://code.tilo.so/releases/manifest.json",
         );
         SelectedManifest::from_bytes(&release, bytes).unwrap()
     }
@@ -68,7 +69,7 @@ mod native {
         crate::setup::test_support::qualified_tempdir()
     }
     fn root(path: &std::path::Path, s: &SelectedManifest) -> std::path::PathBuf {
-        path.join("qos-internal-install").join(s.manifest_sha256())
+        path.join("tilo-internal-install").join(s.manifest_sha256())
     }
     fn parts<'a>(path: &std::path::Path, s: &'a SelectedManifest) -> [Partial<'a>; 2] {
         fixture_acquire(path, s)
@@ -244,7 +245,7 @@ mod native {
                 "setup::internal_cache::linux::tests::native::lock_probe",
                 "--ignored",
             ])
-            .env("QOS_CACHE_LOCK_PROBE", dir.path())
+            .env("TILO_CACHE_LOCK_PROBE", dir.path())
             .status()
             .unwrap();
         assert!(status.success());
@@ -254,7 +255,7 @@ mod native {
     #[test]
     #[ignore = "subprocess fixture invoked with a held parent lease"]
     fn lock_probe() {
-        let dir = std::env::var_os("QOS_CACHE_LOCK_PROBE").expect("parent fixture path");
+        let dir = std::env::var_os("TILO_CACHE_LOCK_PROBE").expect("parent fixture path");
         let result = fixture_acquire(std::path::Path::new(&dir), &selected());
         assert!(matches!(result,Err(e) if e=="Cache Busy"));
     }
@@ -512,14 +513,14 @@ mod native {
         // Its broad named grant is reduced by the actual private create modes.
         let inherited = directory();
         let held = std::fs::File::open(inherited.path()).unwrap();
-        assert!(!inherited.path().join("qos-internal-install").exists());
+        assert!(!inherited.path().join("tilo-internal-install").exists());
         let default = acl(7, 7);
         set(&held, c"system.posix_acl_default", &default);
-        assert!(!inherited.path().join("qos-internal-install").exists());
+        assert!(!inherited.path().join("tilo-internal-install").exists());
         let cache = fixture_acquire(inherited.path(), &s).unwrap();
         let payload = root(inherited.path(), &s).join("payload");
         for dir in [
-            inherited.path().join("qos-internal-install"),
+            inherited.path().join("tilo-internal-install"),
             root(inherited.path(), &s),
             payload.clone(),
         ] {
@@ -572,9 +573,9 @@ mod native {
                 });
                 let mut bytes = fs::read(&old).unwrap();
                 if case == 1 {
-                    bytes[147..155].copy_from_slice(&3u64.to_le_bytes());
+                    bytes[layout::GENERATION..layout::EPOCH].copy_from_slice(&3u64.to_le_bytes());
                 } else {
-                    bytes[179] ^= 1;
+                    bytes[layout::DIGEST] ^= 1;
                 }
                 let checksum = Sha256::digest(&bytes[..bytes.len() - 32]);
                 let end = bytes.len();

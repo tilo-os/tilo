@@ -58,7 +58,7 @@ def _manifest(value):
 
 def _state(value):
     if (not isinstance(value, dict) or any(key not in value for key in _STATE_KEYS)
-            or value.get('ready') is not True or value.get('app') != 'dev.qos.code-editor'
+            or value.get('ready') is not True or value.get('app') != 'dev.tilo.code-editor'
             or value.get('editor_id') != 'editor_view'
             or value.get('hash_algorithm') != 'sha256'
             or not isinstance(value.get('buffer_id'), str) or not value['buffer_id'].strip()
@@ -93,7 +93,7 @@ def _effects(scenario, lines):
     if (not isinstance(scenario, dict) or not isinstance(scenario.get('steps'), list)
             or not scenario['steps'] or not all(isinstance(s, dict) for s in scenario['steps'])):
         raise ValueError('Invalid native scenario steps')
-    effects = _rows(lines, 'qos-native-effect ')
+    effects = _rows(lines, 'tilo-native-effect ')
     if len(effects) != len(scenario['steps']):
         raise ValueError('Missing or extra Code Editor effect evidence')
     previous = None
@@ -116,7 +116,7 @@ def _pointer_scale(scenario, lines):
     """Native input coordinates are physical; observer bounds are logical."""
     if not any(step.get('kind') in ('click', 'hover') for step in scenario['steps']):
         return None
-    windows = _rows(lines, 'qos-native-window ')
+    windows = _rows(lines, 'tilo-native-window ')
     if len(windows) != 1:
         raise ValueError('Pointer validation requires exactly one native window metadata row')
     scale = windows[0].get('scale_factor')
@@ -213,7 +213,7 @@ def validate_code_editor_scroll(scenario, lines, manifest):
 def validate_code_editor_frame_states(scenario, lines):
     """Require every input mapped once, and complete state preserved after drawing."""
     effects = _effects(scenario, lines)
-    frames = _rows(lines, 'qos-native-frame ')
+    frames = _rows(lines, 'tilo-native-frame ')
     next_input, previous_frame = 0, -1
     for frame in frames:
         identity, inputs = frame.get('cpu_frame_id'), frame.get('input_ids')

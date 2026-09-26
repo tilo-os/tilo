@@ -22,10 +22,10 @@
 #      sit beside its fragment and re-validates its bytes and schema);
 #   2. add one placeholder media fragment per architecture. The merger insists
 #      on the generic x86_64 + aarch64 media matrix; these entries point at
-#      https://code.podesta.ai/qos/internal-cycle-placeholder/... files that do
+#      https://code.tilo.so/tilo/internal-cycle-placeholder/... files that do
 #      not exist and are never downloaded (the round trip never writes media);
 #   3. run apps/imager/packaging/build-release-catalog.sh with
-#      GITHUB_REF_NAME=RELEASE_TAG, TILO_RELEASE_SERVER=https://code.podesta.ai
+#      GITHUB_REF_NAME=RELEASE_TAG, TILO_RELEASE_SERVER=https://code.tilo.so
 #      (the only origin the Imager accepts) and the same bundle owner;
 #   4. embed it with apps/imager/packaging/release-catalog.py --copy-to, build
 #      `cargo build --release --locked -p imager --bin imager`, and restore the
@@ -66,8 +66,8 @@ trap restore EXIT
 mkdir -p "$work/assets/internal/bundle" "$work/assets/media"
 cp "$fragment" "$work/assets/internal/"
 cp "$manifest" "$work/assets/internal/bundle/"
-server=https://code.podesta.ai
-repository=qos/internal-cycle-placeholder
+server=https://code.tilo.so
+repository=tilo/internal-cycle-placeholder
 placeholder="$(printf 'tilo internal-install-cycle placeholder medium' | sha256sum | awk '{print $1}')"
 for media_arch in x86_64 aarch64; do
   jq -n --arg arch "$media_arch" \
@@ -78,7 +78,7 @@ for media_arch in x86_64 aarch64; do
     > "$work/assets/media/catalog-$media_arch.json"
 done
 GITHUB_REF_NAME="$tag" TILO_RELEASE_SERVER="$server" TILO_RELEASE_REPOSITORY="$repository" \
-  TILO_INTERNAL_BUNDLE_OWNER="${TILO_INTERNAL_BUNDLE_OWNER:-qos}" \
+  TILO_INTERNAL_BUNDLE_OWNER="${TILO_INTERNAL_BUNDLE_OWNER:-tilo}" \
   "$repo/apps/imager/packaging/build-release-catalog.sh" "$work/assets" "$work/catalog" >/dev/null
 jq -e --arg sha "$manifest_sha256" --arg arch "$arch" \
   '[.releases[] | select(.purpose == "tilo-internal-installer" and .arch == $arch and .manifest_sha256 == $sha)] | length == 1' \

@@ -1228,7 +1228,9 @@ fn structural_match(needle: &str, facts: &NameFacts) -> Option<(i32, usize)> {
     }
     // Last resort: the characters in order, anywhere in the filename.
     // `ntes` → `notes.md`.
-    fuzzy_subsequence(needle, leaf).then_some((STRUCT_FUZZY, stem_len))
+    ui::search::fuzzy_score(needle, leaf)
+        .is_some()
+        .then_some((STRUCT_FUZZY, stem_len))
 }
 
 /// Best word-boundary tier over every occurrence of `needle` in `leaf`:
@@ -1288,19 +1290,6 @@ fn path_depth(display_lower: &str) -> usize {
     display_lower.bytes().filter(|b| *b == b'/').count()
 }
 
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
-}
-
 /// Open a palette hit via [`crate::shell::doc_open`] when an installed app
 /// claims the type; unclaimed types and directories fall back to
 /// `xdg-open`, and a claimed type with no editor is reported, not silent.
@@ -1311,7 +1300,7 @@ fn open_search_hit(path: &Path, is_dir: bool, chrome: &Chrome) {
         return;
     }
     match doc_open::resolve(path) {
-        DocumentTarget::App { .. } => {
+        DocumentTarget::App { .. } | DocumentTarget::HostApp { .. } => {
             if let Err(e) = doc_open::open_in_workspace(path, chrome) {
                 notify_open_failure(path, &e.user_message(), chrome);
             }
@@ -2427,9 +2416,9 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_subsequence_true_and_false() {
-        assert!(fuzzy_subsequence("ntes", "notes"));
-        assert!(fuzzy_subsequence("tdo", "todo.md"));
-        assert!(!fuzzy_subsequence("xz", "notes"));
+    fn a_scattered_leaf_subsequence_still_matches() {
+        assert!(name_score("ntes", &facts("~/a/notes")).is_some());
+        assert!(name_score("tdo", &facts("~/a/todo.md")).is_some());
+        assert!(name_score("xz", &facts("~/a/notes")).is_none());
     }
 }

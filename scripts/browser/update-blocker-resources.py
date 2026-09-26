@@ -65,7 +65,7 @@ def main():
     brave_root = f'https://raw.githubusercontent.com/brave/adblock-resources/{BRAVE_REV}/'
     custom = json.loads(download(brave_root+'dist/resources.json', BRAVE_SHA))
     mpl_license = download(brave_root+'LICENSE', LICENSE_SHA)
-    with tempfile.TemporaryDirectory(prefix='qos-blocker-resources-') as temp:
+    with tempfile.TemporaryDirectory(prefix='tilo-blocker-resources-') as temp:
         temp = Path(temp)
         with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
             tar.extractall(temp, filter='data')

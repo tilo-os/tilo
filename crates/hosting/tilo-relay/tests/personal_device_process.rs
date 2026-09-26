@@ -28,12 +28,16 @@ use tilo_user_identity::{
 use crate::common::client_endpoint;
 
 const FILE_WORKSPACE: u64 = 42;
+/// How long the enrolled device waits for the host's `Ready`. The host
+/// persists the membership (fsynced) before it answers, so this only turns a
+/// hang into a named failure; it is not a latency budget.
+const REPLY: Duration = Duration::from_secs(120);
 
 fn wait_for_file(path: &std::path::Path, what: &str) {
     let started = Instant::now();
     while !path.is_file() {
         assert!(
-            started.elapsed() < Duration::from_secs(5),
+            started.elapsed() < Duration::from_secs(60),
             "timed out waiting for {what} at {}",
             path.display()
         );
@@ -187,7 +191,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         .arg(&recipient_root)
         .args(["--identity-dir"])
         .arg(&recipient_identities)
-        .args(["--label", "New laptop", "--timeout", "10", "--status-file"])
+        .args(["--label", "New laptop", "--timeout", "60", "--status-file"])
         .arg(&status_file)
         .arg("--requester-pid")
         .arg(requester.pid().to_string())
@@ -212,7 +216,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
             "--expected-service",
             &recipient_service,
             "--timeout",
-            "10",
+            "60",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -322,7 +326,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
+        tokio::time::timeout(REPLY, client.recv()).await,
         Ok(Some(Envelope::Ready {
             workspace_id: FILE_WORKSPACE,
             ..
@@ -344,7 +348,7 @@ async fn ordinary_device_enrollment_survives_approver_offline_with_home_peer_rou
         })
         .unwrap();
     assert!(matches!(
-        tokio::time::timeout(Duration::from_secs(2), client.recv()).await,
+        tokio::time::timeout(REPLY, client.recv()).await,
         Ok(Some(Envelope::Ready { workspace_id, .. })) if workspace_id == continuity
     ));
 }

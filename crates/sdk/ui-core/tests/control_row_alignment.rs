@@ -2,7 +2,7 @@
 //! toolbar and form action row — share a single centre line and meet the
 //! fine-pointer minimum target, under every theme the shell ships and at 2×
 //! text. Measured through the headless host the desktop's inspection tooling
-//! uses, so the rects here are the rects a screen reader or `qos-control`
+//! uses, so the rects here are the rects a screen reader or `tilo-control`
 //! would be handed.
 //!
 //! A control whose centre drifts from its row-mates by more than half a

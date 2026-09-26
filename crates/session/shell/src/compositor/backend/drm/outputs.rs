@@ -122,6 +122,9 @@ impl OutputRegistry {
                 scale: 1.0,
                 transform: settings_store::hardware::OutputTransform::Normal,
                 color_profile: None,
+                refresh_mhz: None,
+                logical_position: (next_x, 0),
+                identity: crate::compositor::backend::OutputIdentity::default(),
             };
             next_x = next_x.saturating_add(i32::from(mode.width));
             out.push((id, output));

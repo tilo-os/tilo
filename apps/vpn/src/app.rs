@@ -20,6 +20,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use std::cell::Cell;
 use std::rc::Rc;
+use ui::charts::{Chart, ChartLabels, ChartStyle, Series, TrendRange, TrendStyle};
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
@@ -44,7 +45,6 @@ use crate::model::{
     ConnId, ConnKind, ConnStatus, Connection, LocalProfileDetails, Vault, human_ago, sample_vault,
 };
 use crate::net::{self, Transfer};
-use crate::throughput;
 
 /// One byte-counter reading of a connected tunnel, timestamped so a rate can
 /// be derived from consecutive samples. Ephemeral live telemetry; it is not
@@ -54,6 +54,10 @@ struct RateSample {
     at: Instant,
     xfer: Transfer,
 }
+
+/// Maximum number of measured rate points plotted across the throughput
+/// chart.
+const THROUGHPUT_SAMPLES: usize = 56;
 
 /// Rolling window of transfer readings for one tunnel.
 #[derive(Default)]
@@ -74,7 +78,7 @@ impl TransferHistory {
         }
         self.samples.push(RateSample { at: now, xfer });
         // Keep enough points to fill the chart, plus one for the leading edge.
-        let cap = throughput::SAMPLES + 1;
+        let cap = THROUGHPUT_SAMPLES + 1;
         if self.samples.len() > cap {
             let drop = self.samples.len() - cap;
             self.samples.drain(0..drop);
@@ -2387,7 +2391,7 @@ impl VpnApp {
         let columns = if compact { 2.0 } else { 4.0 };
         let tw = (content.width() - gap * (columns - 1.0)) / columns;
         let rate_or_dash = |v: Option<f64>| match v {
-            Some(bps) if has_rate => throughput::rate_label(bps),
+            Some(bps) if has_rate => ui::format::rate(bps),
             _ => "—".to_string(),
         };
         let tile_vals = [
@@ -2467,7 +2471,7 @@ impl VpnApp {
         // is no live data yet the plot stays empty with an honest note; the
         // app never draws a synthesized waveform. `chart` comes from
         // `status_geometry`, the rhythm the hit layout reads too.
-        throughput::draw_chart(scene, t, chart, theme, down_series, up_series, has_rate);
+        Self::draw_throughput_plot(scene, tr, t, theme, chart, down_series, up_series, has_rate);
         text_w(
             tr,
             scene,
@@ -2521,6 +2525,70 @@ impl VpnApp {
                 TextWeight::Regular,
             );
         }
+    }
+
+    /// The throughput plot on its raised card: download (info) and upload
+    /// (success) share one scale with headroom, each leading with a dot at the
+    /// newest reading. Only ever plots the measured series it is handed —
+    /// without a live rate the card shows its grid and nothing else.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "the plot is scene + renderer + transform + theme + bounds + both rate series + whether they are live"
+    )]
+    fn draw_throughput_plot(
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        t: Affine,
+        theme: &Theme,
+        chart: Rect,
+        down: &[f64],
+        up: &[f64],
+        live: bool,
+    ) {
+        let raised = theme.tokens.colors.surfaces.raised;
+        // The plot is a raised card like the stat tiles above it, with the
+        // edge derived from its own fill (HIG §9.5).
+        ui::surface::card(scene, t, chart, f64::from(theme.tokens.radii.lg), raised);
+        let plot = chart.inset(-12.0);
+        if plot.width() <= 1.0 || plot.height() <= 1.0 {
+            return;
+        }
+        let peak = down
+            .iter()
+            .chain(up)
+            .copied()
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        let semantic = &theme.tokens.colors.semantic;
+        let series = if live {
+            let as_f32 = |rates: &[f64]| rates.iter().map(|&r| r as f32).collect();
+            vec![
+                Series::new(as_f32(down), semantic.info),
+                Series::new(as_f32(up), semantic.success),
+            ]
+        } else {
+            Vec::new()
+        };
+        let style = ChartStyle::default()
+            .without_header()
+            .with_grid(3, Some(ui::surface::edge_on(raised).multiply_alpha(0.6)))
+            .with_trend(
+                TrendStyle::CHART
+                    .with_line_width(2.0)
+                    .with_fill(ui::charts::TrendFill::Alpha(41))
+                    .with_leading_dot(3.0),
+            );
+        Chart::draw_styled(
+            scene,
+            t,
+            tr,
+            plot,
+            theme,
+            &series,
+            TrendRange::up_to(peak * 1.15),
+            ChartLabels::default(),
+            &style,
+        );
     }
 
     /// The secret-free provisioning explanation plus the per-tunnel Tor

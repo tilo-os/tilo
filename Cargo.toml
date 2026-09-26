@@ -30,8 +30,8 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/session/qos-ntfs-helper",
-    "crates/session/qos-ntfs-protocol",
+    "crates/session/tilo-ntfs-helper",
+    "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
     # Core product surfaces
     "crates/session/shell",
@@ -79,6 +79,7 @@ members = [
     "apps/settings",
     "apps/sheets",
     "apps/slides",
+    "apps/shortcuts",
     "apps/snippets",
     "apps/store",
     "apps/terminal",
@@ -102,6 +103,7 @@ members = [
     "crates/sdk/font-catalog",
     "crates/sdk/rt",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
 
@@ -205,6 +207,7 @@ members = [
     "crates/system/content",
     "crates/system/durable-store",
     "crates/system/fs",
+    "crates/system/fs-content",
     "crates/system/fs-native",
     "crates/system/os-actions",
     "crates/system/power",
@@ -402,6 +405,11 @@ iroh-base = "1.0.3"
 # Disable unused RPC support and its platform certificate dependencies.
 iroh-blobs = { version = "0.103.0", default-features = false, features = ["fs-store", "hide-proto-docs"] }
 iroh-gossip = "0.101.0"
+# iroh-blobs' BAO tree and RPC layer, for the content store's file-backed
+# provider (versions follow iroh-blobs).
+bao-tree = { version = "0.16", default-features = false, features = ["experimental-mixed"] }
+irpc = { version = "0.17.0", default-features = false }
+ref-cast = "1.0.24"
 iroh-mdns-address-lookup = "0.5.0"
 # Content-defined chunking for the native data plane (normalised FastCDC).
 fastcdc = { version = "3.2", default-features = false }
@@ -428,6 +436,9 @@ rquickjs = "0.9"
 # mobile FFI/logging defaults: tilo-projector is a native Rust broker.
 fcast-sender-sdk = { version = "0.3.0", default-features = false, features = ["fcast", "chromecast", "discovery"] }
 mdns-sd = "=0.20.3"
+# FFT for acoustic calibration: deconvolving a recorded sweep into the
+# speaker's impulse response and reading its magnitude response.
+rustfft = "6.2"
 
 # ---------------------------------------------------------------------------
 # Desktop and platform integration
@@ -436,7 +447,7 @@ wayland-client = "0.31.14"
 ashpd = { version = "0.13", default-features = false, features = ["tokio"] }
 zbus = { version = "5.16", default-features = false }
 # X11, Windows and macOS only; Wayland clients use focus-gated wl_data_device
-# through smithay-clipboard (see crates/sdk/ui-core/src/clipboard.rs).
+# through smithay-clipboard (see crates/sdk/tilo-host/src/clipboard.rs).
 arboard = { version = "3.6.1", default-features = false }
 fuser = "0.17.0"
 notify = { version = "8", default-features = false }
@@ -604,3 +615,27 @@ wayland-backend = { path = "vendor/wayland-backend" }
 vello_encoding = { path = "vendor/vello_encoding" }
 vello_shaders = { path = "vendor/vello_shaders" }
 vello = { path = "vendor/vello" }
+# Git forks on code.tilo.so. Cargo reads these revisions from `vendor/git`
+# (see `.cargo/config.toml` and `vendor/PATCHES.md`); upstream contributions
+# are prepared in tilo/upstream-contribs. Drop the entries once upstream
+# releases the changes.
+#
+# accesskit_unix and atspi enable zbus's async-io backend unconditionally, so
+# the tokio-only accessibility stack also built a second async runtime
+# (async-executor, async-io, async-process, blocking, ...). These forks make
+# the backend follow the crates' `async-io`/`tokio` features.
+#
+# The accesskit crates the fork's accesskit_unix depends on by path come from
+# the same revision (identical to their crates.io releases), so each resolves
+# to one copy.
+accesskit = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_atspi_common = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_consumer = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+accesskit_unix = { git = "ssh://git@code.tilo.so/tilo/accesskit.git", rev = "a76088c4c36c03de8109ded02bd42a305fb1d569" }
+atspi = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-common = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+atspi-proxies = { git = "ssh://git@code.tilo.so/tilo/atspi.git", rev = "9183f58d2e18e7c7cd76a1436f7fedc3ada015c2" }
+# rustypipe 0.11.4 uses reqwest 0.12, which kept reqwest 0.12, its QUIC stack
+# (quinn) and fancy-regex 0.14 in the lock. The fork ports 0.11.4 to reqwest
+# 0.13 and fancy-regex 0.16.
+rustypipe = { git = "ssh://git@code.tilo.so/tilo/rustypipe.git", rev = "aeb292fb23856c335ee3423745ed98ae0e683760" }

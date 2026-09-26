@@ -202,7 +202,7 @@ mod tests {
     fn distinguishes_btrfs_subvolumes_and_snapshot_file_identities() {
         use std::{os::unix::fs::MetadataExt, path::PathBuf};
         let base =
-            PathBuf::from(std::env::var_os("QOS_BTRFS_IDENTITY_FIXTURE").expect(
+            PathBuf::from(std::env::var_os("TILO_BTRFS_IDENTITY_FIXTURE").expect(
                 "set fixture with one, two and snapshot subvolumes; one/file before snapshot",
             ));
         let one = File::open(base.join("one")).unwrap();

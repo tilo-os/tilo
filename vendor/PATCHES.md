@@ -46,6 +46,25 @@ The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 
+## Git forks (`vendor/git`)
+
+Some patches live in forks on code.tilo.so rather than in this tree.
+`[patch.crates-io]` names each fork and revision, and Cargo.lock records them,
+but the repositories are private, so CI, image builds and remote builders
+can't fetch them. `.cargo/config.toml` replaces those exact revisions with the
+copies in `vendor/git`. `tools/vendor-git-forks.sh` regenerates the copies
+from the forks with `cargo vendor`. Don't edit them by hand; change the fork
+instead.
+
+| Fork | Branch | Revision | Crates | Change | Upstream contribution |
+|---|---|---|---|---|---|
+| [tilo/accesskit](https://code.tilo.so/tilo/accesskit) | `unix-optional-async-io-v0.23` | `a76088c4` | accesskit 0.25.0, accesskit_consumer 0.39.0, accesskit_atspi_common 0.20.0, accesskit_unix 0.23.0 | `zbus/async-io` only with accesskit_unix's `async-io` feature (the other three crates are the unchanged releases, patched so they aren't duplicated) | [accesskit-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/accesskit-optional-async-io) |
+| [tilo/atspi](https://code.tilo.so/tilo/atspi) | `optional-async-io-v0.29` | `9183f58d` | atspi 0.29.0, atspi-common 0.13.0, atspi-proxies 0.13.0 | `async-io`/`tokio` features select zbus's backend instead of async-io always | [atspi-optional-async-io](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/atspi-optional-async-io) |
+| [tilo/rustypipe](https://code.tilo.so/tilo/rustypipe) | `reqwest-0.13-v0.11.4` | `aeb292fb` | rustypipe 0.11.4 | reqwest 0.13 and fancy-regex 0.16 | [rustypipe-reqwest-0.13](https://code.tilo.so/tilo/upstream-contribs/src/branch/main/rustypipe-reqwest-0.13) |
+
+Remove a row, its `[patch.crates-io]` and `[source]` entries and its
+`vendor/git` directories once upstream releases the change.
+
 ## Vello changes
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and

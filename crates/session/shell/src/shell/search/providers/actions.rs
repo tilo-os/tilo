@@ -10,8 +10,10 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use settings_store::display_mode::DisplayLayoutMode;
 use std::rc::Rc;
 use tilo_clock::unix_now;
+use ui::search::{FieldWeight, RankField};
 
 use crate::shell::chrome_state::{Chrome, ChromeState};
 use crate::shell::search::action_api::{ActionArgs, ActionError, ActionParam, ParamType};
@@ -99,6 +101,12 @@ const PRESENCE_FOLLOW_PARAMS: &[ActionParam] = &[ActionParam::required(
     "Stable collaborator id returned by the workspace roster.",
 )];
 
+const SCREENSHOT_SEND_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "target",
+    ParamType::Text,
+    "`workspace` to save into this workspace's files, or the id of one of your online devices.",
+)];
+
 const PRESENCE_STATUS_PARAMS: &[ActionParam] = &[ActionParam::optional(
     "text",
     ParamType::Text,
@@ -168,20 +176,18 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         }
         "peer.invite" | "peer.connect" => contract = ActionContract::view(),
         // Moving a tab between groups is layout, undone by moving it back;
-        // closing one is not — its content is gone from the workspace.
+        // a close is undone by `tab.reopen`, which puts it back in place.
         "text.insert"
         | "record.bring"
         | "tab.new.terminal.here"
         | "window.new.terminal"
         | "tab.duplicate"
         | "tab.split-right"
-        | "tab.move-to-new-group" => {
+        | "tab.move-to-new-group"
+        | "tab.close"
+        | "tab.reopen" => {
             contract.permission = PermissionRequirement::Write;
             contract.reversible = true;
-        }
-        "tab.close" => {
-            contract.permission = PermissionRequirement::Write;
-            contract.reversible = false;
         }
         "notifications.dnd.toggle" => {
             contract.permission = PermissionRequirement::Write;
@@ -191,6 +197,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID => {
             contract = quick_settings_contract();
         }
+        DISPLAY_EXTEND_ID
+        | DISPLAY_MIRROR_ID
+        | DISPLAY_BUILTIN_ONLY_ID
+        | DISPLAY_EXTERNAL_ONLY_ID
+        | DISPLAY_KEEP_ID
+        | DISPLAY_REVERT_ID => contract = display_layout_contract(),
         _ => {}
     }
     contract
@@ -1048,12 +1060,48 @@ impl Action {
         ),
         chrome(
             "projection.open",
-            "Project to a display",
-            "Miracast, Google Cast, AirPlay, or FCast",
+            "Choose where the desktop appears",
+            "Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver",
             |st, _| {
                 st.overlays.projection = true;
                 Ok(())
             },
+        ),
+        chrome(
+            DISPLAY_EXTEND_ID,
+            "Extend displays",
+            "Use every connected display as one larger desktop",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::Extend),
+        ),
+        chrome(
+            DISPLAY_MIRROR_ID,
+            "Mirror displays",
+            "Show the same picture on every connected display",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::Mirror),
+        ),
+        chrome(
+            DISPLAY_BUILTIN_ONLY_ID,
+            "Show only on this screen",
+            "Turn external displays off and keep the built-in screen",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::BuiltinOnly),
+        ),
+        chrome(
+            DISPLAY_EXTERNAL_ONLY_ID,
+            "Show only on external displays",
+            "Turn the built-in screen off and use the external displays",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
+        ),
+        chrome(
+            DISPLAY_KEEP_ID,
+            "Keep display settings",
+            "Confirm the display layout that was just applied",
+            |_, _| settle_display_change(true),
+        ),
+        chrome(
+            DISPLAY_REVERT_ID,
+            "Revert display settings",
+            "Restore the display layout from before the last change",
+            |_, _| settle_display_change(false),
         ),
         chrome(
             "capture.open",
@@ -1064,6 +1112,26 @@ impl Action {
                 Ok(())
             },
         ),
+        Action {
+            id: "capture.screenshot.send",
+            label: "Send the last screenshot",
+            subtitle: "To one of your devices, or into this workspace's files",
+            params: SCREENSHOT_SEND_PARAMS,
+            apply: |st, args| {
+                let target = args.text("target").unwrap_or_default().trim();
+                if target.is_empty() {
+                    return Err(ActionError::Refused(
+                        "name `workspace` or one of your online devices".into(),
+                    ));
+                }
+                st.push_screenshot_send(if target == "workspace" {
+                    ui::widget::ScreenshotSendTarget::Workspace
+                } else {
+                    ui::widget::ScreenshotSendTarget::Device(target.to_string())
+                });
+                Ok(())
+            },
+        },
         chrome(
             "collaborators.open",
             "Show collaborators",
@@ -1329,6 +1397,16 @@ impl Action {
                     let message = err.user_message().to_string();
                     st.push_warning_notification("Can't close this tab", &message);
                     ActionError::Refused(message)
+                })
+            },
+        ),
+        chrome(
+            "tab.reopen",
+            "Reopen closed tab",
+            "Bring back the tab closed most recently in this workspace, where it was",
+            |st, _| {
+                st.reopen_closed_tab().map(|_| ()).ok_or_else(|| {
+                    ActionError::Refused("no closed tab to reopen in this workspace".into())
                 })
             },
         ),
@@ -1670,6 +1748,72 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
 
     fn set_mute(&self, muted: bool) -> Result<(), String> {
         self.inner.set_mute(muted)
+    }
+
+    fn brightness(&self) -> Result<f32, String> {
+        self.inner.brightness()
+    }
+
+    fn keyboard_backlight(&self) -> Result<os_actions::KeyboardBacklight, String> {
+        self.inner.keyboard_backlight()
+    }
+
+    fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
+        self.inner.set_keyboard_backlight(level)
+    }
+}
+
+pub(crate) const DISPLAY_EXTEND_ID: &str = "display.layout.extend";
+pub(crate) const DISPLAY_MIRROR_ID: &str = "display.layout.mirror";
+pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
+pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
+pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
+pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+
+/// Stage a whole-desktop layout through the same confirm-or-restore
+/// transaction as Super+P, and open the display sheet so whoever is at the
+/// machine sees Keep/Revert and the countdown.
+fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
+    settings_store::display_mode::stage_layout(mode)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    st.overlays.projection = true;
+    Ok(())
+}
+
+/// Keep or revert the display change that is waiting for confirmation.
+fn settle_display_change(keep: bool) -> Result<(), ActionError> {
+    use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+
+    let mut transaction = DisplayTransaction::load()
+        .ok_or_else(|| ActionError::Refused("no display change is waiting".into()))?;
+    let waiting = if keep {
+        transaction.state == DisplayTransactionState::AwaitingConfirmation
+    } else {
+        matches!(
+            transaction.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        )
+    };
+    if !waiting {
+        return Err(ActionError::Refused("no display change is waiting".into()));
+    }
+    if keep {
+        transaction.request_confirmation()
+    } else {
+        transaction.request_revert()
+    }
+    .map_err(|error| ActionError::Refused(error.to_string()))
+}
+
+fn display_layout_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        // An unconfirmed layout restores itself; Revert undoes it at once.
+        reversible: true,
+        ..tilo_actions::ActionContract::default()
     }
 }
 
@@ -2356,55 +2500,21 @@ impl SearchProvider for ActionsProvider {
     }
 }
 
-/// Case-insensitive scoring:
-/// - Prefix match on label → 100
-/// - Substring match on label → 50
-/// - Exact action id → 90
-/// - Substring match on subtitle or id → 25
-/// - Multi-word terms spanning label/subtitle/id → 20
-/// - Fuzzy subsequence on label → 10
-/// - Empty needle → 0 (matches everything, sort by kind order)
-fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
-    if needle.is_empty() {
-        return Some(0);
-    }
-    if label.starts_with(needle) {
-        return Some(100);
-    }
-    if label.contains(needle) {
-        return Some(50);
-    }
-    if id == needle {
-        return Some(90);
-    }
-    if subtitle.contains(needle) || id.contains(needle) {
-        return Some(25);
-    }
-    let terms: Vec<&str> = needle.split_whitespace().collect();
-    if terms.len() > 1
-        && terms
-            .iter()
-            .all(|term| label.contains(term) || subtitle.contains(term) || id.contains(term))
-    {
-        return Some(20);
-    }
-    if fuzzy_subsequence(needle, label) {
-        return Some(10);
-    }
-    None
-}
+/// A typed action id is a verbatim identity — scripts and power users name
+/// actions by it — so it weighs close to the label.
+pub(super) const ACTION_ID_WEIGHT: FieldWeight = FieldWeight::new(90);
 
-fn fuzzy_subsequence(needle: &str, hay: &str) -> bool {
-    let mut hi = hay.chars();
-    'ch: for nc in needle.chars() {
-        for hc in hi.by_ref() {
-            if hc == nc {
-                continue 'ch;
-            }
-        }
-        return false;
-    }
-    true
+/// The shared ranker over an action's label, id and subtitle. An empty
+/// needle ranks everything `0`, so rows sort by kind order.
+fn match_score(needle: &str, label: &str, subtitle: &str, id: &str) -> Option<i32> {
+    crate::shell::search::rank_fields(
+        needle,
+        &[
+            RankField::new(label, FieldWeight::TITLE),
+            RankField::new(id, ACTION_ID_WEIGHT),
+            RankField::new(subtitle, FieldWeight::SUBTITLE),
+        ],
+    )
 }
 
 #[cfg(test)]
@@ -2625,7 +2735,7 @@ mod tests {
                 "app grants and enforced access for this workspace",
                 "settings.privacy.open",
             ),
-            Some(90),
+            Some(100),
         );
         assert_eq!(
             match_score(
@@ -2634,7 +2744,9 @@ mod tests {
                 "app grants and enforced access for this workspace",
                 "settings.privacy.open",
             ),
-            Some(20),
+            Some(crate::shell::search::provider_score(
+                ui::search::rank::SPANNING_RANK
+            )),
         );
     }
 

@@ -40,7 +40,7 @@ let form = Form::new()
 
 An explicit Field placement wins the nearest FormSection/Form region choice, then the automatic pattern. An explicit spacing value is independent of density, including when inherited from Form. Removing the spacing override restores the appropriate density's theme gap. Forced `Beside` stays beside even in insufficient space; authors own this deliberate constraint and can inspect the required width. Standard children retain their explicit dimensions and may overflow when those dimensions exceed available space.
 
-`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/Section/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement through `FrameHarness::inspection()` / `inspection_json()` and the qos-dev inspection flow; see [Manual layout](MANUAL_LAYOUT.md#existing-preview-and-inspection).
+`Widget::layout_info()` and concrete read-only `effective_layout()` methods expose resolved values and their Theme/Pattern/Form/Section/Field/Page origins. Field information also includes actual available width, required beside width and resolved placement. Values are available after build/settlement through `FrameHarness::inspection()` / `inspection_json()` and the tilo-dev inspection flow; see [Manual layout](MANUAL_LAYOUT.md#existing-preview-and-inspection).
 
 Manual hosts should use `compute_widget_layout`; App and FrameHarness already do. The renderer-aware adjustment hook measures owned children through normal references and callback bindings. It does not create another layout tree, replace retained children, or establish geometry during painting.
 

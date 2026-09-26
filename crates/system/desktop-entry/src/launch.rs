@@ -112,9 +112,8 @@ pub enum HostLaunchError {
         source: ExecError,
     },
     #[error(
-        "{id} asks to be run inside a terminal window (Terminal=true). Tilo does not \
-         yet host a terminal for applications it did not package — run it from the \
-         Tilo terminal instead."
+        "{id} asks to be run inside a terminal window (Terminal=true). The desktop \
+         starts such entries in the Tilo terminal; they are not run as a bare host process."
     )]
     NeedsTerminal { id: String },
     #[error("no application on this system has the desktop-file id {0}")]
@@ -168,9 +167,10 @@ pub struct LaunchEnv {
     /// host app connects to the compositor that launched it rather than whatever the launcher's
     /// own environment pointed at.
     pub wayland_socket: Option<PathBuf>,
-    /// Session-wide rootless Xwayland display, when the compositor started a
-    /// compatibility bridge. Native Wayland clients still receive both and
-    /// choose Wayland normally; X11-only applications use this fallback.
+    /// The rootless Xwayland display of the workspace this app opens in. It
+    /// is never shared across workspaces, because X11 does not isolate its
+    /// clients from each other. Native Wayland clients still receive both
+    /// and choose Wayland normally; X11-only applications use this fallback.
     pub x11_display: Option<String>,
     /// MIT-MAGIC-COOKIE authority file for [`Self::x11_display`].
     pub x11_authority: Option<PathBuf>,
@@ -204,6 +204,24 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
             id: entry.id.clone(),
         });
     }
+    let mut argv = expanded_argv(entry, env)?.into_iter();
+    let program = argv.next().ok_or_else(|| HostLaunchError::NoExec {
+        id: entry.id.clone(),
+    })?;
+
+    Ok(HostLaunch {
+        desktop_id: entry.id.clone(),
+        display_name: entry.name.clone(),
+        program: PathBuf::from(program),
+        args: argv.collect(),
+        env: build_env(env),
+        window_identities: entry.window_identities(),
+        source: entry.source.clone(),
+    })
+}
+
+/// `Exec=` split and field-code expanded for `env`'s files and URLs.
+fn expanded_argv(entry: &DesktopEntry, env: &LaunchEnv) -> Result<Vec<String>, HostLaunchError> {
     let exec = entry
         .exec
         .as_deref()
@@ -224,20 +242,33 @@ pub fn plan(entry: &DesktopEntry, env: &LaunchEnv) -> Result<HostLaunch, HostLau
             path: Some(&entry.path),
         },
     );
-    let mut argv = argv.into_iter();
-    let program = argv.next().ok_or_else(|| HostLaunchError::NoExec {
-        id: entry.id.clone(),
-    })?;
+    if argv.is_empty() {
+        return Err(HostLaunchError::NoExec {
+            id: entry.id.clone(),
+        });
+    }
+    Ok(argv)
+}
 
-    Ok(HostLaunch {
-        desktop_id: entry.id.clone(),
-        display_name: entry.name.clone(),
-        program: PathBuf::from(program),
-        args: argv.collect(),
-        env: build_env(env),
-        window_identities: entry.window_identities(),
-        source: entry.source.clone(),
-    })
+/// The argv a `Terminal=true` entry asks a terminal emulator to run, with `%f`/`%u` field
+/// codes expanded from `env`. Only the files and URLs of `env` are used: the terminal that
+/// runs it supplies its own environment.
+///
+/// # Errors
+///
+/// Returns [`HostLaunchError::NotAnApplication`] if `entry` is not `Type=Application`,
+/// [`HostLaunchError::NoExec`] or [`HostLaunchError::BadExec`] for an unusable `Exec=`.
+pub fn terminal_argv(
+    entry: &DesktopEntry,
+    env: &LaunchEnv,
+) -> Result<Vec<String>, HostLaunchError> {
+    if entry.entry_type != EntryType::Application {
+        return Err(HostLaunchError::NotAnApplication {
+            id: entry.id.clone(),
+            kind: format!("{:?}", entry.entry_type),
+        });
+    }
+    expanded_argv(entry, env)
 }
 
 /// The child's whole environment: an allowlist of the parent's, plus the overrides the
@@ -319,6 +350,25 @@ fn build_env(env_spec: &LaunchEnv) -> BTreeMap<String, String> {
         }
     }
     env
+}
+
+/// Plan a launch for the desktop file at `path` — an autostart entry, which need not sit in
+/// any `applications` directory. Its id is the file name without `.desktop`.
+///
+/// # Errors
+///
+/// Returns [`HostLaunchError::NotFound`] if the file cannot be read or is not a desktop entry,
+/// or any error [`plan`] can return.
+pub fn plan_file(path: &std::path::Path, env: &LaunchEnv) -> Result<HostLaunch, HostLaunchError> {
+    let id = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let entry = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| crate::entry::parse(&text, &id, path, &crate::locale::locale_candidates()))
+        .ok_or_else(|| HostLaunchError::NotFound(path.display().to_string()))?;
+    plan(&entry, env)
 }
 
 /// Find the entry with this desktop-file id on the current system and plan a launch for it.
@@ -543,6 +593,23 @@ mod tests {
             plan(&e, &LaunchEnv::default()),
             Err(HostLaunchError::NeedsTerminal { .. })
         ));
+    }
+
+    #[test]
+    fn a_terminal_entry_yields_the_argv_its_terminal_runs() {
+        let e = entry(
+            "[Desktop Entry]\nType=Application\nName=Vim\nExec=vim -- %F\nTerminal=true\n",
+            "vim",
+        );
+        let argv = terminal_argv(
+            &e,
+            &LaunchEnv {
+                files: vec!["/home/u/notes.txt".into()],
+                ..Default::default()
+            },
+        )
+        .expect("a runnable argv");
+        assert_eq!(argv, vec!["vim", "--", "/home/u/notes.txt"]);
     }
 
     #[test]

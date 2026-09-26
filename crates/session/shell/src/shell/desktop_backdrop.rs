@@ -471,12 +471,13 @@ pub fn wallpaper_image_for_workspace(workspace_id: &str, target: &str) -> Option
             cache.images.clear();
         }
     }
-    let file = cache
-        .records
-        .iter()
-        .find(|record| record.workspace_id == workspace_id && record.target == target)?
-        .cache_file
-        .clone();
+    let file = crate::portal::desktop_services::wallpaper_record_for(
+        &cache.records,
+        workspace_id,
+        target,
+    )?
+    .cache_file
+    .clone();
     if !safe_cache_name(&file) {
         return None;
     }

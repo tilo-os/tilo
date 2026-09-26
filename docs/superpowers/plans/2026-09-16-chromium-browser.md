@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox syntax for tracking.
 
-**Goal:** Replace simulated/default browsing with a Chromium engine on macOS and Linux, with native blocking and verified navigation to podesta.ai.
+**Goal:** Replace simulated/default browsing with a Chromium engine on macOS and Linux, with native blocking and verified navigation to tilo.so.
 
 **Architecture:** Native CEF process communicates with Rust WebViewEngine over framed pipes. Native blocking uses a Rust static library linked into the helper; CEF distributions are independently cached.
 
@@ -15,7 +15,7 @@
 - Preserve unrelated worktree edits; commit only task-owned files or hunks.
 - macOS and Linux are required. No silent test-engine fallback, sandbox disabling or certificate bypass.
 - Keep Chrome extension support in scope; built-in blocking is independent.
-- Full completion includes actual Rust browser navigation to https://podesta.ai.
+- Full completion includes actual Rust browser navigation to https://tilo.so.
 - Use pinned CEF SDK distributions; ordinary Rust builds must not compile Chromium.
 
 ## IPC contract shared by Tasks 1 and 2
@@ -43,7 +43,7 @@ events are ignored and malformed packets terminate the connection.
 
 **Files:** Create apps/browser/chromium/{CMakeLists.txt,src/*,resources/*,README.md}; create scripts/browser/{cef-lock.json,build-host.py}; native protocol tests under apps/browser/chromium/tests/.
 
-**Interfaces:** Consumes the IPC contract above. Produces target/chromium/Browser Engine.app/Contents/MacOS/qos-chromium-host on macOS, target/chromium/qos-chromium-host on Linux. Host accepts --profile=<absolute directory>. Filtering C ABI will be supplied by Task 2; native runtime may be built initially without that linkage only for explicit development validation, never treated as complete blocking.
+**Interfaces:** Consumes the IPC contract above. Produces target/chromium/Browser Engine.app/Contents/MacOS/tilo-chromium-host on macOS, target/chromium/tilo-chromium-host on Linux. Host accepts --profile=<absolute directory>. Filtering C ABI will be supplied by Task 2; native runtime may be built initially without that linkage only for explicit development validation, never treated as complete blocking.
 
 - [ ] Write and run protocol tests for truncated headers, oversized packets, frame bounds and valid messages before implementing the codec.
 - [ ] Pin stable CEF archives with digest verification for macOS arm64/x64 and Linux arm64/x64; download atomically and fail closed on mismatch.
@@ -55,7 +55,7 @@ events are ignored and malformed packets terminate the connection.
 
 **Files:** Create ui/src/webview/chromium/{mod.rs,protocol.rs,tests.rs}; modify ui/src/webview/mod.rs; add crates/browser/chromium-blocker/{Cargo.toml,src/lib.rs}; modify workspace manifest by minimal hunk; extend native host with filtering bridge.
 
-**Interfaces:** Produces ChromiumEngine::new() -> Result<Arc<Self>, String> implementing WebViewEngine. Runtime locator uses QOS_CHROMIUM_HOST override or packaged/repo target paths. C ABI filtering has opaque owned state and synchronous network decisions; never depends on UI IPC for each network request.
+**Interfaces:** Produces ChromiumEngine::new() -> Result<Arc<Self>, String> implementing WebViewEngine. Runtime locator uses TILO_CHROMIUM_HOST override or packaged/repo target paths. C ABI filtering has opaque owned state and synchronous network decisions; never depends on UI IPC for each network request.
 
 - [ ] Test IPC parser with malformed lengths, BGRA conversion, URI/title events and helper EOF. Verify failure before implementation.
 - [ ] Implement bounded channels, a dedicated writer and event/frame reader, host lifetime cleanup, and visible failures. Maintain engine waker and latest-frame mailbox.
@@ -73,7 +73,7 @@ events are ignored and malformed packets terminate the connection.
 - [ ] Select Chromium for live browsing; show startup error state when unavailable. Preserve deterministic shots.
 - [ ] Implement downloads, permission decisions, clipboard/text input, developer tools, persistent profile/session and clear-on-exit behavior.
 - [ ] Implement and validate MV3 service worker/storage/content-script/action surfaces; manage installation and permissions explicitly.
-- [ ] Preserve existing history, bookmarks, search and qOS actions; run browser regression tests and native fixture checks.
+- [ ] Preserve existing history, bookmarks, search and Tilo actions; run browser regression tests and native fixture checks.
 
 ### Task 4: GPU transport, packaging and platform qualification
 
@@ -88,7 +88,7 @@ events are ignored and malformed packets terminate the connection.
 
 **Files:** Add scripts/browser/verify-live.py and docs/superpowers/audits/2026-09-16-chromium-browser-verification.md.
 
-- [ ] Launch the actual browser, navigate to https://podesta.ai, inspect the rendered window, and record final URL/title/load result/frame evidence.
+- [ ] Launch the actual browser, navigate to https://tilo.so, inspect the rendered window, and record final URL/title/load result/frame evidence.
 - [ ] Run native blocker and browser capability fixtures; measure build/startup/frame delivery/memory with environment recorded.
 - [ ] Request independent task and final reviews, fix actionable findings, and rerun affected checks.
 - [ ] Audit every spec requirement against direct evidence. Only complete the goal when no required work remains.

@@ -49,6 +49,12 @@ impl Dispatch<wl_registry::WlRegistry, ()> for Seen {
 /// Bring up the compositor state on one end of a socket pair, connect a
 /// client to the other, and return the interfaces the registry offered.
 fn advertised_globals() -> Vec<String> {
+    advertised_globals_to(Arc::new(shell::compositor::state::ClientState::default()))
+}
+
+/// [`advertised_globals`] for a client accepted with `client` state — the
+/// privileged socket, the OSK socket, or an ordinary app.
+fn advertised_globals_to(client: Arc<shell::compositor::state::ClientState>) -> Vec<String> {
     let event_loop: EventLoop<'static, shell::compositor::state::State> =
         EventLoop::try_new().expect("calloop");
     let mut display: Display<shell::compositor::state::State> = Display::new().expect("display");
@@ -57,10 +63,7 @@ fn advertised_globals() -> Vec<String> {
     let (server_side, client_side) = UnixStream::pair().expect("socketpair");
     display
         .handle()
-        .insert_client(
-            server_side,
-            Arc::new(shell::compositor::state::ClientState::default()),
-        )
+        .insert_client(server_side, client)
         .expect("insert client");
 
     let conn = Connection::from_socket(client_side).expect("client connection");
@@ -108,6 +111,13 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "xdg_wm_base",
     "wl_seat",
     "zxdg_output_manager_v1",
+    // Toolkits (GTK 4.14+, Qt 6.8+, SDL3, winit) name their cursor through
+    // it instead of loading an Xcursor theme the sandbox may not contain.
+    "wp_cursor_shape_manager_v1",
+    // Games, emulators and remote-desktop clients lock the pointer and read
+    // raw deltas; SDL and Proton refuse mouse-look without these.
+    "zwp_pointer_constraints_v1",
+    "zwp_relative_pointer_manager_v1",
 ];
 
 #[test]
@@ -132,6 +142,27 @@ fn every_interface_a_toolkit_requires_is_advertised() {
     );
 }
 
+/// Video players and presentations keep the screen on with this; without it
+/// they fall back to nothing and the session locks mid-film.
+#[test]
+fn the_idle_inhibit_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "zwp_idle_inhibit_manager_v1"),
+        "zwp_idle_inhibit_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
+
+/// Windows no desktop entry describes set their own tab icon through it.
+#[test]
+fn the_toplevel_icon_global_is_advertised() {
+    let globals = advertised_globals();
+    assert!(
+        globals.iter().any(|g| g == "xdg_toplevel_icon_manager_v1"),
+        "xdg_toplevel_icon_manager_v1 is not advertised. Advertised: {globals:?}"
+    );
+}
+
 /// Keep this check separate so its failure identifies the clipboard global.
 #[test]
 fn the_clipboard_global_is_advertised() {
@@ -143,4 +174,24 @@ fn the_clipboard_global_is_advertised() {
          it is absent, so every GTK application — which is most Flatpaks \
          — fails to open a window. Advertised: {globals:?}"
     );
+}
+
+/// Display configuration and panel power can black out every screen, so
+/// only the privileged socket (session tools such as kanshi) sees them; an
+/// app on the public socket must not.
+#[test]
+fn display_configuration_globals_reach_only_privileged_clients() {
+    const DISPLAY_CONTROL: [&str; 2] = ["zwlr_output_manager_v1", "zwlr_output_power_manager_v1"];
+    let public = advertised_globals();
+    let privileged = advertised_globals_to(shell::compositor::state::ClientState::privileged_arc());
+    for interface in DISPLAY_CONTROL {
+        assert!(
+            !public.iter().any(|g| g == interface),
+            "{interface} is advertised on the public socket. Advertised: {public:?}"
+        );
+        assert!(
+            privileged.iter().any(|g| g == interface),
+            "{interface} is missing for privileged clients. Advertised: {privileged:?}"
+        );
+    }
 }

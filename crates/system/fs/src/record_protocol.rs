@@ -128,6 +128,16 @@ pub struct RecordProtocolSessionV1 {
     pub record_id: FileRecordId,
 }
 
+impl RecordProtocolSessionV1 {
+    /// Whether this is a session of what `invite` grants: its workspace and
+    /// its record. A recipient accepts a snapshot only from such a session,
+    /// never one the host opened on another workspace or record.
+    #[must_use]
+    pub fn is_for_invite(&self, invite: &collab_types::FileInviteV1) -> bool {
+        self.workspace_id == invite.workspace_id && self.record_id == invite.record_id
+    }
+}
+
 impl From<RecordAccessBinding> for RecordProtocolSessionV1 {
     fn from(binding: RecordAccessBinding) -> Self {
         Self {
@@ -1030,6 +1040,49 @@ mod tests {
     };
 
     static NEXT_PARTY: AtomicU64 = AtomicU64::new(100);
+
+    /// A recipient takes a snapshot only from a session on the invite's
+    /// workspace and record.
+    #[test]
+    fn a_session_on_another_workspace_or_record_is_not_the_invites() {
+        let workspace = Uuid::new_v4();
+        let record = FileRecordId::new();
+        let issuer = SigningKey::from_bytes(&[7; 32]);
+        let mut rng = StdRng::seed_from_u64(9);
+        let invite = mint_bearer_file_invite(
+            FileInviteSpec {
+                workspace_id: workspace,
+                record_id: record,
+                subject: FileInviteSubject::Bearer {
+                    secret_hash: [0; 32],
+                },
+                permission: FilePermission::View,
+                expires_at_ms: None,
+                max_redemptions: None,
+            },
+            &issuer,
+            &mut rng,
+        )
+        .unwrap()
+        .token;
+        let session = RecordProtocolSessionV1 {
+            session_id: Uuid::new_v4(),
+            grant_id: invite.id,
+            workspace_id: workspace,
+            record_id: record,
+        };
+        assert!(session.is_for_invite(&invite));
+        let other_workspace = RecordProtocolSessionV1 {
+            workspace_id: Uuid::new_v4(),
+            ..session
+        };
+        assert!(!other_workspace.is_for_invite(&invite));
+        let other_record = RecordProtocolSessionV1 {
+            record_id: FileRecordId::new(),
+            ..session
+        };
+        assert!(!other_record.is_for_invite(&invite));
+    }
 
     struct Party {
         endpoint: Endpoint,

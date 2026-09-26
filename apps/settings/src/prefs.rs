@@ -26,7 +26,7 @@
 //! {
 //!   "version": 1,
 //!   "locale":  { … },                       // owned by region.rs
-//!   "audio":   { "event_sounds": true, "chat_join": true, "chat_leave": true },
+//!   "audio":   { "system_sounds": { "enabled": true, "volume": 0.7, … } },
 //!   "display": { "auto_brightness": false, "night_light": false },
 //!   "input":   { "natural_scroll": false, "tap_to_click": true,
 //!                "pointer_speed": 0.5, "key_repeat": 0.5,
@@ -40,6 +40,8 @@
 //!   "accessibility": { "large_cursor": false, "cursor_size": 24,
 //!                      "screen_reader": false, "on_screen_keyboard": false,
 //!                      "sticky_keys": false, "slow_keys": false,
+//!                      "bounce_keys": false, "bounce_keys_delay_ms": 300,
+//!                      "bounce_keys_alert": false, "mouse_keys": false,
 //!                      "visual_alerts": false }
 //! }
 //! ```
@@ -55,23 +57,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::region::RegionSettings;
 
-/// Remembered default audio devices and persistent transforms. The three
-/// legacy sound booleans remain deserializable for compatibility but are not
-/// exposed as controls: notification sound delivery belongs to Notifications,
-/// and collaboration sounds are not offered until the shell has a real event
-/// sound consumer.
-/// `#[serde(default)]` keeps configs written before these fields existed
-/// loadable.
+/// Remembered default audio devices, persistent transforms and which system
+/// events make a sound.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "flat user-facing preferences record loaded from settings.json; each bool is an \
-              independently meaningful serialized setting, not a related toggle group"
-)]
 pub struct AudioPrefs {
-    pub event_sounds: bool,
-    pub chat_join: bool,
-    pub chat_leave: bool,
+    /// "System sounds": master switch, volume, theme and per-event choices.
+    /// The compositor plays them; see [`settings_store::system_sounds`].
+    #[serde(default)]
+    pub system_sounds: settings_store::system_sounds::SystemSoundPrefs,
     /// Label of the last chosen default sink (output device), if any.
     #[serde(default)]
     pub output_device: Option<String>,
@@ -86,6 +79,10 @@ pub struct AudioPrefs {
     /// keeps the bounded virtual sink alive across Settings navigation.
     #[serde(default)]
     pub mono_output: bool,
+    /// Give calls an echo-cancelled microphone. The compositor session owns
+    /// the `PipeWire` client that provides it.
+    #[serde(default = "default_true")]
+    pub echo_cancellation: bool,
 }
 
 const fn default_audio_balance() -> f32 {
@@ -95,13 +92,12 @@ const fn default_audio_balance() -> f32 {
 impl Default for AudioPrefs {
     fn default() -> Self {
         Self {
-            event_sounds: true,
-            chat_join: true,
-            chat_leave: true,
+            system_sounds: settings_store::system_sounds::SystemSoundPrefs::default(),
             output_device: None,
             input_device: None,
             balance: default_audio_balance(),
             mono_output: false,
+            echo_cancellation: true,
         }
     }
 }
@@ -115,6 +111,10 @@ pub struct DisplayPrefs {
     /// whole-output Night Light transform.
     #[serde(default = "default_night_light_temperature")]
     pub night_light_temperature: u32,
+    /// Follow the Appearance day/night schedule instead of the manual switch:
+    /// on from sunset, off from sunrise.
+    #[serde(default)]
+    pub night_light_schedule: bool,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -138,6 +138,7 @@ impl Default for DisplayPrefs {
         Self {
             auto_brightness: false,
             night_light: false,
+            night_light_schedule: false,
             night_light_temperature: default_night_light_temperature(),
             scale: 1.0,
         }
@@ -177,6 +178,12 @@ pub struct InputPrefs {
     /// `adaptive` or `flat`; capability-gated by libinput.
     pub accel_profile: String,
     pub touchpad_gestures: bool,
+    /// Which button a clickpad press means; capability-gated by libinput.
+    pub touchpad_click_method: settings_store::hardware::TouchpadClickMethod,
+    /// Two-finger or edge scrolling; capability-gated by libinput.
+    pub touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod,
+    /// Scroll-distance multiplier for wheels and touchpads.
+    pub scroll_speed: f64,
     /// XKB compose option (`ralt`, `menu`, …), or none.
     pub compose_key: Option<String>,
     /// Ordered XKB layouts. `keyboard_layout` remains the active first item
@@ -208,6 +215,9 @@ impl Default for InputPrefs {
             left_handed: false,
             accel_profile: "adaptive".into(),
             touchpad_gestures: true,
+            touchpad_click_method: settings_store::hardware::TouchpadClickMethod::Default,
+            touchpad_scroll_method: settings_store::hardware::TouchpadScrollMethod::TwoFinger,
+            scroll_speed: 1.0,
             compose_key: None,
             keyboard_layouts: vec!["us".into()],
             pen_output: None,
@@ -238,6 +248,7 @@ impl InputPrefs {
             .and_then(serde_json::Value::as_bool)
             .or(legacy_natural_scroll)
             .or(Some(settings_store::hardware::DEFAULT_MOUSE_NATURAL_SCROLL));
+        input.scroll_speed = settings_store::hardware::clamp_scroll_speed(input.scroll_speed);
         Some(input)
     }
 
@@ -268,6 +279,9 @@ impl InputPrefs {
             keyboard_layouts: self.keyboard_layouts.clone(),
             compose_key: self.compose_key.clone(),
             touchpad_gestures: self.touchpad_gestures,
+            touchpad_click_method: self.touchpad_click_method,
+            touchpad_scroll_method: self.touchpad_scroll_method,
+            scroll_speed: self.scroll_speed,
             pen_output: self.pen_output.clone(),
         };
         config.normalise_sources();
@@ -448,6 +462,49 @@ pub struct AppearancePrefs {
     /// (serde `default`), so older configs keep their look.
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f64,
+    /// When the day ends, for the "Automatic" theme and a scheduled night
+    /// light: `"sun"` follows sunrise and sunset at the time zone's location,
+    /// `"custom"` uses [`Self::sunrise`] and [`Self::sunset`]
+    /// (`settings_store::day_schedule`).
+    #[serde(default = "default_schedule")]
+    pub schedule: String,
+    /// Custom sunrise, `HH:MM`; also the fallback when the sun cannot be followed.
+    #[serde(default = "default_sunrise")]
+    pub sunrise: String,
+    /// Custom sunset, `HH:MM`; also the fallback when the sun cannot be followed.
+    #[serde(default = "default_sunset")]
+    pub sunset: String,
+    /// Whether a newly chosen wallpaper covers `"workspace"` (the one Settings
+    /// runs in) or `"all"` workspaces. The compositor reads it when applying.
+    #[serde(default = "default_wallpaper_scope")]
+    pub wallpaper_scope: String,
+    /// Where a newly chosen wallpaper shows: `background`, `lockscreen` or `both`.
+    #[serde(default = "default_wallpaper_target")]
+    pub wallpaper_target: String,
+}
+
+fn default_schedule() -> String {
+    "sun".to_string()
+}
+
+fn default_sunrise() -> String {
+    settings_store::day_schedule::format_hhmm(
+        settings_store::day_schedule::DaySchedule::FIXED.sunrise,
+    )
+}
+
+fn default_sunset() -> String {
+    settings_store::day_schedule::format_hhmm(
+        settings_store::day_schedule::DaySchedule::FIXED.sunset,
+    )
+}
+
+fn default_wallpaper_scope() -> String {
+    "workspace".to_string()
+}
+
+fn default_wallpaper_target() -> String {
+    "background".to_string()
 }
 
 /// Serde default for [`AppearancePrefs::ui_scale`] so a config written before
@@ -465,6 +522,11 @@ impl Default for AppearancePrefs {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            schedule: default_schedule(),
+            sunrise: default_sunrise(),
+            sunset: default_sunset(),
+            wallpaper_scope: default_wallpaper_scope(),
+            wallpaper_target: default_wallpaper_target(),
         }
     }
 }
@@ -473,6 +535,7 @@ impl AppearancePrefs {
     /// The named theme presets the Appearance pane offers, in display order.
     /// Each maps to a real constructor on [`ui::Theme`] via [`theme_by_name`].
     pub const THEMES: &'static [&'static str] = &[
+        settings_store::day_schedule::AUTOMATIC_THEME,
         "Dark",
         "Light",
         "Tilo Blue",
@@ -496,7 +559,7 @@ impl AppearancePrefs {
         let base = if self.high_contrast {
             ui::Theme::high_contrast()
         } else {
-            theme_by_name(&self.theme)
+            self.base_theme()
         };
         // UI scale grows the whole system first; text scale then layers extra
         // type growth on top. Both fold into the same theme the compositor and
@@ -504,6 +567,48 @@ impl AppearancePrefs {
         base.with_ui_scale(self.ui_scale as f32)
             .with_text_scale(self.text_scale as f32)
             .with_reduce_motion(self.reduce_motion)
+    }
+}
+
+impl AppearancePrefs {
+    /// The day/night schedule these preferences describe, at the system time
+    /// zone's location.
+    pub fn schedule(&self) -> settings_store::day_schedule::Scheduled {
+        let mut section = serde_json::Map::new();
+        section.insert("schedule".into(), self.schedule.clone().into());
+        section.insert("sunrise".into(), self.sunrise.clone().into());
+        section.insert("sunset".into(), self.sunset.clone().into());
+        settings_store::day_schedule::Scheduled {
+            config: settings_store::day_schedule::ScheduleConfig::from_section(&section),
+            location: settings_store::day_schedule::timezone_location(),
+        }
+    }
+
+    /// The chosen theme before the accessibility comforts: "Automatic" is
+    /// the light theme by day and the dark theme by night.
+    pub fn base_theme(&self) -> ui::Theme {
+        if settings_store::day_schedule::is_automatic(&self.theme) {
+            if self.schedule().is_night(ui::theme::local_moment()) {
+                ui::Theme::dark()
+            } else {
+                ui::Theme::light()
+            }
+        } else {
+            theme_by_name(&self.theme)
+        }
+    }
+}
+
+/// Overwrite `known`'s fields in the `section` object, keeping any other key
+/// in it. A non-object section is replaced by an empty one first.
+fn merge_fields(section: &mut serde_json::Value, known: &serde_json::Value) {
+    if !section.is_object() {
+        *section = serde_json::json!({});
+    }
+    if let (Some(target), Some(fields)) = (section.as_object_mut(), known.as_object()) {
+        for (key, value) in fields {
+            target.insert(key.clone(), value.clone());
+        }
     }
 }
 
@@ -614,15 +719,30 @@ pub struct AccessibilityPrefs {
     /// accidental brushes.
     #[serde(default)]
     pub slow_keys: bool,
+    /// Ignore a second press of the same key soon after its release.
+    #[serde(default)]
+    pub bounce_keys: bool,
+    /// The bounce-keys window in milliseconds.
+    #[serde(default = "default_bounce_keys_delay_ms")]
+    pub bounce_keys_delay_ms: u32,
+    /// Flash the visual alert when bounce keys ignores a press.
+    #[serde(default)]
+    pub bounce_keys_alert: bool,
+    /// Move the pointer with the numeric keypad.
+    #[serde(default)]
+    pub mouse_keys: bool,
     /// Flash the screen instead of (or alongside) an audible alert.
     #[serde(default)]
     pub visual_alerts: bool,
     /// Whole-desktop colour transform owned by the compositor.
     #[serde(default)]
     pub color_filter: ColorFilter,
-    /// Pointer-following lens magnification. `1` means disabled.
+    /// Desktop magnification factor. `1` means disabled.
     #[serde(default = "default_magnifier_zoom")]
     pub magnifier_zoom: u8,
+    /// A lens around the point of interest, or the whole screen magnified.
+    #[serde(default)]
+    pub magnifier_view: settings_store::magnifier::MagnifierView,
     /// Paint full-screen guide lines through the hardware pointer.
     #[serde(default)]
     pub cursor_crosshair: bool,
@@ -772,6 +892,10 @@ fn default_cursor_size() -> u32 {
     24
 }
 
+fn default_bounce_keys_delay_ms() -> u32 {
+    settings_store::hardware::BOUNCE_KEYS_DEFAULT_DELAY_MS
+}
+
 fn default_magnifier_zoom() -> u8 {
     1
 }
@@ -789,9 +913,14 @@ impl Default for AccessibilityPrefs {
             on_screen_keyboard: false,
             sticky_keys: false,
             slow_keys: false,
+            bounce_keys: false,
+            bounce_keys_delay_ms: default_bounce_keys_delay_ms(),
+            bounce_keys_alert: false,
+            mouse_keys: false,
             visual_alerts: false,
             color_filter: ColorFilter::None,
             magnifier_zoom: default_magnifier_zoom(),
+            magnifier_view: settings_store::magnifier::MagnifierView::Lens,
             cursor_crosshair: false,
             thick_text_caret: false,
             switch_control: false,
@@ -804,6 +933,31 @@ impl Default for AccessibilityPrefs {
 }
 
 impl AccessibilityPrefs {
+    /// The offered bounce-keys windows as `(display label, milliseconds)`.
+    pub const BOUNCE_DELAYS: &'static [(&'static str, u32)] = &[
+        ("100 ms", 100),
+        ("200 ms", 200),
+        ("300 ms", 300),
+        ("500 ms", 500),
+        ("800 ms", 800),
+    ];
+
+    /// The offered bounce-keys window closest to `ms`.
+    pub fn bounce_delay_label(ms: u32) -> &'static str {
+        Self::BOUNCE_DELAYS
+            .iter()
+            .min_by_key(|(_, d)| d.abs_diff(ms))
+            .map_or("300 ms", |(l, _)| *l)
+    }
+
+    /// Map a bounce-keys label back to milliseconds, if recognised.
+    pub fn bounce_delay_ms(label: &str) -> Option<u32> {
+        Self::BOUNCE_DELAYS
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, d)| *d)
+    }
+
     /// The offered pointer sizes as `(display label, size px)`. The compositor
     /// applies [`Self::cursor_size`] as its cursor-theme size when
     /// [`Self::large_cursor`] is set.
@@ -895,9 +1049,11 @@ impl SystemPrefs {
     }
 
     /// Serialize to pretty JSON, **merging** into `existing` so foreign
-    /// keys (notably `locale`) survive. The known `appearance` fields are
-    /// merged one level deeper so Theme Studio's nested editable artifact is
-    /// not destroyed when Settings changes text scale or the active preset.
+    /// keys (notably `locale`) survive. The known `appearance` and
+    /// `accessibility` fields are merged one level deeper: Theme Studio keeps
+    /// its nested editable artifact in `appearance`, and the compositor keeps
+    /// the magnifier toggle's remembered zoom in `accessibility`, and neither
+    /// may be destroyed when Settings writes its own fields.
     pub fn to_json_merged(&self, existing: &str) -> String {
         let mut obj = serde_json::from_str::<serde_json::Value>(existing)
             .ok()
@@ -927,22 +1083,18 @@ impl SystemPrefs {
         let appearance = obj
             .entry("appearance")
             .or_insert_with(|| serde_json::json!({}));
-        if !appearance.is_object() {
-            *appearance = serde_json::json!({});
-        }
         let known = serde_json::to_value(&self.appearance).unwrap_or_default();
-        if let (Some(target), Some(fields)) = (appearance.as_object_mut(), known.as_object()) {
-            for (key, value) in fields {
-                target.insert(key.clone(), value.clone());
-            }
-        }
+        merge_fields(appearance, &known);
         obj.insert(
             "notifications".into(),
             serde_json::to_value(&self.notifications).unwrap_or_default(),
         );
-        obj.insert(
-            "accessibility".into(),
-            serde_json::to_value(self.accessibility).unwrap_or_default(),
+        let accessibility = obj
+            .entry("accessibility")
+            .or_insert_with(|| serde_json::json!({}));
+        merge_fields(
+            accessibility,
+            &serde_json::to_value(self.accessibility).unwrap_or_default(),
         );
         serde_json::to_string_pretty(&serde_json::Value::Object(obj))
             .unwrap_or_else(|_| "{}".into())
@@ -1072,7 +1224,7 @@ mod tests {
     #[test]
     fn defaults_are_sensible() {
         let p = SystemPrefs::default();
-        assert!(p.audio.event_sounds);
+        assert!(p.audio.system_sounds.enabled);
         assert!(!p.display.night_light);
         assert!(p.input.tap_to_click);
         assert_eq!(p.input.touchpad_natural_scroll, Some(true));
@@ -1086,9 +1238,55 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_filters_and_touchpad_choices_round_trip_through_json() {
+        use settings_store::hardware::{TouchpadClickMethod, TouchpadScrollMethod};
+        let mut p = SystemPrefs::default();
+        assert_eq!(p.accessibility.bounce_keys_delay_ms, 300);
+        p.accessibility.bounce_keys = true;
+        p.accessibility.bounce_keys_delay_ms = 500;
+        p.accessibility.bounce_keys_alert = true;
+        p.accessibility.mouse_keys = true;
+        p.input.touchpad_click_method = TouchpadClickMethod::Clickfinger;
+        p.input.touchpad_scroll_method = TouchpadScrollMethod::Edge;
+        p.input.scroll_speed = 2.0;
+        let json = p.to_json_merged("");
+        let back = SystemPrefs::from_json(&json);
+        assert_eq!(back.accessibility, p.accessibility);
+        assert_eq!(
+            back.input.touchpad_click_method,
+            TouchpadClickMethod::Clickfinger
+        );
+        assert_eq!(
+            back.input.touchpad_scroll_method,
+            TouchpadScrollMethod::Edge
+        );
+        assert_eq!(back.input.scroll_speed, 2.0);
+
+        // The compositor reads the same document.
+        let root: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let input = root["input"].as_object().unwrap();
+        let rich = settings_store::hardware::RichInputConfig::from_section(input);
+        assert_eq!(rich.touchpad_click_method, TouchpadClickMethod::Clickfinger);
+        assert_eq!(rich.touchpad_scroll_method, TouchpadScrollMethod::Edge);
+        assert_eq!(rich.scroll_speed, 2.0);
+        assert_eq!(root["accessibility"]["bounce_keys_delay_ms"], 500);
+        assert_eq!(root["accessibility"]["mouse_keys"], true);
+    }
+
+    #[test]
+    fn bounce_delay_labels_map_both_ways() {
+        assert_eq!(AccessibilityPrefs::bounce_delay_label(300), "300 ms");
+        assert_eq!(AccessibilityPrefs::bounce_delay_label(450), "500 ms");
+        assert_eq!(AccessibilityPrefs::bounce_delay_ms("800 ms"), Some(800));
+        assert_eq!(AccessibilityPrefs::bounce_delay_ms("forever"), None);
+    }
+
+    #[test]
     fn round_trips_through_json() {
         let mut p = SystemPrefs::default();
-        p.audio.event_sounds = false;
+        p.audio.system_sounds.enabled = false;
+        p.audio.system_sounds.theme = Some("ocean".into());
+        p.audio.system_sounds.events.error = false;
         p.display.night_light = true;
         p.input.pointer_speed = 0.9;
         p.input.keyboard_layout = "de".into();
@@ -1204,6 +1402,7 @@ mod tests {
             reduce_motion: false,
             text_scale: 1.2,
             ui_scale: 1.25,
+            ..AppearancePrefs::default()
         };
         let theme = p.resolve_theme();
         assert_eq!(theme.ui_scale, 1.25, "UI scale folds in");
@@ -1248,6 +1447,7 @@ mod tests {
             reduce_motion: true,
             text_scale: 1.5,
             ui_scale: 1.0,
+            ..AppearancePrefs::default()
         };
         let theme = p.resolve_theme();
         assert_eq!(theme.name, "Nord", "the named preset is applied");
@@ -1263,6 +1463,7 @@ mod tests {
             reduce_motion: false,
             text_scale: 1.0,
             ui_scale: 1.0,
+            ..AppearancePrefs::default()
         };
         // high_contrast wins over the named preset.
         assert_eq!(p.resolve_theme().name, "High Contrast");
@@ -1272,7 +1473,10 @@ mod tests {
     fn appearance_unknown_theme_name_degrades_to_dark() {
         assert_eq!(theme_by_name("not-a-theme").name, "Dark");
         // Every advertised preset maps to a distinct real constructor.
-        for name in AppearancePrefs::THEMES {
+        for name in AppearancePrefs::THEMES
+            .iter()
+            .filter(|name| !settings_store::day_schedule::is_automatic(name))
+        {
             let t = theme_by_name(name);
             assert_eq!(&t.name, name, "{name} must resolve to its own theme");
         }
@@ -1292,6 +1496,17 @@ mod tests {
             out.contains("\"currency\": \"EUR\""),
             "locale survived: {out}"
         );
+    }
+
+    #[test]
+    fn merge_preserves_the_compositors_accessibility_keys() {
+        let existing = r#"{"accessibility":{"magnifier_zoom":1,"magnifier_last_zoom":4}}"#;
+        let mut p = SystemPrefs::from_json(existing);
+        p.accessibility.sticky_keys = true;
+        let out = p.to_json_merged(existing);
+        let root: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(root["accessibility"]["magnifier_last_zoom"], 4);
+        assert_eq!(root["accessibility"]["sticky_keys"], true);
     }
 
     #[test]
@@ -1330,11 +1545,11 @@ mod tests {
         // A garbage `input` section falls back to defaults rather than
         // throwing away the whole document.
         let p = SystemPrefs::from_json(
-            r#"{"input":"not-an-object","audio":{"event_sounds":false,"chat_join":true,"chat_leave":true}}"#,
+            r#"{"input":"not-an-object","audio":{"system_sounds":{"enabled":false}}}"#,
         );
         assert_eq!(p.input, InputPrefs::default());
         assert!(
-            !p.audio.event_sounds,
+            !p.audio.system_sounds.enabled,
             "the valid audio section still parsed"
         );
     }

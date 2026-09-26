@@ -29,7 +29,11 @@ pub use transport::{
 mod broker;
 mod history;
 #[cfg(feature = "broker-transport")]
-pub use broker::{CertifiedEndpointIdentity, HostSessionConnector, wifi_continuity_command};
+mod route_keys;
+#[cfg(feature = "broker-transport")]
+pub use broker::{
+    CertifiedEndpointIdentity, HostSessionConnector, speaker_command, wifi_continuity_command,
+};
 pub use history::{DocumentHistory, HISTORY_PAGE_SIZE, HISTORY_PREFETCH_MARGIN};
 
 #[cfg(any(test, feature = "test-support"))]
@@ -39,6 +43,12 @@ pub use loopback::{LoopbackPeer, LoopbackTransport};
 
 pub use collab_types::DocumentMutation;
 use collab_types::SignedOp;
+pub use runtime_collab::{
+    CalibrationInfo, CalibrationMemberInfo, CalibrationMemberState, CalibrationPhaseInfo,
+    MAX_SPEAKER_NAME_CHARS, SpeakerCommand, SpeakerDeviceInfo, SpeakerEndpointInfo,
+    SpeakerGroupInfo, SpeakerMemberInfo, SpeakerMemberSpec, SpeakerMemberStatus, SpeakerReply,
+    SpeakerRoleSpec, SpeakerSnapshot, SpeakerTrimInfo,
+};
 pub use runtime_collab::{
     NearbyDestinationHandle, NearbyTargetHandle, NearbyTransferCommand, NearbyTransferDestination,
     NearbyTransferDirection, NearbyTransferHandle, NearbyTransferPhase, NearbyTransferReply,
@@ -64,16 +74,20 @@ pub fn wifi_continuity_command(
     Err("Wi-Fi continuity requires the certified collaboration service".to_string())
 }
 
-/// Inert, app-owned resume projection sent only to the local shell.
+/// Ask the shell's speaker-group authority. Without the broker transport
+/// there is no certified collaboration service to carry it.
 ///
-/// The bytes are deliberately opaque to the toolkit so each app can version
-/// its CRDT-derived schema. The shell validates size and path redaction before
-/// retaining them for same-identity continuation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ContinuationMetadata {
-    pub schema_version: u16,
-    pub bytes: Vec<u8>,
+/// # Errors
+///
+/// Always returns an unavailable message in this build.
+#[cfg(not(feature = "broker-transport"))]
+pub fn speaker_command(
+    _command: runtime_collab::SpeakerCommand,
+) -> Result<runtime_collab::SpeakerReply, String> {
+    Err("speakers need the certified collaboration service".to_string())
 }
+
+pub use crate::host::ContinuationMetadata;
 
 /// The launcher-only resume payload the host passed this window
 /// ([`crate::host::HostIdentity::continuity_resume`]).
@@ -82,18 +96,6 @@ pub fn continuation_restore_env() -> Option<ContinuationMetadata> {
         .identity
         .continuity_resume
         .clone()
-}
-
-/// Decode a hex resume payload and its schema version. Invalid input is
-/// ignored so an app outside Tilo or an older sender opens normally.
-#[cfg(feature = "native")]
-pub(crate) fn decode_continuation(hex: &str, schema: &str) -> Option<ContinuationMetadata> {
-    let bytes = hex::decode(hex).ok()?;
-    let schema_version = schema.parse().ok()?;
-    (!bytes.is_empty() && bytes.len() <= 32 * 1024).then_some(ContinuationMetadata {
-        schema_version,
-        bytes,
-    })
 }
 
 /// Why a request did not reach the collaboration transport.
@@ -377,6 +379,30 @@ impl RouteSpec {
     }
 }
 
+/// What an endpoint's route can do with content, as apps see it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChannelAccessState {
+    /// No channel encryption applies to this endpoint (a test harness).
+    Unencrypted,
+    /// End-to-end encrypted; content flows.
+    Encrypted,
+    /// This device asked for access and has not been admitted yet, so no
+    /// content can be read or written. Edits wait on the device.
+    WaitingForAccess,
+    /// This device was removed from the channel.
+    Removed,
+    /// This device cannot join the channel right now (no secret store, or
+    /// the room's governor is unknown). Edits wait on the device.
+    Unavailable,
+}
+
+impl ChannelAccessState {
+    /// Whether content currently flows.
+    pub fn is_open(self) -> bool {
+        matches!(self, Self::Unencrypted | Self::Encrypted)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum CollabEvent {
     Context {
@@ -415,6 +441,15 @@ pub enum CollabEvent {
         type_id: String,
         payload: Vec<u8>,
         from_user_id: String,
+    },
+    /// What this endpoint can do with one route's end-to-end encrypted
+    /// content changed: it was admitted, is waiting for access (a new device
+    /// before its welcome arrives), was removed, or cannot join. While a
+    /// route is not open the SDK holds edits and incoming ciphertext on the
+    /// device instead of dropping them; apps show the state.
+    ChannelAccess {
+        route: RouteSpec,
+        state: ChannelAccessState,
     },
     /// A validated signed document envelope from another peer. For cleartext
     /// routes the mutation kind is inside the outer signed payload. For an

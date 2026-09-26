@@ -15,7 +15,7 @@ use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::presence::PresenceCtx;
@@ -25,13 +25,12 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::colors::ACCENT_PRIMARY_IDX;
 use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
+    DragScroller, ScrollAlignment, ScrollMomentum, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
-const WHEEL_LINE_PX: f64 = 60.0;
 const BAR_THICKNESS: f64 = 8.0;
 const BAR_MARGIN: f64 = 2.0;
 
@@ -1398,29 +1397,21 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     *handled = true;
                 }
             }
-            WindowEvent::MouseWheel { delta, .. }
+            WindowEvent::MouseWheel { delta, phase, .. }
                 if self
                     .last_cursor
                     .is_some_and(|point| self.rect.contains(point)) =>
             {
-                let delta = match delta {
-                    MouseScrollDelta::LineDelta(_, y) if !self.reduce_motion => {
-                        self.momentum.push(f64::from(*y) * -WHEEL_LINE_PX)
-                    }
-                    MouseScrollDelta::LineDelta(_, y) => {
-                        self.momentum.stop();
-                        f64::from(*y) * -WHEEL_LINE_PX
-                    }
-                    MouseScrollDelta::PixelDelta(position) => {
-                        self.momentum.stop();
-                        -position.y
-                    }
-                };
                 self.last_tick = Some(crate::time::now());
-                *handled = self.scroll_by(delta);
-                if !*handled {
-                    self.momentum.stop();
-                }
+                *handled = match self.momentum.wheel(delta, *phase, self.reduce_motion) {
+                    WheelStep::Scroll(delta) => {
+                        let moved = self.scroll_by(delta);
+                        self.momentum.wheel_applied(delta, moved);
+                        moved
+                    }
+                    WheelStep::Fling => true,
+                    WheelStep::Ignored => false,
+                };
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.is_focused && event.state == ElementState::Pressed =>
@@ -1650,6 +1641,7 @@ mod tests {
     use crate::time::Duration;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
+    use winit::event::MouseScrollDelta;
 
     use taffy::AvailableSpace;
     use winit::dpi::PhysicalPosition;
@@ -2483,7 +2475,7 @@ mod tests {
             phase: winit::event::TouchPhase::Moved,
         };
         assert!(dispatch(&mut list, &wheel, &taffy, node));
-        assert_eq!(list.scroll_offset(), WHEEL_LINE_PX);
+        assert_eq!(list.scroll_offset(), 60.0);
         assert!(!list.momentum.is_active());
 
         let now = crate::time::now();

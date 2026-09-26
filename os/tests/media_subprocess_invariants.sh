@@ -8,7 +8,7 @@ AUDIO="$ROOT/crates/media/core/src/audio.rs"
 RUNTIME="$ROOT/crates/media/core/src/audio_runtime.rs"
 OCR="$ROOT/crates/media/ocr/src/lib.rs"
 SETTINGS_AUDIO="$ROOT/apps/settings/src/panes/audio.rs"
-NOTIFICATION_SOUND="$ROOT/crates/media/core/src/notification_sound.rs"
+EVENT_SOUND="$ROOT/crates/media/core/src/event_sound.rs"
 SHELL_CAPTURE="$ROOT/crates/session/shell/src/compositor/audio_capture.rs"
 
 fails=0
@@ -46,10 +46,10 @@ must_contain "$SETTINGS_AUDIO" 'bounded_command::run\(' \
     "Settings audio probes do not use bounded execution"
 must_not_contain "$SETTINGS_AUDIO" 'Command::new|\.output\(\)|wait_with_output' \
     "Settings audio contains a raw subprocess path"
-must_contain "$NOTIFICATION_SOUND" 'bounded_command::run_prepared' \
-    "notification audio does not use descendant-cleaning bounded execution"
-must_not_contain "$NOTIFICATION_SOUND" '\.spawn\(\)|child\.kill\(\)' \
-    "notification audio contains direct-child-only execution"
+must_contain "$EVENT_SOUND" 'bounded_command::run_prepared' \
+    "event sounds do not use descendant-cleaning bounded execution"
+must_not_contain "$EVENT_SOUND" '\.spawn\(\)|child\.kill\(\)' \
+    "event sounds contain direct-child-only execution"
 must_contain "$SHELL_CAPTURE" 'bounded_command::run_prepared' \
     "screen-recording probes need bounded subprocess execution"
 must_not_contain "$SHELL_CAPTURE" '\.output\(\)|\.status\(\)' \

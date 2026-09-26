@@ -23,11 +23,11 @@ use sha2::{Digest, Sha256};
 use crate::error::CliError;
 use crate::hypervisor::{CommandLine, Runner};
 
-pub const FORGE: &str = "code.podesta.ai";
-pub const PACKAGES: &str = "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk";
+pub const FORGE: &str = "code.tilo.so";
+pub const PACKAGES: &str = "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk";
 /// Lists the package's published versions.
 pub const VERSIONS: &str =
-    "https://code.podesta.ai/api/v1/packages/qos?type=generic&q=tilo-vm-disk&limit=50";
+    "https://code.tilo.so/api/v1/packages/tilo?type=generic&q=tilo-vm-disk&limit=50";
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -62,7 +62,7 @@ pub fn manifest_url(tag: &str, arch: &str) -> String {
 
 /// Lists the files of one published tag.
 pub fn files_url(tag: &str) -> String {
-    format!("https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/{tag}/files")
+    format!("https://code.tilo.so/api/v1/packages/tilo/generic/tilo-vm-disk/{tag}/files")
 }
 
 /// What a tag offers, as `<arch> <format>`, from its file listing: the disks
@@ -458,11 +458,11 @@ mod tests {
       "schema": "https://tilo.sh/dev/disk/v1",
       "tag": "main-1a2b3c4",
       "sourceRevision": "1a2b3c4d",
-      "image": "code.podesta.ai/qos/tilo-vm:main-1a2b3c4",
+      "image": "registry.tilo.so/tilo/tilo-vm:main-1a2b3c4",
       "imageDigest": "sha256:aa",
       "disks": [
         {"arch": "x86_64", "format": "qcow2", "file": "tilo-vm-main-1a2b3c4-x86_64.qcow2",
-         "url": "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-main-1a2b3c4-x86_64.qcow2",
+         "url": "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-main-1a2b3c4-x86_64.qcow2",
          "sha256": "ab", "size": 3, "virtualSize": 10}
       ]
     }"#;
@@ -477,11 +477,11 @@ mod tests {
         assert_eq!(manifest.offered(), ["x86_64 qcow2"]);
         assert_eq!(
             manifest_url("main-1a2b3c4", "x86_64"),
-            "https://code.podesta.ai/api/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
+            "https://code.tilo.so/api/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/tilo-vm-disk-x86_64.json"
         );
         assert_eq!(
             files_url("main-1a2b3c4"),
-            "https://code.podesta.ai/api/v1/packages/qos/generic/tilo-vm-disk/main-1a2b3c4/files"
+            "https://code.tilo.so/api/v1/packages/tilo/generic/tilo-vm-disk/main-1a2b3c4/files"
         );
     }
 
@@ -504,16 +504,16 @@ mod tests {
 
     #[test]
     fn tokens_are_found_in_fgj_and_tea_configs() {
-        let fgj = "default_host: code.podesta.ai\nhosts:\n    code.podesta.ai:\n        hostname: code.podesta.ai\n        token: abc123\n    other.example:\n        token: nope\n";
-        assert_eq!(fgj_token(fgj, "code.podesta.ai").as_deref(), Some("abc123"));
+        let fgj = "default_host: code.tilo.so\nhosts:\n    code.tilo.so:\n        hostname: code.tilo.so\n        token: abc123\n    other.example:\n        token: nope\n";
+        assert_eq!(fgj_token(fgj, "code.tilo.so").as_deref(), Some("abc123"));
         assert_eq!(fgj_token(fgj, "missing.example"), None);
-        let other_first = "hosts:\n  other.example:\n    token: nope\n  code.podesta.ai:\n    user: q\n    token: \"xyz\"\n";
+        let other_first = "hosts:\n  other.example:\n    token: nope\n  code.tilo.so:\n    user: q\n    token: \"xyz\"\n";
         assert_eq!(
-            fgj_token(other_first, "code.podesta.ai").as_deref(),
+            fgj_token(other_first, "code.tilo.so").as_deref(),
             Some("xyz")
         );
-        let tea = "logins:\n  - name: other\n    url: https://git.example\n    token: nope\n  - name: podesta\n    url: https://code.podesta.ai\n    token: t0k\n    default: true\n";
-        assert_eq!(tea_token(tea, "code.podesta.ai").as_deref(), Some("t0k"));
+        let tea = "logins:\n  - name: other\n    url: https://git.example\n    token: nope\n  - name: tilo\n    url: https://code.tilo.so\n    token: t0k\n    default: true\n";
+        assert_eq!(tea_token(tea, "code.tilo.so").as_deref(), Some("t0k"));
         assert_eq!(tea_token(tea, "missing.example"), None);
     }
 

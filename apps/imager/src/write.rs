@@ -1135,7 +1135,7 @@ const WINDOWS_ELEVATION_SCRIPT: &str = r#"$p = Start-Process -FilePath $args[0] 
 ///
 /// The request is deserialized from a user-private temporary file, then fully
 /// validated and its live target identity is checked again by
-/// [`run_system_job`]. Progress is append-only JSON so the unprivileged window
+/// `run_system_job`. Progress is append-only JSON so the unprivileged window
 /// can remain responsive while the platform authentication broker waits.
 ///
 /// # Errors
@@ -1820,7 +1820,7 @@ fn finish_target(_target: &TargetDrive, _result: &JobResult) {}
 ///
 /// * Tests/shots → the request is refused and no worker is created.
 /// * Live UI → platform authentication starts the narrow helper.
-/// * Deliberate allow-gated root diagnostics → [`run_system_job`] runs in the
+/// * Deliberate allow-gated root diagnostics → `run_system_job` runs in the
 ///   current process.
 pub fn spawn_job(
     req: WriteRequest,

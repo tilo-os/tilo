@@ -7,7 +7,7 @@
 //! * [`TileLayer::visible_tiles`] computes which `z/x/y` tiles cover the
 //!   current viewport — pure arithmetic, runs every frame.
 //! * For any tile that is not already decoded in memory, the layer sends a
-//!   [`TileRequest`] over a channel to a background [`worker`] thread and
+//!   `TileRequest` over a channel to a background `worker` thread and
 //!   *returns immediately*. The frame is drawn from whatever is cached.
 //! * The worker checks the on-disk cache first, then fetches over HTTP and
 //!   decodes the PNG to RGBA — all off the UI thread — and ships the decoded
@@ -592,7 +592,7 @@ impl TileLayer {
 
     /// Begin downloading every tile covering `region` across `z0..=z1` into the
     /// on-disk cache. Non-blocking: the worker streams progress back via
-    /// [`drain`]. Returns the number of tiles queued.
+    /// `drain`. Returns the number of tiles queued.
     pub fn start_download(&mut self, region: GeoBounds, z0: u8, z1: u8) -> u32 {
         let ids = region.tiles_in_range(z0, z1);
         let total = ids.len() as u32;

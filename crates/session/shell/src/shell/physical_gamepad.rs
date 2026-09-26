@@ -222,6 +222,21 @@ pub fn local_physical_gamepads() -> Result<Vec<LocalPhysicalGamepadView>, String
     Ok(manager.views())
 }
 
+/// Controllers currently leased to a remote device. Local desktop navigation
+/// stays off for these so one press never acts in two places.
+pub fn forwarded_physical_gamepads() -> Vec<PhysicalGamepadId> {
+    manager().lock().map_or_else(
+        |_| Vec::new(),
+        |manager| {
+            manager
+                .active
+                .values()
+                .map(|active| active.source_id.clone())
+                .collect()
+        },
+    )
+}
+
 /// Begin forwarding after a trusted shell action. The source token is local
 /// and the app/workspace/session binding must have been derived from current
 /// compositor focus by the native integration.

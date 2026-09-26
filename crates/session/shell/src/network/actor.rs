@@ -4610,4 +4610,357 @@ mod tests {
             }
         }
     }
+
+    /// The room's governance transport of one device, over its real actor:
+    /// channel governance goes to the room's workspace host (and gossip) like
+    /// any collaboration message, and documents are collected on the side.
+    struct ActorChannelTransport {
+        cmd: mpsc::Sender<NetCmd>,
+        events: Mutex<mpsc::Receiver<NetEvent>>,
+        room: crate::shell::state::RoomId,
+        documents: Mutex<Vec<collab_types::SignedOp>>,
+        host_ready: std::sync::atomic::AtomicBool,
+    }
+
+    impl ActorChannelTransport {
+        fn new(
+            cmd: mpsc::Sender<NetCmd>,
+            events: mpsc::Receiver<NetEvent>,
+            room: crate::shell::state::RoomId,
+        ) -> Self {
+            Self {
+                cmd,
+                events: Mutex::new(events),
+                room,
+                documents: Mutex::new(Vec::new()),
+                host_ready: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+
+        fn host_ready(&self) -> bool {
+            self.host_ready.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl crate::shell::channel_encryption::GovernanceTransport for ActorChannelTransport {
+        fn publish(&self, msg: NeighbourMsg) -> bool {
+            self.cmd.try_send(NetCmd::Publish { ws: 42, msg }).is_ok()
+        }
+
+        fn take_inbound(&self) -> Vec<crate::shell::network::InboundChannelGovernance> {
+            use crate::shell::network::InboundChannelGovernance as Inbound;
+            let room = self.room;
+            let mut inbound = Vec::new();
+            let mut events = self.events.lock().unwrap();
+            while let Ok(event) = events.try_recv() {
+                let msg = match event {
+                    NetEvent::Msg { msg, .. } => msg,
+                    NetEvent::HostReady { .. } => {
+                        self.host_ready
+                            .store(true, std::sync::atomic::Ordering::SeqCst);
+                        continue;
+                    }
+                    _ => continue,
+                };
+                match msg {
+                    NeighbourMsg::MlsGovernance { frame, .. } => {
+                        inbound.push(Inbound::Frame { room, frame });
+                    }
+                    NeighbourMsg::MlsAccessRequest { request, .. } => {
+                        inbound.push(Inbound::AccessRequest { room, request });
+                    }
+                    NeighbourMsg::MlsGovernanceAck { ack, .. } => {
+                        inbound.push(Inbound::Ack { room, ack });
+                    }
+                    NeighbourMsg::AppDocument { envelope, .. } => {
+                        self.documents.lock().unwrap().push(*envelope);
+                    }
+                    _ => {}
+                }
+            }
+            inbound
+        }
+    }
+
+    fn channel_service(
+        key: &ed25519_dalek::SigningKey,
+        dir: &std::path::Path,
+        directory: crate::shell::channel_encryption::tests::Directory,
+    ) -> crate::shell::channel_encryption::ChannelEncryption {
+        crate::shell::channel_encryption::ChannelEncryption::open(
+            crate::shell::channel_encryption::ChannelEncryptionConfig {
+                root: dir.join("channels"),
+                vault: channel_crypto::VaultKey::new(key.to_bytes()),
+                device_key: key.clone(),
+            },
+            Box::new(directory),
+            Arc::new(Mutex::new(
+                crate::shell::collab_core::BrokerChannels::default(),
+            )),
+        )
+        .unwrap()
+    }
+
+    fn every_file(dir: &std::path::Path, out: &mut Vec<Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                every_file(&path, out);
+            } else if let Ok(bytes) = std::fs::read(&path) {
+                out.push(bytes);
+            }
+        }
+    }
+
+    fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+        haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+    }
+
+    /// End to end through two real actors and a real workspace host:
+    ///
+    /// - a new channel is encrypted from creation, and what the relay stores
+    ///   (governance and document history alike) holds no plaintext;
+    /// - a member device whose network fails right after asking for access
+    ///   still joins: the host retained the steward's frames and the steward
+    ///   kept redelivering, so the restarted device gets its Welcome;
+    /// - it reads what the steward wrote; once the policy drops it, the
+    ///   removal commit rotates the keys and later content is closed to it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one transcript across two devices, a host outage and a restart"
+    )]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn channel_encryption_runs_end_to_end_through_the_workspace_host() {
+        use crate::shell::channel_encryption::ChannelAccess;
+        use crate::shell::channel_encryption::tests::{Directory, Policy};
+        use std::time::Instant;
+
+        const SECRET: &[u8] = b"quarterly figures nobody outside may read";
+        const LATER: &[u8] = b"written after the laptop lost access";
+        let user_root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&user_root, DeviceCapabilities::primary(), "desktop");
+        let (b_key, b_cert) = enrol(&user_root, DeviceCapabilities::member(), "laptop");
+        let device = |key: &ed25519_dalek::SigningKey| {
+            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes())
+        };
+        let (relay, relay_state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &user_root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let identity = |key: &ed25519_dalek::SigningKey, cert: &DeviceCert| HostIdentity {
+            device_cert: cert.clone(),
+            device_signing_key: key.clone(),
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, rx_a, cmd_b, rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(&a_key, &a_cert),
+            b,
+            lookup_b,
+            identity(&b_key, &b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+        let room = crate::shell::state::RoomId::new();
+        let workspace = room.to_string();
+        let channel = collab_types::document_channel_id("so.tilo.writer", &workspace, "q3");
+        let artifact = collab_types::document_artifact_id("so.tilo.writer", &workspace, "q3");
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(device(&b_key));
+        let (a_dir, b_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut steward = channel_service(
+            &a_key,
+            a_dir.path(),
+            Directory {
+                governs: true,
+                steward: device(&a_key),
+                policy: policy.clone(),
+            },
+        );
+        let member_directory = || Directory {
+            governs: false,
+            steward: device(&a_key),
+            policy: Policy::default(),
+        };
+        let steward_transport = ActorChannelTransport::new(cmd_a.clone(), rx_a, room);
+        let first_laptop = ActorChannelTransport::new(cmd_b.clone(), rx_b, room);
+
+        // Encrypted from creation; the laptop waits and asks once.
+        assert!(matches!(
+            steward.access(room, channel, Instant::now()),
+            ChannelAccess::Ready(_)
+        ));
+        let generation = steward.generation();
+        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
+        assert!(matches!(
+            member.access(room, channel, Instant::now()),
+            ChannelAccess::Waiting
+        ));
+        member.pump(&first_laptop, Instant::now(), 1_000);
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        timeout(Duration::from_secs(30), async {
+            while steward.generation() == generation {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+            }
+        })
+        .await
+        .expect("the steward admits the laptop from its request");
+
+        // The laptop's network fails before it processes any answer: its
+        // session to the host goes down and the process with everything it
+        // had queued is gone.
+        cmd_b
+            .send(NetCmd::DisconnectHost {
+                id: relay.node_addr().id,
+            })
+            .await
+            .unwrap();
+        drop(member);
+        drop(first_laptop);
+        drop(cmd_b);
+
+        // The laptop restarts: a fresh actor on the same device key, its
+        // channel state reopened from disk.
+        let (b_again, lookup_again) = identified_endpoint(&b_key).await;
+        let (cmd_again, _task) = Actor::spawn_reporting_addrs(
+            b_again,
+            lookup_again,
+            Some(identity(&b_key, &b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events, events_rx) = mpsc::channel(64);
+        cmd_again
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        cmd_again
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        let laptop = ActorChannelTransport::new(cmd_again, events_rx, room);
+        let mut member = channel_service(&b_key, b_dir.path(), member_directory());
+        let member_keys = timeout(Duration::from_secs(90), async {
+            loop {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+                member.pump(&laptop, Instant::now(), 1_000);
+                if laptop.host_ready()
+                    && let ChannelAccess::Ready(keys) = member.access(room, channel, Instant::now())
+                {
+                    break keys;
+                }
+            }
+        })
+        .await
+        .expect("the restarted laptop joins from retained and redelivered frames");
+
+        // The steward writes; the laptop reads it through the host.
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+            panic!("steward keys");
+        };
+        let (metadata, ciphertext) = keys
+            .seal_content(artifact, collab_types::ContentRetention::Checkpoint, SECRET)
+            .unwrap();
+        let mut op = collab_types::SignedOp::new_unsigned_with_encryption(
+            ciphertext.clone(),
+            artifact,
+            device(&a_key),
+            collab_types::AttestationId::default(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+            metadata,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 1,
+                    app_id: "so.tilo.writer".into(),
+                    cluster_id: workspace.clone(),
+                    record_id: "q3".into(),
+                    envelope: Box::new(op),
+                },
+            })
+            .await
+            .unwrap();
+        let received = timeout(Duration::from_secs(30), async {
+            loop {
+                tick.tick().await;
+                member.pump(&laptop, Instant::now(), 1_000);
+                let next = laptop.documents.lock().unwrap().pop();
+                if let Some(op) = next {
+                    break op;
+                }
+            }
+        })
+        .await
+        .expect("the document reaches the laptop through the host");
+        assert_eq!(
+            member_keys
+                .open_content(artifact, &received.encryption.unwrap(), &received.payload)
+                .unwrap()
+                .as_slice(),
+            SECRET
+        );
+
+        // What the host stored: ciphertext, and never the plaintext.
+        let mut stored = Vec::new();
+        every_file(relay_state.path(), &mut stored);
+        assert!(
+            stored.iter().any(|file| contains(file, &ciphertext)),
+            "the host retains the encrypted checkpoint"
+        );
+        assert!(
+            stored.iter().all(|file| !contains(file, SECRET)),
+            "no stored byte of the host holds the plaintext"
+        );
+
+        // The laptop loses access: removal rotates the keys.
+        policy.allowed.lock().unwrap().clear();
+        timeout(Duration::from_secs(30), async {
+            loop {
+                tick.tick().await;
+                steward.pump(&steward_transport, Instant::now(), 1_000);
+                member.pump(&laptop, Instant::now(), 1_000);
+                if matches!(
+                    member.access(room, channel, Instant::now()),
+                    ChannelAccess::Removed
+                ) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the laptop learns of its removal");
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+            panic!("steward keys");
+        };
+        let (metadata, later) = keys
+            .seal_content(artifact, collab_types::ContentRetention::Delta, LATER)
+            .unwrap();
+        assert!(
+            member_keys
+                .open_content(artifact, &metadata, &later)
+                .is_err()
+        );
+    }
 }

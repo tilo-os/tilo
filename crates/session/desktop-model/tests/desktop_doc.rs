@@ -226,3 +226,58 @@ fn governance_edits_round_trip() {
     );
     assert!(!desktop_doc::set_owner(&mut doc, WorkspaceId(9), "eve"));
 }
+
+fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {
+    serde_json::from_value(serde_json::json!({ "id": id, "name": name, "steps": [] }))
+        .expect("a shortcut with no steps")
+}
+
+#[test]
+fn shortcuts_are_seeded_saved_replaced_and_deleted() {
+    let mut tree = tree();
+    tree.workspaces[0].shortcuts = vec![shortcut("morning", "Morning")];
+    let mut doc = AutoCommit::new();
+    desktop_doc::seed(&mut doc, &tree);
+    assert_eq!(
+        read_back(&doc).workspaces[0].shortcuts,
+        vec![shortcut("morning", "Morning")]
+    );
+
+    assert!(desktop_doc::upsert_shortcut(
+        &mut doc,
+        WorkspaceId(1),
+        &shortcut("evening", "Evening")
+    ));
+    assert!(desktop_doc::upsert_shortcut(
+        &mut doc,
+        WorkspaceId(1),
+        &shortcut("morning", "Wake up")
+    ));
+    assert_eq!(
+        read_back(&doc).workspaces[0].shortcuts,
+        vec![
+            shortcut("evening", "Evening"),
+            shortcut("morning", "Wake up")
+        ]
+    );
+
+    assert!(desktop_doc::remove_shortcut(
+        &mut doc,
+        WorkspaceId(1),
+        "morning"
+    ));
+    assert!(!desktop_doc::remove_shortcut(
+        &mut doc,
+        WorkspaceId(1),
+        "morning"
+    ));
+    assert_eq!(
+        read_back(&doc).workspaces[0].shortcuts,
+        vec![shortcut("evening", "Evening")]
+    );
+    assert!(!desktop_doc::upsert_shortcut(
+        &mut doc,
+        WorkspaceId(9),
+        &shortcut("x", "X")
+    ));
+}

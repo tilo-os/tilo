@@ -48,10 +48,10 @@ impl Observer {
     /// row construction and this emission, reporting that cost one frame later.
     pub(crate) fn log_native_handoff(&self, row: serde_json::Value) {
         let Some(row) = handoff_row(row, self.worker_id()) else {
-            eprintln!("qos-display-error handoff row is not an object");
+            eprintln!("tilo-display-error handoff row is not an object");
             return;
         };
-        crate::native_scenario::log::emit_json("qos-native-worker-handoff", row);
+        crate::native_scenario::log::emit_json("tilo-native-worker-handoff", row);
     }
 
     pub(crate) fn log_native_present(
@@ -61,7 +61,7 @@ impl Observer {
         bounds: crate::render_thread::timing::CallBounds,
     ) {
         crate::native_scenario::log::emit_json(
-            "qos-native-present-call",
+            "tilo-native-present-call",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
                 "cpu_frame_id": cpu_frame_id,
@@ -87,7 +87,7 @@ impl Observer {
     ) {
         let (receive, start, end) = bounds;
         crate::native_scenario::log::emit_json(
-            "qos-native-worker",
+            "tilo-native-worker",
             serde_json::json!({
                 "worker_id": self.worker_id(), "worker_frame_ix": worker_frame_ix,
                 "cpu_frame_id": cpu_frame_id,
@@ -120,7 +120,7 @@ impl Observer {
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         let readback: Option<(usize, bool, bool)> = None;
         crate::native_scenario::log::emit_json(
-            "qos-native-render-config",
+            "tilo-native-render-config",
             serde_json::json!({
                 "worker_id": self.worker_id(),
                 "requested_present_mode": format!("{:?}", surface.config.present_mode),
@@ -135,7 +135,7 @@ impl Observer {
     }
 
     pub(crate) fn from_env() -> Option<Self> {
-        if !std::env::var("QOS_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
+        if !std::env::var("TILO_PROFILE_PRESENTATION").is_ok_and(|value| value == "1") {
             return None;
         }
         #[cfg(all(target_os = "macos", feature = "presentation-feedback"))]
@@ -152,11 +152,11 @@ impl Observer {
                         "cpu_frame_id": sample.cpu_frame_id, "presented_time_s": sample.presented_time_s,
                         "drawable_id": sample.drawable_id, "backend": "metal",
                     });
-                    let _ = crate::native_scenario::log::write_json("qos-display-frame", row);
+                    let _ = crate::native_scenario::log::write_json("tilo-display-frame", row);
                 }
             });
             if let Err(error) = result {
-                eprintln!("qos-display-error {error}");
+                eprintln!("tilo-display-error {error}");
                 return None;
             }
             Some(Self { worker_id, sender })
@@ -164,7 +164,7 @@ impl Observer {
         #[cfg(not(all(target_os = "macos", feature = "presentation-feedback")))]
         {
             eprintln!(
-                "qos-display-error presentation feedback requires macOS and the presentation-feedback feature"
+                "tilo-display-error presentation feedback requires macOS and the presentation-feedback feature"
             );
             None
         }
@@ -188,7 +188,7 @@ impl Observer {
             // SAFETY: we only register a diagnostic observer. No raw resource is
             // destroyed or retained; this guard ends before SurfaceTexture::present.
             let Some(metal) = (unsafe { surface.as_hal::<vello::wgpu::hal::api::Metal>() }) else {
-                eprintln!("qos-display-error active surface is not Metal");
+                eprintln!("tilo-display-error active surface is not Metal");
                 return;
             };
             let sender = self.sender.clone();
@@ -204,11 +204,11 @@ impl Observer {
                     });
                 }));
             if let Err(error) = result {
-                eprintln!("qos-display-error {error}");
+                eprintln!("tilo-display-error {error}");
                 return;
             }
             crate::native_scenario::log::emit_json(
-                "qos-display-request",
+                "tilo-display-request",
                 serde_json::json!({
                     "worker_id": self.worker_id, "worker_frame_ix": worker_frame_ix, "cpu_frame_id": cpu_frame_id,
                 }),

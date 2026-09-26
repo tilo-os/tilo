@@ -367,8 +367,8 @@ fn standalone_shot_theme(text_scale: Option<f32>, environment_text_scale: Option
         ));
     let reduced = [
         "TILO_SHOTS_REDUCE_MOTION",
-        "QOS_A11Y_REDUCE_MOTION",
-        "QOS_REDUCE_MOTION",
+        "TILO_A11Y_REDUCE_MOTION",
+        "TILO_REDUCE_MOTION",
     ]
     .into_iter()
     .filter_map(|key| std::env::var(key).ok())

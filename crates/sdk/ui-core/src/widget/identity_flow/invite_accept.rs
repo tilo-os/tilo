@@ -41,7 +41,7 @@ use crate::widget::text_input::TextInput;
 
 const TITLE: &str = "Accept channel invite";
 const LINK_LABEL: &str = "Invite link";
-const LINK_PLACEHOLDER: &str = "Paste a qos://invite/... URL";
+const LINK_PLACEHOLDER: &str = "Paste a tilo://invite/... URL";
 const EMPTY_HINT: &str = "Paste an invite link to see who sent it and what it grants.";
 const DECLINE_LABEL: &str = "Decline";
 const ACCEPT_LABEL: &str = "Accept invite";

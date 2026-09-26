@@ -46,7 +46,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 setTimeout(()=>{const node=document.createElement('div');node.className='late-ad';document.body.append(node)},100);
 try { eval('window.pageEvalAllowed=true') } catch (_) { window.pageEvalAllowed=false }
 const siteSheet=new CSSStyleSheet();siteSheet.replaceSync('.site-sheet-control {display:grid}');document.adoptedStyleSheets=[...document.adoptedStyleSheets,siteSheet];
-setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),control:getComputedStyle(document.querySelector('.csp-control')).display,site:getComputedStyle(document.querySelector('.site-sheet-control')).display,late:window.qosLateCount||0,pageEvalAllowed:window.pageEvalAllowed,nonce:Date.now()})},100);
+setInterval(()=>{const late=document.querySelector('.late-ad');if(late)document.title=JSON.stringify({styles:['.sponsor','.late-ad','#domain-ad'].map(s=>getComputedStyle(document.querySelector(s)).display),control:getComputedStyle(document.querySelector('.csp-control')).display,site:getComputedStyle(document.querySelector('.site-sheet-control')).display,late:window.tiloLateCount||0,pageEvalAllowed:window.pageEvalAllowed,nonce:Date.now()})},100);
 </script>'''
         if path=='/iframes':
             body=b'<!doctype html><title>iframe source</title>'
@@ -77,7 +77,7 @@ class BlockingRegressions(unittest.TestCase):
         self.url=f'http://127.0.0.1:{self.server.server_port}/'
         self.addCleanup(self.save_evidence)
     def save_evidence(self):
-        if directory:=os.environ.get('QOS_SITE_EVIDENCE_DIR'):
+        if directory:=os.environ.get('TILO_SITE_EVIDENCE_DIR'):
             path=Path(directory);path.mkdir(parents=True,exist_ok=True)
             self.host.log.seek(0)
             (path/(self._testMethodName+'.stderr')).write_bytes(self.host.log.read())
@@ -246,7 +246,7 @@ class BlockingRegressions(unittest.TestCase):
     def test_late_script_configuration_under_csp(self):
         self.server.csp=True
         self.host.navigate(self.url+'csp')
-        script='var qosLateCount=(window.qosLateCount||0)+1'
+        script='var tiloLateCount=(window.tiloLateCount||0)+1'
         def state():
             self.host.settle(.2)
             return json.loads(self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))['title'])
@@ -277,9 +277,9 @@ class BlockingRegressions(unittest.TestCase):
         self.loaded()
         self.assertEqual(self.host.latest_title(),'early-true')
     def test_redirect_replacement_and_scriptlet_resources(self):
-        self.config(rules=RULES+'\n/replace.js$script,redirect=noopjs\n/empty-response$xmlhttprequest,redirect=empty\n127.0.0.1##+js(set-constant, qosFixture, true)')
+        self.config(rules=RULES+'\n/replace.js$script,redirect=noopjs\n/empty-response$xmlhttprequest,redirect=empty\n127.0.0.1##+js(set-constant, tiloFixture, true)')
         self.loaded()
-        self.host.send(op='scripts',scripts=["document.title=JSON.stringify({loaded:window.redirectLoaded===true,original:window.originalReplacement===true,scriptlet:window.qosFixture===true,empty:window.emptyReplacement===''})"])
+        self.host.send(op='scripts',scripts=["document.title=JSON.stringify({loaded:window.redirectLoaded===true,original:window.originalReplacement===true,scriptlet:window.tiloFixture===true,empty:window.emptyReplacement===''})"])
         event=self.host.until(lambda e:e['event']=='title' and e['title'].startswith('{'))
         self.assertEqual(json.loads(event['title']),{'loaded':True,'original':False,'scriptlet':True,'empty':True})
         self.assertNotIn('/replace.js',self.server.requests)

@@ -3295,7 +3295,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let documents = native(tmp.path());
         let checkout = RecordCheckout::new(RecordId::for_tab(401), RecordKind::new("tab"));
-        let package = "dev.qos.history-existing-legacy";
+        let package = "dev.tilo.history-existing-legacy";
         let room = "11111111-1111-4111-8111-111111111111";
         let original_heads = {
             let store = RecordStore::new(RecordSet::open_in(Rc::clone(&documents), package, room));
@@ -3332,7 +3332,7 @@ mod tests {
     fn history_existing_package_record_migrates_once_without_losing_old_history() {
         let tmp = tempfile::tempdir().unwrap();
         let documents = native(tmp.path());
-        let package = "dev.qos.history-package-record";
+        let package = "dev.tilo.history-package-record";
         let checkout = RecordCheckout::new(RecordId::for_tab(403), RecordKind::new("tab"));
         let room = "11111111-1111-4111-8111-111111111111";
         let old_heads = {
@@ -3427,7 +3427,7 @@ mod tests {
     fn history_existing_scoped_refuses_corruption_empty_and_mismatched_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let documents = native(tmp.path());
-        let package = "dev.qos.history-record-refusals";
+        let package = "dev.tilo.history-record-refusals";
         let room = "11111111-1111-4111-8111-111111111111";
         for (index, payload) in [
             b"not automerge".to_vec(),
@@ -3506,7 +3506,7 @@ mod tests {
         let checkout = RecordCheckout::new(RecordId::for_tab(420), RecordKind::new("tab"));
         let heads = {
             let mut owners = RecordOwners::new(root.clone());
-            let store = owners.open("dev.qos.test", "history-room").unwrap();
+            let store = owners.open("dev.tilo.test", "history-room").unwrap();
             store.create_record(&checkout).unwrap();
             let heads = store
                 .with(&checkout.id, |doc| {
@@ -3518,7 +3518,7 @@ mod tests {
             heads
         };
         let mut owners = RecordOwners::new(root);
-        let store = owners.open("dev.qos.test", "history-room").unwrap();
+        let store = owners.open("dev.tilo.test", "history-room").unwrap();
         assert!(store.create_record(&checkout).is_err());
         store.open_existing_record_checked(&checkout).unwrap();
         assert_eq!(
@@ -3551,7 +3551,7 @@ mod tests {
     fn history_new_canonical_record_creation_reports_busy_during_read_loan() {
         let tmp = tempfile::tempdir().unwrap();
         let mut owners = RecordOwners::new(tmp.path().join("state"));
-        let store = owners.open("dev.qos.test", "read-loan").unwrap();
+        let store = owners.open("dev.tilo.test", "read-loan").unwrap();
         let existing = RecordCheckout::new(RecordId::for_tab(423), RecordKind::new("tab"));
         let new = RecordCheckout::new(RecordId::for_tab(424), RecordKind::new("tab"));
         store.create_record(&existing).unwrap();

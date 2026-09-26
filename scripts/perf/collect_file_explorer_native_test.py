@@ -18,7 +18,7 @@ class FileExplorerCollectorTests(unittest.TestCase):
             seed.write_text('#!/usr/bin/env python3\nimport sys,json\nfrom pathlib import Path\np=Path(sys.argv[1]);p.mkdir();(p/"fixture.txt").write_text("seed")\nprint(json.dumps(dict(schema=1,entry_count=1200,image_count=299,hash_algorithm="sha256",order_hash="a"*64)))\n')
             seed.chmod(0o755)
             app = root / 'app'
-            app.write_text('#!/usr/bin/env python3\nimport sys,os\nfrom pathlib import Path\nassert len(sys.argv)==2\np=Path(sys.argv[1]);assert p.is_absolute() and p.is_dir()\nassert (p/"fixture.txt").read_text()=="seed"\nassert os.environ["QUICK_APP_ID"]=="dev.qos.file-explorer"\nassert Path(os.environ["XDG_CONFIG_HOME"])==p.parent/"config"\nassert Path(os.environ["XDG_CACHE_HOME"])==p.parent/"cache"\nprint("production directory opened",flush=True)\nraise SystemExit(7)\n')
+            app.write_text('#!/usr/bin/env python3\nimport sys,os\nfrom pathlib import Path\nassert len(sys.argv)==2\np=Path(sys.argv[1]);assert p.is_absolute() and p.is_dir()\nassert (p/"fixture.txt").read_text()=="seed"\nassert os.environ["QUICK_APP_ID"]=="dev.tilo.file-explorer"\nassert Path(os.environ["XDG_CONFIG_HOME"])==p.parent/"config"\nassert Path(os.environ["XDG_CACHE_HOME"])==p.parent/"cache"\nprint("production directory opened",flush=True)\nraise SystemExit(7)\n')
             app.chmod(0o755)
             scenario = root / 'scenario.json'
             scenario.write_text(json.dumps(dict(name='Files route',interval_us=16667,warmup_steps=0,steps=[dict(kind='wheel',dx=0,dy=-3)])))

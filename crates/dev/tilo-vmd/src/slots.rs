@@ -16,7 +16,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use tilo_vm_protocol::{ComponentInfo, Lease, Owner, SlotKind, VM_SLOT, valid_slot_name};
+use tilo_vm_protocol::display::format_outputs;
+use tilo_vm_protocol::{
+    ComponentInfo, Lease, OutputSpec, Owner, SlotKind, VM_SLOT, valid_slot_name,
+};
 
 use crate::error::DaemonError;
 use crate::fsutil::write_atomic;
@@ -37,6 +40,17 @@ pub struct SlotRecord {
     /// Set while this slot's session runs on seat0 instead of greetd.
     #[serde(default)]
     pub seat0: Option<Lease>,
+    /// Headful: the outputs its vkms card has, left to right. Empty means
+    /// one output at the compositor's defaults.
+    #[serde(default)]
+    pub outputs: Vec<OutputSpec>,
+}
+
+impl SlotRecord {
+    /// vkms connectors on this slot's card.
+    pub fn connectors(&self) -> u32 {
+        u32::try_from(self.outputs.len()).unwrap_or(u32::MAX).max(1)
+    }
 }
 
 impl SlotRecord {
@@ -100,26 +114,44 @@ impl SlotStore {
     /// Create a slot, or return the existing one when it matches.
     ///
     /// # Errors
-    /// Invalid or reserved names, and a kind conflicting with an existing slot.
+    /// Invalid or reserved names, outputs on a slot that is not headful,
+    /// and a kind or outputs conflicting with an existing slot.
     pub fn create(
         &self,
         name: &str,
         kind: SlotKind,
         owner: Owner,
+        outputs: &[OutputSpec],
     ) -> Result<(SlotRecord, bool), DaemonError> {
         if name == VM_SLOT || kind == SlotKind::Vm {
             return Err(DaemonError::ReservedName(name.to_owned()));
         }
         Self::check_name(name)?;
+        if !outputs.is_empty() {
+            if kind != SlotKind::Headful {
+                return Err(DaemonError::OutputsNeedHeadful(name.to_owned()));
+            }
+            tilo_vm_protocol::display::validate_outputs(outputs)
+                .map_err(DaemonError::BadOutputs)?;
+        }
         if let Some(existing) = self.try_load(name)? {
-            return if existing.kind == kind {
-                Ok((existing, false))
-            } else {
-                Err(DaemonError::SlotKindConflict {
+            if existing.kind != kind {
+                return Err(DaemonError::SlotKindConflict {
                     name: name.to_owned(),
                     kind: existing.kind.as_str().into(),
-                })
-            };
+                });
+            }
+            if existing.outputs != outputs {
+                return Err(DaemonError::SlotOutputsConflict {
+                    name: name.to_owned(),
+                    outputs: if existing.outputs.is_empty() {
+                        "one default output".into()
+                    } else {
+                        format_outputs(&existing.outputs)
+                    },
+                });
+            }
+            return Ok((existing, false));
         }
         let record = SlotRecord {
             name: name.to_owned(),
@@ -129,6 +161,7 @@ impl SlotStore {
             current: 0,
             seat: None,
             seat0: None,
+            outputs: outputs.to_vec(),
         };
         self.save(&record)?;
         Ok((record, true))
@@ -152,6 +185,7 @@ impl SlotStore {
                 current: 0,
                 seat: None,
                 seat0: None,
+                outputs: Vec::new(),
             });
         }
         Err(DaemonError::SlotNotFound(name.to_owned()))
@@ -434,23 +468,23 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (_, created) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         assert!(created);
         let (_, created) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         assert!(!created);
         assert!(matches!(
-            store.create("a", SlotKind::Headful, Owner::default()),
+            store.create("a", SlotKind::Headful, Owner::default(), &[]),
             Err(DaemonError::SlotKindConflict { .. })
         ));
         assert!(matches!(
-            store.create("vm", SlotKind::Headless, Owner::default()),
+            store.create("vm", SlotKind::Headless, Owner::default(), &[]),
             Err(DaemonError::ReservedName(_))
         ));
         assert!(matches!(
-            store.create("Bad", SlotKind::Headless, Owner::default()),
+            store.create("Bad", SlotKind::Headless, Owner::default(), &[]),
             Err(DaemonError::InvalidName(_))
         ));
         assert!(matches!(
@@ -461,11 +495,42 @@ mod tests {
     }
 
     #[test]
+    fn outputs_are_fixed_at_creation_and_need_a_headful_slot() {
+        let root = tempfile::tempdir().unwrap();
+        let store = SlotStore::new(root.path());
+        let two = tilo_vm_protocol::display::parse_outputs("2560x1600@2,1920x1080").unwrap();
+        let (record, created) = store
+            .create("a", SlotKind::Headful, Owner::default(), &two)
+            .unwrap();
+        assert!(created);
+        assert_eq!(record.connectors(), 2);
+        assert_eq!(store.load("a").unwrap().outputs, two);
+        let (_, created) = store
+            .create("a", SlotKind::Headful, Owner::default(), &two)
+            .unwrap();
+        assert!(!created);
+        let Err(DaemonError::SlotOutputsConflict { outputs, .. }) =
+            store.create("a", SlotKind::Headful, Owner::default(), &[])
+        else {
+            panic!("a different output list must conflict");
+        };
+        assert_eq!(outputs, "2560x1600@2,1920x1080@1");
+        assert!(matches!(
+            store.create("b", SlotKind::Headless, Owner::default(), &two),
+            Err(DaemonError::OutputsNeedHeadful(_))
+        ));
+        let (plain, _) = store
+            .create("c", SlotKind::Headful, Owner::default(), &[])
+            .unwrap();
+        assert_eq!(plain.connectors(), 1);
+    }
+
+    #[test]
     fn swaps_make_generations_in_order() {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         assert_eq!(swap(&store, &mut record, "shell", "h1"), Some(1));
         assert_eq!(swap(&store, &mut record, "launcher", "h2"), Some(2));
@@ -485,7 +550,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (record, _) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         let (from, to) = store
             .prepare_swap(&record, "shell", "h1", session())
@@ -508,7 +573,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         swap(&store, &mut record, "shell", "h1");
         swap(&store, &mut record, "shell", "h2");
@@ -538,7 +603,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         for layer in ["h1", "h2", "h3", "h4"] {
             swap(&store, &mut record, "shell", layer);
@@ -562,7 +627,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         let (mut record, _) = store
-            .create("a", SlotKind::Headless, Owner::default())
+            .create("a", SlotKind::Headless, Owner::default(), &[])
             .unwrap();
         store.mark_pending("a", 1).unwrap();
         assert_eq!(store.pending("a"), Some(1));
@@ -575,7 +640,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let store = SlotStore::new(root.path());
         store
-            .create("a", SlotKind::Headful, Owner::default())
+            .create("a", SlotKind::Headful, Owner::default(), &[])
             .unwrap();
         assert!(store.remove("a").unwrap());
         assert!(!store.remove("a").unwrap());

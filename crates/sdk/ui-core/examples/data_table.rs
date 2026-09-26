@@ -233,8 +233,8 @@ pub fn run(_args: &[String]) {
     println!("OK: thumb tracks the offset");
 }
 
-/// `QOS_SHOTS_THEME` picks the palette (`dark` by default) and
-/// `QOS_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
+/// `TILO_SHOTS_THEME` picks the palette (`dark` by default) and
+/// `TILO_SHOTS_TEXT_SCALE` the text scale — the switches every app's `--shots`
 /// honours through `tilo_ui::launch::shot_theme`, whose `LaunchArgs` an example
 /// cannot construct. An unknown theme name is an error, never a silent dark
 /// shot: a capture that cannot observe its subject must fail.

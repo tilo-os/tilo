@@ -257,6 +257,18 @@ struct CacheFingerprint {
     focused: bool,
     focused_control: Option<String>,
     clock_activity: Option<(String, u64, bool, bool)>,
+    app_tray_revision: u64,
+    continuity: Option<String>,
+}
+
+/// One application tray icon as last painted: where, and what a click on
+/// it addresses.
+#[derive(Clone, Debug)]
+struct AppTraySlot {
+    key: String,
+    id: String,
+    item_is_menu: bool,
+    rect: Rect,
 }
 
 /// One dot in the centre band's carousel indicator. Paint and hit testing
@@ -403,6 +415,17 @@ fn small_count_to_f64(n: usize) -> f64 {
 /// below. Vello's `Affine::mul` is plain matrix composition with no
 /// side effects, but it is a custom `Mul` impl rather than primitive
 /// integer arithmetic, which is what trips the lint at each call site.
+/// A logical pointer position as the whole-pixel coordinates a tray item's
+/// `Activate`/`ContextMenu` call carries.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "rounded and clamped into i32's range before the cast"
+)]
+fn pointer_coordinates(point: Point) -> (i32, i32) {
+    let whole = |v: f64| v.round().clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
+    (whole(point.x), whole(point.y))
+}
+
 fn at(transform: Affine, xy: (f64, f64)) -> Affine {
     #[allow(
         clippy::arithmetic_side_effects,
@@ -496,6 +519,11 @@ pub struct TopBarChrome {
     /// prove the pill's trailing padding equals its leading padding.
     ws_gear_rect: Rect,
     tray_pill_rect: Rect,
+    /// Application tray icons, right to left, as last painted.
+    app_tray: Vec<AppTraySlot>,
+    /// Uploaded icon images by item key, reused while the item's pixels
+    /// are the same allocation.
+    app_tray_images: HashMap<String, (usize, vello::peniko::ImageData)>,
     /// Interaction geometry is deliberately larger than the painted pill:
     /// the screen's top-right edge must remain an easy Quick Settings target.
     tray_hit_rect: Rect,
@@ -525,6 +553,9 @@ pub struct TopBarChrome {
     avatar_stack_rect: Rect,
     /// Persistent trusted-chrome disclosure of active screen viewers.
     sharing_indicator_rect: Rect,
+    /// "Continue <app> from <device>": the offer, and its dismiss chip.
+    continuity_rect: Rect,
+    continuity_dismiss_rect: Rect,
     /// Scroll over `center_rect` cycles it, dots jump directly.
     center_widget: CenterWidget,
     activity_headline: Option<String>,
@@ -799,6 +830,8 @@ impl TopBarChrome {
             ws_pill_rect: Rect::ZERO,
             ws_gear_rect: Rect::ZERO,
             tray_pill_rect: Rect::ZERO,
+            app_tray: Vec::new(),
+            app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
@@ -817,6 +850,8 @@ impl TopBarChrome {
             clock_control_focus: None,
             avatar_stack_rect: Rect::ZERO,
             sharing_indicator_rect: Rect::ZERO,
+            continuity_rect: Rect::ZERO,
+            continuity_dismiss_rect: Rect::ZERO,
             center_widget: CenterWidget::Clock,
             activity_headline: None,
             activity_unread: 0,
@@ -896,6 +931,8 @@ impl TopBarChrome {
                     .as_ref()
                     .map(|a| (a.label.clone(), a.remaining_secs, a.overlay, a.paused))
             }),
+            app_tray_revision: crate::tray::Tray::global().revision(),
+            continuity: self.continuity_label(),
         }
     }
 
@@ -1124,6 +1161,8 @@ impl TopBarChrome {
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
+    const CONTROL_CONTINUITY: &'static str = "topbar:continuity";
+    const CONTROL_CONTINUITY_DISMISS: &'static str = "topbar:continuity-dismiss";
     const CONTROL_REMOVE_CLOCK: &'static str = "topbar:editor:remove-clock";
     const CONTROL_REMOVE_MONITOR: &'static str = "topbar:editor:remove-system-monitor";
     const CONTROL_REMOVE_CALENDAR: &'static str = "topbar:editor:remove-calendar";
@@ -1421,7 +1460,22 @@ impl TopBarChrome {
         if !self.media_indicator_rect.is_zero_area() {
             controls.push(Self::CONTROL_MEDIA);
         }
+        if self.continuity_label().is_some() {
+            controls.push(Self::CONTROL_CONTINUITY);
+            controls.push(Self::CONTROL_CONTINUITY_DISMISS);
+        }
         controls
+    }
+
+    /// The live continuity offer's label. Read from chrome rather than
+    /// cached, so the semantic surface and the next paint agree even before
+    /// a frame has drawn the chip.
+    fn continuity_label(&self) -> Option<String> {
+        let chrome = self.chrome.as_ref()?;
+        let suggestion = chrome.borrow().continuity_suggestion(Instant::now())?;
+        Some(crate::shell::continuity_suggestion::continue_label(
+            &suggestion,
+        ))
     }
 
     fn control_rect(&self, target: &str) -> Rect {
@@ -1451,6 +1505,8 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => self.media_hit_rect(),
+            Self::CONTROL_CONTINUITY => self.continuity_rect,
+            Self::CONTROL_CONTINUITY_DISMISS => self.continuity_dismiss_rect,
             target if Self::editor_widget(target).is_some() => Self::editor_widget(target)
                 .map_or(Rect::ZERO, |(widget, present)| {
                     self.widget_editor_action_rect(widget, present)
@@ -1518,6 +1574,10 @@ impl TopBarChrome {
                 }
             }
             Self::CONTROL_MEDIA => "Privacy settings for active capture".into(),
+            Self::CONTROL_CONTINUITY => self
+                .continuity_label()
+                .unwrap_or_else(|| "Top bar control".into()),
+            Self::CONTROL_CONTINUITY_DISMISS => crate::shell::i18n::t("continuity-dismiss"),
             target if Self::editor_widget(target).is_some() => {
                 let Some((widget, present)) = Self::editor_widget(target) else {
                     return "Top bar editor control".into();
@@ -3023,6 +3083,181 @@ impl TopBarChrome {
         );
     }
 
+    /// Running applications' status-notifier icons (`crate::tray`), drawn
+    /// leftward from `rx` beside the system tray pill. `Passive` items stay
+    /// hidden, as the protocol asks; one that needs attention carries a
+    /// warning dot. Returns where the next cluster may end.
+    fn draw_app_tray(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        rx: f64,
+    ) -> f64 {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let items: Vec<crate::tray::TrayItem> = crate::tray::Tray::global()
+            .snapshot()
+            .into_iter()
+            .filter(|item| item.status != crate::tray::ItemStatus::Passive)
+            .collect();
+        self.app_tray.clear();
+        self.app_tray_images
+            .retain(|key, _| items.iter().any(|item| &item.key == key));
+        if items.is_empty() {
+            return rx;
+        }
+        let slot = f64::from(tokens.spacing.s6);
+        let gap = f64::from(tokens.spacing.s1);
+        let icon_px = 18.0_f64;
+        let mut right = rx;
+        for item in items.iter().rev() {
+            let hit = Rect::new(
+                right - slot,
+                center_y - BAR_CONTROL_PX / 2.0,
+                right,
+                center_y + BAR_CONTROL_PX / 2.0,
+            );
+            let icon_rect = Rect::from_center_size(hit.center(), (icon_px, icon_px));
+            self.draw_app_tray_icon(scene, transform, theme, text_renderer, item, icon_rect);
+            if item.status == crate::tray::ItemStatus::NeedsAttention {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.semantic.warning,
+                    None,
+                    &vello::kurbo::Circle::new((icon_rect.x1, icon_rect.y0 + 2.0), 3.0),
+                );
+            }
+            self.app_tray.push(AppTraySlot {
+                key: item.key.clone(),
+                id: item.id.clone(),
+                item_is_menu: item.item_is_menu,
+                rect: hit,
+            });
+            right = hit.x0 - gap;
+        }
+        right - f64::from(tokens.spacing.s3) + gap
+    }
+
+    /// One tray item's image, or its letter badge, in `icon_rect`.
+    fn draw_app_tray_icon(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        item: &crate::tray::TrayItem,
+        icon_rect: Rect,
+    ) {
+        let tokens = &theme.tokens;
+        let colors = &tokens.colors;
+        let icon_px = icon_rect.width();
+        match &item.icon {
+            crate::tray::TrayIcon::Pixels {
+                width,
+                height,
+                rgba,
+            } => {
+                let identity = std::sync::Arc::as_ptr(rgba) as usize;
+                let image = match self.app_tray_images.get(&item.key) {
+                    Some((cached, image)) if *cached == identity => image.clone(),
+                    _ => {
+                        let image = vello::peniko::ImageData {
+                            data: vello::peniko::Blob::new(rgba.clone()),
+                            format: vello::peniko::ImageFormat::Rgba8,
+                            alpha_type: vello::peniko::ImageAlphaType::Alpha,
+                            width: *width,
+                            height: *height,
+                        };
+                        self.app_tray_images
+                            .insert(item.key.clone(), (identity, image.clone()));
+                        image
+                    }
+                };
+                let sx = icon_px / f64::from((*width).max(1));
+                let sy = icon_px / f64::from((*height).max(1));
+                scene.fill(
+                    Fill::NonZero,
+                    transform
+                        .pre_translate((icon_rect.x0, icon_rect.y0).into())
+                        .pre_scale_non_uniform(sx, sy),
+                    &vello::peniko::ImageBrush::new(image),
+                    None,
+                    &Rect::new(0.0, 0.0, f64::from(*width), f64::from(*height)),
+                );
+            }
+            crate::tray::TrayIcon::Letter(letter) => {
+                scene.fill(
+                    Fill::NonZero,
+                    transform,
+                    colors.surfaces.raised,
+                    None,
+                    &vello::kurbo::Circle::new(icon_rect.center(), icon_px / 2.0),
+                );
+                let label = letter.to_string();
+                let size = tokens.typography.scale.xs;
+                let (w, h) =
+                    text_renderer.measure_weighted(&label, size, None, TextWeight::Semibold);
+                text_renderer.draw_text_weighted(
+                    scene,
+                    &label,
+                    size,
+                    colors.text_primary,
+                    at(
+                        transform,
+                        (
+                            icon_rect.center().x - f64::from(w) / 2.0,
+                            icon_rect.center().y - f64::from(h) / 2.0,
+                        ),
+                    ),
+                    None,
+                    TextWeight::Semibold,
+                );
+            }
+        }
+    }
+
+    /// A press on an application tray icon: the primary button activates
+    /// the item (or asks for its menu when it has no primary action), the
+    /// secondary button asks for its menu, the middle one runs its
+    /// secondary action.
+    fn handle_app_tray_press(&self, event: &WindowEvent, handled: &mut bool) -> bool {
+        let WindowEvent::MouseInput {
+            state: winit::event::ElementState::Pressed,
+            button,
+            ..
+        } = event
+        else {
+            return false;
+        };
+        let Some(point) = self.last_cursor else {
+            return false;
+        };
+        let Some(slot) = self.app_tray.iter().find(|slot| slot.rect.contains(point)) else {
+            return false;
+        };
+        let (x, y) = pointer_coordinates(point);
+        let request = match button {
+            winit::event::MouseButton::Left if slot.item_is_menu => {
+                crate::tray::TrayRequest::ContextMenu { x, y }
+            }
+            winit::event::MouseButton::Left => crate::tray::TrayRequest::Activate { x, y },
+            winit::event::MouseButton::Right => crate::tray::TrayRequest::ContextMenu { x, y },
+            winit::event::MouseButton::Middle => {
+                crate::tray::TrayRequest::SecondaryActivate { x, y }
+            }
+            _ => return false,
+        };
+        if let Err(error) = crate::tray::Tray::global().request(&slot.key, request) {
+            tracing::debug!(target: "shell::tray", key = %slot.key, %error, "tray click not delivered");
+        }
+        *handled = true;
+        true
+    }
+
     /// Active microphone/camera use, drawn leftward from `rx`. New use is
     /// announced as a named pill for four seconds, then settles into a
     /// quiet dot; hovering that exact dot expands the same verified app
@@ -3287,6 +3522,66 @@ impl TopBarChrome {
         self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
     }
 
+    /// A quiet offer to continue the tab another of this person's devices
+    /// just moved to, left of the roster, with its own dismiss chip. It
+    /// yields to the centre band: with no room for a readable label it is
+    /// not drawn at all (the palette still offers it).
+    fn draw_continuity_chip(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        label: Option<&str>,
+    ) {
+        use ui::widget::chip::{Chip, ChipLead, ChipStyle};
+
+        self.continuity_rect = Rect::ZERO;
+        self.continuity_dismiss_rect = Rect::ZERO;
+        let Some(label) = label else {
+            return;
+        };
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let height = 24.0;
+        let right = self.avatar_stack_rect.x0 - f64::from(theme.tokens.spacing.s3);
+        let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
+        let dismiss_w = height;
+        let lead = ChipLead::Glyph(ui::icons::Icon::Monitor);
+        let natural = Chip::natural_width_at(label, height, lead, theme, text_renderer);
+        let room = right - dismiss_w - gap - left_limit;
+        // Below this the label elides to a word or two and stops saying
+        // what it offers.
+        if room < 96.0 {
+            return;
+        }
+        let width = natural.min(room);
+        let top = center_y - height / 2.0;
+        self.continuity_dismiss_rect = Rect::new(right - dismiss_w, top, right, top + height);
+        let chip_right = self.continuity_dismiss_rect.x0 - gap;
+        self.continuity_rect = Rect::new(chip_right - width, top, chip_right, top + height);
+        Chip::draw_at(
+            scene,
+            transform,
+            self.continuity_rect,
+            label,
+            lead,
+            ChipStyle::default(),
+            theme,
+            text_renderer,
+        );
+        Chip::draw_at(
+            scene,
+            transform,
+            self.continuity_dismiss_rect,
+            "",
+            ChipLead::Glyph(ui::icons::Icon::X),
+            ChipStyle::default(),
+            theme,
+            text_renderer,
+        );
+    }
+
     /// Sets [`Self::avatar_stack_rect`] to either the drawn chip stack's
     /// bounds or the restored empty-room Invite control. `pos` is
     /// `(center_y, stack_right_x)`.
@@ -3388,6 +3683,19 @@ impl TopBarChrome {
             if let Some(widget) = clicked.and_then(|i| self.configured_center_widget(i)) {
                 self.center_widget = widget;
                 *handled = true;
+                return;
+            }
+        }
+        if let Some(p) = self.last_cursor {
+            let target = if self.continuity_dismiss_rect.contains(p) {
+                Some(Self::CONTROL_CONTINUITY_DISMISS)
+            } else if self.continuity_rect.contains(p) {
+                Some(Self::CONTROL_CONTINUITY)
+            } else {
+                None
+            };
+            if let Some(target) = target {
+                *handled = self.activate_continuity_control(target);
                 return;
             }
         }
@@ -3754,6 +4062,12 @@ impl TopBarChrome {
         if self.control_is_disabled(target) {
             return false;
         }
+        if matches!(
+            target,
+            Self::CONTROL_CONTINUITY | Self::CONTROL_CONTINUITY_DISMISS
+        ) {
+            return self.activate_continuity_control(target);
+        }
         if Self::editor_widget(target).is_some() {
             return self.activate_editor_control(target);
         }
@@ -3808,6 +4122,21 @@ impl TopBarChrome {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Accepting focuses the offered tab here; dismissing hides the offer
+    /// until that device's focus moves again. Neither happens on its own.
+    fn activate_continuity_control(&self, target: &str) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let mut state = chrome.borrow_mut();
+        let now = Instant::now();
+        if target == Self::CONTROL_CONTINUITY {
+            state.accept_continuity_suggestion(now).is_some()
+        } else {
+            state.dismiss_continuity_suggestion(now).is_some()
         }
     }
 
@@ -4543,6 +4872,14 @@ impl Widget for TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - layout.tray_w
             - f64::from(theme.tokens.spacing.s4);
+        let stack_right_x = self.draw_app_tray(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            stack_right_x,
+        );
         // Snapshotted before drawing, so `avatar_stack_rect` can be
         // populated once the drawn circle count (incl. overflow) is known.
         let stack_right_x = self.draw_media_indicator(
@@ -4577,6 +4914,14 @@ impl Widget for TopBarChrome {
             text_renderer,
             (center_y, stack_right_x),
             slot_count,
+        );
+        self.draw_continuity_chip(
+            scene,
+            transform,
+            theme,
+            text_renderer,
+            center_y,
+            fp.continuity.as_deref(),
         );
         self.draw_activity_badge(scene, transform, theme, text_renderer);
         self.draw_focus_indicator(scene, transform, theme);
@@ -4613,7 +4958,7 @@ impl Widget for TopBarChrome {
             return;
         }
         self.handle_keyboard(event, handled);
-        if *handled {
+        if *handled || self.handle_app_tray_press(event, handled) {
             return;
         }
         if let WindowEvent::MouseInput {
@@ -4655,7 +5000,11 @@ impl Widget for TopBarChrome {
     /// So a harness clicks the pill the renderer painted instead of a
     /// guessed coordinate.
     fn test_rects(&self) -> Vec<(String, Rect)> {
-        vec![
+        let app_tray = self
+            .app_tray
+            .iter()
+            .map(|slot| (format!("topbar_tray_item_{}", slot.id), slot.rect));
+        let mut rects = vec![
             ("topbar_overview_button".to_string(), self.overview_btn_rect),
             ("topbar_workspace_up".to_string(), self.up_btn_rect),
             ("topbar_workspace_down".to_string(), self.down_btn_rect),
@@ -4691,6 +5040,11 @@ impl Widget for TopBarChrome {
             (
                 "topbar_sharing_indicator".to_string(),
                 self.sharing_indicator_rect,
+            ),
+            ("topbar_continuity".to_string(), self.continuity_rect),
+            (
+                "topbar_continuity_dismiss".to_string(),
+                self.continuity_dismiss_rect,
             ),
             (
                 "topbar_center_clock".to_string(),
@@ -4728,7 +5082,9 @@ impl Widget for TopBarChrome {
                 "topbar_editor_add_calendar".to_string(),
                 self.control_rect(Self::CONTROL_ADD_CALENDAR),
             ),
-        ]
+        ];
+        rects.extend(app_tray);
+        rects
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -4891,6 +5247,9 @@ impl Widget for TopBarChrome {
         if self.cache_fp.rect_px.2 == 0 {
             return true;
         }
+        if crate::tray::Tray::global().revision() != self.cache_fp.app_tray_revision {
+            return true;
+        }
         // A status change must reach the screen without waiting for an
         // unrelated event — ancestors only rebuild on a dirty descendant.
         let live = self.live_status();
@@ -4911,6 +5270,9 @@ impl Widget for TopBarChrome {
                 .collect::<Vec<_>>()
                 != self.cache_fp.media_key
         {
+            return true;
+        }
+        if self.continuity_label() != self.cache_fp.continuity {
             return true;
         }
         if let Some(started) = self.media_started {

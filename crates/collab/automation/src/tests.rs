@@ -23,8 +23,8 @@ use crate::{
     AskRequest, Binding, CatchUp, CheckErrorKind, Condition, ConfirmationRequest, NoShortcuts,
     RunHooks, RunId, RunMode, RunOutcome, RunReport, RunRequest, RunTrigger,
     SHORTCUT_RESOURCE_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, Schedule, Selector, Shortcut,
-    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, Weekday, check, run,
-    shortcut_resource_id,
+    Step, StepFailure, StepKind, StepPath, TimeOfDay, TriggerSpec, UnattendedConsent, Weekday,
+    check, run, shortcut_resource_id,
 };
 
 const NOTES: &str = "so.tilo.notes";
@@ -332,6 +332,8 @@ fn shortcut(id: &str, steps: Vec<Step>) -> Shortcut {
         output: None,
         grant: notes_grant(),
         triggers: Vec::new(),
+        consents: Vec::new(),
+        saved_by: None,
     }
 }
 
@@ -361,6 +363,17 @@ fn run_with(
     run_id: RunId,
     mode: RunMode,
 ) -> RunReport {
+    run_consented(host, hooks, shortcut, run_id, mode, Vec::new())
+}
+
+fn run_consented(
+    host: &FakeHost,
+    hooks: &Hooks,
+    shortcut: &Shortcut,
+    run_id: RunId,
+    mode: RunMode,
+    consents: Vec<UnattendedConsent>,
+) -> RunReport {
     block_on(run(
         host,
         hooks,
@@ -371,6 +384,7 @@ fn run_with(
             mode,
             trigger: RunTrigger::Manual,
             inputs: serde_json::Map::new(),
+            consents,
         },
     ))
 }
@@ -607,6 +621,67 @@ fn confirmation_is_refused_unattended_and_asked_for_interactively() {
         RunMode::Interactive,
     );
     assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    let started = host.started();
+    assert_eq!(started.len(), 1);
+    assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
+}
+
+#[test]
+fn an_unattended_run_takes_only_the_exact_actions_consented_to() {
+    let host = FakeHost::new();
+    let purge = shortcut(
+        "purge",
+        vec![invoke(
+            "delete",
+            NOTES,
+            Selector::Fixed(NOTE.into()),
+            "delete",
+            &[],
+        )],
+    );
+    let elsewhere = UnattendedConsent::new(NOTES, "notes.note:other", "delete");
+    let report = run_consented(
+        &host,
+        &Hooks::default(),
+        &purge,
+        RunId::new(),
+        RunMode::Unattended,
+        vec![elsewhere],
+    );
+    assert!(
+        matches!(
+            failure(&report),
+            Some((_, StepFailure::ConfirmationRequired))
+        ),
+        "consent to another resource is no consent here: {report:?}"
+    );
+    assert!(host.started().is_empty());
+
+    let hooks = Hooks::default();
+    let report = run_consented(
+        &host,
+        &hooks,
+        &purge,
+        RunId::new(),
+        RunMode::Unattended,
+        vec![UnattendedConsent::new(NOTES, NOTE, "delete")],
+    );
+    assert_eq!(report.outcome, RunOutcome::Completed, "{report:?}");
+    assert!(
+        hooks.confirmations.lock().unwrap().is_empty(),
+        "nobody is asked in an unattended run"
+    );
+    let mut stray = purge;
+    stray.consents = vec![UnattendedConsent::new(NOTES, NOTE, "archive")];
+    assert!(
+        matches!(
+            check(&stray, &host.catalog(), &NoShortcuts)
+                .as_ref()
+                .map_err(Vec::as_slice),
+            Err([error]) if matches!(error.kind, CheckErrorKind::UnusedConsent { .. })
+        ),
+        "a consent no step can use is refused at save time"
+    );
     let started = host.started();
     assert_eq!(started.len(), 1);
     assert_eq!(started[0].confirmation, Some(Confirmation::Confirmed));
@@ -863,6 +938,60 @@ fn an_ai_step_is_an_invocation_of_the_agent_transform() {
 }
 
 #[test]
+fn an_ai_step_never_reads_a_secret() {
+    let host = FakeHost::new();
+    let mut leak = shortcut(
+        "leak",
+        vec![Step::new(
+            "sum",
+            StepKind::Ai {
+                transform: AiTransform::Summarise,
+                input: Binding::Input("token".into()),
+            },
+        )],
+    );
+    leak.inputs = vec![ActionParam::required(
+        "token",
+        ParamType::Secret,
+        "An API token",
+    )];
+    leak.grant.push(PermissionProfileRule::grant(
+        Scope::App(AGENT_APP_ID.into()),
+        Verb::Write,
+    ));
+    let errors = check(&leak, &host.catalog(), &NoShortcuts).unwrap_err();
+    assert!(
+        errors.iter().any(|error| matches!(
+            &error.kind,
+            CheckErrorKind::Incompatible(reason) if reason.contains("secret")
+        )),
+        "{errors:?}"
+    );
+
+    // Refused at run time too, for a shortcut that was never checked.
+    let mut inputs = serde_json::Map::new();
+    inputs.insert("token".into(), json!("s3cret"));
+    let report = block_on(run(
+        &host,
+        &Hooks::default(),
+        RunRequest {
+            shortcut: &leak,
+            run: RunId::new(),
+            caller: caller(),
+            mode: RunMode::Unattended,
+            trigger: RunTrigger::Manual,
+            inputs,
+            consents: Vec::new(),
+        },
+    ));
+    assert!(
+        matches!(failure(&report), Some((_, StepFailure::Binding { reason })) if reason.contains("secret")),
+        "{report:?}"
+    );
+    assert!(host.started().is_empty());
+}
+
+#[test]
 fn an_unattended_run_cannot_ask() {
     let host = FakeHost::new();
     let asking = shortcut(
@@ -960,4 +1089,107 @@ fn a_shortcut_round_trips_through_serde() {
     assert_eq!(json["triggers"][1]["schedule"]["every"], "calendar");
     let back: Shortcut = serde_json::from_value(json).unwrap();
     assert_eq!(back, tidy);
+}
+
+#[test]
+fn binding_options_are_exactly_what_the_checker_accepts_in_scope() {
+    let host = FakeHost::new();
+    let catalog = host.catalog();
+    let mut tidy = shortcut(
+        "tidy",
+        vec![
+            list(),
+            Step::new(
+                "label",
+                StepKind::SetVar {
+                    name: "label".into(),
+                    value: Binding::Literal(json!("Inbox")),
+                },
+            ),
+            Step::new(
+                "each",
+                StepKind::ForEach {
+                    items: Binding::step("list", "/titles"),
+                    item: "title".into(),
+                    body: vec![invoke(
+                        "copy",
+                        NOTES,
+                        Selector::Fixed(INBOX.into()),
+                        "create",
+                        &[],
+                    )],
+                },
+            ),
+        ],
+    );
+    tidy.inputs = vec![
+        ActionParam::required("folder", ParamType::Text, "Folder"),
+        ActionParam::required("limit", ParamType::Integer, "Limit"),
+    ];
+    let title = ActionParam::required("title", ParamType::Text, "Title");
+    let offered = |at: &str, param: &ActionParam| {
+        let mut path = StepPath::root();
+        for segment in at.split('.') {
+            path = match segment {
+                "each" => path.each(None),
+                index => path.child(index.parse().unwrap()),
+            };
+        }
+        crate::binding_options(&tidy, &catalog, &path, param)
+            .into_iter()
+            .map(|option| option.binding)
+            .collect::<Vec<_>>()
+    };
+
+    // Inside the loop: text inputs, the text variable, the loop item; the
+    // integer input, the whole list result and its array field are not text.
+    let inside = offered("2.each.0", &title);
+    assert_eq!(
+        inside,
+        vec![
+            Binding::Input("folder".into()),
+            Binding::Var("label".into()),
+            Binding::Var("title".into()),
+        ]
+    );
+    // Before the variable is set only the input is in scope.
+    assert_eq!(offered("1", &title), vec![Binding::Input("folder".into())]);
+    // An array parameter is offered the list's array field.
+    let items = ActionParam::required("items", ParamType::Array, "Items");
+    assert_eq!(offered("1", &items), vec![Binding::step("list", "/titles")]);
+    // A number parameter takes the integer input and the declared count.
+    let number = ActionParam::required("n", ParamType::Number, "N");
+    assert!(offered("1", &number).contains(&Binding::Input("limit".into())));
+    assert!(offered("1", &number).contains(&Binding::step("list", "/count")));
+
+    // Every option offered checks cleanly when bound.
+    for binding in inside {
+        let mut bound = tidy.clone();
+        let StepKind::ForEach { body, .. } = &mut bound.steps[2].kind else {
+            panic!("the loop body is an action step")
+        };
+        let StepKind::Invoke { args, .. } = &mut body[0].kind else {
+            panic!("the loop body is an action step")
+        };
+        args.insert("title".into(), binding.clone());
+        assert_eq!(
+            check(&bound, &catalog, &NoShortcuts),
+            Ok(()),
+            "{binding:?} was offered, so it must check"
+        );
+    }
+
+    // Past the last step, everything the top level introduced.
+    let after = crate::values_at(&tidy, &catalog, &StepPath::root().child(3));
+    assert!(
+        after
+            .iter()
+            .any(|option| option.binding == Binding::Var("label".into()))
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|option| option.binding == Binding::Var("title".into())),
+        "the loop item is gone after the loop"
+    );
 }

@@ -1377,6 +1377,7 @@ impl FrameHarness {
         reason = "one exclusive sync/build/admission/measure/apply sequence keeps layout ownership explicit"
     )]
     pub fn relayout(&mut self) {
+        self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout() {
             tracing::error!(
                 ?error,
@@ -1630,6 +1631,14 @@ impl FrameHarness {
 
         let t_draw = self.profiler.as_ref().map(|_| crate::time::now());
         self.scene.reset();
+        // Cull against the window exactly as the live host does, so offscreen
+        // frames paint (and cost) what a window would.
+        let previous_viewport = self.presence.push_viewport(Rect::new(
+            0.0,
+            0.0,
+            f64::from(self.viewport.0),
+            f64::from(self.viewport.1),
+        ));
         if let Some(history) = &mut self.history {
             history.draw(
                 &mut self.scene,
@@ -1671,7 +1680,8 @@ impl FrameHarness {
                 document_identity: self.state.document_identity(),
                 permissions: &self.permissions,
             };
-            self.document_history
+            let drawn = self
+                .document_history
                 .draw(
                     &context,
                     &mut self.scene,
@@ -1680,8 +1690,13 @@ impl FrameHarness {
                     &self.theme,
                     &self.presence,
                 )
-                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
+                .map_err(|_| crate::widget::WidgetLayoutError::CompositionDidNotSettle);
+            if let Err(error) = drawn {
+                self.presence.pop_viewport(previous_viewport);
+                return Err(error);
+            }
         }
+        self.presence.pop_viewport(previous_viewport);
         if let Some(p) = self.profiler.as_mut() {
             p.record_since(crate::profiling::Pass::Draw, t_draw);
         }
@@ -2813,37 +2828,21 @@ impl FrameHarness {
             self.relayout();
         }
         if let WindowEvent::Touch(touch) = event {
-            let pointer_events = self.touch_pointer.events(touch);
-            self.dispatching_touch_pointer = true;
-            for pointer_event in pointer_events {
-                let pointer_event = match pointer_event {
-                    crate::interaction::TouchPointerEvent::Move(position) => {
-                        WindowEvent::CursorMoved {
-                            device_id: touch.device_id,
-                            position,
-                        }
-                    }
-                    crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
-                        WindowEvent::MouseWheel {
-                            device_id: touch.device_id,
-                            delta: winit::event::MouseScrollDelta::PixelDelta(delta),
-                            phase,
-                        }
-                    }
-                };
-                self.send(&pointer_event);
-            }
-            self.dispatching_touch_pointer = false;
+            let scale = self.input_scale;
+            let mut touch_pointer = std::mem::take(&mut self.touch_pointer);
+            let pointer_events = touch_pointer.events(touch, |position| {
+                self.claims_raw_touch_at(Point::new(position.x / scale, position.y / scale))
+            });
+            self.touch_pointer = touch_pointer;
+            self.dispatch_touch_pointer(touch.device_id, pointer_events);
+        }
+        // Mouse side buttons navigate the tree's history, as in the live host.
+        if let Some(direction) = crate::interaction::mouse_nav_direction(event)
+            && self
+                .root
+                .on_nav_gesture(direction, &mut self.state.doc, &self.state.root)
+        {
+            return;
         }
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
@@ -3264,6 +3263,62 @@ impl FrameHarness {
         }
     }
 
+    fn dispatch_touch_pointer(
+        &mut self,
+        device_id: winit::event::DeviceId,
+        events: Vec<crate::interaction::TouchPointerEvent>,
+    ) {
+        let nested = std::mem::replace(&mut self.dispatching_touch_pointer, true);
+        for pointer_event in events {
+            self.send(&pointer_event.window_event(device_id));
+        }
+        self.dispatching_touch_pointer = nested;
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    /// Fire a touch long-press whose hold deadline passed at `now`.
+    fn poll_touch_hold(&mut self, now: crate::time::Instant) {
+        if let Some((device_id, events)) = self.touch_pointer.poll(now) {
+            self.dispatch_touch_pointer(device_id, events);
+        }
+    }
+
+    /// Hold one finger still at logical `(x, y)` past the long-press delay,
+    /// then lift it: the touchscreen's secondary click. The hold is resolved
+    /// at its deadline instead of waiting for it in real time.
+    pub fn touch_hold_at(&mut self, x: f64, y: f64) {
+        self.pump_component_wakes();
+        self.send_touch_phase(winit::event::TouchPhase::Started, x, y);
+        if let Some(deadline) = self.touch_pointer.long_press_deadline() {
+            self.poll_touch_hold(deadline);
+        }
+        self.relayout();
+        self.send_touch_phase(winit::event::TouchPhase::Ended, x, y);
+    }
+
+    /// Deliver one finger's contact update at logical `(x, y)`; `id`
+    /// distinguishes simultaneous fingers.
+    pub fn touch(&mut self, id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) {
+        self.pump_component_wakes();
+        self.send(&WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
+            force: None,
+            id,
+        }));
+    }
+
     /// Move the pointer to `(x, y)` and press+release the left button — the
     /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
@@ -3309,13 +3364,7 @@ impl FrameHarness {
     }
 
     fn send_touch_phase(&mut self, phase: winit::event::TouchPhase, x: f64, y: f64) {
-        self.send(&WindowEvent::Touch(winit::event::Touch {
-            device_id: winit::event::DeviceId::dummy(),
-            phase,
-            location: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
-            force: None,
-            id: 0,
-        }));
+        self.touch(0, phase, x, y);
     }
 
     /// Touch the centre of a named widget.

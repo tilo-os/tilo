@@ -10,6 +10,7 @@
 //! the PDF engine; [`sample_document`] is the bundled demonstration used by the
 //! screenshot harness and tests, laid out from its blocks.
 
+use ui::search::SearchTokenizer as _;
 use uuid::Uuid;
 
 /// US-Letter page geometry, in PDF points.
@@ -803,8 +804,8 @@ pub const MAX_SEARCH_RESULTS: usize = 500;
 
 /// Find bounded, non-overlapping spans in the original UTF-8 text. Both PDF
 /// backends share the system search normalization and Unicode word boundaries.
-/// Lowercase expansion/contraction (for example İ and K) must never turn an
-/// index into normalized text into an index into the source document.
+/// Folding expansion or contraction (İ, K, a dropped accent) must never turn
+/// an index into normalized text into an index into the source document.
 pub(crate) fn search_text(
     text: &str,
     query: &str,
@@ -834,7 +835,9 @@ pub(crate) fn search_text(
         let mut pairs = vec![(0, 0)];
         let mut normalized_end = 0;
         for (source_start, scalar) in text.char_indices() {
-            normalized_end += scalar.to_lowercase().map(char::len_utf8).sum::<usize>();
+            ui::search::UnicodeTokenizer.fold_char(scalar, &mut |folded| {
+                normalized_end += folded.len_utf8();
+            });
             pairs.push((normalized_end, source_start + scalar.len_utf8()));
         }
         pairs
@@ -1392,11 +1395,11 @@ mod tests {
         );
         assert_eq!(hits[0].start, text.find(" test test_2").unwrap() + 1);
         assert_eq!(hits[1].start, text.find("(test)").unwrap() + 1);
-        assert_eq!(search(&doc, "étest", options).len(), 1);
-        assert!(
-            search(&doc, "i", options).is_empty(),
-            "a partial lowercase expansion is not a whole word"
-        );
+        // The precomposed and the combining spelling are the same word.
+        assert_eq!(search(&doc, "étest", options).len(), 2);
+        // İ folds to a dotless base like every other accented letter, so a
+        // plain "i" names the whole word.
+        assert_eq!(search(&doc, "i", options).len(), 1);
         let dotted = search(&doc, "i\u{307}", options);
         assert_eq!(dotted.len(), 1);
         assert_eq!(dotted[0].start, text.find('İ').unwrap());

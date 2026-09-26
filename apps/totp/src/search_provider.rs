@@ -1,7 +1,7 @@
 //! Authenticator accounts as a Tilo global-search source.
 //!
-//! Mirrors the reference wiring in [`apps/contacts`]: the authenticator
-//! declares its searchable type by implementing [`SearchProvider`] over a
+//! Mirrors the reference wiring in `apps/contacts`: the authenticator
+//! declares its searchable type by implementing `SearchProvider` over a
 //! snapshot of the vault, so a 2FA account is findable from the unified Ctrl+K
 //! palette by issuer or account name. Activating a row selects the account
 //! (clearing any in-app filter so it is revealed).

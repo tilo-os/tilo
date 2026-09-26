@@ -88,8 +88,6 @@ static REFRESHING: AtomicBool = AtomicBool::new(false);
 /// The small search-metadata cache is read once per shell process. App
 /// payloads remain uncached until the user opens one.
 static DISK_CACHE_LOADED: AtomicBool = AtomicBool::new(false);
-/// Per package, so the frame thread can retire it when the app starts.
-static PENDING_NOTICES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
 
 /// Lock [`CATALOGUE`], recovering from poisoning instead of panicking:
 /// a panic while holding this lock doesn't corrupt the cached listing
@@ -101,11 +99,15 @@ fn lock_catalogue() -> std::sync::MutexGuard<'static, Option<(Vec<CatalogueApp>,
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// [`lock_catalogue`], for [`PENDING_NOTICES`].
-fn lock_pending_notices() -> std::sync::MutexGuard<'static, Vec<(String, u64)>> {
-    PENDING_NOTICES
+/// Run `f` on the session's pending "Opening…" notices, recovering from
+/// poisoning as [`lock_catalogue`] does.
+fn with_pending_notices<T>(f: impl FnOnce(&mut Vec<(String, u64)>) -> T) -> T {
+    let session = launcher::LaunchSession::current();
+    let mut pending = session
+        .opening_notices
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    f(&mut pending)
 }
 
 /// The same search the launcher does for `tilo-launcher`, including its
@@ -316,15 +318,16 @@ fn schedule_refresh() {
 // ---------------------------------------------------------------------
 
 pub fn note_pending_notice(package_id: &str, notification_id: u64) {
-    let mut pending = lock_pending_notices();
-    pending.retain(|(id, _)| id != package_id);
-    pending.push((package_id.to_string(), notification_id));
+    with_pending_notices(|pending| {
+        pending.retain(|(id, _)| id != package_id);
+        pending.push((package_id.to_string(), notification_id));
+    });
 }
 
 /// A peek, not a take — the frame thread walks this every frame.
 /// Retirement goes through [`take_pending_notice`].
 pub fn pending_notices() -> Vec<(String, u64)> {
-    lock_pending_notices().clone()
+    with_pending_notices(|pending| pending.clone())
 }
 
 /// Return the active opening notice for `package_id`, if any. Launching the
@@ -332,17 +335,20 @@ pub fn pending_notices() -> Vec<(String, u64)> {
 /// not create a stack of indistinguishable "Opening…" cards or overwrite the
 /// only id that can retire the old cards.
 pub fn pending_notice(package_id: &str) -> Option<u64> {
-    lock_pending_notices()
-        .iter()
-        .find(|(id, _)| id == package_id)
-        .map(|(_, notification_id)| *notification_id)
+    with_pending_notices(|pending| {
+        pending
+            .iter()
+            .find(|(id, _)| id == package_id)
+            .map(|(_, notification_id)| *notification_id)
+    })
 }
 
 /// So the "opening" toast is retired by the app appearing, not a timer.
 pub fn take_pending_notice(package_id: &str) -> Option<u64> {
-    let mut pending = lock_pending_notices();
-    let idx = pending.iter().position(|(id, _)| id == package_id)?;
-    Some(pending.remove(idx).1)
+    with_pending_notices(|pending| {
+        let idx = pending.iter().position(|(id, _)| id == package_id)?;
+        Some(pending.remove(idx).1)
+    })
 }
 
 /// `capabilities` is the activating workspace's grant list, captured
@@ -365,7 +371,7 @@ pub fn install_and_launch(
     };
     let builder = std::thread::Builder::new().name("app-install".to_string());
     let identity = (package_id.clone(), display_name.clone());
-    let spawn_result = builder.spawn(move || {
+    let spawn_result = launcher::spawn_reporting(builder, move || {
         let mut command = std::process::Command::new(&bin);
         command.args(["install", &package_id]);
         let out =

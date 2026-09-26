@@ -39,7 +39,9 @@ use uuid::Uuid;
 use crate::catalog::{ResourceTarget, find_row};
 use crate::grant::grant_permits;
 use crate::path::StepPath;
-use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
+use crate::shortcut::{
+    AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind, UnattendedConsent,
+};
 use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_APP_ID, AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec,
@@ -127,6 +129,12 @@ pub struct RunRequest<'a> {
     pub trigger: RunTrigger,
     /// Values for the shortcut's declared inputs.
     pub inputs: Map<String, Value>,
+    /// Confirmations given in advance that an unattended run may use in
+    /// place of a person: only a step resolving to exactly one of these
+    /// actions proceeds past its confirmation. The host passes the
+    /// shortcut's [`consents`](Shortcut::consents) only to a run their
+    /// giver started.
+    pub consents: Vec<UnattendedConsent>,
 }
 
 /// An action that needs the person's confirmation before it runs.
@@ -196,7 +204,7 @@ pub enum StepFailure {
     #[error("the host refused: {error}")]
     Host { error: ActionHostError },
     #[error("the action failed: {}", error.message)]
-    Action { error: ActionFailure },
+    Action { error: Box<ActionFailure> },
     #[error("the action was cancelled")]
     Cancelled { message: Option<String> },
     #[error("the action broke its declared contract: {reason}")]
@@ -280,6 +288,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger,
         inputs,
+        consents,
     } = request;
     let mut report = RunReport {
         run,
@@ -311,6 +320,7 @@ pub async fn run<H: ActionHost + Sync, K: RunHooks>(
         mode,
         trigger: report.trigger.clone(),
         inputs,
+        consents,
         vars: BTreeMap::new(),
         outputs: BTreeMap::new(),
         records: Vec::new(),
@@ -342,6 +352,7 @@ struct Runner<'a, H, K> {
     mode: RunMode,
     trigger: String,
     inputs: Map<String, Value>,
+    consents: Vec<UnattendedConsent>,
     vars: BTreeMap<String, Value>,
     outputs: BTreeMap<String, Value>,
     records: Vec<StepRecord>,
@@ -415,6 +426,13 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 self.record(step, &path, done)
             }
             StepKind::Ai { transform, input } => {
+                // A secret handed to the agent would reach a model provider.
+                if self.is_secret(input) {
+                    let refused = StepFailure::Binding {
+                        reason: "an AI step may not read a secret".into(),
+                    };
+                    return self.record(step, &path, Done::local(Err(refused)));
+                }
                 let mut done = self
                     .invoke(
                         step,
@@ -667,7 +685,17 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             return Ok(None);
         }
         if self.mode == RunMode::Unattended {
-            return Err(StepFailure::ConfirmationRequired);
+            if !self
+                .consents
+                .iter()
+                .any(|consent| consent.covers(app_id, &descriptor.address))
+            {
+                return Err(StepFailure::ConfirmationRequired);
+            }
+            return Ok(Some(match policy {
+                ConfirmationPolicy::Phrase { phrase } => Confirmation::Phrase(phrase),
+                ConfirmationPolicy::Confirm | ConfirmationPolicy::None => Confirmation::Confirmed,
+            }));
         }
         let mut arguments = bound.to_json();
         for param in &descriptor.params {
@@ -779,7 +807,11 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
         loop {
             status = match status {
                 ReceiptStatus::Completed { output } => return Ok(output),
-                ReceiptStatus::Failed { error } => return Err(StepFailure::Action { error }),
+                ReceiptStatus::Failed { error } => {
+                    return Err(StepFailure::Action {
+                        error: Box::new(error),
+                    });
+                }
                 ReceiptStatus::Rejected { error } => return Err(StepFailure::Host { error }),
                 ReceiptStatus::Cancelled { message } => {
                     return Err(StepFailure::Cancelled { message });

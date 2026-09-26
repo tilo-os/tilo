@@ -6,7 +6,7 @@
 
 **Architecture:** Consume the shared resolved-style boundary and couple measured app geometry to paint, hit testing, scrolling and accessibility. Authored slide/document coordinates remain explicit; ordinary app text scales once. No parallel production workers.
 
-**Tech Stack:** Rust, qOS UI, Vello, Taffy, app-local retained and immediate widgets.
+**Tech Stack:** Rust, Tilo UI, Vello, Taffy, app-local retained and immediate widgets.
 
 **Spec:** `docs/superpowers/specs/2026-09-15-app-ui-balance.md`
 

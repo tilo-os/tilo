@@ -268,7 +268,7 @@ def browse_rows(tool, peer_id):
             if pages > 128:
                 raise ProofError("directory traversal exceeded 128 pages")
             page = tool(
-                "qos_query",
+                "tilo_query",
                 {"peer_id": peer_id, "parent_resource": parent, "revision": revision, "cursor": cursor},
             )
             if page.get("stale_cursor"):
@@ -298,7 +298,7 @@ def resolve_action(tool, peer_id, action):
                         "resource": row["resource"],
                         "action": action,
                     }
-                    return target, tool("qos_resolve", target)["row"]["descriptor"]
+                    return target, tool("tilo_resolve", target)["row"]["descriptor"]
         except StaleDiscovery:
             return None
         return None
@@ -310,7 +310,7 @@ def observe_terminal(tool, result):
     invocation_id = result["invocation_id"]
 
     def terminal():
-        current = tool("qos_status", {"invocation_id": invocation_id})
+        current = tool("tilo_status", {"invocation_id": invocation_id})
         return current if current["update"]["state"] in {"succeeded", "failed", "cancelled"} else None
 
     return wait_until(f"terminal invocation {invocation_id}", terminal, timeout=30)
@@ -415,16 +415,16 @@ def terminate_owned_pids(pids):
 
 
 APP_IDS = {
-    "word-processor": "dev.qos.word-processor",
-    "file-explorer": "dev.qos.file-explorer",
-    "photos": "dev.qos.photos",
-    "calculator": "dev.qos.calculator",
+    "word-processor": "dev.tilo.word-processor",
+    "file-explorer": "dev.tilo.file-explorer",
+    "photos": "dev.tilo.photos",
+    "calculator": "dev.tilo.calculator",
 }
 
 
 def wait_for_apps(client, expected, absent=frozenset()):
     def observe():
-        apps = client.tool("qos_list_apps", {})["apps"]
+        apps = client.tool("tilo_list_apps", {})["apps"]
         present = {app["app_id"] for app in apps}
         if set(expected).issubset(present) and set(absent).isdisjoint(present):
             selected = [app for app in apps if app["app_id"] in expected]
@@ -445,12 +445,12 @@ def remove_profile(profile):
 
 
 def proof_environment(profile, app_state):
-    env = {key: value for key, value in os.environ.items() if not key.startswith(("QOS_", "QUICK_"))}
+    env = {key: value for key, value in os.environ.items() if not key.startswith(("TILO_", "QUICK_"))}
     env.update(
         {
-            "QOS_RUNTIME_PROFILE": str(profile),
-            "QOS_USER_HOME": str(app_state / "home"),
-            "QOS_WP_RECOVERY_DIR": str(app_state / "word-processor-recovery"),
+            "TILO_RUNTIME_PROFILE": str(profile),
+            "TILO_USER_HOME": str(app_state / "home"),
+            "TILO_WP_RECOVERY_DIR": str(app_state / "word-processor-recovery"),
             "XDG_CONFIG_HOME": str(app_state / "config"),
             "XDG_DATA_HOME": str(app_state / "data"),
             "XDG_STATE_HOME": str(app_state / "state"),
@@ -467,7 +467,7 @@ def proof_environment(profile, app_state):
 def run_proof(repo, root, host_source_snapshot):
     fixture = root / "source.png"
     shutil.copy2(repo / "ui/tests/fixtures/test_image.png", fixture)
-    profile = pathlib.Path(tempfile.mkdtemp(prefix="qos-auto-", dir="/tmp"))
+    profile = pathlib.Path(tempfile.mkdtemp(prefix="tilo-auto-", dir="/tmp"))
     os.chmod(profile, 0o700)
     app_state = root / "isolated-app-state"
     app_state.mkdir()
@@ -490,16 +490,16 @@ def run_proof(repo, root, host_source_snapshot):
             "repo": str(repo),
             "runtime_profile": str(profile),
             "commands": [{"name": name, "argv": command} for name, command in commands],
-            "environment": {key: env[key] for key in sorted(env) if key.startswith(("QOS_", "XDG_"))},
+            "environment": {key: env[key] for key in sorted(env) if key.startswith(("TILO_", "XDG_"))},
             "fixture_sha256": sha256(fixture),
             "host_build_source_snapshot": str(host_source_snapshot),
         },
     )
     if (profile / "native.sock").exists():
         raise ProofError("isolated profile unexpectedly has a daemon endpoint")
-    runtime_binary = repo / "target/debug/qos-runtime-mcp"
+    runtime_binary = repo / "target/debug/tilo-runtime-mcp"
     if not runtime_binary.is_file():
-        raise ProofError("build target/debug/qos-runtime-mcp before the native proof")
+        raise ProofError("build target/debug/tilo-runtime-mcp before the native proof")
 
     launches = {}
     client = None
@@ -547,7 +547,7 @@ def run_proof(repo, root, host_source_snapshot):
 
         target, descriptor = resolve_action(client.tool, all_apps[APP_IDS[late_name]]["peer_id"], "add-function")
         formula = "sin(x) + 0.271828"
-        admitted = client.tool("qos_invoke", dict(target, arguments=single_argument(descriptor, formula)))
+        admitted = client.tool("tilo_invoke", dict(target, arguments=single_argument(descriptor, formula)))
         terminal = observe_terminal(client.tool, admitted)
         if terminal["update"]["state"] != "succeeded":
             raise ProofError(f"declared Calculator action failed: {terminal}")
@@ -578,7 +578,7 @@ def run_proof(repo, root, host_source_snapshot):
         if changed:
             raise ProofError(f"relevant source changed during build/proof: {changed}")
         binaries = {name: repo / "target/debug" / name for name in APP_IDS}
-        binaries["qos-runtime-mcp"] = runtime_binary
+        binaries["tilo-runtime-mcp"] = runtime_binary
         binary_metadata = {name: {"path": str(path), "sha256": sha256(path)} for name, path in binaries.items()}
         save(root / "binary-hashes.json", binary_metadata)
         proof = {

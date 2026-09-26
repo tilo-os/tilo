@@ -83,6 +83,8 @@ impl RustyPipeBackend {
             "youtube-music (live)"
         };
 
+        // rustypipe's reqwest client takes the process-default TLS provider.
+        tilo_net::install_crypto_provider();
         let mut builder = RustyPipe::builder().storage_dir(cache_dir());
         if !provider.can_stream() {
             builder = builder.no_botguard();

@@ -116,14 +116,14 @@ mod tests {
         let mut bytes = Vec::new();
         write_json(
             &mut bytes,
-            &serde_json::json!({"op":"navigate","url":"https://podesta.ai"}),
+            &serde_json::json!({"op":"navigate","url":"https://tilo.so"}),
         )
         .unwrap();
         let mut reader = Cursor::new(bytes);
         let Some(Packet::Json(value)) = read_packet(&mut reader).unwrap() else {
             panic!("expected JSON")
         };
-        assert_eq!(value["url"], "https://podesta.ai");
+        assert_eq!(value["url"], "https://tilo.so");
         assert!(read_packet(&mut reader).unwrap().is_none());
     }
 

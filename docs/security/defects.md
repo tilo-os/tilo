@@ -533,7 +533,7 @@ integrity rests on the pin being real rather than aspirational: a pin that relia
 "just point it at whatever resolves today" away from becoming an unpinned build under deadline
 pressure, and the frozen RPM set would then be resolved against an unrecorded base.
 
-**Fix direction:** mirror the base into `code.podesta.ai/qos/fedora-bootc` and pin against the
+**Fix direction:** mirror the base into `registry.tilo.so/tilo/fedora-bootc` and pin against the
 mirror — the same shape `os/Containerfile.rpms` + `snapshot-rpms` already use for packages, since
 our registry collects nothing. Copy with the multi-arch index intact. Fixed on this branch: the
 `mirror-base` workflow plus `os/base-snapshot.env` (`BASE_REF`), consumed by every Containerfile
@@ -636,6 +636,53 @@ debug builds, which is where `catch_unwind` works.
 
 ---
 
+## P1-9 — A fetched namespace tree is not bound to the requesting workspace
+
+`crates/system/fs/src/sync.rs`, `sync/session.rs`, `main.rs`
+
+The namespace is one Automerge document per workspace, and nothing inside its bytes says which
+workspace it is. Every path that accepts one from a peer checked the peer's certificate, but none
+checked the tree against the workspace the ticket names:
+
+- The sync ALPN (`tilo-fs-sync/0`) carried no workspace at all. `fetch_remote_doc` merged whatever
+  document the peer sent, and both sides of `MODE_SYNC` fed any sync message into `sync_receive`.
+  A home peer serves several workspaces under one device key, so a request could reach the wrong
+  one, and a lying peer could serve any tree it held.
+- A read-only device's per-request pull fetched the full document from any peer that had ever
+  authenticated to it and merged it, with no check of the local policy at all.
+- Bootstrap merged documents from every persisted content peer, including peers registered for
+  another workspace and ticketless legacy entries.
+- On the session plane only the server compared the request's `workspace_id`. The client applied
+  whatever `Sync` and `NamespaceChunk` frames came back.
+- The exact-record share client ignored the response's session, so a snapshot from a session on
+  another workspace or record was taken as the invite's.
+
+Signed changesets (`PullChangesets`) were already bound: the signed header carries the workspace
+and `apply_changeset` refuses a mismatch.
+
+**Resolved.** Every namespace request names its workspace (`tilo-fs-sync/1`,
+`tilo-fs-session/2`). Every namespace payload, whether a document, the changes beyond a set of
+heads or a sync message, travels with a `NamespaceBindingV1`: the sending device's signature over
+the workspace, the payload kind and the digest of the exact bytes. Receivers on both sides apply a
+payload only after `sync::accept_namespace_payload` has accepted it. That check requires all of:
+
+- the binding names the requested workspace;
+- it was signed by the authenticated peer's own device;
+- the bytes match the signed digest;
+- the local policy lets that peer read the whole workspace (write it, for sync).
+
+A host refuses a request for another workspace explicitly. Bootstrap takes the tree only from the
+ticket's node and from persisted peers registered for the same workspace. The share client refuses
+a snapshot whose session is not the invite's workspace and record. Held by
+`crates/system/fs/src/namespace_binding.rs::tests`, the
+`crates/system/fs/src/sync/tests.rs` tests from
+`a_document_of_another_workspace_is_refused_although_validly_signed` to
+`a_read_only_pull_merges_only_a_members_document_of_this_workspace`,
+`crates/system/fs/src/sync/session/tests.rs` and
+`crates/system/fs/src/record_repository.rs::tests::a_validly_signed_changeset_of_another_workspace_is_refused`.
+
+---
+
 ## P2-1 — `PeerId` is a 64-bit fold of the public key
 
 `crates/session/shell/src/network/behaviour.rs:98-107` derives the wire `PeerId` as a 64-bit FNV-1a fold of the
@@ -709,7 +756,7 @@ Held by `os/tests/kernel_hardening_invariants.sh`.
 
 ## P2-6 — `insecureAcceptAnything` is the container policy default
 
-`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `code.podesta.ai/qos/tilo`
+`os/etc/containers/policy.json:2-4`. Signature enforcement is scoped to `registry.tilo.so/tilo/tilo`
 only; every other image reference is unverified.
 
 ---

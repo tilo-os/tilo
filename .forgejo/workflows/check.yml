@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       builder_image:
-        description: 'Optional immutable tested builder index (code.podesta.ai/qos/tilo-builder@sha256:...)'
+        description: 'Optional immutable tested builder index (registry.tilo.so/tilo/tilo-builder@sha256:...)'
         required: false
         type: string
 
@@ -62,10 +62,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 5
     container:
-      image: code.podesta.ai/qos/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
     outputs:
       image: ${{ steps.resolve.outputs.image }}
     steps:
@@ -77,7 +74,6 @@ jobs:
         id: resolve
         env:
           REQUESTED_BUILDER: ${{ github.event.inputs.builder_image }}
-          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: python3 tools/ci/resolve_builder.py
       - name: Verify named public-trust contexts with Docker BuildKit
         env:
@@ -90,13 +86,12 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
+      check_matrix: ${{ steps.plan.outputs.check_matrix }}
+      check_required: ${{ steps.plan.outputs.check_required }}
       base: ${{ steps.plan.outputs.base }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
@@ -209,22 +204,17 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      # The slim image carries Rust and policy tools. Install only the native
-      # fixture tools here; check them explicitly so EFI/RPM tests cannot skip.
+      # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
+      # check them explicitly so EFI/RPM tests cannot skip.
       - name: Ensure invariant test tooling
         run: |
-          dnf install -y --setopt=install_weak_deps=False \
-            gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts
           for tool in cargo cc modinfo clang ld.lld rpmbuild rpmkeys jq systemd-escape fc-match; do
             command -v "$tool" >/dev/null || { echo "missing invariant tool: $tool" >&2; exit 1; }
           done
@@ -243,10 +233,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -264,10 +251,12 @@ jobs:
           bash tools/ci/measure.sh "path-selected suites" -- \
             python3 tools/ci/suites.py run --jobs 2 $SUITES
 
-  # Each shard runs its tests, its all-target check and its Clippy diff as
-  # three parallel jobs rather than one after another on one runner. They share
-  # compiler outputs through sccache; each keeps its own target tree. The
-  # `checks` aggregate below requires all three.
+  # Each shard runs its tests and its Clippy gate as parallel jobs rather than
+  # one after another on one runner. Clippy type-checks every target it lints,
+  # so on x86_64 it is also the shard's all-target check; architectures that
+  # are not linted run a standalone check job instead. The jobs share compiler
+  # outputs through sccache; each keeps its own target tree. The `checks`
+  # aggregate below requires all of them.
   test:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -287,9 +276,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -341,7 +327,7 @@ jobs:
           # package shard: those process-wide variables alter unrelated apps'
           # persistence and git fixtures. Only the imager's native syscall
           # tests consume this dedicated location.
-          printf 'QOS_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
+          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
 
       # app-cli's registry integration tests execute the installer;
       # it is deliberately not a Rust dependency, so an affected-only Cargo
@@ -362,7 +348,7 @@ jobs:
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p qos-ntfs-helper') && '1' || '0' }}
+          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p tilo-ntfs-helper') && '1' || '0' }}
           # The builder image carries the encoders and muxers the footage
           # tests need, so their absence here is a failure, not a skip.
           TILO_REQUIRE_MEDIA: "1"
@@ -374,18 +360,33 @@ jobs:
           bash tools/test-env.sh cargo nextest run --locked --profile ci ${{ matrix.test_packages }}
           -E "not ($GOLDEN_FILTER)"
 
+      # A package reached only through outside inputs its manifest entry
+      # scopes (tools/ci/suites.toml) runs just the tests that read them, with
+      # the same environment; their JUnit report joins the shard's.
+      - name: Scoped reader tests of shard ${{ matrix.shard }}
+        if: matrix.scoped_tests != ''
+        env:
+          SCOPED_TESTS: ${{ matrix.scoped_tests }}
+          TILO_REQUIRE_MEDIA: "1"
+          TILO_REQUIRE_AUDIO: "1"
+          TILO_REQUIRE_GPU: "1"
+        run: >-
+          bash tools/ci/measure.sh "scoped reader tests shard ${{ matrix.shard }}" --
+          bash scripts/ci-run.sh "cargo nextest (scoped reader tests, shard ${{ matrix.shard }})" --
+          python3 tools/ci/run_scoped_tests.py
+
       # The ci profile retries a failed test once; a test that then passes
       # is FLAKY and does not fail the shard. List those, and every retried
       # failure, in the job summary and keep the JUnit report.
       - name: Report retried tests in shard ${{ matrix.shard }}
-        if: always() && matrix.test_packages != ''
+        if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         run: >-
           python3 tools/ci/nextest_report.py
           --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})"
           target/nextest/ci/junit.xml
 
       - name: Save test results of shard ${{ matrix.shard }}
-        if: always() && matrix.test_packages != ''
+        if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
         continue-on-error: true
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -403,10 +404,11 @@ jobs:
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
   # Type-checks every target of the shard's complete reverse-dependency
-  # closure. It links nothing, so it uses the architecture's ordinary runner
-  # even when the shard's test links need the large one.
+  # closure on architectures that Clippy does not lint (x86_64 gets the same
+  # check from Clippy). It links nothing, so it uses the architecture's
+  # ordinary runner even when the shard's test links need the large one.
   check:
-    if: needs.select.outputs.rust_required == 'true'
+    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true'
     needs: [builder, select]
     runs-on: ${{ matrix.check_runner }}
     timeout-minutes: 120
@@ -415,12 +417,9 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
+      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.check_required == 'true' && needs.select.outputs.check_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -429,7 +428,6 @@ jobs:
           fetch-depth: 1
 
       - name: Prepare Rust build caches
-        id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
 
       - name: Prepare build runtime
@@ -475,22 +473,11 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
-      # One writer avoids shards and jobs racing to create the same immutable key.
-      - name: Save Cargo downloads
-        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
-        continue-on-error: true
-        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
-        with:
-          path: |
-            /cargo-home/registry/index
-            /cargo-home/registry/cache
-            /cargo-home/git/db
-          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
-
   # Clippy's Rust-level analysis is authoritative once per selected package
-  # set on x86_64; ARM still runs the complete native test and all-target
-  # check jobs above, without compiling two more isolated lint graphs. The
-  # selector's clippy_matrix therefore holds only the x86_64 rows.
+  # set on x86_64, and it is also that shard's all-target check; ARM still runs
+  # the complete native test and all-target check jobs above, without
+  # compiling two more isolated lint graphs. The selector's clippy_matrix
+  # therefore holds only the x86_64 rows.
   clippy:
     if: needs.select.outputs.rust_required == 'true'
     needs: [builder, select]
@@ -504,9 +491,6 @@ jobs:
       matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.clippy_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
     container:
       image: ${{ needs.builder.outputs.image }}
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -515,6 +499,7 @@ jobs:
           fetch-depth: 1
 
       - name: Prepare Rust build caches
+        id: rust-build
         uses: ./.forgejo/actions/prepare-rust-build
 
       - name: Prepare build runtime
@@ -541,6 +526,16 @@ jobs:
           bash scripts/ci-run.sh "Clippy (affected shard ${{ matrix.shard }})" --
           tools/ci/clippy-check.sh ${{ matrix.packages }}
 
+      # Without its default `native` feature, tilo-ui is the portable toolkit
+      # that another host embeds with its own services. Keep that build
+      # compiling whenever the toolkit is affected.
+      - name: Check the portable toolkit build
+        if: contains(format('{0} ', matrix.packages), '-p tilo-ui ')
+        run: >-
+          bash tools/ci/measure.sh "check portable tilo-ui" --
+          bash scripts/ci-run.sh "cargo check (tilo-ui without native)" --
+          cargo check --locked -p tilo-ui --no-default-features --lib
+
       - name: Save observed Clippy inputs
         if: always()
         continue-on-error: true
@@ -559,6 +554,18 @@ jobs:
           bash tools/ci/sccache.sh report 2>&1 | tee -a "$GITHUB_STEP_SUMMARY" || true
           echo '```' >> "$GITHUB_STEP_SUMMARY"
 
+      # One writer avoids shards and jobs racing to create the same immutable key.
+      - name: Save Cargo downloads
+        if: always() && matrix.shard == 1 && steps.rust-build.outputs.cargo-cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: |
+            /cargo-home/registry/index
+            /cargo-home/registry/cache
+            /cargo-home/git/db
+          key: cargo-deps-${{ hashFiles('Cargo.lock') }}
+
   # A pull request that changes only snapshot pins (os/rpms-snapshot.env,
   # os/kernel-snapshot.env) changes no code. Instead of the Rust and security
   # suites, which main runs after the merge, prove each changed pin is the
@@ -572,12 +579,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-      - name: Log in to code.podesta.ai
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: code.podesta.ai
-          username: ${{ github.actor }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh
@@ -603,10 +604,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: code.podesta.ai/qos/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.REGISTRY_TOKEN }}
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
@@ -617,6 +615,7 @@ jobs:
           TEST_RESULT: ${{ needs.test.result }}
           CHECK_RESULT: ${{ needs.check.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
+          CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}
           SUITES_RESULT: ${{ needs.suites.result }}
           SUITES_REQUIRED: ${{ needs.select.outputs.suites_required }}
           PINS_RESULT: ${{ needs.pins.result }}
@@ -628,11 +627,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # The shard's test, check and Clippy jobs pass together or are
-          # skipped together; any other combination is a failure.
-          case "$TEST_RESULT:$CHECK_RESULT:$CLIPPY_RESULT" in
-            success:success:success) AFFECTED_RESULT=success ;;
-            skipped:skipped:skipped) AFFECTED_RESULT=skipped ;;
+          # The shard's test and Clippy jobs, and the standalone check where
+          # the selector requires one, pass together or are skipped together;
+          # any other combination is a failure.
+          case "$TEST_RESULT:$CLIPPY_RESULT:$CHECK_REQUIRED:$CHECK_RESULT" in
+            success:success:true:success|success:success:false:skipped) AFFECTED_RESULT=success ;;
+            skipped:skipped:false:skipped) AFFECTED_RESULT=skipped ;;
             *) AFFECTED_RESULT=failure ;;
           esac
           test "$BUILDER_RESULT" = success
@@ -684,12 +684,17 @@ jobs:
 
       # Reuse this runner for the main-branch receipt, including failed gates.
       # PRs finish after aggregation without another checkout or note write.
+      # The aggregate above is the gate; the receipt is evidence of it. A forge
+      # outage while recording must not turn a passed gate red (the lander
+      # reverts red merges), and a missing receipt already fails closed in
+      # `receipt.sh verify`, so both receipt steps may fail without the job.
       - name: Checkout CI receipt tool
         id: receipt-checkout
         if: >-
           always() &&
           (github.ref == 'refs/heads/main' ||
            github.ref == 'refs/heads/codex/package-desktop-release')
+        continue-on-error: true
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
@@ -697,6 +702,7 @@ jobs:
           filter: blob:none
       - name: Record an observable CI receipt without touching a branch
         if: always() && steps.receipt-checkout.outcome == 'success'
+        continue-on-error: true
         env:
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}

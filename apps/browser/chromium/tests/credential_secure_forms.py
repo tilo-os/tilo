@@ -35,7 +35,7 @@ def main():
     if args.private_denial and args.synthetic_passwords:
         parser.error('--private-denial and --synthetic-passwords are mutually exclusive')
     args.output.mkdir(parents=True, exist_ok=True)
-    profile = tempfile.TemporaryDirectory(prefix='qos-credential-https-', delete=False)
+    profile = tempfile.TemporaryDirectory(prefix='tilo-credential-https-', delete=False)
     report = {'profile': profile.name, 'password_store_commands_sent': 0, 'passed': False}
     process = None
     cleanup_account = None
@@ -63,7 +63,7 @@ def main():
                         frame = exact(length)
                         if frame[0] == 1:
                             decoded = json.loads(frame[1:])
-                            if args.synthetic_passwords and any(value in json.dumps(decoded) for value in ('qos-synthetic-password-one', 'qos-synthetic-password-two')):
+                            if args.synthetic_passwords and any(value in json.dumps(decoded) for value in ('tilo-synthetic-password-one', 'tilo-synthetic-password-two')):
                                 report['public_secret_exposed'] = True
                                 raise AssertionError('Synthetic secret exposed in public event')
                             events.put(decoded)
@@ -103,8 +103,8 @@ def main():
             report['authenticated_https'] = True
             report['stage'] = 'install_inert_fixture'
             fixture = args.fixture.read_text()
-            send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){"+fixture+";document.title='qos-fixture-ready';}"])
-            until(lambda e: e['event'] == 'title' and e['title'] == 'qos-fixture-ready')
+            send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){"+fixture+";document.title='tilo-fixture-ready';}"])
+            until(lambda e: e['event'] == 'title' and e['title'] == 'tilo-fixture-ready')
             def credential(request, action, document='', **fields):
                 if action in ('save', 'update', 'fill', 'delete', 'list'):
                     report['password_store_commands_sent'] += 1
@@ -142,28 +142,28 @@ def main():
             result = credential(4, 'fill_address', document, form=form, profile={'given_name': 'Synthetic', 'family_name': 'Person', 'street': '123 Test Street'})
             assert result['success'], result.get('message')
             check = """if(window===top && location.origin==='https://example.com'){
-              const good=document.getElementById('qos-address-given').value==='Synthetic'
-                && document.getElementById('qos-address-family').value==='Person'
-                && document.getElementById('qos-address-street').value==='123 Test Street'
-                && !document.getElementById('qos-address').dataset.submitAttempted;
-              document.title=good?'qos-address-pass':'qos-address-fail';} """
+              const good=document.getElementById('tilo-address-given').value==='Synthetic'
+                && document.getElementById('tilo-address-family').value==='Person'
+                && document.getElementById('tilo-address-street').value==='123 Test Street'
+                && !document.getElementById('tilo-address').dataset.submitAttempted;
+              document.title=good?'tilo-address-pass':'tilo-address-fail';} """
             send(op='scripts', scripts=[check])
-            outcome = until(lambda e: e['event'] == 'title' and e['title'].startswith('qos-address-'))
-            assert outcome['title'] == 'qos-address-pass'
+            outcome = until(lambda e: e['event'] == 'title' and e['title'].startswith('tilo-address-'))
+            assert outcome['title'] == 'tilo-address-pass'
             report['address_filled_without_submission'] = True
             if args.synthetic_passwords:
                 report['public_secret_exposed'] = False
-                username = 'qos-synthetic-fixture'
+                username = 'tilo-synthetic-fixture'
                 account = hashlib.sha256(username.encode()).hexdigest()
                 def script(source, title):
                     send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){" + source + ";document.title=" + json.dumps(title) + ";}"])
                     until(lambda e: e['event'] == 'title' and e['title'] == title)
                 def set_login(password, title):
-                    script("document.getElementById('qos-login-username').value=" + json.dumps(username) + ";document.getElementById('qos-login-password').value=" + json.dumps(password), title)
+                    script("document.getElementById('tilo-login-username').value=" + json.dumps(username) + ";document.getElementById('tilo-login-password').value=" + json.dumps(password), title)
                 report['stage'] = 'synthetic_keychain_initial_list'
                 listed = credential(10, 'list', document)
                 assert listed['success'] and listed['accounts'] == []
-                set_login('qos-synthetic-password-one', 'qos-login-prepared')
+                set_login('tilo-synthetic-password-one', 'tilo-login-prepared')
                 forms = credential(11, 'discover', document)
                 assert forms['success'] and len(forms['forms']) == 1
                 login = forms['forms'][0]['id']
@@ -190,22 +190,22 @@ def main():
                 listed = credential(14, 'list', document)
                 assert listed['success'] and len(listed['accounts']) == 1
                 assert listed['accounts'][0]['id'] == account
-                for request, password in [(20, 'qos-synthetic-password-one'), (30, 'qos-synthetic-password-two')]:
+                for request, password in [(20, 'tilo-synthetic-password-one'), (30, 'tilo-synthetic-password-two')]:
                     if request == 30:
                         report['stage'] = 'synthetic_keychain_update'
-                        set_login(password, 'qos-login-update-prepared')
+                        set_login(password, 'tilo-login-update-prepared')
                         captured = credential(27, 'capture', document, form=login)
                         assert captured['success']
                         updated = credential(28, 'update', document, capture=captured['capture'], account=account)
                         assert updated['success']
-                    script("document.getElementById('qos-login-username').value='';document.getElementById('qos-login-password').value=''", 'qos-login-cleared-' + str(request))
+                    script("document.getElementById('tilo-login-username').value='';document.getElementById('tilo-login-password').value=''", 'tilo-login-cleared-' + str(request))
                     report['stage'] = 'synthetic_keychain_fill_' + str(request)
                     filled = credential(request, 'fill', document, form=login, account=account)
                     assert filled['success'] and 'password' not in filled
-                    check = "const good=document.getElementById('qos-login-username').value===" + json.dumps(username) + "&&document.getElementById('qos-login-password').value===" + json.dumps(password) + "&&!document.getElementById('qos-login').dataset.submitAttempted;document.title=good?'qos-login-pass-" + str(request) + "':'qos-login-fail'"
+                    check = "const good=document.getElementById('tilo-login-username').value===" + json.dumps(username) + "&&document.getElementById('tilo-login-password').value===" + json.dumps(password) + "&&!document.getElementById('tilo-login').dataset.submitAttempted;document.title=good?'tilo-login-pass-" + str(request) + "':'tilo-login-fail'"
                     send(op='scripts', scripts=["if(window===top && location.origin==='https://example.com'){" + check + ";}"])
-                    verified = until(lambda e: e['event'] == 'title' and e['title'].startswith(('qos-login-pass-', 'qos-login-fail')))
-                    assert verified['title'] == 'qos-login-pass-' + str(request)
+                    verified = until(lambda e: e['event'] == 'title' and e['title'].startswith(('tilo-login-pass-', 'tilo-login-fail')))
+                    assert verified['title'] == 'tilo-login-pass-' + str(request)
                 report['stage'] = 'cross_origin_refusal'
                 send(op='credential_action', request_id=39, action='fill', origin='https://example.org', document=document, form=login, account=account)
                 report['password_store_commands_sent'] += 1

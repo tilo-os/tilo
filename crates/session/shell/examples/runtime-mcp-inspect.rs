@@ -8,7 +8,7 @@ use std::{
 };
 use tilo_automerge::ApplyIncoming;
 
-const WRITER: &str = "dev.qos.word-processor";
+const WRITER: &str = "dev.tilo.word-processor";
 use serde_json::json;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -197,9 +197,9 @@ mod tests {
             collab_types::DocumentMutation::Snapshot(doc.save())
                 .encode()
                 .unwrap(),
-            collab_types::document_artifact_id("dev.qos.word-processor", "room", ""),
+            collab_types::document_artifact_id("dev.tilo.word-processor", "room", ""),
             collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
-            collab_types::document_attestation_id("dev.qos.word-processor", "room", ""),
+            collab_types::document_attestation_id("dev.tilo.word-processor", "room", ""),
             collab_types::OpClass::Splice,
             std::time::SystemTime::now(),
             1,
@@ -225,13 +225,13 @@ mod tests {
         assert!(wait_ready(dir.path(), "room", std::time::Duration::ZERO).is_err());
         std::fs::write(
             dir.path().join("observer-ready.json"),
-            br#"{"room":"wrong","app":"dev.qos.word-processor","subscribed":true}"#,
+            br#"{"room":"wrong","app":"dev.tilo.word-processor","subscribed":true}"#,
         )
         .unwrap();
         assert!(wait_ready(dir.path(), "room", std::time::Duration::ZERO).is_err());
         std::fs::write(
             dir.path().join("observer-ready.json"),
-            br#"{"room":"room","app":"dev.qos.word-processor","subscribed":true}"#,
+            br#"{"room":"room","app":"dev.tilo.word-processor","subscribed":true}"#,
         )
         .unwrap();
         assert!(wait_ready(dir.path(), "room", std::time::Duration::ZERO).is_ok());

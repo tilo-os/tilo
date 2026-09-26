@@ -591,12 +591,12 @@ pub fn run(_args: &[String]) {
     let (canvas_w, canvas_h) = (1100u32, 1500u32);
 
     let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
-    // `QOS_SHOTS_THEME=light|dark|high-contrast` and `QOS_SHOTS_TEXT_SCALE`
+    // `TILO_SHOTS_THEME=light|dark|high-contrast` and `TILO_SHOTS_TEXT_SCALE`
     // are the switches every other capture honours; default stays dark at
     // 1×, and motion is reduced like a real capture so nothing mid-animation
     // lands in the still.
-    let text_scale = std::env::var("QOS_SHOTS_TEXT_SCALE").ok();
-    let theme = std::env::var("QOS_SHOTS_THEME")
+    let text_scale = std::env::var("TILO_SHOTS_TEXT_SCALE").ok();
+    let theme = std::env::var("TILO_SHOTS_THEME")
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark)

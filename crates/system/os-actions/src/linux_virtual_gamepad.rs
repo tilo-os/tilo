@@ -13,6 +13,12 @@ use crate::peripheral_forwarding::{
     VirtualGamepadPlan,
 };
 
+/// USB vendor of the fixed virtual gamepad a granted lease creates. Local
+/// discovery uses it to tell that device apart from hardware in the room.
+pub const FORWARDED_GAMEPAD_VENDOR: u16 = 0x1d6b;
+/// USB product of the fixed virtual gamepad; see [`FORWARDED_GAMEPAD_VENDOR`].
+pub const FORWARDED_GAMEPAD_PRODUCT: u16 = 0x5153;
+
 /// A local Linux device restricted to the broker's sanitized gamepad events.
 pub trait LinuxGamepadDevice: Send {
     /// Emit one typed gamepad event and synchronize it to local consumers.
@@ -215,8 +221,8 @@ mod uinput {
                 *target = libc::c_char::try_from(source).unwrap_or_default();
             }
             setup.id.bustype = BUS_VIRTUAL;
-            setup.id.vendor = 0x1d6b;
-            setup.id.product = 0x5153;
+            setup.id.vendor = super::FORWARDED_GAMEPAD_VENDOR;
+            setup.id.product = super::FORWARDED_GAMEPAD_PRODUCT;
             setup.id.version = 1;
             configure_axes(&mut setup)?;
 

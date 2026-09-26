@@ -22,7 +22,7 @@ use crate::{Hydrator, Namespace};
 /// claimed chunk lengths.
 const MAX_REPLICA_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_REPLICA_CHUNKS_PER_RECORD: usize = 100_000;
-const MAX_REPLICA_CHUNK_BYTES: u32 = 64 * 1024;
+const MAX_REPLICA_CHUNK_BYTES: u32 = crate::content::MAX_CHUNK_LEN;
 const MAX_REPLICA_THUMBNAIL_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_REPLICA_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024 * 1024;
 /// A generation lease intentionally covers only a small physical deletion
@@ -282,10 +282,10 @@ pub async fn hydrate_full_workspace(
                 Ok(manifest) => manifest,
                 Err(error) => return status.failed(&error),
             };
-            if manifest.chunks.len() > MAX_REPLICA_CHUNKS_PER_RECORD {
+            if manifest.chunks().len() > MAX_REPLICA_CHUNKS_PER_RECORD {
                 return status.failed(&anyhow::anyhow!("manifest exceeds replica chunk budget"));
             }
-            for chunk in manifest.chunks {
+            for chunk in manifest.chunks().iter().copied() {
                 if chunk.len == 0 || chunk.len > MAX_REPLICA_CHUNK_BYTES {
                     return status.failed(&anyhow::anyhow!("manifest has an invalid chunk length"));
                 }
@@ -461,10 +461,10 @@ async fn retain_manifest_tree(
     );
     let manifest = Manifest::decode(&bytes)?;
     anyhow::ensure!(
-        manifest.chunks.len() <= MAX_REPLICA_CHUNKS_PER_RECORD,
+        manifest.chunks().len() <= MAX_REPLICA_CHUNKS_PER_RECORD,
         "retained manifest exceeds replica chunk budget"
     );
-    for chunk in manifest.chunks {
+    for chunk in manifest.chunks() {
         anyhow::ensure!(
             chunk.len > 0 && chunk.len <= MAX_REPLICA_CHUNK_BYTES,
             "retained manifest has an invalid chunk length"
@@ -488,13 +488,11 @@ mod tests {
     async fn readiness_requires_manifest_chunks_and_thumbnail() {
         let store = Arc::new(ContentStore::memory());
         let chunk = store.ingest("payload").await.unwrap();
-        let manifest = Manifest {
-            chunks: vec![ChunkRef {
-                hash: *chunk.as_bytes(),
-                len: 7,
-            }],
-        };
-        let manifest = store.ingest(manifest.encode().unwrap()).await.unwrap();
+        let manifest = Manifest::legacy(vec![ChunkRef {
+            hash: *chunk.as_bytes(),
+            len: 7,
+        }]);
+        let manifest = store.ingest(manifest.encode()).await.unwrap();
         let thumbnail = store.ingest("thumb").await.unwrap();
         let mut namespace = Namespace::new("replica-test").unwrap();
         let file = namespace
@@ -517,14 +515,11 @@ mod tests {
         let store = Arc::new(ContentStore::memory());
         let oversized = store
             .ingest(
-                Manifest {
-                    chunks: vec![ChunkRef {
-                        hash: [7; 32],
-                        len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
-                    }],
-                }
-                .encode()
-                .unwrap(),
+                Manifest::legacy(vec![ChunkRef {
+                    hash: [7; 32],
+                    len: MAX_REPLICA_CHUNK_BYTES.saturating_add(1),
+                }])
+                .encode(),
             )
             .await
             .unwrap();
@@ -674,14 +669,11 @@ mod tests {
         let chunk = store.ingest(bytes.to_vec()).await.unwrap();
         let manifest = store
             .ingest(
-                Manifest {
-                    chunks: vec![ChunkRef {
-                        hash: *chunk.as_bytes(),
-                        len: u32::try_from(bytes.len()).unwrap(),
-                    }],
-                }
-                .encode()
-                .unwrap(),
+                Manifest::legacy(vec![ChunkRef {
+                    hash: *chunk.as_bytes(),
+                    len: u32::try_from(bytes.len()).unwrap(),
+                }])
+                .encode(),
             )
             .await
             .unwrap();

@@ -55,7 +55,9 @@ class CanonicalVerifier:
             manifest = tomllib.loads(archive.extractfile('manifest.toml').read().decode())
         flags = [argument for key in self.keys for argument in ('--trusted-key', key)]
         output = self.run(self.pkg, 'verify', *flags, path)
-        verified = re.fullmatch(r'ok: (tapp:[0-9a-f]{64}) verifies and publisher is trusted\s*', output)
+        # A release receipt covers the whole package, so only the full form (every
+        # payload blob inside the archive) is accepted, never a thin one.
+        verified = re.fullmatch(r'ok: (tapp:[0-9a-f]{64}) verifies and publisher is trusted \(full\)\s*', output)
         require(verified is not None, 'unexpected canonical package verification report')
         inspected = self.run(self.pkg, 'inspect', path).split('\n--- manifest.toml ---\n', 1)[0]
         package_ids = re.findall(r'^package-id: (tapp:[0-9a-f]{64})$', inspected, re.MULTILINE)

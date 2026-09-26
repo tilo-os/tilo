@@ -64,7 +64,7 @@ impl SelectedManifest {
     }
 }
 fn production_origin() -> Url {
-    Url::parse("https://code.podesta.ai/").expect("literal URL")
+    Url::parse("https://code.tilo.so/").expect("literal URL")
 }
 fn same_origin(url: &Url, origin: &Url) -> bool {
     url.scheme() == origin.scheme()

@@ -7,8 +7,8 @@
 //! (an SSH terminal grid and a VNC/RDP/Tilo framebuffer canvas).
 //!
 //! Interaction is region-based. Each frame `draw` registers clickable
-//! [`Hit`] regions; `handle_event` hit-tests pointer presses against the
-//! regions captured on the previous frame and dispatches an [`Action`].
+//! `Hit` regions; `handle_event` hit-tests pointer presses against the
+//! regions captured on the previous frame and dispatches an `Action`.
 //! Keyboard input drives the focused text field on the form and the
 //! search box on the list, plus global shortcuts (Escape to go back,
 //! Ctrl-N for a new connection, `/` to focus search).

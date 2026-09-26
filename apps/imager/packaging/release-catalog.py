@@ -39,8 +39,8 @@ def internal(entry, tag):
     if set(entry) != INTERNAL_KEYS or entry["layout"] != "internal-bundle-v2" or entry["release_id"] != tag:
         raise ValueError("invalid internal installer catalog entry")
     arch = entry["arch"]
-    owner = os.environ.get("TILO_INTERNAL_BUNDLE_OWNER", "qos")
-    expected = (f"https://code.podesta.ai/api/packages/{owner}/generic/tilo-internal-installer/"
+    owner = os.environ.get("TILO_INTERNAL_BUNDLE_OWNER", "tilo")
+    expected = (f"https://code.tilo.so/api/packages/{owner}/generic/tilo-internal-installer/"
                 f"{tag}/tilo-internal-installer-{arch}.json")
     if arch not in ("x86_64", "aarch64") or entry["manifest_url"] != expected:
         raise ValueError("internal installer manifest URL does not match its package origin")

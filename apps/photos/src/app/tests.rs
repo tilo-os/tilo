@@ -1570,21 +1570,16 @@ fn completed_thumbnail_wakes_its_idle_host_for_success_and_failure() {
         .unwrap();
     let app = PhotosApp::new();
     for (source, succeeds) in [(path, true), (directory.path().join("missing.png"), false)] {
-        app.thumbnail_tx
-            .as_ref()
-            .unwrap()
-            .send(ThumbnailJob {
-                generation: 1,
-                id: "photos.photo:wake".into(),
-                image: OpenImage::from_path(&source.to_string_lossy(), 16, 8),
-            })
-            .unwrap();
+        let image = OpenImage::from_path(&source.to_string_lossy(), 16, 8);
+        let request = thumbnail_request(&image, &app.content);
+        let key = request.key();
+        app.thumbnail_service.request(request);
         let event = receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("thumbnail completion must wake the idle host without user input");
         assert!(scope.accepts(&event));
-        let result = app.thumbnail_rx.try_recv().unwrap();
-        assert_eq!(result.preview.is_some(), succeeds);
+        let settled = app.thumbnail_service.peek(&key).unwrap();
+        assert_eq!(settled.ready().is_some(), succeeds);
     }
 }
 

@@ -19,6 +19,14 @@
 //! | [`trending`]              | `--flat-playlist -J ".../feed/trending"`       |
 //! | [`resolve_playback_source`] | `-J <watch_url>` → best playable format url   |
 //!
+//! [`search`]: crate::backend::YtBackend::search
+//! [`popular_search`]: crate::backend::YtBackend::popular_search
+//! [`video`]: crate::backend::YtBackend::video
+//! [`channel`]: crate::backend::YtBackend::channel
+//! [`related`]: crate::backend::YtBackend::related
+//! [`trending`]: crate::backend::YtBackend::trending
+//! [`resolve_playback_source`]: crate::backend::YtBackend::resolve_playback_source
+//!
 //! It is a subprocess, not a crate, so it adds **no** compile-time dependency:
 //! the only requirement is that `yt-dlp` is on `PATH` (it is, in the distrobox
 //! build env and on the Tilo image — see the module notes). Construction probes

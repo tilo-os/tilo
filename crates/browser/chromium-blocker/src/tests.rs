@@ -78,9 +78,9 @@ fn reports_query_parameter_rewrite() {
 #[test]
 fn foreign_api_handles_nulls_and_returns_owned_json() {
     unsafe {
-        assert!(qos_blocker_create(std::ptr::null(), 5).is_null());
+        assert!(tilo_blocker_create(std::ptr::null(), 5).is_null());
         assert!(
-            qos_blocker_match(
+            tilo_blocker_match(
                 std::ptr::null_mut(),
                 std::ptr::null(),
                 0,
@@ -91,12 +91,12 @@ fn foreign_api_handles_nulls_and_returns_owned_json() {
             )
             .is_null()
         );
-        qos_blocker_destroy(std::ptr::null_mut());
-        qos_blocker_string_free(std::ptr::null_mut());
+        tilo_blocker_destroy(std::ptr::null_mut());
+        tilo_blocker_string_free(std::ptr::null_mut());
         let rules = "||ads.example^";
-        let handle = qos_blocker_create(rules.as_ptr(), rules.len());
+        let handle = tilo_blocker_create(rules.as_ptr(), rules.len());
         assert!(!handle.is_null());
-        let result = qos_blocker_match(
+        let result = tilo_blocker_match(
             handle,
             b"https://ads.example/banner".as_ptr(),
             26,
@@ -109,8 +109,8 @@ fn foreign_api_handles_nulls_and_returns_owned_json() {
         let json: serde_json::Value =
             serde_json::from_str(std::ffi::CStr::from_ptr(result).to_str().unwrap()).unwrap();
         assert_eq!(json["blocked"], true);
-        qos_blocker_string_free(result);
-        qos_blocker_destroy(handle);
+        tilo_blocker_string_free(result);
+        tilo_blocker_destroy(handle);
     }
 }
 
@@ -144,9 +144,9 @@ fn one_blocker_serves_multiple_calling_threads() {
 #[test]
 fn oversized_foreign_inputs_are_rejected_before_dereference() {
     unsafe {
-        let handle = qos_blocker_create(std::ptr::null(), 0);
+        let handle = tilo_blocker_create(std::ptr::null(), 0);
         assert!(
-            qos_blocker_match(
+            tilo_blocker_match(
                 handle,
                 std::ptr::dangling(),
                 65537,
@@ -158,7 +158,7 @@ fn oversized_foreign_inputs_are_rejected_before_dereference() {
             .is_null()
         );
         assert!(
-            qos_blocker_cosmetics(
+            tilo_blocker_cosmetics(
                 handle,
                 b"https://example.org".as_ptr(),
                 19,
@@ -169,7 +169,7 @@ fn oversized_foreign_inputs_are_rejected_before_dereference() {
             )
             .is_null()
         );
-        qos_blocker_destroy(handle);
+        tilo_blocker_destroy(handle);
     }
 }
 
@@ -183,9 +183,9 @@ fn poisoned_matcher_is_an_explicit_cosmetic_failure() {
 #[test]
 fn required_foreign_strings_reject_null_even_with_zero_length() {
     unsafe {
-        let handle = qos_blocker_create(std::ptr::null(), 0);
+        let handle = tilo_blocker_create(std::ptr::null(), 0);
         assert!(
-            qos_blocker_match(
+            tilo_blocker_match(
                 handle,
                 std::ptr::null(),
                 0,
@@ -197,7 +197,7 @@ fn required_foreign_strings_reject_null_even_with_zero_length() {
             .is_null()
         );
         assert!(
-            qos_blocker_cosmetics(
+            tilo_blocker_cosmetics(
                 handle,
                 std::ptr::null(),
                 0,
@@ -208,14 +208,14 @@ fn required_foreign_strings_reject_null_even_with_zero_length() {
             )
             .is_null()
         );
-        qos_blocker_destroy(handle);
+        tilo_blocker_destroy(handle);
     }
 }
 
 #[test]
 fn bundled_redirects_and_scriptlets_are_available() {
     let blocker = Blocker::new(
-        "/replace.js$script,redirect=noopjs\nexample.com##+js(set-constant, qosFixture, true)",
+        "/replace.js$script,redirect=noopjs\nexample.com##+js(set-constant, tiloFixture, true)",
     );
     let result = blocker
         .check(
@@ -232,6 +232,6 @@ fn bundled_redirects_and_scriptlets_are_available() {
     );
     let cosmetic = blocker.cosmetics("https://example.com", &[], &[]).unwrap();
     let script = cosmetic["injected_script"].as_str().unwrap();
-    assert!(script.contains("qosFixture"));
+    assert!(script.contains("tiloFixture"));
     assert!(script.contains("function"));
 }

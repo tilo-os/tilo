@@ -50,7 +50,7 @@ impl SearchProvider for NotesProvider {
     ) -> crate::shell::search::SearchProximity {
         super::text_app::proximity_of(chrome, result)
     }
-    /// A title prefix scores 110 - see [`super::text_app::match_score`].
+    /// An exact title scores the ranker maximum - see [`super::text_app::match_score`].
     fn max_score(&self) -> i32 {
         super::text_app::MAX_SCORE
     }
@@ -167,7 +167,10 @@ mod tests {
         });
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].title, "Grocery list");
-        assert_eq!(out[0].score, 110);
+        assert_eq!(
+            out[0].score,
+            crate::shell::search::providers::text_app::MAX_SCORE
+        );
     }
 
     #[test]
@@ -222,7 +225,11 @@ mod tests {
             "searching a note's own body must find it; got {:?}",
             out.iter().map(|r| (&r.title, r.score)).collect::<Vec<_>>()
         );
-        assert_eq!(out[0].score, 40, "a body hit scores 40");
+        assert!(
+            out[0].score > 0 && out[0].score < 25,
+            "a body hit ranks far below a title hit, got {}",
+            out[0].score
+        );
         let snippet = out[0].subtitle.as_deref().unwrap_or_default();
         assert!(
             snippet.contains("tilo"),

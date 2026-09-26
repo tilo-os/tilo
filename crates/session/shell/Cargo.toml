@@ -46,8 +46,12 @@ bounded-command = { path = "../../system/bounded-command" }
 private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../system/settings-store" }
+settings-store = { path = "../../system/settings-store", features = ["watch"] }
+notify.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
+# Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
+# written to settings.
+secret-vault = { path = "../../system/secret-vault" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
@@ -88,6 +92,7 @@ thiserror.workspace = true
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["dmabuf-import"] }
 
 tilo-actions = { path = "../../collab/actions" }
+tilo-automation = { path = "../../collab/automation" }
 # The record/room-index store. The compositor keeps one document per room
 # listing which records that room holds, in the same store shape (atomic
 # writes, single-writer lock, debounced writer) an app's own state uses.
@@ -116,7 +121,7 @@ os-actions = { path = "../../system/os-actions" }
 # video stack for shared surfaces, projection and recording: `realtime` is
 # the GStreamer encoder/decoder, which picks hardware first, then
 # royalty-free software, then Cisco's openh264 binary loaded by the system.
-media = { path = "../../media/core", features = ["realtime"] }
+media = { path = "../../media/core", features = ["realtime", "pipewire"] }
 # Recording muxes the encoder's access units through `appsrc`; the same pin
 # as `media`, so one copy resolves.
 gstreamer-app = { workspace = true, features = ["v1_24"] }
@@ -148,6 +153,10 @@ zbus = { workspace = true, features = ["tokio", "p2p", "blocking-api"] }
 
 tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
+# The shared preview decoder behind drag previews.
+thumbnail = { path = "../../media/thumbnail" }
+# Host applications ship SVG icons; rasterised at the size chrome paints them.
+resvg = { version = "0.47", default-features = false }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
@@ -193,6 +202,7 @@ tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, 
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
 
 # The host's own applications: `.desktop` entries the compositor reads
@@ -259,6 +269,13 @@ tilo-test-env = { path = "../../dev/test-env" }
 # GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
 # collapses to one copy in the workspace lock.
 naga = { version = "29", features = ["wgsl-in"] }
+# Client side of the wlr output-management protocols, to drive the
+# compositor the way wlr-randr and kanshi do.
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+# Client side of input-method-v2 and text-input-v3, to drive the compositor
+# the way a composing input method and a text field do.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]

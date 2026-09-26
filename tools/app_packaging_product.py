@@ -22,7 +22,7 @@ from app_packaging_contract import (require, digest, validate_cargo_inputs,
                                    validate_local_cargo_inputs, validate_desired, validate_evidence)
 from ci.resolve_builder import resolve
 
-REPO = 'qos/qos'
+REPO = 'tilo/tilo'
 WORKFLOW = 'release-apps.yml'
 REQUIRED_PATHS = {'.forgejo/workflows/' + WORKFLOW,
                   'rust-toolchain.toml', '.cargo/config.toml',
@@ -204,7 +204,7 @@ class ProductForgejo(core.Forgejo):
     def raw_api(self, path, maximum):
         # The server metadata is checked before requesting this small artifact.
         # Keep bytes raw: the ordinary call() method expects JSON API responses.
-        return bounded_output(['fgj', '--hostname', 'code.podesta.ai', 'api', path], maximum)
+        return bounded_output(['fgj', '--hostname', 'code.tilo.so', 'api', path], maximum)
 
     def artifact_bytes(self, artifact_id):
         return self.raw_api(f'repos/{REPO}/actions/artifacts/{artifact_id}/zip', 256 * 1024)

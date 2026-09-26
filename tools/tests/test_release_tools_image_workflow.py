@@ -59,16 +59,15 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         self.assertNotRegex(self.workflow, r"(?m)^\s*(?:tags:|tag=).*(?:latest|:main)\s*$")
         self.assertIn("release-tools-image-receipt/release-tools-image.json", self.workflow)
 
-    def test_tested_index_is_replicated_and_verified_anonymously(self) -> None:
+    def test_tested_index_is_verified_anonymously(self) -> None:
         publish = self.workflow.split("\n  publish-index:\n", 1)[1].split(
             "\n  verify-public:\n", 1
         )[0]
         self.assertIn(
-            "PUBLIC_IMAGE_REPOSITORY: code.podesta.ai/public/tilo-release-tools",
+            "IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools",
             publish,
         )
-        self.assertIn('"$IMAGE_REPOSITORY@$digest"', publish)
-        self.assertIn('[[ $public_digest == "$digest" ]]', publish)
+        self.assertIn('"$IMAGE_REPOSITORY@$digest" --raw', publish)
         self.assertIn('DOCKER_CONFIG="$anonymous_config"', publish)
         self.assertIn('[[ $actual_children == "$expected_children" ]]', publish)
 
@@ -83,7 +82,7 @@ class ReleaseToolsImageWorkflowTests(unittest.TestCase):
         # release-apps.yml is the single owner of the reviewed digest.
         self.assertRegex(
             publish,
-            r"image: code\.podesta\.ai/public/tilo-release-tools@sha256:[0-9a-f]{64}\n",
+            r"image: registry\.tilo\.so/tilo/tilo-release-tools@sha256:[0-9a-f]{64}\n",
         )
         self.assertNotIn("image: ${{ needs.plan.outputs.builder_image }}", publish)
         container = publish.split("    container:\n", 1)[1].split(

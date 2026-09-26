@@ -323,7 +323,7 @@ fn spawn_reader(reader: impl Read + Send + 'static) -> io::Result<mpsc::Receiver
     // Bounds aggregate buffered input as well as each individual request.
     let (sender, receiver) = mpsc::sync_channel(16);
     std::thread::Builder::new()
-        .name("qos-runtime-mcp-stdin".into())
+        .name("tilo-runtime-mcp-stdin".into())
         .spawn(move || {
             let mut reader = BufReader::new(reader);
             loop {

@@ -1,6 +1,6 @@
 //! The runtime daemon across real process boundaries: no global test
 //! environment mutation and no GUI. The host is Cargo's build of the
-//! `qos-runtime-mcp` binary, which Cargo builds, current, for every
+//! `tilo-runtime-mcp` binary, which Cargo builds, current, for every
 //! integration test run.
 use serde_json::{Value, json};
 use std::{
@@ -12,15 +12,18 @@ use std::{
 };
 
 /// The runtime host every test launches.
-const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_qos-runtime-mcp");
+const RUNTIME_BINARY: &str = env!("CARGO_BIN_EXE_tilo-runtime-mcp");
+/// The launcher's absolute bound on a daemon start (`STARTUP.cap` in
+/// `runtime_host::daemon`). A launcher that fails sooner exits with the reason.
+const LAUNCHER_START_CAP: Duration = Duration::from_secs(120);
 
 fn host(profile: &Path) -> Command {
     let mut command = Command::new(RUNTIME_BINARY);
     command
-        .env("QOS_RUNTIME_PROFILE", profile)
+        .env("TILO_RUNTIME_PROFILE", profile)
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
-        .env_remove("QOS_RUNTIME_STANDALONE");
+        .env_remove("TILO_RUNTIME_STANDALONE");
     command
 }
 struct DaemonProfile {
@@ -30,7 +33,7 @@ impl DaemonProfile {
     fn new() -> Self {
         use std::os::unix::fs::PermissionsExt;
         let root = tempfile::Builder::new()
-            .prefix("qos-d-")
+            .prefix("tilo-d-")
             .tempdir_in("/tmp")
             .unwrap();
         std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -101,14 +104,14 @@ fn first_launch_reuse_and_stale_socket_recovery() {
     let profile = DaemonProfile::new();
     let stale = std::os::unix::net::UnixListener::bind(profile.path().join("native.sock")).unwrap();
     drop(stale);
-    let first = run_true(profile.path(), "dev.qos.first");
+    let first = run_true(profile.path(), "dev.tilo.first");
     assert!(
         first.status.success(),
         "{}",
         String::from_utf8_lossy(&first.stderr)
     );
     let before = status(profile.path());
-    let second = run_true(profile.path(), "dev.qos.second");
+    let second = run_true(profile.path(), "dev.tilo.second");
     assert!(
         second.status.success(),
         "{}",
@@ -123,7 +126,7 @@ fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
     let mut children: Vec<Child> = (0..5)
         .map(|_| {
             host(profile.path())
-                .args(["--run-app", "dev.qos.race", "--", "/usr/bin/true"])
+                .args(["--run-app", "dev.tilo.race", "--", "/usr/bin/true"])
                 .spawn()
                 .unwrap()
         })
@@ -154,7 +157,7 @@ fn simultaneous_first_launch_has_one_owner_and_mcp_eof_keeps_it_alive() {
 #[test]
 fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
     let profile = DaemonProfile::new();
-    let output = host(profile.path()).current_dir("/tmp").args(["--run-app", "dev.qos.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"]).output().unwrap();
+    let output = host(profile.path()).current_dir("/tmp").args(["--run-app", "dev.tilo.argv", "--", "/bin/sh", "-c", "printf '%s\\n' \"$PWD\" \"$1\" \"$2\" \"$3\" \"$TILO_PACKAGE_ID\" \"$TILO_SVC_COLLAB_FD\" \"$TILO_SVC_IDENTITY_FD\"", "sentinel", "two words", "--strange=✓", "--apps"]).output().unwrap();
     assert!(
         output.status.success(),
         "{}",
@@ -166,7 +169,7 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
         std::fs::canonicalize("/tmp").unwrap().to_str().unwrap()
     );
     assert!(
-        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.qos.argv\n"),
+        text.contains("\ntwo words\n--strange=✓\n--apps\ndev.tilo.argv\n"),
         "{text}"
     );
     assert_eq!(text.lines().count(), 7);
@@ -174,7 +177,7 @@ fn run_app_preserves_arguments_cwd_and_connected_descriptors() {
 #[test]
 fn live_profile_lock_fails_without_unlinking_owners_socket() {
     let profile = DaemonProfile::new();
-    let first = run_true(profile.path(), "dev.qos.first");
+    let first = run_true(profile.path(), "dev.tilo.first");
     assert!(
         first.status.success(),
         "{}",
@@ -192,12 +195,12 @@ fn unsafe_profile_and_relative_override_are_rejected() {
     let root = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(root.path(), root.path().join("link")).unwrap();
     assert!(
-        !run_true(&root.path().join("link"), "dev.qos.test")
+        !run_true(&root.path().join("link"), "dev.tilo.test")
             .status
             .success()
     );
     assert!(
-        !run_true(Path::new("relative-profile"), "dev.qos.test")
+        !run_true(Path::new("relative-profile"), "dev.tilo.test")
             .status
             .success()
     );
@@ -216,7 +219,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     }
     const TEST: &str =
         "runtime_daemon_process::independent_sdk_apps_late_join_and_survive_another_app_exit";
-    if let Ok(app_id) = std::env::var("QOS_NATIVE_SDK_HELPER") {
+    if let Ok(app_id) = std::env::var("TILO_NATIVE_SDK_HELPER") {
         runtime_portal::native::ensure_attached(&app_id).unwrap();
         let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
@@ -231,24 +234,28 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
         let log = std::fs::File::create(profile.path().join(format!("{id}.log"))).unwrap();
         Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
-            .env("QOS_NATIVE_SDK_HELPER", id)
-            .env("QOS_RUNTIME_PROFILE", profile.path())
-            .env("QOS_RUNTIME_BINARY", RUNTIME_BINARY)
+            .env("TILO_NATIVE_SDK_HELPER", id)
+            .env("TILO_RUNTIME_PROFILE", profile.path())
+            .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
             .env_remove("TILO_SVC_COLLAB_FD")
             .env_remove("TILO_SVC_IDENTITY_FD")
-            .env_remove("QOS_RUNTIME_STANDALONE")
+            .env_remove("TILO_RUNTIME_STANDALONE")
             .stdin(Stdio::null())
             .stdout(Stdio::from(log.try_clone().unwrap()))
             .stderr(Stdio::from(log))
             .spawn()
             .unwrap()
     };
-    apps.0.push(start_app("dev.qos.independent-first"));
-    let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
+    apps.0.push(start_app("dev.tilo.independent-first"));
+    // The app's own launcher bounds the daemon start and exits with the
+    // reason when it fails, so wait as long as that launcher is alive.
+    let deadline = Instant::now().checked_add(LAUNCHER_START_CAP).unwrap();
     while UnixStream::connect(profile.path().join("native.sock")).is_err() {
         assert!(
-            Instant::now() < deadline,
-            "first SDK process did not start daemon"
+            apps.0[0].try_wait().unwrap().is_none() && Instant::now() < deadline,
+            "first SDK process did not start daemon: {}",
+            std::fs::read_to_string(profile.path().join("dev.tilo.independent-first.log"))
+                .unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -260,7 +267,7 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
     let mut roots = |count| {
         let deadline = Instant::now().checked_add(Duration::from_secs(10)).unwrap();
         loop {
-            writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qos_list_apps","arguments":{}}})).unwrap();
+            writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             let reply: Value = serde_json::from_str(&line).unwrap();
@@ -278,15 +285,15 @@ fn independent_sdk_apps_late_join_and_survive_another_app_exit() {
             std::thread::sleep(Duration::from_millis(25));
         }
     };
-    assert_eq!(roots(1)[0]["app_id"], "dev.qos.independent-first");
+    assert_eq!(roots(1)[0]["app_id"], "dev.tilo.independent-first");
     let before = status(profile.path());
-    apps.0.push(start_app("dev.qos.independent-second"));
+    apps.0.push(start_app("dev.tilo.independent-second"));
     let both = roots(2);
     assert_ne!(both[0]["peer_id"], both[1]["peer_id"]);
     assert_eq!(status(profile.path())["pid"], before["pid"]);
     apps.0[0].kill().unwrap();
     apps.0[0].wait().unwrap();
-    assert_eq!(roots(1)[0]["app_id"], "dev.qos.independent-second");
+    assert_eq!(roots(1)[0]["app_id"], "dev.tilo.independent-second");
     assert!(apps.0[1].try_wait().unwrap().is_none());
 }
 
@@ -295,7 +302,7 @@ fn public_profile_and_symlinked_session_lock_are_rejected() {
     use std::os::unix::fs::PermissionsExt;
     let profile = DaemonProfile::new();
     std::fs::set_permissions(profile.path(), std::fs::Permissions::from_mode(0o777)).unwrap();
-    let output = run_true(profile.path(), "dev.qos.test");
+    let output = run_true(profile.path(), "dev.tilo.test");
     assert!(!output.status.success(), "a public profile was accepted");
     assert_eq!(
         std::fs::metadata(profile.path())
@@ -309,7 +316,7 @@ fn public_profile_and_symlinked_session_lock_are_rejected() {
     let target = profile.path().join("other-file");
     std::fs::write(&target, "untouched").unwrap();
     std::os::unix::fs::symlink(&target, profile.path().join("runtime.lock")).unwrap();
-    assert!(!run_true(profile.path(), "dev.qos.test").status.success());
+    assert!(!run_true(profile.path(), "dev.tilo.test").status.success());
     assert_eq!(std::fs::read_to_string(target).unwrap(), "untouched");
 }
 
@@ -328,8 +335,8 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
     }
     const TEST: &str =
         "runtime_daemon_process::ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime";
-    const APP: &str = "dev.qos.parent-child";
-    if let Ok(stage) = std::env::var("QOS_SDK_FAMILY_STAGE") {
+    const APP: &str = "dev.tilo.parent-child";
+    if let Ok(stage) = std::env::var("TILO_SDK_FAMILY_STAGE") {
         runtime_portal::native::ensure_attached(APP).unwrap();
         let mut manager = connected_manager();
         manager.publish_action_directory(ui::collaboration::local_app_id());
@@ -339,7 +346,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
             Some(
                 Command::new(std::env::current_exe().unwrap())
                     .args(["--exact", TEST, "--nocapture"])
-                    .env("QOS_SDK_FAMILY_STAGE", "child")
+                    .env("TILO_SDK_FAMILY_STAGE", "child")
                     .spawn()
                     .unwrap(),
             )
@@ -359,14 +366,16 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
         .args(["--run-app", APP, "--"])
         .arg(std::env::current_exe().unwrap())
         .args(["--exact", TEST, "--nocapture"])
-        .env("QOS_SDK_FAMILY_STAGE", "parent")
-        .env("QOS_RUNTIME_BINARY", RUNTIME_BINARY)
+        .env("TILO_SDK_FAMILY_STAGE", "parent")
+        .env("TILO_RUNTIME_BINARY", RUNTIME_BINARY)
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone().unwrap()))
         .stderr(Stdio::from(log));
     let mut family = Family(command.spawn().unwrap());
-    let deadline = Instant::now().checked_add(Duration::from_secs(15)).unwrap();
+    // The launcher bounds the daemon start itself and exits with the reason
+    // when it fails, which the loop reports at once.
+    let deadline = Instant::now().checked_add(LAUNCHER_START_CAP).unwrap();
     loop {
         assert!(
             family.0.try_wait().unwrap().is_none(),
@@ -377,7 +386,7 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
             stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
-            writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"qos_list_apps","arguments":{}}})).unwrap();
+            writeln!(stream, "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"tilo_list_apps","arguments":{}}})).unwrap();
             let mut line = String::new();
             BufReader::new(stream).read_line(&mut line).unwrap();
             let reply: Value = serde_json::from_str(&line).unwrap();
@@ -403,16 +412,16 @@ fn ordinary_sdk_parent_child_get_distinct_connections_in_one_runtime() {
 fn explicit_profile_overrides_are_propagated_to_app_descendants() {
     let profile = DaemonProfile::new();
     let output = host(profile.path())
-        .env("QOS_RUNTIME_PROFILE", "/must-not-be-used")
+        .env("TILO_RUNTIME_PROFILE", "/must-not-be-used")
         .arg("--profile")
         .arg(profile.path())
         .args([
             "--run-app",
-            "dev.qos.profile",
+            "dev.tilo.profile",
             "--",
             "/bin/sh",
             "-c",
-            "printf '%s' \"$QOS_RUNTIME_PROFILE\"",
+            "printf '%s' \"$TILO_RUNTIME_PROFILE\"",
         ])
         .output()
         .unwrap();

@@ -108,8 +108,8 @@ impl Connections {
             // This prepares a fresh transfer, including managed spawn where
             // the future child PID is not yet known. Never carry an ancestor's
             // automatic-exec ownership or command-resume marker into it.
-            .env_remove("QOS_RUNTIME_CONNECTION_OWNER_PID")
-            .env_remove("QOS_RUNTIME_RESUME_LIVE")
+            .env_remove("TILO_RUNTIME_CONNECTION_OWNER_PID")
+            .env_remove("TILO_RUNTIME_RESUME_LIVE")
             .env("TILO_PACKAGE_ID", app_id)
             .env("TILO_WORKSPACE_ID", room)
             .env("TILO_SVC_COLLAB_FD", collab.as_raw_fd().to_string())
@@ -181,11 +181,11 @@ mod tests {
         let _identity = std::os::unix::net::UnixListener::bind(&identity_path).unwrap();
         let mut command = std::process::Command::new("/usr/bin/true");
         command
-            .env("QOS_RUNTIME_CONNECTION_OWNER_PID", "1")
-            .env("QOS_RUNTIME_RESUME_LIVE", "dev.qos.parent");
+            .env("TILO_RUNTIME_CONNECTION_OWNER_PID", "1")
+            .env("TILO_RUNTIME_RESUME_LIVE", "dev.tilo.parent");
         let _connections = super::Connections::prepare(
             &mut command,
-            "dev.qos.child",
+            "dev.tilo.child",
             "workspace",
             &super::ServiceSockets {
                 collab: &collab_path,
@@ -195,8 +195,8 @@ mod tests {
         )
         .unwrap();
         for key in [
-            "QOS_RUNTIME_CONNECTION_OWNER_PID",
-            "QOS_RUNTIME_RESUME_LIVE",
+            "TILO_RUNTIME_CONNECTION_OWNER_PID",
+            "TILO_RUNTIME_RESUME_LIVE",
         ] {
             assert_eq!(
                 command.get_envs().find(|(name, _)| *name == key).unwrap().1,

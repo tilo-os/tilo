@@ -7,7 +7,7 @@
 #include "include/base/cef_callback.h"
 #include "include/wrapper/cef_closure_task.h"
 
-namespace qos {
+namespace tilo {
 // Browser-process-only session history. Page content never receives this API.
 class NavigationHistory final : public CefDevToolsMessageObserver {
  public:

@@ -14,8 +14,7 @@ use std::{path::Path, sync::atomic::AtomicBool};
 pub const MAX_MANIFEST_BYTES: usize = 65_536;
 const MAX_IMAGE_BYTES: u64 = 1 << 40;
 const ESP_GUID: &str = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b";
-/// The only manifest schema this build accepts. Schema 1 predates the
-/// qos→tilo rename and could never validate a real live image.
+/// The only manifest schema this build accepts.
 pub const SCHEMA: u32 = 2;
 /// Manifest purpose; the release catalog's internal entries carry the same tag.
 pub const PURPOSE: &str = "tilo-internal-installer";
@@ -197,10 +196,6 @@ fn validate_cmdline(boot: &BootBinding) -> Result<(), String> {
     )?;
     let tokens: Vec<_> = text.split_ascii_whitespace().collect();
     require(tokens.len() <= 64, "too many kernel arguments")?;
-    require(
-        !tokens.iter().any(|token| token.starts_with("qos.")),
-        "legacy qos.* kernel argument",
-    )?;
     let mut names = std::collections::HashSet::new();
     let mut consoles = std::collections::HashSet::new();
     for token in &tokens {
@@ -1016,7 +1011,6 @@ pub(crate) mod tests {
             ("/schema", json!(1)),
             ("/schema", json!(3)),
             ("/purpose", json!("removable-media")),
-            ("/purpose", json!("qos-internal-installer")),
             ("/firmware", json!("bios")),
             ("/secure_boot", json!("enabled")),
             ("/installer_protocol", json!(2)),
@@ -1189,22 +1183,13 @@ pub(crate) mod tests {
         }
     }
     #[test]
-    fn legacy_and_device_bound_cmdlines_are_rejected() {
+    fn device_bound_cmdlines_are_rejected() {
         let base = cmdline();
         let auto = "root=tilo-auto";
-        let mut legacy = base.clone();
-        for name in ["install", "mode", "generation"] {
-            legacy = legacy.replace(&format!("tilo.{name}"), &format!("qos.{name}"));
-        }
         for cmdline in [
-            legacy,
-            format!("{base} qos.install"),
-            format!("{base} qos.generation=7"),
-            format!("{base} qos.luks={}", "0".repeat(43)),
             base.replacen(auto, &format!("root=UUID={ROOT_UUID}"), 1),
             base.replacen(auto, &format!("root=PARTUUID={ROOT_UUID}"), 1),
             base.replacen(auto, &format!("tilo.root={}", "0".repeat(37)), 1),
-            base.replacen(auto, &format!("qos.root={}", "0".repeat(37)), 1),
         ] {
             assert!(with_cmdline(&cmdline).is_err(), "accepted {cmdline}");
         }
