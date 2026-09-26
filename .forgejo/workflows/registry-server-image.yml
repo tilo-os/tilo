@@ -139,6 +139,10 @@ jobs:
 
       - name: Set up the pinned BuildKit frontend
         uses: ./.forgejo/actions/setup-buildx
+        with:
+          # Layers and the cargo registry/target cache mounts stay on the
+          # runner slot; only main pushes, which publish, use the trusted builder.
+          persistent: true
 
       - name: Build the production image without publication
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
