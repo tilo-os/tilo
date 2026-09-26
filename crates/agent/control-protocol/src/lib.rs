@@ -26,6 +26,7 @@ pub const MAX_REQUEST_FRAME_BYTES: usize = 64 * 1024;
 pub const MAX_RESPONSE_FRAME_BYTES: usize = 512 * 1024;
 pub const MAX_AGENT_PAGE_ITEMS: usize = 64;
 pub const MAX_CONVERSATION_PAGE_ITEMS: usize = 100;
+pub const MAX_AUDIT_PAGE_ITEMS: usize = 100;
 pub const MAX_GRANT_OFFERS: usize = 64;
 pub const MAX_ACTIONS_PER_GRANT: usize = 64;
 const MAX_LABEL_SCALARS: usize = 256;
@@ -90,6 +91,20 @@ pub enum AgentRequest {
     },
     #[serde(rename = "agent_status")]
     Status { version: u8, invocation_id: String },
+    /// The owner's audit of one of its agents: every step decision of the
+    /// agent's tasks, oldest first, one bounded page at a time.
+    #[serde(rename = "agent_audit")]
+    Audit {
+        version: u8,
+        agent_id: String,
+        #[serde(deserialize_with = "required_nullable")]
+        cursor: Option<String>,
+    },
+    /// Owner revocation of one of its agents: its running task stops, its
+    /// enrolled session closes and no later step of it is admitted. It only
+    /// withdraws authority; it never starts work.
+    #[serde(rename = "agent_revoke")]
+    Revoke { version: u8, agent_id: String },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,6 +246,21 @@ pub struct AgentSnapshot {
     pub conversation: Vec<ChatMessage>,
 }
 
+/// One step decision of an agent task, as the owner's audit shows it.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AgentAuditEntry {
+    /// Position in the agent's audit, stable across pages.
+    pub sequence: u64,
+    pub app_id: String,
+    pub action: String,
+    pub allowed: bool,
+    /// The refusal reason; `None` when the step was allowed.
+    #[serde(deserialize_with = "required_nullable")]
+    pub reason: Option<String>,
+    pub timestamp: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentCapabilities {
@@ -251,6 +281,10 @@ pub enum AgentResponseKind {
     Conversation,
     #[serde(rename = "agent_operation")]
     Operation,
+    #[serde(rename = "agent_audit")]
+    Audit,
+    #[serde(rename = "agent_revoke")]
+    Revoke,
     #[serde(rename = "agent_error")]
     Error,
 }
@@ -299,6 +333,32 @@ pub enum AgentResponse {
         invocation_id: String,
         binding: AgentBinding,
         operation: AgentOperation,
+    },
+    #[serde(rename = "agent_audit")]
+    Audit {
+        version: u8,
+        #[serde(rename = "invocationId")]
+        invocation_id: String,
+        binding: AgentBinding,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        entries: Vec<AgentAuditEntry>,
+        #[serde(rename = "nextCursor")]
+        #[serde(deserialize_with = "required_nullable")]
+        next_cursor: Option<String>,
+        revision: String,
+    },
+    #[serde(rename = "agent_revoke")]
+    Revoke {
+        version: u8,
+        #[serde(rename = "invocationId")]
+        invocation_id: String,
+        binding: AgentBinding,
+        #[serde(rename = "agentId")]
+        agent_id: String,
+        /// Tasks this revocation stopped (0 when none was still running).
+        #[serde(rename = "stoppedTasks")]
+        stopped_tasks: u32,
     },
     #[serde(rename = "agent_error")]
     Error {
@@ -402,6 +462,21 @@ pub fn canonical_request(request: &AgentRequest) -> Result<Vec<u8>, ValidationEr
             kind: "agent_status",
             invocation_id,
         })?,
+        AgentRequest::Audit {
+            version,
+            agent_id,
+            cursor,
+        } => serialize_canonical(&CanonicalConversation {
+            version: *version,
+            kind: "agent_audit",
+            agent_id,
+            cursor: cursor.as_deref(),
+        })?,
+        AgentRequest::Revoke { version, agent_id } => serialize_canonical(&CanonicalRevoke {
+            version: *version,
+            kind: "agent_revoke",
+            agent_id,
+        })?,
     };
     if bytes.len() > MAX_REQUEST_FRAME_BYTES {
         return Err(ValidationError::FrameTooLarge);
@@ -455,6 +530,13 @@ struct CanonicalMessage<'a> {
     kind: &'static str,
     agent_id: &'a str,
     text: &'a str,
+}
+
+#[derive(Serialize)]
+struct CanonicalRevoke<'a> {
+    version: u8,
+    kind: &'static str,
+    agent_id: &'a str,
 }
 
 #[derive(Serialize)]
@@ -564,6 +646,30 @@ pub fn validate_response(
             operation,
             ..
         } => validate_operation(operation, invocation_id),
+        AgentResponse::Audit {
+            agent_id,
+            entries,
+            next_cursor,
+            revision,
+            ..
+        } => {
+            validate_agent_reference(agent_id, "agentId")?;
+            if entries.len() > MAX_AUDIT_PAGE_ITEMS {
+                return Err(ValidationError::InvalidField("entries"));
+            }
+            if entries
+                .windows(2)
+                .any(|pair| pair[0].sequence >= pair[1].sequence)
+            {
+                return Err(ValidationError::InvalidField("entries"));
+            }
+            for entry in entries {
+                validate_audit_entry(entry)?;
+            }
+            validate_optional_id(next_cursor.as_deref(), "nextCursor")?;
+            validate_revision(revision)
+        }
+        AgentResponse::Revoke { agent_id, .. } => validate_agent_reference(agent_id, "agentId"),
         AgentResponse::Error { error, .. } => validate_error(error),
     }
 }
@@ -610,6 +716,18 @@ impl AgentResponse {
                 binding,
                 AgentResponseKind::Operation,
             ),
+            Self::Audit {
+                version,
+                invocation_id,
+                binding,
+                ..
+            } => (*version, invocation_id, binding, AgentResponseKind::Audit),
+            Self::Revoke {
+                version,
+                invocation_id,
+                binding,
+                ..
+            } => (*version, invocation_id, binding, AgentResponseKind::Revoke),
             Self::Error {
                 version,
                 invocation_id,
@@ -631,10 +749,19 @@ fn normalize_request(mut request: AgentRequest) -> Result<AgentRequest, Validati
             version,
             agent_id,
             cursor,
+        }
+        | AgentRequest::Audit {
+            version,
+            agent_id,
+            cursor,
         } => {
             validate_version(*version)?;
             validate_agent_reference(agent_id, "agent_id")?;
             validate_optional_id(cursor.as_deref(), "cursor")?;
+        }
+        AgentRequest::Revoke { version, agent_id } => {
+            validate_version(*version)?;
+            validate_agent_reference(agent_id, "agent_id")?;
         }
         AgentRequest::Spawn {
             version,
@@ -761,6 +888,19 @@ fn validate_agent(agent: &AgentSnapshot) -> Result<(), ValidationError> {
         validate_message(message)?;
     }
     Ok(())
+}
+
+fn validate_audit_entry(entry: &AgentAuditEntry) -> Result<(), ValidationError> {
+    validate_opaque_id(&entry.app_id, "entry.appId")?;
+    validate_opaque_id(&entry.action, "entry.action")?;
+    match (&entry.reason, entry.allowed) {
+        (None, true) => {}
+        (Some(reason), false) => {
+            validate_scalar_text(reason, 1, MAX_ERROR_MESSAGE_SCALARS, "entry.reason")?;
+        }
+        _ => return Err(ValidationError::InvalidField("entry.reason")),
+    }
+    validate_timestamp(&entry.timestamp)
 }
 
 fn validate_message(message: &ChatMessage) -> Result<(), ValidationError> {

@@ -1,12 +1,14 @@
 //! Live attachment to the existing serial Cloud runtime owner. No constructor
 //! from persisted facts, no new queue, and no detached Store/worker owner.
 use super::*;
+use crate::agent_runtime_adapter::AgentRevocationError;
 use qos_action_broker::{
     agent_control::AgentProviderAuthority,
     agent_reads::{
         AgentReadCustody, AgentReadError, AgentReadFuture, AgentReadReply, CertifiedAgentReads,
     },
 };
+use qos_agent_control_protocol::{AgentError, AgentErrorCode, AgentRequest, AgentResponse};
 use qos_relay::agent_reads::AgentReadBinding;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::time::Instant as Deadline;
@@ -409,6 +411,8 @@ pub(super) fn read_current(
     if *host != evidence.action().room
         || invocation.is_nil()
         || !qos_relay::agent_reads::valid_request(request)
+        // Revocation changes state: only [`revoke_current`] serves it.
+        || matches!(request, AgentRequest::Revoke { .. })
     {
         return Err(AgentReadError::InvalidRequest);
     }
@@ -473,6 +477,104 @@ pub(super) fn read_current(
     }
     Ok(result)
 }
+/// The owner's revocation of one of its agents, on the private agent read
+/// carrier. Never answered from the burst basis: the caller, its binding and
+/// its governance are proved afresh, exactly as a first read of a burst, and
+/// the Store then proves the caller started the agent. Idempotent: a repeat
+/// stops nothing more.
+pub(crate) fn revoke_current(
+    owner: &RuntimeOwner,
+    provider: Option<&Arc<AgentControlProvider>>,
+    evidence: &CertifiedAction,
+    controls: OwnerControls<'_>,
+    cache: &mut ReadCache,
+) -> Result<ActionMessage, AgentReadError> {
+    let ActionMessage::AgentReadV1 {
+        host,
+        invocation,
+        request: request @ AgentRequest::Revoke { agent_id, .. },
+    } = &evidence.action().message
+    else {
+        return Err(AgentReadError::InvalidRequest);
+    };
+    if *host != evidence.action().room
+        || invocation.is_nil()
+        || !qos_relay::agent_reads::valid_request(request)
+    {
+        return Err(AgentReadError::InvalidRequest);
+    }
+    let (binding, current, _) = current_binding(owner, provider, evidence)?;
+    // Every retained basis predates the revocation.
+    cache.entries.clear();
+    let broker = controls
+        .workers
+        .and_then(|workers| workers.app_broker().ok());
+    let response = match owner.revoke_agent(
+        current.certificate(),
+        agent_id,
+        broker.as_ref(),
+        controls.launcher,
+    ) {
+        Ok(stopped_tasks) => AgentResponse::Revoke {
+            version: 1,
+            invocation_id: invocation.to_string(),
+            binding: binding.agent.clone(),
+            agent_id: agent_id.clone(),
+            stopped_tasks,
+        },
+        Err(error) => {
+            let (code, message) = match error {
+                AgentRevocationError::NotOwned => (
+                    AgentErrorCode::AgentNotFound,
+                    "Private agent unavailable for this caller",
+                ),
+                AgentRevocationError::Unavailable(error) => {
+                    tracing::warn!(%error, "agent revocation unavailable");
+                    (
+                        AgentErrorCode::StorageFailed,
+                        "Agent revocation unavailable; retry",
+                    )
+                }
+            };
+            AgentResponse::Error {
+                version: 1,
+                invocation_id: invocation.to_string(),
+                binding: binding.agent.clone(),
+                error: AgentError {
+                    code,
+                    message: message.into(),
+                },
+            }
+        }
+    };
+    if !qos_relay::agent_reads::valid_result(*host, *invocation, &binding, &response)
+        || !qos_relay::agent_reads::matches_request(request, &response)
+    {
+        return Err(AgentReadError::InvalidResult);
+    }
+    Ok(ActionMessage::AgentReadResultV1 {
+        host: *host,
+        invocation: *invocation,
+        binding,
+        response,
+    })
+}
+/// What revocation acts on besides the Store: the enrolled broker sessions
+/// and the managed processes. Both are held only by the runtime loop.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct OwnerControls<'a> {
+    pub(crate) workers: Option<&'a AgentWorkers>,
+    pub(crate) launcher: Option<&'a launcher::managed::ManagedLauncher>,
+}
+fn is_revocation(evidence: &CertifiedAction) -> bool {
+    matches!(
+        &evidence.action().message,
+        ActionMessage::AgentReadV1 {
+            request: AgentRequest::Revoke { .. },
+            ..
+        }
+    )
+}
 #[expect(
     clippy::too_many_arguments,
     reason = "each argument is a distinct piece of custody or context the caller already holds"
@@ -486,6 +588,7 @@ pub(super) async fn dispatch(
     reads_supported: bool,
     queued: &mut AgentWorkQueue,
     reads: &mut ReadCache,
+    controls: OwnerControls<'_>,
 ) {
     // Reads are disposable. A lost mutation waiter still requires exact retained
     // status/uncertainty; do not change already-started mutation semantics.
@@ -514,6 +617,21 @@ pub(super) async fn dispatch(
         return;
     }
     let result = match command.kind {
+        CommandKind::Action | CommandKind::Read if is_revocation(&command.evidence) => {
+            let result = if reads_supported {
+                revoke_current(owner, provider, &command.evidence, controls, reads)
+            } else {
+                Err(AgentReadError::Unavailable)
+            };
+            match command.kind {
+                CommandKind::Read => result
+                    .map(|value| CommandReply::Action(Some(value)))
+                    .map_err(CommandError::Read),
+                _ => result
+                    .map(|value| CommandReply::Action(Some(value)))
+                    .map_err(|error| CommandError::Owner(error.to_string())),
+            }
+        }
         // A private read on the certified command path: the read itself
         // proves the caller (freshly, or from the exact burst basis); the two
         // earlier caller proofs of the generic path only reopened the Store.

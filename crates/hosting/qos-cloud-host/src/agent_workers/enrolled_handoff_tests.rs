@@ -19,6 +19,7 @@ use qos_action_broker::enrolled_dispatch::{
     FixtureProcess, ParentFailure, ParentOwner, ParentReceipt, ParentRecord, ParentStep,
     VerifiedEnrolledDispatch,
 };
+use qos_relay::peer_actions::ActionMessage;
 use std::os::fd::IntoRawFd;
 use ui::collaboration::{CollabEvent, CollabRequest};
 
@@ -304,6 +305,24 @@ async fn enrolled_task_granted(
         assert!(tokio::time::Instant::now() < deadline, "task not accepted");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
+}
+
+/// The owner's durable audit of the agent that runs `invocation`.
+fn owner_audit(
+    store: &crate::Store,
+    owner: &[u8; 32],
+    invocation: uuid::Uuid,
+) -> Vec<crate::agent_runtime_owner::AuditRecord> {
+    let controls = store
+        .owned_agent_controls(owner)
+        .into_values()
+        .find(|controls| controls.iter().any(|id| id.invocation() == invocation))
+        .expect("the owner's agent");
+    let invocations = controls
+        .iter()
+        .map(|id| id.invocation().to_string())
+        .collect();
+    crate::agent_runtime_owner::scope_audit_page(&store.root, &invocations, 0, 1_000).0
 }
 
 fn step(task: &Task, index: u32) -> ParentStep {
@@ -796,20 +815,29 @@ async fn scoped_grants_authorize_steps_by_record_class_and_revocation() {
         let mut stranger = caller.clone();
         stranger.user_public_key = [0xee; 32];
         assert!(store.revoke_agent_task(&stranger, &id).is_err());
-        store.revoke_agent_task(&caller, &id).unwrap();
+        assert!(store.revoke_agent_task(&caller, &id).unwrap());
+        assert!(
+            !store.revoke_agent_task(&caller, &id).unwrap(),
+            "a repeat revocation stops nothing more"
+        );
         // The durable audit records the step decisions for the owner.
-        let audit = store.agent_task_audit(&caller, &id).unwrap();
+        let audit = owner_audit(&store, &caller.user_public_key, task.invocation);
         assert!(
             audit
                 .iter()
-                .any(|entry| entry["action"] == "type-text" && entry["allowed"] == true)
+                .any(|entry| entry.action == "type-text" && entry.refused.is_none())
         );
         assert!(
             audit
                 .iter()
-                .any(|entry| entry["action"] == "save" && entry["allowed"] == false)
+                .any(|entry| entry.action == "save" && entry.refused.is_some())
         );
-        assert!(store.agent_task_audit(&stranger, &id).is_err());
+        assert!(audit.iter().any(|entry| entry.action == "revoke"));
+        assert!(
+            store
+                .owned_agent_controls(&stranger.user_public_key)
+                .is_empty()
+        );
     }
     assert!(check(RECORD, "type-text").is_err());
     drop(dispatch);
@@ -1276,3 +1304,325 @@ mod participant_stream_tests;
 
 #[path = "open_app_tests.rs"]
 mod open_app_tests;
+
+/// Submit step `index` through the live step service and wait for its answer.
+async fn submit_step(
+    workers: &mut AgentWorkers,
+    documents: &mut mpsc::Receiver<PendingHostDocument>,
+    network: &mut mpsc::Receiver<NeighbourMsg>,
+    dispatch: &VerifiedEnrolledDispatch,
+    index: u32,
+) -> Result<qos_actions::InvocationUpdate, String> {
+    let (peer, resource) = writer_peer(workers);
+    let mut answer = workers
+        .step_service
+        .submit(qos_action_broker::enrolled_dispatch::EnrolledStepRequest {
+            dispatch: dispatch.clone(),
+            step: index,
+            peer,
+            resource,
+            action: "insert-table".into(),
+            argument: None,
+        })
+        .map_err(|e| format!("{e:?}"))?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        workers.pump().unwrap();
+        drain(workers, documents, network);
+        match answer.try_recv() {
+            Ok(reply) => {
+                let reply = reply.map_err(|e| format!("{e:?}"))?;
+                return serde_json::from_str(&reply.update_json).map_err(|e| e.to_string());
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                return Err("step reply dropped".into());
+            }
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "step {index} never answered"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+    }
+}
+
+/// The owner's private read of `request`, answered from a fresh basis.
+fn owner_read(
+    owner: &RuntimeOwner,
+    request: qos_agent_control_protocol::AgentRequest,
+) -> qos_agent_control_protocol::AgentResponse {
+    let store = owner.store().unwrap();
+    let caller = store.agent_caller(device()).unwrap();
+    let binding = qos_relay::agent_reads::AgentReadBinding {
+        action_host: store.state.room.clone(),
+        agent: qos_agent_control_protocol::AgentBinding {
+            machine: store.state.machine_id.clone(),
+            room: store.state.room.clone(),
+            device: hex::encode(caller.device()),
+            host: store.state.room.clone(),
+        },
+        spawn: None,
+        message: None,
+    };
+    let basis = crate::agent_runtime_reads::ReadBasis::capture(&store, &caller).unwrap();
+    drop(store);
+    let ActionMessage::AgentReadResultV1 { response, .. } = basis
+        .answer(uuid::Uuid::new_v4(), &request, binding, vec![])
+        .unwrap()
+    else {
+        panic!("private read result missing")
+    };
+    response
+}
+
+/// The owner's revocation of `agent` over the certified private carrier.
+fn revoke(
+    workers: &AgentWorkers,
+    provider: &Arc<qos_action_broker::agent_control::AgentControlProvider>,
+    agent: &str,
+) -> qos_agent_control_protocol::AgentResponse {
+    use crate::agent_runtime::read_attachment::{OwnerControls, ReadCache, revoke_current};
+    crate::agent_runtime::publish_runtime_state(
+        &workers.owner,
+        Some(workers),
+        &mut None,
+        false,
+        false,
+    )
+    .unwrap();
+    let store = workers.owner.store().unwrap();
+    let evidence = crate::agent_runtime::read_attachment::tests::certified(
+        &store,
+        ActionMessage::AgentReadV1 {
+            host: store.state.room.parse().unwrap(),
+            invocation: uuid::Uuid::new_v4(),
+            request: qos_agent_control_protocol::AgentRequest::Revoke {
+                version: 1,
+                agent_id: agent.into(),
+            },
+        },
+    );
+    drop(store);
+    let ActionMessage::AgentReadResultV1 { response, .. } = revoke_current(
+        &workers.owner,
+        Some(provider),
+        &evidence,
+        OwnerControls {
+            workers: Some(workers),
+            launcher: None,
+        },
+        &mut ReadCache::default(),
+    )
+    .unwrap() else {
+        panic!("revocation result missing")
+    };
+    response
+}
+
+/// Owner revocation over the certified agent carrier, end to end on the real
+/// broker and Store: the running task stops, its enrolled session closes, its
+/// next step is refused without an effect, only the owner can revoke or read
+/// the audit, the audit read is paged and bounded, and all of it survives a
+/// host restart.
+#[tokio::test(flavor = "current_thread")]
+async fn owner_revocation_stops_the_running_task_and_survives_restart() {
+    use qos_agent_control_protocol::{
+        AgentErrorCode, AgentRequest, AgentResponse, AgentStatus, MAX_AUDIT_PAGE_ITEMS,
+    };
+    let (directory, owner) = super::tests::selected();
+    let (mut workers, mut documents, mut network) = started(directory.path(), owner).await;
+    let task = enrolled_task(&mut workers, &mut documents, &mut network, true).await;
+    let agent = workers
+        .owner
+        .attempt(task.invocation)
+        .unwrap()
+        .ids
+        .agent_id
+        .clone();
+    let broker = workers.app_broker().unwrap();
+    let dispatch = broker
+        .enrolled_task_dispatch(&task.channel, task.invocation)
+        .unwrap();
+    let first = submit_step(&mut workers, &mut documents, &mut network, &dispatch, 0)
+        .await
+        .unwrap();
+    assert!(
+        matches!(first, qos_actions::InvocationUpdate::Succeeded { .. }),
+        "{first:?}"
+    );
+    let blocks = writer_blocks(&workers.owner);
+
+    // Another person can neither revoke the agent nor see it.
+    let caller = workers
+        .owner
+        .store()
+        .unwrap()
+        .agent_caller(device())
+        .unwrap()
+        .certificate()
+        .clone();
+    let mut stranger = caller.clone();
+    stranger.user_public_key = [0xee; 32];
+    assert!(matches!(
+        workers
+            .owner
+            .revoke_agent(&stranger, &agent, Some(&broker), None),
+        Err(crate::agent_runtime_adapter::AgentRevocationError::NotOwned)
+    ));
+    assert!(broker.enrolled_recipient_ready(&task.channel));
+    assert!(
+        workers
+            .owner
+            .store()
+            .unwrap()
+            .owned_agent_controls(&stranger.user_public_key)
+            .is_empty()
+    );
+
+    // The owner revokes through the certified private carrier.
+    let provider = qos_action_broker::agent_control::AgentControlProvider::new_read_only(
+        workers.owner.clone(),
+    );
+    assert!(
+        matches!(revoke(&workers, &provider, &agent), AgentResponse::Revoke { stopped_tasks: 1, ref agent_id, .. } if *agent_id == agent)
+    );
+    assert!(
+        !broker.enrolled_recipient_ready(&task.channel),
+        "the enrolled session stays open"
+    );
+    assert!(
+        broker
+            .enrolled_task_dispatch(&task.channel, task.invocation)
+            .is_err()
+    );
+    // The next step is refused and has no effect.
+    let refused = submit_step(&mut workers, &mut documents, &mut network, &dispatch, 1).await;
+    assert!(
+        !matches!(refused, Ok(qos_actions::InvocationUpdate::Succeeded { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(writer_blocks(&workers.owner), blocks);
+    assert!(
+        workers
+            .owner
+            .store()
+            .unwrap()
+            .authorize_agent_task_action(
+                &dispatch,
+                WRITER,
+                RECORD,
+                "word-processor.document",
+                "type-text"
+            )
+            .is_err()
+    );
+    // Revoking again stops nothing more; an unknown agent is not the owner's.
+    assert!(matches!(
+        revoke(&workers, &provider, &agent),
+        AgentResponse::Revoke {
+            stopped_tasks: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        revoke(&workers, &provider, "agent:unknown"),
+        AgentResponse::Error { ref error, .. } if error.code == AgentErrorCode::AgentNotFound
+    ));
+
+    // Audit: bounded pages that together hold every decision exactly once.
+    {
+        let store = workers.owner.store().unwrap();
+        for _ in 0..(MAX_AUDIT_PAGE_ITEMS + 20) {
+            let _ = store.authorize_agent_task_action(
+                &dispatch,
+                WRITER,
+                RECORD,
+                "word-processor.document",
+                "type-text",
+            );
+        }
+    }
+    let total = owner_audit(
+        &workers.owner.store().unwrap(),
+        &caller.user_public_key,
+        task.invocation,
+    )
+    .len();
+    assert!(total > MAX_AUDIT_PAGE_ITEMS);
+    let mut cursor = None;
+    let mut sequences = Vec::new();
+    let mut pages = 0;
+    loop {
+        let AgentResponse::Audit {
+            entries,
+            next_cursor,
+            ..
+        } = owner_read(
+            &workers.owner,
+            AgentRequest::Audit {
+                version: 1,
+                agent_id: agent.clone(),
+                cursor: cursor.clone(),
+            },
+        )
+        else {
+            panic!("audit page missing")
+        };
+        assert!(entries.len() <= MAX_AUDIT_PAGE_ITEMS);
+        sequences.extend(entries.iter().map(|entry| entry.sequence));
+        pages += 1;
+        match next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    assert!(pages >= 2);
+    assert_eq!(sequences, (0..total as u64).collect::<Vec<_>>());
+    assert!(matches!(
+        owner_read(
+            &workers.owner,
+            AgentRequest::Audit {
+                version: 1,
+                agent_id: "agent:unknown".into(),
+                cursor: None,
+            },
+        ),
+        AgentResponse::Error { ref error, .. } if error.code == AgentErrorCode::AgentNotFound
+    ));
+    drop(dispatch);
+    drop(task);
+
+    // After a host restart the revocation still holds.
+    let (owner, _workers, _documents, _network) = restart(directory.path(), workers).await;
+    let AgentResponse::List { agents, .. } = owner_read(
+        &owner,
+        AgentRequest::List {
+            version: 1,
+            cursor: None,
+        },
+    ) else {
+        panic!("private list missing")
+    };
+    let revoked = agents.iter().find(|entry| entry.id == agent).unwrap();
+    assert_eq!(revoked.status, AgentStatus::Failed);
+    assert!(matches!(
+        owner.revoke_agent(&caller, &agent, None, None),
+        Ok(0)
+    ));
+    let AgentResponse::Audit { entries, .. } = owner_read(
+        &owner,
+        AgentRequest::Audit {
+            version: 1,
+            agent_id: agent.clone(),
+            cursor: None,
+        },
+    ) else {
+        panic!("audit page missing")
+    };
+    assert!(
+        entries
+            .iter()
+            .any(|entry| entry.action == "revoke" && !entry.allowed)
+    );
+}

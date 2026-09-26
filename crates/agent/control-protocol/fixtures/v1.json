@@ -984,6 +984,127 @@
         "task": "Work",
         "grant_set_id": "权限"
       }
+    },
+    {
+      "id": "valid-audit-request",
+      "target": "request",
+      "accept": true,
+      "value": {
+        "version": 1,
+        "kind": "agent_audit",
+        "agent_id": "agent-1",
+        "cursor": null
+      },
+      "canonical": "{\"version\":1,\"kind\":\"agent_audit\",\"agent_id\":\"agent-1\",\"cursor\":null}"
+    },
+    {
+      "id": "audit-request-requires-cursor",
+      "target": "request",
+      "accept": false,
+      "raw": "{\"version\":1,\"kind\":\"agent_audit\",\"agent_id\":\"agent-1\"}"
+    },
+    {
+      "id": "valid-revoke-request",
+      "target": "request",
+      "accept": true,
+      "value": { "version": 1, "kind": "agent_revoke", "agent_id": "agent-1" },
+      "canonical": "{\"version\":1,\"kind\":\"agent_revoke\",\"agent_id\":\"agent-1\"}"
+    },
+    {
+      "id": "revoke-request-rejects-unknown-field",
+      "target": "request",
+      "accept": false,
+      "value": { "version": 1, "kind": "agent_revoke", "agent_id": "agent-1", "cursor": null }
+    },
+    {
+      "id": "valid-audit",
+      "target": "response",
+      "expectedKind": "agent_audit",
+      "accept": true,
+      "value": {
+        "version": 1,
+        "kind": "agent_audit",
+        "invocationId": "invocation-1",
+        "binding": {
+          "machine": "machine-1",
+          "room": "room-1",
+          "device": "device-1",
+          "host": "host-1"
+        },
+        "agentId": "agent-1",
+        "entries": [
+          { "sequence": 0, "appId": "so.tilo.writer", "action": "type-text", "allowed": true, "reason": null, "timestamp": "2026-09-20T19:30:00.000Z" },
+          { "sequence": 1, "appId": "so.tilo.writer", "action": "save", "allowed": false, "reason": "not delegable", "timestamp": "2026-09-20T19:30:01.000Z" }
+        ],
+        "nextCursor": "cursor-2",
+        "revision": "2"
+      }
+    },
+    {
+      "id": "audit-allowed-entry-carries-no-reason",
+      "target": "response",
+      "expectedKind": "agent_audit",
+      "accept": false,
+      "value": {
+        "version": 1,
+        "kind": "agent_audit",
+        "invocationId": "invocation-1",
+        "binding": {
+          "machine": "machine-1",
+          "room": "room-1",
+          "device": "device-1",
+          "host": "host-1"
+        },
+        "agentId": "agent-1",
+        "entries": [
+          { "sequence": 0, "appId": "so.tilo.writer", "action": "type-text", "allowed": true, "reason": "allowed", "timestamp": "2026-09-20T19:30:00.000Z" }
+        ],
+        "nextCursor": null,
+        "revision": "1"
+      }
+    },
+    {
+      "id": "audit-entries-keep-their-order",
+      "target": "response",
+      "expectedKind": "agent_audit",
+      "accept": false,
+      "value": {
+        "version": 1,
+        "kind": "agent_audit",
+        "invocationId": "invocation-1",
+        "binding": {
+          "machine": "machine-1",
+          "room": "room-1",
+          "device": "device-1",
+          "host": "host-1"
+        },
+        "agentId": "agent-1",
+        "entries": [
+          { "sequence": 1, "appId": "so.tilo.writer", "action": "type-text", "allowed": true, "reason": null, "timestamp": "2026-09-20T19:30:00.000Z" },
+          { "sequence": 1, "appId": "so.tilo.writer", "action": "type-text", "allowed": true, "reason": null, "timestamp": "2026-09-20T19:30:00.000Z" }
+        ],
+        "nextCursor": null,
+        "revision": "1"
+      }
+    },
+    {
+      "id": "valid-revoke",
+      "target": "response",
+      "expectedKind": "agent_revoke",
+      "accept": true,
+      "value": {
+        "version": 1,
+        "kind": "agent_revoke",
+        "invocationId": "invocation-1",
+        "binding": {
+          "machine": "machine-1",
+          "room": "room-1",
+          "device": "device-1",
+          "host": "host-1"
+        },
+        "agentId": "agent-1",
+        "stoppedTasks": 1
+      }
     }
   ]
 }

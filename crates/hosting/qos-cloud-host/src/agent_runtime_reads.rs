@@ -39,6 +39,11 @@ pub(crate) struct ReadBasis {
     cursor_key: [u8; 32],
     /// `None` while no private agent ledger is selected.
     ledger: Option<LedgerView>,
+    /// Store directory holding the durable step audit.
+    root: std::path::PathBuf,
+    /// Invocations of every control of each agent the caller's person
+    /// started: exactly what the owner's audit read covers.
+    owned: BTreeMap<String, std::collections::BTreeSet<String>>,
 }
 struct LedgerView {
     revision: u64,
@@ -104,6 +109,17 @@ impl ReadBasis {
             );
             LedgerView { revision, rows }
         });
+        let owned = store
+            .owned_agent_controls(&current.certificate().user_public_key)
+            .into_iter()
+            .map(|(agent, controls)| {
+                let invocations = controls
+                    .iter()
+                    .map(|id| id.invocation().to_string())
+                    .collect();
+                (agent, invocations)
+            })
+            .collect();
         Ok(Self {
             machine: store.state.machine_id.clone(),
             room: store.state.room.clone(),
@@ -111,6 +127,8 @@ impl ReadBasis {
             current,
             cursor_key: cursor_key(store),
             ledger,
+            root: store.root.clone(),
+            owned,
         })
     }
     /// The certificate of the caller this basis was captured for.
@@ -271,6 +289,9 @@ impl ReadBasis {
                         count -= 1;
                     }
                 }
+                AgentRequest::Audit {
+                    agent_id, cursor, ..
+                } => self.audit(invocation, &binding, agent_id, cursor.as_deref(), revision),
                 _ => Err(AgentErrorCode::InvalidRequest),
             }
         })()
@@ -297,6 +318,70 @@ impl ReadBasis {
             binding,
             response,
         })
+    }
+    /// One page of the owner's durable audit of `agent`. Its cursor is bound
+    /// to the caller and agent but not to the ledger revision: every step
+    /// changes the ledger, while the audit only ever appends.
+    fn audit(
+        &self,
+        invocation: Uuid,
+        binding: &AgentReadBinding,
+        agent: &str,
+        cursor: Option<&str>,
+        revision: u64,
+    ) -> Result<AgentResponse, AgentErrorCode> {
+        let invocations = self.owned.get(agent).ok_or(AgentErrorCode::AgentNotFound)?;
+        let scope = self.audit_scope(agent);
+        let offset = decode_cursor(&self.cursor_key, &scope, 0, cursor)
+            .map_err(|_| AgentErrorCode::InvalidCursor)?;
+        let (records, more) = crate::agent_runtime_owner::scope_audit_page(
+            &self.root,
+            invocations,
+            offset,
+            MAX_AUDIT_PAGE_ITEMS,
+        );
+        let entries = records
+            .iter()
+            .map(audit_entry)
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut count = entries.len();
+        loop {
+            let next = match records.get(count) {
+                Some(record) => Some(record.sequence),
+                None if more => records.last().map(|record| record.sequence + 1),
+                None => None,
+            };
+            let response = AgentResponse::Audit {
+                version: 1,
+                invocation_id: invocation.to_string(),
+                binding: binding.agent.clone(),
+                agent_id: agent.to_owned(),
+                entries: entries[..count].to_vec(),
+                next_cursor: next
+                    .map(|next| encode_cursor(&self.cursor_key, &scope, 0, next as usize)),
+                revision: revision.to_string(),
+            };
+            if fits(self.host, invocation, binding, &response) {
+                return Ok(response);
+            }
+            if count == 0 {
+                return Err(AgentErrorCode::InternalError);
+            }
+            count -= 1;
+        }
+    }
+    fn audit_scope(&self, agent: &str) -> [u8; 16] {
+        let hash = blake3::hash(
+            &serde_json::to_vec(&(
+                "audit",
+                self.machine.as_str(),
+                self.room.as_str(),
+                self.current.certificate(),
+                agent,
+            ))
+            .expect("serializable private scope"),
+        );
+        hash.as_bytes()[..16].try_into().expect("fixed hash length")
     }
     fn scope(&self, agent: Option<&str>) -> [u8; 16] {
         let hash = blake3::hash(
@@ -413,6 +498,21 @@ fn project(
             ),
         );
     }
+    // Controls ended by their owner's revocation (see REVOKED_BY_OWNER).
+    let revoked = |invocation: &str| {
+        ["task_unknown", "unknown"].iter().any(|kind| {
+            ledger
+                .facts
+                .get(&format!("{invocation}:{kind}"))
+                .is_some_and(|receipt| {
+                    matches!(&receipt.change.fact,
+                        AgentRuntimeFact::TaskUnknown { error, .. }
+                        | AgentRuntimeFact::Unknown { error, .. }
+                            if error.code == AgentErrorCode::PermissionDenied
+                                && error.message == crate::agent_runtime_owner::REVOKED_BY_OWNER)
+                })
+        })
+    };
     for receipt in facts {
         let AgentRuntimeFact::Admitted {
             ids,
@@ -454,6 +554,10 @@ fn project(
             | AgentRuntimePhase::Bound => AgentStatus::Starting,
             AgentRuntimePhase::Dispatching | AgentRuntimePhase::Completed => AgentStatus::Running,
             AgentRuntimePhase::Failed => AgentStatus::Failed,
+            // A revoked agent takes no further message: it has ended.
+            AgentRuntimePhase::Unknown if revoked(&receipt.change.invocation) => {
+                AgentStatus::Failed
+            }
             AgentRuntimePhase::Unknown => AgentStatus::Waiting,
         };
         messages.push(Entry::Message(ChatMessage {
@@ -506,7 +610,11 @@ fn project(
             .facts
             .contains_key(&format!("{}:task_unknown", receipt.change.invocation))
         {
-            agent.status = AgentStatus::Waiting;
+            agent.status = if revoked(&receipt.change.invocation) {
+                AgentStatus::Failed
+            } else {
+                AgentStatus::Waiting
+            };
         } else {
             // Joined when answering (owner memory, not Store): see ReadBasis::rows.
             messages.push(Entry::Live {
@@ -516,6 +624,30 @@ fn project(
         }
     }
     Ok(rows)
+}
+/// The protocol form of one persisted decision. Identifiers are ASCII host
+/// names; a reason longer than the protocol bound is shortened.
+fn audit_entry(
+    record: &crate::agent_runtime_owner::AuditRecord,
+) -> Result<AgentAuditEntry, AgentErrorCode> {
+    let identifier = |value: &str| {
+        if value.is_empty() || value.len() > MAX_OPAQUE_ID_BYTES || !value.is_ascii() {
+            "unknown".to_owned()
+        } else {
+            value.to_owned()
+        }
+    };
+    Ok(AgentAuditEntry {
+        sequence: record.sequence,
+        app_id: identifier(&record.app),
+        action: identifier(&record.action),
+        allowed: record.refused.is_none(),
+        reason: record
+            .refused
+            .as_ref()
+            .map(|reason| reason.chars().take(4_096).collect()),
+        timestamp: timestamp(record.at_ms).map_err(|_| AgentErrorCode::InternalError)?,
+    })
 }
 fn timestamp(ms: u64) -> Result<String, String> {
     chrono::DateTime::from_timestamp_millis(i64::try_from(ms).map_err(|_| "invalid retained time")?)

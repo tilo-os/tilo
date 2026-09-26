@@ -48,16 +48,22 @@ pub struct AgentReadBinding {
     pub message: Option<AgentMutationBinding>,
 }
 
-/// Return the canonical response kind only for the three disposable reads.
+/// Return the canonical response kind only for the requests this carrier
+/// takes: the disposable reads and the owner's revocation. Revocation is the
+/// one non-read here because it only withdraws authority (it stops a task
+/// and admits nothing); Spawn and Message stay on the durable invocation path.
 pub fn request_kind(request: &AgentRequest) -> Option<AgentResponseKind> {
     match request {
         AgentRequest::Capabilities { .. } => Some(AgentResponseKind::Capabilities),
         AgentRequest::List { .. } => Some(AgentResponseKind::List),
         AgentRequest::Conversation { .. } => Some(AgentResponseKind::Conversation),
+        AgentRequest::Audit { .. } => Some(AgentResponseKind::Audit),
+        AgentRequest::Revoke { .. } => Some(AgentResponseKind::Revoke),
         _ => None,
     }
 }
-/// Canonical validation does not itself exclude mutations; the read carrier does.
+/// Canonical validation does not itself exclude mutations; the read carrier
+/// does (see [`request_kind`]).
 pub fn valid_request(request: &AgentRequest) -> bool {
     request_kind(request).is_some()
         && qos_agent_control_protocol::canonical_request(request).is_ok()
@@ -130,6 +136,8 @@ pub fn valid_result(
         AgentResponse::Capabilities { .. } => AgentResponseKind::Capabilities,
         AgentResponse::List { .. } => AgentResponseKind::List,
         AgentResponse::Conversation { .. } => AgentResponseKind::Conversation,
+        AgentResponse::Audit { .. } => AgentResponseKind::Audit,
+        AgentResponse::Revoke { .. } => AgentResponseKind::Revoke,
         AgentResponse::Error { .. } => AgentResponseKind::Error,
         AgentResponse::Operation { .. } => return false,
     };
@@ -156,6 +164,18 @@ pub fn matches_request(request: &AgentRequest, response: &AgentResponse) -> bool
                     agent_id: expected, ..
                 },
                 AgentResponse::Conversation { agent_id, .. },
+            )
+            | (
+                AgentRequest::Audit {
+                    agent_id: expected, ..
+                },
+                AgentResponse::Audit { agent_id, .. },
+            )
+            | (
+                AgentRequest::Revoke {
+                    agent_id: expected, ..
+                },
+                AgentResponse::Revoke { agent_id, .. },
             ) => expected == agent_id,
             _ => false,
         }

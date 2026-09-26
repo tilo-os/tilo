@@ -6,6 +6,10 @@ use qos_peer_state::owner_commit::*;
 mod effects;
 mod recovery;
 pub(crate) use effects::FailedLaunchAppend;
+pub(crate) use effects::scope_audit::{AuditRecord, read_page as scope_audit_page};
+/// The terminal error of a control the owner revoked. Reads recognise a
+/// revoked agent by it.
+pub(crate) const REVOKED_BY_OWNER: &str = "Revoked by the workspace owner";
 #[cfg(any(target_os = "linux", test))]
 pub(crate) use effects::RuntimeLaunchClaim;
 #[cfg(test)]

@@ -64,3 +64,16 @@ test('limits pending reads and rejects a response crossing a context change',asy
   for(let i=1;i<=32;i++)ps.push(assert.rejects(f.client.request({invocationId:`22222222-2222-4222-8222-${String(i).padStart(12,'0')}`,request:{version:1,kind:'agent_list',cursor:null}})));
   await assert.rejects(f.client.request({invocationId:'33333333-3333-4333-8333-333333333333',request:{version:1,kind:'agent_list',cursor:null}}));assert.equal(f.pending.length,32);f.action.target='00'.repeat(32);f.pending[0].resolve(f.response());await ps[0];f.client.close();await Promise.all(ps);assert.equal(f.timers.size,0);
 });
+test('carries the owner audit and revocation of one agent and checks the answered agent',async()=>{
+  for(const request of [{version:1,kind:'agent_audit',agent_id:'agent-1',cursor:null},{version:1,kind:'agent_revoke',agent_id:'agent-1'}]){
+    const f=fixture();const p=f.client.request({invocationId,request});
+    assert.deepEqual(f.pending[0].message.request,request);
+    const response=f.response();response.response.agentId='agent-1';f.pending[0].resolve(response);
+    assert.equal((await p).kind,request.kind);
+    const other=f.client.request({invocationId:'33333333-3333-4333-8333-333333333333',request});const rejected=assert.rejects(other,/wrong agent/);
+    const wrong=f.response(1);wrong.response.agentId='agent-2';f.pending[1].resolve(wrong);await rejected;f.client.close();
+  }
+  const f=fixture();
+  for(const request of [{version:1,kind:'agent_revoke',agent_id:'agent-1',cursor:null},{version:1,kind:'agent_audit',agent_id:'agent-1'},{version:1,kind:'agent_revoke',agent_id:' agent-1'}])await assert.rejects(f.client.request({invocationId,request}));
+  assert.equal(f.pending.length,0);f.client.close();
+});

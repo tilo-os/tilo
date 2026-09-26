@@ -792,7 +792,6 @@ impl Store {
             refused.as_deref(),
             self.policy_now_ns().map_or(0, |ns| ns / 1_000_000),
         );
-        scope_audit::record(dispatch.invocation(), app, action, refused);
         result
     }
     /// The host Store's half of the shared per-step authorization: task state
@@ -1028,12 +1027,6 @@ impl Store {
                 Some(&refusal.to_string()),
                 self.policy_now_ns().map_or(0, |ns| ns / 1_000_000),
             );
-            scope_audit::record(
-                id.invocation(),
-                qos_agent_control_protocol::WRITER_APP_ID,
-                "content-removal",
-                Some(refusal.to_string()),
-            );
             let _ = self.mark_agent_task_unknown(
                 id,
                 AgentError {
@@ -1043,48 +1036,80 @@ impl Store {
             );
         }
     }
-    /// The owner's durable audit of one of its agent tasks: every
-    /// step decision with its refusal reason. Only the task's original
-    /// owner caller may read it.
-    #[allow(
-        dead_code,
-        reason = "no production caller yet: an owner HTTPS route for the agents panel must serve this audit"
-    )]
-    pub(crate) fn agent_task_audit(
+    /// Every retained control (the Spawn and each later Message) of the
+    /// agents `owner` started, by agent id, oldest first. The owner's audit
+    /// and revocation cover exactly these. `owner` is the person's root key:
+    /// any of the person's enrolled devices is that owner. Empty without a
+    /// private v2 ledger.
+    pub(crate) fn owned_agent_controls(
         &self,
-        caller: &qos_user_identity::DeviceCert,
-        id: &AgentControlId,
-    ) -> Result<Vec<serde_json::Value>, AgentCommitError> {
-        let owner = self.original_agent_caller(id)?;
-        if owner.certificate().user_public_key != caller.user_public_key {
-            return Err(rejected("agent audit belongs to another owner"));
+        owner: &[u8; 32],
+    ) -> std::collections::BTreeMap<String, Vec<AgentControlId>> {
+        let Some(PrivateAgentState::V2(ledger)) = &self.state.private_agent_ledger else {
+            return std::collections::BTreeMap::new();
+        };
+        let mut admitted: Vec<_> = ledger
+            .facts
+            .values()
+            .filter_map(|receipt| match &receipt.change.fact {
+                AgentRuntimeFact::Admitted { ids, intent, .. }
+                    if intent.scope.caller.user_public_key == *owner =>
+                {
+                    let id = control_id(&receipt.change.invocation).ok()?;
+                    Some((receipt.generation, ids.agent_id.clone(), id))
+                }
+                _ => None,
+            })
+            .collect();
+        admitted.sort_by_key(|(generation, _, _)| *generation);
+        let mut controls: std::collections::BTreeMap<String, Vec<AgentControlId>> =
+            std::collections::BTreeMap::new();
+        for (_, agent, id) in admitted {
+            controls.entry(agent).or_default().push(id);
         }
-        Ok(scope_audit::read_persisted(&self.root, id.invocation()))
+        controls
     }
-    /// Owner revocation of one running task: commits a terminal
-    /// task fact, so the next step's Store check refuses. The adapter then
-    /// closes the enrolled connection; the one child already dispatched may
-    /// still complete.
-    #[allow(
-        dead_code,
-        reason = "only RuntimeOwner::revoke_agent calls it, which has no production caller yet"
-    )]
+    /// Owner revocation of one control: commits its terminal fact, so the
+    /// next step's Store check refuses and a Spawn not yet launched never
+    /// launches. `Ok(false)` when the control had already ended. Only the
+    /// person who started it may. The adapter then closes the enrolled
+    /// connection and stops the process; the one child already dispatched
+    /// may still complete.
     pub(crate) fn revoke_agent_task(
         &mut self,
         caller: &qos_user_identity::DeviceCert,
         id: &AgentControlId,
-    ) -> Result<OwnerCommitReceipt, AgentCommitError> {
-        let owner = self.current_agent_effect(id)?;
+    ) -> Result<bool, AgentCommitError> {
+        let owner = self.original_agent_caller(id)?;
         if owner.certificate().user_public_key != caller.user_public_key {
             return Err(rejected("only the task's owner may revoke it"));
         }
-        self.mark_agent_task_unknown(
-            id,
-            AgentError {
-                code: AgentErrorCode::PermissionDenied,
-                message: "Revoked by the workspace owner".into(),
-            },
-        )
+        let facts = &self.runtime_ledger()?.facts;
+        let has = |kind: &str| facts.contains_key(&format!("{}:{kind}", id.invocation()));
+        let completed = has("completed");
+        if (completed && (has("task_finished") || has("task_unknown")))
+            || (!completed && (has("failed") || has("unknown")))
+        {
+            return Ok(false);
+        }
+        let error = AgentError {
+            code: AgentErrorCode::PermissionDenied,
+            message: REVOKED_BY_OWNER.into(),
+        };
+        if completed {
+            self.mark_agent_task_unknown(id, error)?;
+        } else {
+            self.mark_agent_unknown(id, error)?;
+        }
+        scope_audit::persist(
+            &self.root,
+            id.invocation(),
+            qos_action_broker::agent_control::APP_ID,
+            "revoke",
+            Some(REVOKED_BY_OWNER),
+            self.policy_now_ns().map_or(0, |ns| ns / 1_000_000),
+        );
+        Ok(true)
     }
     pub(crate) fn control_for_launch(
         &self,
@@ -1269,7 +1294,7 @@ fn process_to_data(p: &ChannelProcessFacts) -> ChannelProcessFactsV2 {
 }
 #[cfg(test)]
 pub(crate) mod enrolled_fixture;
-mod scope_audit;
+pub(crate) mod scope_audit;
 mod steps;
 #[cfg(test)]
 mod tests;

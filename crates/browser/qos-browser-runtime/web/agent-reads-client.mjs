@@ -8,10 +8,11 @@ const opaque=value=>typeof value==='string'&&value.length>0&&encoder.encode(valu
 const fail=message=>Error(`Agent reads unavailable: ${message}`);
 function validateRequest(value){
   if(!value||value.version!==1)throw fail('unsupported request');
-  const keys={agent_capabilities:['version','kind'],agent_list:['version','kind','cursor'],agent_conversation:['version','kind','agent_id','cursor']}[value.kind];
+  // agent_revoke is the owner's revocation: it only withdraws authority.
+  const keys={agent_capabilities:['version','kind'],agent_list:['version','kind','cursor'],agent_conversation:['version','kind','agent_id','cursor'],agent_audit:['version','kind','agent_id','cursor'],agent_revoke:['version','kind','agent_id']}[value.kind];
   if(!keys||!equal(Object.keys(value).sort(),keys.sort()))throw fail('unsupported read');
-  if(value.kind!=='agent_capabilities'&&value.cursor!==null&&(!opaque(value.cursor)||!/^[\x00-\x7f]+$/.test(value.cursor)))throw fail('invalid cursor');
-  if(value.kind==='agent_conversation'&&(!opaque(value.agent_id)||value.agent_id.trim()!==value.agent_id))throw fail('invalid agent');
+  if('cursor' in value&&value.cursor!==null&&(!opaque(value.cursor)||!/^[\x00-\x7f]+$/.test(value.cursor)))throw fail('invalid cursor');
+  if('agent_id' in value&&(!opaque(value.agent_id)||value.agent_id.trim()!==value.agent_id))throw fail('invalid agent');
 }
 
 export function createAgentReadsClient({actions,context,supported,request,clock={}}){
@@ -71,7 +72,7 @@ export function createAgentReadsClient({actions,context,supported,request,clock=
           const response=result?.response;
           if(result?.type!=='agent_read_result_v1'||result.host!==binding.actionHost||result.invocation!==invocationId||!equal(result.binding,expected)||encoder.encode(JSON.stringify(result)).length>MAX_BYTES||response?.version!==1||response.invocationId!==invocationId||!equal(response.binding,binding.agent))throw fail('invalid read response');
           if(response.kind!=='agent_error'&&response.kind!==body.kind)throw fail('wrong read response kind');
-          if(response.kind==='agent_conversation'&&response.agentId!==body.agent_id)throw fail('wrong conversation');
+          if(response.kind!=='agent_error'&&'agent_id' in body&&response.agentId!==body.agent_id)throw fail('wrong agent');
           finish(null,copy(response));
         }catch(error){finish(error);}
       },error=>finish(error));

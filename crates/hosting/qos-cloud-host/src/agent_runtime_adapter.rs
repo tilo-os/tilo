@@ -27,6 +27,22 @@ use std::{
 };
 use uuid::Uuid;
 
+/// Why an owner revocation did not happen.
+#[derive(Debug)]
+pub(crate) enum AgentRevocationError {
+    /// The caller started no agent with this id.
+    NotOwned,
+    /// The Store or live registry could not be used; nothing may have changed.
+    Unavailable(String),
+}
+impl std::fmt::Display for AgentRevocationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotOwned => f.write_str("no agent of this owner"),
+            Self::Unavailable(error) => write!(f, "agent revocation unavailable: {error}"),
+        }
+    }
+}
 /// Process-local custody only. No Clone/Serde or reconstruction from the ledger.
 pub(crate) struct LiveAttempt {
     policy_time: PolicyTime,
@@ -357,29 +373,6 @@ impl RuntimeOwner {
     /// host-known agent id, display name and retained grants: the worker
     /// participant views and presence labels follow exactly these.
     /// In-memory only; grants no authority.
-    /// Whether any agent task is live (a live process whose task has no
-    /// terminal progress) — the same filter as [`Self::active_agent_tasks`],
-    /// without building its list. In-memory only.
-    #[expect(
-        dead_code,
-        reason = "no production caller yet: the owner agents-panel route will use this to show whether any agent is running"
-    )]
-    pub(crate) fn has_active_agent_tasks(&self) -> bool {
-        let Ok(live) = self.live.lock() else {
-            return true;
-        };
-        live.attempts.iter().any(|(id, attempt)| {
-            live.processes.contains_key(&attempt.ids.agent_id)
-                && !live.progress.get(id).is_some_and(|p| {
-                    matches!(
-                        p.update,
-                        TaskRunUpdate::Succeeded { .. }
-                            | TaskRunUpdate::Failed { .. }
-                            | TaskRunUpdate::Cancelled { .. }
-                    )
-                })
-        })
-    }
     pub(crate) fn active_agent_tasks(&self) -> Vec<crate::agent_workers::ActiveAgentTask> {
         let Ok(live) = self.live.lock() else {
             return vec![];
@@ -410,46 +403,51 @@ impl RuntimeOwner {
             })
             .collect()
     }
-    /// Owner revocation of an agent: commit a
-    /// terminal fact for each of its live tasks (only the tasks' own owner
-    /// may), then close its enrolled connection so no queued step leaves.
-    /// Wire from the owner's agents panel (HTTPS owner route).
-    #[expect(
-        dead_code,
-        reason = "no production caller yet: the owner agents-panel route will call this to revoke an agent"
-    )]
+    /// Owner revocation of an agent: commit the terminal fact of each of its
+    /// unfinished controls (only the person who started it may), then close
+    /// its enrolled connections so no queued step leaves, and stop its
+    /// process. The Store facts come first, so a step racing the closure is
+    /// already refused; they are durable, so the revocation survives restart.
+    /// Revoking an agent with nothing left running changes nothing.
     pub(crate) fn revoke_agent(
         &self,
         caller: &DeviceCert,
         agent: &str,
-        broker: &qos_action_broker::collab_broker::AppActionBroker,
-    ) -> Result<usize, String> {
-        let attempts: Vec<Uuid> = self
-            .live
-            .lock()
-            .map_err(|_| "live registry poisoned")?
-            .attempts
-            .iter()
-            .filter(|(_, attempt)| attempt.ids.agent_id == agent)
-            .map(|(id, _)| *id)
-            .collect();
-        if attempts.is_empty() {
-            return Err("no live task for this agent".into());
-        }
+        broker: Option<&qos_action_broker::collab_broker::AppActionBroker>,
+        launcher: Option<&launcher::managed::ManagedLauncher>,
+    ) -> Result<u32, AgentRevocationError> {
+        let mut stopped = 0u32;
         {
-            let mut store = self.store()?;
-            for id in &attempts {
-                let id = crate::agent_runtime_owner::AgentControlId::new(*id)
-                    .map_err(|e| e.to_string())?;
-                store
-                    .revoke_agent_task(caller, &id)
-                    .map_err(|e| e.to_string())?;
+            let mut store = self.store().map_err(AgentRevocationError::Unavailable)?;
+            let controls = store
+                .owned_agent_controls(&caller.user_public_key)
+                .remove(agent)
+                .ok_or(AgentRevocationError::NotOwned)?;
+            for id in &controls {
+                if store
+                    .revoke_agent_task(caller, id)
+                    .map_err(|e| AgentRevocationError::Unavailable(e.to_string()))?
+                {
+                    stopped = stopped.saturating_add(1);
+                }
             }
         }
-        if let Ok(mut live) = self.live.lock() {
-            live.processes.remove(agent);
+        let process = self
+            .live
+            .lock()
+            .map_err(|_| AgentRevocationError::Unavailable("live registry poisoned".into()))?
+            .processes
+            .remove(agent);
+        let sessions = broker.map_or(0, |broker| broker.close_enrolled_agent(agent));
+        if let (Some(process), Some(launcher)) = (process, launcher)
+            && let Err(error) = launcher.stop(process.binding())
+        {
+            // The task is already refused and its connection closed; the
+            // process exit is still observed through the launcher.
+            tracing::warn!(%error, agent, "revoked agent process stop failed");
         }
-        Ok(broker.close_enrolled_agent(agent))
+        tracing::info!(agent, stopped, sessions, "agent revoked by its owner");
+        Ok(stopped)
     }
     pub(crate) fn attempt(&self, id: Uuid) -> Result<Arc<LiveAttempt>, String> {
         let attempt = self
@@ -672,19 +670,6 @@ impl RuntimeOwner {
             .pending_spawn_ids(after, limit)
             .map_err(|e| e.to_string())
     }
-    #[expect(
-        dead_code,
-        reason = "no production caller yet: the owner agents-panel route will call this to read an agent task"
-    )]
-    pub(crate) fn observe(
-        &self,
-        caller: &VerifiedAgentCaller,
-        id: Uuid,
-    ) -> Result<AgentRuntimeObservation, String> {
-        self.store()?
-            .observe_agent_runtime(caller, &AgentControlId::new(id).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())
-    }
     pub(crate) fn process(&self, agent: &str) -> Result<VerifiedManagedProcess, String> {
         let proof = self
             .live
@@ -789,25 +774,6 @@ impl RuntimeOwner {
                 .map_err(|e| e.to_string())?;
         }
         Ok(())
-    }
-    #[expect(
-        dead_code,
-        reason = "no production caller yet: the owner agents-panel route will call this to read task progress"
-    )]
-    pub(crate) fn progress_for(
-        &self,
-        caller: &VerifiedAgentCaller,
-        id: Uuid,
-    ) -> Result<Option<PrivateProgress>, String> {
-        // Refresh the original caller and operation scope before reading any private progress.
-        self.observe(caller, id)?;
-        Ok(self
-            .live
-            .lock()
-            .map_err(|_| "live registry poisoned")?
-            .progress
-            .get(&id)
-            .cloned())
     }
 }
 impl ManagedLaunchAuthority for RuntimeOwner {

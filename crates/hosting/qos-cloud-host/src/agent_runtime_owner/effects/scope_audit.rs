@@ -1,24 +1,15 @@
-//! Process-local, bounded per-task audit and rate state for scoped grants.
-//! Neither grants authority: an absent entry only means "no history yet".
+//! The durable owner audit of agent step decisions, and the process-local,
+//! bounded per-task rate and content-removal state for scoped grants. None of
+//! it grants authority: an absent entry only means "no history yet".
 use qos_agent_control_protocol::{RateLimiter, Refusal, ScopeBudgets};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::BufRead;
 use std::sync::Mutex;
 
 const MAX_TASKS: usize = 64;
-const MAX_ENTRIES_PER_TASK: usize = 256;
-
-/// One agent step decision, visible to the owner.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct AuditEntry {
-    pub(crate) app: String,
-    pub(crate) action: String,
-    /// `None` = allowed; otherwise the refusal reason.
-    pub(crate) refused: Option<String>,
-}
 
 #[derive(Default)]
 struct Tasks {
-    audit: BTreeMap<uuid::Uuid, VecDeque<AuditEntry>>,
     rate: BTreeMap<uuid::Uuid, RateLimiter>,
     removal: BTreeMap<uuid::Uuid, Removal>,
 }
@@ -50,8 +41,20 @@ fn bound<V>(map: &mut BTreeMap<uuid::Uuid, V>, keep: uuid::Uuid) {
 pub(crate) const AUDIT_FILE: &str = "agent-audit.jsonl";
 const MAX_AUDIT_FILE_BYTES: u64 = 4 * 1024 * 1024;
 
-/// Append one decision to the durable log. Best effort: a failed append is
-/// logged and never changes the decision itself.
+/// One persisted step decision, as the owner's audit read returns it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AuditRecord {
+    /// Position among the decisions of the same read's tasks.
+    pub(crate) sequence: u64,
+    pub(crate) app: String,
+    pub(crate) action: String,
+    /// `None` = allowed; otherwise the refusal reason.
+    pub(crate) refused: Option<String>,
+    pub(crate) at_ms: u64,
+}
+
+/// Append one decision to the durable log and the operator log. Best
+/// effort: a failed append is logged and never changes the decision itself.
 pub(crate) fn persist(
     root: &std::path::Path,
     invocation: uuid::Uuid,
@@ -61,6 +64,15 @@ pub(crate) fn persist(
     at_ms: u64,
 ) {
     use std::io::Write;
+    tracing::info!(
+        target: "agent_audit",
+        %invocation,
+        app,
+        action,
+        allowed = refused.is_none(),
+        reason = refused.unwrap_or(""),
+        "agent step authorization"
+    );
     let path = root.join(AUDIT_FILE);
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > MAX_AUDIT_FILE_BYTES) {
         let _ = std::fs::rename(&path, root.join(format!("{AUDIT_FILE}.1")));
@@ -78,63 +90,57 @@ pub(crate) fn persist(
         tracing::warn!(%error, "agent audit append failed");
     }
 }
-/// The owner's read of one task's durable decisions, oldest first (both
-/// the rotated and the current log).
-pub(crate) fn read_persisted(
+/// One page of the durable decisions of `invocations`, oldest first (the
+/// rotated log, then the current one), starting at `offset`, and whether
+/// more follow. The logs are bounded by one rotation, so a read scans at most
+/// about twice [`MAX_AUDIT_FILE_BYTES`] and returns at most `limit` records.
+pub(crate) fn read_page(
     root: &std::path::Path,
-    invocation: uuid::Uuid,
-) -> Vec<serde_json::Value> {
-    let wanted = invocation.to_string();
-    [format!("{AUDIT_FILE}.1"), AUDIT_FILE.to_string()]
-        .iter()
-        .filter_map(|name| std::fs::read_to_string(root.join(name)).ok())
-        .flat_map(|text| {
-            text.lines()
-                .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-                .collect::<Vec<_>>()
-        })
-        .filter(|entry| entry["invocation"] == wanted.as_str())
-        .collect()
-}
-
-pub(crate) fn record(invocation: uuid::Uuid, app: &str, action: &str, refused: Option<String>) {
-    tracing::info!(
-        target: "agent_audit",
-        %invocation,
-        app,
-        action,
-        allowed = refused.is_none(),
-        reason = refused.as_deref().unwrap_or(""),
-        "agent step authorization"
-    );
-    with(|tasks| {
-        let entries = tasks.audit.entry(invocation).or_default();
-        if entries.len() == MAX_ENTRIES_PER_TASK {
-            entries.pop_front();
+    invocations: &BTreeSet<String>,
+    offset: usize,
+    limit: usize,
+) -> (Vec<AuditRecord>, bool) {
+    let mut page = Vec::new();
+    let mut matched = 0usize;
+    for name in [format!("{AUDIT_FILE}.1"), AUDIT_FILE.to_string()] {
+        let Ok(file) = std::fs::File::open(root.join(name)) else {
+            continue;
+        };
+        for line in std::io::BufReader::new(file).lines() {
+            let Ok(line) = line else { break };
+            let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
+            if !entry["invocation"]
+                .as_str()
+                .is_some_and(|invocation| invocations.contains(invocation))
+            {
+                continue;
+            }
+            let sequence = matched;
+            matched += 1;
+            if sequence < offset {
+                continue;
+            }
+            if page.len() == limit {
+                return (page, true);
+            }
+            page.push(AuditRecord {
+                sequence: sequence as u64,
+                app: entry["app"].as_str().unwrap_or_default().to_owned(),
+                action: entry["action"].as_str().unwrap_or_default().to_owned(),
+                refused: (entry["allowed"] != true).then(|| {
+                    entry["reason"]
+                        .as_str()
+                        .filter(|reason| !reason.is_empty())
+                        .unwrap_or("refused")
+                        .to_owned()
+                }),
+                at_ms: entry["atMs"].as_u64().unwrap_or_default(),
+            });
         }
-        entries.push_back(AuditEntry {
-            app: app.into(),
-            action: action.into(),
-            refused,
-        });
-        bound(&mut tasks.audit, invocation);
-    });
-}
-
-/// The retained decisions of one task, oldest first.
-#[allow(
-    dead_code,
-    reason = "no production caller yet: an owner HTTPS route for the agents panel must serve these entries"
-)]
-pub(crate) fn entries(invocation: uuid::Uuid) -> Vec<AuditEntry> {
-    with(|tasks| {
-        tasks
-            .audit
-            .get(&invocation)
-            .map(|e| e.iter().cloned().collect())
-            .unwrap_or_default()
-    })
-    .unwrap_or_default()
+    }
+    (page, false)
 }
 
 /// Baseline of a new step (covered Writer text bytes before it executes).
@@ -194,25 +200,6 @@ mod tests {
     #[test]
     fn audit_and_rate_state_stay_bounded() {
         let first = uuid::Uuid::from_u128(0xa0d1);
-        for i in 0..(MAX_ENTRIES_PER_TASK + 10) {
-            record(
-                first,
-                "app",
-                &format!("a{i}"),
-                (i % 2 == 0).then(|| "no".into()),
-            );
-        }
-        let kept = entries(first);
-        assert_eq!(kept.len(), MAX_ENTRIES_PER_TASK);
-        assert_eq!(
-            kept.last().unwrap().action,
-            format!("a{}", MAX_ENTRIES_PER_TASK + 9)
-        );
-        for i in 0..(MAX_TASKS as u128 + 5) {
-            record(uuid::Uuid::from_u128(0xb000 + i), "app", "x", None);
-        }
-        assert!(with(|t| t.audit.len()).unwrap() <= MAX_TASKS);
-
         let budgets = ScopeBudgets::default();
         let task = uuid::Uuid::from_u128(0xc0de);
         for _ in 0..budgets.invocation_burst {
@@ -226,10 +213,21 @@ mod tests {
         persist(dir.path(), task, "app", "type-text", None, 1);
         persist(dir.path(), first, "app", "save", Some("not delegable"), 2);
         persist(dir.path(), task, "app", "erase-text", Some("budget"), 3);
-        let kept = read_persisted(dir.path(), task);
+        let only = |id: uuid::Uuid| BTreeSet::from([id.to_string()]);
+        let (kept, more) = read_page(dir.path(), &only(task), 0, 10);
+        assert!(!more);
         assert_eq!(kept.len(), 2);
-        assert_eq!(kept[0]["action"], "type-text");
-        assert_eq!(kept[1]["allowed"], false);
+        assert_eq!(kept[0].action, "type-text");
+        assert_eq!(kept[0].refused, None);
+        assert_eq!(kept[1].refused.as_deref(), Some("budget"));
+        assert_eq!(kept[1].sequence, 1);
+        // Pages are bounded and continue from their offset.
+        let (page, more) = read_page(dir.path(), &only(task), 0, 1);
+        assert!(more && page.len() == 1 && page[0].action == "type-text");
+        let (page, more) = read_page(dir.path(), &only(task), 1, 1);
+        assert!(!more && page.len() == 1 && page[0].action == "erase-text");
+        assert_eq!(read_page(dir.path(), &only(first), 0, 10).0.len(), 1);
+        assert!(read_page(dir.path(), &BTreeSet::new(), 0, 10).0.is_empty());
 
         // Content removal: 10 KB document, a step removing all of it stops.
         let big = uuid::Uuid::from_u128(0xd0c);

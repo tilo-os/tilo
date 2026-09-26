@@ -351,6 +351,7 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
             true,
             &mut Default::default(),
             &mut Default::default(),
+            OwnerControls::default(),
         ));
     });
     begin.recv_timeout(Duration::from_secs(1)).unwrap();
@@ -529,6 +530,7 @@ async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
                 true,
                 &mut Default::default(),
                 &mut Default::default(),
+                OwnerControls::default(),
             ));
         }
         done.send(()).unwrap();
@@ -658,6 +660,7 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
         true,
         &mut AgentWorkQueue::default(),
         &mut ReadCache::default(),
+        OwnerControls::default(),
     )
     .await;
     let (reply, retained) = response.await.unwrap().into_parts();
@@ -899,6 +902,7 @@ async fn agent_read_burst_basis_is_never_an_authorization() {
             true,
             &mut Default::default(),
             &mut cache,
+            OwnerControls::default(),
         ));
         done.send(()).unwrap();
     });

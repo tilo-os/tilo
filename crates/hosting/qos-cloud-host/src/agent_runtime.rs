@@ -641,7 +641,8 @@ async fn run(
                     {
                         last_active = Instant::now();
                     }
-                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued,&mut reads).await;
+                    let controls = read_attachment::OwnerControls { workers: workers.as_ref(), launcher: launcher.as_ref() };
+                    read_attachment::dispatch(command,&root,&owner,provider.as_ref(),offer.as_ref(),reads_supported,&mut queued,&mut reads,controls).await;
                 }
             },
             // A submitted agent step runs its tick now (see STEP_WAKE).
