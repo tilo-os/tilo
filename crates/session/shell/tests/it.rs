@@ -133,6 +133,8 @@ mod qs_actions_click_routing;
 mod real_apps_visual;
 #[path = "recorder_test.rs"]
 mod recorder_test;
+#[path = "recording_frames_test.rs"]
+mod recording_frames_test;
 #[path = "remote_cursors_test.rs"]
 mod remote_cursors_test;
 #[path = "sandbox_check.rs"]

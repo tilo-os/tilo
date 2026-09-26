@@ -65,6 +65,11 @@ const FEEDBACK_RECORD_START_PARAMS: &[ActionParam] = &[
         ParamType::Text,
         "Comma-separated app ids; only their documents are recorded. Defaults to every app.",
     ),
+    ActionParam::optional(
+        "pixels",
+        ParamType::Text,
+        "Also keep frames of the recorded surfaces: `keep` to keep them with the recording, `check` only to check replay against them. Omitted, no pixels are captured.",
+    ),
 ];
 
 const FEEDBACK_RECENT_BUFFER_PARAMS: &[ActionParam] = &[ActionParam::required(
@@ -1347,8 +1352,18 @@ impl Action {
                     );
                 }
                 let apps = comma_list(args.text("apps"));
+                let pixels = match args.text("pixels").map(str::trim) {
+                    None | Some("" | "off") => None,
+                    Some(value) => Some(
+                        session_trace::frames::PixelPurpose::parse(value).ok_or_else(|| {
+                            ActionError::Refused(format!(
+                                "pixels is `keep`, `check` or `off`, not `{value}`"
+                            ))
+                        })?,
+                    ),
+                };
                 recorder
-                    .start(&rooms, apps, &user)
+                    .start(&rooms, apps, pixels, &user)
                     .map_err(|error| ActionError::Refused(error.to_string()))
             },
         },

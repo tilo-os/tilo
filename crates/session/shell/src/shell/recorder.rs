@@ -13,6 +13,12 @@
 //! personal room. Nothing is written or sent: the record waits in memory for
 //! review ([`Recorder::awaiting_review`]).
 //!
+//! A recording may keep pixels too ([`PixelPurpose`]): the compositor then
+//! hands the recorded surfaces' frames to [`Recorder::push_frame`], masked
+//! on arrival, and the sealed session references the frame strip as a
+//! blob with relation `frames`. The strip's bytes stay with the pending
+//! session in memory, like the record itself.
+//!
 //! With the recent buffer on (`feedback.recent_buffer`, off by default), the
 //! recorder also follows the rooms the user administers as they visit them
 //! and keeps the last two minutes of presence and op references in memory,
@@ -24,6 +30,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime};
 
 use automerge::AutoCommit;
+use session_trace::frames::{
+    FrameLimits, FramePush, FrameStrip, FrameStripBuilder, PixelPurpose, PreparedFrame,
+    SurfaceFrame,
+};
 use session_trace::{
     Environment, ImageDigest, ImageIdentity, Limits, OpReference, PresenceChange, PresenceUpdate,
     Pushed, RecentBuffer, RecentItem, Route, SessionSummary, SessionTrace, SurfaceGeometry,
@@ -107,9 +117,28 @@ pub struct PendingSession {
     pub checkout: RecordCheckout,
     pub summary: SessionSummary,
     doc: AutoCommit,
+    frames: Option<SealedFrames>,
+}
+
+/// The frame strip of a pending session and the blob bytes its record
+/// references.
+struct SealedFrames {
+    strip: FrameStrip,
+    blob: Vec<u8>,
 }
 
 impl PendingSession {
+    /// The frames the recording kept, masked, if it kept pixels.
+    pub fn frames(&self) -> Option<&FrameStrip> {
+        self.frames.as_ref().map(|frames| &frames.strip)
+    }
+
+    /// The bytes of the blob the record references with relation
+    /// `frames`: what review stores or attaches.
+    pub fn frame_blob(&self) -> Option<&[u8]> {
+        self.frames.as_ref().map(|frames| frames.blob.as_slice())
+    }
+
     /// The record document: identity plus the `session` map.
     pub fn document(&self) -> &AutoCommit {
         &self.doc
@@ -145,12 +174,33 @@ struct Recording {
     /// Only these apps' routes, or every route when empty.
     apps: Vec<String>,
     builder: TraceBuilder,
+    /// Present when the recording keeps pixels.
+    frames: Option<FrameStripBuilder>,
 }
 
 impl Recording {
     fn wants(&self, route: &CrdtRoute) -> bool {
-        self.rooms.contains(&route.cluster_id)
-            && (self.apps.is_empty() || self.apps.contains(&route.app_id))
+        self.rooms.contains(&route.cluster_id) && self.wants_app(&route.app_id)
+    }
+
+    fn wants_app(&self, app_id: &str) -> bool {
+        self.apps.is_empty() || self.apps.iter().any(|app| app == app_id)
+    }
+}
+
+/// Which surfaces the compositor should capture frames of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PixelRequest {
+    pub rooms: Vec<String>,
+    /// Only these apps, or every app when empty.
+    pub apps: Vec<String>,
+    pub purpose: PixelPurpose,
+}
+
+impl PixelRequest {
+    pub fn wants(&self, room: &str, app_id: &str) -> bool {
+        self.rooms.iter().any(|wanted| wanted == room)
+            && (self.apps.is_empty() || self.apps.iter().any(|app| app == app_id))
     }
 }
 
@@ -522,6 +572,8 @@ impl Recorder {
                         "events": recording.builder.event_count(),
                         "snapshots": recording.builder.snapshot_count(),
                         "truncated": recording.builder.is_truncated(),
+                        "pixels": recording.frames.as_ref().map(|frames| frames.purpose().as_str()),
+                        "frames": recording.frames.as_ref().map(FrameStripBuilder::frame_count),
                     })
                 }),
                 capture.finishing.is_some(),
@@ -539,6 +591,7 @@ impl Recorder {
                 "kind": pending.checkout.kind.as_str(),
                 "home": launcher::appdir::PERSONAL_ROOM,
                 "summary": pending.summary,
+                "frames": pending.frames().map(|strip| strip.frames.len()),
             })).collect::<Vec<_>>(),
         })
     }
@@ -613,7 +666,8 @@ impl Recorder {
         }
     }
 
-    /// Start recording `rooms`, optionally only `apps`' routes in them.
+    /// Start recording `rooms`, optionally only `apps`' routes in them,
+    /// keeping frames of their surfaces when `pixels` says why.
     ///
     /// # Errors
     ///
@@ -623,6 +677,7 @@ impl Recorder {
         &self,
         rooms: &[String],
         apps: Vec<String>,
+        pixels: Option<PixelPurpose>,
         user: &UserId,
     ) -> Result<(), RecorderError> {
         if rooms.is_empty() {
@@ -659,6 +714,8 @@ impl Recorder {
                 rooms: rooms.iter().cloned().collect(),
                 apps,
                 builder,
+                frames: pixels
+                    .map(|purpose| FrameStripBuilder::new(purpose, FrameLimits::default())),
             };
             // Surfaces already measured for a room the buffer held.
             for (room, surface) in &capture.surfaces {
@@ -689,6 +746,7 @@ impl Recorder {
             .take()
             .ok_or(RecorderError::NotRecording)?;
         let trace = recording.builder.finish(Instant::now());
+        let frames = recording.frames;
         {
             let mut control = lock(&self.control);
             let recent_rooms = lock(&self.capture).recent_rooms.clone();
@@ -699,7 +757,70 @@ impl Recorder {
             }
         }
         self.resync_rooms();
-        self.seal(&trace)
+        self.seal(&trace, frames)
+    }
+
+    /// What the compositor should capture, while a recording keeps pixels.
+    pub fn pixel_request(&self) -> Option<PixelRequest> {
+        let capture = lock(&self.capture);
+        let request = capture.recording.as_ref().and_then(|recording| {
+            Some(PixelRequest {
+                rooms: recording.rooms.iter().cloned().collect(),
+                apps: recording.apps.clone(),
+                purpose: recording.frames.as_ref()?.purpose(),
+            })
+        });
+        drop(capture);
+        request
+    }
+
+    /// Keep one captured frame of a recorded surface, taken at `at`.
+    /// It is masked with the surface's semantic layout as the trace last
+    /// described it before it is encoded; sealing masks again with the
+    /// layout around it. Masking and encoding run outside the recorder's
+    /// lock, so the broker's fanout never waits on them.
+    ///
+    /// Returns `None` when no recording keeps pixels of that surface.
+    ///
+    /// # Errors
+    ///
+    /// When the frame is malformed or cannot be encoded.
+    pub fn push_frame(
+        &self,
+        at: Instant,
+        route: Route,
+        width: u32,
+        height: u32,
+        scale: f64,
+        rgba: Vec<u8>,
+    ) -> Result<Option<FramePush>, session_trace::frames::FrameError> {
+        let capture = lock(&self.capture);
+        let wanted = capture
+            .recording
+            .as_ref()
+            .filter(|recording| {
+                recording.frames.is_some()
+                    && recording.rooms.contains(&route.room)
+                    && recording.wants_app(&route.app_id)
+            })
+            .map(|recording| {
+                (
+                    recording.builder.offset_at(at),
+                    recording.builder.latest_regions(&route),
+                )
+            });
+        drop(capture);
+        let Some((offset, layout)) = wanted else {
+            return Ok(None);
+        };
+        let frame = SurfaceFrame::new(offset, route, width, height, scale, rgba)?;
+        let prepared = PreparedFrame::prepare(frame, &layout)?;
+        let pushed = lock(&self.capture)
+            .recording
+            .as_mut()
+            .and_then(|recording| recording.frames.as_mut())
+            .map(|frames| frames.push_prepared(prepared));
+        Ok(pushed)
     }
 
     /// Turn the recent buffer on or off and remember the choice through the
@@ -874,7 +995,8 @@ impl Recorder {
             }
         };
         if let Some(recording) = sealed
-            && let Err(error) = self.seal(&recording.builder.finish(Instant::now()))
+            && let Err(error) =
+                self.seal(&recording.builder.finish(Instant::now()), recording.frames)
         {
             tracing::warn!(%error, "recorder: a revoked recording could not be sealed");
         }
@@ -956,15 +1078,20 @@ impl Recorder {
         let Some(finishing) = finishing else {
             return false;
         };
-        if let Err(error) = self.seal(&finishing.builder.finish(now)) {
+        if let Err(error) = self.seal(&finishing.builder.finish(now), None) {
             tracing::warn!(%error, "recorder: the captured session could not be sealed");
         }
         true
     }
 
     /// Wrap `trace` in a `session` record homed in the personal room and
-    /// keep it for review.
-    fn seal(&self, trace: &SessionTrace) -> Result<RecordCheckout, RecorderError> {
+    /// keep it for review. Kept frames are sealed against the finished
+    /// trace and referenced as the record's `frames` blob.
+    fn seal(
+        &self,
+        trace: &SessionTrace,
+        frames: Option<FrameStripBuilder>,
+    ) -> Result<RecordCheckout, RecorderError> {
         let checkout = RecordCheckout::new(
             RecordId::minted(),
             RecordKind::new(session_trace::SESSION_RECORD_KIND),
@@ -984,6 +1111,9 @@ impl Recorder {
                 );
             }
         }
+        let frames = frames
+            .map(|frames| seal_frames(&mut doc, trace, frames))
+            .transpose()?;
         session_trace::write(&mut doc, trace)
             .map_err(|error| RecorderError::Write(error.to_string()))?;
         let summary = trace.summary();
@@ -995,10 +1125,37 @@ impl Recorder {
             checkout: checkout.clone(),
             summary,
             doc,
+            frames,
         });
         drop(control);
         Ok(checkout)
     }
+}
+
+/// Seal a frame strip against `trace` and reference its bytes from `doc`.
+fn seal_frames(
+    doc: &mut AutoCommit,
+    trace: &SessionTrace,
+    frames: FrameStripBuilder,
+) -> Result<SealedFrames, RecorderError> {
+    let strip = frames
+        .finish(trace)
+        .map_err(|error| RecorderError::Write(error.to_string()))?;
+    let blob = strip
+        .encode()
+        .map_err(|error| RecorderError::Write(error.to_string()))?;
+    let reference = ui::record::BlobRef {
+        hash: blake3::hash(&blob).to_hex().to_string(),
+        len: u64::try_from(blob.len()).unwrap_or(u64::MAX),
+        mime: session_trace::frames::FRAMES_MIME.to_string(),
+        relation: session_trace::FRAMES_BLOB_RELATION.to_string(),
+    };
+    if !ui::record::add_blob_reference(doc, &reference) {
+        return Err(RecorderError::Write(
+            "the frame blob could not be referenced".into(),
+        ));
+    }
+    Ok(SealedFrames { strip, blob })
 }
 
 fn environment() -> Environment {
@@ -1329,6 +1486,7 @@ mod tests {
                     SystemTime::now(),
                     Limits::default(),
                 ),
+                frames: None,
             }),
             ..Capture::default()
         };

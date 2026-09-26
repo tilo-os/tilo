@@ -24,11 +24,18 @@
 //! [`FRAMES_BLOB_RELATION`], and a redacted duplicate names its origin with
 //! a record reference of relation [`REDACTED_FROM_RELATION`].
 //!
+//! The pixel layer is [`frames`]: masked ([`mask`]) lossless frames of the
+//! recorded surfaces, and the [`divergence`] check that compares them with
+//! a replay's.
+//!
 //! [`RecentBuffer`] is the in-memory ring behind "record what just
 //! happened": presence and inspect keyframes by value, document ops by
 //! reference only, because the ops already live in the record's history.
 
 mod builder;
+pub mod divergence;
+pub mod frames;
+pub mod mask;
 mod recent;
 mod record;
 pub mod redact;

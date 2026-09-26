@@ -143,6 +143,28 @@ impl TraceBuilder {
             .any(|snapshot| &snapshot.route == route)
     }
 
+    /// Where `at` falls on this trace's clock, without placing anything
+    /// on the timeline. The pixel layer stamps frames with it.
+    pub fn offset_at(&self, at: Instant) -> Offset {
+        Offset::from_duration(at.saturating_duration_since(self.epoch))
+    }
+
+    /// The semantic layout of `surface` as the timeline last described it.
+    pub fn latest_regions(&self, surface: &Route) -> Vec<crate::frames::ElementRegion> {
+        self.timeline
+            .iter()
+            .rev()
+            .find_map(|entry| match &entry.event {
+                Event::Inspect(keyframe)
+                    if crate::frames::same_surface(&keyframe.route, surface) =>
+                {
+                    Some(crate::frames::keyframe_regions(keyframe))
+                }
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
     /// Monotonic offset of `at`: never before the previous event, so the
     /// timeline stays ordered even if callers' clocks disagree.
     fn offset(&mut self, at: Instant) -> Offset {

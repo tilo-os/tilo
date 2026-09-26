@@ -123,6 +123,19 @@ check on that claim:
 Frame redaction is exact rather than guessed. The trace knows where every
 sensitive node was on screen, so those rectangles are masked.
 
+Pixels are captured only when the recording asks for them: to keep with the
+recording, or only for the check above. The compositor renders each
+recorded app surface alone, never the desktop or another app, once a second
+and on damage, and the recorder masks each frame with the surface's inspect
+bounds before it is encoded, then again against the finished trace. Frames
+are lossless PNG keyframes, because a lossy codec would make the check
+compare codec noise. They form one bounded blob that the `session` record
+references with relation `frames`. Pixels that no semantic node describes
+are flagged per region as unexplained and are never guessed at. The check
+compares pixels per element with a perceptual tolerance that ignores
+anti-aliasing, and each diverging region comes with a small cropped
+evidence frame.
+
 ## Replay is following a past session
 
 Replaying a `session` record creates an ephemeral **replay room**. The shell

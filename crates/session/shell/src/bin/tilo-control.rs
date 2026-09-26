@@ -450,7 +450,7 @@ fn parse_actions_command<'a>(
     }
 }
 
-const FEEDBACK_USAGE: &str = "feedback record start [--room ROOM]... [--app APP]... | \
+const FEEDBACK_USAGE: &str = "feedback record start [--room ROOM]... [--app APP]... [--pixels keep|check] | \
 feedback record stop | feedback record capture-recent | \
 feedback recent-buffer on|off | feedback status";
 
@@ -511,13 +511,15 @@ fn parse_feedback_start<'a>(
 ) -> Result<Command, ParseError> {
     let mut rooms: Vec<String> = Vec::new();
     let mut apps: Vec<String> = Vec::new();
+    let mut pixels: Vec<String> = Vec::new();
     while let Some(flag) = iter.next() {
         let target = match flag.as_str() {
             "--room" => &mut rooms,
             "--app" => &mut apps,
+            "--pixels" => &mut pixels,
             other => {
                 return Err(ParseError::Usage(format!(
-                    "feedback record start: unknown option `{other}` (--room ROOM, --app APP)"
+                    "feedback record start: unknown option `{other}` (--room ROOM, --app APP, --pixels keep|check)"
                 )));
             }
         };
@@ -532,6 +534,9 @@ fn parse_feedback_start<'a>(
     }
     if !apps.is_empty() {
         args.insert("apps".into(), apps.join(",").into());
+    }
+    if let Some(purpose) = pixels.pop() {
+        args.insert("pixels".into(), purpose.into());
     }
     Ok(feedback_invoke(
         "feedback.record.start",
@@ -967,10 +972,12 @@ fn print_usage() {
          \x20                               run one typed action without synthetic input\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
-         \x20 feedback record start [--room ROOM]... [--app APP]...\n\
+         \x20 feedback record start [--room ROOM]... [--app APP]... [--pixels keep|check]\n\
          \x20                               admit the Recorder agent (Observer) to ROOM (default:\n\
          \x20                               the active workspace) and record its documents,\n\
          \x20                               presence and actions; --app narrows the documents.\n\
+         \x20                               --pixels also keeps masked frames of those apps'\n\
+         \x20                               windows (check: only to compare replay against).\n\
          \x20                               The Recorder is listed as AGENT while it records.\n\
          \x20 feedback record stop          remove the Recorder and keep the `session` record\n\
          \x20                               in memory for review; nothing is written or sent\n\

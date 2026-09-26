@@ -27,6 +27,8 @@ serde.workspace = true
 serde_json.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 thiserror.workspace = true
+# Frames are kept as lossless PNG keyframes.
+image = { workspace = true, features = ["png"] }
 
 [dev-dependencies]
 uuid.workspace = true

@@ -180,7 +180,7 @@ fn a_recording_keeps_snapshot_ops_and_presence_and_is_a_visible_revocable_agent(
 
     assert_eq!(workspace_has_recorder(&mut roster, &tree), (None, false));
     recorder
-        .start(std::slice::from_ref(&room), Vec::new(), &owner())
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
         .unwrap();
     assert_eq!(
         workspace_has_recorder(&mut roster, &tree),
@@ -348,7 +348,7 @@ fn removing_the_recorder_agent_ends_the_recording() {
     let mut roster = LocalParticipantRoster::new(broker.fanout());
     let room = ROOM.to_string();
     recorder
-        .start(std::slice::from_ref(&room), Vec::new(), &owner())
+        .start(std::slice::from_ref(&room), Vec::new(), None, &owner())
         .unwrap();
     assert!(recorder.is_recording());
 
@@ -492,7 +492,7 @@ fn a_recording_keeps_semantic_keyframes_only_when_the_tree_changes() {
     }
 
     recorder
-        .start(&[ROOM.to_string()], Vec::new(), &owner())
+        .start(&[ROOM.to_string()], Vec::new(), None, &owner())
         .unwrap();
     // Longer than one poll interval: the unchanged tree is asked again and
     // not kept a second time.

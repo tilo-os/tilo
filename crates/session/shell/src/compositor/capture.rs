@@ -42,6 +42,10 @@ const REPLAY_KEYFRAME_INTERVAL: u32 = REPLAY_FPS * 2;
 const REPLAY_MAX_VIDEO_BYTES: usize = 128 * 1024 * 1024;
 const AUDIO_BYTES_PER_VIDEO_FRAME: usize = 48_000 / REPLAY_FPS as usize * 4;
 const REPLAY_MAX_AUDIO_BYTES: usize = REPLAY_SECONDS * 48_000 * 4;
+/// A recorded surface that shows nothing new is still captured this often.
+const SESSION_FRAME_BASE: Duration = Duration::from_secs(1);
+/// A damaged recorded surface is captured at most this often.
+const SESSION_FRAME_DAMAGE: Duration = Duration::from_millis(200);
 
 pub fn recording_audio_availability() -> (bool, bool) {
     let availability = super::audio_capture::availability();
@@ -114,6 +118,72 @@ pub struct CaptureExecutor {
     external_updates: Vec<(String, Rect, String, Rect)>,
     external_dismissals: Vec<String>,
     portal_screenshot_armed: bool,
+    /// The pixel layer of a feedback recording: which recorded surfaces
+    /// were captured when, and what they looked like then.
+    session_frames: Vec<SessionSurface>,
+}
+
+/// One recorded surface the pixel layer follows.
+struct SessionSurface {
+    surface_id: u64,
+    last_capture: Instant,
+    /// Client frames taken from the surface as of the last capture.
+    frame_seq: u64,
+    rect: Rect,
+    renderer: Option<OffscreenRenderer>,
+}
+
+impl SessionSurface {
+    /// Due at the base rate, or sooner when the client drew or the tile
+    /// moved or resized.
+    fn due(&self, now: Instant, frame_seq: u64, rect: Rect) -> bool {
+        let since = now.saturating_duration_since(self.last_capture);
+        since >= SESSION_FRAME_BASE
+            || (since >= SESSION_FRAME_DAMAGE && (frame_seq != self.frame_seq || rect != self.rect))
+    }
+}
+
+/// A tab a feedback recording keeps pixels of.
+struct RecordedSurface {
+    surface_id: u64,
+    target_id: String,
+    app_id: String,
+    room: String,
+}
+
+/// The active tab of every window group whose room and app `wants`. Only
+/// these surfaces are captured: never the desktop, never another app.
+fn recorded_surfaces(
+    tree: &crate::shell::state::WorkspaceTree,
+    wants: impl Fn(&str, &str) -> bool,
+) -> Vec<RecordedSurface> {
+    let mut surfaces = Vec::new();
+    for workspace in &tree.desktop.workspaces {
+        if workspace.room.is_nil() {
+            continue;
+        }
+        let room = workspace.room.to_string();
+        for group in workspace
+            .strips
+            .iter()
+            .flat_map(|strip| &strip.window_groups)
+        {
+            let Some(tab) = group.tabs.iter().find(|tab| tab.id == group.active_tab) else {
+                continue;
+            };
+            if let crate::shell::state::TileContent::Foreign { app_id, surface_id } = &tab.tile
+                && wants(&room, app_id)
+            {
+                surfaces.push(RecordedSurface {
+                    surface_id: *surface_id,
+                    target_id: format!("group:{}:tab:{}", group.id, tab.id),
+                    app_id: app_id.clone(),
+                    room: room.clone(),
+                });
+            }
+        }
+    }
+    surfaces
 }
 
 struct LiveMirror {
@@ -738,6 +808,7 @@ impl CaptureExecutor {
                 }
             }
         }
+        self.capture_session_frames(frame_builder);
         // A just-created mirror was inserted after the clean desktop's layout
         // pass. Reconcile structural nodes now so its very first appended
         // frame has real geometry at `spawn_from` rather than Rect::ZERO.
@@ -748,6 +819,121 @@ impl CaptureExecutor {
         // region overlapping its own PiP never feeds back recursively.
         let capture_overlays_appended = frame_builder.draw_capture_overlays(clean_screen_scene);
         (outcomes, capture_overlays_appended)
+    }
+
+    /// Capture the surfaces a feedback recording keeps pixels of, and hand
+    /// each frame to the recorder, which masks it before keeping it.
+    fn capture_session_frames(&mut self, frame_builder: &mut FrameBuilder) {
+        let recorder = frame_builder.chrome().recorder().cloned();
+        let Some(request) = recorder
+            .as_ref()
+            .and_then(|recorder| recorder.pixel_request())
+        else {
+            self.session_frames.clear();
+            return;
+        };
+        let surfaces = recorded_surfaces(&frame_builder.chrome().tree(), |room, app| {
+            request.wants(room, app)
+        });
+        self.session_frames.retain(|followed| {
+            surfaces
+                .iter()
+                .any(|surface| surface.surface_id == followed.surface_id)
+        });
+        let Some(recorder) = recorder else {
+            return;
+        };
+        let now = Instant::now();
+        for surface in surfaces {
+            let Some(rect) = frame_builder.foreign_surface_rect(surface.surface_id) else {
+                continue;
+            };
+            let frame_seq = crate::compositor::foreign::store().frame_seq(surface.surface_id);
+            let followed_at = self
+                .session_frames
+                .iter()
+                .position(|followed| followed.surface_id == surface.surface_id);
+            let index = followed_at.unwrap_or_else(|| {
+                self.session_frames.push(SessionSurface {
+                    surface_id: surface.surface_id,
+                    // A surface is captured as soon as it is followed.
+                    last_capture: now.checked_sub(SESSION_FRAME_BASE).unwrap_or(now),
+                    frame_seq,
+                    rect,
+                    renderer: None,
+                });
+                self.session_frames.len().saturating_sub(1)
+            });
+            let Some(followed) = self.session_frames.get_mut(index) else {
+                continue;
+            };
+            if !followed.due(now, frame_seq, rect) {
+                continue;
+            }
+            followed.last_capture = now;
+            followed.frame_seq = frame_seq;
+            followed.rect = rect;
+            let frame = render_session_frame(
+                frame_builder,
+                &surface.target_id,
+                rect,
+                &mut followed.renderer,
+            );
+            let pushed = frame.and_then(|(width, height, rgba)| {
+                recorder
+                    .push_frame(
+                        now,
+                        session_trace::Route::new(surface.app_id.clone(), surface.room.clone(), ""),
+                        width,
+                        height,
+                        f64::from(width) / rect.width(),
+                        rgba,
+                    )
+                    .map_err(|error| error.to_string())
+            });
+            if let Err(error) = pushed {
+                tracing::warn!(app = %surface.app_id, %error, "recording frame was not kept");
+            }
+            // The structure this frame shows, so masking and replay line
+            // up with the pixels.
+            recorder.inspect_now(surface.surface_id);
+        }
+    }
+
+    /// Every laid-out app surface of `room` as it looks now, rendered
+    /// exactly as a recording captures one: the tile alone, at `at` on the
+    /// caller's clock. A replay reads its frames through this, so captured
+    /// and replayed pixels come from one path.
+    pub fn room_surface_frames(
+        frame_builder: &mut FrameBuilder,
+        room: &str,
+        at: session_trace::Offset,
+    ) -> Vec<Result<session_trace::frames::SurfaceFrame, String>> {
+        let surfaces = recorded_surfaces(&frame_builder.chrome().tree(), |candidate, _| {
+            candidate == room
+        });
+        let mut frames = Vec::with_capacity(surfaces.len());
+        for surface in surfaces {
+            let Some(rect) = frame_builder.foreign_surface_rect(surface.surface_id) else {
+                continue;
+            };
+            let mut renderer = None;
+            frames.push(
+                render_session_frame(frame_builder, &surface.target_id, rect, &mut renderer)
+                    .and_then(|(width, height, rgba)| {
+                        session_trace::frames::SurfaceFrame::new(
+                            at,
+                            session_trace::Route::new(surface.app_id, surface.room, ""),
+                            width,
+                            height,
+                            f64::from(width) / rect.width(),
+                            rgba,
+                        )
+                        .map_err(|error| error.to_string())
+                    }),
+            );
+        }
+        frames
     }
 
     pub fn has_live_mirrors(&self) -> bool {
@@ -1384,6 +1570,38 @@ fn app_local_region_on_surface(region: Rect, app_rect: Rect) -> Option<Rect> {
     let local_bounds = Rect::from_origin_size(Point::ZERO, app_rect.size());
     let local = region.intersect(local_bounds);
     (local.area() > 0.0).then_some(local + app_rect.origin().to_vec2())
+}
+
+/// Paint one recorded app surface alone, unclipped by the output, and read
+/// it back: the tile's content rectangle, without its tab decoration.
+fn render_session_frame(
+    frame_builder: &mut FrameBuilder,
+    target_id: &str,
+    rect: Rect,
+    renderer: &mut Option<OffscreenRenderer>,
+) -> Result<(u32, u32, Vec<u8>), String> {
+    let (scene, painted) = frame_builder.paint_capture_targets(
+        &[target_id.to_string()],
+        CaptureExtent::FullApp,
+        false,
+    );
+    if painted.is_empty() {
+        return Err("the recorded window is not painted".into());
+    }
+    let (composed, width, height) = compose_spatial(&scene, &[rect])?;
+    let stale = renderer
+        .as_ref()
+        .is_none_or(|renderer| renderer.width != width || renderer.height != height);
+    if stale {
+        *renderer = Some(
+            OffscreenRenderer::try_new(width, height)
+                .map_err(|error| format!("recording frame renderer {width}×{height}: {error}"))?,
+        );
+    }
+    let renderer = renderer
+        .as_mut()
+        .ok_or_else(|| "recording frame renderer disappeared".to_string())?;
+    Ok((width, height, render_capture_rgba(renderer, &composed)))
 }
 
 fn record_frame(
