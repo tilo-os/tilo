@@ -440,6 +440,8 @@ pub struct SearchResourceScope {
     pub app_id: String,
     pub resource: String,
     pub label: String,
+    /// The resource's kind, which decides the shortcuts offered on it.
+    pub kind: String,
 }
 
 /// Session-local presence changes requested through the semantic action

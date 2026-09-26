@@ -10988,6 +10988,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
+                kind: String::new(),
             });
         let state = FrameBuilderControlState {
             fb: &fb,
