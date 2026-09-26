@@ -648,6 +648,14 @@ fn the_state_dump_carries_the_partition() {
     let displays = dump["outputs"]["displays"].as_array().expect("displays");
     assert_eq!(displays.len(), 2);
     assert_eq!(displays[0]["id"], 0, "primary first");
+
+    // What `state.json` holds loads back with the partition intact.
+    let saved = serde_json::to_string(&*desk.fb.chrome().tree()).expect("the state saves");
+    let loaded: WorkspaceTree = serde_json::from_str(&saved).expect("the saved state loads");
+    assert_eq!(
+        loaded.desktop.outputs.home,
+        desk.fb.chrome().tree().desktop.outputs.home
+    );
 }
 
 /// Every map key anywhere in an automerge document.

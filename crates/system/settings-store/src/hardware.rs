@@ -1669,6 +1669,10 @@ pub fn fixed_shell_chords() -> Vec<(&'static str, KeyChord)> {
 }
 
 impl Default for ShortcutConfig {
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the default table is one line per shortcut action"
+    )]
     fn default() -> Self {
         // Built directly rather than through the fallible `KeyChord::parse`: every
         // chord here is a literal we already know is well-formed.

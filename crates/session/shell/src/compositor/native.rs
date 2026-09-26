@@ -1875,6 +1875,10 @@ impl ControlState for FrameBuilderControlState<'_> {
     /// manually rather than `derive(Serialize)` because the chrome owns
     /// `Rc<RefCell<…>>` widget handles that can't sensibly serialise; this also
     /// lets fields like `search_scope` pick a wire-friendly enum-as-string form.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one flat JSON literal with a line per dumped chrome field"
+    )]
     fn chrome_state_json(&self) -> serde_json::Value {
         let chrome = self.fb.chrome();
         let overlays = &chrome.overlays;
