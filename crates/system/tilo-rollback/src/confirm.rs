@@ -168,7 +168,10 @@ pub fn plan(
 /// Returns an error if `proof` does not open `device` (refusing to raise the floor past the
 /// only proven-working secret), if `plan.floor.target_floor` exceeds `plan.generation`, or if
 /// the underlying counter advance fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TPM step inputs; each is an independent value the caller already holds"
+)]
 pub fn advance_floor(
     runner: &dyn Runner,
     ws: &Workspace,

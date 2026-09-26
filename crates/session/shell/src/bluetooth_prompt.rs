@@ -332,7 +332,7 @@ impl Widget for PairingPromptView {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, reason = "mirrors the Widget event inputs")]
     fn handle_event(
         &mut self,
         event: &WindowEvent,

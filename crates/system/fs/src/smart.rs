@@ -26,7 +26,10 @@ pub const DEFAULT_MAX_QUEUED_PREDICTIVE_BYTES: u64 = 128 * 1024 * 1024;
 /// monitors. A false gate cancels queued/running speculation; foreground reads
 /// are deliberately outside this policy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // Independent runtime gates are the policy's public contract.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent runtime gates are the policy's public contract"
+)]
 pub struct PredictivePolicy {
     pub enabled: bool,
     pub network_allows: bool,

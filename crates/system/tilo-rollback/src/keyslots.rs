@@ -250,7 +250,10 @@ pub fn primary(runner: &dyn Runner, ws: &Workspace) -> Result<std::path::PathBuf
 ///
 /// Returns an error if creating the sealing parent, sealing with `tpm2_create`, or reading
 /// back the sealed public/private blobs fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TPM step inputs; each is an independent value the caller already holds"
+)]
 pub fn seal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -420,7 +423,10 @@ fn unseal_auth(session: &Path, pin_file: Option<&Path>) -> String {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TPM step inputs; each is an independent value the caller already holds"
+)]
 fn invoke_unseal(
     runner: &dyn Runner,
     ws: &Workspace,
@@ -710,7 +716,10 @@ pub fn kill_generation_slot(
 ///
 /// Returns an error if `predictions` is empty, or if sealing, adding the keyslot, or
 /// importing the token fails.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TPM step inputs; each is an independent value the caller already holds"
+)]
 pub fn enroll_generation(
     runner: &dyn Runner,
     ws: &Workspace,

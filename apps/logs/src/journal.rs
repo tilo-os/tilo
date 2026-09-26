@@ -659,7 +659,10 @@ const fn very(n: u32) -> u32 {
     n
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "test builder: one argument per journal field"
+)]
 fn build(
     realtime_us: u64,
     unit: &str,

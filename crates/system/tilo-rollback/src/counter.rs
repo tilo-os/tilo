@@ -649,7 +649,10 @@ impl AdvanceOutcome {
 /// Returns an error if the number of increments needed to reach `target_floor` exceeds
 /// `max_increments`, if an approved increment fails, or if the counter doesn't move after an
 /// approved increment.
-#[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "TPM step inputs; each is an independent value the caller already holds"
+)]
 pub fn advance(
     runner: &dyn Runner,
     ws: &Workspace,
