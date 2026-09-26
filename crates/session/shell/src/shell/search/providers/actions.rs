@@ -10,6 +10,7 @@
 
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use settings_store::display_mode::DisplayLayoutMode;
 use std::rc::Rc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, RankField};
@@ -190,6 +191,12 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
         QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID => {
             contract = quick_settings_contract();
         }
+        DISPLAY_EXTEND_ID
+        | DISPLAY_MIRROR_ID
+        | DISPLAY_BUILTIN_ONLY_ID
+        | DISPLAY_EXTERNAL_ONLY_ID
+        | DISPLAY_KEEP_ID
+        | DISPLAY_REVERT_ID => contract = display_layout_contract(),
         _ => {}
     }
     contract
@@ -1047,12 +1054,48 @@ impl Action {
         ),
         chrome(
             "projection.open",
-            "Project to a display",
-            "Miracast, Google Cast, AirPlay, or FCast",
+            "Choose where the desktop appears",
+            "Extend, mirror, one screen, or a Miracast, Google Cast, AirPlay or FCast receiver",
             |st, _| {
                 st.overlays.projection = true;
                 Ok(())
             },
+        ),
+        chrome(
+            DISPLAY_EXTEND_ID,
+            "Extend displays",
+            "Use every connected display as one larger desktop",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::Extend),
+        ),
+        chrome(
+            DISPLAY_MIRROR_ID,
+            "Mirror displays",
+            "Show the same picture on every connected display",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::Mirror),
+        ),
+        chrome(
+            DISPLAY_BUILTIN_ONLY_ID,
+            "Show only on this screen",
+            "Turn external displays off and keep the built-in screen",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::BuiltinOnly),
+        ),
+        chrome(
+            DISPLAY_EXTERNAL_ONLY_ID,
+            "Show only on external displays",
+            "Turn the built-in screen off and use the external displays",
+            |st, _| stage_display_layout(st, DisplayLayoutMode::ExternalOnly),
+        ),
+        chrome(
+            DISPLAY_KEEP_ID,
+            "Keep display settings",
+            "Confirm the display layout that was just applied",
+            |_, _| settle_display_change(true),
+        ),
+        chrome(
+            DISPLAY_REVERT_ID,
+            "Revert display settings",
+            "Restore the display layout from before the last change",
+            |_, _| settle_display_change(false),
         ),
         chrome(
             "capture.open",
@@ -1691,6 +1734,60 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
 
     fn set_keyboard_backlight(&self, level: u32) -> Result<(), String> {
         self.inner.set_keyboard_backlight(level)
+    }
+}
+
+pub(crate) const DISPLAY_EXTEND_ID: &str = "display.layout.extend";
+pub(crate) const DISPLAY_MIRROR_ID: &str = "display.layout.mirror";
+pub(crate) const DISPLAY_BUILTIN_ONLY_ID: &str = "display.layout.builtin-only";
+pub(crate) const DISPLAY_EXTERNAL_ONLY_ID: &str = "display.layout.external-only";
+pub(crate) const DISPLAY_KEEP_ID: &str = "display.change.keep";
+pub(crate) const DISPLAY_REVERT_ID: &str = "display.change.revert";
+
+/// Stage a whole-desktop layout through the same confirm-or-restore
+/// transaction as Super+P, and open the display sheet so whoever is at the
+/// machine sees Keep/Revert and the countdown.
+fn stage_display_layout(st: &mut ChromeState, mode: DisplayLayoutMode) -> Result<(), ActionError> {
+    settings_store::display_mode::stage_layout(mode)
+        .map_err(|error| ActionError::Refused(error.to_string()))?;
+    st.overlays.projection = true;
+    Ok(())
+}
+
+/// Keep or revert the display change that is waiting for confirmation.
+fn settle_display_change(keep: bool) -> Result<(), ActionError> {
+    use settings_store::hardware::{DisplayTransaction, DisplayTransactionState};
+
+    let mut transaction = DisplayTransaction::load()
+        .ok_or_else(|| ActionError::Refused("no display change is waiting".into()))?;
+    let waiting = if keep {
+        transaction.state == DisplayTransactionState::AwaitingConfirmation
+    } else {
+        matches!(
+            transaction.state,
+            DisplayTransactionState::Requested
+                | DisplayTransactionState::AwaitingConfirmation
+                | DisplayTransactionState::ConfirmRequested
+        )
+    };
+    if !waiting {
+        return Err(ActionError::Refused("no display change is waiting".into()));
+    }
+    if keep {
+        transaction.request_confirmation()
+    } else {
+        transaction.request_revert()
+    }
+    .map_err(|error| ActionError::Refused(error.to_string()))
+}
+
+fn display_layout_contract() -> tilo_actions::ActionContract {
+    tilo_actions::ActionContract {
+        permission: tilo_actions::PermissionRequirement::Write,
+        retry: tilo_actions::RetryPolicy::Idempotent,
+        // An unconfirmed layout restores itself; Revert undoes it at once.
+        reversible: true,
+        ..tilo_actions::ActionContract::default()
     }
 }
 

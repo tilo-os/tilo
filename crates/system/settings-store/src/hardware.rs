@@ -192,6 +192,20 @@ pub struct DisplayHardwareSnapshot {
     /// stale runtime file cannot become trusted after PID reuse.
     pub publisher_start_ticks: u64,
     pub outputs: Vec<DisplayOutputSnapshot>,
+    /// Where each enabled output sits in the compositor's combined desktop
+    /// coordinates right now, after arrangement, mirroring and rotation.
+    pub layout: Vec<LiveOutputPlacement>,
+}
+
+/// One enabled output's live rectangle in combined desktop coordinates.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveOutputPlacement {
+    /// Collision-free output key, as in [`OutputDescriptor::connector`].
+    pub connector: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl DisplayHardwareSnapshot {
@@ -1675,7 +1689,7 @@ mod tests {
             backend: "test".into(),
             publisher_pid: std::process::id(),
             publisher_start_ticks: current.saturating_add(1),
-            outputs: Vec::new(),
+            ..DisplayHardwareSnapshot::default()
         };
         assert_ne!(
             process_start_ticks(stale.publisher_pid),

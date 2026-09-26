@@ -1338,6 +1338,7 @@ enum AccessibleOverlay {
     RoomActivity,
     QuickSettings,
     ShortcutHelp,
+    DisplayLayouts,
 }
 
 /// The result of asking whether the global Print Screen shortcut may change
@@ -1879,9 +1880,12 @@ pub struct ShellOverlayHost {
     /// Hit targets over live peer cursors. Rebuilt from room presence every
     /// paint; a click is an explicit spatial request to follow that person.
     follow_cursor_targets: Vec<(String, Rect)>,
-    /// Complete wireless projection picker, including controller, editor,
-    /// animation, painted geometry, and event routing.
+    /// The Super+P display sheet, including controller, editor, animation,
+    /// painted geometry, and event routing.
     projection_overlay: ProjectionOverlay,
+    /// Numbered cards painted on every display when Settings asks which
+    /// screen is which.
+    display_identify: crate::shell::display_identify::DisplayIdentify,
     /// Shared toolkit capture selector. The shell only hosts it and drains
     /// semantic intents; compositor readback/encoding stays below this layer.
     capture_studio: ui::widget::CaptureStudio,
@@ -2949,6 +2953,10 @@ impl ShellOverlayHost {
     fn accessible_overlay_order(&self) -> Vec<AccessibleOverlay> {
         let mut order = Vec::with_capacity(7);
         let flags = self.overlay_flags();
+        // The display sheet is modal and drawn above every other overlay.
+        if flags.projection {
+            order.push(AccessibleOverlay::DisplayLayouts);
+        }
         if self.tab_menu.is_open() {
             order.push(AccessibleOverlay::TabContextMenu);
         }
@@ -3357,6 +3365,7 @@ impl ShellOverlayHost {
             activity_pending_reveal: None,
             collaborators_overlay: CollaboratorsOverlay::default(),
             projection_overlay: inputs.projection_overlay,
+            display_identify: crate::shell::display_identify::DisplayIdentify::default(),
             followed_peer: None,
             followed_room: None,
             follow_transition: ui::Transition::closed(),
@@ -4547,6 +4556,31 @@ impl ShellOverlayHost {
     /// The displays the host was last told about.
     pub fn output_geometry(&self) -> &[OutputGeometry] {
         &self.outputs
+    }
+
+    /// Start painting each display's number and name when Settings has
+    /// asked to identify displays since the last check. The compositor
+    /// calls this at its settings reload point.
+    pub fn poll_display_identify(&mut self) -> bool {
+        let outputs = if self.outputs.is_empty() {
+            vec![OutputGeometry {
+                x: 0.0,
+                width: self.rect.width(),
+                height: self.rect.height(),
+            }]
+        } else {
+            self.outputs.clone()
+        };
+        let started = self.display_identify.poll(&outputs, Instant::now());
+        if started && let Some(chrome) = self.chrome.as_ref() {
+            chrome.borrow_mut().bump();
+        }
+        started
+    }
+
+    /// The identify cards on screen right now, one per display.
+    pub fn display_identify_labels(&self) -> Vec<crate::shell::display_identify::IdentifyLabel> {
+        self.display_identify.labels(Instant::now()).to_vec()
     }
 
     /// Per-display strip widths: full extent plus width actually
@@ -12331,8 +12365,9 @@ impl ShellOverlayHost {
             *handled = true;
             return true;
         }
-        // Win+P — wireless display picker. Super specifically, so an
-        // application's Ctrl+P remains Print.
+        // Win+P — the display layout sheet. Super specifically, so an
+        // application's Ctrl+P remains Print. Once open, the sheet owns the
+        // chord itself: pressing it again moves to the next layout.
         if super_down
             && !shift_down
             && let Key::Character(s) = logical_key
@@ -12341,7 +12376,7 @@ impl ShellOverlayHost {
         {
             if !repeat {
                 let mut st = chrome.borrow_mut();
-                st.overlays.projection = !st.overlays.projection;
+                st.overlays.projection = true;
                 st.bump();
             }
             *handled = true;
@@ -18025,6 +18060,9 @@ impl Widget for ShellOverlayHost {
                         }
                     }
                 }
+                AccessibleOverlay::DisplayLayouts => {
+                    root.children.push(self.projection_overlay.accessibility());
+                }
                 AccessibleOverlay::ShortcutHelp => {
                     use settings_store::hardware::ShortcutAction;
                     let shortcuts = &self.shortcut_config;
@@ -18227,7 +18265,9 @@ impl Widget for ShellOverlayHost {
                 }
                 _ => None,
             },
-            AccessibleOverlay::MemberSheet | AccessibleOverlay::ShortcutHelp => None,
+            AccessibleOverlay::MemberSheet
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => None,
         }
     }
 
@@ -18267,7 +18307,8 @@ impl Widget for ShellOverlayHost {
             }
             AccessibleOverlay::Overview
             | AccessibleOverlay::MemberSheet
-            | AccessibleOverlay::ShortcutHelp => false,
+            | AccessibleOverlay::ShortcutHelp
+            | AccessibleOverlay::DisplayLayouts => false,
         }
     }
 
@@ -18434,7 +18475,8 @@ impl ShellOverlayHost {
         let follow_in_flight = self.follow_transition.is_animating(now);
         let room_replay_in_flight = self.room_activity.replay_is_playing();
         let capture_in_flight = self.capture_studio.needs_animation_frame();
-        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now);
+        let projection_needs_frame = self.projection_overlay.needs_animation_frame(now)
+            || self.display_identify.needs_frame(now);
         let sidebar_frame = self
             .sidebar
             .as_ref()
@@ -19248,6 +19290,8 @@ impl ShellOverlayHost {
         self.draw_collaborators_dropdown(scene, transform, text_renderer, theme, presence, flags);
         self.draw_room_activity_sheet(scene, transform, text_renderer, theme, presence, flags);
         self.draw_projection_sheet(scene, transform, text_renderer, theme, presence, flags);
+        self.display_identify
+            .draw(scene, transform, text_renderer, theme, Instant::now());
     }
 
     /// Ribbon and rail sit below Quick Settings and every popover.
@@ -27576,7 +27620,7 @@ mod palette_dispatch_tests {
             "Lock:Super+L",
             "Quick Settings:Super+Q",
             "Workspace wheel:Super+S",
-            "Wireless display:Super+P",
+            "Display layout:Super+P",
             "Capture screenshot:Super+Shift+S",
             "Picture in picture:Super+Shift+P",
             "Save recent replay:Super+Shift+R",
@@ -32376,7 +32420,7 @@ mod tests {
     }
 
     #[test]
-    fn super_p_opens_and_toggles_the_projection_sheet() {
+    fn super_p_opens_the_display_sheet_and_escape_closes_it() {
         let mut h = build_harness();
         let sup = Modifiers::from(ModifiersState::SUPER);
         assert!(!h.chrome.borrow().overlays.projection);
@@ -32384,14 +32428,21 @@ mod tests {
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
             h.chrome.borrow().overlays.projection,
-            "Win+P must open the OS-owned projection sheet"
+            "Win+P must open the OS-owned display sheet"
         );
 
         assert!(pump(&mut h, &key_press(Key::Character("p".into())), sup));
         assert!(
-            !h.chrome.borrow().overlays.projection,
-            "the same familiar chord closes the sheet again"
+            h.chrome.borrow().overlays.projection,
+            "pressing Win+P again moves between layouts; it does not close the sheet"
         );
+
+        assert!(pump(
+            &mut h,
+            &key_press(Key::Named(NamedKey::Escape)),
+            Modifiers::default()
+        ));
+        assert!(!h.chrome.borrow().overlays.projection);
     }
 
     #[test]

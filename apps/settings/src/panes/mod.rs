@@ -25,6 +25,7 @@ pub mod audio;
 pub mod bluetooth;
 pub mod device_mesh;
 pub mod display;
+pub mod display_arrangement;
 pub mod keyboard_shortcuts;
 pub mod mouse_keyboard;
 pub mod network;
