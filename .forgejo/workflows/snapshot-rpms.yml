@@ -168,7 +168,7 @@ jobs:
           file: os/Containerfile.rpms
           platforms: ${{ matrix.platform }}
           push: true
-          tags: code.podesta.ai/qos/rpms:native-${{ github.sha }}-${{ matrix.arch }}
+          tags: code.podesta.ai/qos/rpms:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           labels: org.opencontainers.image.revision=${{ github.sha }}
           build-args: |
             BASE_REF=${{ env.BASE_REF }}
