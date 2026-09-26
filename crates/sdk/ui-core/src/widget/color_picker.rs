@@ -235,7 +235,7 @@ impl ColorPicker {
     /// Poll for a user-driven colour change since the last call, draining
     /// the record — lets a retained-mode app read it each frame instead of
     /// wiring an `FnMut` that would have to borrow its own state. A
-    /// *programmatic* [`set_color`] is not reported here.
+    /// *programmatic* `set_color` is not reported here.
     pub fn take_changed(&mut self) -> Option<Color> {
         self.changed.take()
     }
@@ -390,7 +390,7 @@ impl ColorPicker {
     /// Push a new "current colour" into the picker from the outside.
     /// Updates the swatch/SV/hue/slider positions and the embedded hex
     /// field, but does NOT fire `on_change` or the `take_changed` record
-    /// — see [`take_changed`]. No-op when the colour is unchanged.
+    /// — see `take_changed`. No-op when the colour is unchanged.
     pub fn set_color(&mut self, color: Color) {
         if color.r() == self.color.r()
             && color.g() == self.color.g()
@@ -1330,7 +1330,7 @@ impl Widget for ColorPicker {
         Widget::ime_purpose(&self.hex_input)
     }
 
-    /// The colour picker reports [`Role::ComboBox`] — a selector whose
+    /// The colour picker reports `Role::ComboBox` — a selector whose
     /// value is the chosen colour as its canonical `#RRGGBB` hex string.
     /// The SV square, hue strip and channel sliders render inline (there is
     /// no separate open/closed state), so `expanded` is left unset.

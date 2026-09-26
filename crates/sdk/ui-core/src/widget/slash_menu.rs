@@ -1,5 +1,5 @@
 //! `SlashMenu` — block-type conversion popover triggered by `/` inside
-//! a [`BlockEditor`] block.
+//! a [`BlockEditor`](crate::widget::block_editor::BlockEditor) block.
 //!
 //! The menu is anchored at the caret position (logical pixels), lists
 //! every block kind the editor supports, and supports:
@@ -19,11 +19,11 @@
 //! ## Overlay drawing
 //!
 //! `SlashMenu` does NOT participate in the main draw pass — the parent
-//! ([`BlockEditor`] / `MainPanel`) must call [`SlashMenu::draw_overlay`]
+//! ([`BlockEditor`](crate::widget::block_editor::BlockEditor) / `MainPanel`) must call [`SlashMenu::draw_overlay`]
 //! AFTER the main draw so the popover lands on top of everything else.
-//! Same pattern as [`ContextMenu`]'s "draw last" convention.
+//! Same pattern as [`ContextMenu`](crate::widget::context_menu::ContextMenu)'s "draw last" convention.
 //!
-//! ## Why not [`crate::widget::CommandPalette`]?
+//! ## Why not `crate::widget::CommandPalette`?
 //!
 //! `CommandPalette` is a full-screen search affordance with a filter
 //! strip, kbd-chip footer, and a docked input row. The slash menu is
@@ -348,7 +348,7 @@ impl SlashMenu {
     }
 
     /// Commit the row under `pt` as if Enter were pressed on it — the chosen
-    /// [`BlockKind`] is both returned and queued via [`take_selected_kind`], and
+    /// [`BlockKind`] is both returned and queued via `take_selected_kind`, and
     /// the menu closes. Returns `None` (and leaves the menu open) when `pt`
     /// isn't on a row, so the caller can treat an off-row click as a dismiss.
     pub fn click_at(&mut self, pt: Point) -> Option<BlockKind> {
@@ -383,7 +383,7 @@ impl SlashMenu {
     /// consumed (so the parent can stop propagating it).
     ///
     /// This is the `SlashMenu`'s "active" event handler — wired into
-    /// [`BlockEditor::handle_event`] which redirects keystrokes here
+    /// `BlockEditor::handle_event` which redirects keystrokes here
     /// whenever the menu is visible. The widget does NOT register
     /// itself in the `Widget` trait's `handle_event` chain because it
     /// has no taffy node — it's an overlay, not a layout participant.

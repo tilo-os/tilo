@@ -143,7 +143,7 @@ impl SearchRegistry {
         results
     }
 
-    /// Sorted by descending [`rank_key`](Self::rank_key); ties keep provider
+    /// Sorted by descending `rank_key`; ties keep provider
     /// registration order (a stable sort), so ranking is deterministic.
     pub fn query(&self, query: &str) -> Vec<SearchResult> {
         let mut all: Vec<SearchResult> = Vec::new();

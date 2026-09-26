@@ -1,7 +1,7 @@
 //! The shared multi-line code-editing widget: a retained [`Widget`] that
 //! puts real code editing — caret, selection (shift/drag, word-wise),
 //! clipboard, undo/redo, IME, and a multiline a11y node — on the *same*
-//! [`TextInput`](crate::widget::TextInput) core every other text field
+//! [`TextInput`] core every other text field
 //! uses. On top of that it adds a **gutter** with line numbers and a
 //! current-line highlight, **syntax highlighting** through a pluggable
 //! [`Highlighter`] (the widget owns rendering/caret/selection, the app

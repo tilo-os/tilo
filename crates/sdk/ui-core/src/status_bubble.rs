@@ -82,7 +82,7 @@ impl StatusBubble {
     }
 
     /// Fully opaque while hovered or fresh, ramping to zero across the
-    /// final [`FADE`] of the linger.
+    /// final `FADE` of the linger.
     pub fn alpha(&self, now: Instant) -> f32 {
         if self.hovered {
             return 1.0;

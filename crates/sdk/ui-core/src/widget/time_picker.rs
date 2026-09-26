@@ -661,7 +661,7 @@ impl Widget for TimePicker {
         self.is_focused
     }
 
-    /// The time picker reports [`Role::ComboBox`] — a selector whose value
+    /// The time picker reports `Role::ComboBox` — a selector whose value
     /// is the chosen time as `HH:MM` (or `HH:MM:SS` when the seconds spinner
     /// is enabled). The spinners render inline, so `expanded` is left unset.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {

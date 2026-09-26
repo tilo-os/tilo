@@ -698,7 +698,7 @@ impl Colors {
     /// The colour of the film a glass surface is made of. **Not white** —
     /// `surface_white_*` only works over a dark ground. Glass takes its
     /// colour from what it's made of, so the film is the theme's raised
-    /// tier carried one derived step further ([`GLASS_FILM_LIFT`]), opaque
+    /// tier carried one derived step further (`GLASS_FILM_LIFT`), opaque
     /// (alpha belongs to the state painting it, not the material).
     ///
     /// The step follows [`Colors::lifts_bright`], not [`Colors::hairline_on`]'s
@@ -719,7 +719,7 @@ impl Colors {
     /// silhouette since the shell never samples the app's pixels inside it,
     /// so one constant stroked over app content would read as a soft rim
     /// light over a dark app and a glaring line over a light one.
-    /// [`crate::widget::tile_host::TileHost`] owns the matching geometry.
+    /// `crate::widget::tile_host::TileHost` owns the matching geometry.
     ///
     /// A preset's declared [`Surfaces::window_card_border`] is honoured
     /// wherever it registers; only a declaration the ground would swallow

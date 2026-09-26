@@ -231,7 +231,7 @@ pub enum Politeness {
 /// The per-widget *local* accessibility semantics returned by
 /// [`Widget::accessibility`](crate::widget::Widget::accessibility);
 /// `name`/`description` must already be **FTL-resolved** strings (via
-/// [`i18n!`](crate::i18n)), not translation keys, since AccessKit/AT-SPI
+/// [`i18n!`](macro@crate::i18n)), not translation keys, since AccessKit/AT-SPI
 /// consume final text.
 #[must_use]
 #[derive(Clone, Debug, PartialEq, serde::Serialize)]

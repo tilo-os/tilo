@@ -323,7 +323,7 @@ impl Dropdown {
     }
 
     /// Place the dropdown at an absolute rect without going through taffy —
-    /// the counterpart to [`TextInput::apply_layout_external`]. The open
+    /// the counterpart to `TextInput::apply_layout_external`. The open
     /// list still paints in the overlay pass, so only the closed control's
     /// box is caller-driven; focus / a11y / CRDT-bound selection are unaffected.
     pub fn apply_layout_external(&mut self, rect: Rect) {

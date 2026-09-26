@@ -228,7 +228,7 @@ impl<C: Widget> ModalDialog<C> {
         self
     }
 
-    /// Same shape as [`primary_action`] but renders with the muted
+    /// Same shape as `primary_action` but renders with the muted
     /// (raised-surface) treatment.
     #[must_use]
     pub fn secondary_action(

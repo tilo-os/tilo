@@ -7,9 +7,9 @@
 //!
 //! A track with one tick per change is unusable for a document: a
 //! debounced editor produces hundreds of them and they smear into a grey
-//! band. Installing groups ([`Self::set_groups`]) adds a segment band above
+//! band. Installing groups (`Self::set_groups`) adds a segment band above
 //! the track and snaps the handle to boundaries; per-change resolution stays
-//! one toggle away ([`Self::set_snap_to_groups`]). No groups installed is the
+//! one toggle away (`Self::set_snap_to_groups`). No groups installed is the
 //! degenerate case — every change is a tick, nothing snaps — not a separate
 //! mode.
 

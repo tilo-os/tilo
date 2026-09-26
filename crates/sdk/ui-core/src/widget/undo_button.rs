@@ -1,6 +1,6 @@
 //! The toolkit's Undo / Redo control.
 //!
-//! `UndoButton` reads the host-published [`UndoStatus`](crate::undo::UndoStatus),
+//! `UndoButton` reads the host-published [`UndoStatus`],
 //! exposes the same availability to assistive technology, and asks the host to
 //! perform the verb through the same path as Ctrl+Z. It provides a discoverable
 //! pointer and screen-reader control for Undo and Redo.
