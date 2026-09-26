@@ -572,6 +572,7 @@ impl App {
         // widget/document authority, and it always runs on the App owner
         // thread.
         self.pump_action_directory_requests();
+        self.sync_joined_records();
         self.refresh_document_routes();
         self.drain_document_routes();
         self.publish_owned_documents();
@@ -596,6 +597,46 @@ impl App {
             self.publish_action_surface();
         }
         any
+    }
+
+    /// Tell every widget's [`crate::record::JoinedRecords`] who this device
+    /// is, bring the records they created into the room's index, and tell
+    /// the widgets when that index changed. The index delta then leaves on
+    /// the room route like any other; one made only of this device's own
+    /// comment references is signed `Comment`.
+    pub(super) fn sync_joined_records(&mut self) {
+        fn visit(
+            widget: &dyn crate::widget::Widget,
+            author: Option<[u8; 32]>,
+            references: &mut Vec<crate::record::RecordCheckout>,
+        ) {
+            if let Some(joined) = widget.joined_records() {
+                // A device key does not change while an app runs; before
+                // collaboration connects there is simply none to tell.
+                if author.is_some() {
+                    joined.set_comment_author(author);
+                }
+                references.extend(joined.take_references());
+            }
+            for child in widget.children() {
+                visit(child, author, references);
+            }
+        }
+        let author = self.comment_author();
+        let mut references = Vec::new();
+        visit(self.root_widget.as_ref(), author, &mut references);
+        let Some(index) = self.persistence.room_index.as_mut() else {
+            return;
+        };
+        for checkout in &references {
+            crate::record::room::reference(index.document_mut(), &checkout.id, &checkout.kind);
+        }
+        let heads = index.document_mut().get_heads();
+        if self.persistence.room_index_seen.as_ref() != Some(&heads) {
+            self.persistence.room_index_seen = Some(heads);
+            self.root_widget.room_index_changed(index.document());
+            self.needs_sync = true;
+        }
     }
 
     /// The device key this app signs document changes with, once connected:

@@ -227,6 +227,8 @@ pub(super) struct PersistenceRuntime {
     /// The live document belongs to the record selected by the root widget.
     pub(super) records: Option<crate::record::RecordSet>,
     pub(super) room_index: Option<crate::state::DocumentReplica>,
+    /// The index heads widgets were last told about.
+    pub(super) room_index_seen: Option<Vec<automerge::ChangeHash>>,
 }
 
 impl PersistenceRuntime {
@@ -235,6 +237,7 @@ impl PersistenceRuntime {
             autosave: None,
             records: None,
             room_index: None,
+            room_index_seen: None,
         }
     }
 }

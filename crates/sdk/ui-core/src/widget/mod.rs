@@ -810,6 +810,23 @@ pub trait Widget {
         self.callback_binding().is_some() || self.record_intent().is_some()
     }
 
+    /// The set of records this widget shows and edits, when it holds more
+    /// than the one its host binds (see [`crate::record::JoinedRecords`]). The
+    /// host joins each one's route, merges remote changes into it, publishes
+    /// the widget's own edits and brings the records it creates into the room.
+    fn joined_records(&self) -> Option<&crate::record::JoinedRecords> {
+        None
+    }
+
+    /// The room's record index changed — a member brought a record into the
+    /// room, or this app did. A widget listing records the room holds (the
+    /// comments on something) reads the new list here.
+    fn room_index_changed(&mut self, index: &AutoCommit) {
+        for child in self.children_mut() {
+            child.room_index_changed(index);
+        }
+    }
+
     /// Opaque actual custody for framework History source registration.
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
         self.callback_binding()

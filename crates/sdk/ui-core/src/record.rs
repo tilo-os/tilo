@@ -17,7 +17,10 @@
 //!
 //! [`RecordSet`] owns the open records and hands the active one to the
 //! toolkit; [`tick`] parks the outgoing document and checks the named one
-//! in each frame. Not all app state is a record — a theme or account stays
+//! in each frame. A widget that shows many records at once — a
+//! conversation whose messages each belong to their author — holds them as
+//! [`JoinedRecords`]: the host joins, merges and publishes each one, and
+//! brings the ones it creates into the room. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
 use std::collections::{BTreeMap, HashMap};
@@ -26,6 +29,9 @@ use std::rc::Rc;
 use tilo_automerge::ApplyIncoming;
 
 use durable_store::{DurableStore, StorageKey};
+
+mod joined;
+pub use joined::{JoinedRecords, MAX_JOINED_RECORDS};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};

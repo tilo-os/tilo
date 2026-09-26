@@ -152,6 +152,19 @@ part of the result row. Drag onto a workspace spoke in the wheel disc stays as
 the bulk gesture, for when you are moving several things and already have them
 in front of you.
 
+## One surface, many records
+
+A view often shows many records at once: a conversation whose messages each
+belong to their author, a mailbox, the annotations on a folder. The widget
+holds them as `ui::record::JoinedRecords` (`crates/sdk/ui-core/src/record/joined.rs`).
+The host joins each record's route, merges remote changes into it, publishes
+the widget's own edits, and brings each record the widget creates into the
+room's index, which is how the other members find it. A record the device may
+write is kept in the widget's record store. Somebody else's comment record is
+followed instead: an in-memory replica that only its author's changes fill
+and that is never published to. The set is bounded, so a surface joins the
+records it shows rather than the whole room.
+
 ## History nests: room outside, record inside
 
 A room's own history is the log of actions on the room **as a resource** —

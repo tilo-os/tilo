@@ -606,6 +606,14 @@ pub trait Decorator {
             .on_workspace_request_finished(address, result);
     }
 
+    fn joined_records(&self) -> Option<&crate::record::JoinedRecords> {
+        self.inner().joined_records()
+    }
+
+    fn room_index_changed(&mut self, index: &AutoCommit) {
+        self.inner_mut().room_index_changed(index);
+    }
+
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         self.inner().control_action_bindings()
     }
@@ -1391,6 +1399,14 @@ impl<T: Decorator> Widget for T {
         result: &Result<(), String>,
     ) {
         Decorator::on_workspace_request_finished(self, address, result);
+    }
+
+    fn joined_records(&self) -> Option<&crate::record::JoinedRecords> {
+        Decorator::joined_records(self)
+    }
+
+    fn room_index_changed(&mut self, index: &AutoCommit) {
+        Decorator::room_index_changed(self, index);
     }
 
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {

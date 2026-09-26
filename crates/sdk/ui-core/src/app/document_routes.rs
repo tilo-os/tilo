@@ -263,11 +263,75 @@ impl App {
             self.layout.layout_dirty = true;
         }
     }
+    /// A change on a route a widget follows: somebody else's record, merged
+    /// into the widget's replica. Only the record's own author may have made
+    /// it. Returns whether the envelope was on a followed route at all.
+    fn apply_followed_document_envelope(
+        &mut self,
+        envelope: &collab_types::SignedOp,
+        decrypted_payload: Option<&[u8]>,
+    ) -> bool {
+        let Some(follower) = self
+            .document_routes
+            .followers
+            .iter()
+            .find(|follower| matches_route(&follower.route, envelope))
+        else {
+            return false;
+        };
+        let record = follower.route.record.clone().unwrap_or_default();
+        if collab_types::check_document_route(&record, envelope.op_class, &envelope.author).is_err()
+            || !collab_types::is_comment_record_of(&record, &envelope.author)
+        {
+            tracing::warn!(
+                record,
+                "collab: refused a followed record's change from somebody else"
+            );
+            return true;
+        }
+        if envelope.encryption.is_some() && decrypted_payload.is_none() {
+            return true;
+        }
+        let mutation = match collab_types::DocumentMutation::decode(
+            decrypted_payload.unwrap_or(&envelope.payload),
+        ) {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                tracing::warn!(%error, "collab: invalid followed document mutation");
+                return true;
+            }
+        };
+        let merged = follower
+            .replica
+            .try_borrow_mut()
+            .map_or(Ok(false), |mut replica| {
+                crate::history_mode::routes::merge_committed(&mut replica, &mutation)
+            });
+        match merged {
+            Ok(true) => {
+                self.invalidate_widget_resource_cache();
+                self.needs_sync = true;
+                self.layout.layout_dirty = true;
+            }
+            Ok(false) => {}
+            Err(error) => {
+                tracing::warn!(%error, record, "collab: a followed record could not be merged")
+            }
+        }
+        true
+    }
+
     pub(super) fn apply_signed_document_envelope(
         &mut self,
         envelope: &collab_types::SignedOp,
         decrypted_payload: Option<&[u8]>,
     ) {
+        // A followed record's route names that record; it is never the
+        // unqualified room-index route nor the primary document.
+        self.refresh_document_routes();
+        if self.apply_followed_document_envelope(envelope, decrypted_payload) {
+            return;
+        }
         // Before the first record checkout the launcher's unqualified route
         // carries room-index discovery, never the editable record document.
         if self.persistence.records.is_some() && self.collaboration.room_manager.is_none() {

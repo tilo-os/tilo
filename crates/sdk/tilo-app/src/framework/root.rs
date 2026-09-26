@@ -253,6 +253,14 @@ impl<R: Resource> Decorator for ResourceRoot<R> {
         self.content.on_workspace_request_finished(address, result);
     }
 
+    fn joined_records(&self) -> Option<&ui_core::record::JoinedRecords> {
+        self.content.joined_records()
+    }
+
+    fn room_index_changed(&mut self, index: &AutoCommit) {
+        self.content.room_index_changed(index);
+    }
+
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending() || self.content.has_pending_control_invocation()
     }

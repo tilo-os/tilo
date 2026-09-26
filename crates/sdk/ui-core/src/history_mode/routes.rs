@@ -176,10 +176,17 @@ pub(crate) struct OwnerRoute {
     /// Why local changes on this route are not reaching peers.
     pub(crate) outbound_failure: Option<String>,
 }
+/// A replica of somebody else's record, joined to receive their changes and
+/// never published to: only the author may write it.
+pub(crate) struct FollowerRoute {
+    pub(crate) route: RouteSpec,
+    pub(crate) replica: std::rc::Rc<std::cell::RefCell<AutoCommit>>,
+}
 #[derive(Default)]
 pub(crate) struct OwnerDocumentRoutes {
     pub(crate) witness: Option<PrimaryRouteWitness>,
     pub(crate) owners: Vec<OwnerRoute>,
+    pub(crate) followers: Vec<FollowerRoute>,
     pub(crate) primary: PendingRemote,
     pub(crate) primary_generation: u64,
     pub(crate) status: Option<String>,
@@ -205,14 +212,23 @@ impl OwnerDocumentRoutes {
         generation: u64,
         outer: &AutoCommit,
     ) -> Vec<RouteSpec> {
-        fn collect(root: &dyn Widget, owners: &mut Vec<HistoryOwner>) {
+        type Followers = Vec<(RouteSpec, std::rc::Rc<std::cell::RefCell<AutoCommit>>)>;
+        fn collect(root: &dyn Widget, owners: &mut Vec<HistoryOwner>, followers: &mut Followers) {
             if let Some(owner) = root.history_owner()
                 && !owners.iter().any(|existing| existing.same_owner(&owner))
             {
                 owners.push(owner);
             }
+            if let Some(joined) = root.joined_records() {
+                for owner in joined.owners() {
+                    if !owners.iter().any(|existing| existing.same_owner(&owner)) {
+                        owners.push(owner);
+                    }
+                }
+                followers.extend(joined.followers());
+            }
             for child in root.children() {
-                collect(child, owners);
+                collect(child, owners, followers);
             }
         }
         if self.witness != witness || self.primary_generation != generation {
@@ -221,6 +237,7 @@ impl OwnerDocumentRoutes {
                 self.status = Some("Document connection or owner changed while remote updates were pending. Reconnect and synchronize before continuing.".into());
             }
             self.owners.clear();
+            self.followers.clear();
             self.retired.clear();
             self.primary = PendingRemote::default();
             self.witness = witness;
@@ -230,9 +247,10 @@ impl OwnerDocumentRoutes {
             return vec![];
         }
         let mut current = vec![];
-        collect(root, &mut current);
+        let mut followed: Followers = vec![];
+        collect(root, &mut current, &mut followed);
         // Hidden live subtrees retain their admitted collaboration owners.
-        root.visit_framework_history(&mut |_, live| collect(live, &mut current));
+        root.visit_framework_history(&mut |_, live| collect(live, &mut current, &mut followed));
         self.owners.retain_mut(|entry| {
             entry.owners.retain(|owner| current.iter().any(|actual| actual.same_owner(owner)) && owner.validate().is_ok());
             if entry.owners.is_empty() {
@@ -242,6 +260,18 @@ impl OwnerDocumentRoutes {
             !entry.owners.is_empty()
         });
         let mut joins = vec![];
+        // Followers are exactly what the widgets follow now; a new one joins.
+        let previous: HashSet<RouteSpec> = self.followers.iter().map(|f| f.route.clone()).collect();
+        self.followers = followed
+            .into_iter()
+            .filter(|(route, _)| !self.retired.contains(route))
+            .map(|(route, replica)| {
+                if !previous.contains(&route) {
+                    joins.push(route.clone());
+                }
+                FollowerRoute { route, replica }
+            })
+            .collect();
         for owner in current {
             let Some(route) = owner.broker_route() else {
                 continue;

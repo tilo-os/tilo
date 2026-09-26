@@ -2455,6 +2455,10 @@ mod local_privacy_tests;
 #[path = "app/large_document_tests.rs"]
 mod large_document_tests;
 
+#[cfg(test)]
+#[path = "app/joined_records_tests.rs"]
+mod joined_records_tests;
+
 /// Finish the current writer and every retained outgoing-owner failure before
 /// reporting widget-owned durability. Reports remain owned by the runner.
 ///
