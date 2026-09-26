@@ -338,6 +338,9 @@ pub enum BackendEvent {
         x: f64,
         y: f64,
     },
+    /// An accessibility filter rejected input (a bounce-keys press) and the
+    /// user asked to see it: flash the shell's visual alert.
+    VisualAlert,
     Redraw,
     Focus(bool),
 }
@@ -477,6 +480,15 @@ pub trait Backend {
     /// independently of idle blanking ([`Self::set_dpms`]). Default no-op
     /// for backends with no physical panel.
     fn set_output_power(&mut self, _output: OutputId, _on: bool) {}
+
+    /// Turn the built-in panel to `rotation` because the device was turned
+    /// (`None` restores its configured transform). External monitors never
+    /// follow. Default no-op for backends without a built-in panel.
+    fn set_device_rotation(
+        &mut self,
+        _rotation: Option<settings_store::hardware::OutputTransform>,
+    ) {
+    }
 
     /// Re-establish the display after the system came back from suspend.
     ///

@@ -1,5 +1,9 @@
 //! Pure, versioned schema and structural editor for Tilo serialized UI graphs.
 
+mod edit;
+
+pub use edit::{UiGraphEdit, parse_ui_graph_edits};
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
@@ -737,6 +741,22 @@ pub enum UiGraphError {
     Poisoned,
     #[error("the UI graph changed while this edit was being prepared; retry against the new graph")]
     ConcurrentEdit,
+    #[error("UI graph I/O error: {0}")]
+    Io(String),
+    #[error("UI graph edit batch must contain at least one edit")]
+    EmptyEditBatch,
+    #[error("UI graph edit {index} failed: {message}")]
+    EditFailed { index: usize, message: String },
+    #[error("UI node {id:?} has invalid property path {property:?}")]
+    InvalidPropertyPath { id: String, property: String },
+    #[error("UI node {id:?} has no property {property:?}")]
+    UnknownProperty { id: String, property: String },
+    #[error("property {property:?} is not valid for UI node {id:?}: {message}")]
+    InvalidPropertyValue {
+        id: String,
+        property: String,
+        message: String,
+    },
 }
 
 #[cfg(test)]

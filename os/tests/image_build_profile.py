@@ -422,7 +422,9 @@ print('sha256:' + '6' * 64)
             env=self.env | overrides,
             text=True,
             capture_output=True,
-            timeout=10,
+            # The builder runs against stubs in well under a second; the bound
+            # only catches a hang, so a loaded runner must not trip it.
+            timeout=120,
             check=False,
         )
 

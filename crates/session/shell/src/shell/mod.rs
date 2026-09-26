@@ -20,6 +20,7 @@
 
 pub mod actions;
 pub(crate) mod animation_diagnostics;
+pub mod automation_folders;
 pub mod automation_host;
 pub mod automation_triggers;
 pub(crate) mod capture_surface;
@@ -109,14 +110,18 @@ pub mod remote_cursors;
 pub mod render;
 pub mod room_activity;
 pub mod room_records;
+pub mod screenshot_send;
 pub mod search;
 pub mod service_members;
 pub mod session_audio_policy;
 pub mod session_policy;
 pub mod sidebar_wheel_disc;
 pub mod spatial_calibration;
+pub mod speaker_calibration;
 pub mod speaker_group;
+pub mod speaker_group_audio;
 pub mod speaker_group_runtime;
+pub mod speaker_settings;
 pub mod split_row;
 pub mod state;
 pub mod status;
@@ -1240,6 +1245,9 @@ pub fn to_ui_window_group_with_inputs(
 /// [`doc_open::open_in_workspace`] — the explorer asks, the compositor
 /// answers. Named so a test can install it against its own chrome too.
 pub fn install_document_opener(chrome: &chrome_state::Chrome) {
+    file_explorer::open_with::set_open_with_route(std::rc::Rc::new(ShellOpenWithRoute {
+        chrome: chrome.clone(),
+    }));
     let chrome = chrome.clone();
     file_explorer::files_app::set_document_opener(move |path| {
         let native_app = { chrome.borrow().hosted_inputs.native_app_for_path(path) };
@@ -1286,6 +1294,49 @@ pub fn install_document_opener(chrome: &chrome_state::Chrome) {
             .map(|_| ())
             .map_err(|e| e.user_message())
     });
+}
+
+/// Files' "Open With": candidates, launches and defaults all come from
+/// [`doc_open`], under the active workspace's policy and the local person.
+struct ShellOpenWithRoute {
+    chrome: chrome_state::Chrome,
+}
+
+impl file_explorer::open_with::OpenWithRoute for ShellOpenWithRoute {
+    fn candidates(&self, path: &std::path::Path) -> file_explorer::open_with::OpenWithCandidates {
+        let apps = {
+            let state = self.chrome.borrow();
+            let tree = state.tree();
+            doc_open::open_with_choices(
+                path,
+                &state.local_user_id,
+                tree.desktop
+                    .active_workspace()
+                    .map(|workspace| &workspace.default_apps),
+            )
+        };
+        file_explorer::open_with::OpenWithCandidates {
+            type_label: doc_open::type_label(path),
+            apps: apps
+                .into_iter()
+                .map(|choice| file_explorer::open_with::OpenWithApp {
+                    id: choice.id,
+                    name: choice.name,
+                    is_default: choice.is_default,
+                })
+                .collect(),
+        }
+    }
+
+    fn open_with(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::open_with_app(path, &self.chrome, app_id)
+            .map(|_| ())
+            .map_err(|error| error.user_message())
+    }
+
+    fn set_default(&self, path: &std::path::Path, app_id: &str) -> Result<(), String> {
+        doc_open::set_personal_default(path, app_id)
+    }
 }
 
 /// The production entry point: threads the *shared* [`WorkspaceTreeHandle`](crate::shell::state::WorkspaceTreeHandle)

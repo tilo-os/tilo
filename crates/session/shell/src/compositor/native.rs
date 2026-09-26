@@ -4,7 +4,7 @@
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 
 use crate::shell::input_policy::{
-    is_lock_chord, is_remote_input_kill_switch, winit_event_to_lock_key,
+    is_lock_chord, is_mouse_keys_toggle, is_remote_input_kill_switch, winit_event_to_lock_key,
 };
 pub use crate::shell::session_policy::*;
 use crate::shell::state::WorkspaceAuthority as _;
@@ -1436,7 +1436,7 @@ impl TestControlConn {
         }
         if ready < 0 {
             let error = std::io::Error::last_os_error();
-            eprintln!("nirios compositor: test_control connection check: {error}");
+            eprintln!("tilo compositor: test_control connection check: {error}");
             return true;
         }
         descriptor.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0
@@ -1901,6 +1901,9 @@ impl ControlState for FrameBuilderControlState<'_> {
         // The hosted file manager's drag, if in flight, and whether the compositor took it over to a client.
             "files_drag": file_explorer::external_drag::unclaimed().map(|d| d.paths),
             "files_drag_handed_off": file_explorer::external_drag::is_handed_off(),
+            // The compositor-owned sheet on screen (portal review, polkit,
+            // network secrets); masked values appear only as their length.
+            "portal_dialog": self.fb.host().portal_dialog_state_json(),
             "editing_workspace_name": chrome.editing_workspace_name,
             "pending_grants_count": chrome.pending_grants.len(),
         // Mirrored from the SessionManager each tick; lets a headless test observe lock/unlock transitions.
@@ -2944,7 +2947,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
         let pending = &conn.output[conn.output_offset..];
         match conn.reader.get_mut().write(pending) {
             Ok(0) => {
-                eprintln!("nirios compositor: test_control write: disconnected");
+                eprintln!("tilo compositor: test_control write: disconnected");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -2953,7 +2956,7 @@ fn flush_test_control_output(conn: &mut TestControlConn) -> PendingConnectionPro
                 return PendingConnectionProgress::OutputPending;
             }
             Err(error) => {
-                eprintln!("nirios compositor: test_control write: {error}");
+                eprintln!("tilo compositor: test_control write: {error}");
                 conn.closed = true;
                 return PendingConnectionProgress::Closed;
             }
@@ -3856,6 +3859,9 @@ enum PriorityRoute {
     VtSwitch(i32),
     RemoteInputKillSwitch,
     LockSession,
+    /// Shift+Alt+Num Lock flips mouse keys; it works whichever client has
+    /// focus, since the person who needs it may have no other pointer.
+    ToggleMouseKeys,
     /// Nothing claims the event ahead of spatial forwarding, input capture
     /// and ordinary client/chrome routing.
     Continue,
@@ -3888,6 +3894,8 @@ fn priority_route(
         PriorityRoute::RemoteInputKillSwitch
     } else if is_lock_chord(event, modifiers, shortcuts) {
         PriorityRoute::LockSession
+    } else if is_mouse_keys_toggle(event, modifiers) {
+        PriorityRoute::ToggleMouseKeys
     } else if let Some(key) = media_key {
         PriorityRoute::MediaKey(key)
     } else {
@@ -4494,11 +4502,15 @@ fn install_session_peer_sync(
     tracing::info!("peer-sync: actor spawned, default workspace joined");
     let net = Arc::new(handle);
     install_wifi_secret_bridge(frame_builder.host_mut(), Arc::clone(&net));
+    crate::network_secrets::store::RoamingWifiSlot::global().set(Arc::clone(&net) as _);
     install_device_fabric_bridge(
         frame_builder.host_mut(),
         Arc::clone(&net),
         tree_handle.clone(),
     );
+    frame_builder.host_mut().set_personal_devices(Arc::new(
+        crate::shell::device_fabric_runtime::FabricDeviceDirectory::new(Arc::clone(&net)),
+    ));
     let stream_net = Arc::clone(&net);
     state.set_legacy_stream_publisher(Arc::new(move |message| {
         stream_net.publish_legacy_active(message)
@@ -5406,6 +5418,21 @@ pub fn run() {
         std::process::exit(1);
     }
     crate::compositor::foreign::install_completion_ping(&capture_ping);
+    // Convertibles: the accelerometer turns the built-in panel. The ping
+    // only wakes the loop; the change itself is drained below.
+    let device_rotation = match calloop::ping::make_ping() {
+        Ok((ping, source)) => match event_loop.handle().insert_source(source, |(), (), _| {}) {
+            Ok(_) => crate::compositor::device_rotation::spawn(move || ping.ping()),
+            Err(error) => {
+                tracing::warn!(%error, "could not register the device rotation wake source");
+                None
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%error, "could not create the device rotation wake source");
+            None
+        }
+    };
 
     // Accept readiness is also part of the outer loop. Accepted streams get
     // their own source below; this source prevents the first request from
@@ -5953,6 +5980,7 @@ pub fn run() {
     // A media player's answer to a transport key, as the OSD to raise.
     let (transport_osd, transport_osds) =
         crate::session_runtime::mailbox::<crate::shell::osd::Osd>(Arc::clone(&session_wake));
+    let mut super_tap = crate::shell::input_policy::SuperTap::default();
 
     // Idle / DPMS-blank / session-lock state machine (pure logic, see
     // `compositor::idle`); transitions become `backend.set_dpms` calls and
@@ -6114,6 +6142,23 @@ pub fn run() {
                 crate::shell::portal_dialog::PortalDialogQueue::global(),
             ),
             |_| tracing::info!("polkit: authentication agent registered for this session"),
+        )
+    });
+
+    // NetworkManager secret agent: a Wi-Fi password that changed, 802.1X
+    // sign-in, VPN secrets and SIM PINs become a sheet only the compositor
+    // draws, instead of a connection that silently fails.
+    let network_secret_agent: Option<
+        crate::session_runtime::Registration<crate::network_secrets::service::AgentHandle>,
+    > = notif_runtime.map(|rt| {
+        crate::session_runtime::Registration::start(
+            rt.handle(),
+            "network secret agent",
+            crate::network_secrets::service::serve(
+                crate::shell::portal_dialog::PortalDialogQueue::global(),
+                crate::network_secrets::store::RoamingWifiSlot::global(),
+            ),
+            |_| tracing::info!("network: secret agent registered with NetworkManager"),
         )
     });
 
@@ -6552,6 +6597,14 @@ pub fn run() {
                     // Physical priority: the host's own keyboard/mouse blocks every remote
                     // peer for the next half second, stamped at the funnel so lock/VT/power-key branches count as takeover too.
                     state.remote_input_firewall.note_local_input(Instant::now());
+                    // A lone Super tap opens global search. Observed ahead of every
+                    // branch below, so a chord one of them handles still disarms it.
+                    if super_tap.observe(wev) && !session.is_locked() {
+                        frame_builder
+                            .host_mut()
+                            .open_global_search(&test_control_ctx.doc, &test_control_ctx.root_obj);
+                        session_changed = true;
+                    }
 
                     let locked = session.is_locked();
                     let route = priority_route(
@@ -6674,6 +6727,16 @@ pub fn run() {
                                 present_pipe.as_ref(),
                                 &mut screen_dimmer,
                             );
+                        }
+                    } else if route == PriorityRoute::ToggleMouseKeys {
+                        // The compositor applies the flipped preference on its
+                        // next settings poll; the readout confirms it now.
+                        if let Some(osd) = settings_store::settings_path()
+                            .as_deref()
+                            .and_then(crate::shell::media_keys::toggle_mouse_keys)
+                        {
+                            frame_builder.with_chrome(|st| publish_media_osd(st, osd));
+                            session_changed = true;
                         }
                     } else if let PriorityRoute::MediaKey(mk) = route {
                         // Hardware media/brightness/machine keys belong to the machine, not
@@ -6913,6 +6976,10 @@ pub fn run() {
                         }
                     }
                 }
+                BackendEvent::VisualAlert => {
+                    frame_builder.with_chrome(|st| st.flash_visual_alert(Instant::now()));
+                    session_changed = true;
+                }
                 BackendEvent::Redraw => {
                     // Redraw is implicit: the native loop paints every tick.
                 }
@@ -7077,6 +7144,12 @@ pub fn run() {
         }
         for (output, on) in state.output_management.take_power_requests() {
             backend.set_output_power(output, on);
+        }
+        if let Some(rotation) = device_rotation
+            .as_ref()
+            .and_then(|changes| changes.try_iter().last())
+        {
+            backend.set_device_rotation(Some(rotation));
         }
         if state.output_management.take_staged_by_tool() {
             frame_builder.with_chrome(|chrome| {
@@ -7474,6 +7547,13 @@ pub fn run() {
                     toplevel.send_close();
                 }
                 state.close_sheets_over(surface_id);
+            }
+            let mut fullscreen_toggle = false;
+            frame_builder.with_chrome(|chrome| {
+                fullscreen_toggle = chrome.take_fullscreen_toggle_request();
+            });
+            if fullscreen_toggle {
+                toggle_focused_client_fullscreen(&mut state, &mut frame_builder);
             }
 
             // Protocol callbacks and the frame builder share one tree handle, so
@@ -8517,6 +8597,27 @@ pub fn run() {
                             // shell receipt, so a second notification would
                             // obscure work and split the next action.
                             tracing::info!(path = %path.display(), "screenshot saved");
+                            frame_builder.host_mut().set_capture_send_devices(
+                                peer_sync.as_deref().map_or_else(Vec::new, |network| {
+                                    crate::shell::screenshot_send::online_devices(network)
+                                }),
+                            );
+                        }
+                        CaptureOutcome::ScreenshotSendRequested { path, target } => {
+                            let mut bridge = crate::shell::screenshot_send::FabricSendBridge {
+                                network: peer_sync.as_deref(),
+                                workspace_root: crate::shell::screenshot_send::workspace_files_root(
+                                ),
+                            };
+                            match crate::shell::screenshot_send::route(&path, &target, &mut bridge)
+                            {
+                                Ok(receipt) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_notification("Screenshot sent", receipt.message());
+                                }),
+                                Err(error) => frame_builder.with_chrome(|chrome| {
+                                    chrome.push_error_notification("Screenshot not sent", error);
+                                }),
+                            }
                         }
                         CaptureOutcome::Copied { width, height } => {
                             tracing::info!(width, height, "screenshot copied");
@@ -9036,6 +9137,7 @@ pub fn run() {
     drop(notif_handle);
     drop(tray_handle);
     drop(polkit_agent);
+    drop(network_secret_agent);
 }
 
 /// Publish a successful machine-level change to every shell surface that
@@ -9081,7 +9183,8 @@ fn sync_quick_settings_from_osd(
         | crate::shell::osd::OsdKind::KeyboardBacklight
         | crate::shell::osd::OsdKind::NoBacklight
         | crate::shell::osd::OsdKind::Touchpad { .. }
-        | crate::shell::osd::OsdKind::PointerHeld { .. } => {}
+        | crate::shell::osd::OsdKind::PointerHeld { .. }
+        | crate::shell::osd::OsdKind::MouseKeys { .. } => {}
     }
 }
 
@@ -10964,6 +11067,7 @@ mod tests {
                 app_id: "so.tilo.reader".into(),
                 resource: "book:architecture/chapter:7".into(),
                 label: "Rendering and state".into(),
+                kind: String::new(),
             });
         let state = FrameBuilderControlState {
             fb: &fb,
@@ -11532,6 +11636,37 @@ fn apply_shell_gesture(
 /// above the normal tiled scene.  The requested `wl_output` wins; if it was
 /// removed, use the output currently containing the window's centre, then the
 /// first live output as a deterministic hotplug fallback.
+/// The full-screen chord: the focused Wayland client enters or leaves
+/// `xdg_toplevel` fullscreen exactly as if it had asked. A Tilo app has no
+/// protocol fullscreen, so its window group maximizes instead.
+fn toggle_focused_client_fullscreen(state: &mut State, frame: &mut FrameBuilder) {
+    use smithay::wayland::shell::xdg::XdgShellHandler;
+    let toplevel = state.client_input.keyboard_focus().and_then(|surface_id| {
+        state
+            .xdg_shell_state
+            .toplevel_surfaces()
+            .iter()
+            .find(|toplevel| {
+                crate::compositor::state::surface_id(toplevel.wl_surface()) == surface_id
+            })
+            .cloned()
+            .map(|toplevel| (surface_id, toplevel))
+    });
+    let Some((surface_id, toplevel)) = toplevel else {
+        let _ = frame.host_mut().toggle_focused_group_maximized();
+        return;
+    };
+    if state
+        .fullscreen_target
+        .as_ref()
+        .is_some_and(|target| target.surface_id == surface_id)
+    {
+        state.unfullscreen_request(toplevel);
+    } else {
+        state.fullscreen_request(toplevel, None);
+    }
+}
+
 fn reconcile_fullscreen_overlay(
     state: &mut State,
     frame: &mut FrameBuilder,
@@ -11801,6 +11936,28 @@ mod vt_chord_tests {
         assert_eq!(
             route(&character("l"), ModifiersState::SUPER, false),
             PriorityRoute::LockSession
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                false
+            ),
+            PriorityRoute::ToggleMouseKeys
+        );
+        assert_eq!(
+            route(&key(NamedKey::NumLock, ElementState::Pressed), none, false),
+            PriorityRoute::Continue,
+            "a bare Num Lock is the client's"
+        );
+        assert_eq!(
+            route(
+                &key(NamedKey::NumLock, ElementState::Pressed),
+                ModifiersState::SHIFT | ModifiersState::ALT,
+                true
+            ),
+            PriorityRoute::LockScreen,
+            "the lock keeps the chord"
         );
         assert_eq!(route(&character("a"), none, false), PriorityRoute::Continue);
     }

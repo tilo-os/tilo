@@ -14,7 +14,8 @@
 //! once per fire time across a restart and catches up (or not) after a
 //! sleep, a step asking for confirmation runs unattended only when its
 //! saver consented in advance, and revoking the saver's membership or
-//! deleting the shortcut stops its triggers.
+//! deleting the shortcut stops its triggers. An application opening starts
+//! a shortcut with the application's id bound as its input.
 
 use std::os::fd::IntoRawFd;
 use std::os::unix::net::UnixStream;
@@ -480,6 +481,28 @@ impl Door {
         trigger: &TriggerSpec,
         run: RunId,
     ) -> Result<u64, ActionHostError> {
+        self.fire_with(person, shortcut, trigger, run, Map::new())
+    }
+
+    /// Start the run `firing` asks for, as `person`, with its payload.
+    fn fire_firing(&self, person: &str, firing: &Firing) -> Result<u64, ActionHostError> {
+        self.fire_with(
+            person,
+            &firing.shortcut,
+            &firing.trigger,
+            firing.run,
+            firing.inputs.clone(),
+        )
+    }
+
+    fn fire_with(
+        &self,
+        person: &str,
+        shortcut: &str,
+        trigger: &TriggerSpec,
+        run: RunId,
+        inputs: Map<String, Value>,
+    ) -> Result<u64, ActionHostError> {
         self.broker
             .app_action_broker()
             .expect("the action broker")
@@ -489,6 +512,7 @@ impl Door {
                 shortcut,
                 trigger,
                 run,
+                inputs,
             )
     }
 
@@ -946,14 +970,80 @@ fn a_chord_the_desktop_owns_cannot_start_a_shortcut() {
         other => panic!("a fixed desktop chord must be refused: {other:?}"),
     }
     let watching = triggered_draft(
-        "on-open",
-        vec![TriggerSpec::AppOpened {
-            app_id: FIXTURE.into(),
+        "on-network",
+        vec![TriggerSpec::NetworkChanged {
+            network: None,
+            connected: Some(true),
         }],
     );
     assert!(
         matches!(door.save(&watching), Err(ActionHostError::Refused { .. })),
-        "only keyboard and schedule triggers can be saved"
+        "network triggers cannot be saved yet"
+    );
+}
+
+#[test]
+fn an_app_opening_runs_the_shortcut_with_the_app_bound_as_its_input() {
+    let mut door = Door::open();
+    let owner = owner_principal();
+    let mut on_open = publish_draft("on-open", &["draft", "publish"]);
+    on_open.inputs = vec![ActionParam::required(
+        "app_id",
+        ParamType::Text,
+        "The application that opened",
+    )];
+    on_open.steps[0] = invoke_step(
+        "draft",
+        "draft",
+        &[("title", Binding::Input("app_id".into()))],
+    );
+    on_open.triggers = vec![TriggerSpec::AppOpened {
+        app_id: FIXTURE.into(),
+    }];
+    door.save(&on_open)
+        .expect("a required input every trigger gives may be required");
+
+    let mut mistyped = on_open.clone();
+    mistyped.id = "mistyped".into();
+    mistyped.inputs[0].ty = ParamType::Integer;
+    match door.save(&mistyped) {
+        Err(ActionHostError::Refused { reason }) => {
+            assert!(reason.contains("`app_id` is integer"), "{reason}");
+        }
+        other => panic!("an input typed against its trigger is refused: {other:?}"),
+    }
+
+    let mut triggers = TriggerHost::new(utc_clock("2026-09-25T08:00:00Z"), None);
+    let observe = |triggers: &mut TriggerHost, running: &[&str]| {
+        let running: std::collections::BTreeSet<String> =
+            running.iter().map(ToString::to_string).collect();
+        let tree = door.membership.read();
+        let armed = armed(&tree.desktop.workspaces, |_| owner.clone());
+        let fired = triggers.observe(TriggerEvent::Apps(&running), &armed);
+        drop(tree);
+        fired
+    };
+    assert!(
+        observe(&mut triggers, &["so.tilo.notes"]).is_empty(),
+        "what is already running when the session starts did not just open"
+    );
+    let fired = observe(&mut triggers, &["so.tilo.notes", FIXTURE]);
+    assert_eq!(fired.len(), 1, "{fired:?}");
+    assert_eq!(fired[0].inputs.get("app_id"), Some(&json!(FIXTURE)));
+    assert!(observe(&mut triggers, &["so.tilo.notes", FIXTURE]).is_empty());
+
+    let job = door
+        .fire_firing(&owner, &fired[0])
+        .expect("the trigger starts the shortcut");
+    assert!(matches!(
+        door.job_to_end(job),
+        InvocationUpdate::Succeeded { .. }
+    ));
+    assert_eq!(served_actions(&door), ["draft", "publish"]);
+    assert_eq!(
+        door.app.served[0].1.get("title"),
+        Some(&json!(FIXTURE)),
+        "the opened app's id reached the step through the shortcut's input"
     );
 }
 

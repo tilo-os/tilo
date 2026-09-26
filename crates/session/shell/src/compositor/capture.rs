@@ -22,6 +22,7 @@ use ui::offscreen::OffscreenRenderer;
 use ui::widget::{
     AudioCaptureMode, CaptureDestination, CaptureExtent, CaptureIntent, CaptureMode,
     CapturePreview, PipLayout, RecordingCommand, ReplayCommand, ScreenshotCommand,
+    ScreenshotSendTarget,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
@@ -90,6 +91,12 @@ pub enum CaptureOutcome {
     ScreenshotMarkupOpened(PathBuf),
     ScreenshotMarkupClosed,
     ScreenshotRevealed(PathBuf),
+    /// "Send…" chose a target for the saved screenshot; the compositor
+    /// routes it over the device fabric or into the workspace.
+    ScreenshotSendRequested {
+        path: PathBuf,
+        target: ScreenshotSendTarget,
+    },
     /// A Screenshot portal selection completed in trusted shell chrome. Kept
     /// distinct from a keyboard-initiated capture so its URI is returned only
     /// to the authenticated request that armed the selector.
@@ -608,6 +615,16 @@ impl CaptureExecutor {
                     ScreenshotCommand::CopyLast => self
                         .copy_last_screenshot(frame_builder)
                         .unwrap_or_else(CaptureOutcome::Failed),
+                    ScreenshotCommand::SendLast(target) => {
+                        self.last_screenshot.clone().map_or_else(
+                            || {
+                                CaptureOutcome::Failed(
+                                    "there is no saved screenshot to send".into(),
+                                )
+                            },
+                            |path| CaptureOutcome::ScreenshotSendRequested { path, target },
+                        )
+                    }
                 }
             } else if let Some(command) = intent.replay_command {
                 match command {

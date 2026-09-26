@@ -42,13 +42,14 @@ containerfile="$repo/os/Containerfile"
 # before fs.service and the loop unit of image-backed stores. The signature
 # attachment lookups for the code.tilo.so OS repository and the
 # registry.tilo.so owner namespace are staged with the other trust inputs; the
-# former code.podesta.ai lookup is gone. Sorting
+# former code-host lookup is gone. The PipeWire client config behind the
+# echo-cancelled microphone for calls is part of the payload. Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=ba0806705b5fa4d8864ca95f300d50d10182e9b487dcae67cc9623c2e852f9c0
+expected_contract=8d7990f8d25cbb71bd70a7f626617bfae30106ef462531530a581b2dd15a1f76
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -80,9 +81,11 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # Synced-worktree git defaults add two: the snippet and the /etc/gitconfig
 # that includes it.
 # The opt-in codec-pack overlay adds one COPY of its scratch stage.
-# Keep the current 142-instruction bound exact and reviewed.
-[ "$instructions" -le 142 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 142)" >&2
+# The echo-cancel PipeWire config adds one COPY; folding the three
+# /usr/lib/systemd/user units into one COPY removes two.
+# Keep the current 141-instruction bound exact and reviewed.
+[ "$instructions" -le 141 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 141)" >&2
   exit 1
 }
 

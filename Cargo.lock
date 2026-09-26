@@ -3813,6 +3813,7 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
+ "tilo-automation",
  "tilo-clock",
  "tilo-dav",
  "tilo-test-env",
@@ -4172,12 +4173,14 @@ dependencies = [
  "anyhow",
  "atomic-file",
  "automerge",
+ "bao-tree",
  "blake3",
  "bounded-command",
  "bytes",
  "clap",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fs-content",
  "fs-native",
  "fuser",
  "futures-util",
@@ -4188,6 +4191,7 @@ dependencies = [
  "iroh-base",
  "iroh-blobs",
  "iroh-gossip",
+ "irpc",
  "libc",
  "moka",
  "postcard",
@@ -4195,6 +4199,7 @@ dependencies = [
  "qdoc-codecs",
  "rand 0.10.1",
  "redb",
+ "ref-cast",
  "runtime-fs",
  "serde",
  "serde_bytes",
@@ -4215,11 +4220,21 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs-native"
+name = "fs-content"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "fastcdc",
+ "postcard",
+ "serde",
+]
+
+[[package]]
+name = "fs-native"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "fs-content",
  "libc",
 ]
 
@@ -12672,6 +12687,7 @@ dependencies = [
  "mime_guess",
  "naga",
  "neighbour-wire",
+ "notify",
  "os-actions",
  "package-store",
  "parking_lot",
@@ -12691,6 +12707,7 @@ dependencies = [
  "runtime-identity",
  "runtime-portal",
  "rustls",
+ "secret-vault",
  "serde",
  "serde_json",
  "serial_test",
@@ -14029,7 +14046,6 @@ dependencies = [
  "image",
  "libc",
  "notify",
- "serde",
  "serde_json",
  "syn 2.0.117",
  "tempfile",

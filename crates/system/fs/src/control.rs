@@ -699,9 +699,15 @@ mod tests {
         let (ep_b, look_b, auth_b) = bind_certified_test_endpoint().await;
         let store_b = Arc::new(ContentStore::memory());
         let hyd_b = Arc::new(Hydrator::new(ep_b.clone(), store_b.clone()));
-        let doc = fetch_remote_doc(&ep_b, ticket.node.clone(), &auth_b)
-            .await
-            .unwrap();
+        let doc = fetch_remote_doc(
+            &ep_b,
+            ticket.node.clone(),
+            &auth_b,
+            ticket.workspace_id(),
+            &None,
+        )
+        .await
+        .unwrap();
         let ns_b = Arc::new(Mutex::new(Namespace::from_bytes("B", &doc).unwrap()));
         let ws_b = Workspace::join(
             ep_b.clone(),

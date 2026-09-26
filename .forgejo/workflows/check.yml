@@ -86,7 +86,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
@@ -204,19 +204,17 @@ jobs:
       # The complete suite passes in the quality lane's 2 CPU / 3 GiB job limit.
       CARGO_BUILD_JOBS: '2'
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Checkout security boundary inputs
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
-      # The slim image carries Rust and policy tools. Install only the native
-      # fixture tools here; check them explicitly so EFI/RPM tests cannot skip.
+      # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
+      # check them explicitly so EFI/RPM tests cannot skip.
       - name: Ensure invariant test tooling
         run: |
-          dnf install -y --setopt=install_weak_deps=False \
-            gcc kmod clang lld rpm-build python3-pillow systemd fontconfig google-noto-sans-fonts
           for tool in cargo cc modinfo clang ld.lld rpmbuild rpmkeys jq systemd-escape fc-match; do
             command -v "$tool" >/dev/null || { echo "missing invariant tool: $tool" >&2; exit 1; }
           done
@@ -235,7 +233,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 20
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Checkout exact change
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -606,7 +604,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 10
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     steps:
       - name: Require applicable checks and explain intentional non-applicability
         id: aggregate
