@@ -19,27 +19,27 @@ SPEC.loader.exec_module(watch_ci)
 class PushEventTests(unittest.TestCase):
     def event(self, code=None):
         return {
-            "tool_name": "exec", "session_id": "01a0bfbb-8102-7371-97ff-b025f1181eca",
-            "cwd": "C:/Users/xaver/.codex/worktrees/9245/qos",
-            "tool_input": {"code": code or 'text(await tools.exec_command({cmd:"git push origin HEAD:refs/heads/codex/dev-package-identity; git status --short",workdir:"C:/Users/xaver/qos-registry-submission",max_output_tokens:1500}));'},
+            "tool_name": "exec", "session_id": "00000000-0000-4000-8000-000000000157",
+            "cwd": "C:/work/outer",
+            "tool_input": {"code": code or 'text(await tools.exec_command({cmd:"git push origin HEAD:refs/heads/topic/child; git status --short",workdir:"C:/work/child",max_output_tokens:1500}));'},
             "tool_response": {"content": [{"type": "text", "text": json.dumps({"exit_code": 0, "output": "completed"})}]},
         }
 
-    def test_actual_pr157_code_selects_child_worktree_not_outer_root(self):
+    def test_nested_workdir_wins_over_outer_cwd(self):
         target = push_target(self.event())
-        self.assertEqual(str(target[0]).replace("\\", "/"), "C:/Users/xaver/qos-registry-submission")
-        self.assertTrue(pushes_current_branch(target[1], "codex/dev-package-identity"))
+        self.assertEqual(str(target[0]).replace("\\", "/"), "C:/work/child")
+        self.assertTrue(pushes_current_branch(target[1], "topic/child"))
         self.assertFalse(pushes_current_branch(target[1], "main"))
 
-    def test_both_exact_observed_push_code_fixtures(self):
+    def test_synthetic_push_fixtures(self):
         for name, worktree, branch in [
-            ("qos157", "qos-registry-submission", "codex/dev-package-identity"),
-            ("infra240", "infra-registry-backup-suspend", "codex/suspend-registry-backup-cutover"),
+            ("qos157", "child", "topic/child"),
+            ("infra240", "wrapped", "topic/wrapped"),
         ]:
             event = json.loads((Path(__file__).parent / "fixtures" / f"{name}.json").read_text())
             target = push_target(event)
             self.assertIsNotNone(target, name)
-            self.assertEqual(str(target[0]).replace("\\", "/"), "C:/Users/xaver/" + worktree)
+            self.assertEqual(str(target[0]).replace("\\", "/"), "C:/work/" + worktree)
             self.assertTrue(pushes_current_branch(target[1], branch))
 
     def test_plain_exec_command(self):
@@ -135,9 +135,9 @@ class PushEventTests(unittest.TestCase):
             def run(args, *, cwd, **kwargs):
                 calls.append((args, str(cwd)))
                 if args == ["git", "rev-parse", "HEAD"]:
-                    output = "0fcfa04598dc324fa17875497a987570a372232a"
+                    output = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 elif args == ["git", "branch", "--show-current"]:
-                    output = "codex/dev-package-identity"
+                    output = "topic/child"
                 elif args == ["git", "rev-parse", "--git-common-dir"]:
                     output = directory
                 else:
@@ -148,18 +148,18 @@ class PushEventTests(unittest.TestCase):
                     self.assertEqual(watch_ci.launch(), 0)
                 self.assertEqual(spawn.call_count, 1)
                 args = spawn.call_args.kwargs
-                self.assertEqual(args["sha"], "0fcfa04598dc324fa17875497a987570a372232a")
-                self.assertEqual(args["branch"], "codex/dev-package-identity")
-                self.assertEqual(str(args["cwd"]).replace("\\", "/"), "C:/Users/xaver/qos-registry-submission")
+                self.assertEqual(args["sha"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+                self.assertEqual(args["branch"], "topic/child")
+                self.assertEqual(str(args["cwd"]).replace("\\", "/"), "C:/work/child")
 
     def test_worker_delivers_to_author_once(self):
         event = self.event()
         with tempfile.TemporaryDirectory() as directory:
             parameters = {
                 "session_id": event["session_id"],
-                "cwd": Path("C:/Users/xaver/qos-registry-submission"),
-                "sha": "0fcfa04598dc324fa17875497a987570a372232a",
-                "branch": "codex/dev-package-identity",
+                "cwd": Path("C:/work/child"),
+                "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "branch": "topic/child",
                 "host": "code.podesta.ai",
                 "repo": "qos/qos",
                 "receipt_directory": Path(directory),
@@ -192,7 +192,7 @@ class PushEventTests(unittest.TestCase):
                 watch_ci.worker(
                     session_id="task",
                     cwd=Path("C:/repo"),
-                    sha="0fcfa04598dc324fa17875497a987570a372232a",
+                    sha="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     branch="topic",
                     host="code.podesta.ai",
                     repo="qos/qos",
