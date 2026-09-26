@@ -126,7 +126,12 @@ pub mod offscreen {
     ///
     /// Returns an error if the output directory cannot be created, or if a
     /// scene named in `scenes` fails its own setup.
-    pub fn run_scenes(scenes: &[String], dir: &Path, viewport: (u32, u32)) -> Result<(), String> {
+    pub fn run_scenes(
+        scenes: &[String],
+        dir: &Path,
+        viewport: (u32, u32),
+        outputs: Option<&[shell::compositor::backend::Output]>,
+    ) -> Result<(), String> {
         std::fs::create_dir_all(dir)
             .map_err(|e| format!("create offscreen output dir '{}': {e}", dir.display()))?;
         let mut renderer = OffscreenRenderer::new(viewport.0, viewport.1);
@@ -140,6 +145,9 @@ pub mod offscreen {
         let mut first_paint_seen = false;
         for name in scenes {
             let mut driver = ShellDriver::new(viewport);
+            if let Some(outputs) = outputs {
+                driver.set_outputs(outputs);
+            }
             driver
                 .scene_setup(name)
                 .map_err(|e| format!("scene_setup({name}) failed: {e}"))?;
