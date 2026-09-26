@@ -964,8 +964,50 @@ jobs:
         id: compiler-cache
         env:
           PUBLISH: ${{ steps.release-mode.outputs.publish }}
+          # Publications may use only their own cache: a bucket that only a
+          # main or v* token can reach through this OIDC role, and that no
+          # other principal can write (PodestaAI/infra
+          # clusters/burst-eks-us-west-2/tilo-publication-cache.tf).
+          PUBLICATION_CACHE_ROLE_ARN: ${{ vars.TILO_PUBLICATION_CACHE_ROLE_ARN }}
+          PUBLICATION_CACHE_BUCKET: ${{ vars.TILO_PUBLICATION_CACHE_BUCKET }}
         run: |
           set -euo pipefail
+          if [[ $PUBLISH == true && -n ${PUBLICATION_CACHE_ROLE_ARN:-} ]]; then
+            [[ $PUBLICATION_CACHE_ROLE_ARN =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ \
+               && $PUBLICATION_CACHE_BUCKET =~ ^[a-z0-9][a-z0-9.-]{2,62}$ ]] || {
+              echo '::error::TILO_PUBLICATION_CACHE_ROLE_ARN or TILO_PUBLICATION_CACHE_BUCKET is malformed'
+              exit 1
+            }
+            creds="$(./os/dev/publication-cache-credentials.sh "$PUBLICATION_CACHE_ROLE_ARN")"
+            key_id="$(jq -er .AccessKeyId <<<"$creds")"
+            secret="$(jq -er .SecretAccessKey <<<"$creds")"
+            token="$(jq -er .SessionToken <<<"$creds")"
+            echo "::add-mask::$secret"
+            echo "::add-mask::$token"
+            {
+              printf 'TILO_PUBLICATION_AWS_ACCESS_KEY_ID=%s\n' "$key_id"
+              printf 'TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY=%s\n' "$secret"
+              printf 'TILO_PUBLICATION_AWS_SESSION_TOKEN=%s\n' "$token"
+            } >> "$GITHUB_ENV"
+            region="$(sed -E 's/^.*-([a-z]{2}-[a-z]+-[0-9])$/\1/' <<<"$PUBLICATION_CACHE_BUCKET")"
+            [[ $region =~ ^[a-z]{2}-[a-z]+-[0-9]$ ]]
+            {
+              echo 'mode=publication'
+              echo 'required=0'
+              printf 'bucket=%s\n' "$PUBLICATION_CACHE_BUCKET"
+              printf 'endpoint=https://s3.%s.amazonaws.com\n' "$region"
+              printf 'region=%s\n' "$region"
+              echo 'use_ssl=true'
+              echo 'prefix=tilo/publication/v1'
+              echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
+              echo 'aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID'
+              echo 'aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY'
+              echo 'aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN'
+              echo 'TILO_COMPILER_CACHE_SECRETS'
+            } >> "$GITHUB_OUTPUT"
+            echo "::notice::publication: compiling through the publication-only cache $PUBLICATION_CACHE_BUCKET"
+            exit 0
+          fi
           if [[ $PUBLISH == true ]]; then
             {
               echo 'mode=off'
@@ -975,6 +1017,7 @@ jobs:
               # The Containerfile's own defaults, as the independent rebuild uses.
               echo 'region=auto'
               echo 'use_ssl=false'
+              echo 'prefix=tilo/image/v1'
               echo 'secret-envs='
             } >> "$GITHUB_OUTPUT"
             echo '::notice::publication: compiling without the shared compiler cache'
@@ -994,6 +1037,7 @@ jobs:
             printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
             printf 'region=%s\n' "$SCCACHE_REGION"
             printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
+            echo 'prefix=tilo/image/v1'
             echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
             echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
             echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
@@ -1069,7 +1113,7 @@ jobs:
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
             SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
@@ -1129,7 +1173,7 @@ jobs:
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
             SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
@@ -1199,7 +1243,7 @@ jobs:
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
             SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
@@ -1271,7 +1315,7 @@ jobs:
             SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
             SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
             SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=tilo/image/v1
+            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
             TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
