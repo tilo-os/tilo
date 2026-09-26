@@ -262,6 +262,9 @@ tilo-test-env = { path = "../../dev/test-env" }
 # GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
 # collapses to one copy in the workspace lock.
 naga = { version = "29", features = ["wgsl-in"] }
+# Client side of the wlr output-management protocols, to drive the
+# compositor the way wlr-randr and kanshi do.
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]

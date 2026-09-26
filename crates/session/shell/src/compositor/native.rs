@@ -6121,6 +6121,7 @@ pub fn run() {
             &outs,
             refresh_mhz_of(&*backend),
         );
+        state.set_output_heads(backend.output_heads());
     }
     // Set when the output set changed this tick, so derived state is re-derived once per batch, not per udev edge.
     let mut outputs_dirty = false;
@@ -6912,6 +6913,11 @@ pub fn run() {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();
             backend.reload_input_settings();
+            // The backend has now reconciled any staged display plan; tell
+            // the output-management clients that asked for it how it went.
+            state.output_management.resolve_transactions(
+                settings_store::hardware::DisplayTransaction::load().as_ref(),
+            );
             if let Some(xwayland) = xwayland.as_mut() {
                 xwayland.reload_keyboard_settings();
             }
@@ -6947,6 +6953,18 @@ pub fn run() {
         }
         if let Some(service) = osk_service.as_mut() {
             service.tick();
+        }
+        for (output, on) in state.output_management.take_power_requests() {
+            backend.set_output_power(output, on);
+        }
+        if state.output_management.take_staged_by_tool() {
+            frame_builder.with_chrome(|chrome| {
+                chrome.push_notification(
+                    "Keep the new display layout?",
+                    "A display tool changed your screens. Choose Keep in Settings › Displays \
+                     within 15 seconds, or the previous layout comes back.",
+                );
+            });
         }
 
         // Re-derive everything depending on the output set once, after the whole
@@ -7001,6 +7019,7 @@ pub fn run() {
                 &outs,
                 refresh_mhz_of(&*backend),
             );
+            state.set_output_heads(backend.output_heads());
             if refresh_override.is_none()
                 && let Some(interval) = backend.refresh_interval()
                 && frame_clock.set_interval(interval)
