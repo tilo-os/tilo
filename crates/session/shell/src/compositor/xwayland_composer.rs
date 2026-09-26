@@ -84,9 +84,17 @@ impl ComposerClients {
         // Without the peer table, the composer's connection cannot be told
         // apart; counting it keeps the server up, which is the safe side.
         connected_peers(socket)
-            .map(|peers| peers.iter().filter(|peer| !inodes.contains(peer)).count())
+            .map(|peers| clients_excluding(&peers, inodes))
             .or_else(|| connected_clients(socket))
     }
+}
+
+/// Connections whose client end is not one of the composer's sockets.
+fn clients_excluding(peers: &[u64], composer_sockets: &HashSet<u64>) -> usize {
+    peers
+        .iter()
+        .filter(|peer| !composer_sockets.contains(peer))
+        .count()
 }
 
 /// Connected X clients of the display bound at `socket`, from the kernel's
@@ -116,15 +124,17 @@ pub(crate) fn count_connected(table: &str, socket: &Path) -> usize {
 /// For every connection the X server accepted on `socket`, the inode of the
 /// client's end, from the kernel's `sock_diag` interface.
 fn connected_peers(socket: &Path) -> Option<Vec<u64>> {
+    Some(peers_bound_to(unix_diag_established()?, socket))
+}
+
+fn peers_bound_to(entries: Vec<UnixDiagEntry>, socket: &Path) -> Vec<u64> {
     let target = socket.as_os_str().as_bytes();
-    Some(
-        unix_diag_established()?
-            .into_iter()
-            .filter(|entry| entry.name.as_deref() == Some(target))
-            .filter_map(|entry| entry.peer)
-            .map(u64::from)
-            .collect(),
-    )
+    entries
+        .into_iter()
+        .filter(|entry| entry.name.as_deref() == Some(target))
+        .filter_map(|entry| entry.peer)
+        .map(u64::from)
+        .collect()
 }
 
 struct UnixDiagEntry {
@@ -390,7 +400,7 @@ pub(crate) fn request_connection(display_name: String) {
 mod tests {
     use super::*;
     use std::os::unix::fs::MetadataExt as _;
-    use std::os::unix::net::{UnixListener, UnixStream};
+    use std::os::unix::net::UnixStream;
 
     fn inode(stream: &UnixStream) -> u64 {
         let mut stat: libc::stat = unsafe { std::mem::zeroed() };
@@ -399,33 +409,85 @@ mod tests {
         stat.st_ino
     }
 
+    /// One `SOCK_DIAG_BY_FAMILY` reply as the kernel frames it: header,
+    /// `unix_diag_msg`, then NAME (NUL-terminated) and PEER attributes.
+    fn diag_message(name: Option<&[u8]>, peer: u32) -> Vec<u8> {
+        let mut attributes = Vec::new();
+        if let Some(name) = name {
+            let mut payload = name.to_vec();
+            payload.push(0);
+            let length = u16::try_from(payload.len().saturating_add(4)).unwrap();
+            attributes.extend_from_slice(&length.to_ne_bytes());
+            attributes.extend_from_slice(&UNIX_DIAG_NAME.to_ne_bytes());
+            attributes.extend_from_slice(&payload);
+            while !attributes.len().is_multiple_of(4) {
+                attributes.push(0);
+            }
+        }
+        attributes.extend_from_slice(&8_u16.to_ne_bytes());
+        attributes.extend_from_slice(&UNIX_DIAG_PEER.to_ne_bytes());
+        attributes.extend_from_slice(&peer.to_ne_bytes());
+        let length = u32::try_from(
+            attributes
+                .len()
+                .saturating_add(NLMSG_HEADER + UNIX_DIAG_MSG),
+        )
+        .unwrap();
+        let mut message = Vec::new();
+        message.extend_from_slice(&length.to_ne_bytes());
+        message.extend_from_slice(&SOCK_DIAG_BY_FAMILY.to_ne_bytes());
+        message.extend_from_slice(&[0_u8; 10]);
+        message.extend_from_slice(&[0_u8; UNIX_DIAG_MSG]);
+        message.extend_from_slice(&attributes);
+        message
+    }
+
+    #[test]
+    fn diag_replies_yield_the_peers_of_one_display_socket() {
+        let mut datagram = diag_message(Some(b"/tmp/.X11-unix/X7"), 101);
+        datagram.extend(diag_message(Some(b"/tmp/.X11-unix/X70"), 202));
+        datagram.extend(diag_message(None, 303));
+        datagram.extend(diag_message(Some(b"/tmp/.X11-unix/X7"), 404));
+        let mut done = Vec::new();
+        done.extend_from_slice(&16_u32.to_ne_bytes());
+        done.extend_from_slice(&3_u16.to_ne_bytes());
+        done.extend_from_slice(&[0_u8; 10]);
+        datagram.extend(done);
+
+        let mut entries = Vec::new();
+        assert!(matches!(
+            parse_diag_messages(&datagram, &mut entries),
+            Some(DiagProgress::Done)
+        ));
+        assert_eq!(
+            peers_bound_to(entries, Path::new("/tmp/.X11-unix/X7")),
+            [101, 404],
+            "exact path match, NUL stripped, unnamed sockets ignored"
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_error_reply_reads_as_unavailable() {
+        let message = diag_message(Some(b"/tmp/.X11-unix/X7"), 1);
+        let mut entries = Vec::new();
+        assert!(parse_diag_messages(&message[..message.len() - 3], &mut entries).is_none());
+        let mut error = Vec::new();
+        error.extend_from_slice(&16_u32.to_ne_bytes());
+        error.extend_from_slice(&2_u16.to_ne_bytes());
+        error.extend_from_slice(&[0_u8; 10]);
+        assert!(parse_diag_messages(&error, &mut entries).is_none());
+    }
+
     #[test]
     fn the_composer_connection_is_not_counted_as_a_client() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("X4321");
-        let listener = UnixListener::bind(&path).unwrap();
-        let app = UnixStream::connect(&path).unwrap();
-        let (app_server, _) = listener.accept().unwrap();
-        let composer = UnixStream::connect(&path).unwrap();
-        let (_composer_server, _) = listener.accept().unwrap();
-
-        let peers = connected_peers(&path).expect("sock_diag readable");
-        assert_eq!(peers.len(), 2);
-        assert!(peers.contains(&inode(&app)) && peers.contains(&inode(&composer)));
-
-        let mut clients = ComposerClients::for_group(Some(i32::MAX));
-        clients.inodes = Some(HashSet::from([inode(&composer)]));
-        assert_eq!(clients.connected_clients(&path), Some(1));
-        drop(app);
-        drop(app_server);
+        let composer = HashSet::from([404]);
+        assert_eq!(clients_excluding(&[101, 404], &composer), 1);
         assert_eq!(
-            clients.connected_clients(&path),
-            Some(0),
+            clients_excluding(&[404], &composer),
+            0,
             "only the composer is left"
         );
-
-        let mut without = ComposerClients::for_group(None);
-        assert_eq!(without.connected_clients(&path), Some(1));
+        assert_eq!(clients_excluding(&[101], &HashSet::new()), 1);
     }
 
     #[test]
