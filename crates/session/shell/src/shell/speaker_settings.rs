@@ -131,7 +131,13 @@ pub fn devices(fabric: &DeviceFabric, local: &DeviceId) -> Vec<SpeakerDeviceInfo
                 local: &snapshot.owner == local,
                 can_join: &snapshot.owner == local || snapshot.presence.capabilities.audio_group,
                 outputs: endpoints(AudioEndpointKind::Output),
-                microphones: endpoints(AudioEndpointKind::Microphone),
+                // Calibration listens on the device that runs it, so only this
+                // device's microphones are offered.
+                microphones: if &snapshot.owner == local {
+                    endpoints(AudioEndpointKind::Microphone)
+                } else {
+                    Vec::new()
+                },
             }
         })
         .collect()
@@ -311,7 +317,7 @@ fn snapshot(network: &crate::shell::network::ShellNetwork) -> SpeakerSnapshot {
 /// Answer one command from Settings.
 #[must_use]
 pub fn handle(
-    network: &crate::shell::network::ShellNetwork,
+    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     command: SpeakerCommand,
 ) -> SpeakerReply {
     let result = match command {
@@ -345,7 +351,7 @@ fn bounded_reason(mut reason: String) -> String {
 }
 
 fn run_command(
-    network: &crate::shell::network::ShellNetwork,
+    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     command: SpeakerCommand,
 ) -> Result<Option<String>, String> {
     use crate::shell::speaker_group_runtime as groups;
@@ -443,8 +449,34 @@ fn with_run<T>(
     result
 }
 
+/// Measure with this device's microphone; remote members are asked over the
+/// fabric to play the sweep at the scheduled instant.
+fn timed_source(
+    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
+    local: DeviceId,
+) -> Box<dyn crate::shell::speaker_calibration::MeasurementSource> {
+    let network = std::sync::Arc::downgrade(network);
+    Box::new(crate::shell::speaker_calibration::TimedMeasurement::new(
+        local,
+        Box::new(move |request, start_ns| {
+            let network = network
+                .upgrade()
+                .ok_or_else(|| "the device network is unavailable".to_string())?;
+            network
+                .send_personal_fabric_action(
+                    &request.member,
+                    crate::shell::device_fabric::PersonalFabricAction::SpeakerSweep {
+                        group: request.group,
+                        start_ns,
+                    },
+                )
+                .map(|_| ())
+        }),
+    ))
+}
+
 fn start_calibration(
-    network: &crate::shell::network::ShellNetwork,
+    network: &std::sync::Arc<crate::shell::network::ShellNetwork>,
     group: &str,
     microphone_device: &str,
     microphone: &str,
@@ -499,7 +531,7 @@ fn start_calibration(
         &labels,
         microphone_device,
         microphone,
-        crate::shell::speaker_calibration::unavailable_source(),
+        timed_source(network, local),
     );
     state()
         .lock()

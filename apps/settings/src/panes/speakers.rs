@@ -510,7 +510,7 @@ impl SpeakersPane {
             if take(CALIBRATE_KEY) {
                 match self
                     .microphone()
-                    .ok_or_else(|| "None of your devices has a microphone".to_string())
+                    .ok_or_else(|| "This device has no microphone to calibrate with".to_string())
                     .and_then(|microphone| self.setup.calibrate_command(&group, &microphone))
                 {
                     Ok(SpeakerCommand::StartCalibration {

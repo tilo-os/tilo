@@ -12,10 +12,10 @@
 //! the spatial display calibration.
 //!
 //! Measuring needs audio played and captured at sample-accurate times on
-//! different devices. That timing belongs to the synchronized playout path,
-//! which plugs in through [`MeasurementSource`]; until a device provides it,
-//! [`unavailable_source`] fails each member with an honest reason instead of
-//! guessing.
+//! different devices. [`TimedMeasurement`] does that with the timed audio
+//! path: the member plays the sweep at a scheduled instant on this device's
+//! clock, converted through the fabric clock estimate, while this device's
+//! microphone records around it.
 
 use crate::shell::personal_continuity::DeviceId;
 use crate::shell::speaker_group::{EndpointSelector, SpeakerGroup, SpeakerGroupId, SpeakerTrim};
@@ -24,6 +24,25 @@ use crate::shell::speaker_group::{EndpointSelector, SpeakerGroup, SpeakerGroupId
 pub const SWEEP_START_HZ: f64 = 20.0; // a frequency, not a pixel length
 pub const SWEEP_END_HZ: f64 = 20_000.0;
 pub const SWEEP_SECONDS: f64 = 3.0; // a duration, not a pixel length
+pub const SWEEP_RATE: u32 = 48_000;
+/// How far ahead a sweep is scheduled: time for the request to cross the
+/// fabric and for both streams to open.
+const SWEEP_LEAD_NS: i64 = 1_200_000_000;
+/// Recording starts this long before the sweep so its onset is captured.
+const CAPTURE_PREROLL_NS: i64 = 200_000_000;
+/// Recording continues this long after the sweep for late arrivals and the
+/// room's decay.
+const CAPTURE_TAIL_NS: i64 = 700_000_000;
+
+/// The sweep every device plays and measures against.
+///
+/// # Errors
+///
+/// Only if the fixed parameters were invalid.
+pub fn sweep() -> Result<media::calibration::LogSweep, String> {
+    media::calibration::LogSweep::new(SWEEP_RATE, SWEEP_START_HZ, SWEEP_END_HZ, SWEEP_SECONDS)
+        .map_err(|error| error.to_string())
+}
 
 /// One member to measure with one microphone.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -49,24 +68,122 @@ pub trait MeasurementSource: Send {
     fn cancel(&mut self);
 }
 
-struct Unavailable;
+/// Asks a remote member to play the sweep at a time on this device's clock.
+pub type SweepSender = Box<dyn Fn(&SweepRequest, i64) -> Result<(), String> + Send>;
 
-impl MeasurementSource for Unavailable {
-    fn begin(&mut self, _: &SweepRequest) -> Result<(), String> {
-        Err("this device cannot time a measurement precisely enough yet".into())
+/// Measures with this device's microphone and the timed audio path: the
+/// member plays the sweep at a scheduled instant (on its own output, or
+/// asked over the fabric), while the microphone records around it.
+pub struct TimedMeasurement {
+    local: DeviceId,
+    send: SweepSender,
+    result:
+        Option<std::sync::mpsc::Receiver<Result<media::calibration::SpeakerMeasurement, String>>>,
+    clock_sync: Option<crate::shell::device_fabric_runtime::FabricClockSync>,
+}
+
+impl TimedMeasurement {
+    #[must_use]
+    pub fn new(local: DeviceId, send: SweepSender) -> Self {
+        Self {
+            local,
+            send,
+            result: None,
+            clock_sync: None,
+        }
+    }
+}
+
+fn to_f32(sample: i16) -> f32 {
+    f32::from(sample) / 32_768.0
+}
+
+impl MeasurementSource for TimedMeasurement {
+    fn begin(&mut self, request: &SweepRequest) -> Result<(), String> {
+        use crate::shell::speaker_group_runtime::{resolve_local_microphone, resolve_local_output};
+        if request.microphone_device != self.local {
+            return Err(
+                "calibrate with a microphone on the device that set up the speakers".into(),
+            );
+        }
+        let microphone = resolve_local_microphone(&self.local, request.microphone)
+            .ok_or_else(|| "that microphone is no longer connected".to_string())?;
+        let sweep = sweep()?;
+        let play_at = media::pw_stream::monotonic_now_ns().saturating_add(SWEEP_LEAD_NS);
+        if request.member == self.local {
+            let sink = resolve_local_output(&self.local, request.output)
+                .ok_or_else(|| "that speaker's output is no longer connected".to_string())?;
+            let signal = sweep.signal().to_vec();
+            std::thread::Builder::new()
+                .name("calibration-play".into())
+                .spawn(move || {
+                    let _ = media::pw_stream::TimedAudio::native().play_at(
+                        sink.serial,
+                        SWEEP_RATE,
+                        1,
+                        signal,
+                        play_at,
+                    );
+                })
+                .map_err(|error| format!("could not play the sweep: {error}"))?;
+        } else {
+            self.clock_sync = Some(crate::shell::device_fabric_runtime::hold_fabric_clock_sync(
+                request.member.clone(),
+            ));
+            (self.send)(request, play_at)?;
+        }
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.result = Some(receiver);
+        let duration_ns = i64::try_from(sweep.signal().len())
+            .unwrap_or(i64::MAX)
+            .saturating_mul(1_000_000_000)
+            .checked_div(i64::from(SWEEP_RATE))
+            .unwrap_or(0)
+            .saturating_add(CAPTURE_PREROLL_NS)
+            .saturating_add(CAPTURE_TAIL_NS);
+        std::thread::Builder::new()
+            .name("calibration-listen".into())
+            .spawn(move || {
+                let result = media::pw_stream::TimedAudio::native()
+                    .capture_window(
+                        media::pw_stream::CaptureTarget {
+                            serial: microphone.serial,
+                            monitor_sink: false,
+                        },
+                        SWEEP_RATE,
+                        1,
+                        play_at.saturating_sub(CAPTURE_PREROLL_NS),
+                        duration_ns,
+                    )
+                    .map_err(|error| error.to_string())
+                    .and_then(|window| {
+                        let capture = window
+                            .samples
+                            .iter()
+                            .copied()
+                            .map(to_f32)
+                            .collect::<Vec<_>>();
+                        sweep
+                            .measure(&capture, window.first_sample_ns, play_at)
+                            .map_err(|error| error.to_string())
+                    });
+                let _ = sender.send(result);
+            })
+            .map_err(|error| format!("could not start listening: {error}"))?;
+        Ok(())
     }
 
     fn poll(&mut self) -> Option<Result<media::calibration::SpeakerMeasurement, String>> {
-        None
+        let result = self.result.as_ref()?.try_recv().ok()?;
+        self.result = None;
+        self.clock_sync = None;
+        Some(result)
     }
 
-    fn cancel(&mut self) {}
-}
-
-/// The source used until synchronized playout can schedule sweeps.
-#[must_use]
-pub fn unavailable_source() -> Box<dyn MeasurementSource> {
-    Box::new(Unavailable)
+    fn cancel(&mut self) {
+        self.result = None;
+        self.clock_sync = None;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -503,16 +620,20 @@ mod tests {
     }
 
     #[test]
-    fn without_timed_playout_calibration_fails_honestly_at_once() {
-        let run = CalibrationRun::start(
-            &pair(),
-            &["Desk".into(), "Shelf".into()],
-            id("phone"),
-            EndpointSelector::mint(&id("phone"), "mic"),
-            unavailable_source(),
+    fn timed_measurement_listens_only_on_this_device() {
+        let mut source = TimedMeasurement::new(id("desk"), Box::new(|_, _| Ok(())));
+        let request = SweepRequest {
+            group: SpeakerGroupId([3; 16]),
+            member: id("shelf"),
+            output: EndpointSelector::mint(&id("shelf"), "out"),
+            microphone_device: id("phone"),
+            microphone: EndpointSelector::mint(&id("phone"), "mic"),
+        };
+        assert_eq!(
+            source.begin(&request),
+            Err("calibrate with a microphone on the device that set up the speakers".into())
         );
-        assert_eq!(run.phase(), CalibrationPhase::Failed);
-        assert!(run.message().unwrap().starts_with("Could not measure Desk"));
+        assert!(source.poll().is_none());
     }
 
     #[test]
