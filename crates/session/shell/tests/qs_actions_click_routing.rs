@@ -31,7 +31,7 @@ use taffy::prelude::TaffyMaxContent;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::kurbo::Point;
+use vello::kurbo::{Affine, Point};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, ModifiersState, NamedKey, PhysicalKey};
@@ -435,7 +435,8 @@ fn keyboard_slider_arrows_route_through_the_host() {
 /// overlay ordering and modifier state have historically swallowed keys.
 #[test]
 fn keyboard_actions_and_reverse_tab_route_through_the_host() {
-    // Sliders, live controls, power profile, and Customize precede Settings.
+    // Sliders, live controls, Devices, Clipboard, power profile and Edit
+    // precede Settings.
     // Enter on Settings dismisses the popover. The launcher itself is covered by the
     // serial `quick_settings_settings_action_launches_personal_settings_app`
     // test; this route test also guards against reopening the unrelated
@@ -443,7 +444,7 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..8 {
+    for _ in 0..10 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -465,11 +466,11 @@ fn keyboard_actions_and_reverse_tab_route_through_the_host() {
         "Personal Settings must not be conflated with workspace sharing settings"
     );
 
-    // A fresh host: Space on Customize enters edit mode without dismissing.
+    // A fresh host: Space on Edit enters edit mode without dismissing.
     let tree = minimal_tree();
     let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
-    for _ in 0..7 {
+    for _ in 0..9 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -539,11 +540,11 @@ fn keyboard_edit_reorder_routes_through_the_host_and_updates_semantics() {
     });
     let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
 
-    // The control-first root puts Customize after two sliders, three live
-    // controls, and Power profile. Space enters edit mode with no hidden
-    // selection. Two Tabs then select Bluetooth. Move it below Night Light
-    // with Ctrl+Down.
-    for _ in 0..7 {
+    // The control-first root puts Edit after two sliders, three live
+    // controls, Devices, Clipboard and Power profile. Space enters edit mode
+    // with no hidden selection. Two Tabs then select Bluetooth. Move it below
+    // Night Light with Ctrl+Down.
+    for _ in 0..9 {
         assert!(press_key(
             &mut host,
             &taffy,
@@ -883,5 +884,173 @@ fn clicking_a_strip_ribbon_segment_moves_focus() {
     assert_eq!(
         focused, 2,
         "clicking the third ribbon segment must focus the third strip"
+    );
+}
+
+/// Paint one frame so retained chrome geometry matches what a person sees.
+fn repaint(host: &mut shell::shell::overlay_host::ShellOverlayHost) {
+    let theme = Theme::dark();
+    let mut text = ui::text_render::TextRenderer::new();
+    let mut scene = vello::Scene::new();
+    host.draw(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &ui::presence::PresenceCtx::default(),
+    );
+}
+
+fn quick_settings_target(
+    host: &shell::shell::overlay_host::ShellOverlayHost,
+    name: &str,
+) -> vello::kurbo::Rect {
+    host.quick_settings_semantic_rects()
+        .into_iter()
+        .find(|(target, _)| target == name)
+        .map_or_else(
+            || panic!("Quick Settings publishes no {name} target"),
+            |(_, rect)| rect,
+        )
+}
+
+/// Every labelled root destination is live: a click on each lands on the
+/// surface its label names instead of doing nothing.
+#[test]
+fn every_quick_settings_destination_click_lands_on_its_surface() {
+    use shell::shell::quick_settings::QsLevel;
+
+    for (target, level) in [
+        ("quick_settings_history", QsLevel::Notifications),
+        ("quick_settings_devices", QsLevel::Devices),
+        ("quick_settings_clipboard", QsLevel::Clipboard),
+    ] {
+        let tree = minimal_tree();
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+        repaint(&mut host);
+        let centre = quick_settings_target(&host, target).center();
+        click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+        let st = chrome.borrow();
+        assert!(
+            st.overlays.quick_settings,
+            "{target} keeps the popover open"
+        );
+        assert_eq!(
+            st.quick_settings.current_level(),
+            &level,
+            "{target} must open its pane"
+        );
+    }
+
+    // Privacy opens the workspace's app grants — the same destination as
+    // the `settings.privacy.open` action.
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    repaint(&mut host);
+    let centre = quick_settings_target(&host, "quick_settings_privacy").center();
+    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    {
+        let st = chrome.borrow();
+        assert!(!st.overlays.quick_settings);
+        assert!(st.overlays.ws_settings);
+        assert_eq!(
+            st.ws_settings_tab,
+            shell::shell::chrome_state::WsTab::Permissions
+        );
+    }
+
+    // Power opens the session menu and closes the popover.
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    repaint(&mut host);
+    let centre = quick_settings_target(&host, "quick_settings_power").center();
+    click_at(&mut host, &taffy, host_node, centre.x, centre.y);
+    assert!(!chrome.borrow().overlays.quick_settings);
+    assert!(!host.power_menu_semantic_rects().is_empty());
+}
+
+/// Tab visits every root stop in turn, and at each one exactly one node of
+/// the published Quick Settings tree is focused — the node Enter would
+/// activate — until Tab wraps back to the first.
+#[test]
+fn tab_through_every_quick_settings_stop_focuses_exactly_one_node() {
+    let tree = minimal_tree();
+    let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+    let (taffy, host_node) = open_quick_settings(&mut host, &chrome);
+    repaint(&mut host);
+    let quick_settings = |host: &shell::shell::overlay_host::ShellOverlayHost| {
+        host.accessibility()
+            .expect("shell semantics")
+            .children
+            .into_iter()
+            .find(|node| node.name.as_deref() == Some("Quick Settings"))
+            .expect("Quick Settings is published")
+    };
+    let stops = quick_settings(&host).children.len();
+    assert!(
+        quick_settings(&host)
+            .children
+            .iter()
+            .all(|node| !node.state.focused),
+        "opening moves no focus"
+    );
+    let mut visited = Vec::new();
+    for _ in 0..stops {
+        assert!(press_key(
+            &mut host,
+            &taffy,
+            host_node,
+            Key::Named(NamedKey::Tab),
+            ModifiersState::empty(),
+        ));
+        let dialog = quick_settings(&host);
+        let focused: Vec<_> = dialog
+            .children
+            .iter()
+            .filter(|node| node.state.focused)
+            .filter_map(|node| node.name.clone())
+            .collect();
+        assert_eq!(focused.len(), 1, "exactly one focused node: {focused:?}");
+        visited.push(focused[0].clone());
+    }
+    for name in [
+        "Brightness",
+        "Volume",
+        "Wi-Fi",
+        "Bluetooth",
+        "Devices",
+        "Clipboard",
+        "Change power profile",
+        "Edit controls",
+        "Settings",
+        "Privacy",
+        "History",
+        "Power",
+    ] {
+        assert!(
+            visited.iter().any(|v| v == name),
+            "Tab never reached {name}: {visited:?}"
+        );
+    }
+    assert_eq!(visited.first().map(String::as_str), Some("Brightness"));
+    assert!(press_key(
+        &mut host,
+        &taffy,
+        host_node,
+        Key::Named(NamedKey::Tab),
+        ModifiersState::empty(),
+    ));
+    let dialog = quick_settings(&host);
+    assert_eq!(
+        dialog
+            .children
+            .iter()
+            .find(|node| node.state.focused)
+            .and_then(|node| node.name.as_deref()),
+        Some("Brightness"),
+        "Tab wraps to the first stop"
     );
 }

@@ -405,6 +405,11 @@ pub struct QuickSettingsState {
     /// as they asked. Shown on the power row so a screen that never locks
     /// has a visible reason.
     pub awake_holders: Vec<String>,
+    /// Certified personal devices known to the device fabric, read when the
+    /// popover opens. `None` when this session has no device fabric.
+    pub personal_devices: Option<usize>,
+    /// Private clipboard history entries, read when the popover opens.
+    pub clipboard_items: usize,
 }
 
 /// One compositor-authoritative screen exposure projected into trusted
@@ -474,6 +479,8 @@ impl Default for QuickSettingsState {
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             awake_holders: Vec::new(),
+            personal_devices: None,
+            clipboard_items: 0,
         }
     }
 }
@@ -515,6 +522,8 @@ impl QuickSettingsState {
             wifi_password: None,
             power_profile: PowerProfile::Balanced,
             awake_holders: Vec::new(),
+            personal_devices: None,
+            clipboard_items: 0,
         }
     }
 
