@@ -379,6 +379,11 @@ pub struct QuickSettingsState {
     pub vpns: Vec<os_actions::VpnConnectionInfo>,
     pub privacy: os_actions::PrivacyStatus,
     pub night_light: bool,
+    /// The machine has an accelerometer, so its screen can follow the device
+    /// and the rotation-lock tile is offered.
+    pub rotation_available: bool,
+    /// `display.rotation_lock`: the screen stays put when the device turns.
+    pub rotation_lock: bool,
     /// The renderer dispatches on `nav_stack.last()` (always at least
     /// `Root`) — pushing `Wifi`/`Bluetooth` flips the popover to the
     /// drill-in list.
@@ -471,6 +476,13 @@ impl Default for QuickSettingsState {
             privacy: os_actions::get_privacy_status(),
             night_light: settings_store::bool_at(&settings_store::load(), "display", "night_light")
                 .unwrap_or(false),
+            rotation_available: os_actions::has_accelerometer(),
+            rotation_lock: settings_store::bool_at(
+                &settings_store::load(),
+                "display",
+                "rotation_lock",
+            )
+            .unwrap_or(false),
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
@@ -515,6 +527,8 @@ impl QuickSettingsState {
             vpns: Vec::new(),
             privacy: os_actions::PrivacyStatus::default(),
             night_light: false,
+            rotation_available: false,
+            rotation_lock: false,
             nav_stack: vec![QsLevel::Root],
             // Populated by nmcli/bluetoothctl on the popover's rising
             // edge — no fake content.
