@@ -4078,7 +4078,19 @@ fn doctor_resolved_app_with_capnp_probe(
     DoctorReport { app_dir, checks }
 }
 
+/// Whether `cargo` names a build that runs on a remote builder (`rcargo`),
+/// where build scripts — and so the Cap'n Proto compiler — execute, rather
+/// than on this machine.
+fn builds_remotely(cargo: &std::ffi::OsStr) -> bool {
+    Path::new(cargo)
+        .file_name()
+        .is_some_and(|name| name == "rcargo")
+}
+
 fn probe_capnp_compiler() -> std::result::Result<String, String> {
+    if std::env::var_os("CARGO").is_some_and(|cargo| builds_remotely(&cargo)) {
+        return Ok("builds run on the rcargo builder, which provides `capnp`".to_owned());
+    }
     let output = ProcessCommand::new("capnp")
         .arg("--version")
         .output()

@@ -3977,3 +3977,15 @@ fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
         format!("{}\n--document\nA file.qdoc\n", temp.path().display())
     );
 }
+
+#[test]
+fn only_an_rcargo_build_skips_the_local_capnp_probe() {
+    assert!(builds_remotely(std::ffi::OsStr::new("rcargo")));
+    assert!(builds_remotely(std::ffi::OsStr::new(
+        "/home/dev/.cargo/bin/rcargo"
+    )));
+    assert!(!builds_remotely(std::ffi::OsStr::new("cargo")));
+    assert!(!builds_remotely(std::ffi::OsStr::new(
+        "/usr/bin/rcargo-wrapper"
+    )));
+}
