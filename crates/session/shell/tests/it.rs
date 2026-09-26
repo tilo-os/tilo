@@ -63,6 +63,8 @@ mod drm_backend_boot;
 mod e2e_shell_flows;
 #[path = "expand_fullscreen_visual.rs"]
 mod expand_fullscreen_visual;
+#[path = "feedback_channel_e2e.rs"]
+mod feedback_channel_e2e;
 #[path = "file_drop_routing.rs"]
 mod file_drop_routing;
 #[path = "flatpak_share_e2e.rs"]

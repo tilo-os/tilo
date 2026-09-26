@@ -12872,6 +12872,7 @@ dependencies = [
  "capnp",
  "capnp-rpc",
  "channel-crypto",
+ "chat",
  "chrono",
  "cli",
  "collab-fixtures",

@@ -258,6 +258,8 @@ tilo-relay = { path = "../../hosting/tilo-relay" }
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
+# A real app over the production broker in the feedback-channel end-to-end.
+chat = { path = "../../../apps/chat", default-features = false }
 rand_chacha.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
