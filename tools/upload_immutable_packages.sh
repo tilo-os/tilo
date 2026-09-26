@@ -41,17 +41,27 @@ trap cleanup EXIT
 upload_one() {
   local index=$1 file=${files[$1]} url=${urls[$1]}
   local response="$state/$index.response" remote="$state/$index.remote"
-  local errors="$state/$index.err" status
+  local errors="$state/$index.err" status redirect
 
   if ! status=$(curl --silent --show-error --retry 3 --retry-all-errors \
-    --output "$response" --write-out '%{http_code}' \
+    --output "$response" --write-out '%{http_code} %{redirect_url}' \
     --header "Authorization: Bearer $TILO_PACKAGE_TOKEN" \
     --request PUT --upload-file "$file" "$url" 2>"$errors"); then
     printf 'upload request failed: %s\n' "$url" >> "$errors"
     return 1
   fi
+  redirect=${status#* }
+  status=${status%% *}
 
   case "$status" in
+    3??)
+      # A moved package base (an owner rename) answers every upload with a
+      # redirect. Following it would resend the token and the body to another
+      # URL, so name the new location and let the base URL be corrected.
+      printf 'package upload was redirected (HTTP %s) to %s: %s\n' "$status" "${redirect:-an unnamed location}" "$url" >> "$errors"
+      printf 'the package base URL has moved; update TILO_PACKAGE_PUBLIC_BASE_URL (or the caller'"'"'s base) to the new location\n' >> "$errors"
+      return 1
+      ;;
     200|201|204)
       printf 'published %s\n' "${file##*/}" > "$state/$index.out"
       ;;
