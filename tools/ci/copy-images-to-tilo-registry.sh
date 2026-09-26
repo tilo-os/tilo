@@ -140,12 +140,14 @@ if [[ $APPLY != 1 ]]; then
   exit 0
 fi
 
-command -v skopeo >/dev/null || die 'skopeo is required'
-command -v jq >/dev/null || die 'jq is required'
+# A missing credential is the likelier operator mistake and needs no tools
+# to report, so name it before checking what is installed.
 if [[ -z ${DEST_TOKEN:-} ]]; then
   [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]] \
     || die 'set DEST_TOKEN, or run inside a Forgejo Actions job with enable-openid-connect: true'
 fi
+command -v skopeo >/dev/null || die 'skopeo is required'
+command -v jq >/dev/null || die 'jq is required'
 if [[ $RESIGN == 1 ]]; then
   command -v cosign >/dev/null || die 'cosign is required for RESIGN=1'
   # Same KMS-only guard and AWS web-identity setup as the release workflow.
