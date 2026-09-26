@@ -20,8 +20,11 @@ fn xrgb_pitch() -> usize {
 }
 
 fn bridge() -> VelloDrmBridge {
-    let bridge = VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
+    let mut bridge = VelloDrmBridge::new(NATIVE_WIDTH, NATIVE_HEIGHT)
         .expect("native retained-frame oracle requires a working wgpu adapter");
+    // These oracles compare native 4K pixels; how long llvmpipe takes to produce them on a
+    // loaded host is not what they check.
+    bridge.wait_for_gpu_completion_for_test();
     eprintln!(
         "retained renderer gate adapter: {:?}",
         bridge

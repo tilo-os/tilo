@@ -160,12 +160,14 @@ mod identity_fs_tests {
             ..WorkspaceTree::default()
         };
         tree.export_fs_capabilities();
-        for _ in 0..300 {
-            if log.exists() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        }
+        // The worker only retires once a publication succeeds, so its
+        // retirement is the event to wait on. Four backed-off failures take
+        // about 1.5 s of sleeps plus five process spawns; the budget is only
+        // a backstop for a worker that never succeeds.
+        assert!(
+            wait_for_fs_authority_publication_idle(Duration::from_secs(60)),
+            "the retry worker never published the queued ACL"
+        );
         assert!(
             log.exists(),
             "the queued ACL survives more than three failures"
@@ -176,10 +178,6 @@ mod identity_fs_tests {
                 .parse::<u8>()
                 .expect("numeric attempt count")
                 > 3
-        );
-        assert!(
-            wait_for_fs_authority_publication_idle(Duration::from_secs(1)),
-            "the retry worker must retire before its fixture is removed"
         );
     }
 
