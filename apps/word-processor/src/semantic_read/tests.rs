@@ -109,6 +109,8 @@ fn semantic_read_refuses_pending_stale_and_insufficient_scan() {
 }
 
 // Track allocations only on this test thread; fixtures are built before measurement.
+// The meter is Chat's: both apps bound semantic reads the same way.
+#[path = "../../../chat/src/semantic_read/tests/allocation_meter.rs"]
 mod allocation_meter;
 
 #[test]
