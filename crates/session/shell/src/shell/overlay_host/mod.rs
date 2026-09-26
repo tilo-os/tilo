@@ -23886,7 +23886,7 @@ mod peer_cursor_tests;
 /// says which is which. Dormant membership stays in workspace settings:
 /// immediate presence never invents an idle session.
 #[cfg(test)]
-#[path = "roster_rows.rs"]
+#[path = "roster_rows_tests.rs"]
 mod roster_rows;
 
 #[cfg(test)]
