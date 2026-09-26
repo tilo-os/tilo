@@ -111,6 +111,10 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     // Toolkits (GTK 4.14+, Qt 6.8+, SDL3, winit) name their cursor through
     // it instead of loading an Xcursor theme the sandbox may not contain.
     "wp_cursor_shape_manager_v1",
+    // Games, emulators and remote-desktop clients lock the pointer and read
+    // raw deltas; SDL and Proton refuse mouse-look without these.
+    "zwp_pointer_constraints_v1",
+    "zwp_relative_pointer_manager_v1",
 ];
 
 #[test]
