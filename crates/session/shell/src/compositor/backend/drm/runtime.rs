@@ -273,6 +273,9 @@ pub struct DrmDispatchState {
     /// the plane of the output the pointer is over (hiding the one it left),
     /// all at input rate with no framebuffer redraw. Empty → software cursor from `pointer`.
     pub hw_cursor: CursorPlanes,
+    /// What the pointer shows, applied to every scanout (including ones a
+    /// hotplug adds later).
+    pub pointer_image: crate::compositor::cursor::PointerImage,
     /// Per-user xkb keymap + state translating libinput keycodes into winit
     /// `KeyboardInput` events (`FrameBuilder::dispatch_event`'s wire); `None`
     /// when the keymap couldn't compile, running pointer-only. The persisted
@@ -507,6 +510,7 @@ pub enum ScanoutCommand {
         dpms_on: bool,
     },
     SetCursorSize(u32),
+    SetPointerImage(crate::compositor::cursor::PointerImage),
 }
 
 /// The ownership state for one card across a udev remove/re-add race.  This
@@ -744,6 +748,20 @@ fn reconcile_capability_topology(
 }
 
 impl DrmDispatchState {
+    /// Keep the cursor planes' offset in step with the image they show.
+    fn sync_cursor_hotspot(&mut self) {
+        let hotspot = self
+            .pointer_image
+            .bitmap(self.accessibility.effective_cursor_size())
+            .map_or((0, 0), |bitmap| {
+                (
+                    i32::try_from(bitmap.hotspot.0).unwrap_or(0),
+                    i32::try_from(bitmap.hotspot.1).unwrap_or(0),
+                )
+            });
+        self.hw_cursor.set_hotspot(hotspot);
+    }
+
     /// Build the initial dispatch state from everything [`DrmRuntime::new`]
     /// gathered before it — the seat's active session, every retained KMS
     /// card, and the persisted settings. Every other field
@@ -804,6 +822,7 @@ impl DrmDispatchState {
             logical_pointer: (0.0, 0.0),
             output_size: (0, 0),
             hw_cursor: CursorPlanes::default(),
+            pointer_image: crate::compositor::cursor::PointerImage::default(),
             keyboard,
             present_gate: Some(Arc::new(Mutex::new(()))),
         }
@@ -1076,7 +1095,8 @@ impl DrmDispatchState {
     /// Returns entries for the scanout owner; `position` is provisional — [`Self::relayout_outputs`] fixes it for the whole set, and `Reconfigure` carries the final table.
     fn adopt_builds(&mut self, builds: Vec<ScanoutBuild>) -> Vec<ScanoutEntry> {
         let mut entries = Vec::with_capacity(builds.len());
-        for build in builds {
+        for mut build in builds {
+            build.scanout.set_pointer_image(self.pointer_image.clone());
             let key = DrmOutputKey {
                 device: build.device_id,
                 connector: build.connector_id,
@@ -2748,6 +2768,17 @@ impl DrmRuntime {
     /// Queue cancellation for every active direct-touch contact. The session
     /// lock uses this before it hides client input, because a physical release
     /// after that boundary cannot be relied upon to arrive.
+    /// Show `image` as the pointer on every output.
+    pub fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        if self.dispatch.pointer_image == image {
+            return;
+        }
+        self.dispatch.pointer_image = image.clone();
+        self.dispatch.sync_cursor_hotspot();
+        self.dispatch
+            .command(ScanoutCommand::SetPointerImage(image));
+    }
+
     pub fn cancel_touch(&mut self) {
         self.dispatch.handle_direct_touch_cancel();
     }
@@ -2790,6 +2821,7 @@ impl DrmRuntime {
             self.dispatch.command(ScanoutCommand::SetCursorSize(
                 accessibility.effective_cursor_size(),
             ));
+            self.dispatch.sync_cursor_hotspot();
         }
         if !accessibility.sticky_keys {
             self.dispatch.sticky_latched = ModifiersState::empty();

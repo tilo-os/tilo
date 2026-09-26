@@ -47,6 +47,8 @@ mod control_socket_test;
 mod controller_navigation;
 #[path = "cross_strip_drag.rs"]
 mod cross_strip_drag;
+#[path = "cursor_protocol.rs"]
+mod cursor_protocol;
 #[path = "dbus_runtime_context.rs"]
 mod dbus_runtime_context;
 #[path = "desktop_env_interactions.rs"]
