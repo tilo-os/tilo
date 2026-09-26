@@ -1342,6 +1342,7 @@ impl CapnpBrokerState {
         shortcut_id: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, ActionHostError> {
         let shortcut = self
             .saved_shortcut(caller, room, shortcut_id)
@@ -1380,7 +1381,7 @@ impl CapnpBrokerState {
                 run,
                 trigger: tilo_automation::RunTrigger::Fired(trigger.clone()),
                 mode: tilo_automation::RunMode::Unattended,
-                inputs: serde_json::Map::new(),
+                inputs,
             },
             automation_host::DoorHooks::new(None),
         )

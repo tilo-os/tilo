@@ -271,6 +271,38 @@ pub type OpenFileChannel = Receiver<OpenFileOutcome>;
 /// frame.
 pub type MultiChannel = Receiver<MultiOutcome>;
 
+/// Where a wallpaper is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallpaperTarget {
+    Background,
+    Lockscreen,
+    Both,
+}
+
+/// The outcome of asking the desktop to use a picture as the wallpaper. The
+/// desktop previews it and asks the user to confirm; `Err` carries why it did
+/// not happen, including the user declining.
+pub type WallpaperChannel = Receiver<Result<(), String>>;
+
+/// Ask the desktop's Wallpaper portal to use `file`, an already-open picture
+/// (typically from [`PickRequest::send_open_file`]), for `target`. Never
+/// blocks: the D-Bus round trip runs on the app runtime.
+pub fn send_set_wallpaper(file: File, target: WallpaperTarget) -> WallpaperChannel {
+    #[cfg(all(feature = "portal", unix))]
+    {
+        crate::native::portal::set_wallpaper(file, target)
+    }
+    #[cfg(not(all(feature = "portal", unix)))]
+    {
+        let _ = (file, target);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = tx.send(Err(
+            "setting the wallpaper needs the desktop portal build".to_string()
+        ));
+        rx
+    }
+}
+
 /// One entry in the chooser's file-type dropdown.
 ///
 /// Globs and MIME types are both accepted because the portal backends differ

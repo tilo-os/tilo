@@ -177,7 +177,8 @@ fn legacy_restore_actual_storage_reopen_never_applies_os_theme() {
         }
         return;
     }
-    let dir = std::env::temp_dir().join(format!("tilo-slice5-themes-legacy-{}", std::process::id()));
+    let dir =
+        std::env::temp_dir().join(format!("tilo-slice5-themes-legacy-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     for stage in ["write", "read"] {
         let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::legacy_restore_actual_storage_reopen_never_applies_os_theme","--nocapture"]).env("TILO_SLICE5_THEMES_STAGE",stage).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).output().unwrap();

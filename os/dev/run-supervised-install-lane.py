@@ -41,9 +41,9 @@ FIRMWARE = {
         'b3b855c5a80310168051164986855692d1bdb06e67619856177965cd87c6774f',
 }
 PAUSE_TTL_SECONDS = 12 * 60 * 60
-OWNER_LABEL = 'tilo.sandbox.example/owner'
-OPERATION_LABEL = 'tilo.sandbox.example/operation'
-EXPIRES_LABEL = 'tilo.sandbox.example/expires-at'
+OWNER_LABEL = 'tilo.so/owner'
+OPERATION_LABEL = 'tilo.so/operation'
+EXPIRES_LABEL = 'tilo.so/expires-at'
 OWNER = 'supervised-install-lane'
 
 

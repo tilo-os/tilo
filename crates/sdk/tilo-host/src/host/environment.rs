@@ -136,6 +136,12 @@ pub struct HostEnvironment {
     /// The user's preferred locale, as a POSIX or BCP 47 tag.
     pub locale: Option<String>,
     pub diagnostics: RunnerDiagnostics,
+    /// Directory `tilo-app dev` uses to hand the open document, route, and
+    /// caret to the next process. Absent outside that loop.
+    pub dev_session: Option<PathBuf>,
+    /// Directory of live `ui/*.json` screens. Absent when the app uses the
+    /// graph embedded in its binary.
+    pub ui_graph_dir: Option<PathBuf>,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);

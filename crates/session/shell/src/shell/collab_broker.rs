@@ -552,9 +552,10 @@ impl AppActionBroker {
         shortcut: &str,
         trigger: &tilo_automation::TriggerSpec,
         run: tilo_automation::RunId,
+        inputs: serde_json::Map<String, serde_json::Value>,
     ) -> Result<u64, tilo_actions::remote::ActionHostError> {
         self.state
-            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run)
+            .start_triggered_shortcut_run(caller, room, shortcut, trigger, run, inputs)
     }
 
     pub fn statuses_generation(&self) -> u64 {

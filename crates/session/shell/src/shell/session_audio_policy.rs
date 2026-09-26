@@ -2,7 +2,7 @@
 //!
 //! Settings writes intent to the shared settings store. This worker reads it,
 //! observes `PipeWire` off the render thread, and owns any virtual mono node
-//! until the desktop session ends. It is intentionally not a `DBus` service:
+//! and the echo-cancelled microphone until the desktop session ends. It is intentionally not a `DBus` service:
 //! neither operation is privileged, and one owner per graphical session is the
 //! security/correctness boundary we need.
 
@@ -96,6 +96,8 @@ fn preferences_from(
     PersistentAudioPreferences {
         balance,
         mono_output: settings_store::bool_at(doc, "audio", "mono_output").unwrap_or(false),
+        echo_cancellation: settings_store::bool_at(doc, "audio", "echo_cancellation")
+            .unwrap_or(true),
     }
 }
 
@@ -109,11 +111,19 @@ mod tests {
         let mut doc = serde_json::Map::new();
         doc.insert(
             "audio".into(),
-            json!({"balance": 8.0, "mono_output": "yes"}),
+            json!({"balance": 8.0, "mono_output": "yes", "echo_cancellation": "no"}),
         );
         assert_eq!(
             preferences_from(&doc),
             PersistentAudioPreferences::default()
         );
+    }
+
+    #[test]
+    fn calls_are_echo_cancelled_unless_the_person_turned_it_off() {
+        assert!(preferences_from(&serde_json::Map::new()).echo_cancellation);
+        let mut doc = serde_json::Map::new();
+        doc.insert("audio".into(), json!({"echo_cancellation": false}));
+        assert!(!preferences_from(&doc).echo_cancellation);
     }
 }

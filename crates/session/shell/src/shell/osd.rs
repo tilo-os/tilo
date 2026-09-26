@@ -62,6 +62,8 @@ pub enum OsdKind {
     /// A client locked or confined the pointer (`held`), or it was just
     /// released. The caption names the way out.
     PointerHeld { held: bool },
+    /// Mouse keys after its Shift+Alt+Num Lock chord.
+    MouseKeys { enabled: bool },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -181,6 +183,14 @@ impl Osd {
         }
     }
 
+    pub fn mouse_keys(enabled: bool) -> Self {
+        Self {
+            kind: OsdKind::MouseKeys { enabled },
+            level: 0.0,
+            raised_at: Instant::now(),
+        }
+    }
+
     /// Whether this kind draws a level bar — a bar pinned at zero next to
     /// "Next track" would read as a broken meter.
     pub fn has_level(&self) -> bool {
@@ -215,6 +225,8 @@ impl Osd {
                 crate::compositor::pointer_lock::RELEASE_CHORD_LABEL
             ),
             OsdKind::PointerHeld { held: false } => "Pointer released".to_string(),
+            OsdKind::MouseKeys { enabled: true } => "Mouse keys on".to_string(),
+            OsdKind::MouseKeys { enabled: false } => "Mouse keys off".to_string(),
         }
     }
 
@@ -452,7 +464,7 @@ fn draw_glyph(
         OsdKind::NoBacklight => (ui::icons::Icon::Monitor, colors.text_dim),
         OsdKind::AirplaneMode { on: true } => (ui::icons::Icon::WifiOff, colors.text_primary),
         OsdKind::AirplaneMode { on: false } => (ui::icons::Icon::Wifi, colors.text_primary),
-        OsdKind::Touchpad { enabled } => (
+        OsdKind::Touchpad { enabled } | OsdKind::MouseKeys { enabled } => (
             ui::icons::Icon::Mouse,
             if enabled {
                 colors.text_primary
@@ -587,6 +599,8 @@ mod tests {
         assert_eq!(Osd::airplane_mode(false).caption(), "Airplane mode off");
         assert_eq!(Osd::touchpad(false).caption(), "Touchpad off");
         assert_eq!(Osd::touchpad(true).caption(), "Touchpad on");
+        assert_eq!(Osd::mouse_keys(true).caption(), "Mouse keys on");
+        assert_eq!(Osd::mouse_keys(false).caption(), "Mouse keys off");
         assert_eq!(Osd::no_backlight().caption(), "No adjustable display");
         assert_eq!(Osd::transport(Transport::Stop).caption(), "Stop");
         for toggle in [

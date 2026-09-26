@@ -56,6 +56,7 @@ pub struct PendingRootActions {
     pub mobile: Option<bool>,
     pub night_light: Option<bool>,
     pub do_not_disturb: Option<bool>,
+    pub rotation_lock: Option<bool>,
     pub power: Option<PowerProfile>,
 }
 
@@ -371,6 +372,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::AirplaneMode => "airplane_mode",
             QuickSettingsControl::MobileData => "mobile_data",
             QuickSettingsControl::DoNotDisturb => "do_not_disturb",
+            QuickSettingsControl::RotationLock => "rotation_lock",
         }
     }
     pub fn set_layout_text_scale(&mut self, scale: f32) {
@@ -493,6 +495,8 @@ impl QuickSettingsRoot {
                 }
                 QuickSettingsControl::Vpn => !state.vpns.is_empty(),
                 QuickSettingsControl::MobileData => state.radios.wwan_available,
+                // Only a convertible that can sense its orientation rotates.
+                QuickSettingsControl::RotationLock => state.rotation_available,
             })
             .collect()
     }
@@ -509,6 +513,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::AirplaneMode,
             QuickSettingsControl::MobileData,
             QuickSettingsControl::DoNotDisturb,
+            QuickSettingsControl::RotationLock,
         ] {
             if !all.contains(&c) {
                 all.push(c);
@@ -530,6 +535,8 @@ impl QuickSettingsRoot {
                             .contains(&QuickSettingsControl::AirplaneMode)
                 }
                 QuickSettingsControl::MobileData => state.radios.wwan_available,
+                // Only a convertible that can sense its orientation rotates.
+                QuickSettingsControl::RotationLock => state.rotation_available,
             })
             .collect()
     }
@@ -965,6 +972,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::AirplaneMode => "Airplane mode",
             QuickSettingsControl::MobileData => "Mobile data",
             QuickSettingsControl::DoNotDisturb => "Do Not Disturb",
+            QuickSettingsControl::RotationLock => "Rotation lock",
         }
     }
     fn rendered_label(c: QuickSettingsControl, s: &QuickSettingsState) -> &'static str {
@@ -984,6 +992,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::AirplaneMode => ui::icons::Icon::WifiOff,
             QuickSettingsControl::MobileData => ui::icons::Icon::Globe,
             QuickSettingsControl::DoNotDisturb => ui::icons::Icon::Bell,
+            QuickSettingsControl::RotationLock => ui::icons::Icon::RotateCw,
         }
     }
     fn on(c: QuickSettingsControl, s: &QuickSettingsState) -> bool {
@@ -998,6 +1007,7 @@ impl QuickSettingsRoot {
             QuickSettingsControl::AirplaneMode => s.radios.airplane_mode,
             QuickSettingsControl::MobileData => s.radios.wwan_enabled,
             QuickSettingsControl::DoNotDisturb => s.do_not_disturb,
+            QuickSettingsControl::RotationLock => s.rotation_lock,
         }
     }
     fn subline(c: QuickSettingsControl, s: &QuickSettingsState) -> &str {
@@ -1058,6 +1068,13 @@ impl QuickSettingsRoot {
                     "Off"
                 }
             }
+            QuickSettingsControl::RotationLock => {
+                if s.rotation_lock {
+                    "Locked"
+                } else {
+                    "Rotates with device"
+                }
+            }
         }
     }
     fn toggle(
@@ -1095,6 +1112,10 @@ impl QuickSettingsRoot {
             QuickSettingsControl::DoNotDisturb => {
                 s.do_not_disturb = !s.do_not_disturb;
                 pending.do_not_disturb = Some(s.do_not_disturb);
+            }
+            QuickSettingsControl::RotationLock => {
+                s.rotation_lock = !s.rotation_lock;
+                pending.rotation_lock = Some(s.rotation_lock);
             }
         }
         None
@@ -3263,6 +3284,53 @@ mod tests {
             !root
                 .edit_controls(&state)
                 .contains(&QuickSettingsControl::MobileData)
+        );
+    }
+
+    #[test]
+    fn rotation_lock_appears_only_where_the_device_can_rotate() {
+        let root = QuickSettingsRoot::default();
+        let mut state = QuickSettingsState {
+            rotation_available: false,
+            ..QuickSettingsState::default()
+        };
+        assert!(
+            !root
+                .visible_controls(&state)
+                .contains(&QuickSettingsControl::RotationLock)
+        );
+        assert!(
+            !root
+                .edit_controls(&state)
+                .contains(&QuickSettingsControl::RotationLock)
+        );
+        state.rotation_available = true;
+        assert!(
+            root.visible_controls(&state)
+                .contains(&QuickSettingsControl::RotationLock)
+        );
+    }
+
+    #[test]
+    fn the_rotation_lock_tile_toggles_the_persisted_lock() {
+        let mut state = QuickSettingsState {
+            rotation_available: true,
+            rotation_lock: false,
+            ..QuickSettingsState::default()
+        };
+        let mut pending = PendingRootActions::default();
+        let action =
+            QuickSettingsRoot::toggle(QuickSettingsControl::RotationLock, &mut state, &mut pending);
+        assert_eq!(action, None);
+        assert!(state.rotation_lock);
+        assert_eq!(pending.rotation_lock, Some(true));
+        assert!(QuickSettingsRoot::on(
+            QuickSettingsControl::RotationLock,
+            &state
+        ));
+        assert_eq!(
+            QuickSettingsRoot::subline(QuickSettingsControl::RotationLock, &state),
+            "Locked"
         );
     }
 }
