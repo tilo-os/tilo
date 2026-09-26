@@ -113,16 +113,19 @@ fn spawn_at(
     listener.set_nonblocking(true)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
-    let thread = std::thread::Builder::new()
-        .name("tilo-tool-intents".into())
-        .spawn(move || {
+    // Launches a client asks for report to the session that started the
+    // service, like every other launch.
+    let thread = crate::shell::launcher::spawn_reporting(
+        std::thread::Builder::new().name("tilo-tool-intents".into()),
+        move || {
             while !worker_shutdown.load(Ordering::Acquire) {
                 match listener.accept() {
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
-                        let _ = std::thread::Builder::new()
-                            .name("tilo-tool-client".into())
-                            .spawn(move || serve_client(stream, &handler));
+                        let _ = crate::shell::launcher::spawn_reporting(
+                            std::thread::Builder::new().name("tilo-tool-client".into()),
+                            move || serve_client(stream, &handler),
+                        );
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(20));
@@ -133,7 +136,8 @@ fn spawn_at(
                     }
                 }
             }
-        })?;
+        },
+    )?;
     Ok(ToolServiceHandle {
         shutdown,
         thread: Some(thread),

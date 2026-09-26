@@ -1193,7 +1193,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(launch_events)]
     fn repeated_activation_while_opening_is_idempotent() {
         let chrome = chrome_rc();
         let package_id = "so.tilo.repeated-open-fixture";
@@ -1724,7 +1723,6 @@ mod tests {
     /// Must say so in the same words an installed app's launch uses, not
     /// fail silently. Drives the `on_open` closure.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn activating_with_no_workspace_reports_it_the_same_way() {
         let p = ApplicationsProvider::new();
         let c = chrome_rc();
@@ -1817,7 +1815,14 @@ mod tests {
             "a public cold query must not start or clone a full application corpus"
         );
 
-        let provider = ApplicationsProvider::new();
+        // A source of its own: the retained snapshot below stays current
+        // whatever other tests install or invalidate meanwhile.
+        let provider = ApplicationsProvider::with_test_source(ApplicationsTestSource::new(
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
         let entries = (0..=4_000)
             .map(|index| {
                 ApplicationEntry::Installed(app_in(
