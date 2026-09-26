@@ -1,6 +1,6 @@
 //! AccessKit bridge: turns the toolkit's per-widget semantic model
 //! ([`crate::a11y::AccessNode`], from
-//! [`Widget::accessibility`](crate::widget::Widget::accessibility)) into an
+//! [`Widget::accessibility`]) into an
 //! [`accesskit::TreeUpdate`], published over AT-SPI2.
 //!
 //! [`build_tree_update_with_resources`] is a pure function of `(root_widget,
@@ -47,7 +47,7 @@
 //! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
 //!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
 //!   clip the user was on, via
-//!   [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at).
+//!   [`Widget::perform_action_at`].
 //!   Inversion re-walks the live tree rather than caching an index, so a stale
 //!   id from a previous frame resolves to `None` instead of to the wrong clip.
 
@@ -70,7 +70,7 @@ type HostedByIndex<'a> = HashMap<usize, Vec<HostedWidget<'a>>>;
 
 /// Reserved so no widget can collide with it: widget ids are offset by +1
 /// from their taffy node id, and structural fallback ids are large offsets
-/// — see [`widget_node_id`].
+/// — see `widget_node_id`.
 pub const ROOT_ID: AkNodeId = AkNodeId(0);
 /// Base of the structural fallback range, for a widget with no taffy node.
 /// Well clear of any realistic taffy id.
@@ -254,7 +254,7 @@ pub fn is_synthetic_id(id: AkNodeId) -> bool {
 /// The host tracks focus by `taffy::NodeId` while the exported tree is keyed by
 /// AccessKit id, so anything crossing between the two — moving focus to a node,
 /// asserting on one in a test — has to translate. Exposed rather than
-/// open-coded so a caller cannot drift from [`widget_node_id`].
+/// open-coded so a caller cannot drift from `widget_node_id`.
 pub fn widget_ak_id<S: BuildHasher>(
     node_map: &HashMap<TaffyNodeId, *mut dyn Widget, S>,
     taffy_id: TaffyNodeId,
@@ -272,7 +272,7 @@ pub fn widget_ak_id<S: BuildHasher>(
 /// [`build_tree_update`] uses the same rule to aim the exported focus. This is
 /// the other half: the host uses it to aim *keyboard* activation at the element
 /// the user is on, so a canvas widget implements
-/// [`Widget::perform_action_at`](crate::widget::Widget::perform_action_at) once
+/// [`Widget::perform_action_at`] once
 /// and gets both the assistive-technology and the Enter/arrow paths, instead of
 /// having to implement `perform_action` again for the keyboard.
 pub fn active_descendant_path(access: &AccessNode) -> Option<Vec<u64>> {

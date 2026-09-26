@@ -9,7 +9,7 @@
 //!
 //! To add an icon: pull the `__iconNode` entries from
 //! `tilo-concept/node_modules/lucide-react/dist/esm/icons/<kebab>.js`,
-//! add a variant to [`Icon`], and map it in [`icon_subpaths`].
+//! add a variant to [`Icon`], and map it in `icon_subpaths`.
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Circle, Join, Point, Rect, RoundedRect, Shape, Stroke};
@@ -853,7 +853,7 @@ pub fn draw_icon(
 /// at four sizes would not line up; they must come from one path table).
 ///
 /// `color_for` receives the subpath index in the order
-/// [`icon_subpaths`] returns them (for [`Icon::Wifi`]: base dot, outer
+/// `icon_subpaths` returns them (for [`Icon::Wifi`]: base dot, outer
 /// arc, middle arc, inner arc).
 #[allow(
     clippy::arithmetic_side_effects,

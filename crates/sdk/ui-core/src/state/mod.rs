@@ -381,7 +381,7 @@ impl UndoLog {
     /// [`State::record_committed_action`].
     ///
     /// The entry lands unattributed, which an author-scoped Ctrl+Z *claims*
-    /// rather than skips — see [`claimable_by`](Self::claimable_by). A caller
+    /// rather than skips — see `claimable_by`. A caller
     /// that knows the change came from someone else must name them through
     /// [`record_committed_action_authored`](Self::record_committed_action_authored),
     /// or the local user's undo will reach an edit that was never theirs.
@@ -1067,7 +1067,7 @@ impl State {
     ///
     /// `current_focused_idx` / `current_metadata` are captured on the redo
     /// stack so a subsequent redo can restore the caret — same rationale as
-    /// [`undo`].
+    /// [`undo`](crate::undo).
     pub fn undo_for_author(
         &mut self,
         author: &UserId,

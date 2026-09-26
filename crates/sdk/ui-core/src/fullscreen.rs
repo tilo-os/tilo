@@ -1,7 +1,7 @@
 //! Shared fullscreen / presentation mechanism.
 //!
 //! A root widget expresses a [`FullscreenRequest`] via
-//! [`crate::widget::Widget::fullscreen_request`]. The App
+//! `crate::widget::Widget::fullscreen_request`. The App
 //! ([`crate::app::App`]) polls it each frame, runs [`select_output`] over
 //! the live monitors, and drives `winit::window::Window::set_fullscreen` —
 //! a genuine borderless full-output surface, not a maximized window.

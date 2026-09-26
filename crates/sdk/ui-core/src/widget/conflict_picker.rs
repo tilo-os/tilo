@@ -13,7 +13,7 @@
 //!
 //! A [`crate::widget::merge_strategy::ConflictKind::MergeOrPick`] with
 //! `merge_preview: Some(_)` adds a third `[Use merged]` card. Cards lay out
-//! side-by-side above [`NARROW_THRESHOLD`]/[`MIN_CARD_W`], else stack
+//! side-by-side above `NARROW_THRESHOLD`/`MIN_CARD_W`, else stack
 //! vertically.
 //!
 //! Outcomes flow through `on_pick`: [`PickerOutcome::Picked`],

@@ -4,7 +4,7 @@
 //! so it can't answer *does a change survive a restart?* [`Driver`] does:
 //! it stands up the app's widget tree over a Taffy layout at a fixed
 //! viewport and feeds it the same `WindowEvent`s winit would, through the
-//! same [`Widget::handle_event`](crate::widget::Widget::handle_event) the
+//! same [`Widget::handle_event`] the
 //! live app uses — nothing stubbed, including CRDT mutations.
 //!
 //! Apps opt in with one line in `main`, next to `--shots`:

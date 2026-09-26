@@ -1,6 +1,6 @@
 //! Recursive 2D box layout for the math model.
 //!
-//! Lays the [`MathExpr`] tree out into a flat list of positioned
+//! Lays the [`MathExpr`](crate::math::model::MathExpr) tree out into a flat list of positioned
 //! [`Box2d`]es with exact glyph metrics from [`TextRenderer`], plus the gap
 //! geometry the caret and hit-testing need. Layout is pure: it reads the
 //! model + a renderer (for measuring) and produces positions; it never

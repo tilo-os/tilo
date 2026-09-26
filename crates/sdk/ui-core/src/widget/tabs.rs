@@ -1408,7 +1408,7 @@ impl TabBar {
     }
     /// Tint `id`'s leading marker. A tab with no `app_kind` paints a filled dot
     /// in the leading slot; one with both tints its app glyph instead. Pass a
-    /// colour read off the `Theme` — see [`Self::accent_ids`].
+    /// colour read off the `Theme` — see `Self::accent_ids`.
     pub fn set_accent(&mut self, id: u64, color: vello::peniko::Color) {
         self.accent_ids.insert(id, color);
     }
@@ -1433,7 +1433,7 @@ impl TabBar {
         self.modified_ids.contains(&id)
     }
     /// Offer, or withhold, the hover-reveal maximize chip. Defaults to offered
-    /// — see [`Self::show_maximize`] for when to turn it off.
+    /// — see `Self::show_maximize` for when to turn it off.
     pub fn set_show_maximize(&mut self, show: bool) {
         self.show_maximize = show;
     }

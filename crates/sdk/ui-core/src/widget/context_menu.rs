@@ -558,7 +558,7 @@ impl ContextMenu {
     }
 
     /// No-op for separators / out-of-range indices. Records the index in
-    /// [`Self::selection`] so a `&mut self` / CRDT host can react via
+    /// `Self::selection` so a `&mut self` / CRDT host can react via
     /// [`Self::take_selection`].
     pub fn click_item(&mut self, idx: usize) {
         let Some(item) = self.items.get(idx) else {

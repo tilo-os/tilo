@@ -1168,7 +1168,7 @@ pub trait Widget {
     /// [`AccessState`](crate::a11y::AccessState). Default `None` means
     /// presentational: the node is skipped and children reparent onto the
     /// parent. State must be **derived, not stored** so it can't drift from
-    /// `draw`; names must already be [`i18n!`](crate::i18n)-resolved.
+    /// `draw`; names must already be [`i18n!`](macro@crate::i18n)-resolved.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         None
     }
@@ -1633,8 +1633,8 @@ pub trait Widget {
     /// Widget → host: an undo or redo the user asked for.
     ///
     /// The host drains this after each event and performs it through
-    /// [`App::perform_undo`](crate::app::App::perform_undo) /
-    /// [`App::perform_redo`](crate::app::App::perform_redo) — the same methods
+    /// `App::perform_undo` /
+    /// `App::perform_redo` — the same methods
     /// the Ctrl+Z key handler calls, so a button and the shortcut are one
     /// implementation and cannot drift.
     ///
@@ -1827,7 +1827,7 @@ pub trait Widget {
         false
     }
 
-    /// Unlike [`wants_pointer_capture`], does not swallow misses — drawn
+    /// Unlike `wants_pointer_capture`, does not swallow misses — drawn
     /// and hit-tested first, so a small on-video affordance gets z-order
     /// priority without deadening the content under it. Default `false`.
     fn is_floating(&self) -> bool {

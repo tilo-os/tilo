@@ -917,7 +917,7 @@ impl BlockEditor {
         editor
     }
 
-    /// Inverse of [`from_markdown`]; round-trip is byte-stable.
+    /// Inverse of `from_markdown`; round-trip is byte-stable.
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
         let ordinals = numbered_ordinals(&self.blocks);

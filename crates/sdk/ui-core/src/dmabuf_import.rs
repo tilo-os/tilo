@@ -30,6 +30,9 @@
 //!   back.
 //!
 //! Every failure is a typed error, never a silently blank frame.
+//!
+//! [`ImportError::NotVulkan`]: crate::dmabuf_import::ImportError::NotVulkan
+//! [`ImportError::StrideMismatch`]: crate::dmabuf_import::ImportError::StrideMismatch
 
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd};
 

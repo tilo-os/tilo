@@ -1,6 +1,6 @@
 //! `RichTextEditor` — a shared CRDT-native WYSIWYG rich-text editor widget.
 //!
-//! Ties together the shared caret core ([`EditCore`](crate::text_edit::EditCore))
+//! Ties together the shared caret core ([`EditCore`])
 //! and the rich-run layout primitive ([`RichTextLayout`]) into an *editable*
 //! widget with shared caret motion, selection, splicing, and run styling.
 //!

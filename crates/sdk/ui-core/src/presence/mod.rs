@@ -462,7 +462,7 @@ pub struct PresenceCtx {
     /// never affect document state or anyone's local viewport.
     following: HashMap<(PresenceKey, UserId), UserId>,
     pub remote_cursors: Vec<RemoteCursor>,
-    /// Seeded by the shell from [`Collaborator::cursor_color`]; falls
+    /// Seeded by the shell from `Collaborator::cursor_color`; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
     pub color_overrides: HashMap<UserId, (u8, u8, u8)>,
     /// Friendly display names per user, seeded from the collab roster

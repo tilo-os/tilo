@@ -18,6 +18,9 @@
 //! them into one sampleable RGBA texture with a fullscreen pass. That is the
 //! same arithmetic [`media::frame::planar_to_rgba`] does per pixel on the CPU,
 //! moved to the GPU.
+//!
+//! [`upload_planar`]: crate::gpu_video::upload_planar
+//! [`YuvConverter`]: crate::gpu_video::YuvConverter
 
 use media::dmabuf::{ColorRange, Colorimetry};
 use media::frame::{PlanarFormat, PlanarImage};

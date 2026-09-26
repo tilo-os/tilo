@@ -1,7 +1,7 @@
 //! `EditCore` — the shared headless text-editing model.
 //!
 //! Caret + selection state (byte offsets) plus the motion / edit vocabulary
-//! every editable surface needs, built on the shared [`text_selection`] boundary
+//! every editable surface needs, built on the shared [`text_selection`](crate::text_selection) boundary
 //! walkers and producing splices for an Automerge `Text`. It is deliberately
 //! UI-free: no rendering, no CRDT handle. The host widget applies the returned
 //! [`Edit`] to its CRDT (`AutoCommit::splice_text`, char-addressed) and feeds the
@@ -62,7 +62,7 @@ impl Edit {
 }
 
 /// The caret + selection model. Selection offsets are **bytes** into the bound
-/// text (matching [`text_selection`] and cosmic-text's byte-indexed layout).
+/// text (matching [`text_selection`](crate::text_selection) and cosmic-text's byte-indexed layout).
 #[derive(Clone, Debug, Default)]
 pub struct EditCore {
     sel: Selection,
