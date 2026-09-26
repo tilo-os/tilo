@@ -1644,30 +1644,7 @@ impl SlidesApp {
     /// title and each slide (with its elements). Derived entirely from the
     /// in-memory deck mirror, which the shared document already holds.
     pub(crate) fn slides_resource_ctx(&self) -> crate::actions::SlidesResourceCtx {
-        let slides = self
-            .deck
-            .slides
-            .iter()
-            .enumerate()
-            .map(|(idx, s)| crate::actions::SlideResource {
-                idx,
-                data: crate::actions::SlideData::from_slide(s),
-                elements: s
-                    .z_sorted()
-                    .into_iter()
-                    .map(|e| crate::actions::ElementResource {
-                        id: e.id.clone(),
-                        kind: e.kind,
-                        text: e.text.clone(),
-                        z: e.z,
-                    })
-                    .collect(),
-            })
-            .collect();
-        crate::actions::SlidesResourceCtx {
-            deck_title: self.deck.title.clone(),
-            slides,
-        }
+        crate::actions::SlidesResourceCtx::from_deck(&self.deck)
     }
 
     // --- rail scroll geometry ----------------------------------------------

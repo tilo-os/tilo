@@ -161,30 +161,44 @@ pub struct Element {
 
 impl Element {
     pub fn text(text: &str, x: f64, y: f64, w: f64, h: f64, font_size: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Text,
-            x,
-            y,
-            w,
-            h,
-            text: text.to_string(),
-            src: String::new(),
-            fill: "text".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 0.0,
-            z: 0,
-        }
+        let mut element = Element::of_kind(new_id(), ElementKind::Text, x, y, w, h);
+        element.text = text.to_string();
+        element.font_size = font_size;
+        element
     }
 
     pub fn shape(kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        Element::shape_with_id(new_id(), kind, x, y, w, h)
+    }
+
+    /// An image element backed by the picture at `src` (a filesystem path).
+    /// The pixels are decoded lazily off the UI thread and cached by path.
+    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::of_kind(new_id(), ElementKind::Image, x, y, w, h);
+        element.src = src.to_string();
+        element
+    }
+
+    /// A new element of `kind` with that kind's default style and the given
+    /// id: what [`Self::text`], [`Self::image`] and the shapes start from.
+    /// Taking the id rather than minting one lets an action create an
+    /// element whose id comes from its deterministic context.
+    pub fn of_kind(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
+        let mut element = Element::shape_with_id(id, kind, x, y, w, h);
+        match kind {
+            ElementKind::Text => element.fill = "text".into(),
+            ElementKind::Image => {
+                element.fill = "surface".into();
+                element.radius = 12.0;
+            }
+            ElementKind::Rect | ElementKind::Ellipse | ElementKind::Line => {}
+        }
+        element
+    }
+
+    fn shape_with_id(id: Id, kind: ElementKind, x: f64, y: f64, w: f64, h: f64) -> Element {
         Element {
-            id: new_id(),
+            id,
             kind,
             x,
             y,
@@ -208,30 +222,6 @@ impl Element {
             bold: false,
             italic: false,
             radius: if kind == ElementKind::Rect { 16.0 } else { 0.0 },
-            z: 0,
-        }
-    }
-
-    /// An image element backed by the picture at `src` (a filesystem path).
-    /// The pixels are decoded lazily off the UI thread and cached by path.
-    pub fn image(src: &str, x: f64, y: f64, w: f64, h: f64) -> Element {
-        Element {
-            id: new_id(),
-            kind: ElementKind::Image,
-            x,
-            y,
-            w,
-            h,
-            text: String::new(),
-            src: src.to_string(),
-            fill: "surface".into(),
-            stroke: "none".into(),
-            stroke_width: 0.0,
-            font_size: 32.0,
-            align: TextAlign::Left,
-            bold: false,
-            italic: false,
-            radius: 12.0,
             z: 0,
         }
     }
