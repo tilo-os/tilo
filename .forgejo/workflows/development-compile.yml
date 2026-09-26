@@ -42,7 +42,7 @@ on:
         description: Reviewed immutable native tools and application builder
         required: true
         type: string
-        default: code.sandbox.example/qos/tilo-builder@sha256:5365970de75407269908d486afd076f4a480356333e1b188958cd2dac60345c9
+        default: code.sandbox.example/qos/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
       mode:
         description: 'Cache proof, reusable native applications, or full OS assembly'
         required: true
