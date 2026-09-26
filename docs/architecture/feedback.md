@@ -123,10 +123,11 @@ check on that claim:
 Frame redaction is exact rather than guessed. The trace knows where every
 sensitive node was on screen, so those rectangles are masked.
 
-Pixels are captured only when the recording asks for them: to keep with the
-recording, or only for the check above. The compositor renders each
-recorded app surface alone, never the desktop or another app, once a second
-and on damage, and the recorder masks each frame with the surface's inspect
+A feedback recording captures pixels for the check above by default. They
+stay on the device and are offered only where they diverge, unless the user
+chooses to keep them with the recording or to capture none. The compositor
+renders each recorded app surface alone, never the desktop or another app,
+at the scale it renders at, once a second and on damage, and the recorder masks each frame with the surface's inspect
 bounds before it is encoded, then again against the finished trace. Frames
 are lossless PNG keyframes, because a lossy codec would make the check
 compare codec noise. They form one bounded blob that the `session` record

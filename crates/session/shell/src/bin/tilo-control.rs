@@ -450,7 +450,7 @@ fn parse_actions_command<'a>(
     }
 }
 
-const FEEDBACK_USAGE: &str = "feedback record start [--room ROOM]... [--app APP]... [--pixels keep|check] | \
+const FEEDBACK_USAGE: &str = "feedback record start [--room ROOM]... [--app APP]... [--pixels check|keep|off] | \
 feedback record stop | feedback record capture-recent | \
 feedback recent-buffer on|off | feedback status";
 
@@ -519,7 +519,7 @@ fn parse_feedback_start<'a>(
             "--pixels" => &mut pixels,
             other => {
                 return Err(ParseError::Usage(format!(
-                    "feedback record start: unknown option `{other}` (--room ROOM, --app APP, --pixels keep|check)"
+                    "feedback record start: unknown option `{other}` (--room ROOM, --app APP, --pixels check|keep|off)"
                 )));
             }
         };
@@ -972,12 +972,14 @@ fn print_usage() {
          \x20                               run one typed action without synthetic input\n\
          \x20 actions status INVOCATION_ID   read latest broker state/output\n\
          \x20 actions cancel INVOCATION_ID   request cooperative cancellation\n\
-         \x20 feedback record start [--room ROOM]... [--app APP]... [--pixels keep|check]\n\
+         \x20 feedback record start [--room ROOM]... [--app APP]... [--pixels check|keep|off]\n\
          \x20                               admit the Recorder agent (Observer) to ROOM (default:\n\
          \x20                               the active workspace) and record its documents,\n\
          \x20                               presence and actions; --app narrows the documents.\n\
-         \x20                               --pixels also keeps masked frames of those apps'\n\
-         \x20                               windows (check: only to compare replay against).\n\
+         \x20                               Masked frames of those apps' windows are kept on\n\
+         \x20                               this device to check replay against (--pixels\n\
+         \x20                               check, the default); keep: with the recording;\n\
+         \x20                               off: no pixels.\n\
          \x20                               The Recorder is listed as AGENT while it records.\n\
          \x20 feedback record stop          remove the Recorder and keep the `session` record\n\
          \x20                               in memory for review; nothing is written or sent\n\

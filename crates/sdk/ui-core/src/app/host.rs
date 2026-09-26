@@ -8442,6 +8442,35 @@ mod bound_component_tests {
     }
 }
 
+#[cfg(feature = "native")]
+impl App {
+    /// Lay out and draw one frame at `width`×`height` physical pixels and
+    /// `scale_factor`, through the same layout and draw passes the native
+    /// runner uses before it submits a frame. For a host that presents the
+    /// scene itself, such as a compositor test standing in for the window.
+    /// Returns `false` when layout failed and nothing was drawn.
+    pub fn draw_frame(
+        &mut self,
+        scene: &mut Scene,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+    ) -> bool {
+        if self.layout.root_node.is_none() {
+            self.init_layout();
+        }
+        let Some(root) = self.layout.root_node else {
+            return false;
+        };
+        let first = self.layout.last_layout_logical.is_none();
+        if run_layout_pass(self, root, width, height, scale_factor, first, None).is_none() {
+            return false;
+        }
+        draw_frame_content(self, scene, width, height, scale_factor, None);
+        true
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn draw_prepared_component_test_frame(app: &mut App) {
     app.init_layout();

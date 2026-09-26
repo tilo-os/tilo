@@ -75,8 +75,13 @@ fn px(value: f64) -> u32 {
 /// A frame builder whose rendered tree holds the client's tab, focused,
 /// in a workspace that is room `ROOM`, administered by `OWNER`.
 fn desktop_with_client(surface_id: u64) -> FrameBuilder {
+    desktop_with(surface_id, APP, OWNER)
+}
+
+/// [`desktop_with_client`] for any app, in a room `owner` administers.
+fn desktop_with(surface_id: u64, app_id: &str, owner: &str) -> FrameBuilder {
     let mut protocol = WorkspaceTree::bootstrap_demo();
-    tab_binding::adopt_toplevel(&mut protocol, surface_id, Some(APP.to_string()));
+    tab_binding::adopt_toplevel(&mut protocol, surface_id, Some(app_id.to_string()));
     let mut fb = FrameBuilder::new((W, H));
     {
         let chrome = fb.chrome();
@@ -109,7 +114,7 @@ fn desktop_with_client(surface_id: u64) -> FrameBuilder {
         rendered.desktop.set_active_group(strip_id, group_id);
         let workspace = &mut rendered.desktop.workspaces[workspace_index];
         workspace.room = RoomId::parse(&ROOM.to_string()).unwrap();
-        workspace.set_owner(OWNER);
+        workspace.set_owner(owner);
     }
     fb.with_chrome(shell::shell::chrome_state::ChromeState::bump);
     fb
@@ -257,7 +262,7 @@ fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
 
     // Replay reads frames through the same render path: the surface as it
     // looks now is exactly the last frame the recording kept.
-    let now = CaptureExecutor::room_surface_frames(&mut fb, &ROOM.to_string(), trace.duration);
+    let now = CaptureExecutor::room_surface_frames(&mut fb, &ROOM.to_string(), trace.duration, 1.0);
     assert_eq!(now.len(), 1);
     let now = now.into_iter().next().unwrap().unwrap();
     let last = strip.frames[1].decode().unwrap();
@@ -267,5 +272,315 @@ fn recording_with_pixels_keeps_the_recorded_surface_as_a_frames_blob() {
         "an unchanged surface replays pixel for pixel"
     );
     store().forget(surface_id);
+    drop(broker);
+}
+
+/// The tile of `surface_id` once laid out, in whole logical pixels.
+fn laid_out(fb: &mut FrameBuilder, surface_id: u64) -> (u32, u32) {
+    for _ in 0..4 {
+        let _ = frame(fb);
+    }
+    let rect = fb
+        .foreign_surface_rect(surface_id)
+        .expect("the client's tile is laid out");
+    (px(rect.width()), px(rect.height()))
+}
+
+#[test]
+fn a_scaled_surface_is_kept_at_the_pixels_it_renders() {
+    let surface_id = 0x5EED_F4A3_0002;
+    store().forget(surface_id);
+    let mut fb = desktop_with_client(surface_id);
+    let (width, height) = laid_out(&mut fb, surface_id);
+    // On a scale-2 output the client commits a buffer twice the tile.
+    store().publish_rgba(
+        surface_id,
+        &solid(width * 2, height * 2, [0x30, 0x60, 0xD0]),
+        width * 2,
+        height * 2,
+    );
+    present(&mut fb, surface_id);
+
+    let dir = tempfile::tempdir().unwrap();
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        dir.path().join("collab.sock"),
+        fb.chrome().tree_handle(),
+        Vec::new(),
+    )
+    .unwrap();
+    fb.host_mut().attach_collab_broker(&broker);
+    let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
+    let owner = OWNER.to_string();
+    recorder
+        .start(
+            &[ROOM.to_string()],
+            vec![APP.to_string()],
+            Some(PixelPurpose::Check),
+            &owner,
+        )
+        .unwrap();
+    // What the compositor measures every frame: the surface renders at 2.
+    // The display the tile is on is a scale-2 output; the shell measures
+    // each laid-out tab against it every frame, as the compositor does.
+    fb.host_mut()
+        .set_recording_outputs(vec![shell::shell::recorder::RecordedOutput {
+            rect: vello::kurbo::Rect::new(-1.0e6, -1.0e6, 1.0e6, 1.0e6),
+            scale: 2.0,
+            name: "output 1".into(),
+        }]);
+
+    let mut executor = CaptureExecutor::default();
+    let mut scene = frame(&mut fb);
+    let _ = executor.execute_ready(&mut fb, &mut scene);
+    let checkout = recorder.stop(&owner).unwrap();
+    let pending = recorder.take_session(&checkout.id).unwrap();
+    let strip = referenced_frames(&pending);
+    assert_eq!(strip.purpose, PixelPurpose::Check);
+    assert_eq!(strip.frames.len(), 1);
+    let stored = &strip.frames[0];
+    assert_eq!(
+        (stored.width, stored.height),
+        (width * 2, height * 2),
+        "a scaled surface keeps the pixels it rendered"
+    );
+    assert!((stored.scale - 2.0).abs() < 1e-9, "scale {}", stored.scale);
+    assert_eq!(
+        stored.unexplained,
+        vec![PixelRect::new(0, 0, width * 2, height * 2)]
+    );
+    let pixels = stored.decode().unwrap();
+    // Interior points: the tile's corners are rounded.
+    for (x, y) in [
+        (width / 2, height / 2),
+        (width, height),
+        (width * 3 / 2, height * 3 / 2),
+    ] {
+        let got = pixels.pixel(x, y).unwrap();
+        for (channel, want) in got.iter().zip([0x30, 0x60, 0xD0]) {
+            assert!(channel.abs_diff(want) <= 4, "({x},{y}) is {got:?}");
+        }
+    }
+    let replayed = CaptureExecutor::room_surface_frames(&mut fb, &ROOM.to_string(), stored.at, 2.0);
+    let replayed = replayed.into_iter().next().unwrap().unwrap();
+    assert_eq!((replayed.width, replayed.height), (width * 2, height * 2));
+    store().forget(surface_id);
+    drop(broker);
+}
+
+/// A real app answering Inspect through the broker: a person's identity,
+/// certified for `ROOM`.
+mod inspected {
+    use std::os::fd::IntoRawFd as _;
+    use std::os::unix::net::UnixStream;
+
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    pub const APP: &str = "so.tilo.mask-fixture";
+    const ROOT_KEY: [u8; 32] = [61; 32];
+    const DEVICE_KEY: [u8; 32] = [62; 32];
+
+    pub fn owner() -> String {
+        let root = SigningKey::from_bytes(&ROOT_KEY);
+        let collab_types::Principal::Person(principal) = collab_types::Principal::person_from_key(
+            collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+        ) else {
+            panic!("a person key names a person")
+        };
+        principal
+    }
+
+    pub fn device() -> [u8; 32] {
+        SigningKey::from_bytes(&DEVICE_KEY)
+            .verifying_key()
+            .to_bytes()
+    }
+
+    fn identity() -> ui::collaboration::CertifiedEndpointIdentity {
+        let root = SigningKey::from_bytes(&ROOT_KEY);
+        let device = SigningKey::from_bytes(&DEVICE_KEY);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "mask".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::primary(),
+            issued_at_ns: 1,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        let workspace = super::ROOM.to_string();
+        let presentation = runtime_collab::CertifiedJoinIdentity {
+            workspace_id: workspace.clone(),
+            device_certificate: serde_json::to_vec(&certificate).unwrap(),
+            proof: device
+                .sign(&runtime_identity::collaboration_join_signing_bytes(
+                    &workspace,
+                ))
+                .to_bytes()
+                .to_vec(),
+        }
+        .encode()
+        .unwrap();
+        ui::collaboration::CertifiedEndpointIdentity::new(presentation, device)
+    }
+
+    /// A toolkit app with a public button and a personal email field.
+    pub fn app(socket: &std::path::Path) -> ui::App {
+        use ui::widget::{Button, Column, TextInput, TextInputKind};
+        let stream = UnixStream::connect(socket).unwrap();
+        let manager = ui::collaboration::CollaborationManager::for_route_fd_with_identity(
+            stream.into_raw_fd(),
+            APP,
+            super::ROOM,
+            None,
+            Some("mask".to_owned()),
+            identity(),
+        )
+        .unwrap();
+        let root = Column::new()
+            .push(Box::new(Button::new("send", "Send", None)))
+            .push(Box::new(
+                TextInput::local()
+                    .with_kind(TextInputKind::Email)
+                    .with_initial_value("ada@example.org")
+                    .with_accessible_name("Email"),
+            ));
+        let mut app =
+            ui::App::with_collaboration_manager(ui::State::new(), Box::new(root), manager);
+        app.init_layout();
+        app
+    }
+}
+
+/// The inspected app, connected and inspectable, having committed its own
+/// drawn frame at its tile's size as `surface_id`'s buffer: the pixels the
+/// compositor records are the app's, and its Inspect bounds describe them.
+fn committed_app(
+    socket: &std::path::Path,
+    broker: &shell::shell::collab_broker::BrokerHandle,
+    surface_id: u64,
+    (width, height): (u32, u32),
+) -> ui::App {
+    let mut app = inspected::app(socket);
+    let mut drawn = vello::Scene::new();
+    assert!(app.draw_frame(&mut drawn, width, height, 1.0));
+    let buffer = ui::offscreen::OffscreenRenderer::new(width, height)
+        .render(&drawn, vello::peniko::Color::WHITE);
+    store().publish_rgba(surface_id, &buffer, width, height);
+    let actions = broker.app_action_broker().expect("typed broker state");
+    let started = Instant::now();
+    while actions.inspectable_apps().is_empty() {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the app never became inspectable"
+        );
+        app.pump_collab_presence();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    app
+}
+
+#[test]
+fn a_personal_field_of_a_real_app_is_masked_in_every_kept_frame() {
+    let surface_id = 0x5EED_F4A3_0003;
+    store().forget(surface_id);
+    let owner = inspected::owner();
+    let mut fb = desktop_with(surface_id, inspected::APP, &owner);
+    let (width, height) = laid_out(&mut fb, surface_id);
+
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("collab.sock");
+    let broker = shell::shell::collab_broker::spawn_native_harness(
+        socket.clone(),
+        fb.chrome().tree_handle(),
+        vec![inspected::device()],
+    )
+    .unwrap();
+    let mut app = committed_app(&socket, &broker, surface_id, (width, height));
+    present(&mut fb, surface_id);
+    fb.host_mut().attach_collab_broker(&broker);
+    let recorder = fb.chrome().recorder().cloned().expect("recorder attached");
+    recorder
+        .start(
+            &[ROOM.to_string()],
+            vec![inspected::APP.to_string()],
+            Some(PixelPurpose::Keep),
+            &owner,
+        )
+        .unwrap();
+
+    // The compositor's loop: the app answers, the recorder asks for
+    // keyframes (sooner for each captured surface, through `inspect_now`),
+    // and the capture tick keeps frames.
+    let mut executor = CaptureExecutor::default();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(2_500) {
+        app.pump_collab_presence();
+        recorder.pump(Instant::now(), &owner);
+        let mut scene = frame(&mut fb);
+        let _ = executor.execute_ready(&mut fb, &mut scene);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let checkout = recorder.stop(&owner).unwrap();
+    let pending = recorder.take_session(&checkout.id).unwrap();
+    let trace = pending.trace().unwrap();
+    let email = trace
+        .timeline
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            session_trace::Event::Inspect(keyframe) => Some(keyframe),
+            _ => None,
+        })
+        .flat_map(|keyframe| keyframe.reply.nodes.iter())
+        .find(|node| node.label.as_deref() == Some("Email"))
+        .cloned()
+        .expect("the recording kept a keyframe of the app");
+    assert_eq!(email.sensitivity, ui::a11y::Sensitivity::Personal);
+    let visible = email.visible.expect("the field is on screen");
+
+    let strip = referenced_frames(&pending);
+    assert!(!strip.frames.is_empty());
+    for stored in &strip.frames {
+        let bounds = PixelRect::new(0, 0, stored.width, stored.height);
+        let field = PixelRect::covering(&visible, stored.scale, bounds);
+        assert!(!field.is_empty(), "the field lies on the captured surface");
+        assert!(
+            stored.masked.iter().any(|rect| rect.contains(&field)),
+            "{:?} is not masked in {:?}",
+            field,
+            stored.masked
+        );
+        let pixels = stored.decode().unwrap();
+        for y in field.y..field.bottom() {
+            for x in field.x..field.right() {
+                assert_eq!(
+                    pixels.pixel(x, y),
+                    Some(session_trace::mask::MASK_RGBA),
+                    "({x},{y}) of the personal field is not masked"
+                );
+            }
+        }
+        // Nothing but sensitive nodes is masked.
+        let outside = (0..stored.height)
+            .flat_map(|y| (0..stored.width).map(move |x| (x, y)))
+            .find(|&(x, y)| !stored.masked.iter().any(|rect| rect.contains_point(x, y)))
+            .expect("the frame is not all mask");
+        assert_ne!(
+            pixels.pixel(outside.0, outside.1),
+            Some(session_trace::mask::MASK_RGBA)
+        );
+        // The app describes its whole surface, so nothing is unexplained
+        // where its nodes lie.
+        assert!(
+            !stored
+                .unexplained
+                .iter()
+                .any(|rect| !rect.intersect(&field).is_empty()),
+            "the field is described: {:?}",
+            stored.unexplained
+        );
+    }
+    store().forget(surface_id);
+    drop(app);
     drop(broker);
 }

@@ -191,6 +191,9 @@ struct Capture {
     /// likely changed: a View or overlay moved, an action finished, a frame
     /// was captured. Their keyframe is asked for sooner.
     keyframe_triggers: BTreeSet<(String, Option<String>)>,
+    /// The scale each measured tab's surface renders at: what a captured
+    /// frame's pixels are per logical pixel.
+    surface_scales: Vec<(crate::shell::state::TabId, f64)>,
 }
 
 struct Recording {
@@ -522,6 +525,10 @@ impl Recorder {
     /// Take this frame's measurement of the client surfaces on screen. Only
     /// surfaces tiled in a held room are kept, by the app they belong to.
     pub fn note_surfaces(&self, measured: &[MeasuredSurface]) {
+        lock(&self.capture).surface_scales = measured
+            .iter()
+            .map(|surface| (surface.tab, surface.scale))
+            .collect();
         let held = self.subscription.rooms();
         let surfaces: Vec<(String, SurfaceGeometry)> = {
             let tree = self.tree.read();
@@ -780,6 +787,15 @@ impl Recorder {
         }
         self.resync_rooms();
         self.seal(&trace, frames)
+    }
+
+    /// The scale the surface of `tab` renders at, as last measured.
+    pub fn surface_scale(&self, tab: crate::shell::state::TabId) -> Option<f64> {
+        lock(&self.capture)
+            .surface_scales
+            .iter()
+            .find(|(id, _)| *id == tab)
+            .map(|(_, scale)| *scale)
     }
 
     /// What the compositor should capture, while a recording keeps pixels.

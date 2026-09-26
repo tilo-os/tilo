@@ -146,6 +146,7 @@ impl SessionSurface {
 /// A tab a feedback recording keeps pixels of.
 struct RecordedSurface {
     surface_id: u64,
+    tab: crate::shell::state::TabId,
     target_id: String,
     app_id: String,
     room: String,
@@ -176,6 +177,7 @@ fn recorded_surfaces(
             {
                 surfaces.push(RecordedSurface {
                     surface_id: *surface_id,
+                    tab: tab.id,
                     target_id: format!("group:{}:tab:{}", group.id, tab.id),
                     app_id: app_id.clone(),
                     room: room.clone(),
@@ -873,10 +875,18 @@ impl CaptureExecutor {
             followed.last_capture = now;
             followed.frame_seq = frame_seq;
             followed.rect = rect;
+            // Frames are kept at the resolution the client renders at, so
+            // a scaled output keeps its detail and Inspect's logical
+            // bounds times this scale index the frame.
+            let scale = recorder
+                .surface_scale(surface.tab)
+                .filter(|scale| scale.is_finite() && *scale > 0.0)
+                .unwrap_or(1.0);
             let frame = render_session_frame(
                 frame_builder,
                 &surface.target_id,
                 rect,
+                scale,
                 &mut followed.renderer,
             );
             let pushed = frame.and_then(|(width, height, rgba)| {
@@ -908,6 +918,7 @@ impl CaptureExecutor {
         frame_builder: &mut FrameBuilder,
         room: &str,
         at: session_trace::Offset,
+        scale: f64,
     ) -> Vec<Result<session_trace::frames::SurfaceFrame, String>> {
         let surfaces = recorded_surfaces(&frame_builder.chrome().tree(), |candidate, _| {
             candidate == room
@@ -919,18 +930,24 @@ impl CaptureExecutor {
             };
             let mut renderer = None;
             frames.push(
-                render_session_frame(frame_builder, &surface.target_id, rect, &mut renderer)
-                    .and_then(|(width, height, rgba)| {
-                        session_trace::frames::SurfaceFrame::new(
-                            at,
-                            session_trace::Route::new(surface.app_id, surface.room, ""),
-                            width,
-                            height,
-                            f64::from(width) / rect.width(),
-                            rgba,
-                        )
-                        .map_err(|error| error.to_string())
-                    }),
+                render_session_frame(
+                    frame_builder,
+                    &surface.target_id,
+                    rect,
+                    scale,
+                    &mut renderer,
+                )
+                .and_then(|(width, height, rgba)| {
+                    session_trace::frames::SurfaceFrame::new(
+                        at,
+                        session_trace::Route::new(surface.app_id, surface.room, ""),
+                        width,
+                        height,
+                        f64::from(width) / rect.width(),
+                        rgba,
+                    )
+                    .map_err(|error| error.to_string())
+                }),
             );
         }
         frames
@@ -1573,11 +1590,13 @@ fn app_local_region_on_surface(region: Rect, app_rect: Rect) -> Option<Rect> {
 }
 
 /// Paint one recorded app surface alone, unclipped by the output, and read
-/// it back: the tile's content rectangle, without its tab decoration.
+/// it back at `scale` device pixels per logical pixel: the tile's content
+/// rectangle, without its tab decoration.
 fn render_session_frame(
     frame_builder: &mut FrameBuilder,
     target_id: &str,
     rect: Rect,
+    scale: f64,
     renderer: &mut Option<OffscreenRenderer>,
 ) -> Result<(u32, u32, Vec<u8>), String> {
     let (scene, painted) = frame_builder.paint_capture_targets(
@@ -1588,11 +1607,18 @@ fn render_session_frame(
     if painted.is_empty() {
         return Err("the recorded window is not painted".into());
     }
-    let (composed, width, height) = compose_spatial(&scene, &[rect])?;
-    let stale = renderer
+    let (width, height, fit) = output_dimensions(rect.width() * scale, rect.height() * scale)?;
+    let mut composed = Scene::new();
+    append_clipped(
+        &mut composed,
+        &scene,
+        rect,
+        Affine::scale(scale * fit) * Affine::translate((-rect.x0, -rect.y0)),
+    );
+    let resized = renderer
         .as_ref()
         .is_none_or(|renderer| renderer.width != width || renderer.height != height);
-    if stale {
+    if resized {
         *renderer = Some(
             OffscreenRenderer::try_new(width, height)
                 .map_err(|error| format!("recording frame renderer {width}×{height}: {error}"))?,

@@ -68,7 +68,7 @@ const FEEDBACK_RECORD_START_PARAMS: &[ActionParam] = &[
     ActionParam::optional(
         "pixels",
         ParamType::Text,
-        "Also keep frames of the recorded surfaces: `keep` to keep them with the recording, `check` only to check replay against them. Omitted, no pixels are captured.",
+        "Frames of the recorded surfaces: `check` (the default) keeps them on this device only to check replay against, and offers just the regions that diverge; `keep` keeps them with the recording; `off` captures no pixels.",
     ),
 ];
 
@@ -1352,8 +1352,12 @@ impl Action {
                     );
                 }
                 let apps = comma_list(args.text("apps"));
+                // A feedback recording checks its own replay against what
+                // the user saw, so it keeps frames for that unless told not
+                // to; they stay on the device unless they diverge.
                 let pixels = match args.text("pixels").map(str::trim) {
-                    None | Some("" | "off") => None,
+                    None | Some("") => Some(session_trace::frames::PixelPurpose::Check),
+                    Some("off") => None,
                     Some(value) => Some(
                         session_trace::frames::PixelPurpose::parse(value).ok_or_else(|| {
                             ActionError::Refused(format!(
