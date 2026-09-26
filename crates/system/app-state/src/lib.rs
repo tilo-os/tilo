@@ -1073,20 +1073,21 @@ fn sync_directory_ancestors(
     mut visit: impl FnMut(&Path) -> Result<(), StoreError>,
 ) -> Result<(), StoreError> {
     let physical = fs::canonicalize(dir).map_err(|e| io_err("resolving canonical directory", e))?;
-    // Windows owns and provisions the profile root before launching an
-    // app. Our durability obligation includes that root and every child
-    // directory, including ancestors left by an interrupted earlier open.
-    // It does not include creating the OS-owned C:\Users or volume root.
-    // Query the OS known folder, not USERPROFILE supplied by an environment.
-    #[cfg(windows)]
-    let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
+    // The app is handed its home before it runs: Windows provisions the
+    // profile folder, a person's login provisions theirs, and the launcher
+    // provisions the one directory a sandboxed app may write and points
+    // `HOME` at it. Our durability obligation includes that root and every
+    // directory below it, including ancestors left by an interrupted earlier
+    // open. It does not include what lies above it, which the app may not
+    // even open: inside the sandbox the app's home is the only directory it
+    // is given, and the directories above it are refused.
+    let home = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)
             .and_then(|f| f.sync_all())
             .map_err(|e| io_err(format!("syncing directory {}", path.display()), e))?;
-        #[cfg(windows)]
-        if profile_root.as_deref() == Some(path) {
+        if home.as_deref() == Some(path) {
             break;
         }
     }
