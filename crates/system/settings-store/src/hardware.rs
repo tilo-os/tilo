@@ -512,6 +512,10 @@ pub enum AccelProfile {
 /// while physical mouse wheels retain their conventional direction.
 pub const DEFAULT_TOUCHPAD_NATURAL_SCROLL: bool = true;
 pub const DEFAULT_MOUSE_NATURAL_SCROLL: bool = false;
+/// `input` key for whether touchpads send events at all. Absent means on;
+/// the touchpad-toggle hardware key flips it and the compositor applies it
+/// to every touchpad through libinput's send-events mode.
+pub const TOUCHPAD_ENABLED_KEY: &str = "touchpad_enabled";
 
 #[allow(
     clippy::struct_excessive_bools,

@@ -1353,6 +1353,14 @@ impl DrmDispatchState {
         if let Some(on) = plan.left_handed {
             let _ = device.config_left_handed_set(on);
         }
+        if let Some(on) = plan.send_events {
+            use smithay::reexports::input::SendEventsMode;
+            let _ = device.config_send_events_set_mode(if on {
+                SendEventsMode::ENABLED
+            } else {
+                SendEventsMode::DISABLED
+            });
+        }
         if let Some(flat) = plan.flat_acceleration {
             use smithay::reexports::input::AccelProfile;
             let _ = device.config_accel_set_profile(if flat {
@@ -3350,6 +3358,14 @@ fn keysym_to_winit_key(raw: u32) -> Key {
         keysyms::KEY_XF86AudioNext => Some(NamedKey::MediaTrackNext),
         keysyms::KEY_XF86AudioPrev => Some(NamedKey::MediaTrackPrevious),
         keysyms::KEY_XF86PowerOff => Some(NamedKey::Power),
+        keysyms::KEY_XF86AudioStop => Some(NamedKey::MediaStop),
+        // winit's own XKB table folds every sleep spelling into Standby and
+        // names the calculator key LaunchApplication2; the nested backend
+        // delivers those, so this one must too.
+        keysyms::KEY_XF86Sleep | keysyms::KEY_XF86Suspend | keysyms::KEY_XF86Standby => {
+            Some(NamedKey::Standby)
+        }
+        keysyms::KEY_XF86Calculator => Some(NamedKey::LaunchApplication2),
         _ => None,
     };
     if let Some(n) = named {
@@ -3712,11 +3728,48 @@ mod tests {
             (ks::KEY_XF86AudioPlay, NamedKey::MediaPlayPause),
             (ks::KEY_XF86AudioNext, NamedKey::MediaTrackNext),
             (ks::KEY_XF86AudioPrev, NamedKey::MediaTrackPrevious),
+            (ks::KEY_XF86AudioStop, NamedKey::MediaStop),
+            (ks::KEY_XF86Sleep, NamedKey::Standby),
+            (ks::KEY_XF86Suspend, NamedKey::Standby),
+            (ks::KEY_XF86Standby, NamedKey::Standby),
+            (ks::KEY_XF86Calculator, NamedKey::LaunchApplication2),
         ] {
             assert_eq!(
                 keysym_to_winit_key(raw),
                 Key::Named(want),
                 "keysym {raw:#x} must map to {want:?}"
+            );
+        }
+    }
+
+    /// The machine keys winit has no name for arrive as the raw keysym —
+    /// exactly what the nested backend delivers — and the hardware-key
+    /// classifier routes them from there.
+    #[test]
+    fn unnamed_machine_keysyms_reach_the_hardware_key_classifier() {
+        use crate::shell::media_keys::{MediaKey, classify};
+        use smithay::input::keyboard::keysyms as ks;
+        for (raw, want) in [
+            (ks::KEY_XF86KbdBrightnessUp, MediaKey::KeyboardBacklightUp),
+            (
+                ks::KEY_XF86KbdBrightnessDown,
+                MediaKey::KeyboardBacklightDown,
+            ),
+            (ks::KEY_XF86KbdLightOnOff, MediaKey::KeyboardBacklightToggle),
+            (ks::KEY_XF86WLAN, MediaKey::Wireless),
+            (0x1008_ffb5, MediaKey::Wireless),
+            (ks::KEY_XF86Display, MediaKey::DisplayMode),
+            (ks::KEY_XF86TouchpadToggle, MediaKey::TouchpadToggle),
+            (ks::KEY_XF86Sleep, MediaKey::Sleep),
+            (ks::KEY_XF86Calculator, MediaKey::Calculator),
+            (ks::KEY_XF86AudioStop, MediaKey::Stop),
+        ] {
+            let key = keysym_to_winit_key(raw);
+            let event = keyboard_input_event(key.clone(), None, true, 0);
+            assert_eq!(
+                classify(&event),
+                Some(want),
+                "keysym {raw:#x} ({key:?}) must reach {want:?}"
             );
         }
     }
