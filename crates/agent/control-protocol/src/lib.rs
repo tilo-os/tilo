@@ -659,7 +659,7 @@ pub fn validate_response(
             }
             if entries
                 .windows(2)
-                .any(|pair| pair[0].sequence >= pair[1].sequence)
+                .any(|pair| matches!(pair, [earlier, later] if earlier.sequence >= later.sequence))
             {
                 return Err(ValidationError::InvalidField("entries"));
             }
