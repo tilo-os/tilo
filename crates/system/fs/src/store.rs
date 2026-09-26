@@ -352,7 +352,8 @@ impl ContentStore {
     pub fn memory() -> Self {
         let scratch = tempfile::tempdir().expect("a temporary directory for the content store");
         let files = Arc::new(
-            FileArea::open(scratch.path(), u64::MAX).expect("a content area in a fresh directory"),
+            FileArea::open_ephemeral(scratch.path(), u64::MAX)
+                .expect("a content area in a fresh directory"),
         );
         Self::memory_with_files(files, Some(scratch))
     }
@@ -397,7 +398,7 @@ impl ContentStore {
     #[allow(clippy::unwrap_used, reason = "test fixture")]
     fn memory_with_gc_interval(gc_interval: Duration) -> Self {
         let scratch = tempfile::tempdir().unwrap();
-        let files = Arc::new(FileArea::open(scratch.path(), u64::MAX).unwrap());
+        let files = Arc::new(FileArea::open_ephemeral(scratch.path(), u64::MAX).unwrap());
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(iroh_blobs::store::mem::Options {
                 gc_config: Some(GcConfig {

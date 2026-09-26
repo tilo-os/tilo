@@ -213,6 +213,10 @@ pub struct FileArea {
     /// Distinguishes the staging files of concurrent adoptions.
     staging: AtomicU64,
     budget: AtomicU64,
+    /// Whether data is synced and the index is on disk. An ephemeral area
+    /// (an in-memory content store's) is gone with its process, so syncing
+    /// it would only cost a disk flush per write.
+    durable: bool,
 }
 
 fn hex(key: &AreaKey) -> String {
@@ -236,6 +240,15 @@ fn range_set(ranges: &[(u64, u64)]) -> RangeSet {
 }
 
 impl FileArea {
+    /// Makes `file`'s data durable, in a durable area.
+    fn sync(&self, file: &File) -> io::Result<()> {
+        if self.durable {
+            file.sync_data()
+        } else {
+            Ok(())
+        }
+    }
+
     /// The area's index database, unless the area was closed.
     fn database(&self) -> io::Result<Arc<Database>> {
         self.db
@@ -262,9 +275,28 @@ impl FileArea {
     ///
     /// Returns an error when the directory or its database cannot be opened.
     pub fn open(dir: &Path, budget: u64) -> io::Result<Self> {
+        std::fs::create_dir_all(dir)?;
+        let db = Database::create(dir.join("area.redb")).map_err(db_error)?;
+        Self::open_with(dir, db, budget, true)
+    }
+
+    /// An area whose files live under `dir` but whose index is in memory
+    /// and whose data is never synced: for a store that does not outlive
+    /// its process.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the directory cannot be created.
+    pub fn open_ephemeral(dir: &Path, budget: u64) -> io::Result<Self> {
+        let db = Database::builder()
+            .create_with_backend(redb::backends::InMemoryBackend::new())
+            .map_err(db_error)?;
+        Self::open_with(dir, db, budget, false)
+    }
+
+    fn open_with(dir: &Path, db: Database, budget: u64, durable: bool) -> io::Result<Self> {
         let data = dir.join("data");
         std::fs::create_dir_all(&data)?;
-        let db = Database::create(dir.join("area.redb")).map_err(db_error)?;
         {
             let txn = db.begin_write().map_err(db_error)?;
             txn.open_table(ENTRIES).map_err(db_error)?;
@@ -280,6 +312,7 @@ impl FileArea {
             create: Mutex::new(()),
             staging: AtomicU64::new(0),
             budget: AtomicU64::new(budget),
+            durable,
         };
         area.load()?;
         Ok(area)
@@ -705,7 +738,7 @@ impl FileArea {
     /// Syncs `key`'s data, then records `stored`, a snapshot of its state
     /// taken before the sync: ranges recorded later are not covered by it.
     fn persist_synced(&self, key: &AreaKey, stored: &Stored) -> io::Result<()> {
-        self.file(key)?.sync_data()?;
+        self.sync(self.file(key)?.as_ref())?;
         self.persist_stored(key, stored)?;
         let mut state = self.lock();
         if let Some(entry) = state.entries.get_mut(key) {
@@ -792,7 +825,7 @@ impl FileArea {
                 .write(true)
                 .open(&staging)?;
             clone_or_copy(source, &target, len)?;
-            target.sync_data()?;
+            self.sync(&target)?;
             Ok::<_, io::Error>(target)
         })();
         let target = match result {
@@ -826,7 +859,7 @@ impl FileArea {
                 .write(true)
                 .open(&staging)?;
             target.write_all_at(bytes, 0)?;
-            target.sync_data()?;
+            self.sync(&target)?;
             Ok::<_, io::Error>(target)
         })();
         let target = match result {
@@ -868,7 +901,7 @@ impl FileArea {
             std::fs::remove_file(path)?;
         }
         let target = OpenOptions::new().read(true).write(true).open(&staging)?;
-        target.sync_data()?;
+        self.sync(&target)?;
         let len = target.metadata()?.len();
         self.share_extents(&digest, &target, len);
         self.install(key, &staging, target, len, retention, Some(digest), &[])?;
@@ -1164,7 +1197,7 @@ impl FileArea {
         };
         for key in &unsynced {
             if let Ok(file) = self.file(key) {
-                file.sync_data()?;
+                self.sync(&file)?;
             }
         }
         {
