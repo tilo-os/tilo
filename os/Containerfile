@@ -2211,8 +2211,8 @@ RUN chmod 0755 /usr/libexec/tilo-windows-vm-network /usr/libexec/tilo-windows-pr
 # socket-activated rather than always-on. Time sync, firewall, Bluetooth,
 # modem, power, homed, hardening, boot assessment, automatic bootc updates and
 # NetworkManager are system services/timers.
-RUN restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
-    systemctl enable greetd.service && \
+RUN systemctl enable greetd.service && \
+    restorecon -v /usr/lib/systemd/user/tilo-graphical-session.target && \
     systemctl disable NetworkManager.service firewalld.service chronyd.service && \
     systemctl enable tilo-device-key-init.service && \
     systemctl set-default graphical.target && \
