@@ -90,6 +90,7 @@ pub mod predict;
 pub mod suggest;
 pub mod swipe;
 pub mod toolbar;
+pub mod touch_model;
 pub mod widget;
 
 pub use dict::{Dictionary, Entry};
@@ -106,4 +107,5 @@ pub use predict::Predictor;
 pub use suggest::{Suggestion, suggestion_rects};
 pub use swipe::{Candidate, GeometricSwipeModel, SwipeModel, is_swipe};
 pub use toolbar::{OskToolbarAction, OskToolbarItem, toolbar_rects};
+pub use touch_model::{NextKeyDistribution, TouchKey, TouchModel};
 pub use widget::{OskWidget, input_purpose_from_name, input_purpose_name};
