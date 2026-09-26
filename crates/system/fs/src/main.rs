@@ -1016,6 +1016,46 @@ async fn open_store(cache_dir: Option<PathBuf>) -> Result<ContentStore> {
     }
 }
 
+/// [`open_store`] for a mount that may serve the native data plane: its
+/// file-backed content lives on the store volume next to the room, so
+/// publishing a file and filling a placeholder share extents with it
+/// instead of copying them.
+async fn open_workspace_store(
+    cache_dir: Option<PathBuf>,
+    data_plane: &DataPlaneArgs,
+    workspace: uuid::Uuid,
+) -> Result<ContentStore> {
+    let Some(dir) = cache_dir else {
+        return Ok(ContentStore::memory());
+    };
+    match native_content_dir(data_plane, workspace) {
+        Some(files) => ContentStore::open_with_files(dir, &files).await,
+        None => ContentStore::open(dir).await,
+    }
+}
+
+/// `<store>/.content/<room>` when the native data plane may run on a
+/// dedicated store volume.
+#[cfg(target_os = "linux")]
+fn native_content_dir(data_plane: &DataPlaneArgs, workspace: uuid::Uuid) -> Option<PathBuf> {
+    if data_plane.data_plane == DataPlaneChoice::Fuse
+        || fs_native::store::check_dedicated(&data_plane.store).is_err()
+    {
+        return None;
+    }
+    Some(
+        data_plane
+            .store
+            .join(".content")
+            .join(workspace.to_string()),
+    )
+}
+
+#[cfg(not(target_os = "linux"))]
+fn native_content_dir(_data_plane: &DataPlaneArgs, _workspace: uuid::Uuid) -> Option<PathBuf> {
+    None
+}
+
 fn workspace_ticket_path(cache_dir: &Path) -> PathBuf {
     cache_dir.join("workspace-ticket")
 }
@@ -1482,9 +1522,6 @@ async fn serve(
             fs::NamedShareOutbox::open(cache.join("named-share-outbox.json")).map(Arc::new)
         })
         .transpose()?;
-    let store = Arc::new(open_store(cache_dir.clone()).await?);
-    let author = endpoint.id().to_string();
-
     // A registered NAS ticket changes the *workspace identity*, not merely a
     // blob source.  Joining it here keeps the record mesh on the NAS UUID
     // after `fs.service` restarts instead of deriving a fresh local UUID.
@@ -1493,6 +1530,8 @@ async fn serve(
         || Ticket::workspace_id_for_topic(*endpoint.id().as_bytes()),
         Ticket::workspace_id,
     );
+    let store = Arc::new(open_workspace_store(cache_dir.clone(), &data_plane, workspace_id).await?);
+    let author = endpoint.id().to_string();
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     if let Some(cache_dir) = cache_dir.as_deref() {
         for peer in load_persisted_content_peers(cache_dir)? {
@@ -1984,7 +2023,9 @@ async fn mount(
     let caps = resolve_acl(&acl_args, credentials.user_public_key())?;
     let acl = caps.as_ref().map(|c| (c.handle(), c.identity()));
     let _reload = caps.map(|c| spawn_acl_reload(c, acl_args.acl_reload_secs));
-    let store = Arc::new(open_store(cache_dir.clone()).await?);
+    let store = Arc::new(
+        open_workspace_store(cache_dir.clone(), &data_plane, ticket.workspace_id()).await?,
+    );
     let hydrator = Arc::new(Hydrator::new(endpoint.clone(), store.clone()));
     let author = endpoint.id().to_string();
     let bootstrap = bootstrap_peers(&ticket, cache_dir.as_deref())?;
@@ -3484,6 +3525,7 @@ async fn run_native(
 ) -> Result<MountOutcome> {
     let fs = Arc::new(fs);
     let content = Arc::clone(&fs.hydrator);
+    let hydrator = Arc::clone(&fs.hydrator);
     let runtime = tokio::runtime::Handle::current();
     let plane = tokio::task::spawn_blocking(move || {
         fs::native::NativePlane::start(cfg, fs, content, sync, runtime)
@@ -3519,6 +3561,8 @@ async fn run_native(
         }
     };
     tokio::task::spawn_blocking(move || plane.stop()).await??;
+    let (ranged, blobs) = hydrator.received_bytes();
+    println!("Content received from peers: {ranged} bytes in ranges, {blobs} bytes as blobs");
     println!("Workspace unmounted.");
     Ok(outcome)
 }

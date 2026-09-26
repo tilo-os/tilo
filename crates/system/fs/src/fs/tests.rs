@@ -1781,7 +1781,7 @@ mod record_publisher_integration_tests {
         let manifest_bytes = store.local(original_manifest).await.unwrap();
         let manifest = crate::content::Manifest::decode(&manifest_bytes).unwrap();
         let mut reconstructed = Vec::new();
-        for chunk in manifest.chunks {
+        for chunk in manifest.chunks().iter().copied() {
             let chunk_hash = Hash::from(chunk.hash);
             let bytes = store.local(chunk_hash).await.unwrap();
             assert_eq!(bytes.len(), chunk.len as usize);
