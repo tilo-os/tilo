@@ -72,6 +72,8 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/measure.sh": "tools/tests/test_ci_measure.py",
     "tools/ci/affected_packages.py": "tools/tests/test_ci_select.py",
     "tools/ci/workspace_graph.py": "tools/tests/test_ci_select.py",
+    "tools/ci/test_seconds.json": "tools/tests/test_ci_select.py",
+    "tools/ci/test_seconds.py": "tools/tests/test_ci_test_seconds.py",
     "tools/ci/queue_coalesce.py": "tools/tests/test_ci_queue_coalesce.py",
     "tools/ci/timing_report.py": "tools/tests/test_ci_timing_report.py",
     "tools/ci/nextest_report.py": "tools/tests/test_nextest_report.py",
@@ -182,6 +184,24 @@ MAX_DEVELOPER_SHARDS = 2
 # workspace to every such change; they stay type-checked here and are
 # tested nightly on both architectures.
 REVERSE_TEST_COST_BUDGET = SHARD_COST_BUDGET
+# Recorded test execution seconds per package (tools/ci/test_seconds.py). A
+# shard's test job links its tests and then runs them on about four threads;
+# one recorded test second costs roughly as much shard wall time as two units
+# of structural cost. Only shard balancing uses these numbers.
+TEST_SECONDS = Path(__file__).with_name("test_seconds.json")
+TEST_SECOND_WEIGHT = 2
+
+
+def recorded_test_seconds(path: Path = TEST_SECONDS) -> dict[str, int]:
+    """Per-package test seconds; absent data balances on structure alone."""
+    if not path.is_file():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict) or not all(
+            isinstance(name, str) and type(value) is int and value >= 0
+            for name, value in data.items()):
+        raise ValueError(f"{path} must map package names to whole seconds")
+    return data
 
 
 def manifest_at(root: Path, revision: str) -> dict[str, tuple[str, str]] | None:
@@ -419,14 +439,23 @@ def direct_dependants_within_budget(
     return added, sorted(deferred)
 
 
-def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> list[dict]:
+def balance(names: set[str], packages: dict[str, dict], shard_count: int,
+            test_seconds: dict[str, int] | None = None) -> list[dict]:
+    """Spread packages over shards by structural cost plus recorded test time."""
     if not names:
         return []
-    shards = [{"names": [], "cost": 0} for _ in range(max(1, min(shard_count, len(names))))]
-    for name in sorted(names, key=lambda n: (-package_cost(packages[n]), n)):
-        shard = min(shards, key=lambda item: (item["cost"], len(item["names"])))
+    test_seconds = test_seconds or {}
+
+    def weight(name: str) -> int:
+        return package_cost(packages[name]) + TEST_SECOND_WEIGHT * test_seconds.get(name, 0)
+
+    shards = [{"names": [], "cost": 0, "weight": 0}
+              for _ in range(max(1, min(shard_count, len(names))))]
+    for name in sorted(names, key=lambda n: (-weight(n), n)):
+        shard = min(shards, key=lambda item: (item["weight"], len(item["names"])))
         shard["names"].append(name)
         shard["cost"] += package_cost(packages[name])
+        shard["weight"] += weight(name)
     result = []
     for index, shard in enumerate(shards, 1):
         names_sorted = sorted(shard["names"])
@@ -436,6 +465,7 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int) -> lis
                 "packages": " ".join(f"-p {name}" for name in names_sorted),
                 "package_count": len(names_sorted),
                 "estimated_cost": shard["cost"],
+                "recorded_test_seconds": sum(test_seconds.get(name, 0) for name in names_sorted),
             }
         )
     return result
@@ -459,6 +489,7 @@ def make_plan(
     resolved_inputs: dict[str, ResolvedInput] | None = None,
     suite_manifest: path_suites.Manifest | None = None,
     all_suites: bool = False,
+    test_seconds: dict[str, int] | None = None,
 ) -> dict:
     packages, by_dir = package_maps(metadata, root)
     resolved_inputs = {path: resolved for path, resolved in (resolved_inputs or {}).items()
@@ -585,7 +616,7 @@ def make_plan(
     runners = NATIVE_RUNNERS if force_full else {"x86_64": NATIVE_RUNNERS["x86_64"]}
     matrix = []
     for arch, runner in runners.items():
-        for shard in balance(selected, packages, effective_shards):
+        for shard in balance(selected, packages, effective_shards, test_seconds):
             shard_names = set(shard["packages"].split()[1::2])
             test_names = sorted(tested & shard_names)
             selected_runner = (
@@ -690,6 +721,7 @@ def main() -> int:
         resolved_inputs=resolved_inputs,
         suite_manifest=path_suites.load(root),
         all_suites=args.all_suites,
+        test_seconds=recorded_test_seconds(),
     )
     print(json.dumps(plan, indent=2))
     if args.github_output:
