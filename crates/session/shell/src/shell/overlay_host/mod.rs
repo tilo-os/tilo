@@ -26851,7 +26851,6 @@ mod palette_dispatch_tests {
     /// maps a toplevel. The opening acknowledgement retires immediately while
     /// the placement promise remains available for the bounded handoff grace.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn clean_launch_exit_retires_its_pending_open_notice() {
         let (mut host, chrome) = host_with_launch_polling();
         let package_id = "so.tilo.exit-before-window-fixture";
@@ -27886,7 +27885,6 @@ mod palette_dispatch_tests {
     /// retire the moment the window's own place says which app is coming —
     /// otherwise it's noise, or a stale "Loading…" under "isn't responding".
     #[test]
-    #[serial_test::serial(launch_events)]
     fn the_loading_indication_stands_until_the_window_place_speaks_for_itself() {
         const SURFACE: u64 = 918_273;
         let (h, chrome) = host_with_launch_polling();
@@ -27968,7 +27966,6 @@ mod palette_dispatch_tests {
     /// The other way the hand-over can happen: an app fast enough to paint
     /// before the card was ever due still settles the open.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn a_window_that_paints_before_the_card_is_due_settles_the_open_too() {
         const SURFACE: u64 = 918_274;
         let (h, chrome) = host_with_launch_polling();
@@ -33468,7 +33465,6 @@ mod tests {
     /// after its app was uninstalled). That refusal must consume any staged
     /// placement and leave one finite, bounded recovery notice for retry.
     #[test]
-    #[serial_test::serial(launch_events)]
     fn room_activity_preflight_failure_clears_placement_and_emits_one_notice() {
         let chrome = ChromeState::new(WorkspaceTree::bootstrap_demo());
         let app_id = "org.tilo.missing-history-fixture-9f1e";
