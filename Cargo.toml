@@ -99,6 +99,7 @@ members = [
     "crates/agent/provider-config",
 
     # SDK
+    "crates/sdk/font-catalog",
     "crates/sdk/rt",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-resource",

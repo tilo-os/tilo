@@ -93,15 +93,18 @@ def progress_pixel(width, first, second):
 
 def text_png(path, text, size, color, weight="Regular"):
     """Rasterize text now so the tiny initramfs never needs fonts or Pango."""
-    font_path = subprocess.run(
-        ["fc-match", "-f", "%{file}", f"Noto Sans:style={weight}"],
+    # The index also names the instance of a variable font (FreeType reads
+    # its high 16 bits), so a variable Noto Sans is drawn at `weight` rather
+    # than at its default instance.
+    font_path, _, index = subprocess.run(
+        ["fc-match", "-f", "%{file}\n%{index}", f"Noto Sans:style={weight}"],
         check=True,
         capture_output=True,
         text=True,
-    ).stdout
+    ).stdout.partition("\n")
     if not font_path:
         raise RuntimeError("fontconfig could not resolve Noto Sans")
-    font = ImageFont.truetype(font_path, size)
+    font = ImageFont.truetype(font_path, size, index=int(index or 0))
     probe = PillowImage.new("RGBA", (1, 1))
     bounds = ImageDraw.Draw(probe).textbbox((0, 0), text, font=font)
     width = bounds[2] - bounds[0] + 4
