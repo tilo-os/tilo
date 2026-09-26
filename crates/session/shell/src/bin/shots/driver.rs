@@ -240,6 +240,13 @@ impl ShellDriver {
         self.fb.viewport()
     }
 
+    /// The size of the painted scene in physical pixels: what a renderer
+    /// target is sized to. Differs from [`Self::viewport`] once a display
+    /// draws at a scale other than 1.
+    pub fn scene_size(&self) -> (f64, f64) {
+        self.fb.scene_size()
+    }
+
     /// Replace the active modifier set. Scenarios call this when they
     /// need a chord (e.g. Cmd+K, Cmd+Tab); a `dispatch` of the resulting
     /// `Key(Tab)` then sees `is_mod = true` inside the host.
@@ -417,7 +424,7 @@ impl ShellDriver {
     /// responsible for passing it to a renderer (offscreen or live).
     pub fn paint(&mut self) -> Scene {
         if let Some(state) = self.lock_visual {
-            let (width, height) = self.fb.viewport();
+            let (width, height) = self.fb.scene_size();
             let output = shell::compositor::lock_screen::LockOutput {
                 origin: (0.0, 0.0),
                 size: (width, height),

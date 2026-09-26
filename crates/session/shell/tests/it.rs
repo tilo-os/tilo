@@ -125,6 +125,8 @@ mod opening_configure_carries_the_tab_size;
 mod peer_join_toast_batches;
 #[path = "peer_sync_test.rs"]
 mod peer_sync_test;
+#[path = "per_output_scale.rs"]
+mod per_output_scale;
 #[path = "permission_prompt_pump.rs"]
 mod permission_prompt_pump;
 #[path = "permissions_tab_test.rs"]

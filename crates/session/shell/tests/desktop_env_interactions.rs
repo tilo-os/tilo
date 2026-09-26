@@ -129,11 +129,12 @@ fn lay_out_host(host: &mut ShellOverlayHost) -> Layout {
     // What the compositor does before every build: name the display, so
     // window-group width fractions resolve against it rather than the
     // toolkit's fallback.
-    host.set_output_geometry(&[shell::shell::overlay_host::OutputGeometry {
-        x: 0.0,
-        width: f64::from(W),
-        height: f64::from(H),
-    }]);
+    host.set_output_geometry(&[shell::shell::overlay_host::OutputGeometry::unscaled(
+        0.0,
+        0.0,
+        f64::from(W),
+        f64::from(H),
+    )]);
     let theme = Theme::dark();
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();

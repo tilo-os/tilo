@@ -368,12 +368,12 @@ struct ForeignEntry {
     seq: u64,
     /// Human-readable reason the last capture failed, drawn on the tile so an unsupported buffer is visible, not silently blank.
     last_error: Option<String>,
-    /// The tab's on-screen rectangle in physical pixels, published by `apply_layout`; `None` until laid out.
+    /// The tab's rectangle in the logical desktop, published by `apply_layout`; `None` until laid out.
     placement: Option<Rect>,
     /// Size most recently sent to the client in an `xdg_toplevel` configure, in surface-local (logical) pixels.
     configured: Option<(i32, i32)>,
-    /// That configure in physical pixels (logical × the scale it was converted at) — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
-    configured_px: Option<(f64, f64)>,
+    /// That configure in the tab's (logical) units — smaller than the tab when the client's maximum size clamped it, which is what centres the window in its tab.
+    configured_extent: Option<(f64, f64)>,
     /// The client's `xdg_toplevel.set_min_size`/`set_max_size`, logical pixels; `0` on an axis leaves it unconstrained.
     min_size: (i32, i32),
     max_size: (i32, i32),
@@ -412,7 +412,7 @@ impl ForeignEntry {
             last_error: None,
             placement: None,
             configured: None,
-            configured_px: None,
+            configured_extent: None,
             min_size: (0, 0),
             max_size: (0, 0),
             geometry: None,
@@ -498,7 +498,7 @@ impl ForeignEntry {
     /// Where in `tile` the window belongs: all of it, unless the client's
     /// maximum size kept it smaller, in which case it sits centred.
     fn target_box(&self, tile: Rect) -> Rect {
-        let Some((w, h)) = self.configured_px else {
+        let Some((w, h)) = self.configured_extent else {
             return tile;
         };
         // Rounding between logical and physical pixels leaves up to a pixel of
@@ -1617,39 +1617,29 @@ impl ForeignFrameStore {
 
     /// The size the client should be configured to, in surface-local (logical)
     /// pixels, **iff** it differs from the last sent — records the value as sent so an unchanged layout returns `None`.
+    ///
+    /// The tab is laid out in the logical desktop, so its size is the
+    /// configure as is; the display's scale reaches the client separately,
+    /// as its preferred `wp_fractional_scale`.
     #[allow(
         clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "every cast to u32/i32 below is preceded by a .clamp(..) into that type's \
-                  range and a .round(), so none truncates a fraction, loses a sign, or wraps \
-                  out of range"
+        reason = "each value is .round()-ed and .clamp()-ed into i32's range first"
     )]
-    pub fn take_pending_configure(&self, id: SurfaceId, scale: f64) -> Option<(i32, i32)> {
-        let scale = if scale.is_finite() && scale > 0.0 {
-            scale
-        } else {
-            1.0
-        };
+    pub fn take_pending_configure(&self, id: SurfaceId) -> Option<(i32, i32)> {
         self.with_entry(id, |e| {
             let rect = e.placement?;
-            let w_px = rect.width().round().clamp(0.0, f64::from(u32::MAX)) as u32;
-            let h_px = rect.height().round().clamp(0.0, f64::from(u32::MAX)) as u32;
-            if w_px == 0 || h_px == 0 {
+            let logical = (
+                rect.width().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+                rect.height().round().clamp(0.0, f64::from(i32::MAX)) as i32,
+            );
+            if logical.0 == 0 || logical.1 == 0 {
                 return None;
             }
-            let tab = (
-                (f64::from(w_px) / scale)
-                    .round()
-                    .clamp(1.0, f64::from(i32::MAX)) as i32,
-                (f64::from(h_px) / scale)
-                    .round()
-                    .clamp(1.0, f64::from(i32::MAX)) as i32,
-            );
             let logical = (
-                honour_size_limits(tab.0, e.min_size.0, e.max_size.0),
-                honour_size_limits(tab.1, e.min_size.1, e.max_size.1),
+                honour_size_limits(logical.0, e.min_size.0, e.max_size.0),
+                honour_size_limits(logical.1, e.min_size.1, e.max_size.1),
             );
-            e.configured_px = Some((f64::from(logical.0) * scale, f64::from(logical.1) * scale));
+            e.configured_extent = Some((f64::from(logical.0), f64::from(logical.1)));
             if e.configured == Some(logical) {
                 return None;
             }
@@ -2534,7 +2524,7 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
-        if let Some((w, h)) = store().take_pending_configure(id, state.surface_scale(id)) {
+        if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
             tracing::debug!(
@@ -2602,18 +2592,14 @@ fn configure_to(toplevel: &ToplevelSurface, w: i32, h: i32, tiled: bool) {
 /// chrome around a strip. Not what layout would have given — it declined — but a size the window can honestly render at, close enough that a later correction is small.
 #[cfg(target_os = "linux")]
 fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) {
-    let scale = if state.scale.is_finite() && state.scale > 0.0 {
-        state.scale
-    } else {
-        1.0
-    };
+    // `output_size` is the logical desktop, the unit a configure is in.
     let (out_w, out_h) = state.output_size;
     #[allow(
         clippy::cast_possible_truncation,
         reason = "clamped to [1.0, i32::MAX] and .round()-ed first, so the cast to i32 never \
                   truncates a fraction or wraps out of range"
     )]
-    let logical = |px: f64| (px / scale).round().clamp(1.0, f64::from(i32::MAX)) as i32;
+    let logical = |px: f64| px.round().clamp(1.0, f64::from(i32::MAX)) as i32;
     let chrome_w = f64::from(crate::shell::sidebar_wheel_disc::SIDEBAR_RESERVE_PX);
     let chrome_h =
         f64::from(crate::shell::topbar_chrome::TOPBAR_HEIGHT_PX) + ui::widget::tabs::TAB_BAR_HEIGHT;
@@ -3266,7 +3252,7 @@ mod tests {
         let tile = Rect::new(0.0, 0.0, 1200.0, 800.0);
         store().note_placement(id, tile);
         store().note_size_limits(id, (0, 0), (600, 0));
-        assert_eq!(store().take_pending_configure(id, 1.0), Some((600, 800)));
+        assert_eq!(store().take_pending_configure(id), Some((600, 800)));
         let target = store().target_box(id, tile);
         assert_eq!(target, Rect::new(300.0, 0.0, 900.0, 800.0));
 
@@ -3286,7 +3272,7 @@ mod tests {
 
         store().note_size_limits(id, (1400, 0), (0, 0));
         assert_eq!(
-            store().take_pending_configure(id, 1.0),
+            store().take_pending_configure(id),
             Some((1400, 800)),
             "a minimum above the tab is honoured too"
         );
@@ -3409,31 +3395,18 @@ mod tests {
     fn pending_configure_fires_once_per_size_change() {
         let id = sid(4);
         store().forget(id);
-        assert_eq!(store().take_pending_configure(id, 1.0), None);
+        assert_eq!(store().take_pending_configure(id), None);
 
         store().note_placement(id, Rect::new(0.0, 0.0, 1200.0, 800.0));
-        assert_eq!(store().take_pending_configure(id, 1.0), Some((1200, 800)));
+        assert_eq!(store().take_pending_configure(id), Some((1200, 800)));
         assert_eq!(
-            store().take_pending_configure(id, 1.0),
+            store().take_pending_configure(id),
             None,
             "an unchanged layout must not re-send a configure every frame"
         );
 
         store().note_placement(id, Rect::new(0.0, 0.0, 600.0, 400.0));
-        assert_eq!(store().take_pending_configure(id, 1.0), Some((600, 400)));
-        store().forget(id);
-    }
-
-    #[test]
-    fn pending_configure_divides_physical_pixels_by_scale() {
-        let id = sid(5);
-        store().forget(id);
-        store().note_placement(id, Rect::new(0.0, 0.0, 2400.0, 1600.0));
-        assert_eq!(
-            store().take_pending_configure(id, 2.0),
-            Some((1200, 800)),
-            "the configure carries surface-local (logical) size, not physical px"
-        );
+        assert_eq!(store().take_pending_configure(id), Some((600, 400)));
         store().forget(id);
     }
 
