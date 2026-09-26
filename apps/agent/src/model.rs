@@ -766,7 +766,7 @@ mod tests {
             .expect("a user turn");
         assert!(turn.contains("turn the bullets into a table"), "{turn}");
         assert!(turn.contains("list_item: a - 1"), "{turn}");
-        assert!(turn.contains("InsertTable"), "{turn}");
+        assert!(turn.contains("InsertFilledTable"), "{turn}");
     }
 
     #[test]
