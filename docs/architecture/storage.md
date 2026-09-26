@@ -1141,7 +1141,11 @@ mmap-written). [R9]
 - Lease-class detection: a file whose journal shows a write without a create
   or rename, whose inode survived the epoch, and whose new version still
   shares extents with the previous snapshot (FIEMAP). A truncate-and-rewrite
-  allocates new extents and is not lease-class.
+  allocates new extents and is not lease-class. A small file can have every
+  block rewritten in place (an update of a two-page SQLite database rewrites
+  the header page and the one table page); when no extent is shared, the
+  rewritten ranges are compared in 512-byte sectors, and a file that kept
+  non-zero sectors at their offsets while others changed is lease-class too.
 - The lease is a `WriteLease {holder, epoch, expires_ms}` carried in the
   namespace (one root-level register per record), so every device sees it in
   causal order with the file's changes. A change of holder raises the epoch;
