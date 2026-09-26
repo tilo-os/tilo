@@ -2194,6 +2194,10 @@ impl WorkspaceTree {
     /// Returns the underlying `automerge::AutomergeError` if any blob in
     /// `changes` fails to decode, or if applying them to the room's
     /// document fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one admission sequence: every refusal is checked on the candidate before any governed field lands"
+    )]
     pub fn apply_room_changes(
         &mut self,
         room: RoomId,

@@ -2245,11 +2245,11 @@ impl ShellNetwork {
     /// acknowledgement per device), so devices that are offline now still
     /// receive it. Returns whether it was handed to the transport.
     pub fn publish_channel_governance(&self, message: NeighbourMsg) -> bool {
-        let room = match &message {
-            NeighbourMsg::MlsGovernance { room, .. }
-            | NeighbourMsg::MlsAccessRequest { room, .. }
-            | NeighbourMsg::MlsGovernanceAck { room, .. } => room,
-            _ => return false,
+        let (NeighbourMsg::MlsGovernance { room, .. }
+        | NeighbourMsg::MlsAccessRequest { room, .. }
+        | NeighbourMsg::MlsGovernanceAck { room, .. }) = &message
+        else {
+            return false;
         };
         if RoomId::parse(room).is_some_and(|room| self.room_is_public(room)) {
             return false;
@@ -6370,7 +6370,7 @@ impl ShellNetwork {
         // One standing invitation admits many people, so its single name
         // would label all of them alike; they are told apart by identity.
         let name = if admission.standing {
-            format!("Member {}", &person[..person.len().min(8)])
+            format!("Member {}", person.chars().take(8).collect::<String>())
         } else {
             admission.name.clone()
         };
@@ -9075,6 +9075,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario: several people admitted, re-admitted and refused through one invitation"
+    )]
     fn a_standing_invite_admits_many_people_as_commenters_until_revoked() {
         use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
@@ -11459,8 +11463,8 @@ mod tests {
         seconds: u64,
         mut done: impl FnMut(&ShellNetwork) -> bool,
     ) -> bool {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
-        while std::time::Instant::now() < deadline {
+        let started = std::time::Instant::now();
+        while started.elapsed() < std::time::Duration::from_secs(seconds) {
             net.tick();
             if done(net) {
                 return true;
@@ -11470,22 +11474,30 @@ mod tests {
         false
     }
 
-    fn workspace_state(
-        net: &ShellNetwork,
-        room: RoomId,
-    ) -> Option<(
+    /// A room's class, owner and roster, as one member holds them.
+    type HeldRoom = (
         collab_types::ChannelClass,
         Option<String>,
         Vec<(String, crate::shell::state::CapRole)>,
-    )> {
-        let tree = net.tree_handle().ok()?;
-        let tree = tree.read();
-        let workspace = tree.desktop.workspaces.iter().find(|w| w.room == room)?;
-        Some((
-            workspace.channel_class,
-            workspace.owner.clone(),
-            workspace.roster(),
-        ))
+    );
+
+    fn workspace_state(net: &ShellNetwork, room: RoomId) -> Option<HeldRoom> {
+        let handle = net.tree_handle().ok()?;
+        let tree = handle.read();
+        let held = tree
+            .desktop
+            .workspaces
+            .iter()
+            .find(|w| w.room == room)
+            .map(|workspace| {
+                (
+                    workspace.channel_class,
+                    workspace.owner.clone(),
+                    workspace.roster(),
+                )
+            });
+        drop(tree);
+        held
     }
 
     /// The acceptance path for the community room: the team creates a public
@@ -11621,14 +11633,13 @@ mod tests {
         // The team connects once, which leaves its governance and its
         // certificate retained at the host, then goes away.
         {
-            let team_net = networked_shell(team_tree, &team).await;
+            let team_net = Box::pin(networked_shell(team_tree, &team)).await;
             assert!(team_net.join_default_workspace());
             assert!(team_net.connect_host(relay.node_addr()));
             let team_device = team.cert.device_public_key;
             let retained = tick_until(&team_net, 30, |_| {
                 std::fs::read_dir(store.root().join("retained").join("checkpoints"))
-                    .map(|entries| entries.count() >= 2)
-                    .unwrap_or(false)
+                    .is_ok_and(|entries| entries.count() >= 2)
             })
             .await;
             assert!(
@@ -11641,19 +11652,19 @@ mod tests {
         let join = |label: &'static str, seed: u8| {
             let token = token.clone();
             async move {
-                let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-                let device = certified_device(&root, DeviceCapabilities::primary(), label);
+                let person_root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+                let device = certified_device(&person_root, DeviceCapabilities::primary(), label);
                 let mut tree = WorkspaceTree::default();
                 let local = tree.append_empty_workspace(label);
-                let net = networked_shell(tree, &device).await;
+                let net = Box::pin(networked_shell(tree, &device)).await;
                 assert!(net.join_default_workspace());
                 net.accept_invite(local, &token)
                     .expect("the standing invite is accepted");
-                (net, root)
+                (net, person_root)
             }
         };
 
-        let (ada, ada_root) = join("Ada", 0xD1).await;
+        let (ada, ada_root) = Box::pin(join("Ada", 0xD1)).await;
         let ada_person = person_of(&ada_root);
         let joined = tick_until(&ada, 60, |net| {
             workspace_state(net, room).is_some_and(|(class, owner, roster)| {
@@ -11672,7 +11683,7 @@ mod tests {
             workspace_state(&ada, room)
         );
 
-        let (bea, bea_root) = join("Bea", 0xD2).await;
+        let (bea, bea_root) = Box::pin(join("Bea", 0xD2)).await;
         let bea_person = person_of(&bea_root);
         let sees_both = tick_until(&bea, 60, |net| {
             workspace_state(net, room).is_some_and(|(_, _, roster)| {
