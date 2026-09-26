@@ -16925,24 +16925,32 @@ impl Widget for ShellOverlayHost {
         {
             return;
         }
-        // Tilo-reserved shell chords above always win.  All remaining pressed
+        // Tilo-reserved shell chords above always win.  All remaining
         // physical keys are offered to the portal registry, which can only
         // match an accelerator installed after a reviewed, authenticated
-        // GlobalShortcuts grant. A match consumes the key before app content.
+        // GlobalShortcuts grant. Over a focused client the compositor's
+        // router has already claimed the press; this covers shell chrome
+        // holding focus. Pressing twice is idempotent, and the release sends
+        // `Deactivated` exactly once whichever path saw it first.
         if let WindowEvent::KeyboardInput {
             event:
                 KeyEvent {
                     physical_key,
-                    state: ElementState::Pressed,
+                    state,
                     ..
                 },
             ..
         } = event
-            && crate::portal::global_shortcuts::ShellGlobalShortcutsService::global()
-                .match_physical_key(physical_key, *modifiers)
         {
-            *handled = true;
-            return;
+            let grants = crate::portal::global_shortcuts::ShellGlobalShortcutsService::global();
+            let claimed = match state {
+                ElementState::Pressed => grants.press(physical_key, *modifiers),
+                ElementState::Released => grants.release(physical_key),
+            };
+            if claimed {
+                *handled = true;
+                return;
+            }
         }
         if self.handle_shell_mouse_click_event(event, handled) {
             return;

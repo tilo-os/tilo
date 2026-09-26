@@ -47,6 +47,7 @@ pub mod doc_open;
 pub mod editor_app;
 pub mod fabric_clock;
 mod file_picker_overlay;
+pub mod fixed_chords;
 pub mod fixture_inputs;
 pub mod floating;
 pub mod foreign;
