@@ -100,6 +100,27 @@ impl DeviceCapabilities {
             can_read_all_workspaces: true,
         }
     }
+
+    /// Capability set for a room host: an always-on host that serves
+    /// collaboration rooms it was explicitly delegated (a public community
+    /// room) and nothing else. Without workspace read authority it is never
+    /// a home peer: it cannot replicate Files, advertise full content, or
+    /// federate an identity's workspaces as a peer relay.
+    pub fn room_host() -> Self {
+        Self {
+            can_own_workspaces: false,
+            can_admit_devices: false,
+            can_act_as_host: true,
+            can_read_all_workspaces: false,
+        }
+    }
+
+    /// Whether a certificate with these capabilities stands in for the
+    /// identity's own always-on host: a peer relay that federates and
+    /// replicates every workspace. A room host does not.
+    pub fn is_full_host(&self) -> bool {
+        self.can_act_as_host && self.can_read_all_workspaces
+    }
 }
 
 /// Signed statement: "the user identity with public key

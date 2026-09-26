@@ -118,6 +118,37 @@ enum Command {
         #[arg(long)]
         expected_service: Option<String>,
     },
+    /// Pair this machine as a room host: a host that serves an identity's
+    /// collaboration rooms (such as a public community room it was delegated)
+    /// and nothing else. It receives a host certificate without workspace
+    /// read authority and no Files home-peer configuration, so it can never
+    /// stand in for a home peer, replicate Files, or federate as one.
+    PairRoomHost {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        #[arg(long, default_value = "Room host")]
+        label: String,
+        #[arg(long, default_value_t = 270)]
+        timeout: u64,
+    },
+    /// Approve one nearby room host (see `pair-room-host`), signing its
+    /// certificate with the personal identity in `--identity-dir`. Grants no
+    /// room: each room it serves is delegated separately
+    /// (`tilo-relay-admin community host`).
+    ApproveRoomHost {
+        #[arg(long, default_value = "/var/lib/tilo")]
+        identity_root: PathBuf,
+        /// The personal identity directory holding the active record
+        /// (`primary.json`), usually `~/.config/tilo/identity`.
+        #[arg(long)]
+        identity_dir: PathBuf,
+        #[arg(long, default_value_t = 60)]
+        timeout: u64,
+        #[arg(long)]
+        expected_device: Option<String>,
+        #[arg(long)]
+        expected_service: Option<String>,
+    },
     /// Approve one nearby ordinary device and give it the current fleet and
     /// home-peer registry needed to reconnect after this device goes offline.
     /// Signs with the personal identity in `--identity-dir`; run it as its owner.
@@ -141,6 +172,31 @@ enum Command {
 enum EnrollmentKind {
     HomePeer,
     PersonalDevice,
+    /// A host of an identity's collaboration rooms only. Appended to keep
+    /// the wire discriminants of the other kinds.
+    RoomHost,
+}
+
+impl EnrollmentKind {
+    /// The certificate capabilities this kind is enrolled with.
+    fn capabilities(self) -> DeviceCapabilities {
+        match self {
+            Self::HomePeer => DeviceCapabilities::host(),
+            Self::PersonalDevice => DeviceCapabilities::member(),
+            Self::RoomHost => DeviceCapabilities::room_host(),
+        }
+    }
+
+    /// Whether an enrollment token grants exactly this kind's role. A token
+    /// minted for one kind never enrolls another.
+    fn accepts(self, capabilities: &DeviceCapabilities) -> bool {
+        *capabilities == self.capabilities()
+    }
+
+    /// Kinds that end as a host certificate installed as the machine's own.
+    fn is_host(self) -> bool {
+        matches!(self, Self::HomePeer | Self::RoomHost)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1527,14 +1583,7 @@ fn join_with_token(
     validate_requester(requester_lease)?;
     let token = decode_enrollment_token(token_text).context("decode enrollment token")?;
     verify_enrollment_token(&token, now_ns()?).context("verify enrollment token")?;
-    if kind == EnrollmentKind::HomePeer
-        && (!token.capabilities.can_act_as_host || !token.capabilities.can_read_all_workspaces)
-    {
-        bail!("enrollment token does not grant home-server capabilities");
-    }
-    if kind == EnrollmentKind::PersonalDevice
-        && (token.capabilities.can_act_as_host || token.capabilities.can_read_all_workspaces)
-    {
+    if !kind.accepts(&token.capabilities) {
         bail!("enrollment token grants the wrong device role");
     }
     let paths = IdentityPaths::under(identity_root);
@@ -1672,7 +1721,7 @@ fn join_with_token(
                                 // authenticates Finalized, and the member projection is
                                 // fully installed. A crash can therefore only leave a
                                 // retryable partial enrollment, never a bootable one.
-                                if kind == EnrollmentKind::HomePeer {
+                                if kind.is_host() {
                                     tilo_user_identity::persist::write_device_cert(
                                         &paths.device_cert_for_user(
                                             &response.payload.cert.user_public_key,
@@ -1819,12 +1868,7 @@ fn pair(
                     continue;
                 };
                 if verify_enrollment_token(&token, now_ns()?).is_err()
-                    || (kind == EnrollmentKind::HomePeer
-                        && (!token.capabilities.can_act_as_host
-                            || !token.capabilities.can_read_all_workspaces))
-                    || (kind == EnrollmentKind::PersonalDevice
-                        && (token.capabilities.can_act_as_host
-                            || token.capabilities.can_read_all_workspaces))
+                    || !kind.accepts(&token.capabilities)
                 {
                     continue;
                 }
@@ -1994,10 +2038,7 @@ fn handle_solicitation(
         UnwrapErr(SysRng).fill_bytes(&mut nonce);
         let issued_at_ns = now_ns()?;
         let expires_at_ns = issued_at_ns.saturating_add(5 * 60 * 1_000_000_000);
-        let capabilities = match kind {
-            EnrollmentKind::HomePeer => DeviceCapabilities::host(),
-            EnrollmentKind::PersonalDevice => DeviceCapabilities::member(),
-        };
+        let capabilities = kind.capabilities();
         let token = mint_enrollment_token(
             identity.user_public_key,
             capabilities,
@@ -2050,14 +2091,7 @@ fn valid_pending_request(
         && token.user_public_key == identity.user_public_key
         && token.issuer_device_public_key == identity.device.verifying_key().to_bytes()
         && request.kind == kind
-        && match kind {
-            EnrollmentKind::HomePeer => {
-                token.capabilities.can_act_as_host && token.capabilities.can_read_all_workspaces
-            }
-            EnrollmentKind::PersonalDevice => {
-                !token.capabilities.can_act_as_host && !token.capabilities.can_read_all_workspaces
-            }
-        }
+        && kind.accepts(&token.capabilities)
         && !wrong_selection)
 }
 
@@ -2162,6 +2196,14 @@ fn approval_projection(
                 home_peers_json: None,
             })
         }
+        // A room host takes no Files workspace, authority envelope or
+        // registry: its only authority is each room's own delegation.
+        EnrollmentKind::RoomHost => Ok(ApprovalProjection {
+            home_peer_toml: None,
+            public_identity_json: None,
+            fleet_json: None,
+            home_peers_json: None,
+        }),
         EnrollmentKind::PersonalDevice => {
             let identity_dir = options.identity_dir;
             Ok(ApprovalProjection {
@@ -2374,6 +2416,33 @@ fn approve(options: &ApprovalOptions<'_>) -> anyhow::Result<()> {
     commit_approval(&socket, options, &identity, &pending, &prepared)
 }
 
+/// [`approve`] for a kind that shares no Files workspace: a personal device
+/// or a room host.
+fn approve_without_files(
+    identity_root: &std::path::Path,
+    identity_dir: &std::path::Path,
+    timeout: u64,
+    (expected_device, expected_service): (Option<&str>, Option<&str>),
+    kind: EnrollmentKind,
+) -> anyhow::Result<()> {
+    approve(&ApprovalOptions {
+        identity_root,
+        identity_dir,
+        timeout,
+        workspace_cache: std::path::Path::new(""),
+        acl: std::path::Path::new(""),
+        relay_workspace_ids: &[],
+        expected_device,
+        expected_service,
+        kind,
+        ready: None,
+    })
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one dispatcher arm per subcommand, each only unpacking its arguments"
+)]
 fn main() -> anyhow::Result<()> {
     match Cli::parse().command {
         Command::Discover { timeout } => discover(timeout, EnrollmentKind::HomePeer),
@@ -2448,24 +2517,46 @@ fn main() -> anyhow::Result<()> {
             kind: EnrollmentKind::HomePeer,
             ready: None,
         }),
+        Command::PairRoomHost {
+            identity_root,
+            label,
+            timeout,
+        } => pair(
+            &identity_root,
+            &label,
+            timeout,
+            EnrollmentKind::RoomHost,
+            None,
+            None,
+            None,
+            None,
+        ),
+        Command::ApproveRoomHost {
+            identity_root,
+            identity_dir,
+            timeout,
+            expected_device,
+            expected_service,
+        } => approve_without_files(
+            &identity_root,
+            &identity_dir,
+            timeout,
+            (expected_device.as_deref(), expected_service.as_deref()),
+            EnrollmentKind::RoomHost,
+        ),
         Command::ApproveDevice {
             identity_root,
             identity_dir,
             timeout,
             expected_device,
             expected_service,
-        } => approve(&ApprovalOptions {
-            identity_root: &identity_root,
-            identity_dir: &identity_dir,
+        } => approve_without_files(
+            &identity_root,
+            &identity_dir,
             timeout,
-            workspace_cache: std::path::Path::new(""),
-            acl: std::path::Path::new(""),
-            relay_workspace_ids: &[],
-            expected_device: expected_device.as_deref(),
-            expected_service: expected_service.as_deref(),
-            kind: EnrollmentKind::PersonalDevice,
-            ready: None,
-        }),
+            (expected_device.as_deref(), expected_service.as_deref()),
+            EnrollmentKind::PersonalDevice,
+        ),
     }
 }
 
@@ -2543,6 +2634,32 @@ mod tests {
             fleet_json: None,
             home_peers_json: None,
         }
+    }
+
+    #[test]
+    fn each_enrollment_kind_accepts_only_its_own_role() {
+        let kinds = [
+            EnrollmentKind::HomePeer,
+            EnrollmentKind::PersonalDevice,
+            EnrollmentKind::RoomHost,
+        ];
+        for minted in kinds {
+            for joining in kinds {
+                assert_eq!(
+                    joining.accepts(&minted.capabilities()),
+                    minted == joining,
+                    "a {minted:?} token must {}enroll a {joining:?}",
+                    if minted == joining { "" } else { "not " }
+                );
+            }
+        }
+        let room_host = EnrollmentKind::RoomHost.capabilities();
+        assert!(room_host.can_act_as_host);
+        assert!(
+            !room_host.can_read_all_workspaces && !room_host.is_full_host(),
+            "a room host is never a home peer"
+        );
+        assert!(EnrollmentKind::RoomHost.is_host());
     }
 
     #[test]
@@ -3124,6 +3241,74 @@ mod tests {
         .unwrap();
         assert!(!paths.user_privkey.exists());
         root
+    }
+
+    #[test]
+    fn a_room_host_enrols_without_files_and_is_never_a_home_peer() {
+        let _lan = LAN_PAIRING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let approver_root = tempfile::tempdir().unwrap();
+        let approver_identities = tempfile::tempdir().unwrap();
+        let root = provisioned_approver(approver_root.path(), approver_identities.path(), 61);
+        let user = root.root_public_key();
+
+        let server_root = approver_root.path().to_path_buf();
+        let server_identities = approver_identities.path().to_path_buf();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        // No Files workspace exists on the approving side at all.
+        let approval = std::thread::spawn(move || {
+            approve(&ApprovalOptions {
+                identity_root: &server_root,
+                identity_dir: &server_identities,
+                timeout: 15,
+                workspace_cache: std::path::Path::new(""),
+                acl: std::path::Path::new(""),
+                relay_workspace_ids: &[],
+                expected_device: None,
+                expected_service: None,
+                kind: EnrollmentKind::RoomHost,
+                ready: Some(&ready_tx),
+            })
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("approval listener became ready");
+        let host = tempfile::tempdir().unwrap();
+        pair(
+            host.path(),
+            "Community host",
+            15,
+            EnrollmentKind::RoomHost,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        approval.join().unwrap().unwrap();
+
+        let host_paths = IdentityPaths::under(host.path());
+        let cert = tilo_user_identity::persist::read_device_cert(&host_paths.device_cert).unwrap();
+        tilo_user_identity::verify_device_cert(&cert).unwrap();
+        assert_eq!(cert.user_public_key, user);
+        assert_eq!(cert.capabilities, DeviceCapabilities::room_host());
+        assert!(cert.capabilities.can_act_as_host);
+        assert!(
+            !cert.capabilities.is_full_host(),
+            "a room host never reads every workspace, so it never federates or replicates Files"
+        );
+        assert!(
+            !approver_root.path().join("home-peers.json").exists(),
+            "a room host is not registered as the identity's home peer"
+        );
+        assert!(
+            std::fs::read_dir(host.path())
+                .unwrap()
+                .flatten()
+                .all(|entry| entry.file_name() != "home-peer.toml"),
+            "no Files home-peer configuration reaches a room host"
+        );
     }
 
     #[test]

@@ -94,11 +94,12 @@ pub enum PeerRole {
 }
 
 impl PeerRole {
-    /// Derive the role from a device cert's capabilities. A cert
-    /// with `can_act_as_host = true` is treated as a peer relay when
-    /// it dials another host; every other cert is a plain device.
+    /// Derive the role from a device cert's capabilities. A full host
+    /// cert (acting as host *and* reading every workspace) is treated as a
+    /// peer relay when it dials another host; every other cert — a room
+    /// host's included — is a plain device, gated by room membership.
     pub fn from_cert(cert: &DeviceCert) -> Self {
-        if cert.capabilities.can_act_as_host {
+        if cert.capabilities.is_full_host() {
             Self::PeerRelay
         } else {
             Self::Device
@@ -351,6 +352,29 @@ mod tests {
         };
         sign_device_cert(&mut cert, root_sk).unwrap();
         Party { cert, sk: dev_sk }
+    }
+
+    #[test]
+    fn a_room_host_never_federates_as_a_peer_relay() {
+        let (root_sk, user) = UserIdentity::generate("Alice", 1);
+        let home = enrol(
+            &root_sk,
+            user.public_key,
+            "home",
+            DeviceCapabilities::host(),
+        );
+        let room_host = enrol(
+            &root_sk,
+            user.public_key,
+            "community",
+            DeviceCapabilities::room_host(),
+        );
+        assert_eq!(PeerRole::from_cert(&home.cert), PeerRole::PeerRelay);
+        assert_eq!(
+            PeerRole::from_cert(&room_host.cert),
+            PeerRole::Device,
+            "a room host of the same identity is gated by room membership like any device"
+        );
     }
 
     #[test]
