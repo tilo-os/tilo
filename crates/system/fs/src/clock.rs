@@ -69,8 +69,29 @@ impl tilo_clock::Clock for DaemonClock {
     }
 }
 
+/// Nanoseconds since the Unix epoch.
+///
+/// With no test override this is the live clock, including the fraction of
+/// the current millisecond. Truncating to [`unix_now_ms`] would place "now"
+/// before a certificate issued at `tilo_clock::unix_now_ns()` in that same
+/// millisecond, and [`tilo_user_identity::verify_device_cert_at`] would reject
+/// it as not yet valid.
+///
+/// The test override is stored as whole milliseconds. [`ns_at_unix_ms`] is the
+/// only lift of that value, so a certificate minted for the override uses the
+/// same instant the daemon will read.
 pub fn unix_now_ns() -> u64 {
-    unix_now_ms().saturating_mul(1_000_000)
+    match TEST_CLOCK_FILE.get() {
+        Some(clock) => ns_at_unix_ms(clock.read().unwrap_or(u64::MAX)),
+        None => tilo_clock::try_unix_now_ns().unwrap_or(u64::MAX),
+    }
+}
+
+/// Lift a Unix millisecond timestamp to the nanosecond instant reported while
+/// the test-clock override is installed.
+#[must_use]
+pub fn ns_at_unix_ms(now_ms: u64) -> u64 {
+    now_ms.saturating_mul(1_000_000)
 }
 
 pub fn unix_now_secs() -> u64 {
@@ -213,6 +234,12 @@ mod tests {
     fn owner_only(path: &Path) {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    #[test]
+    fn millisecond_instant_lifts_to_the_start_of_that_millisecond() {
+        assert_eq!(ns_at_unix_ms(1_234), 1_234_000_000);
+        assert_eq!(ns_at_unix_ms(u64::MAX), u64::MAX);
     }
 
     #[test]
