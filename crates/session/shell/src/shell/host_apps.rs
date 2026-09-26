@@ -12,13 +12,15 @@
 //! workspace containing its window, but is not passed to the app and grants
 //! no Tilo service or sandbox authority. The palette labels host apps under
 //! [`ResourceKind::HostApplication`] so a user can tell which kind of
-//! app they're looking at. Host-desktop sessions also pass the private
-//! rootless-Xwayland display for software that cannot speak Wayland.
+//! app they're looking at. Software that cannot speak Wayland reaches the
+//! private rootless-Xwayland display of the workspace it opens in, and only
+//! that one: X11 has no client isolation, so one X server never spans two
+//! workspaces.
 //!
 //! [`ResourceKind::HostApplication`]: crate::shell::search::ResourceKind::HostApplication
 
 use std::path::{Path, PathBuf};
-use std::sync::{OnceLock, RwLock};
+use std::sync::OnceLock;
 
 use desktop_entry::{DesktopEntry, EntrySource};
 
@@ -93,87 +95,26 @@ pub(crate) fn drain_queued_launches() -> Vec<QueuedLaunch> {
     )
 }
 
-#[cfg(test)]
-pub(crate) fn queued_launch_count_for_test() -> usize {
-    queued_launches()
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .len()
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct X11Session {
     pub display: String,
     pub authority: PathBuf,
 }
 
-fn x11_slot() -> &'static RwLock<Option<X11Session>> {
-    static SESSION: OnceLock<RwLock<Option<X11Session>>> = OnceLock::new();
-    SESSION.get_or_init(|| RwLock::new(None))
-}
-
-#[cfg(any(test, target_os = "linux"))]
-pub(crate) fn set_x11_session(session: Option<X11Session>) {
-    let ready = session.is_some();
-    if let Ok(mut slot) = x11_slot().write() {
-        *slot = session;
+/// The X11 connection a host launch into `workspace` may inherit: that
+/// workspace's own display, created on first use. A launch attributed to no
+/// workspace gets none, and callers never fall back to ambient
+/// DISPLAY/XAUTHORITY.
+fn x11_session_for(workspace: Option<&str>) -> Option<X11Session> {
+    #[cfg(target_os = "linux")]
+    {
+        workspace.and_then(crate::compositor::xwayland::session_for_workspace)
     }
-    if ready && let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Ready;
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = workspace;
+        None
     }
-}
-
-/// The bridge is deliberately asynchronous: callers need to distinguish the
-/// short startup race from a terminal outage.  `Unavailable` is also the
-/// default for native Tilo sessions, where Wayland host apps must not be gated
-/// on an optional compatibility service.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum X11Availability {
-    Starting,
-    Ready,
-    Unavailable,
-}
-
-fn x11_availability_slot() -> &'static RwLock<X11Availability> {
-    static STATE: OnceLock<RwLock<X11Availability>> = OnceLock::new();
-    STATE.get_or_init(|| RwLock::new(X11Availability::Unavailable))
-}
-
-pub(crate) fn set_x11_starting() {
-    if let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Starting;
-    }
-}
-
-pub(crate) fn set_x11_unavailable() {
-    if let Ok(mut state) = x11_availability_slot().write() {
-        *state = X11Availability::Unavailable;
-    }
-}
-
-pub(crate) fn x11_availability() -> X11Availability {
-    x11_availability_slot()
-        .read()
-        .map_or(X11Availability::Unavailable, |state| *state)
-}
-
-/// The only X11 connection host launches may inherit. The compositor revokes
-/// this as soon as its bridge exits; callers must treat `None` as a deliberate
-/// Wayland-only launch, never fall back to ambient DISPLAY/XAUTHORITY.
-pub(crate) fn x11_session() -> Option<X11Session> {
-    x11_slot().read().ok().and_then(|slot| slot.clone())
-}
-
-/// Whether host launches which may need X11 can safely be dispatched.
-///
-/// The host-session bridge starts asynchronously so the compositor can paint
-/// immediately.  Session restore and very fast launcher interaction can race
-/// that startup; launching without the private DISPLAY makes X11-only apps
-/// fail permanently even though the bridge becomes ready a few milliseconds
-/// later.  Keep the request queued until publication instead.
-#[cfg(test)]
-pub(crate) fn x11_ready() -> bool {
-    x11_availability() == X11Availability::Ready && x11_session().is_some()
 }
 
 impl HostApp {
@@ -400,7 +341,7 @@ pub(crate) fn launch_resolved_with_activation(
             return Err(error);
         }
     };
-    let x11 = x11_session();
+    let x11 = x11_session_for(portal_workspace_id.as_deref());
     let command = build_launch_command(
         &app,
         &launcher_bin,
@@ -552,88 +493,6 @@ mod tests {
             !cmd.env.iter().any(|(key, _)| key.contains("WORKSPACE")),
             "portal attribution is compositor bookkeeping, not ambient authority"
         );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn revoked_x11_session_cannot_leak_into_a_later_host_launch() {
-        let app = app("com.example.Legacy", "Legacy", &["legacy"]);
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
-        }));
-        assert!(x11_session().is_some(), "fixture published an X11 bridge");
-
-        // This is the exact action SessionXwayland takes after reaping its
-        // child. A later host launch must receive no stale bridge arguments.
-        set_x11_session(None);
-        let command = build_launch_command(
-            &app,
-            Path::new("/usr/bin/tilo-launcher"),
-            Path::new("/run/user/1000/wayland-2"),
-            None,
-            x11_session().as_ref(),
-            None,
-            None,
-        );
-        assert!(
-            !command
-                .args
-                .iter()
-                .any(|arg| arg == "--x11-display" || arg == "--x11-authority"),
-            "a dead bridge must not hand a later X11/Electron launch stale connection details"
-        );
-    }
-
-    #[test]
-    #[serial_test::serial]
-    #[cfg(target_os = "linux")]
-    fn a_queued_host_launch_survives_the_xwayland_startup_window() {
-        set_x11_starting();
-        set_x11_session(None);
-        let _ = drain_queued_launches();
-        queue_launch(QueuedLaunch {
-            app: app("org.example.Legacy.desktop", "Legacy", &["Legacy"]),
-            placement: crate::compositor::tab_binding::Placement::NewGroup,
-            portal_workspace_id: None,
-            requested_at: std::time::Instant::now(),
-        })
-        .expect("Linux accepts a queued host launch");
-
-        assert!(!x11_ready());
-        assert_eq!(
-            queued_launch_count_for_test(),
-            1,
-            "checking readiness must not consume the launch queued during login"
-        );
-
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/run/user/1000/tilo-session/Xauthority-1234"),
-        }));
-        assert!(x11_ready());
-        let requests = drain_queued_launches();
-        assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].app.desktop_id, "org.example.Legacy.desktop");
-        set_x11_session(None);
-        set_x11_unavailable();
-    }
-
-    #[test]
-    #[serial_test::serial]
-    fn x11_availability_distinguishes_startup_from_terminal_outage() {
-        set_x11_session(None);
-        set_x11_starting();
-        assert_eq!(x11_availability(), X11Availability::Starting);
-        set_x11_unavailable();
-        assert_eq!(x11_availability(), X11Availability::Unavailable);
-        set_x11_session(Some(X11Session {
-            display: ":1234".into(),
-            authority: PathBuf::from("/tmp/tilo-test-authority"),
-        }));
-        assert_eq!(x11_availability(), X11Availability::Ready);
-        set_x11_session(None);
-        set_x11_unavailable();
     }
 
     /// Scan the host for installed applications.
