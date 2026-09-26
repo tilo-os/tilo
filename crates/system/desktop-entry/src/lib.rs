@@ -22,6 +22,7 @@
 //! - [`mod@scan`]   — the XDG search path, desktop-file IDs, precedence.
 //! - [`cache`]  — memoising a scan for a UI that queries per keystroke.
 //! - [`launch`] — spawning a host application, and what that costs.
+//! - [`autostart`] — the XDG autostart entries a session starts at login.
 
 #![cfg_attr(
     test,
@@ -36,6 +37,7 @@
     )
 )]
 
+pub mod autostart;
 pub mod cache;
 pub mod entry;
 pub mod exec;
