@@ -11178,6 +11178,7 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-automerge-isolate",
  "tilo-relay",
  "tilo-ui",
  "tilo-user-identity",

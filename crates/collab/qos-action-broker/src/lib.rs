@@ -17,3 +17,7 @@ pub mod route;
 pub mod services;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+// Room admission decodes peer bytes in automerge worker processes started
+// from this test binary; this serves them.
+#[cfg(test)]
+tilo_automerge_isolate::test_worker!();
