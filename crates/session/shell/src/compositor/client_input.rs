@@ -75,6 +75,8 @@ pub struct ClientInput {
     activated: Option<u64>,
     /// Surface the pointer is currently inside (and therefore focused on at the seat), or `None` when the pointer is over chrome.
     pointer_focus: Option<u64>,
+    /// Global origin of the pointer-focused surface, as the router placed it.
+    pointer_focus_origin: Option<(f64, f64)>,
     /// Last known cursor position in global coordinates; `None` until
     /// moved. `Option`, not `(0.0, 0.0)`, since presence is level-triggered — a default would put a peer's cursor at top-left for a session that never moved.
     cursor: Option<(f64, f64)>,
@@ -215,6 +217,10 @@ impl ClientInput {
     }
 
     /// The surface the seat's pointer is currently focused on, if any.
+    pub fn pointer_focus_origin(&self) -> Option<(f64, f64)> {
+        self.pointer_focus_origin
+    }
+
     pub fn pointer_focus(&self) -> Option<u64> {
         self.pointer_focus
     }
@@ -445,6 +451,12 @@ impl State {
         global: (f64, f64),
         target: Option<(u64, (f64, f64))>,
     ) {
+        // A locked pointer does not move; only relative motion reaches the
+        // client. (The direct backend already holds it; this covers hosts
+        // that keep reporting absolute positions.)
+        if self.pointer_lock.is_locked() {
+            return;
+        }
         let Some(pointer) = self.seat.get_pointer() else {
             return;
         };
@@ -458,6 +470,9 @@ impl State {
             });
         let previous_focus = self.client_input.pointer_focus;
         self.client_input.pointer_focus = focus.as_ref().and_then(|_| target.map(|(id, _)| id));
+        self.client_input.pointer_focus_origin = focus
+            .as_ref()
+            .and_then(|_| target.map(|(_, origin)| origin));
         let serial = mint_serial(self);
         let time = event_time(self);
         pointer.motion(
@@ -1021,6 +1036,42 @@ pub fn sync_pointer_image(
     Some(image)
 }
 
+/// Grant, adjust or withdraw a client's pointer lock/confinement for this
+/// tick. Only the surface that both holds keyboard focus and sits under the
+/// local pointer may hold it, and never while the session is locked or
+/// chrome is taking input. Returns what the backend must apply.
+pub fn sync_pointer_constraint(
+    state: &mut State,
+    fb: &FrameBuilder,
+    session_locked: bool,
+) -> Option<crate::compositor::pointer_lock::ConstraintChange> {
+    let target = (!session_locked && !chrome_captures_input(fb))
+        .then(|| state.client_input.pointer_focus())
+        .flatten()
+        .filter(|surface_id| state.client_input.keyboard_focus() == Some(*surface_id))
+        .and_then(|surface_id| {
+            let rect = {
+                let chrome = fb.chrome();
+                let tree = chrome.tree();
+                foreign_tiles(&tree, fb.host())
+                    .into_iter()
+                    .find(|hit| hit.surface_id == surface_id)
+                    .map(|hit| hit.rect)
+            }
+            .or_else(|| {
+                fb.floating_surface_rects()
+                    .into_iter()
+                    .find(|(id, _)| *id == surface_id)
+                    .map(|(_, rect)| rect)
+            })?;
+            Some(crate::compositor::pointer_lock::GrantTarget {
+                surface_id,
+                rect: (rect.x0, rect.y0, rect.x1, rect.y1),
+            })
+        });
+    state.sync_pointer_constraint(target)
+}
+
 /// Tell the remote-input firewall what is on screen. Called every tick,
 /// immediately after [`sync_keyboard_focus`], so a remote event is judged against what the local user is looking at.
 ///
@@ -1053,7 +1104,8 @@ pub fn publish_remote_input_view(state: &mut State, fb: &FrameBuilder, session_l
         chrome_captures_input(fb),
         fb.host().palette_visible(),
     )
-    .locked(session_locked);
+    .locked(session_locked)
+    .pointer_held(state.pointer_lock.is_engaged());
     state.remote_input_firewall.publish_view(view);
 }
 

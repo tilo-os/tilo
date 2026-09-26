@@ -515,7 +515,23 @@ pub struct BlockEditor {
     /// Use a tighter prose rhythm between adjacent paragraphs while retaining
     /// the larger separation around headings, lists, media, and code.
     compact_paragraph_spacing: bool,
-    child_nodes: Vec<NodeId>,
+    /// The measured leaf that stands for the block stack in the layout tree.
+    content_node: Option<NodeId>,
+    stack_leaf: Box<BlockStackLeaf>,
+    /// Per-block margins and height bounds, resolved when the tree is built.
+    stack_boxes: Vec<StackBox>,
+    /// The last stacking pass: each block's unrounded top relative to the
+    /// editor, its height, the width it ran at, and the stack's total height.
+    stack: BlockStack,
+    /// The theme lines measure under, shared by all of them and replaced only
+    /// when the theme's content changes.
+    layout_theme: std::sync::Arc<Theme>,
+    layout_theme_fingerprint: Option<u64>,
+    /// Lines measured and blocks painted since a test last reset them.
+    #[cfg(test)]
+    stack_measures: usize,
+    #[cfg(test)]
+    painted_blocks: usize,
     dirty: bool,
     /// Set when the block list grows/shrinks; drained by
     /// `take_structure_dirty` so the host rebuilds taffy.
@@ -659,7 +675,18 @@ impl BlockEditor {
             handle: HandleMetrics::default(),
             wrap_lines: false,
             compact_paragraph_spacing: false,
-            child_nodes: Vec::new(),
+            content_node: None,
+            stack_leaf: Box::new(BlockStackLeaf {
+                editor: std::ptr::null_mut(),
+            }),
+            stack_boxes: Vec::new(),
+            stack: BlockStack::default(),
+            layout_theme: std::sync::Arc::new(Theme::dark()),
+            layout_theme_fingerprint: None,
+            #[cfg(test)]
+            stack_measures: 0,
+            #[cfg(test)]
+            painted_blocks: 0,
             dirty: true,
             structure_dirty: true,
             edit_pending: false,
@@ -6307,6 +6334,245 @@ fn draw_formula_run(idx: usize, ctx: &mut BlockDrawCtx<'_>, formulas: &mut Formu
     }
 }
 
+/// How one block sits in the stack: its top margin, and the fixed height or
+/// minimum its content height is clamped to.
+#[derive(Clone, Copy, Debug)]
+struct StackBox {
+    margin_top: f32,
+    fixed: Option<f32>,
+    min: f32,
+}
+
+#[derive(Default)]
+struct BlockStack {
+    tops: Vec<f32>,
+    heights: Vec<f32>,
+    width: Option<f32>,
+    total: f32,
+    /// Whether any block's height comes from its content.
+    measured: bool,
+    /// The text renderer's shaping generation and scale the cached line
+    /// heights were measured under; a font or locale swap re-measures all.
+    shaping: Option<(std::sync::Arc<()>, u32)>,
+}
+
+/// The leaf that stands for the editor's block stack in the layout tree. A
+/// separate allocation, so the host never mistakes it for a second editor at
+/// the editor's address; it has no identity, focus or semantics of its own
+/// and measures through its editor, which points it back at itself whenever
+/// it builds the tree (the same lifetime every node-map pointer carries).
+struct BlockStackLeaf {
+    editor: *mut BlockEditor,
+}
+
+impl BlockStackLeaf {
+    fn editor(&self) -> Option<&BlockEditor> {
+        // SAFETY: set by the owning editor's `build_layout`; the host only
+        // measures a tree while the editor that built it stays in place.
+        unsafe { self.editor.as_ref() }
+    }
+
+    fn editor_mut(&mut self) -> Option<&mut BlockEditor> {
+        // SAFETY: as above; measuring holds no other editor borrow.
+        unsafe { self.editor.as_mut() }
+    }
+}
+
+impl Widget for BlockStackLeaf {
+    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        _node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.leaf_node(Style::default())
+    }
+
+    fn measure(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        self.editor_mut().map_or(Size::ZERO, |editor| {
+            editor.measure_stack(known, available, text_renderer)
+        })
+    }
+
+    /// The host marks each node it must re-measure; the editor's own node has
+    /// children, so its dirtiness alone would leave this leaf's cached size.
+    fn layout_needs_measure(&self) -> bool {
+        self.editor().is_some_and(Widget::layout_needs_measure)
+    }
+
+    fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, _origin: Point) {}
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        _presence: &PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "BlockStack"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.editor().map_or(Rect::ZERO, |editor| editor.rect)
+    }
+}
+
+/// Feeds formatted output into a hasher without building the string.
+struct HashWriter(std::collections::hash_map::DefaultHasher);
+
+impl std::fmt::Write for HashWriter {
+    fn write_str(&mut self, text: &str) -> std::fmt::Result {
+        std::hash::Hasher::write(&mut self.0, text.as_bytes());
+        Ok(())
+    }
+}
+
+impl BlockEditor {
+    /// Hand every line one shared theme, replaced only when its content
+    /// changes: an unchanged theme then costs each line a pointer compare.
+    fn refresh_layout_theme(&mut self, theme: &Theme) {
+        use std::fmt::Write as _;
+        let mut hasher = HashWriter(std::collections::hash_map::DefaultHasher::new());
+        let _ = write!(hasher, "{theme:?}");
+        let fingerprint = std::hash::Hasher::finish(&hasher.0);
+        if self.layout_theme_fingerprint != Some(fingerprint) {
+            self.layout_theme_fingerprint = Some(fingerprint);
+            self.layout_theme = std::sync::Arc::new(theme.clone());
+        }
+    }
+
+    /// Measure the block stack. A query without a definite width asks for an
+    /// intrinsic size: answer it from the last stack rather than reshaping
+    /// every paragraph at a width it will never be painted at.
+    fn measure_stack(
+        &mut self,
+        known: Size<Option<f32>>,
+        available: Size<taffy::AvailableSpace>,
+        text_renderer: &mut TextRenderer,
+    ) -> Size<f32> {
+        let definite = known.width.or(match available.width {
+            taffy::AvailableSpace::Definite(width) => Some(width),
+            _ => None,
+        });
+        // 400 is the width a measured line assumes without a definite one.
+        let width = match (definite, self.stack.width) {
+            (Some(width), _) => width,
+            (None, Some(_)) if self.stack.tops.len() == self.blocks.len() => {
+                return Size {
+                    width: if self.stack.measured { 400.0 } else { 0.0 },
+                    height: self.stack.total,
+                };
+            }
+            (None, _) => 400.0,
+        };
+        self.stack_blocks(width, Some(text_renderer));
+        Size {
+            width: if self.stack.measured { width } else { 0.0 },
+            height: self.stack.total,
+        }
+    }
+
+    /// Stack every block at `width`, the way a flex column would: each
+    /// block's top is the running total plus its margin, and the total grows
+    /// by margin plus height. A line whose content and layout inputs are
+    /// unchanged reuses its cached height, so the cost of an edit does not
+    /// grow with the document. Without a text renderer (a host that solved
+    /// the tree without measuring), unmeasured content counts as empty.
+    fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
+        let stack = &mut self.stack;
+        if let Some(text_renderer) = text_renderer.as_deref() {
+            let shaping = (
+                std::sync::Arc::clone(text_renderer.layout_epoch()),
+                text_renderer.text_scale().to_bits(),
+            );
+            if stack.shaping.as_ref().is_none_or(|(epoch, scale)| {
+                !std::sync::Arc::ptr_eq(epoch, &shaping.0) || *scale != shaping.1
+            }) {
+                for block in &mut self.blocks {
+                    block.line.forget_stacked_height();
+                }
+                stack.shaping = Some(shaping);
+            }
+        }
+        stack.tops.clear();
+        stack.heights.clear();
+        stack.measured = false;
+        let mut total = 0.0_f32;
+        for (block, stack_box) in self.blocks.iter_mut().zip(&self.stack_boxes) {
+            let content = match (
+                block.line.stacked_height(width),
+                text_renderer.as_deref_mut(),
+            ) {
+                (Some(height), _) => height,
+                (None, Some(text_renderer)) => {
+                    #[cfg(test)]
+                    {
+                        self.stack_measures = self.stack_measures.saturating_add(1);
+                    }
+                    block.line.measure_stacked(width, text_renderer)
+                }
+                (None, None) => 0.0,
+            };
+            stack.measured |= stack_box.fixed.is_none();
+            let height = stack_box.fixed.unwrap_or(content).max(stack_box.min);
+            stack.tops.push(total + stack_box.margin_top);
+            total += stack_box.margin_top + height;
+            stack.heights.push(height);
+        }
+        stack.total = total;
+        stack.width = Some(width);
+    }
+
+    /// Each block's rectangle from the last stack, rounded exactly as Taffy
+    /// would have rounded one child node per block: the location relative to
+    /// the editor, and the height between the rounded absolute edges.
+    fn stacked_block_rects(&self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) -> Vec<Rect> {
+        let Some(content) = self.content_node else {
+            return Vec::new();
+        };
+        let Ok(content_layout) = taffy.layout(content) else {
+            return Vec::new();
+        };
+        // `layout` hands out the unrounded record itself when rounding is off.
+        let rounding = !std::ptr::eq(content_layout, taffy.unrounded_layout(content));
+        let mut path = vec![node];
+        while let Some(parent) = path.last().and_then(|&child| taffy.parent(child)) {
+            path.push(parent);
+        }
+        let absolute_top = path.iter().rev().fold(0.0_f32, |top, &ancestor| {
+            top + taffy.unrounded_layout(ancestor).location.y
+        });
+        let x0 = origin.x + f64::from(content_layout.location.x);
+        let width = f64::from(content_layout.size.width);
+        self.stack
+            .tops
+            .iter()
+            .zip(&self.stack.heights)
+            .map(|(&top, &height)| {
+                let (top, height) = if rounding {
+                    let edge = absolute_top + top;
+                    (top.round(), (edge + height).round() - edge.round())
+                } else {
+                    (top, height)
+                };
+                let y0 = origin.y + f64::from(top);
+                Rect::new(x0, y0, x0 + width, y0 + f64::from(height))
+            })
+            .collect()
+    }
+}
+
 impl Widget for BlockEditor {
     fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
         self.refresh_image_attachments();
@@ -6446,7 +6712,7 @@ impl Widget for BlockEditor {
                 .iter()
                 .any(|block| block.id == *id && matches!(block.kind, BlockKind::Table { .. }))
         });
-        self.child_nodes.clear();
+        self.refresh_layout_theme(theme);
         // Lines within one authored fence stay together; distinct adjacent
         // fences need space outside both painted backgrounds.
         let is_code: Vec<bool> = self
@@ -6473,6 +6739,7 @@ impl Widget for BlockEditor {
         let code_headers: Vec<f64> = (0..self.blocks.len())
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
+        self.stack_boxes.clear();
         for (i, b) in self.blocks.iter_mut().enumerate() {
             let image = self.image_attachments.get(&b.id);
             let image_preview = image
@@ -6514,21 +6781,25 @@ impl Widget for BlockEditor {
             );
             let header_height = code_headers[i] as f32;
             b.line.set_layout_header_height(header_height);
-            let n = b.line.build_layout(taffy, theme, node_map);
+            b.line.prepare_layout(&self.layout_theme);
+            let row_height = b.line.row_height(theme.text_scale);
+            let mut stack_box = StackBox {
+                margin_top: 0.0,
+                fixed: (!b.line.measures_height()).then_some(row_height),
+                min: row_height,
+            };
             if header_height > 0.0 {
-                let mut style = taffy.style(n).cloned().unwrap_or_default();
                 let height = (b.kind.font_size() * theme.text_scale * 1.5)
                     .max(20.0 * theme.text_scale)
                     + header_height;
                 if !self.wrap_lines {
-                    style.size.height = length(height);
+                    stack_box.fixed = Some(height);
                 }
-                style.min_size.height = length(height);
-                let _ = taffy.set_style(n, style);
+                stack_box.min = height;
             }
-            // Per-block top margin (not the parent's `gap`) so it can be
-            // zeroed for soft-break continuations, the first block, and
-            // consecutive code lines (one contiguous fenced unit).
+            // Per-block top margin (not a uniform gap) so it can be zeroed
+            // for soft-break continuations, the first block, and consecutive
+            // code lines (one contiguous fenced unit).
             let continues_code_block = continues_code[i];
             let adjacent_fences =
                 is_code[i] && i.checked_sub(1).is_some_and(|previous| is_code[previous]);
@@ -6536,7 +6807,7 @@ impl Widget for BlockEditor {
                 && is_paragraph[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_paragraph[previous]);
-            let top_margin: f32 = if i == 0 || b.soft_break || continues_code_block {
+            stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
             } else if adjacent_fences {
                 theme.tokens.spacing.s4 * theme.text_scale
@@ -6545,37 +6816,37 @@ impl Widget for BlockEditor {
             } else {
                 theme.tokens.spacing.s2 * theme.text_scale
             };
-            let block_is_formula_end = is_formula_end.get(i).copied().unwrap_or(false);
-            let is_transclusion = transclusion_target(b).is_some();
-            let is_image = matches!(b.kind, BlockKind::Paragraph)
-                && standalone_markdown_image(b.text()).is_some();
-            if top_margin > 0.0 || block_is_formula_end || is_transclusion || is_image {
-                let existing = taffy.style(n).cloned().unwrap_or_default();
-                let mut s = existing;
-                s.margin = taffy::Rect {
-                    left: length(0.0_f32),
-                    right: length(0.0_f32),
-                    top: length(top_margin),
-                    bottom: length(0.0_f32),
+            if is_formula_end.get(i).copied().unwrap_or(false) {
+                stack_box.min = if formula_descriptor(&b.kind)
+                    .is_some_and(|descriptor| descriptor.mode == crate::math::FormulaMode::Visual)
+                {
+                    FORMULA_VISUAL_MIN_HEIGHT
+                } else {
+                    FORMULA_BLOCK_MIN_HEIGHT
                 };
-                if block_is_formula_end {
-                    let min_height = if formula_descriptor(&b.kind).is_some_and(|descriptor| {
-                        descriptor.mode == crate::math::FormulaMode::Visual
-                    }) {
-                        FORMULA_VISUAL_MIN_HEIGHT
-                    } else {
-                        FORMULA_BLOCK_MIN_HEIGHT
-                    };
-                    s.min_size.height = length(min_height);
-                }
-                if is_transclusion {
-                    s.min_size.height = length(TRANSCLUSION_MIN_HEIGHT * theme.text_scale);
-                }
-                let _ = taffy.set_style(n, s);
             }
-            self.child_nodes.push(n);
+            if transclusion_target(b).is_some() {
+                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+            }
+            self.stack_boxes.push(stack_box);
         }
-        let mut layout_children = self.child_nodes.clone();
+        // One measured leaf stands for the whole block stack. The editor
+        // places its blocks itself from per-line cached heights, so an edit
+        // re-measures only the lines it touched and the layout tree does not
+        // grow with the document.
+        let content = taffy.leaf_node(Style {
+            size: Size {
+                width: Dimension::percent(1.0),
+                height: Dimension::auto(),
+            },
+            flex_shrink: 0.0,
+            ..Default::default()
+        });
+        self.stack_leaf.editor = std::ptr::from_mut(self);
+        let stack_leaf: &mut dyn Widget = self.stack_leaf.as_mut();
+        node_map.insert(content, std::ptr::from_mut(stack_leaf));
+        self.content_node = Some(content);
+        let mut layout_children = vec![content];
         for block in &self.blocks {
             if let Some(image) = self.image_attachments.get_mut(&block.id) {
                 let button_node = image.button_mut().build_layout(taffy, theme, node_map);
@@ -6632,9 +6903,15 @@ impl Widget for BlockEditor {
             origin.y + f64::from(layout.location.y) + f64::from(layout.size.height),
         );
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
-        // Taffy's child list is authoritative (not `self.child_nodes`)
-        // so any internal re-ordering taffy applies is tolerated.
-        let children = taffy.children(node).unwrap_or_default();
+        if let Some(content) = self.content_node {
+            let width = taffy.unrounded_layout(content).size.width;
+            if self.stack.tops.len() != self.blocks.len()
+                || self.stack.width.map(f32::to_bits) != Some(width.to_bits())
+            {
+                self.stack_blocks(width, None);
+            }
+        }
+        let block_rects = self.stacked_block_rects(taffy, node, new_origin);
         self.formula_preview_rects = vec![None; self.blocks.len()];
         self.table_preview_rects = vec![None; self.blocks.len()];
         self.image_preview_rects = vec![None; self.blocks.len()];
@@ -6645,8 +6922,8 @@ impl Widget for BlockEditor {
         let code_headers: Vec<f64> = (0..self.blocks.len())
             .map(|index| code_header_height(&self.blocks, index, self.text_scale))
             .collect();
-        for (index, (b, child_node)) in self.blocks.iter_mut().zip(children.iter()).enumerate() {
-            b.line.apply_layout(taffy, *child_node, new_origin);
+        for (index, (b, block_rect)) in self.blocks.iter_mut().zip(block_rects).enumerate() {
+            b.line.apply_layout_external(block_rect);
             // Shift prefixed kinds' text rect right of a reserved gutter
             // so the prefix glyph doesn't overlap editable text.
             let gutter = prefix_gutter_for(&b.kind) * self.text_scale;
@@ -6911,6 +7188,28 @@ impl Widget for BlockEditor {
             .collect();
         let active_drag = self.block_drag.filter(|drag| drag.active);
         let dragged_group = active_drag.map(|drag| self.movable_group(drag.source));
+        // Paint only what the host's viewport can show. The focused block and
+        // a dragged group always paint: their geometry feeds the caret, IME
+        // and the drag preview even while they are scrolled out of view.
+        // One screen of margin on either side keeps the neighbours a keystroke
+        // can move the caret into freshly painted, and decorations reaching
+        // past a block's own rectangle whole.
+        let paint_window = presence
+            .viewport
+            .get()
+            .map(|viewport| viewport.inflate(0.0, viewport.height().max(0.0)));
+        let painted: Vec<bool> = paint_rects
+            .iter()
+            .enumerate()
+            .map(|(index, rect)| {
+                paint_window.is_none_or(|window| {
+                    rect.is_none_or(|rect| rect.y1 >= window.y0 && rect.y0 <= window.y1)
+                }) || self.focused == Some(index)
+                    || dragged_group
+                        .as_ref()
+                        .is_some_and(|group| group.contains(&index))
+            })
+            .collect();
         let mut drag_offset = active_drag
             .map(|drag| self.last_mouse_pos - drag.start)
             .unwrap_or_default();
@@ -6938,6 +7237,13 @@ impl Widget for BlockEditor {
 
         let mut dragged_scene: Option<(Scene, Rect)> = None;
         for (idx, b) in self.blocks.iter_mut().enumerate() {
+            if !painted[idx] {
+                continue;
+            }
+            #[cfg(test)]
+            {
+                self.painted_blocks = self.painted_blocks.saturating_add(1);
+            }
             let preceding = dragged_group
                 .as_ref()
                 .filter(|group| group.contains(&idx))
@@ -7230,9 +7536,14 @@ impl Widget for BlockEditor {
         // Runs AFTER the block loop: pixel_x_for_byte needs this frame's
         // fresh `char_x_positions`.
         for (i, b) in self.blocks.iter().enumerate() {
-            self.draw_block_presence(i, b, &mut ctx);
+            if painted[i] {
+                self.draw_block_presence(i, b, &mut ctx);
+            }
         }
         for (index, block) in self.blocks.iter().enumerate() {
+            if !painted[index] {
+                continue;
+            }
             if let Some(image) = self.image_attachments.get_mut(&block.id) {
                 let hovered = self
                     .image_preview_rects
