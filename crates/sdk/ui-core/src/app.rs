@@ -1780,6 +1780,18 @@ impl App {
         best.map(|(_, icon)| icon)
     }
 
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    #[cfg(feature = "native")]
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.layout.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
+    }
+
     /// Mirrors [`Self::resolve_cursor`]: smallest-area widget under `point`
     /// exposing a non-empty [`Widget::tooltip`], so a nested icon button
     /// beats its enclosing toolbar.
