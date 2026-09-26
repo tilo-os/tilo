@@ -5072,6 +5072,7 @@ enum DevCandidate {
     Superseded,
 }
 
+#[cfg(test)]
 fn build_dev_candidate(plan: &CargoPlan) -> Result<PathBuf> {
     match build_dev_candidate_interruptible(plan, None, &[], |_| {})? {
         DevCandidate::Built(executable) => Ok(executable),
