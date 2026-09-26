@@ -3789,7 +3789,7 @@ mod tests {
 
     fn named_widget_ptr(widget: &dyn Widget, id: &str) -> Option<usize> {
         if widget.test_id() == Some(id) {
-            return Some(widget as *const dyn Widget as *const () as usize);
+            return Some((widget as *const dyn Widget).cast::<()>().addr());
         }
         widget
             .children()

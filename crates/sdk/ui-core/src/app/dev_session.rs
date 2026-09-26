@@ -57,15 +57,14 @@ impl App {
         if !path.is_file() {
             return None;
         }
-        match self.restore_dev_checkpoint_from(&path) {
-            Some(view) => Some(view),
-            None => {
-                eprintln!(
-                    "tilo: ignoring dev checkpoint {} — it does not match this app",
-                    path.display()
-                );
-                None
-            }
+        if let Some(view) = self.restore_dev_checkpoint_from(&path) {
+            Some(view)
+        } else {
+            eprintln!(
+                "tilo: ignoring dev checkpoint {} — it does not match this app",
+                path.display()
+            );
+            None
         }
     }
 
@@ -116,6 +115,10 @@ extern "C" fn request_dev_session_stop(_signal: libc::c_int) {
 /// instead of dying inside the frame. The dev loop sends that signal before it
 /// starts the rebuilt binary.
 #[cfg(feature = "native")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the signal pipe is read for the life of the process; a pool job would pin a worker on a blocking read"
+)]
 pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<UserEvent>) {
     if crate::host::environment().dev_session.is_none()
         || DEV_STOP_INSTALLED.swap(true, Ordering::Relaxed)
