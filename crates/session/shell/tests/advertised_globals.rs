@@ -108,6 +108,9 @@ const REQUIRED_AT_CONSTRUCTION: &[&str] = &[
     "xdg_wm_base",
     "wl_seat",
     "zxdg_output_manager_v1",
+    // Toolkits (GTK 4.14+, Qt 6.8+, SDL3, winit) name their cursor through
+    // it instead of loading an Xcursor theme the sandbox may not contain.
+    "wp_cursor_shape_manager_v1",
 ];
 
 #[test]

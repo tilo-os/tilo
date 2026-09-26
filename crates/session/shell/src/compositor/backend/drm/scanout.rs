@@ -27,7 +27,7 @@ use smithay::backend::allocator::gbm::{GbmBufferFlags, GbmDevice};
 use super::paint::{BridgeError, SceneDamage, VelloDrmBridge};
 use super::xrgb_history::{XrgbHistoryCommit, XrgbTargetHistory};
 use crate::compositor::backend::OutputId;
-use crate::compositor::cursor::{self, CursorShape};
+use crate::compositor::cursor::{self, CursorBitmap, CursorShape, PointerImage};
 use vello::{FineDamageRect, Scene};
 
 use super::outputs::DrmOutputKey;
@@ -1103,6 +1103,11 @@ pub struct CursorPlanes {
     outputs: Vec<OutputCursor>,
     /// The output currently showing the cursor, if any. By id rather than index, because a hotplug reorders the list.
     active: Option<OutputId>,
+    /// Pixel offset of the pointer position within the cursor image: the
+    /// plane's top-left sits this far up-left of the pointer.
+    hotspot: (i32, i32),
+    /// Last global position, so a hotspot change re-places a still pointer.
+    last: Option<(f64, f64)>,
 }
 
 impl CursorPlanes {
@@ -1111,6 +1116,19 @@ impl CursorPlanes {
         Self {
             outputs,
             active: None,
+            hotspot: (0, 0),
+            last: None,
+        }
+    }
+
+    /// Adopt the hotspot of a newly shown cursor image.
+    pub fn set_hotspot(&mut self, hotspot: (i32, i32)) {
+        if self.hotspot == hotspot {
+            return;
+        }
+        self.hotspot = hotspot;
+        if let Some((x, y)) = self.last {
+            self.move_to(x, y);
         }
     }
 
@@ -1169,6 +1187,7 @@ impl CursorPlanes {
 
     /// Move the cursor to global `(gx, gy)`, hiding the previously-active plane on an output crossing; outside every output (mismatched-height gap) the last position is left alone.
     pub fn move_to(&mut self, gx: f64, gy: f64) {
+        self.last = Some((gx, gy));
         let rects: Vec<_> = self.outputs.iter().map(|o| o.rect).collect();
         let (xi, yi) = (pixel_coord(gx), pixel_coord(gy));
         let Some(i) = output_index_at(&rects, xi, yi) else {
@@ -1197,7 +1216,10 @@ impl CursorPlanes {
             height,
             target.transform,
         );
-        target.mover.move_to(x, y);
+        target.mover.move_to(
+            x.saturating_sub(self.hotspot.0),
+            y.saturating_sub(self.hotspot.1),
+        );
     }
 }
 
@@ -1280,6 +1302,8 @@ pub struct DrmScanout {
     /// True when the KMS cursor plane is driving the pointer; when false we composite the software cursor into the framebuffer.
     hw_cursor_active: bool,
     cursor_size: u32,
+    /// What the pointer shows; resolved at `cursor_size` for drawn shapes.
+    pointer_image: PointerImage,
     /// Opt-in bounded CPU destination-age tracker. It owns metadata only, never pixel storage.
     xrgb_history: XrgbTargetHistory,
     xrgb_scanout_epoch: Option<u64>,
@@ -1484,6 +1508,7 @@ impl DrmScanout {
             cursor_buffer,
             hw_cursor_active,
             cursor_size,
+            pointer_image: PointerImage::default(),
             xrgb_history: XrgbTargetHistory::new(2),
             xrgb_scanout_epoch: Some(1),
             xrgb_software_cursor: [None, None],
@@ -1492,7 +1517,7 @@ impl DrmScanout {
         })
     }
 
-    /// Allocate the 64×64 ARGB cursor buffer, paint the arrow, bind via `set_cursor2` (hotspot at top-left, matching the bitmap); caller must keep the buffer alive.
+    /// Allocate the 64×64 ARGB cursor buffer, paint the default arrow, bind via `set_cursor2` (its hotspot is the top-left tip); caller must keep the buffer alive.
     fn setup_hw_cursor(
         card: &Card,
         crtc: crtc::Handle,
@@ -1506,7 +1531,8 @@ impl DrmScanout {
             let mut map = card
                 .map_dumb_buffer(&mut cbuf)
                 .map_err(|e| format!("map cursor buffer: {e}"))?;
-            paint_cursor_argb(map.as_mut(), pitch, cursor_size);
+            let arrow = cursor::bitmap(CursorShape::Default, cursor_size);
+            paint_cursor_argb(map.as_mut(), pitch, Some(&arrow));
         }
         // Hotspot (0,0): the arrow's tip is the buffer's top-left pixel, so plane position == pointer position; virtual GPUs (virtio-gpu/QXL) use it to place the host pointer.
         #[allow(
@@ -1524,10 +1550,50 @@ impl DrmScanout {
             self.invalidate_xrgb_history();
         }
         self.cursor_size = cursor_size;
-        if let Some(buffer) = self.cursor_buffer.as_mut() {
-            let pitch = buffer.pitch() as usize;
-            if let Ok(mut map) = self.card.map_dumb_buffer(buffer) {
-                paint_cursor_argb(map.as_mut(), pitch, cursor_size);
+        self.repaint_hw_cursor();
+    }
+
+    /// Show `image` as the pointer: repaint the cursor plane (and re-bind it
+    /// when the hotspot moved), or let the next software frame draw it.
+    pub fn set_pointer_image(&mut self, image: PointerImage) {
+        if self.pointer_image == image {
+            return;
+        }
+        self.pointer_image = image;
+        self.invalidate_xrgb_history();
+        self.repaint_hw_cursor();
+    }
+
+    fn cursor_bitmap(&self) -> Option<std::sync::Arc<CursorBitmap>> {
+        self.pointer_image.bitmap(self.cursor_size)
+    }
+
+    fn cursor_hotspot(&self) -> (i32, i32) {
+        self.cursor_bitmap().map_or((0, 0), |bitmap| {
+            (
+                i32::try_from(bitmap.hotspot.0).unwrap_or(0),
+                i32::try_from(bitmap.hotspot.1).unwrap_or(0),
+            )
+        })
+    }
+
+    fn repaint_hw_cursor(&mut self) {
+        let bitmap = self.cursor_bitmap();
+        let hotspot = self.cursor_hotspot();
+        let Some(buffer) = self.cursor_buffer.as_mut() else {
+            return;
+        };
+        let pitch = buffer.pitch() as usize;
+        if let Ok(mut map) = self.card.map_dumb_buffer(buffer) {
+            paint_cursor_argb(map.as_mut(), pitch, bitmap.as_deref());
+        }
+        if self.hw_cursor_active {
+            #[allow(
+                deprecated,
+                reason = "The legacy KMS cursor plane carries the hotspot virtual GPUs use to place the host pointer."
+            )]
+            if let Err(error) = self.card.set_cursor2(self.crtc, Some(&*buffer), hotspot) {
+                tracing::debug!("DRM scanout: re-binding the cursor hotspot failed: {error}");
             }
         }
     }
@@ -1619,7 +1685,10 @@ impl DrmScanout {
                 deprecated,
                 reason = "Session resume restores the legacy KMS cursor plane and hotspot after its binding was lost with DRM master."
             )]
-            if let Err(e) = self.card.set_cursor2(self.crtc, Some(buf), (0, 0)) {
+            if let Err(e) = self
+                .card
+                .set_cursor2(self.crtc, Some(buf), self.cursor_hotspot())
+            {
                 tracing::warn!(
                     "DRM scanout: re-binding the cursor plane on resume failed ({e}); \
                          falling back to the software cursor"
@@ -1709,7 +1778,7 @@ impl DrmScanout {
         };
         let (dw, dh) = (self.width as usize, self.height as usize);
         let hw_cursor_active = self.hw_cursor_active;
-        let cursor_size = self.cursor_size;
+        let cursor_bitmap = self.cursor_bitmap();
         let scanout_epoch = self.xrgb_scanout_epoch;
         let Some(pitch) = self.buffers.get(idx).map(|buffer| buffer.pitch() as usize) else {
             self.invalidate_xrgb_history();
@@ -1723,7 +1792,7 @@ impl DrmScanout {
             .then(|| self.xrgb_software_cursor.get(idx).copied().flatten())
             .flatten();
         let current_cursor = (!hw_cursor_active)
-            .then(|| software_cursor_damage_rect(cursor, dw, dh, cursor_size))
+            .then(|| software_cursor_damage_rect(cursor, dw, dh, cursor_bitmap.as_deref()))
             .flatten();
         let extra = previous_cursor.as_slice();
         // Keep the mapping and every borrow derived from it inside this closure. In particular,
@@ -1757,7 +1826,9 @@ impl DrmScanout {
                 pitch,
             )?;
             if !hw_cursor_active {
-                if let Some((px, py)) = cursor {
+                if let Some((px, py)) = cursor
+                    && let Some(bitmap) = cursor_bitmap.as_deref()
+                {
                     draw_cursor(
                         map.as_mut(),
                         pitch,
@@ -1765,7 +1836,7 @@ impl DrmScanout {
                         dh,
                         pixel_coord(px),
                         pixel_coord(py),
-                        cursor_size,
+                        bitmap,
                     );
                 }
                 let Some(slot) = self.xrgb_software_cursor.get_mut(idx) else {
@@ -1861,6 +1932,7 @@ impl DrmScanout {
         self.invalidate_xrgb_history();
 
         let (dw, dh) = (self.width as usize, self.height as usize);
+        let cursor_bitmap = self.cursor_bitmap();
         let Some(buffer) = self.buffers.get_mut(idx) else {
             tracing::warn!("DRM scanout: back-buffer index {idx} out of range; skipping frame");
             return Ok(false);
@@ -1881,16 +1953,9 @@ impl DrmScanout {
             // Software fallback only — the hardware plane composites itself and must not also be drawn into the frame.
             if !self.hw_cursor_active
                 && let Some((px, py)) = cursor
+                && let Some(bitmap) = cursor_bitmap.as_deref()
             {
-                draw_cursor(
-                    dst,
-                    pitch,
-                    dw,
-                    dh,
-                    pixel_coord(px),
-                    pixel_coord(py),
-                    self.cursor_size,
-                );
+                draw_cursor(dst, pitch, dw, dh, pixel_coord(px), pixel_coord(py), bitmap);
             }
         }
 
@@ -2366,12 +2431,14 @@ fn pick_configured_mode(
         .copied()
 }
 
-/// Paint the arrow into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank; `pitch` is the row stride in bytes.
-fn paint_cursor_argb(dst: &mut [u8], pitch: usize, cursor_size: u32) {
+/// Paint the pointer into a 64×64 ARGB8888 cursor buffer (`[B, G, R, A]`, little-endian), transparent where blank (entirely, for a hidden pointer); `pitch` is the row stride in bytes.
+fn paint_cursor_argb(dst: &mut [u8], pitch: usize, bitmap: Option<&CursorBitmap>) {
     for b in dst.iter_mut() {
         *b = 0;
     }
-    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
+    let Some(bitmap) = bitmap else {
+        return;
+    };
     for y in 0..bitmap.height {
         for x in 0..bitmap.width {
             let source = y
@@ -2405,10 +2472,9 @@ fn draw_cursor(
     dh: usize,
     px: i32,
     py: i32,
-    cursor_size: u32,
+    bitmap: &CursorBitmap,
 ) {
-    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
-    cursor::composite_xrgb(dst, pitch, dw, dh, px, py, &bitmap);
+    cursor::composite_xrgb(dst, pitch, dw, dh, px, py, bitmap);
 }
 
 /// Conservative clipped byte footprint of [`draw_cursor`]. The square bound intentionally covers
@@ -2418,14 +2484,14 @@ fn software_cursor_damage_rect(
     cursor: Option<(f64, f64)>,
     width: usize,
     height: usize,
-    cursor_size: u32,
+    bitmap: Option<&CursorBitmap>,
 ) -> Option<FineDamageRect> {
     let (px, py) = cursor?;
-    let bitmap = cursor::bitmap(CursorShape::Default, cursor_size);
+    let bitmap = bitmap?;
     let span_x = i32::try_from(bitmap.width).ok()?;
     let span_y = i32::try_from(bitmap.height).ok()?;
-    let x0 = pixel_coord(px);
-    let y0 = pixel_coord(py);
+    let x0 = pixel_coord(px).saturating_sub(i32::try_from(bitmap.hotspot.0).ok()?);
+    let y0 = pixel_coord(py).saturating_sub(i32::try_from(bitmap.hotspot.1).ok()?);
     let right = x0.saturating_add(span_x);
     let bottom = y0.saturating_add(span_y);
     let width_i32 = i32::try_from(width).unwrap_or(i32::MAX);
@@ -2464,6 +2530,10 @@ fn paint_completed<E>(result: Result<(), E>) -> Result<bool, E> {
 
 #[cfg(test)]
 mod tests {
+
+    fn arrow(size: u32) -> std::sync::Arc<CursorBitmap> {
+        cursor::bitmap(CursorShape::Default, size)
+    }
     use super::*;
     use ui::ColorCompat as _;
 
@@ -2849,7 +2919,7 @@ mod tests {
         // 64×64 ARGB, tight pitch.
         let pitch = (CURSOR_DIM * 4) as usize;
         let mut buf = vec![0xCDu8; pitch * CURSOR_DIM as usize];
-        paint_cursor_argb(&mut buf, pitch, 24);
+        paint_cursor_argb(&mut buf, pitch, Some(&arrow(24)));
 
         // The explicit (0,0) hotspot sits immediately beside the first
         // antialiased dark outline; it need not force an opaque corner.
@@ -2885,7 +2955,7 @@ mod tests {
         let (w, h) = (32usize, 32usize);
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 4, 4, 24);
+        draw_cursor(&mut dst, pitch, w, h, 4, 4, &arrow(24));
         assert!(
             dst.chunks_exact(4).any(|pixel| pixel[3] == 0xFF),
             "cursor should composite visible pixels"
@@ -2900,8 +2970,8 @@ mod tests {
         let (w, h) = (20usize, 20usize);
         let pitch = w * 4;
         let mut dst = vec![0u8; pitch * h];
-        draw_cursor(&mut dst, pitch, w, h, 18, 18, 24);
-        draw_cursor(&mut dst, pitch, w, h, -3, -3, 24);
+        draw_cursor(&mut dst, pitch, w, h, 18, 18, &arrow(24));
+        draw_cursor(&mut dst, pitch, w, h, -3, -3, &arrow(24));
     }
 
     #[test]
@@ -2919,10 +2989,10 @@ mod tests {
                     height,
                     pixel_coord(x),
                     pixel_coord(y),
-                    48,
+                    &arrow(48),
                 );
             }
-            let footprint = software_cursor_damage_rect(cursor, width, height, 48)
+            let footprint = software_cursor_damage_rect(cursor, width, height, Some(&arrow(48)))
                 .expect("partially visible cursor has a restoration footprint");
             for (offset, (actual, original)) in bytes.iter().zip(&before).enumerate() {
                 if actual == original {
@@ -2941,7 +3011,10 @@ mod tests {
                 );
             }
         }
-        assert_eq!(software_cursor_damage_rect(None, width, height, 24), None);
+        assert_eq!(
+            software_cursor_damage_rect(None, width, height, Some(&arrow(24))),
+            None
+        );
     }
 
     #[test]
@@ -3058,8 +3131,9 @@ mod tests {
                 pitch,
             )
             .expect("seed target zero");
-        draw_cursor(&mut targets[0], pitch, width, height, 4, 5, 24);
-        cursor_slots[0] = software_cursor_damage_rect(first_cursor, width, height, 24);
+        draw_cursor(&mut targets[0], pitch, width, height, 4, 5, &arrow(24));
+        cursor_slots[0] =
+            software_cursor_damage_rect(first_cursor, width, height, Some(&arrow(24)));
         transaction.commit(if write.damage_admitted {
             XrgbHistoryCommit::DamageAccepted
         } else {
@@ -3088,8 +3162,9 @@ mod tests {
                 pitch,
             )
             .expect("seed target one");
-        draw_cursor(&mut targets[1], pitch, width, height, 4, 5, 24);
-        cursor_slots[1] = software_cursor_damage_rect(first_cursor, width, height, 24);
+        draw_cursor(&mut targets[1], pitch, width, height, 4, 5, &arrow(24));
+        cursor_slots[1] =
+            software_cursor_damage_rect(first_cursor, width, height, Some(&arrow(24)));
         transaction.commit(if write.damage_admitted {
             XrgbHistoryCommit::DamageAccepted
         } else {
@@ -3119,8 +3194,9 @@ mod tests {
             )
             .expect("restore old cursor and draw moved cursor");
         assert_eq!(write.mode, XrgbCpuWriteMode::Partial);
-        draw_cursor(&mut targets[0], pitch, width, height, 58, 12, 24);
-        cursor_slots[0] = software_cursor_damage_rect(moved_cursor, width, height, 24);
+        draw_cursor(&mut targets[0], pitch, width, height, 58, 12, &arrow(24));
+        cursor_slots[0] =
+            software_cursor_damage_rect(moved_cursor, width, height, Some(&arrow(24)));
         transaction.commit(if write.damage_admitted {
             XrgbHistoryCommit::DamageAccepted
         } else {
@@ -3130,7 +3206,15 @@ mod tests {
         bridge
             .swizzle_current_staging_for_test(&mut moved_reference, pitch)
             .expect("moved cursor staging reference");
-        draw_cursor(&mut moved_reference, pitch, width, height, 58, 12, 24);
+        draw_cursor(
+            &mut moved_reference,
+            pitch,
+            width,
+            height,
+            58,
+            12,
+            &arrow(24),
+        );
         assert_eq!(
             targets[0]
                 .iter()

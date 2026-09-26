@@ -458,6 +458,8 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// What the pointer shows right now, so captures draw the same image.
+    pointer_image: crate::compositor::cursor::PointerImage,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -658,6 +660,7 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            pointer_image: crate::compositor::cursor::PointerImage::default(),
         };
         builder.rebuild_layout_tree();
         builder.relayout();
@@ -2222,6 +2225,27 @@ impl FrameBuilder {
         self.host.pointer_position()
     }
 
+    /// The pointer image the compositor is showing, for captures.
+    pub fn pointer_image(&self) -> &crate::compositor::cursor::PointerImage {
+        &self.pointer_image
+    }
+
+    pub fn set_pointer_image(&mut self, image: crate::compositor::cursor::PointerImage) {
+        self.pointer_image = image;
+    }
+
+    /// The cursor the chrome under `point` asks for: the smallest widget
+    /// containing the point that names one wins, so a nested button beats
+    /// the bar around it — the same rule `ui::App` applies to app windows.
+    pub fn chrome_cursor_at(
+        &self,
+        point: vello::kurbo::Point,
+    ) -> Option<winit::window::CursorIcon> {
+        let mut best: Option<(f64, winit::window::CursorIcon)> = None;
+        chrome_cursor_walk(self.host.as_ref(), point, &mut best);
+        best.map(|(_, icon)| icon)
+    }
+
     /// Inner node id (host's root child). Required by the input dispatch
     /// path in `bin/shots`'s `ShellDriver`; the compositor doesn't need this.
     /// `None` only in the narrow window where `rebuild_layout_tree` just
@@ -2566,6 +2590,25 @@ impl FrameBuilder {
         for (name, rect) in host.power_menu_semantic_rects() {
             put(name.into(), rect);
         }
+    }
+}
+
+fn chrome_cursor_walk(
+    widget: &dyn ui::widget::Widget,
+    point: vello::kurbo::Point,
+    best: &mut Option<(f64, winit::window::CursorIcon)>,
+) {
+    let rect = widget.get_rect();
+    if rect.contains(point)
+        && let Some(icon) = widget.cursor_shape(point)
+    {
+        let area = rect.area().max(0.0);
+        if best.is_none_or(|(smallest, _)| area < smallest) {
+            *best = Some((area, icon));
+        }
+    }
+    for child in widget.children() {
+        chrome_cursor_walk(child, point, best);
     }
 }
 

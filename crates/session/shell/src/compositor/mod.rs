@@ -18,6 +18,8 @@ pub mod bridge;
 #[cfg(target_os = "linux")]
 pub mod capture;
 #[cfg(target_os = "linux")]
+pub mod client_cursor;
+#[cfg(target_os = "linux")]
 pub mod client_input;
 pub mod controller_nav;
 pub mod cursor;

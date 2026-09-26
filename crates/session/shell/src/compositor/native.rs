@@ -1749,6 +1749,9 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
             },
+            // What the pointer shows: a drawn shape, the focused client's
+            // own surface, or nothing because the client hid it.
+            "pointer": self.fb.pointer_image().describe(),
             "search_scope": format!("{:?}", chrome.search_scope),
             // Applications' status-notifier items and their menus, as the top bar shows them.
             "tray": crate::tray::Tray::global().state_json(),
@@ -7183,6 +7186,13 @@ pub fn run() {
         // Hand the remote-input firewall this frame's screen: foreign tile
         // positions, keyboard holder, chrome-drawn-over, locked — refreshed before remote events drain.
         client_input::publish_remote_input_view(&mut state, &frame_builder, session.is_locked());
+        if let Some(image) =
+            client_input::sync_pointer_image(&state, &mut frame_builder, session.is_locked())
+        {
+            backend.set_pointer_image(image);
+            // A software cursor is drawn into the frame, so it needs one.
+            injected_redraw_pending = true;
+        }
 
         // Per-output HiDPI: tell each client the scale of its current display.
         // Every tick, since a window dragged to another monitor's density is otherwise unobserved.
@@ -8340,6 +8350,9 @@ pub fn run() {
             // what size to render at, then release the frame throttle for on-screen ones; both no-ops with no external client.
             foreign::flush_configures(&mut state);
             foreign::release_frame_throttle(&mut state);
+            state.client_cursor.send_frame_callbacks(
+                u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX),
+            );
         } else if had_backend_events {
             // Input was dispatched but the frame deferred — lay out anyway so the *next*
             // event hit-tests post-input rects, not the pre-overlay tree. Layout is ~0.01ms.
