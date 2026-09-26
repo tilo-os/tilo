@@ -28,7 +28,7 @@ use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload};
 use uuid::Uuid;
 
-mod typed_peer;
+use crate::typed_peer;
 use typed_peer::{TypedPeer as UnixStream, document_mutation, recv, send};
 
 const APP: &str = "so.tilo.word-processor";
@@ -373,144 +373,225 @@ fn assert_table_and_attribution(replica: &mut AutoCommit, invocation_actor: &str
     );
 }
 
+/// Each case spawns its own relay on its own socket.
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "the end-to-end proof keeps the broker, agent, and peer assertions together"
+    reason = "the end-to-end proofs keep the broker, agent, and peer assertions together"
 )]
-fn the_agent_inserts_a_table_on_the_peers_replica() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-
-    let room = typed_peer::room();
-
-    // The peer: what the word processor is on the wire.
-    let mut peer = UnixStream::connect(&sock);
-    let hello = CollabRequest::Hello {
-        app_id: APP.into(),
-        cluster_id: room,
-        record: Some(RECORD.into()),
-        handle: Some("quinten".into()),
-    };
-    send(&mut peer, &hello).unwrap();
-    let replica = seed_document();
-    // A real app publishes its action surface when the document opens, not
-    // after a prospective invoker announces itself. Publishing here also
-    // removes the race where the agent can inspect the snapshot before the
-    // peer has processed its arrival event.
-    publish_word_processor_actions(&mut peer, &replica);
-    // Let the relay register the peer's Hello before the agent's frames
-    // can race it (the relay handles each connection on its own thread).
-    std::thread::sleep(Duration::from_millis(100));
-
-    // The agent, on its own thread, once.
-    let cfg = Config {
-        endpoint: Some(sock),
-        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        // This test proves the relay and the edit path, not the decision, so
-        // it pins the choice to the keyword vocabulary: no network, no key,
-        // and the same answer every run.
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        // `run_until` bounds this test; the wait-for-a-document deadline
-        // belongs to `run`, and is exercised on its own below.
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-        content: ContentStore::memory(),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(15))
-            .expect("agent session")
-    });
-
-    let (mut peer, mut replica, done, saw_scribe_presence, invocation_actor) =
-        drive_peer_to_table(peer, replica);
-    assert!(
-        saw_scribe_presence,
-        "the agent must announce itself to the room"
-    );
-    assert!(
-        done,
-        "the peer's replica never became a table; blocks: {:?}",
-        blocks(&replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-    assert!(agent.join().unwrap(), "the agent reports having acted");
-
-    // The successful task is subsequently recorded as a marker in the same
-    // real document stream. Keep consuming after the visible table result:
-    // history evidence must arrive even though the user-facing work already
-    // looks complete.
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
-        let Some(event) = recv(&mut peer) else {
-            continue;
-        };
-        if let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) {
-            replica.load_incoming(&data).unwrap();
+fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
+    // Case `the_agent_inserts_a_table_on_the_peers_replica`.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("collab.sock");
+        let _broker = typed_peer::spawn(&sock);
+        let started = Instant::now();
+        while !sock.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "relay never bound"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
-    }
-    let runs = ui::read_runs(&replica);
-    let run = runs.last().expect("the completed agent task is recorded");
-    assert_eq!(run.instruction.as_deref(), Some("insert a table"));
-    let issuer = hex::encode("quinten");
-    assert_eq!(run.issued_by.as_deref(), Some(issuer.as_str()));
-    assert!(
-        run.decision
-            .as_deref()
-            .is_some_and(|decision| decision.contains("switched off")),
-        "the fallback decision remains reviewable: {run:?}"
-    );
-    assert!(
-        !run.steps.is_empty(),
-        "the run must retain an exact change range for undo/review"
-    );
-    let history = ui::HistorySource::new().entries(&mut replica);
-    assert!(
-        history.iter().any(|entry| {
-            entry.context.as_ref().is_some_and(|context| {
-                context.purpose.as_deref() == Some("insert a table")
-                    && context
-                        .group
-                        .as_ref()
-                        .is_some_and(|group| group.kind == "agent-run")
-            })
-        }),
-        "the live history source exposes the task context for review"
-    );
-    let mut open = [(APP.to_string(), RECORD.to_string(), &mut replica)];
-    let report = ui::undo_run(
-        run,
-        Some(&hex::encode("Scribe")),
-        &ui::AuthorDirectory::new(),
-        &mut open,
-    );
-    assert!(
-        report.is_complete(),
-        "the recorded task can be undone as one run: {report:?}"
-    );
 
-    assert_table_and_attribution(&mut replica, &invocation_actor);
+        let room = typed_peer::room();
+
+        // The peer: what the word processor is on the wire.
+        let mut peer = UnixStream::connect(&sock);
+        let hello = CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: Some(RECORD.into()),
+            handle: Some("quinten".into()),
+        };
+        send(&mut peer, &hello).unwrap();
+        let replica = seed_document();
+        // A real app publishes its action surface when the document opens, not
+        // after a prospective invoker announces itself. Publishing here also
+        // removes the race where the agent can inspect the snapshot before the
+        // peer has processed its arrival event.
+        publish_word_processor_actions(&mut peer, &replica);
+        // Let the relay register the peer's Hello before the agent's frames
+        // can race it (the relay handles each connection on its own thread).
+        std::thread::sleep(Duration::from_millis(100));
+
+        // The agent, on its own thread, once.
+        let cfg = Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            // This test proves the relay and the edit path, not the decision, so
+            // it pins the choice to the keyword vocabulary: no network, no key,
+            // and the same answer every run.
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            // `run_until` bounds this test; the wait-for-a-document deadline
+            // belongs to `run`, and is exercised on its own below.
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe"),
+            content: ContentStore::memory(),
+        };
+        let agent = std::thread::spawn(move || {
+            let mut s = Session::connect(cfg).expect("agent connects");
+            s.run_until(Instant::now() + Duration::from_secs(15))
+                .expect("agent session")
+        });
+
+        let (mut peer, mut replica, done, saw_scribe_presence, invocation_actor) =
+            drive_peer_to_table(peer, replica);
+        assert!(
+            saw_scribe_presence,
+            "the agent must announce itself to the room"
+        );
+        assert!(
+            done,
+            "the peer's replica never became a table; blocks: {:?}",
+            blocks(&replica)
+                .iter()
+                .map(|b| (b.kind.clone(), b.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(agent.join().unwrap(), "the agent reports having acted");
+
+        // The successful task is subsequently recorded as a marker in the same
+        // real document stream. Keep consuming after the visible table result:
+        // history evidence must arrive even though the user-facing work already
+        // looks complete.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
+            let Some(event) = recv(&mut peer) else {
+                continue;
+            };
+            if let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) {
+                replica.load_incoming(&data).unwrap();
+            }
+        }
+        let runs = ui::read_runs(&replica);
+        let run = runs.last().expect("the completed agent task is recorded");
+        assert_eq!(run.instruction.as_deref(), Some("insert a table"));
+        let issuer = hex::encode("quinten");
+        assert_eq!(run.issued_by.as_deref(), Some(issuer.as_str()));
+        assert!(
+            run.decision
+                .as_deref()
+                .is_some_and(|decision| decision.contains("switched off")),
+            "the fallback decision remains reviewable: {run:?}"
+        );
+        assert!(
+            !run.steps.is_empty(),
+            "the run must retain an exact change range for undo/review"
+        );
+        let history = ui::HistorySource::new().entries(&mut replica);
+        assert!(
+            history.iter().any(|entry| {
+                entry.context.as_ref().is_some_and(|context| {
+                    context.purpose.as_deref() == Some("insert a table")
+                        && context
+                            .group
+                            .as_ref()
+                            .is_some_and(|group| group.kind == "agent-run")
+                })
+            }),
+            "the live history source exposes the task context for review"
+        );
+        let mut open = [(APP.to_string(), RECORD.to_string(), &mut replica)];
+        let report = ui::undo_run(
+            run,
+            Some(&hex::encode("Scribe")),
+            &ui::AuthorDirectory::new(),
+            &mut open,
+        );
+        assert!(
+            report.is_complete(),
+            "the recorded task can be undone as one run: {report:?}"
+        );
+
+        assert_table_and_attribution(&mut replica, &invocation_actor);
+    }
+
+    // Case `the_room_holds_more_than_one_document_and_the_agent_finds_its_own`.
+    {
+        assert_seeds_collide();
+
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("collab.sock");
+        let _broker = typed_peer::spawn(&sock);
+        let started = Instant::now();
+        while !sock.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "relay never bound"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let room = typed_peer::room();
+
+        let (files_peer, files_doc, wp_peer, replica) =
+            connect_files_and_word_processor(&sock, room);
+        std::thread::sleep(Duration::from_millis(100));
+
+        // A room, and no record to tell the room's documents apart.
+        let cfg = Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: None,
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe"),
+            content: ContentStore::memory(),
+        };
+        let agent = std::thread::spawn(move || {
+            let mut s = Session::connect(cfg).expect("agent connects");
+            s.run_until(Instant::now() + Duration::from_secs(20))
+                .expect("the agent must survive another app's document")
+        });
+
+        let files_thread = std::thread::spawn(move || drive_files_peer(files_peer, files_doc));
+        let (replica, done) = drive_word_processor_to_table(wp_peer, replica);
+
+        assert!(
+            agent.join().expect("the agent thread must not panic"),
+            "the agent reports having acted"
+        );
+        assert!(
+            done,
+            "the word processor's document never became a table — the agent \
+             stayed on the other document in the room; blocks: {:?}",
+            blocks(&replica)
+                .iter()
+                .map(|b| (b.kind.clone(), b.text.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // The production insertion landed without consuming the existing list.
+        let b = blocks(&replica);
+        assert_eq!(
+            b.iter().filter(|x| x.kind == "cell").count(),
+            4,
+            "the app's insert-table action makes one 2x2 table"
+        );
+        assert!(
+            b.iter().any(|block| block.text == "Venue - The Hall"),
+            "the unrelated bullets survive: {b:?}"
+        );
+
+        let _ = files_thread.join();
+    }
 }
 
 /// Another app's document in the same room must not end the run.
@@ -665,82 +746,6 @@ fn drive_word_processor_to_table(
     (replica, done)
 }
 
-#[test]
-fn the_room_holds_more_than_one_document_and_the_agent_finds_its_own() {
-    assert_seeds_collide();
-
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let room = typed_peer::room();
-
-    let (files_peer, files_doc, wp_peer, replica) = connect_files_and_word_processor(&sock, room);
-    std::thread::sleep(Duration::from_millis(100));
-
-    // A room, and no record to tell the room's documents apart.
-    let cfg = Config {
-        endpoint: Some(sock),
-        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-        app_id: APP.into(),
-        cluster: room,
-        record: None,
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-        content: ContentStore::memory(),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(20))
-            .expect("the agent must survive another app's document")
-    });
-
-    let files_thread = std::thread::spawn(move || drive_files_peer(files_peer, files_doc));
-    let (replica, done) = drive_word_processor_to_table(wp_peer, replica);
-
-    assert!(
-        agent.join().expect("the agent thread must not panic"),
-        "the agent reports having acted"
-    );
-    assert!(
-        done,
-        "the word processor's document never became a table — the agent \
-         stayed on the other document in the room; blocks: {:?}",
-        blocks(&replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-
-    // The production insertion landed without consuming the existing list.
-    let b = blocks(&replica);
-    assert_eq!(
-        b.iter().filter(|x| x.kind == "cell").count(),
-        4,
-        "the app's insert-table action makes one 2x2 table"
-    );
-    assert!(
-        b.iter().any(|block| block.text == "Venue - The Hall"),
-        "the unrelated bullets survive: {b:?}"
-    );
-
-    let _ = files_thread.join();
-}
-
 /// A room where nobody answers must end in a diagnosis, not a hang.
 ///
 /// The broker matches `(app, room, record)` and drops what does not
@@ -813,264 +818,266 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     );
 }
 
-/// One request, two things to do: each step runs in order against the
-/// document the step before it left, and the instruction paragraph goes
-/// away only once every step in it is done.
+/// Each case spawns its own relay on its own socket.
 #[test]
 #[allow(
     clippy::too_many_lines,
-    reason = "the scenario asserts both ordered application effects and broker attribution"
+    reason = "the scenarios assert ordered application effects, broker attribution and untouched refusal"
 )]
-fn the_agent_carries_out_a_sequence_written_as_one_instruction() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
-        assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let room = typed_peer::room();
-    let mut peer = UnixStream::connect(&sock);
-    let hello = CollabRequest::Hello {
-        app_id: APP.into(),
-        cluster_id: room,
-        record: Some(RECORD.into()),
-        handle: Some("quinten".into()),
-    };
-    send(&mut peer, &hello).unwrap();
-    let mut replica = seed_sequence_document();
-    std::thread::sleep(Duration::from_millis(100));
-
-    let cfg = Config {
-        endpoint: Some(sock),
-        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        // The deterministic floor splits the two clauses; see `Session::decide`.
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-        content: ContentStore::memory(),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(15))
-            .expect("agent session")
-    });
-
-    peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut done = false;
-    while Instant::now() < deadline && !done {
-        let Some(event) = recv(&mut peer) else {
-            continue;
+fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
+    // Case `the_agent_carries_out_a_sequence_written_as_one_instruction`.
+    // One request, two things to do: each step runs in order against the
+    // document the step before it left, and the instruction paragraph goes
+    // away only once every step in it is done.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("collab.sock");
+        let _broker = typed_peer::spawn(&sock);
+        let started = Instant::now();
+        while !sock.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "relay never bound"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let room = typed_peer::room();
+        let mut peer = UnixStream::connect(&sock);
+        let hello = CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: Some(RECORD.into()),
+            handle: Some("quinten".into()),
         };
-        match event {
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::document_snapshot(replica.save());
-                send(&mut peer, &snap).unwrap();
-            }
-            CollabEvent::Invocation {
-                id,
-                resource,
-                action,
-                argument,
-                actor,
-                ..
-            } => {
-                service_word_processor_invocation(
-                    &mut peer,
-                    &mut replica,
+        send(&mut peer, &hello).unwrap();
+        let mut replica = seed_sequence_document();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let cfg = Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            // The deterministic floor splits the two clauses; see `Session::decide`.
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe"),
+            content: ContentStore::memory(),
+        };
+        let agent = std::thread::spawn(move || {
+            let mut s = Session::connect(cfg).expect("agent connects");
+            s.run_until(Instant::now() + Duration::from_secs(15))
+                .expect("agent session")
+        });
+
+        peer.set_read_timeout(Some(Duration::from_millis(200)));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut done = false;
+        while Instant::now() < deadline && !done {
+            let Some(event) = recv(&mut peer) else {
+                continue;
+            };
+            match event {
+                CollabEvent::DocumentSnapshotRequested { .. } => {
+                    publish_word_processor_actions(&mut peer, &replica);
+                    let snap = CollabRequest::document_snapshot(replica.save());
+                    send(&mut peer, &snap).unwrap();
+                }
+                CollabEvent::Invocation {
                     id,
                     resource,
                     action,
-                    argument.as_deref(),
-                    &actor,
-                );
-            }
-            event @ CollabEvent::Document { .. } => {
-                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
-                    continue;
-                };
-                replica.load_incoming(&data).unwrap();
-                let b = blocks(&replica);
-                let title_aligned = b.first().is_some_and(|x| {
-                    matches!(x.attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center")
-                });
-                let has_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
-                let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
-                if title_aligned && has_table && !has_instruction {
-                    done = true;
+                    argument,
+                    actor,
+                    ..
+                } => {
+                    service_word_processor_invocation(
+                        &mut peer,
+                        &mut replica,
+                        id,
+                        resource,
+                        action,
+                        argument.as_deref(),
+                        &actor,
+                    );
                 }
+                event @ CollabEvent::Document { .. } => {
+                    let Some(DocumentMutation::Incremental(data)) = document_mutation(&event)
+                    else {
+                        continue;
+                    };
+                    replica.load_incoming(&data).unwrap();
+                    let b = blocks(&replica);
+                    let title_aligned = b.first().is_some_and(|x| {
+                        matches!(x.attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center")
+                    });
+                    let has_table = b.iter().filter(|x| x.kind == "cell").count() == 4;
+                    let has_instruction = b.iter().any(|x| x.text.starts_with("Scribe:"));
+                    if title_aligned && has_table && !has_instruction {
+                        done = true;
+                    }
+                }
+                _ => {}
             }
-            _ => {}
         }
-    }
-    assert!(
-        done,
-        "the sequence never finished both steps; blocks: {:?}",
-        blocks(&replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-    assert!(agent.join().unwrap(), "the agent reports having acted");
-
-    // Both production actions ran; only the completed plan removes the
-    // instruction.
-    let b = blocks(&replica);
-    assert_eq!(b[0].kind, "paragraph");
-    assert_eq!(b[0].text, "Launch plan");
-    assert!(
-        matches!(b[0].attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center"),
-        "the first catalogue action aligned the title"
-    );
-    assert_eq!(
-        b.iter().filter(|x| x.kind == "cell").count(),
-        4,
-        "the second catalogue action inserted exactly one 2x2 table"
-    );
-    assert!(
-        b.iter().any(|x| x.kind == "image"),
-        "the image the caption belongs to is still there"
-    );
-    assert_eq!(
-        b.iter().filter(|x| x.text.starts_with("Scribe:")).count(),
-        0,
-        "the instruction is answered once, not once per step"
-    );
-}
-
-/// A sequence naming something nothing in the room can do is refused
-/// *whole*, before either step is touched — never the first step applied
-/// and the second one silently dropped.
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "the scenario proves preflight refusal leaves every application action untouched"
-)]
-fn an_unanswerable_step_refuses_the_whole_sequence_untouched() {
-    let dir = tempfile::tempdir().unwrap();
-    let sock = dir.path().join("collab.sock");
-    let _broker = typed_peer::spawn(&sock);
-    let started = Instant::now();
-    while !sock.exists() {
         assert!(
-            started.elapsed() < Duration::from_secs(5),
-            "relay never bound"
+            done,
+            "the sequence never finished both steps; blocks: {:?}",
+            blocks(&replica)
+                .iter()
+                .map(|b| (b.kind.clone(), b.text.clone()))
+                .collect::<Vec<_>>()
         );
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(agent.join().unwrap(), "the agent reports having acted");
+
+        // Both production actions ran; only the completed plan removes the
+        // instruction.
+        let b = blocks(&replica);
+        assert_eq!(b[0].kind, "paragraph");
+        assert_eq!(b[0].text, "Launch plan");
+        assert!(
+            matches!(b[0].attrs.get("align"), Some(qdoc::AttrVal::Str(v)) if v == "center"),
+            "the first catalogue action aligned the title"
+        );
+        assert_eq!(
+            b.iter().filter(|x| x.kind == "cell").count(),
+            4,
+            "the second catalogue action inserted exactly one 2x2 table"
+        );
+        assert!(
+            b.iter().any(|x| x.kind == "image"),
+            "the image the caption belongs to is still there"
+        );
+        assert_eq!(
+            b.iter().filter(|x| x.text.starts_with("Scribe:")).count(),
+            0,
+            "the instruction is answered once, not once per step"
+        );
     }
 
-    let room = typed_peer::room();
-
-    let mut peer = UnixStream::connect(&sock);
-    let hello = CollabRequest::Hello {
-        app_id: APP.into(),
-        cluster_id: room,
-        record: Some(RECORD.into()),
-        handle: Some("quinten".into()),
-    };
-    send(&mut peer, &hello).unwrap();
-    let mut replica = seed_unanswerable_sequence_document();
-    std::thread::sleep(Duration::from_millis(100));
-
-    let cfg = Config {
-        endpoint: Some(sock),
-        endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
-        app_id: APP.into(),
-        cluster: room,
-        record: Some(RECORD.into()),
-        name: "Scribe".into(),
-        pace: Duration::from_millis(10),
-        once: true,
-        model: false,
-        model_timeout: Duration::from_secs(1),
-        await_document: Duration::ZERO,
-        settle: Duration::ZERO,
-        directory: None,
-        permissions: granted("Scribe"),
-        content: ContentStore::memory(),
-    };
-    let agent = std::thread::spawn(move || {
-        let mut s = Session::connect(cfg).expect("agent connects");
-        s.run_until(Instant::now() + Duration::from_secs(15))
-            .expect("agent session")
-    });
-
-    peer.set_read_timeout(Some(Duration::from_millis(200)));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let mut done = false;
-    while Instant::now() < deadline && !done {
-        let Some(event) = recv(&mut peer) else {
-            continue;
-        };
-        match event {
-            CollabEvent::DocumentSnapshotRequested { .. } => {
-                publish_word_processor_actions(&mut peer, &replica);
-                let snap = CollabRequest::document_snapshot(replica.save());
-                send(&mut peer, &snap).unwrap();
-            }
-            CollabEvent::Invocation {
-                resource, action, ..
-            } => {
-                panic!(
-                    "the whole sequence must be refused before dispatch, but invoked {resource}#{action}"
-                );
-            }
-            event @ CollabEvent::Document { .. } => {
-                let Some(DocumentMutation::Incremental(data)) = document_mutation(&event) else {
-                    continue;
-                };
-                replica
-                    .load_incoming(&data)
-                    .expect("apply the agent's change");
-                let b = blocks(&replica);
-                if b.iter().any(|x| x.text.starts_with("Scribe: I can't")) {
-                    done = true;
-                }
-            }
-            _ => {}
+    // Case `an_unanswerable_step_refuses_the_whole_sequence_untouched`.
+    // A sequence naming something nothing in the room can do is refused
+    // *whole*, before either step is touched — never the first step applied
+    // and the second one silently dropped.
+    {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("collab.sock");
+        let _broker = typed_peer::spawn(&sock);
+        let started = Instant::now();
+        while !sock.exists() {
+            assert!(
+                started.elapsed() < Duration::from_secs(5),
+                "relay never bound"
+            );
+            std::thread::sleep(Duration::from_millis(20));
         }
-    }
-    assert!(
-        done,
-        "the agent never answered the sequence; blocks: {:?}",
-        blocks(&replica)
-            .iter()
-            .map(|b| (b.kind.clone(), b.text.clone()))
-            .collect::<Vec<_>>()
-    );
-    assert!(agent.join().unwrap(), "the agent reports having acted");
 
-    // Nothing was touched: the title is still a plain paragraph, and the
-    // refusal was written in place of the instruction rather than after
-    // half the request had already been carried out.
-    let b = blocks(&replica);
-    assert_eq!(
-        b[0].kind, "paragraph",
-        "the title step never ran: the whole sequence was refused first"
-    );
-    assert_eq!(b[0].text, "Launch plan");
-    assert!(
-        !b[0].attrs.contains_key("align"),
-        "the first catalogue action was not dispatched before refusal"
-    );
-    assert!(
-        b.iter().any(|x| x.text.starts_with("Scribe: I can't")),
-        "the refusal names what could not be done: {:?}",
-        b.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
-    );
+        let room = typed_peer::room();
+
+        let mut peer = UnixStream::connect(&sock);
+        let hello = CollabRequest::Hello {
+            app_id: APP.into(),
+            cluster_id: room,
+            record: Some(RECORD.into()),
+            handle: Some("quinten".into()),
+        };
+        send(&mut peer, &hello).unwrap();
+        let mut replica = seed_unanswerable_sequence_document();
+        std::thread::sleep(Duration::from_millis(100));
+
+        let cfg = Config {
+            endpoint: Some(sock),
+            endpoint_identity: Some(typed_peer::endpoint_identity("Scribe")),
+            app_id: APP.into(),
+            cluster: room,
+            record: Some(RECORD.into()),
+            name: "Scribe".into(),
+            pace: Duration::from_millis(10),
+            once: true,
+            model: false,
+            model_timeout: Duration::from_secs(1),
+            await_document: Duration::ZERO,
+            settle: Duration::ZERO,
+            directory: None,
+            permissions: granted("Scribe"),
+            content: ContentStore::memory(),
+        };
+        let agent = std::thread::spawn(move || {
+            let mut s = Session::connect(cfg).expect("agent connects");
+            s.run_until(Instant::now() + Duration::from_secs(15))
+                .expect("agent session")
+        });
+
+        peer.set_read_timeout(Some(Duration::from_millis(200)));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut done = false;
+        while Instant::now() < deadline && !done {
+            let Some(event) = recv(&mut peer) else {
+                continue;
+            };
+            match event {
+                CollabEvent::DocumentSnapshotRequested { .. } => {
+                    publish_word_processor_actions(&mut peer, &replica);
+                    let snap = CollabRequest::document_snapshot(replica.save());
+                    send(&mut peer, &snap).unwrap();
+                }
+                CollabEvent::Invocation {
+                    resource, action, ..
+                } => {
+                    panic!(
+                        "the whole sequence must be refused before dispatch, but invoked {resource}#{action}"
+                    );
+                }
+                event @ CollabEvent::Document { .. } => {
+                    let Some(DocumentMutation::Incremental(data)) = document_mutation(&event)
+                    else {
+                        continue;
+                    };
+                    replica
+                        .load_incoming(&data)
+                        .expect("apply the agent's change");
+                    let b = blocks(&replica);
+                    if b.iter().any(|x| x.text.starts_with("Scribe: I can't")) {
+                        done = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert!(
+            done,
+            "the agent never answered the sequence; blocks: {:?}",
+            blocks(&replica)
+                .iter()
+                .map(|b| (b.kind.clone(), b.text.clone()))
+                .collect::<Vec<_>>()
+        );
+        assert!(agent.join().unwrap(), "the agent reports having acted");
+
+        // Nothing was touched: the title is still a plain paragraph, and the
+        // refusal was written in place of the instruction rather than after
+        // half the request had already been carried out.
+        let b = blocks(&replica);
+        assert_eq!(
+            b[0].kind, "paragraph",
+            "the title step never ran: the whole sequence was refused first"
+        );
+        assert_eq!(b[0].text, "Launch plan");
+        assert!(
+            !b[0].attrs.contains_key("align"),
+            "the first catalogue action was not dispatched before refusal"
+        );
+        assert!(
+            b.iter().any(|x| x.text.starts_with("Scribe: I can't")),
+            "the refusal names what could not be done: {:?}",
+            b.iter().map(|x| x.text.clone()).collect::<Vec<_>>()
+        );
+    }
 }

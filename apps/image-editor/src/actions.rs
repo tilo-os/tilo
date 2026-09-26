@@ -444,8 +444,11 @@ mod tests {
     use super::*;
     use automerge::AutoCommit;
 
+    /// Each editable step is a resource publishing canonical actions whose
+    /// typed parameter surfaces build JSON that touches only their own node.
     #[test]
-    fn resource_tree_publishes_each_editable_step_with_canonical_actions() {
+    fn adjustment_resources_publish_typed_actions_that_touch_only_their_node() {
+        // The resource tree publishes each editable step with canonical actions.
         let mut project = Project::blank();
         assert!(project.insert_before_output(
             "exposure-1",
@@ -478,6 +481,9 @@ mod tests {
             .find(|action| action.id == "remove")
             .expect("adjustments publish their reversible removal action");
         assert!(remove.contract.reversible);
+
+        typed_parameter_surface_builds_json_and_touches_only_its_node();
+        crop_action_ids_are_unique_and_rotation_round_trips_as_integer();
     }
 
     #[test]
@@ -503,7 +509,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn typed_parameter_surface_builds_json_and_touches_only_its_node() {
         let mut project = Project::blank();
         assert!(project.insert_before_output(
@@ -544,7 +549,6 @@ mod tests {
         );
     }
 
-    #[test]
     fn crop_action_ids_are_unique_and_rotation_round_trips_as_integer() {
         let mut project = Project::blank();
         assert!(project.insert_before_output(

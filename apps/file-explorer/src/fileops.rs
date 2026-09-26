@@ -964,134 +964,250 @@ mod tests {
         );
     }
 
+    /// Windows mutations reject stream names without an XDG trash and junction copies never read outside the tree.
     #[test]
     #[cfg(windows)]
-    fn windows_mutations_reject_stream_names_and_do_not_present_an_xdg_trash() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("document.txt");
-        fs::write(&source, b"keep this file").unwrap();
-        for name in ["document.txt:hidden", "document.txt."] {
-            assert!(rename(&source, name).is_err());
-            assert!(new_folder(directory.path(), name).is_err());
+    fn windows_file_operations_refuse_streams_and_junction_escapes() {
+        // --- phase: windows_mutations_reject_stream_names_and_do_not_present_an_xdg_trash ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("document.txt");
+            fs::write(&source, b"keep this file").unwrap();
+            for name in ["document.txt:hidden", "document.txt."] {
+                assert!(rename(&source, name).is_err());
+                assert!(new_folder(directory.path(), name).is_err());
+            }
+            assert_eq!(fs::read(&source).unwrap(), b"keep this file");
+            assert!(trash_dir().is_none());
+            assert!(restore_entries(std::slice::from_ref(&source)).is_err());
+            assert!(purge_entries(std::slice::from_ref(&source)).is_err());
+            assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
         }
-        assert_eq!(fs::read(&source).unwrap(), b"keep this file");
-        assert!(trash_dir().is_none());
-        assert!(restore_entries(std::slice::from_ref(&source)).is_err());
-        assert!(purge_entries(std::slice::from_ref(&source)).is_err());
-        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
-    }
 
-    #[test]
-    #[cfg(windows)]
-    fn copying_a_junction_never_reads_or_copies_the_outside_tree() {
-        let directory = tempfile::tempdir().unwrap();
-        let outside = directory.path().join("outside");
-        let source = directory.path().join("source");
-        let destination = directory.path().join("destination");
-        for path in [&outside, &source, &destination] {
-            fs::create_dir(path).unwrap();
+        // --- phase: copying_a_junction_never_reads_or_copies_the_outside_tree ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let outside = directory.path().join("outside");
+            let source = directory.path().join("source");
+            let destination = directory.path().join("destination");
+            for path in [&outside, &source, &destination] {
+                fs::create_dir(path).unwrap();
+            }
+            fs::write(outside.join("private.txt"), b"outside data").unwrap();
+            let junction = source.join("link");
+            let result = std::process::Command::new("cmd.exe")
+                .args(["/c", "mklink", "/J"])
+                .arg(&junction)
+                .arg(&outside)
+                .output()
+                .unwrap();
+            assert!(result.status.success(), "{result:?}");
+            assert!(copy_into(&source, &destination).is_err());
+            assert!(!destination.join("source/link/private.txt").exists());
+            assert_eq!(
+                fs::read(outside.join("private.txt")).unwrap(),
+                b"outside data"
+            );
+            fs::remove_dir(&junction).unwrap();
         }
-        fs::write(outside.join("private.txt"), b"outside data").unwrap();
-        let junction = source.join("link");
-        let result = std::process::Command::new("cmd.exe")
-            .args(["/c", "mklink", "/J"])
-            .arg(&junction)
-            .arg(&outside)
-            .output()
-            .unwrap();
-        assert!(result.status.success(), "{result:?}");
-        assert!(copy_into(&source, &destination).is_err());
-        assert!(!destination.join("source/link/private.txt").exists());
-        assert_eq!(
-            fs::read(outside.join("private.txt")).unwrap(),
-            b"outside data"
-        );
-        fs::remove_dir(&junction).unwrap();
     }
 
     fn tmp() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
     }
 
+    /// Destination names dedup, folders are created, renamed, copied and moved, trash is the XDG home trash and exhausted names never overwrite.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn unique_destination_dedups() {
-        let d = tmp();
-        let root = d.path();
-        // Free name is returned verbatim.
-        assert_eq!(
-            unique_destination(root, "a.txt").unwrap(),
-            root.join("a.txt")
-        );
-        fs::write(root.join("a.txt"), b"x").unwrap();
-        assert_eq!(
-            unique_destination(root, "a.txt").unwrap(),
-            root.join("a 2.txt")
-        );
-        fs::write(root.join("a 2.txt"), b"x").unwrap();
-        assert_eq!(
-            unique_destination(root, "a.txt").unwrap(),
-            root.join("a 3.txt")
-        );
-        // Extension-less names.
-        fs::create_dir(root.join("folder")).unwrap();
-        assert_eq!(
-            unique_destination(root, "folder").unwrap(),
-            root.join("folder 2")
-        );
+    fn basic_file_operations_dedup_and_never_overwrite() {
+        // --- phase: unique_destination_dedups ---
+        {
+            let d = tmp();
+            let root = d.path();
+            // Free name is returned verbatim.
+            assert_eq!(
+                unique_destination(root, "a.txt").unwrap(),
+                root.join("a.txt")
+            );
+            fs::write(root.join("a.txt"), b"x").unwrap();
+            assert_eq!(
+                unique_destination(root, "a.txt").unwrap(),
+                root.join("a 2.txt")
+            );
+            fs::write(root.join("a 2.txt"), b"x").unwrap();
+            assert_eq!(
+                unique_destination(root, "a.txt").unwrap(),
+                root.join("a 3.txt")
+            );
+            // Extension-less names.
+            fs::create_dir(root.join("folder")).unwrap();
+            assert_eq!(
+                unique_destination(root, "folder").unwrap(),
+                root.join("folder 2")
+            );
+        }
+
+        // --- phase: new_folder_creates_and_dedups ---
+        {
+            let d = tmp();
+            let p = new_folder(d.path(), "Stuff").unwrap();
+            assert!(p.is_dir());
+            let p2 = new_folder(d.path(), "Stuff").unwrap();
+            assert_eq!(p2.file_name().unwrap().to_string_lossy(), "Stuff 2");
+            assert!(new_folder(d.path(), "  ").is_err());
+            assert!(new_folder(d.path(), "a/b").is_err());
+            assert!(new_folder(d.path(), ".").is_err());
+            assert!(new_folder(d.path(), "..").is_err());
+            let unicode = new_folder(d.path(), "文書 📁").unwrap();
+            assert!(unicode.is_dir());
+        }
+
+        // --- phase: rename_moves_within_dir ---
+        {
+            let d = tmp();
+            let f = d.path().join("old.txt");
+            fs::write(&f, b"x").unwrap();
+            let renamed = rename(&f, "new.txt").unwrap();
+            assert!(renamed.ends_with("new.txt"));
+            assert!(!f.exists());
+            assert!(renamed.exists());
+            // Collision is refused.
+            fs::write(d.path().join("taken.txt"), b"x").unwrap();
+            assert!(rename(&renamed, "taken.txt").is_err());
+            assert!(rename(&renamed, "..").is_err());
+        }
+
+        // --- phase: copy_into_recurses_and_dedups ---
+        {
+            let d = tmp();
+            let src = d.path().join("dir");
+            fs::create_dir(&src).unwrap();
+            fs::write(src.join("inner.txt"), b"hello").unwrap();
+            let destdir = d.path().join("dest");
+            fs::create_dir(&destdir).unwrap();
+
+            let copied = copy_into(&src, &destdir).unwrap();
+            assert!(copied.join("inner.txt").exists());
+            assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
+            // Original still present (copy, not move).
+            assert!(src.join("inner.txt").exists());
+            // A second copy into the same dir dedups the folder name.
+            let copied2 = copy_into(&src, &destdir).unwrap();
+            assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
+        }
+
+        // --- phase: move_into_relocates ---
+        {
+            let d = tmp();
+            let f = d.path().join("move-me.txt");
+            fs::write(&f, b"x").unwrap();
+            let destdir = d.path().join("dest");
+            fs::create_dir(&destdir).unwrap();
+            let moved = move_into(&f, &destdir).unwrap();
+            assert!(moved.exists());
+            assert!(!f.exists());
+            assert_eq!(moved.parent().unwrap(), destdir);
+        }
+
+        // --- phase: trash_dir_is_the_xdg_home_trash_files_dir ---
+        {
+            // The Trash sidebar entry + the "am I in the trash?" check both hinge on
+            // this path being the freedesktop home-trash files dir.
+            if let Some(t) = trash_dir() {
+                assert!(
+                    t.ends_with("Trash/files"),
+                    "trash dir is <data>/Trash/files: {t:?}"
+                );
+                assert!(is_trash_dir(&t), "the trash dir recognises itself");
+                assert!(
+                    !is_trash_dir(Path::new("/tmp/not-trash")),
+                    "an unrelated dir is not the trash"
+                );
+            }
+        }
+
+        // --- phase: exhausted_destination_names_do_not_overwrite_existing_files ---
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            fs::write(&source, b"selected bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+            let occupied = destination.join("report.txt");
+            fs::write(&occupied, b"existing bytes").unwrap();
+            for suffix in 2..10_000 {
+                fs::write(
+                    destination.join(format!("report {suffix}.txt")),
+                    b"suffix bytes",
+                )
+                .unwrap();
+            }
+            assert!(copy_into(&source, &destination).is_err());
+            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+            assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+            assert!(move_into(&source, &destination).is_err());
+            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+            assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
+            for suffix in 2..10_000 {
+                assert_eq!(
+                    fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
+                    b"suffix bytes"
+                );
+            }
+        }
     }
 
+    /// Copies and moves publish atomically despite racing roots and descendants, clean staging on failure and refuse destinations inside the source.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
     #[test]
-    fn new_folder_creates_and_dedups() {
-        let d = tmp();
-        let p = new_folder(d.path(), "Stuff").unwrap();
-        assert!(p.is_dir());
-        let p2 = new_folder(d.path(), "Stuff").unwrap();
-        assert_eq!(p2.file_name().unwrap().to_string_lossy(), "Stuff 2");
-        assert!(new_folder(d.path(), "  ").is_err());
-        assert!(new_folder(d.path(), "a/b").is_err());
-        assert!(new_folder(d.path(), ".").is_err());
-        assert!(new_folder(d.path(), "..").is_err());
-        let unicode = new_folder(d.path(), "文書 📁").unwrap();
-        assert!(unicode.is_dir());
-    }
+    fn copies_and_moves_publish_atomically_under_races() {
+        // --- phase: copy_and_move_publish_after_a_racing_root_without_replacing_it ---
+        {
+            for remove_source in [false, true] {
+                let directory = tmp();
+                let source = directory.path().join("report.txt");
+                let destination = directory.path().join("destination");
+                fs::write(&source, b"selected bytes").unwrap();
+                fs::create_dir(&destination).unwrap();
 
-    #[test]
-    fn rename_moves_within_dir() {
-        let d = tmp();
-        let f = d.path().join("old.txt");
-        fs::write(&f, b"x").unwrap();
-        let renamed = rename(&f, "new.txt").unwrap();
-        assert!(renamed.ends_with("new.txt"));
-        assert!(!f.exists());
-        assert!(renamed.exists());
-        // Collision is refused.
-        fs::write(d.path().join("taken.txt"), b"x").unwrap();
-        assert!(rename(&renamed, "taken.txt").is_err());
-        assert!(rename(&renamed, "..").is_err());
-    }
+                let mut raced = false;
+                let mut observer = TestTransferObserver {
+                    force_staging: true,
+                    before_publish: Some(Box::new(|candidate| {
+                        if !raced {
+                            raced = true;
+                            fs::write(candidate, b"competitor bytes")?;
+                        }
+                        Ok(())
+                    })),
+                    ..Default::default()
+                };
+                let transferred =
+                    transfer_into_with(&source, &destination, remove_source, &mut observer)
+                        .unwrap();
+                drop(observer);
 
-    #[test]
-    fn copy_into_recurses_and_dedups() {
-        let d = tmp();
-        let src = d.path().join("dir");
-        fs::create_dir(&src).unwrap();
-        fs::write(src.join("inner.txt"), b"hello").unwrap();
-        let destdir = d.path().join("dest");
-        fs::create_dir(&destdir).unwrap();
+                assert!(raced, "the test forced the post-selection collision");
+                assert_eq!(transferred, destination.join("report 2.txt"));
+                assert_eq!(
+                    fs::read(destination.join("report.txt")).unwrap(),
+                    b"competitor bytes"
+                );
+                assert_eq!(fs::read(&transferred).unwrap(), b"selected bytes");
+                assert_eq!(source.exists(), !remove_source);
+                assert_no_transfer_staging(&destination);
+            }
+        }
 
-        let copied = copy_into(&src, &destdir).unwrap();
-        assert!(copied.join("inner.txt").exists());
-        assert_eq!(fs::read(copied.join("inner.txt")).unwrap(), b"hello");
-        // Original still present (copy, not move).
-        assert!(src.join("inner.txt").exists());
-        // A second copy into the same dir dedups the folder name.
-        let copied2 = copy_into(&src, &destdir).unwrap();
-        assert_eq!(copied2.file_name().unwrap().to_string_lossy(), "dir 2");
-    }
-
-    #[test]
-    fn copy_and_move_publish_after_a_racing_root_without_replacing_it() {
-        for remove_source in [false, true] {
+        // --- phase: direct_move_retries_when_the_selected_name_is_claimed ---
+        {
             let directory = tmp();
             let source = directory.path().join("report.txt");
             let destination = directory.path().join("destination");
@@ -1100,7 +1216,6 @@ mod tests {
 
             let mut raced = false;
             let mut observer = TestTransferObserver {
-                force_staging: true,
                 before_publish: Some(Box::new(|candidate| {
                     if !raced {
                         raced = true;
@@ -1110,451 +1225,365 @@ mod tests {
                 })),
                 ..Default::default()
             };
-            let transferred =
-                transfer_into_with(&source, &destination, remove_source, &mut observer).unwrap();
+            let moved = transfer_into_with(&source, &destination, true, &mut observer).unwrap();
             drop(observer);
 
-            assert!(raced, "the test forced the post-selection collision");
-            assert_eq!(transferred, destination.join("report 2.txt"));
+            assert_eq!(moved, destination.join("report 2.txt"));
             assert_eq!(
                 fs::read(destination.join("report.txt")).unwrap(),
                 b"competitor bytes"
             );
-            assert_eq!(fs::read(&transferred).unwrap(), b"selected bytes");
-            assert_eq!(source.exists(), !remove_source);
+            assert_eq!(fs::read(&moved).unwrap(), b"selected bytes");
+            assert!(!source.exists());
+        }
+
+        // --- phase: racing_descendants_are_never_overwritten_by_directory_publication ---
+        {
+            let directory = tmp();
+            let source = directory.path().join("project");
+            let destination = directory.path().join("destination");
+            let outside = directory.path().join("outside.txt");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("selected.txt"), b"selected bytes").unwrap();
+            fs::write(&outside, b"outside bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut raced = false;
+            let mut observer = TestTransferObserver {
+                force_staging: true,
+                before_publish: Some(Box::new(|candidate| {
+                    if !raced {
+                        raced = true;
+                        fs::create_dir(candidate)?;
+                        #[cfg(unix)]
+                        std::os::unix::fs::symlink(&outside, candidate.join("selected.txt"))?;
+                        #[cfg(not(unix))]
+                        fs::write(candidate.join("selected.txt"), b"competitor bytes")?;
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            };
+            let copied = transfer_into_with(&source, &destination, false, &mut observer).unwrap();
+            drop(observer);
+
+            assert_eq!(copied, destination.join("project 2"));
+            #[cfg(unix)]
+            assert_eq!(
+                fs::read_link(destination.join("project/selected.txt")).unwrap(),
+                outside
+            );
+            #[cfg(not(unix))]
+            assert_eq!(
+                fs::read(destination.join("project/selected.txt")).unwrap(),
+                b"competitor bytes"
+            );
+            assert_eq!(
+                fs::read(copied.join("selected.txt")).unwrap(),
+                b"selected bytes"
+            );
+            assert_eq!(fs::read(&outside).unwrap(), b"outside bytes");
             assert_no_transfer_staging(&destination);
         }
-    }
 
-    #[test]
-    fn direct_move_retries_when_the_selected_name_is_claimed() {
-        let directory = tmp();
-        let source = directory.path().join("report.txt");
-        let destination = directory.path().join("destination");
-        fs::write(&source, b"selected bytes").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let mut raced = false;
-        let mut observer = TestTransferObserver {
-            before_publish: Some(Box::new(|candidate| {
-                if !raced {
-                    raced = true;
-                    fs::write(candidate, b"competitor bytes")?;
-                }
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let moved = transfer_into_with(&source, &destination, true, &mut observer).unwrap();
-        drop(observer);
-
-        assert_eq!(moved, destination.join("report 2.txt"));
-        assert_eq!(
-            fs::read(destination.join("report.txt")).unwrap(),
-            b"competitor bytes"
-        );
-        assert_eq!(fs::read(&moved).unwrap(), b"selected bytes");
-        assert!(!source.exists());
-    }
-
-    #[test]
-    fn racing_descendants_are_never_overwritten_by_directory_publication() {
-        let directory = tmp();
-        let source = directory.path().join("project");
-        let destination = directory.path().join("destination");
-        let outside = directory.path().join("outside.txt");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("selected.txt"), b"selected bytes").unwrap();
-        fs::write(&outside, b"outside bytes").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let mut raced = false;
-        let mut observer = TestTransferObserver {
-            force_staging: true,
-            before_publish: Some(Box::new(|candidate| {
-                if !raced {
-                    raced = true;
-                    fs::create_dir(candidate)?;
-                    #[cfg(unix)]
-                    std::os::unix::fs::symlink(&outside, candidate.join("selected.txt"))?;
-                    #[cfg(not(unix))]
-                    fs::write(candidate.join("selected.txt"), b"competitor bytes")?;
-                }
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let copied = transfer_into_with(&source, &destination, false, &mut observer).unwrap();
-        drop(observer);
-
-        assert_eq!(copied, destination.join("project 2"));
-        #[cfg(unix)]
-        assert_eq!(
-            fs::read_link(destination.join("project/selected.txt")).unwrap(),
-            outside
-        );
-        #[cfg(not(unix))]
-        assert_eq!(
-            fs::read(destination.join("project/selected.txt")).unwrap(),
-            b"competitor bytes"
-        );
-        assert_eq!(
-            fs::read(copied.join("selected.txt")).unwrap(),
-            b"selected bytes"
-        );
-        assert_eq!(fs::read(&outside).unwrap(), b"outside bytes");
-        assert_no_transfer_staging(&destination);
-    }
-
-    #[test]
-    fn failed_recursive_copy_publishes_nothing_and_cleans_private_staging() {
-        let directory = tmp();
-        let source = directory.path().join("project");
-        let destination = directory.path().join("destination");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("first.txt"), b"first bytes").unwrap();
-        fs::write(source.join("second.txt"), b"second bytes").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let root = source.clone();
-        let mut visited_child = false;
-        let mut observer = TestTransferObserver {
-            force_staging: true,
-            before_copy_source: Some(Box::new(move |path| {
-                if path != root {
-                    if visited_child {
-                        return Err(std::io::Error::other("injected recursive copy failure"));
-                    }
-                    visited_child = true;
-                }
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let result = transfer_into_with(&source, &destination, false, &mut observer);
-
-        assert!(result.is_err());
-        assert!(source.join("first.txt").exists());
-        assert!(source.join("second.txt").exists());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_no_transfer_staging(&destination);
-    }
-
-    #[test]
-    fn failed_cut_source_deletion_publishes_nothing_and_cleans_staging() {
-        let directory = tmp();
-        let source = directory.path().join("project");
-        let destination = directory.path().join("destination");
-        fs::create_dir(&source).unwrap();
-        fs::write(source.join("first.txt"), b"first bytes").unwrap();
-        fs::write(source.join("second.txt"), b"second bytes").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let mut observer = TestTransferObserver {
-            force_staging: true,
-            before_source_remove: Some(Box::new(|quarantine| {
-                fs::remove_file(quarantine.join("first.txt"))?;
-                Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "injected partial source deletion failure",
-                ))
-            })),
-            ..Default::default()
-        };
-        let result = transfer_into_with(&source, &destination, true, &mut observer);
-
-        assert!(result.is_err());
-        assert_eq!(fs::read(source.join("first.txt")).unwrap(), b"first bytes");
-        assert_eq!(
-            fs::read(source.join("second.txt")).unwrap(),
-            b"second bytes"
-        );
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_no_transfer_staging(&destination);
-        assert_no_source_quarantine(directory.path());
-
-        let retried = move_into(&source, &destination).unwrap();
-        assert_eq!(retried, destination.join("project"));
-        assert_eq!(fs::read(retried.join("first.txt")).unwrap(), b"first bytes");
-        assert_eq!(
-            fs::read(retried.join("second.txt")).unwrap(),
-            b"second bytes"
-        );
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn source_swap_to_symlink_is_refused_without_reading_its_target() {
-        use std::os::unix::fs::symlink;
-
-        let directory = tmp();
-        let source = directory.path().join("report.txt");
-        let destination = directory.path().join("destination");
-        let outside = directory.path().join("outside.txt");
-        fs::write(&source, b"selected bytes").unwrap();
-        fs::write(&outside, b"outside secret").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let selected = source.clone();
-        let target = outside.clone();
-        let mut swapped = false;
-        let mut observer = TestTransferObserver {
-            force_staging: true,
-            before_copy_source: Some(Box::new(move |path| {
-                if path == selected && !swapped {
-                    swapped = true;
-                    fs::remove_file(path)?;
-                    symlink(&target, path)?;
-                }
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let result = transfer_into_with(&source, &destination, false, &mut observer);
-
-        assert!(result.is_err());
-        assert_eq!(fs::read(&outside).unwrap(), b"outside secret");
-        assert_eq!(fs::read_link(&source).unwrap(), outside);
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_no_transfer_staging(&destination);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn source_directory_swap_to_symlink_is_refused_without_traversal() {
-        use std::os::unix::fs::symlink;
-
-        let directory = tmp();
-        let source = directory.path().join("project");
-        let saved_source = directory.path().join("saved-project");
-        let destination = directory.path().join("destination");
-        let outside = directory.path().join("outside");
-        fs::create_dir(&source).unwrap();
-        fs::create_dir(&outside).unwrap();
-        fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
-        fs::create_dir(&destination).unwrap();
-
-        let selected = source.clone();
-        let saved = saved_source.clone();
-        let target = outside.clone();
-        let mut swapped = false;
-        let mut observer = TestTransferObserver {
-            force_staging: true,
-            before_copy_source: Some(Box::new(move |path| {
-                if path == selected && !swapped {
-                    swapped = true;
-                    fs::rename(path, &saved)?;
-                    symlink(&target, path)?;
-                }
-                Ok(())
-            })),
-            ..Default::default()
-        };
-        let result = transfer_into_with(&source, &destination, false, &mut observer);
-
-        assert!(result.is_err());
-        assert_eq!(
-            fs::read(outside.join("secret.txt")).unwrap(),
-            b"outside secret"
-        );
-        assert!(saved_source.is_dir());
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
-        assert_no_transfer_staging(&destination);
-    }
-
-    #[test]
-    fn recursive_copy_and_move_refuse_a_destination_inside_the_source() {
-        let d = tmp();
-        let source = d.path().join("source");
-        let nested_destination = source.join("nested");
-        fs::create_dir_all(&nested_destination).unwrap();
-        fs::write(source.join("file.txt"), b"x").unwrap();
-
-        assert!(copy_into(&source, &nested_destination).is_err());
-        assert!(move_into(&source, &nested_destination).is_err());
-        assert!(
-            source.join("file.txt").exists(),
-            "refusal has no side effect"
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_preserves_symlinks_without_reading_their_targets() {
-        use std::os::unix::fs::symlink;
-
-        let d = tmp();
-        let source = d.path().join("source");
-        let destination = d.path().join("destination");
-        fs::create_dir(&source).unwrap();
-        fs::create_dir(&destination).unwrap();
-        // This deliberately points outside the selected source tree. A copy
-        // must reproduce the link rather than dereferencing `/etc/passwd`.
-        symlink("/etc/passwd", source.join("outside-link")).unwrap();
-        symlink("missing-target", source.join("dangling-link")).unwrap();
-
-        let copied = copy_into(&source, &destination).unwrap();
-        let outside = copied.join("outside-link");
-        let dangling = copied.join("dangling-link");
-        assert!(
-            fs::symlink_metadata(&outside)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            fs::read_link(&outside).unwrap(),
-            PathBuf::from("/etc/passwd")
-        );
-        assert!(
-            fs::symlink_metadata(&dangling)
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        assert_eq!(
-            fs::read_link(&dangling).unwrap(),
-            PathBuf::from("missing-target")
-        );
-    }
-
-    #[test]
-    fn trash_dir_is_the_xdg_home_trash_files_dir() {
-        // The Trash sidebar entry + the "am I in the trash?" check both hinge on
-        // this path being the freedesktop home-trash files dir.
-        if let Some(t) = trash_dir() {
-            assert!(
-                t.ends_with("Trash/files"),
-                "trash dir is <data>/Trash/files: {t:?}"
-            );
-            assert!(is_trash_dir(&t), "the trash dir recognises itself");
-            assert!(
-                !is_trash_dir(Path::new("/tmp/not-trash")),
-                "an unrelated dir is not the trash"
-            );
-        }
-    }
-
-    #[test]
-    fn move_into_relocates() {
-        let d = tmp();
-        let f = d.path().join("move-me.txt");
-        fs::write(&f, b"x").unwrap();
-        let destdir = d.path().join("dest");
-        fs::create_dir(&destdir).unwrap();
-        let moved = move_into(&f, &destdir).unwrap();
-        assert!(moved.exists());
-        assert!(!f.exists());
-        assert_eq!(moved.parent().unwrap(), destdir);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_and_move_propagate_destination_metadata_failure() {
-        use std::os::unix::fs::symlink;
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("report.txt");
-        let destination = directory.path().join("destination");
-        fs::write(&source, b"selected bytes").unwrap();
-        symlink("destination", &destination).unwrap();
-        let candidate = destination.join("report.txt");
-        let metadata_error = fs::symlink_metadata(&candidate).unwrap_err();
-        let expected = crate::i18n::t_args(
-            "files-destination-inspect-failed",
-            &[
-                crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
-                crate::i18n::arg("error", metadata_error.to_string()),
-            ],
-        );
-        for result in [
-            copy_into(&source, &destination),
-            move_into(&source, &destination),
-        ] {
-            let error = result.unwrap_err();
-            assert_eq!(error, expected);
-            assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-            assert_eq!(
-                fs::read_link(&destination).unwrap(),
-                PathBuf::from("destination")
-            );
-        }
-    }
-
-    #[test]
-    fn exhausted_destination_names_do_not_overwrite_existing_files() {
-        let directory = tempfile::tempdir().unwrap();
-        let source = directory.path().join("report.txt");
-        let destination = directory.path().join("destination");
-        fs::write(&source, b"selected bytes").unwrap();
-        fs::create_dir(&destination).unwrap();
-        let occupied = destination.join("report.txt");
-        fs::write(&occupied, b"existing bytes").unwrap();
-        for suffix in 2..10_000 {
-            fs::write(
-                destination.join(format!("report {suffix}.txt")),
-                b"suffix bytes",
-            )
-            .unwrap();
-        }
-        assert!(copy_into(&source, &destination).is_err());
-        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
-        assert!(move_into(&source, &destination).is_err());
-        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
-        assert_eq!(fs::read_dir(&destination).unwrap().count(), 9_999);
-        for suffix in 2..10_000 {
-            assert_eq!(
-                fs::read(destination.join(format!("report {suffix}.txt"))).unwrap(),
-                b"suffix bytes"
-            );
-        }
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn copy_and_move_preserve_dangling_destination_entries() {
-        use std::os::unix::fs::symlink;
-
-        for move_source in [false, true] {
-            for numbered_collision in [false, true] {
-                let directory = tempfile::tempdir().unwrap();
-                let source = directory.path().join("report.txt");
+        // --- phase: failed_recursive_copy_publishes_nothing_and_cleans_private_staging ---
+        {
+            fn failed_recursive_copy_publishes_nothing_and_cleans_private_staging() {
+                let directory = tmp();
+                let source = directory.path().join("project");
                 let destination = directory.path().join("destination");
-                let outside = directory.path().join("unselected-target.txt");
-                fs::write(&source, b"selected bytes").unwrap();
+                fs::create_dir(&source).unwrap();
+                fs::write(source.join("first.txt"), b"first bytes").unwrap();
+                fs::write(source.join("second.txt"), b"second bytes").unwrap();
                 fs::create_dir(&destination).unwrap();
-                let occupied = destination.join("report.txt");
-                let (link, expected) = if numbered_collision {
-                    fs::write(&occupied, b"existing bytes").unwrap();
-                    (
-                        destination.join("report 2.txt"),
-                        destination.join("report 3.txt"),
-                    )
-                } else {
-                    (occupied.clone(), destination.join("report 2.txt"))
+
+                let root = source.clone();
+                let mut visited_child = false;
+                let mut observer = TestTransferObserver {
+                    force_staging: true,
+                    before_copy_source: Some(Box::new(move |path| {
+                        if path != root {
+                            if visited_child {
+                                return Err(std::io::Error::other(
+                                    "injected recursive copy failure",
+                                ));
+                            }
+                            visited_child = true;
+                        }
+                        Ok(())
+                    })),
+                    ..Default::default()
                 };
-                symlink(&outside, &link).unwrap();
-                let result = if move_source {
-                    move_into(&source, &destination)
-                } else {
-                    copy_into(&source, &destination)
-                }
-                .unwrap();
-                assert_eq!(result, expected);
-                assert_eq!(fs::read(&result).unwrap(), b"selected bytes");
-                assert_eq!(fs::read_link(&link).unwrap(), outside);
-                assert!(
-                    !outside.exists(),
-                    "copy must not write through the destination link"
+                let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+                assert!(result.is_err());
+                assert!(source.join("first.txt").exists());
+                assert!(source.join("second.txt").exists());
+                assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+                assert_no_transfer_staging(&destination);
+            }
+            failed_recursive_copy_publishes_nothing_and_cleans_private_staging();
+        }
+
+        // --- phase: failed_cut_source_deletion_publishes_nothing_and_cleans_staging ---
+        {
+            let directory = tmp();
+            let source = directory.path().join("project");
+            let destination = directory.path().join("destination");
+            fs::create_dir(&source).unwrap();
+            fs::write(source.join("first.txt"), b"first bytes").unwrap();
+            fs::write(source.join("second.txt"), b"second bytes").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let mut observer = TestTransferObserver {
+                force_staging: true,
+                before_source_remove: Some(Box::new(|quarantine| {
+                    fs::remove_file(quarantine.join("first.txt"))?;
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        "injected partial source deletion failure",
+                    ))
+                })),
+                ..Default::default()
+            };
+            let result = transfer_into_with(&source, &destination, true, &mut observer);
+
+            assert!(result.is_err());
+            assert_eq!(fs::read(source.join("first.txt")).unwrap(), b"first bytes");
+            assert_eq!(
+                fs::read(source.join("second.txt")).unwrap(),
+                b"second bytes"
+            );
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            assert_no_transfer_staging(&destination);
+            assert_no_source_quarantine(directory.path());
+
+            let retried = move_into(&source, &destination).unwrap();
+            assert_eq!(retried, destination.join("project"));
+            assert_eq!(fs::read(retried.join("first.txt")).unwrap(), b"first bytes");
+            assert_eq!(
+                fs::read(retried.join("second.txt")).unwrap(),
+                b"second bytes"
+            );
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 1);
+        }
+
+        // --- phase: recursive_copy_and_move_refuse_a_destination_inside_the_source ---
+        {
+            let d = tmp();
+            let source = d.path().join("source");
+            let nested_destination = source.join("nested");
+            fs::create_dir_all(&nested_destination).unwrap();
+            fs::write(source.join("file.txt"), b"x").unwrap();
+
+            assert!(copy_into(&source, &nested_destination).is_err());
+            assert!(move_into(&source, &nested_destination).is_err());
+            assert!(
+                source.join("file.txt").exists(),
+                "refusal has no side effect"
+            );
+        }
+    }
+
+    /// Symlink swaps are refused without traversal, symlinks and dangling entries are preserved, and metadata failures propagate.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario test: each labelled phase is one original case, kept verbatim"
+    )]
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_and_metadata_failures_are_handled_without_following_links() {
+        // --- phase: source_swap_to_symlink_is_refused_without_reading_its_target ---
+        {
+            use std::os::unix::fs::symlink;
+
+            let directory = tmp();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            let outside = directory.path().join("outside.txt");
+            fs::write(&source, b"selected bytes").unwrap();
+            fs::write(&outside, b"outside secret").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let selected = source.clone();
+            let target = outside.clone();
+            let mut swapped = false;
+            let mut observer = TestTransferObserver {
+                force_staging: true,
+                before_copy_source: Some(Box::new(move |path| {
+                    if path == selected && !swapped {
+                        swapped = true;
+                        fs::remove_file(path)?;
+                        symlink(&target, path)?;
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            };
+            let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+            assert!(result.is_err());
+            assert_eq!(fs::read(&outside).unwrap(), b"outside secret");
+            assert_eq!(fs::read_link(&source).unwrap(), outside);
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            assert_no_transfer_staging(&destination);
+        }
+
+        // --- phase: source_directory_swap_to_symlink_is_refused_without_traversal ---
+        {
+            use std::os::unix::fs::symlink;
+
+            let directory = tmp();
+            let source = directory.path().join("project");
+            let saved_source = directory.path().join("saved-project");
+            let destination = directory.path().join("destination");
+            let outside = directory.path().join("outside");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("secret.txt"), b"outside secret").unwrap();
+            fs::create_dir(&destination).unwrap();
+
+            let selected = source.clone();
+            let saved = saved_source.clone();
+            let target = outside.clone();
+            let mut swapped = false;
+            let mut observer = TestTransferObserver {
+                force_staging: true,
+                before_copy_source: Some(Box::new(move |path| {
+                    if path == selected && !swapped {
+                        swapped = true;
+                        fs::rename(path, &saved)?;
+                        symlink(&target, path)?;
+                    }
+                    Ok(())
+                })),
+                ..Default::default()
+            };
+            let result = transfer_into_with(&source, &destination, false, &mut observer);
+
+            assert!(result.is_err());
+            assert_eq!(
+                fs::read(outside.join("secret.txt")).unwrap(),
+                b"outside secret"
+            );
+            assert!(saved_source.is_dir());
+            assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+            assert_no_transfer_staging(&destination);
+        }
+
+        // --- phase: copy_preserves_symlinks_without_reading_their_targets ---
+        {
+            use std::os::unix::fs::symlink;
+
+            let d = tmp();
+            let source = d.path().join("source");
+            let destination = d.path().join("destination");
+            fs::create_dir(&source).unwrap();
+            fs::create_dir(&destination).unwrap();
+            // This deliberately points outside the selected source tree. A copy
+            // must reproduce the link rather than dereferencing `/etc/passwd`.
+            symlink("/etc/passwd", source.join("outside-link")).unwrap();
+            symlink("missing-target", source.join("dangling-link")).unwrap();
+
+            let copied = copy_into(&source, &destination).unwrap();
+            let outside = copied.join("outside-link");
+            let dangling = copied.join("dangling-link");
+            assert!(
+                fs::symlink_metadata(&outside)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read_link(&outside).unwrap(),
+                PathBuf::from("/etc/passwd")
+            );
+            assert!(
+                fs::symlink_metadata(&dangling)
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            assert_eq!(
+                fs::read_link(&dangling).unwrap(),
+                PathBuf::from("missing-target")
+            );
+        }
+
+        // --- phase: copy_and_move_propagate_destination_metadata_failure ---
+        {
+            use std::os::unix::fs::symlink;
+            let directory = tempfile::tempdir().unwrap();
+            let source = directory.path().join("report.txt");
+            let destination = directory.path().join("destination");
+            fs::write(&source, b"selected bytes").unwrap();
+            symlink("destination", &destination).unwrap();
+            let candidate = destination.join("report.txt");
+            let metadata_error = fs::symlink_metadata(&candidate).unwrap_err();
+            let expected = crate::i18n::t_args(
+                "files-destination-inspect-failed",
+                &[
+                    crate::i18n::arg("path", candidate.to_string_lossy().into_owned()),
+                    crate::i18n::arg("error", metadata_error.to_string()),
+                ],
+            );
+            for result in [
+                copy_into(&source, &destination),
+                move_into(&source, &destination),
+            ] {
+                let error = result.unwrap_err();
+                assert_eq!(error, expected);
+                assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                assert_eq!(
+                    fs::read_link(&destination).unwrap(),
+                    PathBuf::from("destination")
                 );
-                assert_eq!(source.exists(), !move_source);
-                if !move_source {
-                    assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
-                }
-                if numbered_collision {
-                    assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+            }
+        }
+
+        // --- phase: copy_and_move_preserve_dangling_destination_entries ---
+        {
+            use std::os::unix::fs::symlink;
+
+            for move_source in [false, true] {
+                for numbered_collision in [false, true] {
+                    let directory = tempfile::tempdir().unwrap();
+                    let source = directory.path().join("report.txt");
+                    let destination = directory.path().join("destination");
+                    let outside = directory.path().join("unselected-target.txt");
+                    fs::write(&source, b"selected bytes").unwrap();
+                    fs::create_dir(&destination).unwrap();
+                    let occupied = destination.join("report.txt");
+                    let (link, expected) = if numbered_collision {
+                        fs::write(&occupied, b"existing bytes").unwrap();
+                        (
+                            destination.join("report 2.txt"),
+                            destination.join("report 3.txt"),
+                        )
+                    } else {
+                        (occupied.clone(), destination.join("report 2.txt"))
+                    };
+                    symlink(&outside, &link).unwrap();
+                    let result = if move_source {
+                        move_into(&source, &destination)
+                    } else {
+                        copy_into(&source, &destination)
+                    }
+                    .unwrap();
+                    assert_eq!(result, expected);
+                    assert_eq!(fs::read(&result).unwrap(), b"selected bytes");
+                    assert_eq!(fs::read_link(&link).unwrap(), outside);
+                    assert!(
+                        !outside.exists(),
+                        "copy must not write through the destination link"
+                    );
+                    assert_eq!(source.exists(), !move_source);
+                    if !move_source {
+                        assert_eq!(fs::read(&source).unwrap(), b"selected bytes");
+                    }
+                    if numbered_collision {
+                        assert_eq!(fs::read(&occupied).unwrap(), b"existing bytes");
+                    }
                 }
             }
         }

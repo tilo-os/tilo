@@ -361,85 +361,89 @@ impl Harness {
     }
 }
 
+/// The native observer tracks search rebuilds/backspace and never commits pending changes.
 #[test]
-fn native_observer_tracks_search_rebuild_and_backspace() {
-    let mut h = Harness::new();
-    let p = h.search_field_rect().center();
-    h.click(p);
-    let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
-    assert_eq!(before["ready"], true);
-    assert_eq!(before["rendered_result_count"], h.sidebar_row_count());
-    assert_eq!(before["search_focused"], true);
-    let original_heads = h.doc.get_heads();
-    h.type_char("z");
-    let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
-    assert_eq!(typed["local_search_text"], "z");
-    assert_eq!(typed["synchronized_search_query"], "z");
-    assert_eq!(typed["search_widget_text"], "z");
-    assert_eq!(typed["search_caret_byte"], 1);
-    assert_eq!(typed["search_focused"], true);
-    assert_eq!(typed["rendered_result_count"], h.sidebar_row_count());
-    assert_ne!(
-        typed["rendered_category_ids"],
-        before["rendered_category_ids"]
-    );
-    // Native key construction, delivered through the same root widget route.
-    let mut ev = char_key_event("");
-    if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
-        event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
-        event.text = None;
+fn native_observer_tracks_search_without_committing_pending_changes() {
+    // Case `native_observer_tracks_search_rebuild_and_backspace`.
+    {
+        let mut h = Harness::new();
+        let p = h.search_field_rect().center();
+        h.click(p);
+        let before = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        assert_eq!(before["ready"], true);
+        assert_eq!(before["rendered_result_count"], h.sidebar_row_count());
+        assert_eq!(before["search_focused"], true);
+        let original_heads = h.doc.get_heads();
+        h.type_char("z");
+        let typed = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        assert_eq!(typed["local_search_text"], "z");
+        assert_eq!(typed["synchronized_search_query"], "z");
+        assert_eq!(typed["search_widget_text"], "z");
+        assert_eq!(typed["search_caret_byte"], 1);
+        assert_eq!(typed["search_focused"], true);
+        assert_eq!(typed["rendered_result_count"], h.sidebar_row_count());
+        assert_ne!(
+            typed["rendered_category_ids"],
+            before["rendered_category_ids"]
+        );
+        // Native key construction, delivered through the same root widget route.
+        let mut ev = char_key_event("");
+        if let WindowEvent::KeyboardInput { event, .. } = &mut ev {
+            event.logical_key = Key::Named(winit::keyboard::NamedKey::Backspace);
+            event.text = None;
+        }
+        let mut handled = false;
+        h.app.handle_event(
+            &ev,
+            1.0,
+            &Modifiers::default(),
+            &mut h.doc,
+            &root(),
+            &mut handled,
+            &mut None,
+            h.app_node,
+            &h.taffy,
+        );
+        let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        assert_eq!(immediate["local_search_text"], "");
+        assert_eq!(immediate["synchronized_search_query"], "z");
+        h.app.sync(&mut h.doc, &root());
+        if h.app.take_structure_dirty() {
+            h.rebuild();
+        }
+        let after = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
+        assert_eq!(after["search_caret_byte"], 0);
+        assert_eq!(after["search_focused"], true);
+        assert_eq!(
+            after["rendered_category_ids"],
+            before["rendered_category_ids"]
+        );
+        assert_eq!(h.doc.get_heads(), original_heads);
+        assert_eq!(
+            after["effective_document_heads"],
+            before["effective_document_heads"]
+        );
     }
-    let mut handled = false;
-    h.app.handle_event(
-        &ev,
-        1.0,
-        &Modifiers::default(),
-        &mut h.doc,
-        &root(),
-        &mut handled,
-        &mut None,
-        h.app_node,
-        &h.taffy,
-    );
-    let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
-    assert_eq!(immediate["local_search_text"], "");
-    assert_eq!(immediate["synchronized_search_query"], "z");
-    h.app.sync(&mut h.doc, &root());
-    if h.app.take_structure_dirty() {
-        h.rebuild();
-    }
-    let after = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
-    assert_eq!(after["search_caret_byte"], 0);
-    assert_eq!(after["search_focused"], true);
-    assert_eq!(
-        after["rendered_category_ids"],
-        before["rendered_category_ids"]
-    );
-    assert_eq!(h.doc.get_heads(), original_heads);
-    assert_eq!(
-        after["effective_document_heads"],
-        before["effective_document_heads"]
-    );
-}
 
-#[test]
-fn native_observer_does_not_commit_original_pending_changes() {
-    use automerge::transaction::Transactable;
-    let config = crate::prefs::test_env::ScratchConfig::new();
-    let app = config.app();
-    let mut doc = AutoCommit::new();
-    doc.put(root(), "diagnostic_test", "pending").unwrap();
-    let debug_before = format!("{doc:?}");
-    let pending = doc.pending_ops();
-    let a = app.native_input_snapshot(&doc, &root()).unwrap();
-    let b = app.native_input_snapshot(&doc, &root()).unwrap();
-    assert_eq!(a, b);
-    assert_eq!(a["ready"], false);
-    assert_eq!(a["original_pending_ops"], pending);
-    assert_eq!(format!("{doc:?}"), debug_before);
-    assert_eq!(doc.pending_ops(), pending);
-    assert!(!a["effective_document_heads"].as_array().unwrap().is_empty());
-    assert!(a.get("document_content").is_none());
+    // Case `native_observer_does_not_commit_original_pending_changes`.
+    {
+        use automerge::transaction::Transactable;
+        let config = crate::prefs::test_env::ScratchConfig::new();
+        let app = config.app();
+        let mut doc = AutoCommit::new();
+        doc.put(root(), "diagnostic_test", "pending").unwrap();
+        let debug_before = format!("{doc:?}");
+        let pending = doc.pending_ops();
+        let a = app.native_input_snapshot(&doc, &root()).unwrap();
+        let b = app.native_input_snapshot(&doc, &root()).unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a["ready"], false);
+        assert_eq!(a["original_pending_ops"], pending);
+        assert_eq!(format!("{doc:?}"), debug_before);
+        assert_eq!(doc.pending_ops(), pending);
+        assert!(!a["effective_document_heads"].as_array().unwrap().is_empty());
+        assert!(a.get("document_content").is_none());
+    }
 }
 
 fn named_widget_identity(widget: &dyn Widget, name: &str) -> Option<usize> {
@@ -510,7 +514,10 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     assert_eq!(restored["search_focused"], true);
     assert_eq!(restored["search_caret_byte"], 0);
     assert_eq!(restored["local_search_text"], "");
-    assert_eq!(restored["rendered_result_count"], 22);
+    assert_eq!(
+        restored["rendered_result_count"],
+        crate::categories::Category::ALL.len()
+    );
     assert_eq!(restored["sidebar_open"], true);
 }
 

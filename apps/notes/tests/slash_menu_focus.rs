@@ -153,135 +153,139 @@ fn dispatch(
     handled
 }
 
+#[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
 #[test]
-fn slash_menu_arrows_navigate_the_menu_not_the_page_list() {
-    let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-    let welcome = app.workspace_pages_for_test()[0].id;
-    // A second page so a stray ArrowDown on the page list would be visible
-    // (it would move the selection off Welcome).
-    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-    app.sync_sidebar_for_test();
+fn slash_menu_owns_arrow_and_enter_keys() {
+    eprintln!("phase slash_menu_arrows_navigate_the_menu_not_the_page_list");
+    {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        let welcome = app.workspace_pages_for_test()[0].id;
+        // A second page so a stray ArrowDown on the page list would be visible
+        // (it would move the selection off Welcome).
+        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.sync_sidebar_for_test();
 
-    let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
+        let mut state = ui::State::new();
+        let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
-    // Click Welcome's row: this selects it AND gives the sidebar focus,
-    // while loading the page focuses the editor too — the exact state in
-    // which the sidebar used to steal the arrows.
-    let r0 = app.sidebar_row_center_for_test(0).unwrap();
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &cursor_moved(r0.x, r0.y),
-    );
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &mouse(ElementState::Pressed),
-    );
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &mouse(ElementState::Released),
-    );
-    assert_eq!(app.selected_for_test(), Some(welcome));
+        // Click Welcome's row: this selects it AND gives the sidebar focus,
+        // while loading the page focuses the editor too — the exact state in
+        // which the sidebar used to steal the arrows.
+        let r0 = app.sidebar_row_center_for_test(0).unwrap();
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &cursor_moved(r0.x, r0.y),
+        );
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &mouse(ElementState::Pressed),
+        );
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &mouse(ElementState::Released),
+        );
+        assert_eq!(app.selected_for_test(), Some(welcome));
 
-    // Type `/` in the editor → the block menu opens.
-    dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));
-    assert!(
-        app.editor_slash_menu_visible_for_test(),
-        "typing `/` opens the block menu"
-    );
-    assert_eq!(
-        app.main_panel_mut()
-            .editor()
-            .slash_menu()
-            .highlighted_kind(),
-        Some(&BlockKind::Paragraph),
-        "the menu starts on the first row"
-    );
+        // Type `/` in the editor → the block menu opens.
+        dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));
+        assert!(
+            app.editor_slash_menu_visible_for_test(),
+            "typing `/` opens the block menu"
+        );
+        assert_eq!(
+            app.main_panel_mut()
+                .editor()
+                .slash_menu()
+                .highlighted_kind(),
+            Some(&BlockKind::Paragraph),
+            "the menu starts on the first row"
+        );
 
-    // ArrowDown must move the MENU highlight, not the page selection.
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &named_key(NamedKey::ArrowDown),
-    );
-    assert_eq!(
-        app.selected_for_test(),
-        Some(welcome),
-        "the page selection must NOT move while the `/` menu owns the arrows"
-    );
-    assert_eq!(
-        app.main_panel_mut()
-            .editor()
-            .slash_menu()
-            .highlighted_kind(),
-        Some(&BlockKind::Heading(1)),
-        "ArrowDown advances the block-menu highlight"
-    );
+        // ArrowDown must move the MENU highlight, not the page selection.
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &named_key(NamedKey::ArrowDown),
+        );
+        assert_eq!(
+            app.selected_for_test(),
+            Some(welcome),
+            "the page selection must NOT move while the `/` menu owns the arrows"
+        );
+        assert_eq!(
+            app.main_panel_mut()
+                .editor()
+                .slash_menu()
+                .highlighted_kind(),
+            Some(&BlockKind::Heading(1)),
+            "ArrowDown advances the block-menu highlight"
+        );
 
-    // Escape closes the menu.
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &named_key(NamedKey::Escape),
-    );
-    assert!(
-        !app.editor_slash_menu_visible_for_test(),
-        "Escape closes the block menu"
-    );
-}
+        // Escape closes the menu.
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &named_key(NamedKey::Escape),
+        );
+        assert!(
+            !app.editor_slash_menu_visible_for_test(),
+            "Escape closes the block menu"
+        );
+    }
 
-#[test]
-fn slash_menu_enter_inserts_the_chosen_block() {
-    let tmp = TempDir::new().unwrap();
-    let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
-    // A fresh empty child page gives a clean single-paragraph editor.
-    app.apply_event_for_test(OutEvent::CreateChild { parent: None });
-    app.sync_sidebar_for_test();
+    eprintln!("phase slash_menu_enter_inserts_the_chosen_block");
+    {
+        let tmp = TempDir::new().unwrap();
+        let mut app = NotesApp::spawn_with_starter_page(tmp.path().into()).unwrap();
+        // A fresh empty child page gives a clean single-paragraph editor.
+        app.apply_event_for_test(OutEvent::CreateChild { parent: None });
+        app.sync_sidebar_for_test();
 
-    let mut state = ui::State::new();
-    let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
+        let mut state = ui::State::new();
+        let (taffy, child) = settle_layout(&mut app, &mut state, 1200, 800).unwrap();
 
-    // Open the menu, arrow to Heading 1, Enter to convert the block.
-    dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));
-    assert!(app.editor_slash_menu_visible_for_test());
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &named_key(NamedKey::ArrowDown),
-    );
-    dispatch(
-        &mut app,
-        &mut state,
-        &taffy,
-        child,
-        &named_key(NamedKey::Enter),
-    );
+        // Open the menu, arrow to Heading 1, Enter to convert the block.
+        dispatch(&mut app, &mut state, &taffy, child, &char_key("/"));
+        assert!(app.editor_slash_menu_visible_for_test());
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &named_key(NamedKey::ArrowDown),
+        );
+        dispatch(
+            &mut app,
+            &mut state,
+            &taffy,
+            child,
+            &named_key(NamedKey::Enter),
+        );
 
-    assert!(
-        !app.editor_slash_menu_visible_for_test(),
-        "Enter commits and closes the menu"
-    );
-    assert!(
-        matches!(
-            app.main_panel_mut().editor().blocks()[0].kind,
-            BlockKind::Heading(1)
-        ),
-        "Enter inserted/converted the block to the chosen kind (Heading 1)"
-    );
+        assert!(
+            !app.editor_slash_menu_visible_for_test(),
+            "Enter commits and closes the menu"
+        );
+        assert!(
+            matches!(
+                app.main_panel_mut().editor().blocks()[0].kind,
+                BlockKind::Heading(1)
+            ),
+            "Enter inserted/converted the block to the chosen kind (Heading 1)"
+        );
+    }
 }

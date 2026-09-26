@@ -118,67 +118,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn save_indicator_text_per_status() {
+    fn status_text_describes_save_state_counts_and_words() {
         let mut bar = StatusModel::new();
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saved,
-            ..Default::default()
-        });
-        assert_eq!(bar.save_text(), "Saved");
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saving,
-            ..Default::default()
-        });
-        assert_eq!(bar.save_text(), "Saving…");
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Failed,
-            ..Default::default()
-        });
-        assert_eq!(bar.save_text(), "Save failed");
-    }
+        for (status, text) in [
+            (SaveStatus::Saved, "Saved"),
+            (SaveStatus::Saving, "Saving…"),
+            (SaveStatus::Failed, "Save failed"),
+        ] {
+            bar.set_state(StatusBarState {
+                save_status: status,
+                ..Default::default()
+            });
+            assert_eq!(bar.save_text(), text, "save status {status:?}");
+        }
 
-    #[test]
-    fn right_text_singularizes_page_and_word() {
-        let mut bar = StatusModel::new();
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saved,
-            page_path: "Welcome".into(),
-            page_count: 1,
-            word_count: Some(1),
-        });
-        assert_eq!(bar.right_text(), "1 note · 1 word");
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saved,
-            page_path: "Welcome".into(),
-            page_count: 4,
-            word_count: Some(142),
-        });
-        assert_eq!(bar.right_text(), "4 notes · 142 words");
-    }
+        // (page path, pages, words, right-hand text): counts singularize and a
+        // missing word count is dropped.
+        for (page_path, page_count, word_count, text) in [
+            ("Welcome", 1, Some(1), "1 note · 1 word"),
+            ("Welcome", 4, Some(142), "4 notes · 142 words"),
+            ("", 3, None, "3 notes"),
+        ] {
+            bar.set_state(StatusBarState {
+                save_status: SaveStatus::Saved,
+                page_path: page_path.into(),
+                page_count,
+                word_count,
+            });
+            assert_eq!(
+                bar.right_text(),
+                text,
+                "{page_count} pages, {word_count:?} words"
+            );
+        }
 
-    #[test]
-    fn right_text_drops_word_count_when_none() {
-        let mut bar = StatusModel::new();
-        bar.set_state(StatusBarState {
-            save_status: SaveStatus::Saved,
-            page_path: String::new(),
-            page_count: 3,
-            word_count: None,
-        });
-        assert_eq!(bar.right_text(), "3 notes");
-    }
-
-    #[test]
-    fn count_words_handles_punctuation_and_marks() {
-        // "**bold** italic and `code`" is 4 word-tokens by
-        // whitespace splitting. The status bar uses this so its
-        // count matches a human's mental model regardless of inline
-        // markdown markers (the markers count as part of the
-        // surrounding word).
-        assert_eq!(count_words("**bold** italic and `code`"), 4);
-        assert_eq!(count_words(""), 0);
-        assert_eq!(count_words("   "), 0);
-        assert_eq!(count_words("one\ntwo\tthree"), 3);
+        // "**bold** italic and `code`" is 4 word-tokens by whitespace
+        // splitting. The status bar uses this so its count matches a human's
+        // mental model regardless of inline markdown markers (the markers
+        // count as part of the surrounding word).
+        for (text, words) in [
+            ("**bold** italic and `code`", 4),
+            ("", 0),
+            ("   ", 0),
+            ("one\ntwo\tthree", 3),
+        ] {
+            assert_eq!(count_words(text), words, "words in {text:?}");
+        }
     }
 
     #[test]

@@ -732,213 +732,319 @@ mod tests {
     use super::*;
 
     #[test]
-    fn edge_on_registers_on_every_preset_surface() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let s = &theme.tokens.colors.surfaces;
-            for (name, ground) in [
-                ("base", s.base),
-                ("raised", s.raised),
-                ("overlay", s.overlay),
-                ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
-            ] {
-                let edge = edge_on(ground);
-                let moved = edge_delta(edge, ground);
+    fn edges_and_chips_register_on_every_preset_surface() {
+        // Case `edge_on_registers_on_every_preset_surface`.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let s = &theme.tokens.colors.surfaces;
+                for (name, ground) in [
+                    ("base", s.base),
+                    ("raised", s.raised),
+                    ("overlay", s.overlay),
+                    ("panel_ground", crate::chrome::shell::panel_ground(&theme)),
+                ] {
+                    let edge = edge_on(ground);
+                    let moved = edge_delta(edge, ground);
+                    assert!(
+                        moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
+                        theme.name
+                    );
+                }
+            }
+            // The declared border is what vanished on the dark preset: derived
+            // must register there where declared does not.
+            let dark = Theme::dark();
+            let raised = dark.tokens.colors.surfaces.raised;
+            let declared = edge_delta(dark.tokens.colors.border_standard, raised);
+            let derived = edge_delta(edge_on(raised), raised);
+            assert!(
+                declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
+             changed, the ratchet's rationale needs revisiting"
+            );
+            assert!(
+                derived > declared,
+                "derived {derived:.4} vs declared {declared:.4}"
+            );
+        }
+
+        // Case `edge_on_starts_at_the_control_hairline_where_that_already_registers`.
+        {
+            // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
+            let grey = Color::from_rgb8(0x80, 0x80, 0x80);
+            assert_eq!(
+                edge_on(grey),
+                Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
+            );
+        }
+
+        // Case `a_translucent_wash_takes_its_edge_from_the_composited_surface`.
+        {
+            // A 16 % accent wash over the light panel is still a light surface.
+            for theme in [Theme::light(), Theme::dark()] {
+                let ground = theme.tokens.colors.surfaces.raised;
+                let wash = theme.accent_primary.with_alpha(0.16);
+                let seen = crate::tokens::colors::composite(wash, ground);
+                let derived = edge_on(seen);
                 assert!(
-                    moved >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{name} edge on {:?} moved only {moved:.4} ({edge:?})",
-                    theme.name
+                    edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "card_on edge must register on the seen surface"
+                );
+                // Judged by the wash's own RGB the hairline can flip polarity and
+                // stop registering on the surface the eye sees.
+                let naive = edge_on(wash);
+                assert!(
+                    edge_delta(derived, seen) >= edge_delta(naive, seen),
+                    "composited derivation must never register worse than the naive one"
                 );
             }
         }
-        // The declared border is what vanished on the dark preset: derived
-        // must register there where declared does not.
-        let dark = Theme::dark();
-        let raised = dark.tokens.colors.surfaces.raised;
-        let declared = edge_delta(dark.tokens.colors.border_standard, raised);
-        let derived = edge_delta(edge_on(raised), raised);
-        assert!(
-            declared < crate::tokens::colors::HAIRLINE_MIN_DELTA,
-            "dark border_standard on raised was the invisible edge ({declared:.4}); if this \
-             changed, the ratchet's rationale needs revisiting"
-        );
-        assert!(
-            derived > declared,
-            "derived {derived:.4} vs declared {declared:.4}"
-        );
-    }
 
-    #[test]
-    fn edge_on_starts_at_the_control_hairline_where_that_already_registers() {
-        // A mid grey moves plenty at alpha 26: the ladder must not over-darken it.
-        let grey = Color::from_rgb8(0x80, 0x80, 0x80);
-        assert_eq!(
-            edge_on(grey),
-            Colors::hairline_on(grey, EDGE_ALPHA_STEPS[0])
-        );
-    }
-
-    #[test]
-    fn a_translucent_wash_takes_its_edge_from_the_composited_surface() {
-        // A 16 % accent wash over the light panel is still a light surface.
-        for theme in [Theme::light(), Theme::dark()] {
-            let ground = theme.tokens.colors.surfaces.raised;
-            let wash = theme.accent_primary.with_alpha(0.16);
-            let seen = crate::tokens::colors::composite(wash, ground);
-            let derived = edge_on(seen);
+        // Case `a_separator_occupies_one_whole_pixel_row`.
+        {
+            // A whole-pixel centre and a half-pixel centre both land on one row.
+            let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
+            assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
+            assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
+            let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
+            assert_eq!((half.y0, half.y1), (99.0, 100.0));
             assert!(
-                edge_delta(derived, seen) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "card_on edge must register on the seen surface"
-            );
-            // Judged by the wash's own RGB the hairline can flip polarity and
-            // stop registering on the surface the eye sees.
-            let naive = edge_on(wash);
-            assert!(
-                edge_delta(derived, seen) >= edge_delta(naive, seen),
-                "composited derivation must never register worse than the naive one"
+                separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
+                "insets that meet paint nothing"
             );
         }
-    }
 
-    #[test]
-    fn a_separator_occupies_one_whole_pixel_row() {
-        // A whole-pixel centre and a half-pixel centre both land on one row.
-        let whole = separator_rect(10.0, 200.0, 100.0, 12.0).expect("rule");
-        assert_eq!((whole.x0, whole.x1), (22.0, 188.0));
-        assert_eq!((whole.y0, whole.y1), (100.0, 101.0));
-        let half = separator_rect(0.0, 50.0, 99.5, 0.0).expect("rule");
-        assert_eq!((half.y0, half.y1), (99.0, 100.0));
-        assert!(
-            separator_rect(0.0, 20.0, 5.0, 12.0).is_none(),
-            "insets that meet paint nothing"
-        );
-    }
+        // Case `edge_on_memo_returns_the_derived_answer`.
+        {
+            // The memo must be transparent: the same surface asked twice (and
+            // many distinct surfaces cycling through the slots) always yields
+            // exactly what the ladder derives.
+            let theme = Theme::dark();
+            let surfaces = [
+                theme.tokens.colors.surfaces.base,
+                theme.tokens.colors.surfaces.raised,
+                theme.tokens.colors.surfaces.overlay,
+                theme.tokens.colors.lift(0.35),
+                theme.tokens.colors.lift(0.5),
+                Theme::light().tokens.colors.surfaces.base,
+                Theme::light().tokens.colors.surfaces.raised,
+                Theme::high_contrast().tokens.colors.surfaces.base,
+                Theme::high_contrast().tokens.colors.surfaces.raised,
+                Color::from_rgb8(120, 60, 200),
+                Color::from_rgb8(255, 255, 255),
+                Color::from_rgb8(0, 0, 0),
+            ];
+            for _ in 0..3 {
+                for surface in surfaces {
+                    assert_eq!(edge_on(surface), derive_edge_on(surface));
+                }
+            }
+        }
 
-    #[test]
-    fn edge_on_memo_returns_the_derived_answer() {
-        // The memo must be transparent: the same surface asked twice (and
-        // many distinct surfaces cycling through the slots) always yields
-        // exactly what the ladder derives.
-        let theme = Theme::dark();
-        let surfaces = [
-            theme.tokens.colors.surfaces.base,
-            theme.tokens.colors.surfaces.raised,
-            theme.tokens.colors.surfaces.overlay,
-            theme.tokens.colors.lift(0.35),
-            theme.tokens.colors.lift(0.5),
-            Theme::light().tokens.colors.surfaces.base,
-            Theme::light().tokens.colors.surfaces.raised,
-            Theme::high_contrast().tokens.colors.surfaces.base,
-            Theme::high_contrast().tokens.colors.surfaces.raised,
-            Color::from_rgb8(120, 60, 200),
-            Color::from_rgb8(255, 255, 255),
-            Color::from_rgb8(0, 0, 0),
-        ];
-        for _ in 0..3 {
-            for surface in surfaces {
-                assert_eq!(edge_on(surface), derive_edge_on(surface));
+        // Case `panel_edge_registers_on_the_panel_ground_in_every_preset`.
+        {
+            for (name, theme) in [
+                ("dark", Theme::dark()),
+                ("light", Theme::light()),
+                ("high-contrast", Theme::high_contrast()),
+            ] {
+                let ground = crate::chrome::panel_ground(&theme);
+                let border = crate::chrome::panel_border(&theme);
+                assert!(
+                    edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{name}: the panel border must register on the panel ground"
+                );
+            }
+            // Degenerate rects paint nothing rather than a stray hairline.
+            let mut scene = Scene::new();
+            panel(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(10.0, 10.0, 10.0, 40.0),
+                8.0,
+                &Theme::dark(),
+            );
+            assert!(
+                scene.encoding().is_empty(),
+                "an empty panel encodes no draw ops"
+            );
+        }
+
+        // Case `card_edge_is_one_pixel_inside_rect`.
+        {
+            let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
+            let outline = edge_outline(rect, 12.0);
+            assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
+            assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
+            // A radius under half a pixel does not go negative.
+            assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
+        }
+
+        // Case `chip_colors_selected_is_solid_accent_no_border`.
+        {
+            let theme = Theme::dark();
+            let (fill, border) = chip_colors(&theme, true);
+            assert_eq!(fill, theme.tokens.colors.accent[5]);
+            assert!(border.is_none(), "selected chip has no border");
+            let (fill_idle, border_idle) = chip_colors(&theme, false);
+            assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
+            assert!(border_idle.is_some(), "idle chip has a border");
+        }
+
+        // Case `chip_colors_quiet_edge_registers_on_every_preset`:
+        // The quiet chip's edge is derived from its own fill, so it registers
+        // on every preset — the declared `border_standard` it replaces measured
+        // under the visibility floor on the dark preset's raised surface.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let (fill, border) = chip_colors(&theme, false);
+                let edge = border.expect("quiet chip has an edge");
+                assert_eq!(
+                    edge,
+                    edge_on(fill),
+                    "{}: edge derives from the fill",
+                    theme.name
+                );
+                assert!(
+                    edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                    "{}: quiet chip edge moved only {:.4}",
+                    theme.name,
+                    edge_delta(edge, fill)
+                );
             }
         }
     }
 
     #[test]
-    fn panel_edge_registers_on_the_panel_ground_in_every_preset() {
-        for (name, theme) in [
-            ("dark", Theme::dark()),
-            ("light", Theme::light()),
-            ("high-contrast", Theme::high_contrast()),
-        ] {
-            let ground = crate::chrome::panel_ground(&theme);
-            let border = crate::chrome::panel_border(&theme);
+    fn shadow_sprites_are_cached_bounded_and_circular() {
+        // Case `sprite_is_cached_per_tint`.
+        {
+            let a = sprites_for(0, 0, 0);
+            let b = sprites_for(0, 0, 0);
             assert!(
-                edge_delta(border, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{name}: the panel border must register on the panel ground"
+                Arc::ptr_eq(&a, &b),
+                "same tint must return the cached sprite"
+            );
+            let c = sprites_for(99, 102, 241);
+            assert!(
+                !Arc::ptr_eq(&a, &c),
+                "different tint must bake a new sprite"
             );
         }
-        // Degenerate rects paint nothing rather than a stray hairline.
-        let mut scene = Scene::new();
-        panel(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(10.0, 10.0, 10.0, 40.0),
-            8.0,
-            &Theme::dark(),
-        );
-        assert!(
-            scene.encoding().is_empty(),
-            "an empty panel encodes no draw ops"
-        );
-    }
 
-    #[test]
-    fn card_edge_is_one_pixel_inside_rect() {
-        let rect = Rect::new(10.0, 20.0, 110.0, 60.0);
-        let outline = edge_outline(rect, 12.0);
-        assert_eq!(outline.rect(), Rect::new(10.5, 20.5, 109.5, 59.5));
-        assert!((outline.radii().top_left - 11.5).abs() < 1e-9);
-        // A radius under half a pixel does not go negative.
-        assert!(edge_outline(rect, 0.0).radii().top_left.abs() < 1e-9);
-    }
+        // Case `sprite_cache_is_bounded_and_evicted_sprites_remain_alive`.
+        {
+            let mut cache = HashMap::new();
+            let retained = cached_sprites(&mut cache, (0, 0, 0));
+            for tint in 1..=SHADOW_SPRITE_CACHE_LIMIT {
+                let channel = u8::try_from(tint).unwrap_or(u8::MAX);
+                let _ = cached_sprites(&mut cache, (channel, channel, channel));
+            }
+            assert_eq!(cache.len(), SHADOW_SPRITE_CACHE_LIMIT);
+            assert_eq!(retained.corner.width, SHADOW_SPRITE_SIZE);
+            assert_eq!(retained.corner.height, SHADOW_SPRITE_SIZE);
+        }
 
-    #[test]
-    fn chip_colors_selected_is_solid_accent_no_border() {
-        let theme = Theme::dark();
-        let (fill, border) = chip_colors(&theme, true);
-        assert_eq!(fill, theme.tokens.colors.accent[5]);
-        assert!(border.is_none(), "selected chip has no border");
-        let (fill_idle, border_idle) = chip_colors(&theme, false);
-        assert_eq!(fill_idle, theme.tokens.colors.surfaces.raised);
-        assert!(border_idle.is_some(), "idle chip has a border");
-    }
-
-    /// The quiet chip's edge is derived from its own fill, so it registers
-    /// on every preset — the declared `border_standard` it replaces measured
-    /// under the visibility floor on the dark preset's raised surface.
-    #[test]
-    fn chip_colors_quiet_edge_registers_on_every_preset() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let (fill, border) = chip_colors(&theme, false);
-            let edge = border.expect("quiet chip has an edge");
-            assert_eq!(
-                edge,
-                edge_on(fill),
-                "{}: edge derives from the fill",
-                theme.name
+        // Case `edge_sprite_runs_from_zero_through_the_peak_back_to_zero`:
+        // Ends of the band are zero, and the peak sits where
+        // [`SHADOW_PEAK_RADIUS`] says.
+        {
+            let s = build_shadow_sprites(0, 0, 0);
+            let n = SHADOW_SPRITE_SIZE;
+            assert!(
+                alpha_at(&s.edge, 0, 0) <= 2,
+                "inner end of the band must be ~0"
             );
             assert!(
-                edge_delta(edge, fill) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
-                "{}: quiet chip edge moved only {:.4}",
-                theme.name,
-                edge_delta(edge, fill)
+                alpha_at(&s.edge, n - 1, 0) <= 2,
+                "outer end of the band must be ~0"
             );
+            // Peak column: SHADOW_PEAK_RADIUS along the band.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "SHADOW_PEAK_RADIUS is a 0.0..=1.0 fraction of the band, so the \
+                      product with n stays within 0..n"
+            )]
+            let peak_x = (SHADOW_PEAK_RADIUS * f64::from(n)).round() as u32;
+            let peak = alpha_at(&s.edge, peak_x, 0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
+            )]
+            let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+            assert!(
+                (i32::from(peak) - expected).abs() <= 2,
+                "the baked peak must be {expected}/255; got {peak}"
+            );
+            // Every row must match — that's what lets one sprite stretch to
+            // any edge length.
+            for y in 1..SHADOW_EDGE_ROWS {
+                for x in [0, peak_x, n / 2, n - 1] {
+                    assert_eq!(
+                        alpha_at(&s.edge, x, y),
+                        alpha_at(&s.edge, x, 0),
+                        "edge sprite row {y} differs from row 0 at x={x}"
+                    );
+                }
+            }
         }
-    }
 
-    #[test]
-    fn sprite_is_cached_per_tint() {
-        let a = sprites_for(0, 0, 0);
-        let b = sprites_for(0, 0, 0);
-        assert!(
-            Arc::ptr_eq(&a, &b),
-            "same tint must return the cached sprite"
-        );
-        let c = sprites_for(99, 102, 241);
-        assert!(
-            !Arc::ptr_eq(&a, &c),
-            "different tint must bake a new sprite"
-        );
-    }
-
-    #[test]
-    fn sprite_cache_is_bounded_and_evicted_sprites_remain_alive() {
-        let mut cache = HashMap::new();
-        let retained = cached_sprites(&mut cache, (0, 0, 0));
-        for tint in 1..=SHADOW_SPRITE_CACHE_LIMIT {
-            let channel = u8::try_from(tint).unwrap_or(u8::MAX);
-            let _ = cached_sprites(&mut cache, (channel, channel, channel));
+        // Case `corner_sprite_joins_the_edge_profile_where_the_slices_meet`:
+        // The corner sprite must equal the edge profile along the two
+        // rows/columns where it meets an edge slice — the join is continuous by
+        // construction.
+        {
+            let s = build_shadow_sprites(0, 0, 0);
+            let n = SHADOW_SPRITE_SIZE;
+            for x in [0, 1, n / 4, n / 2, (3 * n) / 4, n - 1] {
+                // Innermost row of the corner = the edge profile in x.
+                assert_eq!(
+                    alpha_at(&s.corner, x, 0),
+                    alpha_at(&s.edge, x, 0),
+                    "corner row 0 must equal the edge profile at x={x}"
+                );
+                // …and by symmetry the innermost column equals it in y.
+                assert_eq!(
+                    alpha_at(&s.corner, 0, x),
+                    alpha_at(&s.edge, x, 0),
+                    "corner column 0 must equal the edge profile at y={x}"
+                );
+            }
+            // The outer corner of the sprite is a full spread × spread away
+            // diagonally — outside the circle — so it is a true zero.
+            assert_eq!(alpha_at(&s.corner, n - 1, n - 1), 0);
         }
-        assert_eq!(cache.len(), SHADOW_SPRITE_CACHE_LIMIT);
-        assert_eq!(retained.corner.width, SHADOW_SPRITE_SIZE);
-        assert_eq!(retained.corner.height, SHADOW_SPRITE_SIZE);
+
+        // Case `corner_sprite_contours_are_circular`:
+        // The corner's iso-alpha contours are circles about the corner
+        // point, not the elliptical contours a stretched radial sprite
+        // would produce.
+        {
+            let s = build_shadow_sprites(0, 0, 0);
+            let n = f64::from(SHADOW_SPRITE_SIZE);
+            // Walking a quarter circle of radius `r` (in band units) out
+            // from the corner must hold the alpha constant.
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to 0.0..=n - 1.0 immediately above, so it's always within u32 range"
+            )]
+            let px = |u: f64| ((u + 1.0) * 0.5 * n).round().clamp(0.0, n - 1.0) as u32;
+            for r in [0.25_f64, 0.5, 0.75] {
+                let straight = i32::from(alpha_at(&s.corner, px(r), px(0.0)));
+                for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
+                    let (sin, cos) = deg.to_radians().sin_cos();
+                    let got = i32::from(alpha_at(&s.corner, px(r * cos), px(r * sin)));
+                    assert!(
+                        (got - straight).abs() <= 3,
+                        "at radius {r} the corner alpha must not depend on the \
+                     angle: {deg}° gave {got}, straight out gave {straight}"
+                    );
+                }
+            }
+        }
     }
 
     fn alpha_at(img: &Image, x: u32, y: u32) -> u8 {
@@ -948,106 +1054,6 @@ mod tests {
             .saturating_mul(4)
             .saturating_add(3);
         img.data.data()[idx as usize]
-    }
-
-    /// Ends of the band are zero, and the peak sits where
-    /// [`SHADOW_PEAK_RADIUS`] says.
-    #[test]
-    fn edge_sprite_runs_from_zero_through_the_peak_back_to_zero() {
-        let s = build_shadow_sprites(0, 0, 0);
-        let n = SHADOW_SPRITE_SIZE;
-        assert!(
-            alpha_at(&s.edge, 0, 0) <= 2,
-            "inner end of the band must be ~0"
-        );
-        assert!(
-            alpha_at(&s.edge, n - 1, 0) <= 2,
-            "outer end of the band must be ~0"
-        );
-        // Peak column: SHADOW_PEAK_RADIUS along the band.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "SHADOW_PEAK_RADIUS is a 0.0..=1.0 fraction of the band, so the \
-                      product with n stays within 0..n"
-        )]
-        let peak_x = (SHADOW_PEAK_RADIUS * f64::from(n)).round() as u32;
-        let peak = alpha_at(&s.edge, peak_x, 0);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
-        )]
-        let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
-        assert!(
-            (i32::from(peak) - expected).abs() <= 2,
-            "the baked peak must be {expected}/255; got {peak}"
-        );
-        // Every row must match — that's what lets one sprite stretch to
-        // any edge length.
-        for y in 1..SHADOW_EDGE_ROWS {
-            for x in [0, peak_x, n / 2, n - 1] {
-                assert_eq!(
-                    alpha_at(&s.edge, x, y),
-                    alpha_at(&s.edge, x, 0),
-                    "edge sprite row {y} differs from row 0 at x={x}"
-                );
-            }
-        }
-    }
-
-    /// The corner sprite must equal the edge profile along the two
-    /// rows/columns where it meets an edge slice — the join is continuous by
-    /// construction.
-    #[test]
-    fn corner_sprite_joins_the_edge_profile_where_the_slices_meet() {
-        let s = build_shadow_sprites(0, 0, 0);
-        let n = SHADOW_SPRITE_SIZE;
-        for x in [0, 1, n / 4, n / 2, (3 * n) / 4, n - 1] {
-            // Innermost row of the corner = the edge profile in x.
-            assert_eq!(
-                alpha_at(&s.corner, x, 0),
-                alpha_at(&s.edge, x, 0),
-                "corner row 0 must equal the edge profile at x={x}"
-            );
-            // …and by symmetry the innermost column equals it in y.
-            assert_eq!(
-                alpha_at(&s.corner, 0, x),
-                alpha_at(&s.edge, x, 0),
-                "corner column 0 must equal the edge profile at y={x}"
-            );
-        }
-        // The outer corner of the sprite is a full spread × spread away
-        // diagonally — outside the circle — so it is a true zero.
-        assert_eq!(alpha_at(&s.corner, n - 1, n - 1), 0);
-    }
-
-    /// The corner's iso-alpha contours are circles about the corner
-    /// point, not the elliptical contours a stretched radial sprite
-    /// would produce.
-    #[test]
-    fn corner_sprite_contours_are_circular() {
-        let s = build_shadow_sprites(0, 0, 0);
-        let n = f64::from(SHADOW_SPRITE_SIZE);
-        // Walking a quarter circle of radius `r` (in band units) out
-        // from the corner must hold the alpha constant.
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "clamped to 0.0..=n - 1.0 immediately above, so it's always within u32 range"
-        )]
-        let px = |u: f64| ((u + 1.0) * 0.5 * n).round().clamp(0.0, n - 1.0) as u32;
-        for r in [0.25_f64, 0.5, 0.75] {
-            let straight = i32::from(alpha_at(&s.corner, px(r), px(0.0)));
-            for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
-                let (sin, cos) = deg.to_radians().sin_cos();
-                let got = i32::from(alpha_at(&s.corner, px(r * cos), px(r * sin)));
-                assert!(
-                    (got - straight).abs() <= 3,
-                    "at radius {r} the corner alpha must not depend on the \
-                     angle: {deg}° gave {got}, straight out gave {straight}"
-                );
-            }
-        }
     }
 
     /// The red channel of the render *is* the composited alpha, so a
@@ -1074,106 +1080,109 @@ mod tests {
         }
     }
 
-    /// A shadow is as even around a rounded corner as along a flat edge,
-    /// since it's a blur of the surface's own outline. Sampling is at
-    /// equal *normal* distance from the silhouette — out from the flat
-    /// edge, and out along the corner arc's diagonal.
     #[test]
-    fn token_shadow_is_even_around_a_rounded_corner() {
-        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
-        let radius = 24.0;
-        // offset_y 0 isolates shape from the deliberate downward shift.
-        let token = Shadow {
-            offset_y: 0.0,
-            blur: 16.0,
-            color: Color::WHITE,
-        };
-        let at = render_token_shadow(400, 400, rect, radius, &token);
-
-        // Corner arc centre, and the point where the arc meets the
-        // outward diagonal.
-        let cc = 250.0 - radius;
-        let k = std::f64::consts::FRAC_1_SQRT_2;
-        for d in [2.0_f64, 5.0, 9.0, 14.0] {
-            let edge = at(250.0 + d, 200.0);
-            let corner = at(cc + (radius + d) * k, cc + (radius + d) * k);
-            let (lo, hi) = (f64::from(edge.min(corner)), f64::from(edge.max(corner)));
-            assert!(
-                hi - lo <= 14.0,
-                "at {d} px out the shadow must be as dense at the rounded \
-                 corner as along the flat edge: edge {edge}, corner \
-                 {corner}. A corner far lighter than the edge is a shadow \
-                 whose outline is not the surface's outline."
-            );
-        }
-    }
-
-    /// The token's colour alpha is the shadow's strength; unlike
-    /// [`soft_shadow`], [`shadow`] actually reads it.
-    #[test]
-    fn token_shadow_honours_the_token_alpha() {
-        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
-        let radius = 24.0;
-        let peak = |a: u8| {
+    fn token_shadow_is_even_and_follows_its_alpha_and_blur() {
+        // Case `token_shadow_is_even_around_a_rounded_corner`:
+        // A shadow is as even around a rounded corner as along a flat edge,
+        // since it's a blur of the surface's own outline. Sampling is at
+        // equal *normal* distance from the silhouette — out from the flat
+        // edge, and out along the corner arc's diagonal.
+        {
+            let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+            let radius = 24.0;
+            // offset_y 0 isolates shape from the deliberate downward shift.
             let token = Shadow {
                 offset_y: 0.0,
                 blur: 16.0,
-                color: Color::from_rgba8(255, 255, 255, a),
+                color: Color::WHITE,
             };
             let at = render_token_shadow(400, 400, rect, radius, &token);
-            // Just outside the flat right edge, where coverage is ~half.
-            at(251.0, 200.0)
-        };
-        let full = peak(255);
-        let half = peak(128);
-        assert!(
-            full > 60,
-            "a full-strength shadow must actually paint (got {full})"
-        );
-        let ratio = f64::from(half) / f64::from(full);
-        assert!(
-            (ratio - 0.5).abs() <= 0.08,
-            "halving the token's alpha must halve the shadow: {full} -> \
-             {half} (ratio {ratio:.3}). A ratio near 1.0 means the token's \
-             alpha is being discarded."
-        );
-    }
 
-    /// A token's visible reach is set by its `blur`, through the one
-    /// shared mapping ([`std_dev_for`]).
-    #[test]
-    fn token_shadow_reach_follows_blur() {
-        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
-        let token = Shadow {
-            offset_y: 0.0,
-            blur: 16.0,
-            color: Color::WHITE,
-        };
-        let at = render_token_shadow(400, 400, rect, 24.0, &token);
-        let reach = std_dev_for(token.blur) * 2.5;
-        let mut last = 0.0_f64;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "reach is 2.5 * std_dev_for(a non-negative blur), so reach * 2.0 is \
-                      always non-negative and far below u32::MAX"
-        )]
-        let steps = (reach * 2.0) as u32;
-        for d in 1..=steps {
-            if at(250.0 + f64::from(d), 200.0) > 2 {
-                last = f64::from(d);
+            // Corner arc centre, and the point where the arc meets the
+            // outward diagonal.
+            let cc = 250.0 - radius;
+            let k = std::f64::consts::FRAC_1_SQRT_2;
+            for d in [2.0_f64, 5.0, 9.0, 14.0] {
+                let edge = at(250.0 + d, 200.0);
+                let corner = at(cc + (radius + d) * k, cc + (radius + d) * k);
+                let (lo, hi) = (f64::from(edge.min(corner)), f64::from(edge.max(corner)));
+                assert!(
+                    hi - lo <= 14.0,
+                    "at {d} px out the shadow must be as dense at the rounded \
+                 corner as along the flat edge: edge {edge}, corner \
+                 {corner}. A corner far lighter than the edge is a shadow \
+                 whose outline is not the surface's outline."
+                );
             }
         }
-        assert!(
-            last <= reach + 2.0,
-            "the shadow must die out within 2.5 standard deviations \
+
+        // Case `token_shadow_honours_the_token_alpha`:
+        // The token's colour alpha is the shadow's strength; unlike
+        // [`soft_shadow`], [`shadow`] actually reads it.
+        {
+            let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+            let radius = 24.0;
+            let peak = |a: u8| {
+                let token = Shadow {
+                    offset_y: 0.0,
+                    blur: 16.0,
+                    color: Color::from_rgba8(255, 255, 255, a),
+                };
+                let at = render_token_shadow(400, 400, rect, radius, &token);
+                // Just outside the flat right edge, where coverage is ~half.
+                at(251.0, 200.0)
+            };
+            let full = peak(255);
+            let half = peak(128);
+            assert!(
+                full > 60,
+                "a full-strength shadow must actually paint (got {full})"
+            );
+            let ratio = f64::from(half) / f64::from(full);
+            assert!(
+                (ratio - 0.5).abs() <= 0.08,
+                "halving the token's alpha must halve the shadow: {full} -> \
+             {half} (ratio {ratio:.3}). A ratio near 1.0 means the token's \
+             alpha is being discarded."
+            );
+        }
+
+        // Case `token_shadow_reach_follows_blur`:
+        // A token's visible reach is set by its `blur`, through the one
+        // shared mapping ([`std_dev_for`]).
+        {
+            let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+            let token = Shadow {
+                offset_y: 0.0,
+                blur: 16.0,
+                color: Color::WHITE,
+            };
+            let at = render_token_shadow(400, 400, rect, 24.0, &token);
+            let reach = std_dev_for(token.blur) * 2.5;
+            let mut last = 0.0_f64;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "reach is 2.5 * std_dev_for(a non-negative blur), so reach * 2.0 is \
+                      always non-negative and far below u32::MAX"
+            )]
+            let steps = (reach * 2.0) as u32;
+            for d in 1..=steps {
+                if at(250.0 + f64::from(d), 200.0) > 2 {
+                    last = f64::from(d);
+                }
+            }
+            assert!(
+                last <= reach + 2.0,
+                "the shadow must die out within 2.5 standard deviations \
              ({reach:.1} px) of the edge; it was still painting at {last} px"
-        );
-        assert!(
-            last >= reach * 0.5,
-            "the shadow must actually reach most of its blur \
+            );
+            assert!(
+                last >= reach * 0.5,
+                "the shadow must actually reach most of its blur \
              ({reach:.1} px); it stopped at {last} px"
-        );
+            );
+        }
     }
 
     /// The red channel of the render *is* the composited alpha, so the
@@ -1203,80 +1212,341 @@ mod tests {
         }
     }
 
-    /// The composited shadow has to reach the strength the sprite's
-    /// alpha envelope describes. A full-intensity white shadow peaks at
-    /// `bump · inner · outer = 1 · 1 · (1 - SHADOW_PEAK_RADIUS) = 0.7`,
-    /// so over black the brightest pixel on the ring is `255 · 0.7 ≈
-    /// 178`. If the premultiplied sprite were handed to the renderer as
-    /// straight alpha, the tint would get premultiplied twice and that
-    /// peak would collapse to `255 · 0.7² ≈ 125` — this pins against that.
-    ///
-    /// The ring's position is asserted too, measured from the rect's
-    /// **edge**: the envelope peaks `(1 - 2·SHADOW_PEAK_RADIUS)` of a
-    /// `spread` inside the edge and dies exactly one `spread` outside it,
-    /// whatever the rect's size.
     #[test]
-    fn soft_shadow_peak_matches_sprite_envelope() {
-        let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
-        let spread = 30.0;
-        let at = render_shadow(400, 400, rect, spread);
+    fn soft_shadow_falloff_is_seamless_circular_and_spread_sized() {
+        // Case `soft_shadow_peak_matches_sprite_envelope`:
+        // The composited shadow has to reach the strength the sprite's
+        // alpha envelope describes. A full-intensity white shadow peaks at
+        // `bump · inner · outer = 1 · 1 · (1 - SHADOW_PEAK_RADIUS) = 0.7`,
+        // so over black the brightest pixel on the ring is `255 · 0.7 ≈
+        // 178`. If the premultiplied sprite were handed to the renderer as
+        // straight alpha, the tint would get premultiplied twice and that
+        // peak would collapse to `255 · 0.7² ≈ 125` — this pins against that.
+        //
+        // The ring's position is asserted too, measured from the rect's
+        // **edge**: the envelope peaks `(1 - 2·SHADOW_PEAK_RADIUS)` of a
+        // `spread` inside the edge and dies exactly one `spread` outside it,
+        // whatever the rect's size.
+        {
+            let rect = Rect::new(150.0, 150.0, 250.0, 250.0);
+            let spread = 30.0;
+            let at = render_shadow(400, 400, rect, spread);
 
-        // Walk outward along the horizontal centre line and keep the
-        // brightest sample plus where it was found.
-        let (cx, cy) = (200.0, 200.0);
-        let half = rect.width() / 2.0 + spread; // 80 px
-        let (mut peak, mut peak_dx) = (0u8, 0.0f64);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "half is rect.width() / 2.0 + spread, always non-negative for any rect this toolkit draws"
-        )]
-        let steps = half as u32;
-        for dx in 0..=steps {
-            let v = at(cx + f64::from(dx), cy);
-            if v > peak {
-                peak = v;
-                peak_dx = f64::from(dx);
+            // Walk outward along the horizontal centre line and keep the
+            // brightest sample plus where it was found.
+            let (cx, cy) = (200.0, 200.0);
+            let half = rect.width() / 2.0 + spread; // 80 px
+            let (mut peak, mut peak_dx) = (0u8, 0.0f64);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "half is rect.width() / 2.0 + spread, always non-negative for any rect this toolkit draws"
+            )]
+            let steps = half as u32;
+            for dx in 0..=steps {
+                let v = at(cx + f64::from(dx), cy);
+                if v > peak {
+                    peak = v;
+                    peak_dx = f64::from(dx);
+                }
             }
-        }
 
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
-        )]
-        let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS)^2 is within 0.0..=255.0"
-        )]
-        let double_premultiplied =
-            (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
-        assert!(
-            (i32::from(peak) - expected).abs() <= 6,
-            "full-intensity white shadow must peak at ~{expected}/255 \
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS) is within 0.0..=255.0"
+            )]
+            let expected = (255.0 * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "255.0 * (1.0 - SHADOW_PEAK_RADIUS)^2 is within 0.0..=255.0"
+            )]
+            let double_premultiplied =
+                (255.0 * (1.0 - SHADOW_PEAK_RADIUS) * (1.0 - SHADOW_PEAK_RADIUS)).round() as i32;
+            assert!(
+                (i32::from(peak) - expected).abs() <= 6,
+                "full-intensity white shadow must peak at ~{expected}/255 \
              (the sprite's own alpha envelope); got {peak}. A peak near \
              {double_premultiplied} means the premultiplied sprite is being premultiplied a \
              second time.",
-        );
+            );
 
-        let expected_dx = rect.width() / 2.0 - (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread;
-        assert!(
-            (peak_dx - expected_dx).abs() <= 4.0,
-            "the ring must peak {expected_dx} px out from the centre — \
+            let expected_dx = rect.width() / 2.0 - (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread;
+            assert!(
+                (peak_dx - expected_dx).abs() <= 4.0,
+                "the ring must peak {expected_dx} px out from the centre — \
              {} px inside the rect's own edge, independent of the rect's \
              size; peaked at {peak_dx}",
-            (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread,
-        );
+                (1.0 - 2.0 * SHADOW_PEAK_RADIUS) * spread,
+            );
 
-        // The centre stays clear so a card's own fill paints over an
-        // unmodified backdrop, and the target's corner is fully
-        // transparent so no square halo leaks out.
-        assert!(at(cx, cy) <= 6, "sprite centre must stay clear");
-        assert_eq!(
-            at(cx + half, cy + half),
-            0,
-            "the stretched sprite must not leak a square-edged halo"
-        );
+            // The centre stays clear so a card's own fill paints over an
+            // unmodified backdrop, and the target's corner is fully
+            // transparent so no square halo leaks out.
+            assert!(at(cx, cy) <= 6, "sprite centre must stay clear");
+            assert_eq!(
+                at(cx + half, cy + half),
+                0,
+                "the stretched sprite must not leak a square-edged halo"
+            );
+        }
+
+        // Case `soft_shadow_falloff_width_is_the_spread_not_the_rects_size`:
+        // The falloff outside an edge is a function of the distance to that
+        // edge and of `spread` — never of the rect's own dimensions. Wide,
+        // tall and small-square must all match [`shadow_profile`] pixel for
+        // pixel, on both axes.
+        {
+            let spread = 40.0;
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "spread is a small positive px constant in these tests, always well within u32 range"
+            )]
+            let span = spread as u32 + 6;
+            // Wide (the overview's active row), tall, and a small square.
+            let wide = outward_profiles(Rect::new(150.0, 330.0, 1172.0, 565.0), spread, span);
+            let tall = outward_profiles(Rect::new(560.0, 100.0, 800.0, 800.0), spread, span);
+            let square = outward_profiles(Rect::new(600.0, 400.0, 700.0, 500.0), spread, span);
+
+            for (label, profile) in [
+                ("wide/right", &wide.0),
+                ("wide/bottom", &wide.1),
+                ("tall/right", &tall.0),
+                ("tall/bottom", &tall.1),
+                ("square/right", &square.0),
+                ("square/bottom", &square.1),
+            ] {
+                // 1. Every sample matches the declared envelope at its own
+                //    distance from the edge, in units of `spread`.
+                for (k, got) in profile.iter().enumerate() {
+                    #[allow(
+                        clippy::cast_precision_loss,
+                        reason = "k is a small profile-vector index (at most a few hundred), \
+                              far below where f64 loses integer precision"
+                    )]
+                    let u = (k as f64 + 0.5) / spread;
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
+                    )]
+                    let want = (255.0 * shadow_profile(u)).round() as i32;
+                    assert!(
+                        (i32::from(*got) - want).abs() <= 8,
+                        "{label}: {k} px out from the edge must be {want}/255 \
+                     (shadow_profile({u:.3})); got {got}. Whole profile: \
+                     {profile:?}"
+                    );
+                }
+                // 2. …so the band is `spread` wide: still painting half way
+                //    out, nothing at all past the spread.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "spread * 0.5 is a small positive px offset, always within the profile vector's length"
+                )]
+                let half_way = profile[(spread * 0.5) as usize];
+                assert!(
+                    half_way >= 8,
+                    "{label}: half a spread ({} px) out the shadow must still \
+                 be painting; got {half_way}/255: {profile:?}",
+                    spread * 0.5,
+                );
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "spread is a small positive px constant, always within the profile vector's length"
+                )]
+                let spread_floor = spread as usize;
+                assert!(
+                    profile[spread_floor..].iter().all(|v| *v == 0),
+                    "{label}: nothing may paint past {spread} px — the spread \
+                 *is* the falloff width: {profile:?}"
+                );
+                // 3. And it is actually a shadow at the edge, not a hairline.
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "255.0 * shadow_profile(0.0) is within 0.0..=255.0"
+                )]
+                let edge_alpha = (255.0 * shadow_profile(0.0)) as i32;
+                assert!(
+                    i32::from(profile[0]) >= edge_alpha - 12,
+                    "{label}: the shadow at the edge must read ~{}/255; got {}",
+                    (255.0 * shadow_profile(0.0)).round(),
+                    profile[0]
+                );
+            }
+
+            // 4. Stated directly: the three aspect ratios agree with each
+            //    other, and each rect's own two axes agree.
+            for (label, a, b) in [
+                ("wide vs square", &wide.0, &square.0),
+                ("tall vs square", &tall.0, &square.0),
+                ("wide: x vs y", &wide.0, &wide.1),
+                ("tall: x vs y", &tall.0, &tall.1),
+            ] {
+                for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                    assert!(
+                        (i32::from(*x) - i32::from(*y)).abs() <= 6,
+                        "{label}: the profiles diverge {k} px out from the \
+                     edge ({x} vs {y}): {a:?} vs {b:?}"
+                    );
+                }
+            }
+        }
+
+        // Case `soft_shadow_corners_stay_circular_on_a_wide_rect`:
+        // A corner's falloff is a `spread`-radius quarter circle: alpha a
+        // given distance diagonally out from the corner matches alpha the
+        // same distance straight out from an edge — on a wide rect too.
+        {
+            let spread = 40.0;
+            let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+            let at = render_shadow(1400, 900, rect, spread);
+            for r in [6.0_f64, 12.0, 20.0, 28.0, 36.0] {
+                let straight = i32::from(at(rect.x1 + r, rect.center().y));
+                for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
+                    let (sin, cos) = deg.to_radians().sin_cos();
+                    let got = i32::from(at(rect.x1 + r * cos, rect.y1 + r * sin));
+                    assert!(
+                        (got - straight).abs() <= 8,
+                        "{r} px out from the bottom-right corner at {deg}° \
+                     reads {got}/255, but {r} px straight out from the \
+                     edge reads {straight}/255 — the corner is not a \
+                     circle of radius {spread}"
+                    );
+                }
+            }
+        }
+
+        // Case `soft_shadow_is_uniform_along_an_edge_and_seamless_at_the_slice_joins`:
+        // Along one edge the shadow is constant, including across the
+        // boundaries where the edge slice meets the two corner slices — any
+        // step there would show as a hairline running out of the corner.
+        {
+            let spread = 40.0;
+            let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+            let at = render_shadow(1400, 900, rect, spread);
+            // The corner slices own the first and last `spread` of the edge;
+            // between them the field must not vary at all.
+            for dy in [1.0_f64, 8.0, 20.0] {
+                let y = rect.y1 + dy;
+                let start = rect.x0 + spread;
+                let end = rect.x1 - spread;
+                let span = end - start;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "span is the sampled interior width in px (rect width minus \
+                          2*spread); always non-negative here and far below u32::MAX \
+                          for any rect this toolkit draws"
+                )]
+                let steps = if span >= 0.0 {
+                    (span as u32).saturating_add(1)
+                } else {
+                    0
+                };
+                let samples: Vec<(f64, u8)> = (0..steps)
+                    .map(|i| {
+                        let x = start + f64::from(i);
+                        (x, at(x, y))
+                    })
+                    .collect();
+                let lo = samples.iter().map(|(_, v)| *v).min().unwrap();
+                let hi = samples.iter().map(|(_, v)| *v).max().unwrap();
+                assert!(
+                    i32::from(hi) - i32::from(lo) <= 3,
+                    "{dy} px below the bottom edge the shadow varies from \
+                 {lo} to {hi} across the edge's length; the worst \
+                 columns were {:?}",
+                    samples
+                        .iter()
+                        .filter(|(_, v)| *v == lo || *v == hi)
+                        .take(6)
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+
+        // Case `soft_shadow_leaves_a_wide_rects_interior_clear`:
+        // A wide card's interior stays completely clear — the centre slice
+        // is skipped because the envelope is zero more than one band in.
+        {
+            let spread = 40.0;
+            let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
+            let at = render_shadow(1400, 900, rect, spread);
+            for fx in [0.25_f64, 0.5, 0.75] {
+                let x = rect.x0 + rect.width() * fx;
+                let y = rect.center().y;
+                assert_eq!(at(x, y), 0, "the interior at ({x}, {y}) must be clear");
+            }
+        }
+
+        // Case `degenerate_inputs_are_noops`.
+        {
+            let mut scene = Scene::new();
+            // Zero-area rect, zero intensity, zero spread — must not panic
+            // and must add nothing detectable (we just assert it returns).
+            soft_shadow(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 0.0, 0.0),
+                Color::BLACK,
+                10.0,
+                0.0,
+                0.5,
+            );
+            soft_shadow(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Color::BLACK,
+                10.0,
+                0.0,
+                0.0,
+            );
+            soft_shadow(
+                &mut scene,
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 100.0, 100.0),
+                Color::BLACK,
+                0.0,
+                0.0,
+                0.5,
+            );
+        }
+
+        // Case `a_pill_thinner_than_the_spread_keeps_the_full_falloff`:
+        // A pill shorter than `2 · spread` still gets the full outward
+        // falloff: opposing slices share the interior instead of squashing
+        // the profile. The toolkit's tab/close/restore pills are this shape
+        // (26 px tall against a 10 px spread).
+        {
+            let spread = 20.0;
+            // 24 px tall — narrower than 2 · spread — and 120 px wide.
+            let pill = Rect::new(400.0, 400.0, 520.0, 424.0);
+            let at = render_shadow(1400, 900, pill, spread);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "spread is a small positive px constant in these tests, always well within u32 range"
+            )]
+            let steps = spread as u32 + 4;
+            for k in 0..steps {
+                let u = (f64::from(k) + 0.5) / spread;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
+                )]
+                let want = (255.0 * shadow_profile(u)).round() as i32;
+                let got = i32::from(at(pill.center().x, pill.y1 + f64::from(k)));
+                assert!(
+                    (got - want).abs() <= 8,
+                    "{k} px below a {}-px-tall pill must read {want}/255 \
+                 (shadow_profile({u:.3})); got {got}",
+                    pill.height(),
+                );
+            }
+        }
     }
 
     /// Sample the shadow outward from the middle of `rect`'s right and
@@ -1291,263 +1561,5 @@ mod tests {
             .map(|k| at(rect.center().x, rect.y1 + f64::from(k)))
             .collect();
         (right, bottom)
-    }
-
-    /// The falloff outside an edge is a function of the distance to that
-    /// edge and of `spread` — never of the rect's own dimensions. Wide,
-    /// tall and small-square must all match [`shadow_profile`] pixel for
-    /// pixel, on both axes.
-    #[test]
-    fn soft_shadow_falloff_width_is_the_spread_not_the_rects_size() {
-        let spread = 40.0;
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "spread is a small positive px constant in these tests, always well within u32 range"
-        )]
-        let span = spread as u32 + 6;
-        // Wide (the overview's active row), tall, and a small square.
-        let wide = outward_profiles(Rect::new(150.0, 330.0, 1172.0, 565.0), spread, span);
-        let tall = outward_profiles(Rect::new(560.0, 100.0, 800.0, 800.0), spread, span);
-        let square = outward_profiles(Rect::new(600.0, 400.0, 700.0, 500.0), spread, span);
-
-        for (label, profile) in [
-            ("wide/right", &wide.0),
-            ("wide/bottom", &wide.1),
-            ("tall/right", &tall.0),
-            ("tall/bottom", &tall.1),
-            ("square/right", &square.0),
-            ("square/bottom", &square.1),
-        ] {
-            // 1. Every sample matches the declared envelope at its own
-            //    distance from the edge, in units of `spread`.
-            for (k, got) in profile.iter().enumerate() {
-                #[allow(
-                    clippy::cast_precision_loss,
-                    reason = "k is a small profile-vector index (at most a few hundred), \
-                              far below where f64 loses integer precision"
-                )]
-                let u = (k as f64 + 0.5) / spread;
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
-                )]
-                let want = (255.0 * shadow_profile(u)).round() as i32;
-                assert!(
-                    (i32::from(*got) - want).abs() <= 8,
-                    "{label}: {k} px out from the edge must be {want}/255 \
-                     (shadow_profile({u:.3})); got {got}. Whole profile: \
-                     {profile:?}"
-                );
-            }
-            // 2. …so the band is `spread` wide: still painting half way
-            //    out, nothing at all past the spread.
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "spread * 0.5 is a small positive px offset, always within the profile vector's length"
-            )]
-            let half_way = profile[(spread * 0.5) as usize];
-            assert!(
-                half_way >= 8,
-                "{label}: half a spread ({} px) out the shadow must still \
-                 be painting; got {half_way}/255: {profile:?}",
-                spread * 0.5,
-            );
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "spread is a small positive px constant, always within the profile vector's length"
-            )]
-            let spread_floor = spread as usize;
-            assert!(
-                profile[spread_floor..].iter().all(|v| *v == 0),
-                "{label}: nothing may paint past {spread} px — the spread \
-                 *is* the falloff width: {profile:?}"
-            );
-            // 3. And it is actually a shadow at the edge, not a hairline.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "255.0 * shadow_profile(0.0) is within 0.0..=255.0"
-            )]
-            let edge_alpha = (255.0 * shadow_profile(0.0)) as i32;
-            assert!(
-                i32::from(profile[0]) >= edge_alpha - 12,
-                "{label}: the shadow at the edge must read ~{}/255; got {}",
-                (255.0 * shadow_profile(0.0)).round(),
-                profile[0]
-            );
-        }
-
-        // 4. Stated directly: the three aspect ratios agree with each
-        //    other, and each rect's own two axes agree.
-        for (label, a, b) in [
-            ("wide vs square", &wide.0, &square.0),
-            ("tall vs square", &tall.0, &square.0),
-            ("wide: x vs y", &wide.0, &wide.1),
-            ("tall: x vs y", &tall.0, &tall.1),
-        ] {
-            for (k, (x, y)) in a.iter().zip(b.iter()).enumerate() {
-                assert!(
-                    (i32::from(*x) - i32::from(*y)).abs() <= 6,
-                    "{label}: the profiles diverge {k} px out from the \
-                     edge ({x} vs {y}): {a:?} vs {b:?}"
-                );
-            }
-        }
-    }
-
-    /// A corner's falloff is a `spread`-radius quarter circle: alpha a
-    /// given distance diagonally out from the corner matches alpha the
-    /// same distance straight out from an edge — on a wide rect too.
-    #[test]
-    fn soft_shadow_corners_stay_circular_on_a_wide_rect() {
-        let spread = 40.0;
-        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
-        let at = render_shadow(1400, 900, rect, spread);
-        for r in [6.0_f64, 12.0, 20.0, 28.0, 36.0] {
-            let straight = i32::from(at(rect.x1 + r, rect.center().y));
-            for deg in [15.0_f64, 30.0, 45.0, 60.0, 75.0] {
-                let (sin, cos) = deg.to_radians().sin_cos();
-                let got = i32::from(at(rect.x1 + r * cos, rect.y1 + r * sin));
-                assert!(
-                    (got - straight).abs() <= 8,
-                    "{r} px out from the bottom-right corner at {deg}° \
-                     reads {got}/255, but {r} px straight out from the \
-                     edge reads {straight}/255 — the corner is not a \
-                     circle of radius {spread}"
-                );
-            }
-        }
-    }
-
-    /// Along one edge the shadow is constant, including across the
-    /// boundaries where the edge slice meets the two corner slices — any
-    /// step there would show as a hairline running out of the corner.
-    #[test]
-    fn soft_shadow_is_uniform_along_an_edge_and_seamless_at_the_slice_joins() {
-        let spread = 40.0;
-        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
-        let at = render_shadow(1400, 900, rect, spread);
-        // The corner slices own the first and last `spread` of the edge;
-        // between them the field must not vary at all.
-        for dy in [1.0_f64, 8.0, 20.0] {
-            let y = rect.y1 + dy;
-            let start = rect.x0 + spread;
-            let end = rect.x1 - spread;
-            let span = end - start;
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "span is the sampled interior width in px (rect width minus \
-                          2*spread); always non-negative here and far below u32::MAX \
-                          for any rect this toolkit draws"
-            )]
-            let steps = if span >= 0.0 {
-                (span as u32).saturating_add(1)
-            } else {
-                0
-            };
-            let samples: Vec<(f64, u8)> = (0..steps)
-                .map(|i| {
-                    let x = start + f64::from(i);
-                    (x, at(x, y))
-                })
-                .collect();
-            let lo = samples.iter().map(|(_, v)| *v).min().unwrap();
-            let hi = samples.iter().map(|(_, v)| *v).max().unwrap();
-            assert!(
-                i32::from(hi) - i32::from(lo) <= 3,
-                "{dy} px below the bottom edge the shadow varies from \
-                 {lo} to {hi} across the edge's length; the worst \
-                 columns were {:?}",
-                samples
-                    .iter()
-                    .filter(|(_, v)| *v == lo || *v == hi)
-                    .take(6)
-                    .collect::<Vec<_>>()
-            );
-        }
-    }
-
-    /// A wide card's interior stays completely clear — the centre slice
-    /// is skipped because the envelope is zero more than one band in.
-    #[test]
-    fn soft_shadow_leaves_a_wide_rects_interior_clear() {
-        let spread = 40.0;
-        let rect = Rect::new(150.0, 330.0, 1172.0, 565.0);
-        let at = render_shadow(1400, 900, rect, spread);
-        for fx in [0.25_f64, 0.5, 0.75] {
-            let x = rect.x0 + rect.width() * fx;
-            let y = rect.center().y;
-            assert_eq!(at(x, y), 0, "the interior at ({x}, {y}) must be clear");
-        }
-    }
-
-    #[test]
-    fn degenerate_inputs_are_noops() {
-        let mut scene = Scene::new();
-        // Zero-area rect, zero intensity, zero spread — must not panic
-        // and must add nothing detectable (we just assert it returns).
-        soft_shadow(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 0.0, 0.0),
-            Color::BLACK,
-            10.0,
-            0.0,
-            0.5,
-        );
-        soft_shadow(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 100.0, 100.0),
-            Color::BLACK,
-            10.0,
-            0.0,
-            0.0,
-        );
-        soft_shadow(
-            &mut scene,
-            Affine::IDENTITY,
-            Rect::new(0.0, 0.0, 100.0, 100.0),
-            Color::BLACK,
-            0.0,
-            0.0,
-            0.5,
-        );
-    }
-
-    /// A pill shorter than `2 · spread` still gets the full outward
-    /// falloff: opposing slices share the interior instead of squashing
-    /// the profile. The toolkit's tab/close/restore pills are this shape
-    /// (26 px tall against a 10 px spread).
-    #[test]
-    fn a_pill_thinner_than_the_spread_keeps_the_full_falloff() {
-        let spread = 20.0;
-        // 24 px tall — narrower than 2 · spread — and 120 px wide.
-        let pill = Rect::new(400.0, 400.0, 520.0, 424.0);
-        let at = render_shadow(1400, 900, pill, spread);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "spread is a small positive px constant in these tests, always well within u32 range"
-        )]
-        let steps = spread as u32 + 4;
-        for k in 0..steps {
-            let u = (f64::from(k) + 0.5) / spread;
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "255.0 * shadow_profile(u) is within 0.0..=255.0"
-            )]
-            let want = (255.0 * shadow_profile(u)).round() as i32;
-            let got = i32::from(at(pill.center().x, pill.y1 + f64::from(k)));
-            assert!(
-                (got - want).abs() <= 8,
-                "{k} px below a {}-px-tall pill must read {want}/255 \
-                 (shadow_profile({u:.3})); got {got}",
-                pill.height(),
-            );
-        }
     }
 }

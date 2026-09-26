@@ -67,7 +67,7 @@ smithay-client-toolkit = { version = "0.20.0", features = ["calloop"], optional 
 [target.'cfg(unix)'.dependencies]
 # MPRIS needs a Unix session bus; p2p supports hermetic tests.
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
-ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast"] }
+ashpd = { workspace = true, optional = true, features = ["file_chooser", "open_uri", "location", "screencast", "wallpaper"] }
 # Drives the location portal's update stream (`native::location`).
 futures-util = { workspace = true, optional = true }
 

@@ -230,250 +230,257 @@ mod tests {
     use ui::search::SearchProvider;
 
     #[test]
-    fn unicode_metadata_is_cursor_paged_and_keeps_canonical_actions() {
-        let audio = vec![TrackState {
-            stream_id: "audio-munich".into(),
-            index: 41,
-            label: "München 夏".into(),
-            selected: false,
-        }];
-        let chapters = vec![ChapterState {
-            id: "intro".into(),
-            label: "Résumé".into(),
-            seconds: 4.0,
-        }];
-        let context = PlayerResourceCtx {
-            title: "München 夏.mkv",
-            media: MediaAvailability {
-                has_media: true,
-                source_id: Some("fixture://munich".into()),
-                media_ref: Some("fixture-media://munich".into()),
-                can_control_transport: true,
-            },
-            settings: PlaybackSettingsState {
-                autoplay: true,
-                loop_enabled: false,
-                rate: 1.0,
-            },
-            audio_tracks: &audio,
-            subtitle_tracks: &[],
-            chapters: &chapters,
-            library: crate::actions::LocalLibraryState::default(),
-        };
-        let provider =
-            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
-        let hits = provider.search("München");
-        assert!(hits.iter().any(|result| {
-            result.action_address()
-                == Some(ActionAddress::new(
-                    crate::actions::audio_resource_id("fixture://munich", "audio-munich"),
-                    format!(
-                        "select-audio-{}",
-                        crate::actions::identity_token_for_action("audio-munich")
-                    ),
-                ))
-        }));
-        let page = provider.search_page("Résumé", None, 1, 1);
-        assert!(
-            page.inspected <= 1,
-            "the posting list keeps page work bounded"
-        );
-        assert!(page.results.iter().any(|result| {
-            result.action_address().is_some_and(|address| {
-                address.action
-                    == format!(
-                        "jump-to-{}",
-                        crate::actions::identity_token_for_action("intro")
-                    )
-            })
-        }));
-    }
-
-    #[test]
-    fn local_library_search_uses_opaque_resource_addresses_not_source_paths() {
-        let context = PlayerResourceCtx {
-            title: "No media",
-            media: MediaAvailability {
-                has_media: false,
-                source_id: None,
-                media_ref: None,
-                can_control_transport: true,
-            },
-            settings: PlaybackSettingsState {
-                autoplay: true,
-                loop_enabled: false,
-                rate: 1.0,
-            },
-            audio_tracks: &[],
-            subtitle_tracks: &[],
-            chapters: &[],
-            library: crate::actions::LocalLibraryState {
-                queue: vec![crate::actions::LocalMediaItemState {
-                    id: "local-queue-local-media-a1b2-open-0".into(),
-                    title: "Family clip.mp4".into(),
-                    current: false,
-                }],
-                recent: Vec::new(),
-            },
-        };
-        let provider =
-            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
-        let hit = provider
-            .search("Family")
-            .into_iter()
-            .find(|result| result.title == "Family clip.mp4")
-            .expect("queue item search hit");
-        assert_eq!(
-            hit.action_address(),
-            Some(ActionAddress::new(
-                crate::actions::queue_item_resource_id("local-queue-local-media-a1b2-open-0"),
-                "play",
-            ))
-        );
-        assert!(!format!("{hit:?}").contains("/home/"));
-    }
-
-    #[test]
-    fn late_metadata_match_remains_cursor_paged() {
-        let audio: Vec<_> = (0..5_000)
-            .map(|index| TrackState {
-                stream_id: format!("stream-{index}"),
-                index,
-                label: if index == 4_999 {
-                    "Final Ωmega track".into()
-                } else {
-                    format!("Audio {index}")
-                },
+    #[allow(
+        clippy::too_many_lines,
+        reason = "merged scenario: each former test is a labelled case block with its own fixture"
+    )]
+    fn library_metadata_search_is_cursor_paged_and_opaque() {
+        // Case `unicode_metadata_is_cursor_paged_and_keeps_canonical_actions`.
+        {
+            let audio = vec![TrackState {
+                stream_id: "audio-munich".into(),
+                index: 41,
+                label: "München 夏".into(),
                 selected: false,
-            })
-            .collect();
-        let context = PlayerResourceCtx {
-            title: "large.mkv",
-            media: MediaAvailability {
-                has_media: true,
-                source_id: Some("fixture://large".into()),
-                media_ref: Some("fixture-media://large".into()),
-                can_control_transport: true,
-            },
-            settings: PlaybackSettingsState {
-                autoplay: true,
-                loop_enabled: false,
-                rate: 1.0,
-            },
-            audio_tracks: &audio,
-            subtitle_tracks: &[],
-            chapters: &[],
-            library: crate::actions::LocalLibraryState::default(),
-        };
-        let provider =
-            VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
-        let first = provider.search_page("Ωmega", None, 64, 4);
-        assert!(first.inspected <= 64);
-        let mut page = first;
-        while page.next.is_some() && page.results.is_empty() {
-            page = provider.search_page("Ωmega", page.next.as_ref(), 64, 4);
-            assert!(page.inspected <= 64, "each page obeys its scan budget");
+            }];
+            let chapters = vec![ChapterState {
+                id: "intro".into(),
+                label: "Résumé".into(),
+                seconds: 4.0,
+            }];
+            let context = PlayerResourceCtx {
+                title: "München 夏.mkv",
+                media: MediaAvailability {
+                    has_media: true,
+                    source_id: Some("fixture://munich".into()),
+                    media_ref: Some("fixture-media://munich".into()),
+                    can_control_transport: true,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: true,
+                    loop_enabled: false,
+                    rate: 1.0,
+                },
+                audio_tracks: &audio,
+                subtitle_tracks: &[],
+                chapters: &chapters,
+                library: crate::actions::LocalLibraryState::default(),
+            };
+            let provider =
+                VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
+            let hits = provider.search("München");
+            assert!(hits.iter().any(|result| {
+                result.action_address()
+                    == Some(ActionAddress::new(
+                        crate::actions::audio_resource_id("fixture://munich", "audio-munich"),
+                        format!(
+                            "select-audio-{}",
+                            crate::actions::identity_token_for_action("audio-munich")
+                        ),
+                    ))
+            }));
+            let page = provider.search_page("Résumé", None, 1, 1);
+            assert!(
+                page.inspected <= 1,
+                "the posting list keeps page work bounded"
+            );
+            assert!(page.results.iter().any(|result| {
+                result.action_address().is_some_and(|address| {
+                    address.action
+                        == format!(
+                            "jump-to-{}",
+                            crate::actions::identity_token_for_action("intro")
+                        )
+                })
+            }));
         }
-        assert_eq!(
-            page.results.len(),
-            1,
-            "late Unicode match is eventually found"
-        );
-    }
-
-    #[test]
-    fn shared_playlists_and_annotations_search_to_canonical_show_actions() {
-        let context = PlayerResourceCtx {
-            title: "No media",
-            media: MediaAvailability {
-                has_media: false,
-                source_id: None,
-                media_ref: None,
-                can_control_transport: true,
-            },
-            settings: PlaybackSettingsState {
-                autoplay: true,
-                loop_enabled: false,
-                rate: 1.0,
-            },
-            audio_tracks: &[],
-            subtitle_tracks: &[],
-            chapters: &[],
-            library: crate::actions::LocalLibraryState::default(),
-        };
-        let shared = crate::shared::SharedLibrary {
-            playlists: vec![crate::shared::Playlist {
-                id: "team".into(),
-                name: "Team review".into(),
-            }],
-            items: Vec::new(),
-            annotations: vec![crate::shared::TimestampAnnotation {
-                id: "cut".into(),
-                media_ref: "media".into(),
-                time_ms: 12_500,
-                text: "Check this cut".into(),
-            }],
-        };
-        let provider = VideoPlayerSearchProvider::new(&context, &shared);
-        assert!(
-            provider
-                .search("Team review")
-                .iter()
-                .any(|hit| hit.action_address()
-                    == Some(ActionAddress::new(
-                        crate::actions::playlist_resource_id("team"),
-                        "show"
-                    )))
-        );
-        assert!(
-            provider
-                .search("Check this cut")
-                .iter()
-                .any(|hit| hit.action_address()
-                    == Some(ActionAddress::new(
-                        crate::actions::annotation_resource_id("cut"),
-                        "show"
-                    )))
-        );
-    }
-
-    #[test]
-    fn matching_current_media_prefers_the_marker_jump_action() {
-        let context = PlayerResourceCtx {
-            title: "Review.mp4",
-            media: MediaAvailability {
-                has_media: true,
-                source_id: Some("fixture://review-open-2".into()),
-                media_ref: Some("fixture-media://review".into()),
-                can_control_transport: true,
-            },
-            settings: PlaybackSettingsState {
-                autoplay: true,
-                loop_enabled: false,
-                rate: 1.0,
-            },
-            audio_tracks: &[],
-            subtitle_tracks: &[],
-            chapters: &[],
-            library: crate::actions::LocalLibraryState::default(),
-        };
-        let shared = crate::shared::SharedLibrary {
-            playlists: Vec::new(),
-            items: Vec::new(),
-            annotations: vec![crate::shared::TimestampAnnotation {
-                id: "review-cut".into(),
-                media_ref: "fixture-media://review".into(),
-                time_ms: 12_500,
-                text: "Check this cut".into(),
-            }],
-        };
-        let provider = VideoPlayerSearchProvider::new(&context, &shared);
-        assert!(provider.search("Check this cut").iter().any(|hit| {
-            hit.action_address()
-                == Some(ActionAddress::new(
-                    crate::actions::annotation_resource_id("review-cut"),
-                    "jump",
+        // Case `local_library_search_uses_opaque_resource_addresses_not_source_paths`.
+        {
+            let context = PlayerResourceCtx {
+                title: "No media",
+                media: MediaAvailability {
+                    has_media: false,
+                    source_id: None,
+                    media_ref: None,
+                    can_control_transport: true,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: true,
+                    loop_enabled: false,
+                    rate: 1.0,
+                },
+                audio_tracks: &[],
+                subtitle_tracks: &[],
+                chapters: &[],
+                library: crate::actions::LocalLibraryState {
+                    queue: vec![crate::actions::LocalMediaItemState {
+                        id: "local-queue-local-media-a1b2-open-0".into(),
+                        title: "Family clip.mp4".into(),
+                        current: false,
+                    }],
+                    recent: Vec::new(),
+                },
+            };
+            let provider =
+                VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
+            let hit = provider
+                .search("Family")
+                .into_iter()
+                .find(|result| result.title == "Family clip.mp4")
+                .expect("queue item search hit");
+            assert_eq!(
+                hit.action_address(),
+                Some(ActionAddress::new(
+                    crate::actions::queue_item_resource_id("local-queue-local-media-a1b2-open-0"),
+                    "play",
                 ))
-        }));
+            );
+            assert!(!format!("{hit:?}").contains("/home/"));
+        }
+        // Case `late_metadata_match_remains_cursor_paged`.
+        {
+            let audio: Vec<_> = (0..5_000)
+                .map(|index| TrackState {
+                    stream_id: format!("stream-{index}"),
+                    index,
+                    label: if index == 4_999 {
+                        "Final Ωmega track".into()
+                    } else {
+                        format!("Audio {index}")
+                    },
+                    selected: false,
+                })
+                .collect();
+            let context = PlayerResourceCtx {
+                title: "large.mkv",
+                media: MediaAvailability {
+                    has_media: true,
+                    source_id: Some("fixture://large".into()),
+                    media_ref: Some("fixture-media://large".into()),
+                    can_control_transport: true,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: true,
+                    loop_enabled: false,
+                    rate: 1.0,
+                },
+                audio_tracks: &audio,
+                subtitle_tracks: &[],
+                chapters: &[],
+                library: crate::actions::LocalLibraryState::default(),
+            };
+            let provider =
+                VideoPlayerSearchProvider::new(&context, &crate::shared::SharedLibrary::default());
+            let first = provider.search_page("Ωmega", None, 64, 4);
+            assert!(first.inspected <= 64);
+            let mut page = first;
+            while page.next.is_some() && page.results.is_empty() {
+                page = provider.search_page("Ωmega", page.next.as_ref(), 64, 4);
+                assert!(page.inspected <= 64, "each page obeys its scan budget");
+            }
+            assert_eq!(
+                page.results.len(),
+                1,
+                "late Unicode match is eventually found"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_entity_search_resolves_to_canonical_show_and_jump_actions() {
+        // Case `shared_playlists_and_annotations_search_to_canonical_show_actions`.
+        {
+            let context = PlayerResourceCtx {
+                title: "No media",
+                media: MediaAvailability {
+                    has_media: false,
+                    source_id: None,
+                    media_ref: None,
+                    can_control_transport: true,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: true,
+                    loop_enabled: false,
+                    rate: 1.0,
+                },
+                audio_tracks: &[],
+                subtitle_tracks: &[],
+                chapters: &[],
+                library: crate::actions::LocalLibraryState::default(),
+            };
+            let shared = crate::shared::SharedLibrary {
+                playlists: vec![crate::shared::Playlist {
+                    id: "team".into(),
+                    name: "Team review".into(),
+                }],
+                items: Vec::new(),
+                annotations: vec![crate::shared::TimestampAnnotation {
+                    id: "cut".into(),
+                    media_ref: "media".into(),
+                    time_ms: 12_500,
+                    text: "Check this cut".into(),
+                }],
+            };
+            let provider = VideoPlayerSearchProvider::new(&context, &shared);
+            assert!(
+                provider
+                    .search("Team review")
+                    .iter()
+                    .any(|hit| hit.action_address()
+                        == Some(ActionAddress::new(
+                            crate::actions::playlist_resource_id("team"),
+                            "show"
+                        )))
+            );
+            assert!(
+                provider
+                    .search("Check this cut")
+                    .iter()
+                    .any(|hit| hit.action_address()
+                        == Some(ActionAddress::new(
+                            crate::actions::annotation_resource_id("cut"),
+                            "show"
+                        )))
+            );
+        }
+        // Case `matching_current_media_prefers_the_marker_jump_action`.
+        {
+            let context = PlayerResourceCtx {
+                title: "Review.mp4",
+                media: MediaAvailability {
+                    has_media: true,
+                    source_id: Some("fixture://review-open-2".into()),
+                    media_ref: Some("fixture-media://review".into()),
+                    can_control_transport: true,
+                },
+                settings: PlaybackSettingsState {
+                    autoplay: true,
+                    loop_enabled: false,
+                    rate: 1.0,
+                },
+                audio_tracks: &[],
+                subtitle_tracks: &[],
+                chapters: &[],
+                library: crate::actions::LocalLibraryState::default(),
+            };
+            let shared = crate::shared::SharedLibrary {
+                playlists: Vec::new(),
+                items: Vec::new(),
+                annotations: vec![crate::shared::TimestampAnnotation {
+                    id: "review-cut".into(),
+                    media_ref: "fixture-media://review".into(),
+                    time_ms: 12_500,
+                    text: "Check this cut".into(),
+                }],
+            };
+            let provider = VideoPlayerSearchProvider::new(&context, &shared);
+            assert!(provider.search("Check this cut").iter().any(|hit| {
+                hit.action_address()
+                    == Some(ActionAddress::new(
+                        crate::actions::annotation_resource_id("review-cut"),
+                        "jump",
+                    ))
+            }));
+        }
     }
 }

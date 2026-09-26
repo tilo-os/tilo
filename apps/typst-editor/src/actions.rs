@@ -277,138 +277,185 @@ mod tests {
         }
     }
 
-    /// The document holds exactly one thing: the source text. There is no
-    /// structural CRDT (no map of documents, no settings object, no assets), so
-    /// there is nothing for an action to mutate beyond the native `Text`.
     #[test]
-    fn source_text_is_the_only_crdt_state() {
-        let (_app, doc) = synced();
-        let keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(
-            keys,
-            vec!["source".to_string()],
-            "the document holds only the source text, nothing structural: {keys:?}"
-        );
-        match doc.get(&ROOT, "source").unwrap() {
-            Some((Value::Object(ObjType::Text), _)) => {}
-            other => panic!("root[\"source\"] must be an Automerge Text, got {other:?}"),
+    fn source_text_is_the_only_crdt_state_and_replicates_as_native_diffs() {
+        // Case `source_text_is_the_only_crdt_state`:
+        // The document holds exactly one thing: the source text. There is no
+        // structural CRDT (no map of documents, no settings object, no assets), so
+        // there is nothing for an action to mutate beyond the native `Text`.
+        {
+            let (_app, doc) = synced();
+            let keys: Vec<String> = doc.keys(&ROOT).collect();
+            assert_eq!(
+                keys,
+                vec!["source".to_string()],
+                "the document holds only the source text, nothing structural: {keys:?}"
+            );
+            match doc.get(&ROOT, "source").unwrap() {
+                Some((Value::Object(ObjType::Text), _)) => {}
+                other => panic!("root[\"source\"] must be an Automerge Text, got {other:?}"),
+            }
+        }
+        // Case `typing_replicates_byte_identically_on_a_peer`:
+        // The collaboration guarantee the native text path already provides: a
+        // keystroke driven through the production `Widget::handle_event` splices
+        // into `root["source"]`, and an independent replica that merges the change
+        // converges byte-identically (same head hashes, not merely the same text) —
+        // exactly what an action executor would give, so no action is needed.
+        {
+            let (mut app, mut doc) = synced();
+            let src = source_id(&doc);
+            doc.commit();
+            let base = doc.save();
+            let before = doc.text(&src).unwrap();
+
+            let mut peer = AutoCommit::load(&base).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "precondition: replicas share a base"
+            );
+
+            // No modifiers → the keystroke falls through to the focused editor, which
+            // splices it into the bound source object on the CRDT-native text path.
+            assert!(
+                send(&mut app, &mut doc, &char_event("Z"), Modifiers::default()),
+                "keystroke consumed by the editor"
+            );
+            doc.commit();
+            let after = doc.text(&src).unwrap();
+            assert_eq!(
+                after.chars().count(),
+                before.chars().count() + 1,
+                "the keystroke inserted exactly one character into the shared text"
+            );
+
+            peer.merge_incoming(&mut doc).unwrap();
+            assert_eq!(
+                doc.get_heads(),
+                peer.get_heads(),
+                "byte-identical convergence after merge"
+            );
+            assert_eq!(
+                peer.text(&src).unwrap(),
+                after,
+                "the peer sees the same source text"
+            );
+        }
+        // Case `switching_documents_is_a_native_text_diff`:
+        // Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
+        // Text — a native text diff — not a structural mutation. The source content
+        // changes, but the document still holds only the one `source` key and still
+        // the same `Text` object, so there is no structural operation to encode.
+        {
+            let (mut app, mut doc) = synced();
+            let src_before = source_id(&doc);
+            let text_before = doc.text(&src_before).unwrap();
+
+            let ctrl = Modifiers::from(ModifiersState::CONTROL);
+            assert!(
+                send(&mut app, &mut doc, &char_event("]"), ctrl),
+                "Ctrl+] consumed"
+            );
+
+            let keys: Vec<String> = doc.keys(&ROOT).collect();
+            assert_eq!(
+                keys,
+                vec!["source".to_string()],
+                "still only the source key: {keys:?}"
+            );
+            let src_after = source_id(&doc);
+            assert_eq!(
+                src_before, src_after,
+                "same Text object, spliced in place — not replaced"
+            );
+            assert_ne!(
+                doc.text(&src_after).unwrap(),
+                text_before,
+                "the switch swapped the source content"
+            );
         }
     }
 
     #[test]
-    fn file_effects_bind_direct_paths_and_keep_job_confirmation_contracts() {
-        let resources = resources(&AutoCommit::new());
-        for id in ["open", "save", "export-pdf"] {
-            let spec = tilo_actions::flatten(&resources)
-                .into_iter()
-                .find(|flat| flat.action.id == id)
-                .map(|flat| flat.action)
-                .unwrap();
-            assert_eq!(spec.params()[0].name, "path");
-            assert!(matches!(
-                spec.contract.execution,
-                ExecutionMode::Background { cancellable: true }
-            ));
-            assert_eq!(spec.contract.result, ResultSpec::Job);
-            assert!(!matches!(
-                spec.contract.confirmation,
-                tilo_actions::ConfirmationPolicy::None
-            ));
-            let args = serde_json::json!({"path": format!("/tmp/{id}")})
-                .as_object()
-                .unwrap()
-                .clone();
-            let encoded = spec.build_json(&args).unwrap();
-            let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
-            let (TypstOperation::Open { path }
-            | TypstOperation::Save { path }
-            | TypstOperation::ExportPdf { path }) = decoded
-            else {
-                unreachable!();
-            };
-            assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
+    fn typst_exports_effect_and_view_operations_with_honest_contracts() {
+        // Case `file_effects_bind_direct_paths_and_keep_job_confirmation_contracts`.
+        {
+            let resources = resources(&AutoCommit::new());
+            for id in ["open", "save", "export-pdf"] {
+                let spec = tilo_actions::flatten(&resources)
+                    .into_iter()
+                    .find(|flat| flat.action.id == id)
+                    .map(|flat| flat.action)
+                    .unwrap();
+                assert_eq!(spec.params()[0].name, "path");
+                assert!(matches!(
+                    spec.contract.execution,
+                    ExecutionMode::Background { cancellable: true }
+                ));
+                assert_eq!(spec.contract.result, ResultSpec::Job);
+                assert!(!matches!(
+                    spec.contract.confirmation,
+                    tilo_actions::ConfirmationPolicy::None
+                ));
+                let args = serde_json::json!({"path": format!("/tmp/{id}")})
+                    .as_object()
+                    .unwrap()
+                    .clone();
+                let encoded = spec.build_json(&args).unwrap();
+                let decoded = decode(OPERATION_TYPE, &encoded.payload).unwrap().unwrap();
+                let (TypstOperation::Open { path }
+                | TypstOperation::Save { path }
+                | TypstOperation::ExportPdf { path }) = decoded
+                else {
+                    unreachable!();
+                };
+                assert_eq!(path.as_deref(), Some(format!("/tmp/{id}").as_str()));
+            }
         }
-    }
-
-    /// The collaboration guarantee the native text path already provides: a
-    /// keystroke driven through the production `Widget::handle_event` splices
-    /// into `root["source"]`, and an independent replica that merges the change
-    /// converges byte-identically (same head hashes, not merely the same text) —
-    /// exactly what an action executor would give, so no action is needed.
-    #[test]
-    fn typing_replicates_byte_identically_on_a_peer() {
-        let (mut app, mut doc) = synced();
-        let src = source_id(&doc);
-        doc.commit();
-        let base = doc.save();
-        let before = doc.text(&src).unwrap();
-
-        let mut peer = AutoCommit::load(&base).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "precondition: replicas share a base"
-        );
-
-        // No modifiers → the keystroke falls through to the focused editor, which
-        // splices it into the bound source object on the CRDT-native text path.
-        assert!(
-            send(&mut app, &mut doc, &char_event("Z"), Modifiers::default()),
-            "keystroke consumed by the editor"
-        );
-        doc.commit();
-        let after = doc.text(&src).unwrap();
-        assert_eq!(
-            after.chars().count(),
-            before.chars().count() + 1,
-            "the keystroke inserted exactly one character into the shared text"
-        );
-
-        peer.merge_incoming(&mut doc).unwrap();
-        assert_eq!(
-            doc.get_heads(),
-            peer.get_heads(),
-            "byte-identical convergence after merge"
-        );
-        assert_eq!(
-            peer.text(&src).unwrap(),
-            after,
-            "the peer sees the same source text"
-        );
-    }
-
-    /// Switching documents (Ctrl+]) is a bulk edit of the *same* `root["source"]`
-    /// Text — a native text diff — not a structural mutation. The source content
-    /// changes, but the document still holds only the one `source` key and still
-    /// the same `Text` object, so there is no structural operation to encode.
-    #[test]
-    fn switching_documents_is_a_native_text_diff() {
-        let (mut app, mut doc) = synced();
-        let src_before = source_id(&doc);
-        let text_before = doc.text(&src_before).unwrap();
-
-        let ctrl = Modifiers::from(ModifiersState::CONTROL);
-        assert!(
-            send(&mut app, &mut doc, &char_event("]"), ctrl),
-            "Ctrl+] consumed"
-        );
-
-        let keys: Vec<String> = doc.keys(&ROOT).collect();
-        assert_eq!(
-            keys,
-            vec!["source".to_string()],
-            "still only the source key: {keys:?}"
-        );
-        let src_after = source_id(&doc);
-        assert_eq!(
-            src_before, src_after,
-            "same Text object, spliced in place — not replaced"
-        );
-        assert_ne!(
-            doc.text(&src_after).unwrap(),
-            text_before,
-            "the switch swapped the source content"
-        );
+        // Case `exports_effect_and_view_operations_without_fake_document_actions`:
+        // The source remains native text while effects/views are discoverable.
+        {
+            let (mut app, doc) = synced();
+            let resources = Widget::resources(&app, &doc);
+            assert_eq!(resources.len(), 1);
+            assert_eq!(resources[0].kind, "typst.workspace");
+            assert_eq!(
+                resources[0].children.len(),
+                1,
+                "workspace owns the active document"
+            );
+            let document = &resources[0].children[0];
+            assert_eq!(document.kind, "typst.document");
+            assert!(
+                document
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "typst.preview")
+            );
+            assert!(
+                document
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "typst.export")
+            );
+            let actions = tilo_actions::flatten(&resources);
+            assert!(actions.iter().any(|a| {
+                a.action.id == "compile" && a.action.kind == tilo_actions::OperationKind::Effect
+            }));
+            assert!(actions.iter().any(|a| {
+                a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
+            }));
+            assert!(
+                actions
+                    .iter()
+                    .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
+            );
+            assert!(
+                app.take_committed_action().is_none(),
+                "effects/views do not create document undo boundaries"
+            );
+        }
     }
 
     // Typst publishes only effects and views (the source is native text), so
@@ -419,49 +466,5 @@ mod tests {
         registry: tilo_actions::ActionRegistry::new(),
         resources: |doc| resources(doc),
         palette: ["Open Typst file", "Save Typst file", "Recompile", "Export PDF", "Zoom in"],
-    }
-
-    /// The source remains native text while effects/views are discoverable.
-    #[test]
-    fn exports_effect_and_view_operations_without_fake_document_actions() {
-        let (mut app, doc) = synced();
-        let resources = Widget::resources(&app, &doc);
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].kind, "typst.workspace");
-        assert_eq!(
-            resources[0].children.len(),
-            1,
-            "workspace owns the active document"
-        );
-        let document = &resources[0].children[0];
-        assert_eq!(document.kind, "typst.document");
-        assert!(
-            document
-                .children
-                .iter()
-                .any(|child| child.kind == "typst.preview")
-        );
-        assert!(
-            document
-                .children
-                .iter()
-                .any(|child| child.kind == "typst.export")
-        );
-        let actions = tilo_actions::flatten(&resources);
-        assert!(actions.iter().any(|a| {
-            a.action.id == "compile" && a.action.kind == tilo_actions::OperationKind::Effect
-        }));
-        assert!(actions.iter().any(|a| {
-            a.action.id == "zoom-in" && a.action.kind == tilo_actions::OperationKind::View
-        }));
-        assert!(
-            actions
-                .iter()
-                .all(|a| a.action.kind != tilo_actions::OperationKind::Document)
-        );
-        assert!(
-            app.take_committed_action().is_none(),
-            "effects/views do not create document undo boundaries"
-        );
     }
 }

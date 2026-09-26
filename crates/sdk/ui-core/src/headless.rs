@@ -1377,6 +1377,7 @@ impl FrameHarness {
         reason = "one exclusive sync/build/admission/measure/apply sequence keeps layout ownership explicit"
     )]
     pub fn relayout(&mut self) {
+        self.poll_touch_hold(crate::time::now());
         if let Err(error) = self.try_relayout() {
             tracing::error!(
                 ?error,
@@ -2827,37 +2828,21 @@ impl FrameHarness {
             self.relayout();
         }
         if let WindowEvent::Touch(touch) = event {
-            let pointer_events = self.touch_pointer.events(touch);
-            self.dispatching_touch_pointer = true;
-            for pointer_event in pointer_events {
-                let pointer_event = match pointer_event {
-                    crate::interaction::TouchPointerEvent::Move(position) => {
-                        WindowEvent::CursorMoved {
-                            device_id: touch.device_id,
-                            position,
-                        }
-                    }
-                    crate::interaction::TouchPointerEvent::Press => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Release => WindowEvent::MouseInput {
-                        device_id: touch.device_id,
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                    },
-                    crate::interaction::TouchPointerEvent::Scroll { delta, phase } => {
-                        WindowEvent::MouseWheel {
-                            device_id: touch.device_id,
-                            delta: winit::event::MouseScrollDelta::PixelDelta(delta),
-                            phase,
-                        }
-                    }
-                };
-                self.send(&pointer_event);
-            }
-            self.dispatching_touch_pointer = false;
+            let scale = self.input_scale;
+            let mut touch_pointer = std::mem::take(&mut self.touch_pointer);
+            let pointer_events = touch_pointer.events(touch, |position| {
+                self.claims_raw_touch_at(Point::new(position.x / scale, position.y / scale))
+            });
+            self.touch_pointer = touch_pointer;
+            self.dispatch_touch_pointer(touch.device_id, pointer_events);
+        }
+        // Mouse side buttons navigate the tree's history, as in the live host.
+        if let Some(direction) = crate::interaction::mouse_nav_direction(event)
+            && self
+                .root
+                .on_nav_gesture(direction, &mut self.state.doc, &self.state.root)
+        {
+            return;
         }
         let mut handled = false;
         let mut focus_target: Option<NodeId> = None;
@@ -3278,6 +3263,62 @@ impl FrameHarness {
         }
     }
 
+    fn dispatch_touch_pointer(
+        &mut self,
+        device_id: winit::event::DeviceId,
+        events: Vec<crate::interaction::TouchPointerEvent>,
+    ) {
+        let nested = std::mem::replace(&mut self.dispatching_touch_pointer, true);
+        for pointer_event in events {
+            self.send(&pointer_event.window_event(device_id));
+        }
+        self.dispatching_touch_pointer = nested;
+    }
+
+    /// Whether a laid-out widget claims raw per-finger touch at `point`
+    /// (logical coords); see [`Widget::claims_raw_touch`].
+    fn claims_raw_touch_at(&self, point: Point) -> bool {
+        self.node_map.keys().any(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.get_rect().contains(point) && widget.claims_raw_touch(point)
+            })
+            .unwrap_or(false)
+        })
+    }
+
+    /// Fire a touch long-press whose hold deadline passed at `now`.
+    fn poll_touch_hold(&mut self, now: crate::time::Instant) {
+        if let Some((device_id, events)) = self.touch_pointer.poll(now) {
+            self.dispatch_touch_pointer(device_id, events);
+        }
+    }
+
+    /// Hold one finger still at logical `(x, y)` past the long-press delay,
+    /// then lift it: the touchscreen's secondary click. The hold is resolved
+    /// at its deadline instead of waiting for it in real time.
+    pub fn touch_hold_at(&mut self, x: f64, y: f64) {
+        self.pump_component_wakes();
+        self.send_touch_phase(winit::event::TouchPhase::Started, x, y);
+        if let Some(deadline) = self.touch_pointer.long_press_deadline() {
+            self.poll_touch_hold(deadline);
+        }
+        self.relayout();
+        self.send_touch_phase(winit::event::TouchPhase::Ended, x, y);
+    }
+
+    /// Deliver one finger's contact update at logical `(x, y)`; `id`
+    /// distinguishes simultaneous fingers.
+    pub fn touch(&mut self, id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) {
+        self.pump_component_wakes();
+        self.send(&WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
+            force: None,
+            id,
+        }));
+    }
+
     /// Move the pointer to `(x, y)` and press+release the left button — the
     /// three events a click produces, in order.
     pub fn click_at(&mut self, x: f64, y: f64) {
@@ -3323,13 +3364,7 @@ impl FrameHarness {
     }
 
     fn send_touch_phase(&mut self, phase: winit::event::TouchPhase, x: f64, y: f64) {
-        self.send(&WindowEvent::Touch(winit::event::Touch {
-            device_id: winit::event::DeviceId::dummy(),
-            phase,
-            location: winit::dpi::PhysicalPosition::new(x * self.input_scale, y * self.input_scale),
-            force: None,
-            id: 0,
-        }));
+        self.touch(0, phase, x, y);
     }
 
     /// Touch the centre of a named widget.
@@ -4796,116 +4831,310 @@ fn write_headless_output(
 mod tests {
     use super::*;
     #[test]
-    fn anonymous_headless_focus_survives_rebuild_without_state_transfer() {
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(crate::widget::layout::AnonymousFocusProbe::new(
-                "own selection",
-            )),
-            (600, 400),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("anonymous-test".into()),
-        );
-        let old = driver.focused.unwrap();
-        driver.relayout();
-        let current = driver.focused.unwrap();
-        assert_ne!(old, current);
-        assert_eq!(
+    fn headless_focus_and_key_activation_route_to_the_right_target() {
+        // Case `anonymous_headless_focus_survives_rebuild_without_state_transfer`.
+        {
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(crate::widget::layout::AnonymousFocusProbe::new(
+                    "own selection",
+                )),
+                (600, 400),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("anonymous-test".into()),
+            );
+            let old = driver.focused.unwrap();
+            driver.relayout();
+            let current = driver.focused.unwrap();
+            assert_ne!(old, current);
+            assert_eq!(
+                driver
+                    .inspect_node(current, |widget| widget.get_state())
+                    .unwrap()
+                    .as_deref(),
+                Some("own selection")
+            );
+        }
+
+        // Case `anonymous_headless_unrelated_focused_siblings_have_no_input_target`.
+        {
+            let root = Column::new()
+                .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
+                    "a",
+                )))
+                .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
+                    "b",
+                )));
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(root),
+                (600, 400),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("fixture".into()),
+            );
+            assert!(driver.focused.is_none());
+            driver.relayout();
+            assert!(driver.focused.is_none());
+        }
+
+        // Case `function_keys_do_not_type_their_names_into_a_focused_field`.
+        {
+            let mut driver = Driver::new(
+                State::new(),
+                Box::new(TextInput::local().with_id("function-key-field")),
+                (640, 160),
+            );
             driver
-                .inspect_node(current, |widget| widget.get_state())
-                .unwrap()
-                .as_deref(),
-            Some("own selection")
-        );
+                .perform_named("function-key-field", &crate::a11y::Action::Focus)
+                .unwrap();
+            driver.type_text("keep");
+            for index in 1..=12 {
+                driver.key(&format!("F{index}"));
+            }
+            let snapshot = driver.inspection();
+            assert_eq!(
+                snapshot.root.semantics.unwrap().value.as_deref(),
+                Some("keep")
+            );
+        }
+
+        // Case `app_wrapper_routes_tab_to_an_opted_in_code_editor_but_traverses_forms`:
+        // The frame harness is the app wrapper used by scenarios. Keep Tab
+        // coverage here rather than only in direct widget tests: the live host
+        // decides whether focus traversal intercepts the key before a widget can
+        // see it.
+        {
+            let mut editor = Driver::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
+            editor.tab(false);
+            editor.key("Tab");
+            let editor_node = editor.focused().expect("editor has focus");
+            // The retained node is valid until relayout, and `key` has already
+            // completed its relayout before this observation.
+            assert_eq!(
+                unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+                Some("4".into()),
+                "Tab reaches the code editor and inserts its configured indent"
+            );
+            editor.set_modifiers(&["shift".into()]);
+            editor.key("Tab");
+            let editor_node = editor.focused().expect("editor remains focused");
+            assert_eq!(
+                unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+                Some("0".into()),
+                "Shift+Tab reaches the same editor and outdents"
+            );
+
+            let form = Column::new()
+                .push(Box::new(TextInput::local().with_id("field")))
+                .push(Box::new(Button::new("next", "Next", None)));
+            let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
+            fields.tab(false);
+            let field = fields.focused().expect("first field has focus");
+            fields.key("Tab");
+            assert_ne!(
+                fields.focused(),
+                Some(field),
+                "ordinary fields yield Tab to focus traversal"
+            );
+        }
+
+        // Case `enter_and_space_activate_a_focused_button_once_per_press`.
+        {
+            let activations: std::rc::Rc<std::cell::Cell<usize>> =
+                std::rc::Rc::new(std::cell::Cell::new(0));
+            let observed = std::rc::Rc::clone(&activations);
+            let button = Button::new("save", "Save", None).on_click(move || {
+                observed.set(observed.get().saturating_add(1));
+            });
+            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+            driver
+                .perform_named("save", &crate::a11y::Action::Focus)
+                .expect("button accepts focus");
+
+            driver.key("Enter");
+            assert_eq!(activations.get(), 1, "Enter activates only on key press");
+            driver.key("Space");
+            assert_eq!(activations.get(), 2, "Space activates only on key press");
+        }
+
+        // Case `consumed_enter_does_not_run_the_focused_activation_fallback`.
+        {
+            let activations = std::rc::Rc::new(std::cell::Cell::new(0));
+            let control = ConsumingActivationControl {
+                activations: std::rc::Rc::clone(&activations),
+                focused: false,
+                rect: Rect::ZERO,
+            };
+            let mut driver = Driver::new(State::new(), Box::new(control), (400, 200));
+            driver
+                .perform_named("consuming-activation", &crate::a11y::Action::Focus)
+                .expect("control accepts focus");
+
+            driver.key("Enter");
+
+            assert_eq!(
+                activations.get(),
+                1,
+                "the consumed key press must not activate a second time"
+            );
+        }
     }
 
     #[test]
-    fn legacy_audit_preserves_explicit_record_index_theme_and_disabled_writer() {
-        use automerge::{ReadDoc, transaction::Transactable};
-        let mut state = State::new();
-        state
-            .doc
-            .put(automerge::ROOT, "body_marker", "body")
-            .unwrap();
-        let mut index = automerge::AutoCommit::new();
-        index.put(automerge::ROOT, "index_marker", "index").unwrap();
-        let inputs = crate::launch::LegacyLaunchInputs::new(
-            state,
-            Box::new(crate::widget::Text::new("audit")),
-            crate::persist::DocWriter::disabled("audit-only fixture"),
-        )
-        .with_records(crate::record::RecordSet::in_memory(), index);
-        let (mut driver, autosave) =
-            build_audit_driver(inputs, (800, 600), Theme::light().with_text_scale(1.5));
-        assert!(!autosave.is_enabled());
-        assert!(
-            driver.records().is_some(),
-            "audit must retain the explicit record owner"
-        );
-        assert_eq!(driver.theme.text_scale, 1.5);
-        assert_eq!(
+    fn headless_record_policy_stays_explicit_and_checked() {
+        // Case `legacy_audit_preserves_explicit_record_index_theme_and_disabled_writer`.
+        {
+            use automerge::{ReadDoc, transaction::Transactable};
+            let mut state = State::new();
+            state
+                .doc
+                .put(automerge::ROOT, "body_marker", "body")
+                .unwrap();
+            let mut index = automerge::AutoCommit::new();
+            index.put(automerge::ROOT, "index_marker", "index").unwrap();
+            let inputs = crate::launch::LegacyLaunchInputs::new(
+                state,
+                Box::new(crate::widget::Text::new("audit")),
+                crate::persist::DocWriter::disabled("audit-only fixture"),
+            )
+            .with_records(crate::record::RecordSet::in_memory(), index);
+            let (mut driver, autosave) =
+                build_audit_driver(inputs, (800, 600), Theme::light().with_text_scale(1.5));
+            assert!(!autosave.is_enabled());
+            assert!(
+                driver.records().is_some(),
+                "audit must retain the explicit record owner"
+            );
+            assert_eq!(driver.theme.text_scale, 1.5);
+            assert_eq!(
+                driver
+                    .state
+                    .doc
+                    .get(automerge::ROOT, "body_marker")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("body")
+            );
+            assert_eq!(
+                driver
+                    .persistence_document()
+                    .get(automerge::ROOT, "index_marker")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str(),
+                Some("index")
+            );
+        }
+
+        // Case `legacy_audit_does_not_activate_automatic_headless_record_policy`.
+        {
+            let mut inputs = crate::launch::LegacyLaunchInputs::new(
+                State::new(),
+                Box::new(crate::widget::Text::new("audit")),
+                crate::persist::DocWriter::disabled("audit-only fixture"),
+            );
+            inputs.records = crate::launch::LegacyRecordPolicy::AutomaticHeadless {
+                records: crate::record::RecordSet::in_memory(),
+                index: automerge::AutoCommit::new(),
+                expected_index: std::path::PathBuf::from("unused-audit-namespace"),
+            };
+            let (driver, autosave) = build_audit_driver(inputs, (800, 600), Theme::light());
+            assert!(!autosave.is_enabled());
+            assert!(driver.records().is_none());
+        }
+
+        // Case `widget_owned_persistence_requires_checked_success`.
+        {
+            use crate::widget::control_result_probe::Probe;
+            for outcome in [None, Some(Err("disk full".into())), Some(Ok(()))] {
+                let succeeds = outcome == Some(Ok(()));
+                let (mut probe, observed) = Probe::new(false);
+                probe.owned_flush = outcome;
+                let inputs = crate::launch::LegacyLaunchInputs::new(
+                    State::new(),
+                    Box::new(probe),
+                    crate::persist::DocWriter::disabled("fixture owns storage"),
+                )
+                .with_widget_owned_persistence();
+                assert_eq!(
+                    run_initialized(&Spec::default(), inputs),
+                    if succeeds { 0 } else { 3 }
+                );
+                assert_eq!(observed.flushes.get(), 1);
+            }
+        }
+
+        // Case `automatic_record_bootstrap_commits_shared_pending_transaction_before_forking`.
+        {
+            use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
+            use automerge::{AutoCommit, ROOT, ReadDoc};
+            let mut state = State::new();
+            state
+                .doc
+                .put(ROOT, "pending_from_opener", "retained")
+                .unwrap();
+            assert!(state.doc.pending_ops() > 0);
+            let index = state.doc.clone();
+            let original_actor = index.get_actor().clone();
+            let mut inputs = LegacyLaunchInputs::new(
+                state,
+                Box::new(Button::new("plain-root", "Plain", None)),
+                crate::persist::DocWriter::disabled("no writes in this fixture"),
+            );
+            inputs.records = LegacyRecordPolicy::AutomaticHeadless {
+                records: crate::record::RecordSet::in_memory(),
+                index,
+                expected_index: std::path::PathBuf::from("not-used-by-this-in-memory-fixture"),
+            };
+            let (mut driver, _) = build_legacy_driver(inputs, (400, 200), Theme::dark(), true);
+            let (_, index) = driver.record_persistence.as_mut().unwrap();
+            assert_eq!(
+                index.pending_ops(),
+                0,
+                "cloned opener transaction is closed before index mutation"
+            );
+            assert_eq!(
+                index.get_actor(),
+                &original_actor,
+                "index keeps its actual writer identity"
+            );
+            assert_ne!(driver.state.doc.get_actor(), &original_actor);
+            assert_eq!(
+                index.get_heads(),
+                driver.state.doc.get_heads(),
+                "identical pending input must commit to exactly the same hash"
+            );
+            index.put(ROOT, "index_only", "reference").unwrap();
             driver
                 .state
                 .doc
-                .get(automerge::ROOT, "body_marker")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("body")
-        );
-        assert_eq!(
-            driver
-                .persistence_document()
-                .get(automerge::ROOT, "index_marker")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("index")
-        );
-    }
-
-    #[test]
-    fn legacy_audit_does_not_activate_automatic_headless_record_policy() {
-        let mut inputs = crate::launch::LegacyLaunchInputs::new(
-            State::new(),
-            Box::new(crate::widget::Text::new("audit")),
-            crate::persist::DocWriter::disabled("audit-only fixture"),
-        );
-        inputs.records = crate::launch::LegacyRecordPolicy::AutomaticHeadless {
-            records: crate::record::RecordSet::in_memory(),
-            index: automerge::AutoCommit::new(),
-            expected_index: std::path::PathBuf::from("unused-audit-namespace"),
-        };
-        let (driver, autosave) = build_audit_driver(inputs, (800, 600), Theme::light());
-        assert!(!autosave.is_enabled());
-        assert!(driver.records().is_none());
+                .put(ROOT, "bootstrap_only", "loaded body")
+                .unwrap();
+            let mut joined = driver.state.doc.clone();
+            joined
+                .merge(index)
+                .expect("separate index/bootstrap authors cannot collide");
+            let reopened =
+                AutoCommit::load(&joined.save()).expect("persisted merged history must reload");
+            for (key, value) in [
+                ("pending_from_opener", "retained"),
+                ("index_only", "reference"),
+                ("bootstrap_only", "loaded body"),
+            ] {
+                assert_eq!(
+                    reopened.get(ROOT, key).unwrap().unwrap().0.as_str(),
+                    Some(value)
+                );
+            }
+        }
     }
 
     use crate::widget::{Button, Checkbox, CodeEditor, Column, TextInput, TreeNode, TreeView};
-    #[test]
-    fn anonymous_headless_unrelated_focused_siblings_have_no_input_target() {
-        let root = Column::new()
-            .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
-                "a",
-            )))
-            .push(Box::new(crate::widget::layout::AnonymousFocusProbe::new(
-                "b",
-            )));
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(root),
-            (600, 400),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture".into()),
-        );
-        assert!(driver.focused.is_none());
-        driver.relayout();
-        assert!(driver.focused.is_none());
-    }
 
     struct ConsumingActivationControl {
         activations: std::rc::Rc<std::cell::Cell<usize>>,
@@ -5025,27 +5254,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn function_keys_do_not_type_their_names_into_a_focused_field() {
-        let mut driver = Driver::new(
-            State::new(),
-            Box::new(TextInput::local().with_id("function-key-field")),
-            (640, 160),
-        );
-        driver
-            .perform_named("function-key-field", &crate::a11y::Action::Focus)
-            .unwrap();
-        driver.type_text("keep");
-        for index in 1..=12 {
-            driver.key(&format!("F{index}"));
-        }
-        let snapshot = driver.inspection();
-        assert_eq!(
-            snapshot.root.semantics.unwrap().value.as_deref(),
-            Some("keep")
-        );
-    }
-
     use automerge::transaction::Transactable;
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -5087,152 +5295,173 @@ mod tests {
         }
     }
 
-    /// The frame harness is the app wrapper used by scenarios. Keep Tab
-    /// coverage here rather than only in direct widget tests: the live host
-    /// decides whether focus traversal intercepts the key before a widget can
-    /// see it.
     #[test]
-    fn app_wrapper_routes_tab_to_an_opted_in_code_editor_but_traverses_forms() {
-        let mut editor = Driver::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
-        editor.tab(false);
-        editor.key("Tab");
-        let editor_node = editor.focused().expect("editor has focus");
-        // The retained node is valid until relayout, and `key` has already
-        // completed its relayout before this observation.
-        assert_eq!(
-            unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
-            Some("4".into()),
-            "Tab reaches the code editor and inserts its configured indent"
-        );
-        editor.set_modifiers(&["shift".into()]);
-        editor.key("Tab");
-        let editor_node = editor.focused().expect("editor remains focused");
-        assert_eq!(
-            unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
-            Some("0".into()),
-            "Shift+Tab reaches the same editor and outdents"
-        );
+    fn audits_certify_action_binding_search_projection_and_accessibility() {
+        // Case `native_app_audit_proves_action_binding_and_a11y_together`.
+        {
+            let resource = crate::widget::resource_actions::resource(
+                "example", "Example", "save", "Save", false,
+            );
+            let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let operation_calls = calls.clone();
+            let root = crate::widget::resource_actions::immediate(
+                Box::new(Column::new().push(Box::new(
+                    Button::new("save", "Save", None).on_action(binding),
+                ))),
+                resource,
+                move |_| {
+                    operation_calls.set(operation_calls.get() + 1);
+                    Ok(tilo_actions::ActionOutput::default())
+                },
+            );
+            let mut driver = Driver::new(State::new(), root, (320, 160));
+            assert!(driver.native_app_audit().is_certified());
+            driver
+                .perform_named("save", &crate::a11y::Action::Activate)
+                .expect("bound control dispatches through the headless host");
+            assert_eq!(calls.get(), 1);
 
-        let form = Column::new()
-            .push(Box::new(TextInput::local().with_id("field")))
-            .push(Box::new(Button::new("next", "Next", None)));
-        let mut fields = Driver::new(State::new(), Box::new(form), (320, 160));
-        fields.tab(false);
-        let field = fields.focused().expect("first field has focus");
-        fields.key("Tab");
-        assert_ne!(
-            fields.focused(),
-            Some(field),
-            "ordinary fields yield Tab to focus traversal"
-        );
-    }
+            let legacy = Driver::new(
+                State::new(),
+                Box::new(Button::new("legacy", "Legacy", None).on_click(|| {})),
+                (320, 160),
+            );
+            let audit = legacy.native_app_audit();
+            assert!(!audit.is_certified());
+            assert_eq!(audit.issues[0].code, "legacy-callback");
 
-    #[test]
-    fn native_app_audit_proves_action_binding_and_a11y_together() {
-        let resource =
-            crate::widget::resource_actions::resource("example", "Example", "save", "Save", false);
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "save").unwrap();
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let operation_calls = calls.clone();
-        let root = crate::widget::resource_actions::immediate(
-            Box::new(Column::new().push(Box::new(
-                Button::new("save", "Save", None).on_action(binding),
-            ))),
-            resource,
-            move |_| {
-                operation_calls.set(operation_calls.get() + 1);
-                Ok(tilo_actions::ActionOutput::default())
-            },
-        );
-        let mut driver = Driver::new(State::new(), root, (320, 160));
-        assert!(driver.native_app_audit().is_certified());
-        driver
-            .perform_named("save", &crate::a11y::Action::Activate)
-            .expect("bound control dispatches through the headless host");
-        assert_eq!(calls.get(), 1);
-
-        let legacy = Driver::new(
-            State::new(),
-            Box::new(Button::new("legacy", "Legacy", None).on_click(|| {})),
-            (320, 160),
-        );
-        let audit = legacy.native_app_audit();
-        assert!(!audit.is_certified());
-        assert_eq!(audit.issues[0].code, "legacy-callback");
-
-        let omitted = Driver::new(
-            State::new(),
-            Box::new(Button::new("omitted", "Omitted", None)),
-            (320, 160),
-        );
-        assert!(
-            omitted
-                .native_app_audit()
-                .issues
-                .iter()
-                .any(|issue| issue.code == "missing-action-binding"),
-            "an interactive custom/control implementation cannot certify itself by omitting inventory"
-        );
-
-        let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
-        assert!(
-            empty
-                .native_app_audit()
-                .issues
-                .iter()
-                .any(|issue| issue.code == "empty-native-contract"),
-            "a custom-painted app cannot certify itself by reporting neither semantics nor controls"
-        );
-    }
-
-    #[test]
-    fn quick_button_handler_is_a_certified_searchable_action() {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let invoked = calls.clone();
-        let button = Button::new("refresh", "Refresh", None).on_effect(move || {
-            invoked.set(invoked.get() + 1);
-        });
-        let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
-
-        assert!(driver.native_app_audit().is_certified());
-        assert!(driver.resources().iter().any(|resource| {
-            resource.id.as_str() == "tilo.control:refresh"
-                && resource.actions.iter().any(|action| action.id == "invoke")
-        }));
-        driver
-            .perform_named("refresh", &crate::a11y::Action::Activate)
-            .expect("the visible control enters through its action");
-        assert_eq!(calls.get(), 1);
-    }
-
-    #[test]
-    fn collaborative_button_is_projected_for_search_and_agents() {
-        use automerge::ReadDoc as _;
-
-        let button = Button::new("complete", "Complete", Some("completed"));
-        let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
-
-        assert!(driver.native_app_audit().is_certified());
-        assert!(driver.resources().iter().any(|resource| {
-            resource.kind == "tilo.ui.control"
-                && resource.label == "Complete"
-                && resource
-                    .actions
+            let omitted = Driver::new(
+                State::new(),
+                Box::new(Button::new("omitted", "Omitted", None)),
+                (320, 160),
+            );
+            assert!(
+                omitted
+                    .native_app_audit()
+                    .issues
                     .iter()
-                    .any(|action| action.id == "activate")
-        }));
-        driver
-            .perform_named("complete", &crate::a11y::Action::Activate)
-            .expect("semantic activation reaches the collaborative control");
-        assert!(matches!(
-            driver.state.doc.get(&automerge::ROOT, "completed"),
-            Ok(Some((automerge::Value::Scalar(value), _))) if value.as_ref() == &automerge::ScalarValue::Boolean(true)
-        ));
+                    .any(|issue| issue.code == "missing-action-binding"),
+                "an interactive custom/control implementation cannot certify itself by omitting inventory"
+            );
+
+            let empty = Driver::new(State::new(), Box::new(Column::new()), (320, 160));
+            assert!(
+                empty
+                    .native_app_audit()
+                    .issues
+                    .iter()
+                    .any(|issue| issue.code == "empty-native-contract"),
+                "a custom-painted app cannot certify itself by reporting neither semantics nor controls"
+            );
+        }
+
+        // Case `quick_button_handler_is_a_certified_searchable_action`.
+        {
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let invoked = calls.clone();
+            let button = Button::new("refresh", "Refresh", None).on_effect(move || {
+                invoked.set(invoked.get() + 1);
+            });
+            let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
+
+            assert!(driver.native_app_audit().is_certified());
+            assert!(driver.resources().iter().any(|resource| {
+                resource.id.as_str() == "tilo.control:refresh"
+                    && resource.actions.iter().any(|action| action.id == "invoke")
+            }));
+            driver
+                .perform_named("refresh", &crate::a11y::Action::Activate)
+                .expect("the visible control enters through its action");
+            assert_eq!(calls.get(), 1);
+        }
+
+        // Case `collaborative_button_is_projected_for_search_and_agents`.
+        {
+            use automerge::ReadDoc as _;
+
+            let button = Button::new("complete", "Complete", Some("completed"));
+            let mut driver = Driver::new(State::new(), Box::new(button), (320, 160));
+
+            assert!(driver.native_app_audit().is_certified());
+            assert!(driver.resources().iter().any(|resource| {
+                resource.kind == "tilo.ui.control"
+                    && resource.label == "Complete"
+                    && resource
+                        .actions
+                        .iter()
+                        .any(|action| action.id == "activate")
+            }));
+            driver
+                .perform_named("complete", &crate::a11y::Action::Activate)
+                .expect("semantic activation reaches the collaborative control");
+            assert!(matches!(
+                driver.state.doc.get(&automerge::ROOT, "completed"),
+                Ok(Some((automerge::Value::Scalar(value), _))) if value.as_ref() == &automerge::ScalarValue::Boolean(true)
+            ));
+        }
+
+        // Case `accessibility_audit_checks_controls_and_synthetic_identity_contracts`.
+        {
+            let mut issues = Vec::new();
+            let root = AccessNode::new(Role::Group).with_children(vec![
+                AccessNode::new(Role::Button)
+                    .with_key(7)
+                    .with_action_target("duplicate")
+                    .with_position(0, 2),
+                AccessNode::new(Role::TextInput)
+                    .with_action_target("duplicate")
+                    .with_value("secret")
+                    .with_state(
+                        crate::a11y::AccessState::new()
+                            .focusable(true)
+                            .protected(true),
+                    )
+                    .with_level(0),
+            ]);
+            audit_access_node(&root, "Root[0]", &mut issues);
+            let codes = issues
+                .iter()
+                .map(|issue| issue.code.as_str())
+                .collect::<HashSet<_>>();
+            for code in [
+                "missing-name",
+                "unnamed-focus-target",
+                "protected-value-exposed",
+                "invalid-set-position",
+                "invalid-level",
+                "duplicate-action-target",
+            ] {
+                assert!(codes.contains(code), "missing {code}: {issues:#?}");
+            }
+            assert!(issues.iter().all(|issue| issue.path.starts_with("Root[0]")));
+            let report = serde_json::to_value(AccessibilityAudit {
+                version: ACCESSIBILITY_AUDIT_VERSION,
+                issues: issues.clone(),
+            })
+            .expect("serialize audit report");
+            assert_eq!(report["version"], ACCESSIBILITY_AUDIT_VERSION);
+            assert!(report["issues"].is_array());
+            assert!(
+                report["issues"][0]["path"]
+                    .as_str()
+                    .is_some_and(|path| path.starts_with("Root[0]"))
+            );
+
+            let driver = Driver::new(
+                State::new(),
+                Box::new(Button::new("save", "Save", None)),
+                (400, 200),
+            );
+            assert!(driver.accessibility_audit().is_clean());
+        }
     }
 
     #[test]
-    fn spec_parses_every_action_shape() {
-        let spec = parse_spec(
+    fn headless_spec_parses_every_shape_and_rejects_malformed_input() {
+        // Case `spec_parses_every_action_shape`.
+        {
+            let spec = parse_spec(
             r#"{"viewport":[800,600],"audit":true,"audit_report":"/tmp/a.json","dump":"/tmp/d.json","targets":"/tmp/t.json",
                 "inspect":"/tmp/i.json",
                 "actions":[{"click_named":"save"},{"click_at":[10,20]},
@@ -5246,417 +5475,290 @@ mod tests {
                            {"perform":{"target":"workspace-tree","semantic_target":"node:2","action":"expand"}}]}"#,
         )
         .expect("spec parses");
-        assert_eq!(spec.viewport, Some((800, 600)));
-        assert!(spec.audit);
-        assert_eq!(
-            spec.audit_report.as_deref(),
-            Some(std::path::Path::new("/tmp/a.json"))
-        );
-        assert_eq!(
-            spec.dump.as_deref(),
-            Some(std::path::Path::new("/tmp/d.json"))
-        );
-        assert_eq!(
-            spec.inspect.as_deref(),
-            Some(std::path::Path::new("/tmp/i.json"))
-        );
-        assert_eq!(spec.actions.len(), 13);
-        assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
-        assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
-        assert!(matches!(
-            &spec.actions[4],
-            Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
-        ));
-        assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
-        assert!(matches!(
-            &spec.actions[8],
-            Action::WaitForNamed { target, timeout }
-                if target == "result" && *timeout == crate::time::Duration::from_millis(750)
-        ));
-        assert!(matches!(
-            &spec.actions[9],
-            Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout: Some(timeout), .. })
-                if target == "result" && role == "static_text"
-                    && *timeout == crate::time::Duration::from_secs(1)
-        ));
-        assert!(matches!(
-            &spec.actions[10],
-            Action::Perform { target, action: crate::a11y::Action::SetValue(value), .. }
-                if target == "name" && value == "Ada"
-        ));
-        assert!(matches!(
-            &spec.actions[11],
-            Action::Perform {
-                action: crate::a11y::Action::SetSelection {
-                    anchor: 0,
-                    focus: 3
-                },
-                ..
+            assert_eq!(spec.viewport, Some((800, 600)));
+            assert!(spec.audit);
+            assert_eq!(
+                spec.audit_report.as_deref(),
+                Some(std::path::Path::new("/tmp/a.json"))
+            );
+            assert_eq!(
+                spec.dump.as_deref(),
+                Some(std::path::Path::new("/tmp/d.json"))
+            );
+            assert_eq!(
+                spec.inspect.as_deref(),
+                Some(std::path::Path::new("/tmp/i.json"))
+            );
+            assert_eq!(spec.actions.len(), 13);
+            assert!(matches!(&spec.actions[0], Action::ClickNamed(n) if n == "save"));
+            assert!(matches!(&spec.actions[2], Action::TapNamed(n) if n == "save"));
+            assert!(matches!(
+                &spec.actions[4],
+                Action::SwipeAt(100.0, 200.0, 100.0, 20.0)
+            ));
+            assert!(matches!(&spec.actions[6], Action::Type(t) if t == "hi"));
+            assert!(matches!(
+                &spec.actions[8],
+                Action::WaitForNamed { target, timeout }
+                    if target == "result" && *timeout == crate::time::Duration::from_millis(750)
+            ));
+            assert!(matches!(
+                &spec.actions[9],
+                Action::Expect(SemanticExpectation { target, role: Some(role), busy: Some(false), timeout: Some(timeout), .. })
+                    if target == "result" && role == "static_text"
+                        && *timeout == crate::time::Duration::from_secs(1)
+            ));
+            assert!(matches!(
+                &spec.actions[10],
+                Action::Perform { target, action: crate::a11y::Action::SetValue(value), .. }
+                    if target == "name" && value == "Ada"
+            ));
+            assert!(matches!(
+                &spec.actions[11],
+                Action::Perform {
+                    action: crate::a11y::Action::SetSelection {
+                        anchor: 0,
+                        focus: 3
+                    },
+                    ..
+                }
+            ));
+            assert!(matches!(
+                &spec.actions[12],
+                Action::Perform {
+                    target,
+                    semantic_target: Some(semantic_target),
+                    action: crate::a11y::Action::Expand,
+                } if target == "workspace-tree" && semantic_target == "node:2"
+            ));
+        }
+
+        // Case `an_unknown_action_is_rejected_rather_than_ignored`.
+        {
+            let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
+            assert!(err.contains("teleport"), "{err}");
+        }
+
+        // Case `action_descriptions_locate_failures_without_echoing_entered_values`.
+        {
+            let typed = action_description(&Action::Type("private value".into()));
+            assert_eq!(typed, "type 13 character(s)");
+            assert!(!typed.contains("private"));
+
+            let set = action_description(&Action::Perform {
+                target: "password".into(),
+                semantic_target: None,
+                action: crate::a11y::Action::SetValue("hunter2".into()),
+            });
+            assert_eq!(set, "perform set_value on \"password\"");
+            assert!(!set.contains("hunter2"));
+
+            let expected = action_description(&Action::Expect(
+                SemanticExpectation::named("items").semantic_target("row:42"),
+            ));
+            assert_eq!(expected, "expect \"items\" / \"row:42\"");
+        }
+
+        // Case `malformed_headless_viewports_and_actions_are_rejected`.
+        {
+            for raw in [
+                r#"{"viewport":[0,600]}"#,
+                r#"{"viewport":[800]}"#,
+                r#"{"viewport":"800x600"}"#,
+                r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
+                r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
+                r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
+                r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
+                r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
+                "[]",
+            ] {
+                assert!(parse_spec(raw).is_err(), "accepted {raw}");
             }
-        ));
-        assert!(matches!(
-            &spec.actions[12],
-            Action::Perform {
-                target,
-                semantic_target: Some(semantic_target),
-                action: crate::a11y::Action::Expand,
-            } if target == "workspace-tree" && semantic_target == "node:2"
-        ));
-    }
-
-    #[test]
-    fn an_unknown_action_is_rejected_rather_than_ignored() {
-        let err = parse_spec(r#"{"actions":[{"teleport":"x"}]}"#).unwrap_err();
-        assert!(err.contains("teleport"), "{err}");
-    }
-
-    #[test]
-    fn action_descriptions_locate_failures_without_echoing_entered_values() {
-        let typed = action_description(&Action::Type("private value".into()));
-        assert_eq!(typed, "type 13 character(s)");
-        assert!(!typed.contains("private"));
-
-        let set = action_description(&Action::Perform {
-            target: "password".into(),
-            semantic_target: None,
-            action: crate::a11y::Action::SetValue("hunter2".into()),
-        });
-        assert_eq!(set, "perform set_value on \"password\"");
-        assert!(!set.contains("hunter2"));
-
-        let expected = action_description(&Action::Expect(
-            SemanticExpectation::named("items").semantic_target("row:42"),
-        ));
-        assert_eq!(expected, "expect \"items\" / \"row:42\"");
-    }
-
-    #[test]
-    fn accessibility_audit_checks_controls_and_synthetic_identity_contracts() {
-        let mut issues = Vec::new();
-        let root = AccessNode::new(Role::Group).with_children(vec![
-            AccessNode::new(Role::Button)
-                .with_key(7)
-                .with_action_target("duplicate")
-                .with_position(0, 2),
-            AccessNode::new(Role::TextInput)
-                .with_action_target("duplicate")
-                .with_value("secret")
-                .with_state(
-                    crate::a11y::AccessState::new()
-                        .focusable(true)
-                        .protected(true),
-                )
-                .with_level(0),
-        ]);
-        audit_access_node(&root, "Root[0]", &mut issues);
-        let codes = issues
-            .iter()
-            .map(|issue| issue.code.as_str())
-            .collect::<HashSet<_>>();
-        for code in [
-            "missing-name",
-            "unnamed-focus-target",
-            "protected-value-exposed",
-            "invalid-set-position",
-            "invalid-level",
-            "duplicate-action-target",
-        ] {
-            assert!(codes.contains(code), "missing {code}: {issues:#?}");
         }
-        assert!(issues.iter().all(|issue| issue.path.starts_with("Root[0]")));
-        let report = serde_json::to_value(AccessibilityAudit {
-            version: ACCESSIBILITY_AUDIT_VERSION,
-            issues: issues.clone(),
-        })
-        .expect("serialize audit report");
-        assert_eq!(report["version"], ACCESSIBILITY_AUDIT_VERSION);
-        assert!(report["issues"].is_array());
-        assert!(
-            report["issues"][0]["path"]
-                .as_str()
-                .is_some_and(|path| path.starts_with("Root[0]"))
-        );
 
-        let driver = Driver::new(
-            State::new(),
-            Box::new(Button::new("save", "Save", None)),
-            (400, 200),
-        );
-        assert!(driver.accessibility_audit().is_clean());
-    }
+        // Case `unknown_headless_fields_fail_instead_of_doing_nothing`.
+        {
+            let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
+            assert!(error.contains("unknown field \"steps\""), "{error}");
+            assert!(error.contains("actions"), "{error}");
+        }
 
-    #[test]
-    fn malformed_headless_viewports_and_actions_are_rejected() {
-        for raw in [
-            r#"{"viewport":[0,600]}"#,
-            r#"{"viewport":[800]}"#,
-            r#"{"viewport":"800x600"}"#,
-            r#"{"actions":[{"key":"Enter","type":"oops"}]}"#,
-            r#"{"actions":[{"perform":{"target":"name","action":"set_value"}}]}"#,
-            r#"{"actions":[{"perform":{"target":"name","action":"focus","value":"extra"}}]}"#,
-            r#"{"actions":[{"perform":{"target":"name","action":"set_selection","anchor":-1,"focus":0}}]}"#,
-            r#"{"actions":[{"wait_for_named":{"target":"result","timeout_ms":0}}]}"#,
-            "[]",
-        ] {
-            assert!(parse_spec(raw).is_err(), "accepted {raw}");
+        // Case `headless_outputs_create_explicit_nested_parent_directories`.
+        {
+            let temp = tempfile::tempdir().expect("temporary output root");
+            let output = temp.path().join("artifacts/audit/inspect.json");
+            write_headless_output(&output, b"{}\n").expect("write nested output");
+            assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
         }
     }
 
     #[test]
-    fn wait_action_succeeds_for_a_named_widget_and_reports_bounded_timeout() {
-        let mut driver = Driver::new(
-            State::new(),
-            Box::new(Button::new("ready", "Ready", None)),
-            (400, 200),
-        );
-        driver
-            .perform(&Action::WaitForNamed {
-                target: "ready".into(),
-                timeout: crate::time::Duration::from_millis(10),
-            })
-            .expect("an already-present target succeeds immediately");
+    fn pointer_touch_and_wait_actions_reach_named_targets_or_fail() {
+        // Case `clicking_a_named_target_reaches_the_widget`:
+        // A button click must reach the widget through the same
+        // `handle_event` the live app calls.
+        {
+            let button = Button::new("btn", "Save", None);
+            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
+            let targets = driver.targets();
+            assert!(
+                targets.keys().any(|k| k.starts_with("Button")),
+                "the button must be addressable, got {:?}",
+                targets.keys().collect::<Vec<_>>()
+            );
+            let name = targets
+                .keys()
+                .find(|k| k.starts_with("Button"))
+                .unwrap()
+                .clone();
+            driver.click_named(&name).expect("click lands");
+        }
 
-        let error = driver
-            .perform(&Action::WaitForNamed {
-                target: "never-appears".into(),
-                timeout: crate::time::Duration::from_millis(1),
-            })
-            .unwrap_err();
-        assert!(error.contains("1 ms"), "{error}");
-        assert!(error.contains("never-appears"), "{error}");
-    }
+        // Case `touch_profile_enlarges_and_activates_the_same_button`.
+        {
+            use std::cell::Cell;
+            use std::rc::Rc;
 
-    #[test]
-    fn semantic_expectation_reports_all_mismatches_and_addresses_model_rows() {
-        let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-        let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
-        let mut driver = Driver::new(State::new(), Box::new(tree), (500, 300));
-        driver
-            .perform_semantic_named("items-tree", Some("node:2"), &crate::a11y::Action::Activate)
-            .expect("select child row");
-        driver
-            .expect(
-                &SemanticExpectation::named("items-tree")
-                    .semantic_target("node:2")
-                    .role(crate::a11y::Role::TreeItem)
-                    .name("Child")
-                    .selected(true)
-                    .enabled(true),
-            )
-            .expect("semantic row matches");
+            let fired = Rc::new(Cell::new(0));
+            let fired_by_button = Rc::clone(&fired);
+            let button = Button::new("save", "Save", None)
+                .fit_content(32.0)
+                .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
+            let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
 
-        let error = driver
-            .expect(
-                &SemanticExpectation::named("items-tree")
-                    .semantic_target("node:2")
-                    .name("Wrong")
-                    .selected(false),
-            )
-            .unwrap_err();
-        assert!(error.contains("name expected"), "{error}");
-        assert!(
-            error.contains("selected expected false, got true"),
-            "{error}"
-        );
+            let pointer_rect = driver.targets()["save"];
+            assert_eq!(pointer_rect.height(), 32.0);
 
-        let timeout = driver
-            .expect(
-                &SemanticExpectation::named("items-tree")
-                    .semantic_target("node:2")
-                    .name("Still wrong")
-                    .within(crate::time::Duration::from_millis(2)),
-            )
-            .unwrap_err();
-        assert!(timeout.contains("timed out after 2 ms"), "{timeout}");
-        assert!(timeout.contains("name expected"), "{timeout}");
-        assert!(timeout.contains("Still wrong"), "{timeout}");
-    }
+            driver.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+            let touch_rect = driver.targets()["save"];
+            assert_eq!(touch_rect.height(), 48.0);
+            driver.tap_named("save").expect("touch lands");
+            assert_eq!(fired.get(), 1);
+            assert_eq!(
+                driver.interaction_environment(),
+                crate::InteractionEnvironment::TOUCH
+            );
 
-    #[test]
-    fn unknown_headless_fields_fail_instead_of_doing_nothing() {
-        let error = parse_spec(r#"{"steps":[]}"#).unwrap_err();
-        assert!(error.contains("unknown field \"steps\""), "{error}");
-        assert!(error.contains("actions"), "{error}");
-    }
+            driver.key("Enter");
+            assert_eq!(
+                driver.interaction_environment().pointer_precision,
+                crate::PointerPrecision::Coarse,
+                "keyboard use must not make a hybrid touchscreen's targets small"
+            );
+        }
 
-    #[test]
-    fn headless_outputs_create_explicit_nested_parent_directories() {
-        let temp = tempfile::tempdir().expect("temporary output root");
-        let output = temp.path().join("artifacts/audit/inspect.json");
-        write_headless_output(&output, b"{}\n").expect("write nested output");
-        assert_eq!(std::fs::read_to_string(output).unwrap(), "{}\n");
-    }
+        // Case `host_touch_routing_reaches_pointer_only_controls_and_cancels_swipes`.
+        {
+            use automerge::ReadDoc;
 
-    /// A button click must reach the widget through the same
-    /// `handle_event` the live app calls.
-    #[test]
-    fn clicking_a_named_target_reaches_the_widget() {
-        let button = Button::new("btn", "Save", None);
-        let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
-        let targets = driver.targets();
-        assert!(
-            targets.keys().any(|k| k.starts_with("Button")),
-            "the button must be addressable, got {:?}",
-            targets.keys().collect::<Vec<_>>()
-        );
-        let name = targets
-            .keys()
-            .find(|k| k.starts_with("Button"))
-            .unwrap()
-            .clone();
-        driver.click_named(&name).expect("click lands");
-    }
+            let checkbox = Checkbox::new("remember", "remember").with_id("remember");
+            let mut driver = Driver::new(State::new(), Box::new(checkbox), (400, 200));
+            driver.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+            let rect = driver.targets()["remember"];
+            assert_eq!((rect.width(), rect.height()), (48.0, 48.0));
 
-    #[test]
-    fn touch_profile_enlarges_and_activates_the_same_button() {
-        use std::cell::Cell;
-        use std::rc::Rc;
+            let center = rect.center();
+            self::send_touch(
+                &mut driver,
+                winit::event::TouchPhase::Started,
+                center.x,
+                center.y,
+            );
+            self::send_touch(
+                &mut driver,
+                winit::event::TouchPhase::Moved,
+                center.x + 30.0,
+                center.y,
+            );
+            self::send_touch(
+                &mut driver,
+                winit::event::TouchPhase::Ended,
+                center.x + 30.0,
+                center.y,
+            );
+            assert!(
+                driver
+                    .state_mut()
+                    .doc
+                    .get(&automerge::ROOT, "remember")
+                    .unwrap()
+                    .is_none(),
+                "a drag beyond tap slop must not toggle on pointer-down"
+            );
 
-        let fired = Rc::new(Cell::new(0));
-        let fired_by_button = Rc::clone(&fired);
-        let button = Button::new("save", "Save", None)
-            .fit_content(32.0)
-            .on_click(move || fired_by_button.set(fired_by_button.get() + 1));
-        let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
-
-        let pointer_rect = driver.targets()["save"];
-        assert_eq!(pointer_rect.height(), 32.0);
-
-        driver.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-        let touch_rect = driver.targets()["save"];
-        assert_eq!(touch_rect.height(), 48.0);
-        driver.tap_named("save").expect("touch lands");
-        assert_eq!(fired.get(), 1);
-        assert_eq!(
-            driver.interaction_environment(),
-            crate::InteractionEnvironment::TOUCH
-        );
-
-        driver.key("Enter");
-        assert_eq!(
-            driver.interaction_environment().pointer_precision,
-            crate::PointerPrecision::Coarse,
-            "keyboard use must not make a hybrid touchscreen's targets small"
-        );
-    }
-
-    #[test]
-    fn enter_and_space_activate_a_focused_button_once_per_press() {
-        let activations: std::rc::Rc<std::cell::Cell<usize>> =
-            std::rc::Rc::new(std::cell::Cell::new(0));
-        let observed = std::rc::Rc::clone(&activations);
-        let button = Button::new("save", "Save", None).on_click(move || {
-            observed.set(observed.get().saturating_add(1));
-        });
-        let mut driver = Driver::new(State::new(), Box::new(button), (400, 200));
-        driver
-            .perform_named("save", &crate::a11y::Action::Focus)
-            .expect("button accepts focus");
-
-        driver.key("Enter");
-        assert_eq!(activations.get(), 1, "Enter activates only on key press");
-        driver.key("Space");
-        assert_eq!(activations.get(), 2, "Space activates only on key press");
-    }
-
-    #[test]
-    fn consumed_enter_does_not_run_the_focused_activation_fallback() {
-        let activations = std::rc::Rc::new(std::cell::Cell::new(0));
-        let control = ConsumingActivationControl {
-            activations: std::rc::Rc::clone(&activations),
-            focused: false,
-            rect: Rect::ZERO,
-        };
-        let mut driver = Driver::new(State::new(), Box::new(control), (400, 200));
-        driver
-            .perform_named("consuming-activation", &crate::a11y::Action::Focus)
-            .expect("control accepts focus");
-
-        driver.key("Enter");
-
-        assert_eq!(
-            activations.get(),
-            1,
-            "the consumed key press must not activate a second time"
-        );
-    }
-
-    #[test]
-    fn host_touch_routing_reaches_pointer_only_controls_and_cancels_swipes() {
-        use automerge::ReadDoc;
-
-        let checkbox = Checkbox::new("remember", "remember").with_id("remember");
-        let mut driver = Driver::new(State::new(), Box::new(checkbox), (400, 200));
-        driver.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-        let rect = driver.targets()["remember"];
-        assert_eq!((rect.width(), rect.height()), (48.0, 48.0));
-
-        let center = rect.center();
-        self::send_touch(
-            &mut driver,
-            winit::event::TouchPhase::Started,
-            center.x,
-            center.y,
-        );
-        self::send_touch(
-            &mut driver,
-            winit::event::TouchPhase::Moved,
-            center.x + 30.0,
-            center.y,
-        );
-        self::send_touch(
-            &mut driver,
-            winit::event::TouchPhase::Ended,
-            center.x + 30.0,
-            center.y,
-        );
-        assert!(
-            driver
+            driver.tap_named("remember").expect("touch lands");
+            let (value, _) = driver
                 .state_mut()
                 .doc
                 .get(&automerge::ROOT, "remember")
                 .unwrap()
-                .is_none(),
-            "a drag beyond tap slop must not toggle on pointer-down"
-        );
+                .unwrap();
+            assert_eq!(value.as_bool(), Some(true));
+        }
 
-        driver.tap_named("remember").expect("touch lands");
-        let (value, _) = driver
-            .state_mut()
-            .doc
-            .get(&automerge::ROOT, "remember")
-            .unwrap()
-            .unwrap();
-        assert_eq!(value.as_bool(), Some(true));
-    }
+        // Case `pointer_and_touch_preserve_keyboard_family_and_discovered_devices`.
+        {
+            let mut driver = Driver::new(
+                State::new(),
+                Box::new(Button::new("save", "Save", None)),
+                (400, 200),
+            );
+            let initial = crate::InteractionEnvironment {
+                keyboard_family: crate::interaction::KeyboardFamily::Apple,
+                available: crate::interaction::InputAvailability::NONE
+                    .with(crate::interaction::InputDevice::Keyboard)
+                    .with(crate::interaction::InputDevice::Pointer)
+                    .with(crate::interaction::InputDevice::Touch)
+                    .with(crate::interaction::InputDevice::Controller),
+                ..crate::InteractionEnvironment::default()
+            };
+            driver.set_interaction_environment(initial);
+            driver.scroll(0.0, -1.0);
+            let pointer = driver.interaction_environment();
+            assert_eq!(pointer.keyboard_family, initial.keyboard_family);
+            assert_eq!(pointer.available, initial.available);
+            assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
+            send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
+            let touch = driver.interaction_environment();
+            assert_eq!(touch.keyboard_family, initial.keyboard_family);
+            assert_eq!(touch.available, initial.available);
+            assert_eq!(touch.pointer_precision, crate::PointerPrecision::Coarse);
+        }
 
-    #[test]
-    fn pointer_and_touch_preserve_keyboard_family_and_discovered_devices() {
-        let mut driver = Driver::new(
-            State::new(),
-            Box::new(Button::new("save", "Save", None)),
-            (400, 200),
-        );
-        let initial = crate::InteractionEnvironment {
-            keyboard_family: crate::interaction::KeyboardFamily::Apple,
-            available: crate::interaction::InputAvailability::NONE
-                .with(crate::interaction::InputDevice::Keyboard)
-                .with(crate::interaction::InputDevice::Pointer)
-                .with(crate::interaction::InputDevice::Touch)
-                .with(crate::interaction::InputDevice::Controller),
-            ..crate::InteractionEnvironment::default()
-        };
-        driver.set_interaction_environment(initial);
-        driver.scroll(0.0, -1.0);
-        let pointer = driver.interaction_environment();
-        assert_eq!(pointer.keyboard_family, initial.keyboard_family);
-        assert_eq!(pointer.available, initial.available);
-        assert_eq!(pointer.pointer_precision, crate::PointerPrecision::Fine);
-        send_touch(&mut driver, winit::event::TouchPhase::Started, 10.0, 10.0);
-        let touch = driver.interaction_environment();
-        assert_eq!(touch.keyboard_family, initial.keyboard_family);
-        assert_eq!(touch.available, initial.available);
-        assert_eq!(touch.pointer_precision, crate::PointerPrecision::Coarse);
+        // Case `clicking_a_missing_target_is_an_error`.
+        {
+            let mut driver = Driver::new(
+                State::new(),
+                Box::new(Button::new("b", "B", None)),
+                (400, 200),
+            );
+            let err = driver.click_named("no_such_widget").unwrap_err();
+            assert!(err.contains("no_such_widget"), "{err}");
+        }
+
+        // Case `wait_action_succeeds_for_a_named_widget_and_reports_bounded_timeout`.
+        {
+            let mut driver = Driver::new(
+                State::new(),
+                Box::new(Button::new("ready", "Ready", None)),
+                (400, 200),
+            );
+            driver
+                .perform(&Action::WaitForNamed {
+                    target: "ready".into(),
+                    timeout: crate::time::Duration::from_millis(10),
+                })
+                .expect("an already-present target succeeds immediately");
+
+            let error = driver
+                .perform(&Action::WaitForNamed {
+                    target: "never-appears".into(),
+                    timeout: crate::time::Duration::from_millis(1),
+                })
+                .unwrap_err();
+            assert!(error.contains("1 ms"), "{error}");
+            assert!(error.contains("never-appears"), "{error}");
+        }
     }
 
     fn send_touch(driver: &mut Driver, phase: winit::event::TouchPhase, x: f64, y: f64) {
@@ -5670,437 +5772,490 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_missing_target_is_an_error() {
-        let mut driver = Driver::new(
-            State::new(),
-            Box::new(Button::new("b", "B", None)),
-            (400, 200),
-        );
-        let err = driver.click_named("no_such_widget").unwrap_err();
-        assert!(err.contains("no_such_widget"), "{err}");
+    fn semantic_actions_use_the_widget_path_and_report_mismatches() {
+        // Case `semantic_set_value_and_focus_update_the_inspection_tree`.
+        {
+            let input = TextInput::local()
+                .with_id("name-input")
+                .with_initial_value("world")
+                .with_accessible_name("Name");
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(input),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("fixture-user".into()),
+            );
+
+            driver
+                .perform_named(
+                    "name-input",
+                    &crate::a11y::Action::SetValue("Ada".to_owned()),
+                )
+                .expect("set value through semantic action");
+            driver
+                .perform_named("name-input", &crate::a11y::Action::Focus)
+                .expect("focus through semantic action");
+
+            let semantics = driver
+                .inspection()
+                .root
+                .semantics
+                .expect("text input semantics");
+            assert_eq!(semantics.value.as_deref(), Some("Ada"));
+            assert!(semantics.state.focused);
+        }
+
+        // Case `semantic_document_edit_is_immediately_undoable`.
+        {
+            let input = TextInput::local()
+                .with_id("title-input")
+                .with_on_change_path("title");
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(input),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("task-4-fixture-author".into()),
+            );
+
+            driver
+                .perform_named(
+                    "title-input",
+                    &crate::a11y::Action::SetValue("Project Atlas".to_owned()),
+                )
+                .expect("set durable value through semantic action");
+            driver
+                .state_mut()
+                .undo(None, None)
+                .expect("semantic mutation records one undo boundary");
+            driver.relayout();
+
+            let semantics = driver
+                .inspection()
+                .root
+                .semantics
+                .expect("text input semantics");
+            assert_eq!(semantics.value.as_deref(), Some(""));
+        }
+
+        // Case `semantic_activate_uses_the_widget_action_path`.
+        {
+            use std::cell::Cell;
+            use std::rc::Rc;
+
+            let fired = Rc::new(Cell::new(0));
+            let observed = Rc::clone(&fired);
+            let button = Button::new("save", "Save", None).on_click(move || {
+                observed.set(observed.get() + 1);
+            });
+            let mut driver = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(button),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("task-4-fixture-author".into()),
+            );
+
+            driver
+                .perform_named("save", &crate::a11y::Action::Activate)
+                .expect("activate button");
+            assert_eq!(fired.get(), 1);
+        }
+
+        // Case `unsupported_semantic_action_fails_loudly`.
+        {
+            let mut driver = Driver::new(
+                State::new(),
+                Box::new(Button::new("save", "Save", None)),
+                (400, 200),
+            );
+            let error = driver
+                .perform_named("save", &crate::a11y::Action::Increment)
+                .unwrap_err();
+            assert!(error.contains("does not support"), "{error}");
+            assert!(error.contains("save"), "{error}");
+        }
+
+        // Case `semantic_expectation_reports_all_mismatches_and_addresses_model_rows`.
+        {
+            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
+            let tree = TreeView::new(root).with_expanded([1]).with_id("items-tree");
+            let mut driver = Driver::new(State::new(), Box::new(tree), (500, 300));
+            driver
+                .perform_semantic_named(
+                    "items-tree",
+                    Some("node:2"),
+                    &crate::a11y::Action::Activate,
+                )
+                .expect("select child row");
+            driver
+                .expect(
+                    &SemanticExpectation::named("items-tree")
+                        .semantic_target("node:2")
+                        .role(crate::a11y::Role::TreeItem)
+                        .name("Child")
+                        .selected(true)
+                        .enabled(true),
+                )
+                .expect("semantic row matches");
+
+            let error = driver
+                .expect(
+                    &SemanticExpectation::named("items-tree")
+                        .semantic_target("node:2")
+                        .name("Wrong")
+                        .selected(false),
+                )
+                .unwrap_err();
+            assert!(error.contains("name expected"), "{error}");
+            assert!(
+                error.contains("selected expected false, got true"),
+                "{error}"
+            );
+
+            let timeout = driver
+                .expect(
+                    &SemanticExpectation::named("items-tree")
+                        .semantic_target("node:2")
+                        .name("Still wrong")
+                        .within(crate::time::Duration::from_millis(2)),
+                )
+                .unwrap_err();
+            assert!(timeout.contains("timed out after 2 ms"), "{timeout}");
+            assert!(timeout.contains("name expected"), "{timeout}");
+            assert!(timeout.contains("Still wrong"), "{timeout}");
+        }
+
+        // Case `semantic_tree_row_actions_use_stable_model_ids`.
+        {
+            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
+            let tree = TreeView::new(root)
+                .with_id("items-tree")
+                .with_accessible_name("Items");
+            let mut driver = Driver::new(State::new(), Box::new(tree), (640, 360));
+
+            driver
+                .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Focus)
+                .expect("focus root row");
+            driver
+                .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Expand)
+                .expect("expand root row");
+            driver
+                .perform_semantic_named(
+                    "items-tree",
+                    Some("node:2"),
+                    &crate::a11y::Action::Activate,
+                )
+                .expect("activate child row");
+
+            let semantics = driver.inspection().root.semantics.expect("tree semantics");
+            let root = semantics
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("node:1"))
+                .expect("root semantic row");
+            let child = semantics
+                .children
+                .iter()
+                .find(|node| node.action_target.as_deref() == Some("node:2"))
+                .expect("child semantic row");
+            assert_eq!(root.state.expanded, Some(true));
+            assert!(child.state.selected);
+            assert_eq!(semantics.value.as_deref(), Some("Child"));
+
+            driver
+                .perform_semantic_named(
+                    "items-tree",
+                    Some("node:1"),
+                    &crate::a11y::Action::Collapse,
+                )
+                .expect("collapse root row");
+            let semantics = driver.inspection().root.semantics.expect("tree semantics");
+            assert_eq!(semantics.children[0].state.expanded, Some(false));
+            assert_eq!(semantics.value.as_deref(), Some("Child"));
+        }
     }
 
     #[test]
-    fn semantic_set_value_and_focus_update_the_inspection_tree() {
-        let input = TextInput::local()
-            .with_id("name-input")
-            .with_initial_value("world")
-            .with_accessible_name("Name");
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(input),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("fixture-user".into()),
-        );
-
-        driver
-            .perform_named(
-                "name-input",
-                &crate::a11y::Action::SetValue("Ada".to_owned()),
-            )
-            .expect("set value through semantic action");
-        driver
-            .perform_named("name-input", &crate::a11y::Action::Focus)
-            .expect("focus through semantic action");
-
-        let semantics = driver
-            .inspection()
-            .root
-            .semantics
-            .expect("text input semantics");
-        assert_eq!(semantics.value.as_deref(), Some("Ada"));
-        assert!(semantics.state.focused);
-    }
-
-    #[test]
-    fn semantic_document_edit_is_immediately_undoable() {
-        let input = TextInput::local()
-            .with_id("title-input")
-            .with_on_change_path("title");
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(input),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("task-4-fixture-author".into()),
-        );
-
-        driver
-            .perform_named(
-                "title-input",
-                &crate::a11y::Action::SetValue("Project Atlas".to_owned()),
-            )
-            .expect("set durable value through semantic action");
-        driver
-            .state_mut()
-            .undo(None, None)
-            .expect("semantic mutation records one undo boundary");
-        driver.relayout();
-
-        let semantics = driver
-            .inspection()
-            .root
-            .semantics
-            .expect("text input semantics");
-        assert_eq!(semantics.value.as_deref(), Some(""));
-    }
-
-    #[test]
-    fn semantic_activate_uses_the_widget_action_path() {
-        use std::cell::Cell;
-        use std::rc::Rc;
-
-        let fired = Rc::new(Cell::new(0));
-        let observed = Rc::clone(&fired);
-        let button = Button::new("save", "Save", None).on_click(move || {
-            observed.set(observed.get() + 1);
-        });
-        let mut driver = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(button),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("task-4-fixture-author".into()),
-        );
-
-        driver
-            .perform_named("save", &crate::a11y::Action::Activate)
-            .expect("activate button");
-        assert_eq!(fired.get(), 1);
-    }
-
-    #[test]
-    fn unsupported_semantic_action_fails_loudly() {
-        let mut driver = Driver::new(
-            State::new(),
-            Box::new(Button::new("save", "Save", None)),
-            (400, 200),
-        );
-        let error = driver
-            .perform_named("save", &crate::a11y::Action::Increment)
-            .unwrap_err();
-        assert!(error.contains("does not support"), "{error}");
-        assert!(error.contains("save"), "{error}");
-    }
-
-    #[test]
-    fn inspection_combines_widget_geometry_and_redacted_semantics() {
-        let root = Column::new()
-            .push(Box::new(
-                TextInput::local()
-                    .with_initial_value("swordfish")
-                    .with_secret(true)
-                    .with_accessible_name("Password"),
-            ))
-            .push(Box::new(Button::new("save", "Save", None)));
-        let driver = Driver::new(State::new(), Box::new(root), (640, 360));
-        let json = driver.inspection_json().expect("inspection JSON");
-        let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
-
-        assert_eq!(value["viewport"], serde_json::json!([640, 360]));
-        assert_eq!(value["root"]["widget"], "Column");
-        assert_eq!(value["root"]["children"][0]["widget"], "TextInput");
-        assert_eq!(
-            value["root"]["children"][0]["semantics"]["name"],
-            "Password"
-        );
-        assert_eq!(
-            value["root"]["children"][0]["semantics"]["state"]["protected"],
-            true
-        );
-        assert_eq!(value["root"]["children"][1]["test_id"], "save");
-        assert!(
-            value["root"]["children"][1]["rect"]
-                .as_array()
-                .is_some_and(|rect| rect.len() == 4)
-        );
-        assert!(!json.contains("swordfish"), "secret leaked: {json}");
-    }
-
-    #[test]
-    fn inspection_retains_virtualized_semantic_children() {
-        let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-        let tree = TreeView::new(root)
-            .with_expanded([1])
-            .with_accessible_name("Items");
-        let driver = Driver::new(State::new(), Box::new(tree), (640, 360));
-        let inspection = driver.inspection();
-        let semantics = inspection.root.semantics.expect("tree semantics");
-
-        assert_eq!(semantics.role, crate::a11y::Role::Tree);
-        assert!(
-            semantics.children.len() >= 2,
-            "visible tree rows remain nested semantic children"
-        );
-        assert_eq!(semantics.children[0].role, crate::a11y::Role::TreeItem);
-        assert_eq!(
-            semantics.children[0].action_target.as_deref(),
-            Some("node:1")
-        );
-        assert!(
-            semantics.children[0].bounds.is_some(),
-            "inspection includes the visible row's logical geometry"
-        );
-    }
-
-    #[test]
-    fn semantic_tree_row_actions_use_stable_model_ids() {
-        let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
-        let tree = TreeView::new(root)
-            .with_id("items-tree")
-            .with_accessible_name("Items");
-        let mut driver = Driver::new(State::new(), Box::new(tree), (640, 360));
-
-        driver
-            .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Focus)
-            .expect("focus root row");
-        driver
-            .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Expand)
-            .expect("expand root row");
-        driver
-            .perform_semantic_named("items-tree", Some("node:2"), &crate::a11y::Action::Activate)
-            .expect("activate child row");
-
-        let semantics = driver.inspection().root.semantics.expect("tree semantics");
-        let root = semantics
-            .children
-            .iter()
-            .find(|node| node.action_target.as_deref() == Some("node:1"))
-            .expect("root semantic row");
-        let child = semantics
-            .children
-            .iter()
-            .find(|node| node.action_target.as_deref() == Some("node:2"))
-            .expect("child semantic row");
-        assert_eq!(root.state.expanded, Some(true));
-        assert!(child.state.selected);
-        assert_eq!(semantics.value.as_deref(), Some("Child"));
-
-        driver
-            .perform_semantic_named("items-tree", Some("node:1"), &crate::a11y::Action::Collapse)
-            .expect("collapse root row");
-        let semantics = driver.inspection().root.semantics.expect("tree semantics");
-        assert_eq!(semantics.children[0].state.expanded, Some(false));
-        assert_eq!(semantics.value.as_deref(), Some("Child"));
-    }
-
-    #[test]
-    fn local_control_result_does_not_broadcast_into_component_siblings() {
-        use crate::application_test_support::ProbeHost;
-        use crate::widget::{Column, TileHost};
-        for closed in [false, true] {
-            let owner = ProbeHost::new();
-            let (component, sibling_seen) =
-                crate::widget::control_result_probe::component(&owner, 11, false);
-            let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+    fn inspection_and_dump_reflect_geometry_semantics_and_document() {
+        // Case `inspection_combines_widget_geometry_and_redacted_semantics`.
+        {
             let root = Column::new()
-                .push(Box::new(legacy))
-                .push(Box::new(TileHost::from_component(component)));
+                .push(Box::new(
+                    TextInput::local()
+                        .with_initial_value("swordfish")
+                        .with_secret(true)
+                        .with_accessible_name("Password"),
+                ))
+                .push(Box::new(Button::new("save", "Save", None)));
+            let driver = Driver::new(State::new(), Box::new(root), (640, 360));
+            let json = driver.inspection_json().expect("inspection JSON");
+            let value: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+
+            assert_eq!(value["viewport"], serde_json::json!([640, 360]));
+            assert_eq!(value["root"]["widget"], "Column");
+            assert_eq!(value["root"]["children"][0]["widget"], "TextInput");
+            assert_eq!(
+                value["root"]["children"][0]["semantics"]["name"],
+                "Password"
+            );
+            assert_eq!(
+                value["root"]["children"][0]["semantics"]["state"]["protected"],
+                true
+            );
+            assert_eq!(value["root"]["children"][1]["test_id"], "save");
+            assert!(
+                value["root"]["children"][1]["rect"]
+                    .as_array()
+                    .is_some_and(|rect| rect.len() == 4)
+            );
+            assert!(!json.contains("swordfish"), "secret leaked: {json}");
+        }
+
+        // Case `inspection_retains_virtualized_semantic_children`.
+        {
+            let root = TreeNode::branch(1, "Root", (), vec![TreeNode::leaf(2, "Child", ())]);
+            let tree = TreeView::new(root)
+                .with_expanded([1])
+                .with_accessible_name("Items");
+            let driver = Driver::new(State::new(), Box::new(tree), (640, 360));
+            let inspection = driver.inspection();
+            let semantics = inspection.root.semantics.expect("tree semantics");
+
+            assert_eq!(semantics.role, crate::a11y::Role::Tree);
+            assert!(
+                semantics.children.len() >= 2,
+                "visible tree rows remain nested semantic children"
+            );
+            assert_eq!(semantics.children[0].role, crate::a11y::Role::TreeItem);
+            assert_eq!(
+                semantics.children[0].action_target.as_deref(),
+                Some("node:1")
+            );
+            assert!(
+                semantics.children[0].bounds.is_some(),
+                "inspection includes the visible row's logical geometry"
+            );
+        }
+
+        // Case `dump_json_reflects_the_document`.
+        {
+            use automerge::transaction::Transactable;
+            let mut state = State::new();
+            state
+                .doc
+                .put(&automerge::ROOT, "greeting", "hello")
+                .unwrap();
+            let mut driver = Driver::new(state, Box::new(Button::new("b", "B", None)), (400, 200));
+            let json = driver.dump_json();
+            assert!(json.contains("greeting"), "{json}");
+            assert!(json.contains("hello"), "{json}");
+        }
+    }
+
+    #[test]
+    fn local_control_results_report_refusal_confirmation_and_success() {
+        // Case `local_control_result_does_not_broadcast_into_component_siblings`.
+        {
+            use crate::application_test_support::ProbeHost;
+            use crate::widget::{Column, TileHost};
+            for closed in [false, true] {
+                let owner = ProbeHost::new();
+                let (component, sibling_seen) =
+                    crate::widget::control_result_probe::component(&owner, 11, false);
+                let (legacy, legacy_seen) = crate::widget::control_result_probe::Probe::new(false);
+                let root = Column::new()
+                    .push(Box::new(legacy))
+                    .push(Box::new(TileHost::from_component(component)));
+                let mut host = Driver::new_with_controlled_inputs(
+                    State::new(),
+                    Box::new(root),
+                    (400, 200),
+                    Theme::dark(),
+                    crate::font_catalog::fixture_renderer(),
+                    crate::permissions::UserId("reader".into()),
+                );
+                if closed {
+                    host.close_components();
+                }
+                legacy_seen.enqueue("missing");
+                host.dispatch_control_invocations();
+                assert_eq!(legacy_seen.results.borrow().len(), 1);
+                assert!(
+                    sibling_seen.results.borrow().is_empty(),
+                    "legacy feedback must not enter bound sibling"
+                );
+                assert_eq!(sibling_seen.calls.get(), 0);
+            }
+        }
+
+        // Case `bound_local_control_result_reports_permission_refusal_and_success`.
+        {
+            use crate::application_test_support::{ProbeHost, runner_inputs};
+            for accepted in [false, true] {
+                let owner = ProbeHost::new();
+                let (component, observed) =
+                    crate::widget::control_result_probe::component(&owner, 11, accepted);
+                let binding = component.callback_binding();
+                let mut host =
+                    Driver::from_component(component, (400, 200), runner_inputs()).unwrap();
+                observed.enqueue("run");
+                host.dispatch_control_invocations();
+                assert_eq!(observed.calls.get(), 1);
+                let expected = if accepted {
+                    crate::widget::ResourceOperationStart::Accepted
+                } else {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                };
+                assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+                observed.enqueue("run");
+                *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
+                    collab_types::caps::Actor::person(
+                        Some(collab_types::role::Role::Viewer),
+                        "reader",
+                    ),
+                    Vec::new(),
+                );
+                let before = owner
+                    .records
+                    .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                    .unwrap();
+                host.dispatch_control_invocations();
+                assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
+                assert_eq!(
+                    owner
+                        .records
+                        .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
+                        .unwrap(),
+                    before
+                );
+                assert_eq!(observed.results.borrow().len(), 2);
+                assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
+            }
+        }
+
+        // Case `local_control_result_keeps_confirmation_as_refusal`.
+        {
+            let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
+            probe.confirmation = true;
             let mut host = Driver::new_with_controlled_inputs(
                 State::new(),
-                Box::new(root),
+                Box::new(probe),
                 (400, 200),
                 Theme::dark(),
                 crate::font_catalog::fixture_renderer(),
                 crate::permissions::UserId("reader".into()),
             );
-            if closed {
-                host.close_components();
-            }
-            legacy_seen.enqueue("missing");
+            observed.enqueue("run");
             host.dispatch_control_invocations();
-            assert_eq!(legacy_seen.results.borrow().len(), 1);
-            assert!(
-                sibling_seen.results.borrow().is_empty(),
-                "legacy feedback must not enter bound sibling"
+            assert_eq!(observed.calls.get(), 0);
+            assert_eq!(
+                *observed.results.borrow(),
+                vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
             );
-            assert_eq!(sibling_seen.calls.get(), 0);
         }
-    }
 
-    #[test]
-    fn bound_local_control_result_reports_permission_refusal_and_success() {
-        use crate::application_test_support::{ProbeHost, runner_inputs};
-        for accepted in [false, true] {
-            let owner = ProbeHost::new();
-            let (component, observed) =
-                crate::widget::control_result_probe::component(&owner, 11, accepted);
-            let binding = component.callback_binding();
-            let mut host = Driver::from_component(component, (400, 200), runner_inputs()).unwrap();
+        // Case `local_control_result_reports_completed_and_accepted`.
+        {
+            use crate::widget::control_result_probe::Probe;
+            for accepted in [false, true] {
+                let (probe, observed) = Probe::new(accepted);
+                let mut host = Driver::new_with_controlled_inputs(
+                    State::new(),
+                    Box::new(probe),
+                    (400, 200),
+                    Theme::dark(),
+                    crate::font_catalog::fixture_renderer(),
+                    crate::permissions::UserId("reader".into()),
+                );
+                observed.enqueue("run");
+                host.dispatch_control_invocations();
+                assert_eq!(observed.calls.get(), 1);
+                let expected = if accepted {
+                    crate::widget::ResourceOperationStart::Accepted
+                } else {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                };
+                assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
+                observed.enqueue("missing");
+                host.dispatch_control_invocations();
+                assert_eq!(observed.calls.get(), 1);
+                assert!(matches!(
+                    observed.results.borrow().last(),
+                    Some(Err(tilo_actions::DoorError::Unknown(_)))
+                ));
+            }
+        }
+
+        // Case `local_control_result_reports_fresh_permission_refusal_without_mutation`.
+        {
+            use crate::widget::control_result_probe::Probe;
+            let (probe, observed) = Probe::new(false);
+            let mut host = Driver::new_with_controlled_inputs(
+                State::new(),
+                Box::new(probe),
+                (400, 200),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                crate::permissions::UserId("reader".into()),
+            );
             observed.enqueue("run");
-            host.dispatch_control_invocations();
-            assert_eq!(observed.calls.get(), 1);
-            let expected = if accepted {
-                crate::widget::ResourceOperationStart::Accepted
-            } else {
-                crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )
-            };
-            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
-            observed.enqueue("run");
-            *binding.permissions.borrow_mut() = PermissionContext::from_capabilities(
+            let readonly = PermissionContext::from_capabilities(
                 collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
                 Vec::new(),
             );
-            let before = owner
-                .records
-                .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
-                .unwrap();
+            host.set_permission_ctx(readonly);
+            let before = host.state.doc.base_heads();
             host.dispatch_control_invocations();
-            assert_eq!(observed.calls.get(), 1, "revoked permission blocks handler");
+            assert_eq!(observed.calls.get(), 0, "permission checked before handler");
+            assert_eq!(host.state.doc.base_heads(), before);
             assert_eq!(
-                owner
-                    .records
-                    .read(&binding.checkout.id, automerge::AutoCommit::base_heads)
-                    .unwrap(),
-                before
+                automerge::transaction::Transactable::pending_ops(&host.state.doc),
+                0
             );
-            assert_eq!(observed.results.borrow().len(), 2);
-            assert!(matches!(observed.results.borrow().last(), Some(Err(_))));
-        }
-    }
-
-    #[test]
-    fn local_control_result_keeps_confirmation_as_refusal() {
-        let (mut probe, observed) = crate::widget::control_result_probe::Probe::new(false);
-        probe.confirmation = true;
-        let mut host = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(probe),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("reader".into()),
-        );
-        observed.enqueue("run");
-        host.dispatch_control_invocations();
-        assert_eq!(observed.calls.get(), 0);
-        assert_eq!(
-            *observed.results.borrow(),
-            vec![Err(tilo_actions::DoorError::ConfirmationRequired)]
-        );
-    }
-
-    #[test]
-    fn local_control_result_reports_completed_and_accepted() {
-        use crate::widget::control_result_probe::Probe;
-        for accepted in [false, true] {
-            let (probe, observed) = Probe::new(accepted);
-            let mut host = Driver::new_with_controlled_inputs(
-                State::new(),
-                Box::new(probe),
-                (400, 200),
-                Theme::dark(),
-                crate::font_catalog::fixture_renderer(),
-                crate::permissions::UserId("reader".into()),
-            );
-            observed.enqueue("run");
-            host.dispatch_control_invocations();
-            assert_eq!(observed.calls.get(), 1);
-            let expected = if accepted {
-                crate::widget::ResourceOperationStart::Accepted
-            } else {
-                crate::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )
-            };
-            assert_eq!(*observed.results.borrow(), vec![Ok(expected)]);
-            observed.enqueue("missing");
-            host.dispatch_control_invocations();
-            assert_eq!(observed.calls.get(), 1);
             assert!(matches!(
-                observed.results.borrow().last(),
-                Some(Err(tilo_actions::DoorError::Unknown(_)))
+                observed.results.borrow().as_slice(),
+                [Err(tilo_actions::DoorError::Unknown(_))]
             ));
+            assert!(observed.pending.borrow().is_empty());
         }
-    }
 
-    #[test]
-    fn local_control_result_reports_fresh_permission_refusal_without_mutation() {
-        use crate::widget::control_result_probe::Probe;
-        let (probe, observed) = Probe::new(false);
-        let mut host = Driver::new_with_controlled_inputs(
-            State::new(),
-            Box::new(probe),
-            (400, 200),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::UserId("reader".into()),
-        );
-        observed.enqueue("run");
-        let readonly = PermissionContext::from_capabilities(
-            collab_types::caps::Actor::person(Some(collab_types::role::Role::Viewer), "reader"),
-            Vec::new(),
-        );
-        host.set_permission_ctx(readonly);
-        let before = host.state.doc.base_heads();
-        host.dispatch_control_invocations();
-        assert_eq!(observed.calls.get(), 0, "permission checked before handler");
-        assert_eq!(host.state.doc.base_heads(), before);
-        assert_eq!(
-            automerge::transaction::Transactable::pending_ops(&host.state.doc),
-            0
-        );
-        assert!(matches!(
-            observed.results.borrow().as_slice(),
-            [Err(tilo_actions::DoorError::Unknown(_))]
-        ));
-        assert!(observed.pending.borrow().is_empty());
-    }
-
-    #[test]
-    fn startup_control_waits_for_terminal_without_committing_typing() {
-        use crate::widget::control_result_probe::Probe;
-        for succeeds in [true, false] {
-            let (mut probe, observed) = Probe::new(true);
-            probe.terminal_after = Some((3, succeeds));
-            probe.dirty_typing = true;
-            probe.owned_flush = Some(Ok(()));
-            observed.enqueue("run");
-            let inputs = crate::launch::LegacyLaunchInputs::new(
-                State::new(),
-                Box::new(probe),
-                crate::persist::DocWriter::disabled("fixture owns storage"),
-            )
-            .with_widget_owned_persistence();
-            assert_eq!(
-                run_initialized(&Spec::default(), inputs),
-                i32::from(!succeeds)
-            );
-            assert_eq!(observed.calls.get(), 1);
-            assert_eq!(observed.polls.get(), 3);
-            assert_eq!(
-                observed.commits.get(),
-                0,
-                "idle admission must not commit unrelated pending typing"
-            );
-            assert_eq!(observed.flushes.get(), 1);
-        }
-    }
-
-    #[test]
-    fn widget_owned_persistence_requires_checked_success() {
-        use crate::widget::control_result_probe::Probe;
-        for outcome in [None, Some(Err("disk full".into())), Some(Ok(()))] {
-            let succeeds = outcome == Some(Ok(()));
-            let (mut probe, observed) = Probe::new(false);
-            probe.owned_flush = outcome;
-            let inputs = crate::launch::LegacyLaunchInputs::new(
-                State::new(),
-                Box::new(probe),
-                crate::persist::DocWriter::disabled("fixture owns storage"),
-            )
-            .with_widget_owned_persistence();
-            assert_eq!(
-                run_initialized(&Spec::default(), inputs),
-                if succeeds { 0 } else { 3 }
-            );
-            assert_eq!(observed.flushes.get(), 1);
+        // Case `startup_control_waits_for_terminal_without_committing_typing`.
+        {
+            use crate::widget::control_result_probe::Probe;
+            for succeeds in [true, false] {
+                let (mut probe, observed) = Probe::new(true);
+                probe.terminal_after = Some((3, succeeds));
+                probe.dirty_typing = true;
+                probe.owned_flush = Some(Ok(()));
+                observed.enqueue("run");
+                let inputs = crate::launch::LegacyLaunchInputs::new(
+                    State::new(),
+                    Box::new(probe),
+                    crate::persist::DocWriter::disabled("fixture owns storage"),
+                )
+                .with_widget_owned_persistence();
+                assert_eq!(
+                    run_initialized(&Spec::default(), inputs),
+                    i32::from(!succeeds)
+                );
+                assert_eq!(observed.calls.get(), 1);
+                assert_eq!(observed.polls.get(), 3);
+                assert_eq!(
+                    observed.commits.get(),
+                    0,
+                    "idle admission must not commit unrelated pending typing"
+                );
+                assert_eq!(observed.flushes.get(), 1);
+            }
         }
     }
 
@@ -6287,69 +6442,11 @@ mod tests {
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-        }
-    }
-
-    #[test]
-    fn automatic_record_bootstrap_commits_shared_pending_transaction_before_forking() {
-        use crate::launch::{LegacyLaunchInputs, LegacyRecordPolicy};
-        use automerge::{AutoCommit, ROOT, ReadDoc};
-        let mut state = State::new();
-        state
-            .doc
-            .put(ROOT, "pending_from_opener", "retained")
-            .unwrap();
-        assert!(state.doc.pending_ops() > 0);
-        let index = state.doc.clone();
-        let original_actor = index.get_actor().clone();
-        let mut inputs = LegacyLaunchInputs::new(
-            state,
-            Box::new(Button::new("plain-root", "Plain", None)),
-            crate::persist::DocWriter::disabled("no writes in this fixture"),
-        );
-        inputs.records = LegacyRecordPolicy::AutomaticHeadless {
-            records: crate::record::RecordSet::in_memory(),
-            index,
-            expected_index: std::path::PathBuf::from("not-used-by-this-in-memory-fixture"),
-        };
-        let (mut driver, _) = build_legacy_driver(inputs, (400, 200), Theme::dark(), true);
-        let (_, index) = driver.record_persistence.as_mut().unwrap();
-        assert_eq!(
-            index.pending_ops(),
-            0,
-            "cloned opener transaction is closed before index mutation"
-        );
-        assert_eq!(
-            index.get_actor(),
-            &original_actor,
-            "index keeps its actual writer identity"
-        );
-        assert_ne!(driver.state.doc.get_actor(), &original_actor);
-        assert_eq!(
-            index.get_heads(),
-            driver.state.doc.get_heads(),
-            "identical pending input must commit to exactly the same hash"
-        );
-        index.put(ROOT, "index_only", "reference").unwrap();
-        driver
-            .state
-            .doc
-            .put(ROOT, "bootstrap_only", "loaded body")
-            .unwrap();
-        let mut joined = driver.state.doc.clone();
-        joined
-            .merge(index)
-            .expect("separate index/bootstrap authors cannot collide");
-        let reopened =
-            AutoCommit::load(&joined.save()).expect("persisted merged history must reload");
-        for (key, value) in [
-            ("pending_from_opener", "retained"),
-            ("index_only", "reference"),
-            ("bootstrap_only", "loaded body"),
-        ] {
-            assert_eq!(
-                reopened.get(ROOT, key).unwrap().unwrap().0.as_str(),
-                Some(value)
+            // libtest exits 0 when `--exact` selects nothing; require the child ran.
+            assert!(
+                String::from_utf8_lossy(&output.stdout).contains("test result: ok. 1 passed"),
+                "{case}: the child ran no test: {}",
+                String::from_utf8_lossy(&output.stdout)
             );
         }
     }
@@ -6516,26 +6613,17 @@ mod tests {
             }
             std::thread::sleep(crate::time::Duration::from_millis(20));
         };
+        let stdout = std::fs::read_to_string(stdout).unwrap();
         assert!(
             status.success(),
-            "{}\n{}",
-            std::fs::read_to_string(stdout).unwrap(),
+            "{stdout}\n{}",
             std::fs::read_to_string(stderr).unwrap()
         );
-    }
-
-    #[test]
-    fn dump_json_reflects_the_document() {
-        use automerge::transaction::Transactable;
-        let mut state = State::new();
-        state
-            .doc
-            .put(&automerge::ROOT, "greeting", "hello")
-            .unwrap();
-        let mut driver = Driver::new(state, Box::new(Button::new("b", "B", None)), (400, 200));
-        let json = driver.dump_json();
-        assert!(json.contains("greeting"), "{json}");
-        assert!(json.contains("hello"), "{json}");
+        // libtest exits 0 when `--exact` selects nothing; require the child ran.
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "the child ran no test: {stdout}"
+        );
     }
 }
 
@@ -6699,133 +6787,139 @@ mod a11y_driver_tests {
     }
 
     #[test]
-    fn a_headless_test_can_name_an_element_that_has_no_widget() {
-        let (d, _a) = driver();
-        for name in ["alpha", "beta", "gamma"] {
-            assert!(
-                d.a11y_node_named(name).is_some(),
-                "an element a test cannot name is one a screen-reader user cannot find"
+    fn a11y_driver_names_focuses_and_activates_widgetless_elements() {
+        // Case `a_headless_test_can_name_an_element_that_has_no_widget`.
+        {
+            let (d, _a) = driver();
+            for name in ["alpha", "beta", "gamma"] {
+                assert!(
+                    d.a11y_node_named(name).is_some(),
+                    "an element a test cannot name is one a screen-reader user cannot find"
+                );
+            }
+            assert_eq!(d.a11y_node_named("delta"), None);
+        }
+
+        // Case `a_headless_test_can_activate_one_element_inside_a_canvas`.
+        {
+            // The whole point: before, a canvas could be described in a headless
+            // test but only clicked at coordinates, which activates whatever
+            // happens to sit there.
+            let (mut d, activated) = driver();
+            let beta = d.a11y_node_named("beta").unwrap();
+            d.perform_a11y_action(beta, &Action::Activate).unwrap();
+            assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
+
+            let gamma = d.a11y_node_named("gamma").unwrap();
+            d.perform_a11y_action(gamma, &Action::Activate).unwrap();
+            assert_eq!(
+                *activated.borrow(),
+                vec!["beta".to_string(), "gamma".to_string()]
             );
         }
-        assert_eq!(d.a11y_node_named("delta"), None);
+
+        // Case `focusing_an_element_moves_the_exported_focus_onto_it`.
+        {
+            let (mut d, _a) = driver();
+            let gamma = d.a11y_node_named("gamma").unwrap();
+            d.perform_a11y_action(gamma, &Action::Focus).unwrap();
+
+            let (id, node) = d.a11y_focus().expect("something is focused");
+            assert_eq!(id, gamma, "the reader sits on the element, not the canvas");
+            assert_eq!(node.label(), Some("gamma"));
+        }
     }
 
     #[test]
-    fn a_headless_test_can_activate_one_element_inside_a_canvas() {
-        // The whole point: before, a canvas could be described in a headless
-        // test but only clicked at coordinates, which activates whatever
-        // happens to sit there.
-        let (mut d, activated) = driver();
-        let beta = d.a11y_node_named("beta").unwrap();
-        d.perform_a11y_action(beta, &Action::Activate).unwrap();
-        assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
+    fn a11y_node_references_survive_relayout_or_report_gone() {
+        // Case `a_node_reference_survives_a_relayout`.
+        {
+            // The gap this closes: the host throws its TaffyTree away and rebuilds
+            // it on every relayout, and ids used to be derived from taffy's
+            // per-tree node ids — so every id in the exported tree changed on each
+            // layout pass. An assistive technology holding a reference across a
+            // repaint got an id that no longer resolved, or one that resolved to a
+            // different element, which is worse than having no id at all.
+            let (mut d, _a) = driver();
+            let before: Vec<(String, accesskit::NodeId)> = d
+                .a11y_nodes()
+                .into_iter()
+                .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
+                .collect();
+            assert!(before.len() >= 4, "the canvas and its items are exported");
 
-        let gamma = d.a11y_node_named("gamma").unwrap();
-        d.perform_a11y_action(gamma, &Action::Activate).unwrap();
-        assert_eq!(
-            *activated.borrow(),
-            vec!["beta".to_string(), "gamma".to_string()]
-        );
-    }
+            // A layout pass, exactly as any frame does.
+            d.relayout();
 
-    #[test]
-    fn focusing_an_element_moves_the_exported_focus_onto_it() {
-        let (mut d, _a) = driver();
-        let gamma = d.a11y_node_named("gamma").unwrap();
-        d.perform_a11y_action(gamma, &Action::Focus).unwrap();
+            let after: Vec<(String, accesskit::NodeId)> = d
+                .a11y_nodes()
+                .into_iter()
+                .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
+                .collect();
+            assert_eq!(
+                before, after,
+                "every exported id must be the same after a relayout"
+            );
+        }
 
-        let (id, node) = d.a11y_focus().expect("something is focused");
-        assert_eq!(id, gamma, "the reader sits on the element, not the canvas");
-        assert_eq!(node.label(), Some("gamma"));
-    }
+        // Case `an_id_taken_before_a_relayout_still_operates_the_same_element`.
+        {
+            // Stability is only worth anything if the id still *works*: an AT holds
+            // its reference across frames and then acts on it.
+            let (mut d, activated) = driver();
+            let beta = d.a11y_node_named("beta").unwrap();
 
-    #[test]
-    fn a_node_reference_survives_a_relayout() {
-        // The gap this closes: the host throws its TaffyTree away and rebuilds
-        // it on every relayout, and ids used to be derived from taffy's
-        // per-tree node ids — so every id in the exported tree changed on each
-        // layout pass. An assistive technology holding a reference across a
-        // repaint got an id that no longer resolved, or one that resolved to a
-        // different element, which is worse than having no id at all.
-        let (mut d, _a) = driver();
-        let before: Vec<(String, accesskit::NodeId)> = d
-            .a11y_nodes()
-            .into_iter()
-            .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
-            .collect();
-        assert!(before.len() >= 4, "the canvas and its items are exported");
+            d.relayout();
+            d.relayout();
 
-        // A layout pass, exactly as any frame does.
-        d.relayout();
+            d.perform_a11y_action(beta, &Action::Activate).unwrap();
+            assert_eq!(
+                *activated.borrow(),
+                vec!["beta".to_string()],
+                "the reference must still operate the element it named"
+            );
+        }
 
-        let after: Vec<(String, accesskit::NodeId)> = d
-            .a11y_nodes()
-            .into_iter()
-            .map(|(id, n)| (n.label().unwrap_or_default().to_string(), id))
-            .collect();
-        assert_eq!(
-            before, after,
-            "every exported id must be the same after a relayout"
-        );
-    }
+        // Case `a_held_reference_follows_its_element_when_an_earlier_one_is_removed`.
+        {
+            // Identity keys, observed. Removing an earlier element renumbers every
+            // element after it. Keyed by ordinal, a reference an assistive
+            // technology took before the removal would afterwards name a DIFFERENT
+            // element — it would operate the wrong one, silently. Keyed by
+            // identity, it keeps naming the element it was taken from.
+            let (mut d, activated, items) = driver_with_items();
+            let gamma = d.a11y_node_named("gamma").expect("gamma is addressable");
 
-    #[test]
-    fn an_id_taken_before_a_relayout_still_operates_the_same_element() {
-        // Stability is only worth anything if the id still *works*: an AT holds
-        // its reference across frames and then acts on it.
-        let (mut d, activated) = driver();
-        let beta = d.a11y_node_named("beta").unwrap();
+            // Remove the first element, so gamma slides from third place to second.
+            items.borrow_mut().remove(0);
+            d.relayout();
+            assert!(d.a11y_node_named("alpha").is_none(), "alpha is gone");
+            assert!(
+                d.a11y_node_named("gamma").is_some(),
+                "gamma is still listed"
+            );
 
-        d.relayout();
-        d.relayout();
-
-        d.perform_a11y_action(beta, &Action::Activate).unwrap();
-        assert_eq!(
-            *activated.borrow(),
-            vec!["beta".to_string()],
-            "the reference must still operate the element it named"
-        );
-    }
-
-    #[test]
-    fn a_held_reference_follows_its_element_when_an_earlier_one_is_removed() {
-        // Identity keys, observed. Removing an earlier element renumbers every
-        // element after it. Keyed by ordinal, a reference an assistive
-        // technology took before the removal would afterwards name a DIFFERENT
-        // element — it would operate the wrong one, silently. Keyed by
-        // identity, it keeps naming the element it was taken from.
-        let (mut d, activated, items) = driver_with_items();
-        let gamma = d.a11y_node_named("gamma").expect("gamma is addressable");
-
-        // Remove the first element, so gamma slides from third place to second.
-        items.borrow_mut().remove(0);
-        d.relayout();
-        assert!(d.a11y_node_named("alpha").is_none(), "alpha is gone");
-        assert!(
-            d.a11y_node_named("gamma").is_some(),
-            "gamma is still listed"
-        );
-
-        d.perform_a11y_action(gamma, &Action::Activate)
-            .expect("the reference must still resolve");
-        assert_eq!(
-            *activated.borrow(),
-            vec!["gamma".to_string()],
-            "a held reference must operate the element it named, not the one \
+            d.perform_a11y_action(gamma, &Action::Activate)
+                .expect("the reference must still resolve");
+            assert_eq!(
+                *activated.borrow(),
+                vec!["gamma".to_string()],
+                "a held reference must operate the element it named, not the one \
              that took its place"
-        );
-    }
+            );
+        }
 
-    #[test]
-    fn an_id_that_names_nothing_is_reported_not_silently_retargeted() {
-        let (mut d, activated) = driver();
-        let real = d.a11y_node_named("alpha").unwrap();
-        let stale = accesskit::NodeId(real.0 ^ 0xdead_beef);
-        let err = d
-            .perform_a11y_action(stale, &Action::Activate)
-            .expect_err("a stale id must be an error, not a guess");
-        assert!(err.contains("no accessibility node"), "got {err}");
-        assert!(activated.borrow().is_empty());
+        // Case `an_id_that_names_nothing_is_reported_not_silently_retargeted`.
+        {
+            let (mut d, activated) = driver();
+            let real = d.a11y_node_named("alpha").unwrap();
+            let stale = accesskit::NodeId(real.0 ^ 0xdead_beef);
+            let err = d
+                .perform_a11y_action(stale, &Action::Activate)
+                .expect_err("a stale id must be an error, not a guess");
+            assert!(err.contains("no accessibility node"), "got {err}");
+            assert!(activated.borrow().is_empty());
+        }
     }
 }
 
@@ -6973,75 +7067,78 @@ mod undo_driver_tests {
         }
     }
 
-    /// Clicking the control in a scenario undoes, and reaches the same place
-    /// the harness's Ctrl+Z does. A control that only worked live would be
-    /// dead in every screenshot and every driven test.
     #[test]
-    fn clicking_undo_and_pressing_ctrl_z_reach_the_same_undo() {
-        let mut via_click = undo_driver();
-        type_action(&mut via_click, "hello");
-        via_click
-            .click_named("undo_button")
-            .expect("the control is addressable once it can act");
-        assert_eq!(
-            body(&mut via_click),
-            "hell",
-            "the click undid the last action — one keystroke, one boundary"
-        );
+    fn undo_driver_reaches_one_undo_and_publishes_status() {
+        // Case `clicking_undo_and_pressing_ctrl_z_reach_the_same_undo`:
+        // Clicking the control in a scenario undoes, and reaches the same place
+        // the harness's Ctrl+Z does. A control that only worked live would be
+        // dead in every screenshot and every driven test.
+        {
+            let mut via_click = undo_driver();
+            type_action(&mut via_click, "hello");
+            via_click
+                .click_named("undo_button")
+                .expect("the control is addressable once it can act");
+            assert_eq!(
+                body(&mut via_click),
+                "hell",
+                "the click undid the last action — one keystroke, one boundary"
+            );
 
-        let mut via_key = undo_driver();
-        type_action(&mut via_key, "hello");
-        via_key.set_modifiers(&["ctrl".to_string()]);
-        via_key.key("z");
-        assert_eq!(
-            body(&mut via_key),
-            body(&mut via_click),
-            "the shortcut and the control land in the same place"
-        );
+            let mut via_key = undo_driver();
+            type_action(&mut via_key, "hello");
+            via_key.set_modifiers(&["ctrl".to_string()]);
+            via_key.key("z");
+            assert_eq!(
+                body(&mut via_key),
+                body(&mut via_click),
+                "the shortcut and the control land in the same place"
+            );
 
-        // And redo, through the control.
-        via_click
-            .click_named("redo_button")
-            .expect("redo became available");
-        assert_eq!(body(&mut via_click), "hello");
-    }
+            // And redo, through the control.
+            via_click
+                .click_named("redo_button")
+                .expect("redo became available");
+            assert_eq!(body(&mut via_click), "hello");
+        }
 
-    /// The harness must publish the status, or a control renders dead in every
-    /// shot regardless of the history behind it.
-    #[test]
-    fn the_driver_publishes_the_status_to_the_widget_tree() {
-        let mut d = undo_driver();
+        // Case `the_driver_publishes_the_status_to_the_widget_tree`:
+        // The harness must publish the status, or a control renders dead in every
+        // shot regardless of the history behind it.
+        {
+            let mut d = undo_driver();
 
-        // Nothing to undo: the control is disabled, so it is not in the focus
-        // order the harness tabs through.
-        assert!(
-            d.focus_order().is_empty(),
-            "an empty history leaves no focusable history control"
-        );
+            // Nothing to undo: the control is disabled, so it is not in the focus
+            // order the harness tabs through.
+            assert!(
+                d.focus_order().is_empty(),
+                "an empty history leaves no focusable history control"
+            );
 
-        type_action(&mut d, "hello");
-        assert_eq!(
-            d.focus_order().len(),
-            1,
-            "the Undo control becomes focusable once there is an action"
-        );
-        let status = d.undo_status();
-        assert!(status.can_undo && !status.can_redo);
-        // Each keystroke is its own commit boundary here, so the newest
-        // action inserted one character.
-        assert_eq!(status.undo_summary.as_deref(), Some("+1 -0 chars"));
-    }
+            type_action(&mut d, "hello");
+            assert_eq!(
+                d.focus_order().len(),
+                1,
+                "the Undo control becomes focusable once there is an action"
+            );
+            let status = d.undo_status();
+            assert!(status.can_undo && !status.can_redo);
+            // Each keystroke is its own commit boundary here, so the newest
+            // action inserted one character.
+            assert_eq!(status.undo_summary.as_deref(), Some("+1 -0 chars"));
+        }
 
-    /// A scenario that clicks a control with nothing to undo must not silently
-    /// change the document.
-    #[test]
-    fn clicking_a_disabled_control_in_a_scenario_does_nothing() {
-        let mut d = undo_driver();
-        type_action(&mut d, "hello");
-        assert!(!d.undo_status().can_redo, "nothing has been undone");
-        // Redo is unavailable: nothing has been undone yet.
-        let _ = d.click_named("redo_button");
-        assert_eq!(body(&mut d), "hello", "the document is untouched");
+        // Case `clicking_a_disabled_control_in_a_scenario_does_nothing`:
+        // A scenario that clicks a control with nothing to undo must not silently
+        // change the document.
+        {
+            let mut d = undo_driver();
+            type_action(&mut d, "hello");
+            assert!(!d.undo_status().can_redo, "nothing has been undone");
+            // Redo is unavailable: nothing has been undone yet.
+            let _ = d.click_named("redo_button");
+            assert_eq!(body(&mut d), "hello", "the document is untouched");
+        }
     }
 }
 
@@ -7289,224 +7386,230 @@ mod dispatched_action_driver_tests {
     }
 
     #[test]
-    fn lazy_status_preserves_transaction_boundary_without_a_consumer() {
-        use automerge::transaction::Transactable;
-        let author = crate::permissions::UserId("lazy-status-author".into());
-        let mut state = State::new();
-        state.doc.put(automerge::ROOT, "value", "first").unwrap();
-        assert!(state.commit_action_authored(None, None, Some(author.clone())));
-        let mut driver = Driver::new_with_controlled_inputs(
-            state,
-            Box::new(crate::widget::Spacer::new()),
-            (100, 100),
-            Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            author,
-        );
-        driver
-            .state
-            .doc
-            .put(automerge::ROOT, "value", "pending")
-            .unwrap();
-        assert!(driver.state.doc.pending_ops() > 0);
-        driver.publish_undo_status();
-        assert_eq!(
-            driver.state.doc.pending_ops(),
-            0,
-            "lazy labels must preserve the eager status transaction boundary"
-        );
+    fn dispatched_actions_are_undoable_through_every_input_path() {
+        // Case `lazy_status_preserves_transaction_boundary_without_a_consumer`.
+        {
+            use automerge::transaction::Transactable;
+            let author = crate::permissions::UserId("lazy-status-author".into());
+            let mut state = State::new();
+            state.doc.put(automerge::ROOT, "value", "first").unwrap();
+            assert!(state.commit_action_authored(None, None, Some(author.clone())));
+            let mut driver = Driver::new_with_controlled_inputs(
+                state,
+                Box::new(crate::widget::Spacer::new()),
+                (100, 100),
+                Theme::dark(),
+                crate::font_catalog::fixture_renderer(),
+                author,
+            );
+            driver
+                .state
+                .doc
+                .put(automerge::ROOT, "value", "pending")
+                .unwrap();
+            assert!(driver.state.doc.pending_ops() > 0);
+            driver.publish_undo_status();
+            assert_eq!(
+                driver.state.doc.pending_ops(),
+                0,
+                "lazy labels must preserve the eager status transaction boundary"
+            );
+        }
+
+        // Case `an_edit_dispatched_as_an_action_lights_undo_and_reverts_when_pressed`:
+        // The whole covenant on one interaction: a real edit dispatched as an
+        // action, the Undo control lighting because of it, pressing that control,
+        // and the edit going away.
+        //
+        // Every step is the driver's own output — `undo_status` is what the
+        // harness publishes to the tree, `click_named` is the production click
+        // path, and the document is read back from the live state.
+        {
+            let mut d = action_driver();
+
+            assert!(
+                !d.undo_status().can_undo,
+                "nothing has happened yet, so the control must be dark"
+            );
+
+            d.type_text("a");
+            assert_eq!(
+                body(&mut d),
+                "a",
+                "the dispatched action reached the document"
+            );
+            assert!(
+                d.undo_status().can_undo,
+                "an action-dispatched edit must be an undo boundary the local user owns"
+            );
+
+            d.click_named("undo_button")
+                .expect("the control is addressable once it can act");
+            assert_eq!(body(&mut d), "", "pressing Undo reverted the edit");
+            assert!(
+                d.undo_status().can_redo,
+                "and the reverted action is available to redo"
+            );
+
+            d.click_named("redo_button").expect("redo became available");
+            assert_eq!(body(&mut d), "a", "redo put the action back");
+        }
+
+        // Case `committed_text_uses_the_real_ime_path_as_one_edit`.
+        {
+            let mut d = action_driver();
+
+            d.commit_text("東京 notes");
+            assert_eq!(body(&mut d), "東京 notes");
+            assert!(d.perform_undo());
+            assert_eq!(body(&mut d), "");
+        }
+
+        // Case `ctrl_z_and_the_control_undo_the_same_dispatched_action`:
+        // The keyboard and the control must reach the same undo — for the action
+        // path too, not just the `needs_commit` one.
+        {
+            let mut via_key = action_driver();
+            via_key.type_text("a");
+            via_key.set_modifiers(&["ctrl".to_string()]);
+            via_key.key("z");
+
+            let mut via_click = action_driver();
+            via_click.type_text("a");
+            via_click.click_named("undo_button").expect("addressable");
+
+            assert_eq!(body(&mut via_key), "");
+            assert_eq!(
+                body(&mut via_key),
+                body(&mut via_click),
+                "the shortcut and the control land in the same place"
+            );
+        }
+
+        // Case `an_action_performed_through_accessibility_is_undoable`:
+        // A canvas app is driven through the accessibility tree, not through
+        // clicks — `perform_a11y_action` is the route
+        // [`docs/headless-testing.md`] tells scenarios to take. That route mutates
+        // the document without going through `send`, so it needs the boundary
+        // recorded too.
+        {
+            let mut d = action_driver();
+            let node = d
+                .a11y_node_named("Editor")
+                .expect("the canvas is exported to the accessibility tree");
+
+            d.perform_a11y_action(node, &crate::a11y::Action::Activate)
+                .expect("the widget consumes Activate");
+
+            assert_eq!(body(&mut d), "!", "the a11y verb dispatched the action");
+            assert!(
+                d.undo_status().can_undo,
+                "an action performed through accessibility must be undoable too"
+            );
+            assert!(d.perform_undo(), "and the history actually pops it");
+            assert_eq!(body(&mut d), "");
+        }
     }
 
-    /// The whole covenant on one interaction: a real edit dispatched as an
-    /// action, the Undo control lighting because of it, pressing that control,
-    /// and the edit going away.
-    ///
-    /// Every step is the driver's own output — `undo_status` is what the
-    /// harness publishes to the tree, `click_named` is the production click
-    /// path, and the document is read back from the live state.
     #[test]
-    fn an_edit_dispatched_as_an_action_lights_undo_and_reverts_when_pressed() {
-        let mut d = action_driver();
+    fn dispatched_action_boundaries_follow_interactions() {
+        // Case `several_actions_in_one_event_are_one_boundary`:
+        // One event is one undo boundary, however many actions it dispatched —
+        // [`ActionHost`](crate::action_host::ActionHost)'s contract, observed
+        // through the driver rather than asserted against the host in isolation.
+        {
+            let mut d = action_driver();
+            d.type_text("2"); // dispatches two Appends within the single keystroke
+            assert_eq!(body(&mut d), "xy", "both actions applied");
 
-        assert!(
-            !d.undo_status().can_undo,
-            "nothing has happened yet, so the control must be dark"
-        );
+            assert!(d.perform_undo(), "the batch is undoable");
+            assert_eq!(
+                body(&mut d),
+                "",
+                "one undo reverted the whole event, not half of it"
+            );
+            assert!(
+                !d.undo_status().can_undo,
+                "and there is no second boundary left behind"
+            );
+        }
 
-        d.type_text("a");
-        assert_eq!(
-            body(&mut d),
-            "a",
-            "the dispatched action reached the document"
-        );
-        assert!(
-            d.undo_status().can_undo,
-            "an action-dispatched edit must be an undo boundary the local user owns"
-        );
+        // Case `separate_interactions_are_separate_boundaries`:
+        // Two separate interactions are two separate boundaries, undone newest
+        // first. Guards the rising-edge drain: a host that failed to clear the
+        // bracket would bracket the second edit from the first edit's heads and
+        // revert both at once.
+        {
+            let mut d = action_driver();
+            d.type_text("a");
+            d.type_text("b");
+            assert_eq!(body(&mut d), "ab");
 
-        d.click_named("undo_button")
-            .expect("the control is addressable once it can act");
-        assert_eq!(body(&mut d), "", "pressing Undo reverted the edit");
-        assert!(
-            d.undo_status().can_redo,
-            "and the reverted action is available to redo"
-        );
+            assert!(d.perform_undo());
+            assert_eq!(body(&mut d), "a", "undo reverted only the newer edit");
+            assert!(d.perform_undo());
+            assert_eq!(body(&mut d), "");
+        }
 
-        d.click_named("redo_button").expect("redo became available");
-        assert_eq!(body(&mut d), "a", "redo put the action back");
-    }
+        // Case `two_widgets_dispatching_in_one_tick_are_one_boundary_from_the_earlier`:
+        // Two widgets dispatching in the same tick is still one boundary, and it
+        // spans from the earlier of their brackets.
+        //
+        // The second widget captures its bracket *after* the first has already
+        // changed the document, so recording from that later bracket would strand
+        // the first widget's edit outside the entry: one Ctrl+Z would revert half
+        // the tick and leave the rest with nothing to undo it. Which bracket the
+        // sweep happens to see first is a hash-map order, so this cannot be left
+        // to luck.
+        {
+            // Both editors handle the same keystroke, so a single key press
+            // dispatches from each in turn.
+            let row = crate::widget::Row::new()
+                .push(Box::new(ActionEditor::passive()))
+                .push(Box::new(ActionEditor::new()))
+                .push(Box::new(crate::widget::UndoButton::undo()));
+            let mut d = Driver::new(State::new(), Box::new(row), (400, 120));
 
-    #[test]
-    fn committed_text_uses_the_real_ime_path_as_one_edit() {
-        let mut d = action_driver();
+            d.type_text("a");
+            assert_eq!(body(&mut d), "aa", "both widgets dispatched");
 
-        d.commit_text("東京 notes");
-        assert_eq!(body(&mut d), "東京 notes");
-        assert!(d.perform_undo());
-        assert_eq!(body(&mut d), "");
-    }
-
-    /// The keyboard and the control must reach the same undo — for the action
-    /// path too, not just the `needs_commit` one.
-    #[test]
-    fn ctrl_z_and_the_control_undo_the_same_dispatched_action() {
-        let mut via_key = action_driver();
-        via_key.type_text("a");
-        via_key.set_modifiers(&["ctrl".to_string()]);
-        via_key.key("z");
-
-        let mut via_click = action_driver();
-        via_click.type_text("a");
-        via_click.click_named("undo_button").expect("addressable");
-
-        assert_eq!(body(&mut via_key), "");
-        assert_eq!(
-            body(&mut via_key),
-            body(&mut via_click),
-            "the shortcut and the control land in the same place"
-        );
-    }
-
-    /// A canvas app is driven through the accessibility tree, not through
-    /// clicks — `perform_a11y_action` is the route
-    /// [`docs/headless-testing.md`] tells scenarios to take. That route mutates
-    /// the document without going through `send`, so it needs the boundary
-    /// recorded too.
-    #[test]
-    fn an_action_performed_through_accessibility_is_undoable() {
-        let mut d = action_driver();
-        let node = d
-            .a11y_node_named("Editor")
-            .expect("the canvas is exported to the accessibility tree");
-
-        d.perform_a11y_action(node, &crate::a11y::Action::Activate)
-            .expect("the widget consumes Activate");
-
-        assert_eq!(body(&mut d), "!", "the a11y verb dispatched the action");
-        assert!(
-            d.undo_status().can_undo,
-            "an action performed through accessibility must be undoable too"
-        );
-        assert!(d.perform_undo(), "and the history actually pops it");
-        assert_eq!(body(&mut d), "");
-    }
-
-    /// One event is one undo boundary, however many actions it dispatched —
-    /// [`ActionHost`](crate::action_host::ActionHost)'s contract, observed
-    /// through the driver rather than asserted against the host in isolation.
-    #[test]
-    fn several_actions_in_one_event_are_one_boundary() {
-        let mut d = action_driver();
-        d.type_text("2"); // dispatches two Appends within the single keystroke
-        assert_eq!(body(&mut d), "xy", "both actions applied");
-
-        assert!(d.perform_undo(), "the batch is undoable");
-        assert_eq!(
-            body(&mut d),
-            "",
-            "one undo reverted the whole event, not half of it"
-        );
-        assert!(
-            !d.undo_status().can_undo,
-            "and there is no second boundary left behind"
-        );
-    }
-
-    /// Two separate interactions are two separate boundaries, undone newest
-    /// first. Guards the rising-edge drain: a host that failed to clear the
-    /// bracket would bracket the second edit from the first edit's heads and
-    /// revert both at once.
-    #[test]
-    fn separate_interactions_are_separate_boundaries() {
-        let mut d = action_driver();
-        d.type_text("a");
-        d.type_text("b");
-        assert_eq!(body(&mut d), "ab");
-
-        assert!(d.perform_undo());
-        assert_eq!(body(&mut d), "a", "undo reverted only the newer edit");
-        assert!(d.perform_undo());
-        assert_eq!(body(&mut d), "");
-    }
-
-    /// Two widgets dispatching in the same tick is still one boundary, and it
-    /// spans from the earlier of their brackets.
-    ///
-    /// The second widget captures its bracket *after* the first has already
-    /// changed the document, so recording from that later bracket would strand
-    /// the first widget's edit outside the entry: one Ctrl+Z would revert half
-    /// the tick and leave the rest with nothing to undo it. Which bracket the
-    /// sweep happens to see first is a hash-map order, so this cannot be left
-    /// to luck.
-    #[test]
-    fn two_widgets_dispatching_in_one_tick_are_one_boundary_from_the_earlier() {
-        // Both editors handle the same keystroke, so a single key press
-        // dispatches from each in turn.
-        let row = crate::widget::Row::new()
-            .push(Box::new(ActionEditor::passive()))
-            .push(Box::new(ActionEditor::new()))
-            .push(Box::new(crate::widget::UndoButton::undo()));
-        let mut d = Driver::new(State::new(), Box::new(row), (400, 120));
-
-        d.type_text("a");
-        assert_eq!(body(&mut d), "aa", "both widgets dispatched");
-
-        assert!(d.perform_undo(), "the tick is undoable");
-        assert_eq!(
-            body(&mut d),
-            "",
-            "one undo reverted the whole tick — the entry started before the \
+            assert!(d.perform_undo(), "the tick is undoable");
+            assert_eq!(
+                body(&mut d),
+                "",
+                "one undo reverted the whole tick — the entry started before the \
              first widget's action, not between the two"
-        );
-        assert!(
-            !d.undo_status().can_undo,
-            "and left no orphaned second boundary"
-        );
-    }
+            );
+            assert!(
+                !d.undo_status().can_undo,
+                "and left no orphaned second boundary"
+            );
+        }
 
-    /// An event that dispatches nothing must not push an empty entry, or the
-    /// next Ctrl+Z is spent on a no-op and the user's edit survives a
-    /// press they expected to undo it.
-    #[test]
-    fn an_event_that_dispatches_nothing_records_no_boundary() {
-        let mut d = action_driver();
-        d.type_text("a");
+        // Case `an_event_that_dispatches_nothing_records_no_boundary`:
+        // An event that dispatches nothing must not push an empty entry, or the
+        // next Ctrl+Z is spent on a no-op and the user's edit survives a
+        // press they expected to undo it.
+        {
+            let mut d = action_driver();
+            d.type_text("a");
 
-        // A pointer move: reaches the tree, dispatches no action.
-        d.send(&WindowEvent::CursorMoved {
-            device_id: winit::event::DeviceId::dummy(),
-            position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
-        });
+            // A pointer move: reaches the tree, dispatches no action.
+            d.send(&WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
+            });
 
-        assert!(
-            d.perform_undo(),
-            "the real edit is still the top of the stack"
-        );
-        assert_eq!(body(&mut d), "", "and one press reverted it");
-        assert!(
-            !d.undo_status().can_undo,
-            "the pointer move left nothing behind"
-        );
+            assert!(
+                d.perform_undo(),
+                "the real edit is still the top of the stack"
+            );
+            assert_eq!(body(&mut d), "", "and one press reverted it");
+            assert!(
+                !d.undo_status().can_undo,
+                "the pointer move left nothing behind"
+            );
+        }
     }
 }
 
@@ -7715,92 +7818,96 @@ mod prepared_driver_tests {
         (host, driver, observed, checkout)
     }
     #[test]
-    fn prepared_driver_selected_undo_status_preserves_outer_publication() {
-        let (host, mut driver, bound, checkout) = prepared();
-        let outer = Observations::default();
-        // Preserve the owned bound adapter as a child; this test adds ordinary host chrome.
-        let component_root =
-            std::mem::replace(&mut driver.root, Box::new(crate::widget::Column::new()));
-        driver.root = Box::new(
-            crate::widget::Column::new()
-                .push(Box::new(Observer::new(outer.clone())))
-                .push(component_root),
-        );
-        driver.state.doc.put(ROOT, "outer", true).unwrap();
-        driver
-            .state
-            .commit_action_authored_with_context(None, None, Some(author()), None);
-        driver.state.undo_as(Some(&author()), None, None).unwrap();
-        driver.relayout();
-        let outer_baseline = driver.state.undo_status(Some(&author()));
-        assert!(!outer_baseline.can_undo && outer_baseline.can_redo);
-        let node = *driver
-            .node_map
-            .keys()
-            .find(|node| driver.bindings.binding_for(**node).is_some())
-            .unwrap();
-        driver.set_focused(Some(node));
-        driver.type_text("first");
-        let selected = driver.undo_status();
-        assert!(selected.can_undo && !selected.can_redo);
-        assert_eq!(*bound.published.borrow(), selected);
-        assert_eq!(*outer.published.borrow(), outer_baseline);
-        driver.type_text(" second");
-        for _ in 0..3 {
-            assert!(driver.undo_status().can_undo);
+    fn prepared_driver_publishes_undo_status_and_guards_wakes() {
+        // Case `prepared_driver_selected_undo_status_preserves_outer_publication`.
+        {
+            let (host, mut driver, bound, checkout) = prepared();
+            let outer = Observations::default();
+            // Preserve the owned bound adapter as a child; this test adds ordinary host chrome.
+            let component_root =
+                std::mem::replace(&mut driver.root, Box::new(crate::widget::Column::new()));
+            driver.root = Box::new(
+                crate::widget::Column::new()
+                    .push(Box::new(Observer::new(outer.clone())))
+                    .push(component_root),
+            );
+            driver.state.doc.put(ROOT, "outer", true).unwrap();
+            driver
+                .state
+                .commit_action_authored_with_context(None, None, Some(author()), None);
+            driver.state.undo_as(Some(&author()), None, None).unwrap();
+            driver.relayout();
+            let outer_baseline = driver.state.undo_status(Some(&author()));
+            assert!(!outer_baseline.can_undo && outer_baseline.can_redo);
+            let node = *driver
+                .node_map
+                .keys()
+                .find(|node| driver.bindings.binding_for(**node).is_some())
+                .unwrap();
+            driver.set_focused(Some(node));
+            driver.type_text("first");
+            let selected = driver.undo_status();
+            assert!(selected.can_undo && !selected.can_redo);
+            assert_eq!(*bound.published.borrow(), selected);
+            assert_eq!(*outer.published.borrow(), outer_baseline);
+            driver.type_text(" second");
+            for _ in 0..3 {
+                assert!(driver.undo_status().can_undo);
+            }
+            assert_eq!(body(&host.records, &checkout), "first second");
+            assert!(driver.perform_undo());
+            assert_eq!(body(&host.records, &checkout), "");
+            assert!(!driver.undo_status().can_undo && driver.undo_status().can_redo);
+            assert!(driver.perform_redo());
+            assert_eq!(body(&host.records, &checkout), "first second");
+            assert_eq!(*outer.published.borrow(), outer_baseline);
+            assert_eq!(driver.state.undo_status(Some(&author())), outer_baseline);
+            driver.set_focused(None);
+            assert_eq!(driver.undo_status(), outer_baseline);
         }
-        assert_eq!(body(&host.records, &checkout), "first second");
-        assert!(driver.perform_undo());
-        assert_eq!(body(&host.records, &checkout), "");
-        assert!(!driver.undo_status().can_undo && driver.undo_status().can_redo);
-        assert!(driver.perform_redo());
-        assert_eq!(body(&host.records, &checkout), "first second");
-        assert_eq!(*outer.published.borrow(), outer_baseline);
-        assert_eq!(driver.state.undo_status(Some(&author())), outer_baseline);
-        driver.set_focused(None);
-        assert_eq!(driver.undo_status(), outer_baseline);
-    }
-    #[test]
-    fn prepared_driver_wakes_are_installed_before_callbacks_and_stale_wakes_are_rejected() {
-        let mut outer_scope = crate::WakeScope::new();
-        let outer_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let count = outer_wakes.clone();
-        outer_scope
-            .bind(move |_| {
-                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            })
-            .unwrap();
-        let _outer = outer_scope.enter();
-        let (_host, mut driver, observed, _) = prepared();
-        assert_eq!(driver.root.get_state(), Some("initial callback".into()));
-        assert_eq!(outer_wakes.load(std::sync::atomic::Ordering::Relaxed), 0);
-        let writer = observed.local.borrow().as_ref().unwrap().writer();
-        let before = observed.syncs.get();
-        writer.set("pending".into());
-        let _ = driver.inspection();
-        assert_eq!(
-            observed.syncs.get(),
-            before,
-            "read boundary must not perform a frame"
-        );
-        let _ = driver.action_registry_mut();
-        assert!(observed.syncs.get() > before);
-        assert_eq!(driver.root.get_state(), Some("pending".into()));
-        writer.set("queued before close".into());
-        driver.close_components();
-        assert!(!writer.try_set("stale".into()));
-        assert!(!driver.component_wake.as_ref().unwrap().dirty.get());
-        let (_next, successor, next_observed, _) = prepared();
-        let successor_syncs = next_observed.syncs.get();
-        assert!(successor_syncs > 0, "initial composition was synchronized");
-        assert!(!writer.try_set("late successor result".into()));
-        assert_eq!(successor.root.get_state(), Some("initial callback".into()));
-        assert_eq!(
-            next_observed.syncs.get(),
-            successor_syncs,
-            "stale wake must not synchronize the successor"
-        );
-        outer_scope.close();
+
+        // Case `prepared_driver_wakes_are_installed_before_callbacks_and_stale_wakes_are_rejected`.
+        {
+            let mut outer_scope = crate::WakeScope::new();
+            let outer_wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let count = outer_wakes.clone();
+            outer_scope
+                .bind(move |_| {
+                    count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                })
+                .unwrap();
+            let _outer = outer_scope.enter();
+            let (_host, mut driver, observed, _) = prepared();
+            assert_eq!(driver.root.get_state(), Some("initial callback".into()));
+            assert_eq!(outer_wakes.load(std::sync::atomic::Ordering::Relaxed), 0);
+            let writer = observed.local.borrow().as_ref().unwrap().writer();
+            let before = observed.syncs.get();
+            writer.set("pending".into());
+            let _ = driver.inspection();
+            assert_eq!(
+                observed.syncs.get(),
+                before,
+                "read boundary must not perform a frame"
+            );
+            let _ = driver.action_registry_mut();
+            assert!(observed.syncs.get() > before);
+            assert_eq!(driver.root.get_state(), Some("pending".into()));
+            writer.set("queued before close".into());
+            driver.close_components();
+            assert!(!writer.try_set("stale".into()));
+            assert!(!driver.component_wake.as_ref().unwrap().dirty.get());
+            let (_next, successor, next_observed, _) = prepared();
+            let successor_syncs = next_observed.syncs.get();
+            assert!(successor_syncs > 0, "initial composition was synchronized");
+            assert!(!writer.try_set("late successor result".into()));
+            assert_eq!(successor.root.get_state(), Some("initial callback".into()));
+            assert_eq!(
+                next_observed.syncs.get(),
+                successor_syncs,
+                "stale wake must not synchronize the successor"
+            );
+            outer_scope.close();
+        }
     }
 }
 

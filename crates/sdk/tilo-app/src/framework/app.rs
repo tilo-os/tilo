@@ -341,7 +341,9 @@ pub fn launch_spec<A: ResourceApp>() -> LaunchSpec {
 }
 
 /// Run `A`: the live window, or `--shots`, `--headless` and the other
-/// standard launch modes.
+/// standard launch modes. Needs the native runner (the default `native`
+/// feature); a host without it drives [`launch_spec`] itself.
+#[cfg(feature = "native")]
 pub fn run<A: ResourceApp>() {
     ui_core::launch::run_or_exit(&launch_spec::<A>());
 }

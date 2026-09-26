@@ -106,29 +106,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn categorical_lookup_wraps_and_can_never_be_empty() {
-        let first = Color::from_rgb8(1, 2, 3);
-        let second = Color::from_rgb8(4, 5, 6);
-        let palette = ChartPalette::new(first, [second]);
-        assert_eq!(palette.len(), 2);
-        assert!(!palette.is_empty());
-        assert_eq!(palette.categorical(0), first);
-        assert_eq!(palette.categorical(2), first);
-        assert_eq!(palette.categorical(usize::MAX), second);
-    }
+    fn chart_palettes_wrap_categories_and_clamp_ramps() {
+        // Case `categorical_lookup_wraps_and_can_never_be_empty`.
+        {
+            let first = Color::from_rgb8(1, 2, 3);
+            let second = Color::from_rgb8(4, 5, 6);
+            let palette = ChartPalette::new(first, [second]);
+            assert_eq!(palette.len(), 2);
+            assert!(!palette.is_empty());
+            assert_eq!(palette.categorical(0), first);
+            assert_eq!(palette.categorical(2), first);
+            assert_eq!(palette.categorical(usize::MAX), second);
+        }
 
-    #[test]
-    fn continuous_ramps_clamp_and_preserve_endpoints() {
-        let low = Color::from_rgb8(10, 20, 30);
-        let mid = Color::from_rgb8(100, 110, 120);
-        let high = Color::from_rgb8(220, 230, 240);
-        let palette = ChartPalette::new(low, [])
-            .with_sequential(low, high)
-            .with_diverging(low, mid, high);
-        assert_eq!(palette.sequential(-10.0), low);
-        assert_eq!(palette.sequential(10.0), high);
-        assert_eq!(palette.diverging(-1.0), low);
-        assert_eq!(palette.diverging(0.0), mid);
-        assert_eq!(palette.diverging(1.0), high);
+        // Case `continuous_ramps_clamp_and_preserve_endpoints`.
+        {
+            let low = Color::from_rgb8(10, 20, 30);
+            let mid = Color::from_rgb8(100, 110, 120);
+            let high = Color::from_rgb8(220, 230, 240);
+            let palette = ChartPalette::new(low, [])
+                .with_sequential(low, high)
+                .with_diverging(low, mid, high);
+            assert_eq!(palette.sequential(-10.0), low);
+            assert_eq!(palette.sequential(10.0), high);
+            assert_eq!(palette.diverging(-1.0), low);
+            assert_eq!(palette.diverging(0.0), mid);
+            assert_eq!(palette.diverging(1.0), high);
+        }
     }
 }

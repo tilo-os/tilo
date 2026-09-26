@@ -158,60 +158,64 @@ Title=GIMP\n\
 Url=https://dl.flathub.org/repo/\n\
 Comment=Create images and edit photographs\n";
 
+    /// .flatpakref fields, fallbacks, group/comment handling, conversion and argument scanning.
     #[test]
-    fn parses_install_fields() {
-        let parsed = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref").unwrap();
-        assert_eq!(parsed.app_id, "org.gimp.GIMP");
-        assert_eq!(parsed.title, "GIMP");
-        assert_eq!(parsed.branch, "stable");
-        assert_eq!(parsed.comment, "Create images and edit photographs");
-        assert_eq!(parsed.url, "https://dl.flathub.org/repo/");
-        assert_eq!(parsed.source_path, PathBuf::from("/tmp/gimp.flatpakref"));
-    }
+    fn flatpakref_parsing_and_install_conversion() {
+        // Case `parses_install_fields`.
+        {
+            let parsed = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref").unwrap();
+            assert_eq!(parsed.app_id, "org.gimp.GIMP");
+            assert_eq!(parsed.title, "GIMP");
+            assert_eq!(parsed.branch, "stable");
+            assert_eq!(parsed.comment, "Create images and edit photographs");
+            assert_eq!(parsed.url, "https://dl.flathub.org/repo/");
+            assert_eq!(parsed.source_path, PathBuf::from("/tmp/gimp.flatpakref"));
+        }
 
-    #[test]
-    fn requires_name_and_applies_fallbacks() {
-        assert!(FlatpakRef::parse("[Flatpak Ref]\nTitle=Nameless\n", "x").is_none());
-        let parsed = FlatpakRef::parse("[Flatpak Ref]\nName=org.example.App\n", "x").unwrap();
-        assert_eq!(parsed.title, "org.example.App");
-        assert_eq!(parsed.branch, "stable");
-    }
+        // Case `requires_name_and_applies_fallbacks`.
+        {
+            assert!(FlatpakRef::parse("[Flatpak Ref]\nTitle=Nameless\n", "x").is_none());
+            let parsed = FlatpakRef::parse("[Flatpak Ref]\nName=org.example.App\n", "x").unwrap();
+            assert_eq!(parsed.title, "org.example.App");
+            assert_eq!(parsed.branch, "stable");
+        }
 
-    #[test]
-    fn ignores_other_groups_and_ini_comments() {
-        let parsed = FlatpakRef::parse(
-            "Name=wrong\n[Other]\nName=also.wrong\n[Flatpak Ref]\n; note\nName=real.Id\n",
-            "x",
-        )
-        .unwrap();
-        assert_eq!(parsed.app_id, "real.Id");
-    }
+        // Case `ignores_other_groups_and_ini_comments`.
+        {
+            let parsed = FlatpakRef::parse(
+                "Name=wrong\n[Other]\nName=also.wrong\n[Flatpak Ref]\n; note\nName=real.Id\n",
+                "x",
+            )
+            .unwrap();
+            assert_eq!(parsed.app_id, "real.Id");
+        }
 
-    #[test]
-    fn conversion_keeps_reference_path_for_confirmed_install() {
-        let item = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref")
-            .unwrap()
-            .into_store_item(None);
-        assert_eq!(item.id, "org.gimp.GIMP");
-        assert_eq!(
-            item.install_ref_path.as_deref(),
-            Some("/tmp/gimp.flatpakref")
-        );
-        assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
-    }
+        // Case `conversion_keeps_reference_path_for_confirmed_install`.
+        {
+            let item = FlatpakRef::parse(SAMPLE, "/tmp/gimp.flatpakref")
+                .unwrap()
+                .into_store_item(None);
+            assert_eq!(item.id, "org.gimp.GIMP");
+            assert_eq!(
+                item.install_ref_path.as_deref(),
+                Some("/tmp/gimp.flatpakref")
+            );
+            assert_eq!(item.action_kind(true), crate::ActionKind::FlatpakInstall);
+        }
 
-    #[test]
-    fn argument_scan_does_not_consume_option_values() {
-        let args = [
-            "store",
-            "--shots",
-            "not-an-install.flatpakref",
-            "/tmp/install.flatpakref",
-        ]
-        .map(str::to_string);
-        assert_eq!(
-            path_from_args(&args),
-            Some(PathBuf::from("/tmp/install.flatpakref"))
-        );
+        // Case `argument_scan_does_not_consume_option_values`.
+        {
+            let args = [
+                "store",
+                "--shots",
+                "not-an-install.flatpakref",
+                "/tmp/install.flatpakref",
+            ]
+            .map(str::to_string);
+            assert_eq!(
+                path_from_args(&args),
+                Some(PathBuf::from("/tmp/install.flatpakref"))
+            );
+        }
     }
 }

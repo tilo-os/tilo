@@ -86,21 +86,23 @@ mod tests {
     }
 
     #[test]
-    fn delayed_older_changes_are_still_unread() {
-        let first = entry(1, 100);
-        let mut frontier = HistorySeenFrontier::default();
-        frontier.mark_seen(std::slice::from_ref(&first));
-        let delayed = entry(2, 50);
-        assert_eq!(frontier.unread_count(&[delayed, first]), 1);
-    }
-
-    #[test]
-    fn persistence_round_trips_and_rejects_malformed_ids() {
-        let entries = [entry(2, 10), entry(1, 20)];
-        let mut frontier = HistorySeenFrontier::default();
-        frontier.mark_seen(&entries);
-        let mut encoded = frontier.to_hex();
-        encoded.push("not-an-id".into());
-        assert_eq!(HistorySeenFrontier::from_hex(encoded), frontier);
+    fn seen_markers_keep_delayed_changes_unread_and_persist_strictly() {
+        // phase: delayed_older_changes_are_still_unread
+        {
+            let first = entry(1, 100);
+            let mut frontier = HistorySeenFrontier::default();
+            frontier.mark_seen(std::slice::from_ref(&first));
+            let delayed = entry(2, 50);
+            assert_eq!(frontier.unread_count(&[delayed, first]), 1);
+        }
+        // phase: persistence_round_trips_and_rejects_malformed_ids
+        {
+            let entries = [entry(2, 10), entry(1, 20)];
+            let mut frontier = HistorySeenFrontier::default();
+            frontier.mark_seen(&entries);
+            let mut encoded = frontier.to_hex();
+            encoded.push("not-an-id".into());
+            assert_eq!(HistorySeenFrontier::from_hex(encoded), frontier);
+        }
     }
 }

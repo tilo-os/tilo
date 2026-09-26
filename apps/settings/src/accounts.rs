@@ -1183,8 +1183,13 @@ pub fn sample_directory() -> AccountDirectory {
 mod tests {
     use super::*;
 
+    /// Every account store round-trips through JSON at its contract path, and
+    /// no store ever writes a password.
     #[test]
-    fn mail_store_round_trips_and_drops_password() {
+    fn account_stores_round_trip_without_passwords() {
+        // The relative path Mail reads.
+        assert_eq!(MailStore::REL_PATH, "mail/accounts.json");
+
         let mut acct = MailAccount::new(AccountConfig {
             email: "a@x.example".into(),
             password: "hunter2".into(),
@@ -1196,166 +1201,146 @@ mod tests {
             active: 0,
         };
         let json = store.to_json();
-        // The password must never reach the JSON.
-        assert!(!json.contains("hunter2"));
+        assert!(
+            !json.contains("hunter2"),
+            "mail password must never reach the JSON"
+        );
         let back = MailStore::from_json(&json).expect("parse");
         // Everything except the (skipped) password round-trips.
         assert_eq!(back.accounts[0].config.email, "a@x.example");
         assert_eq!(back.accounts[0].tint, 4);
         assert_eq!(back.accounts[0].config.password, "");
-    }
 
-    #[test]
-    fn mail_store_path_is_the_mail_contract_path() {
-        // The relative path Mail reads.
-        assert_eq!(MailStore::REL_PATH, "mail/accounts.json");
-    }
-
-    #[test]
-    fn dav_and_nextcloud_round_trip() {
         let dav = DavStore {
             version: 1,
             accounts: vec![DavAccount::new("Cal", "https://d.example/c/", "ada")],
         };
-        let back = DavStore::from_json(&dav.to_json()).unwrap();
-        assert_eq!(dav, back);
-
+        assert_eq!(DavStore::from_json(&dav.to_json()).unwrap(), dav);
         let nc = NextcloudStore {
             version: 1,
             accounts: vec![NextcloudAccount::new("NC", "https://cloud.example", "ada")],
         };
-        let back = NextcloudStore::from_json(&nc.to_json()).unwrap();
-        assert_eq!(nc, back);
-    }
+        assert_eq!(NextcloudStore::from_json(&nc.to_json()).unwrap(), nc);
 
-    #[test]
-    fn dav_and_nextcloud_drop_passwords() {
         let mut a = DavAccount::new("Cal", "https://d/", "u");
         a.password = "secret".into();
         let store = DavStore {
             version: 1,
             accounts: vec![a],
         };
-        assert!(!store.to_json().contains("secret"));
-
+        assert!(!store.to_json().contains("secret"), "dav password leaked");
         let mut n = NextcloudAccount::new("NC", "https://c", "u");
         n.password = "nextsecret".into();
         let store = NextcloudStore {
             version: 1,
             accounts: vec![n],
         };
-        assert!(!store.to_json().contains("nextsecret"));
-    }
-
-    #[test]
-    fn directory_views_partition_by_kind() {
-        let dir = sample_directory();
-        assert_eq!(dir.views_of(AccountKind::Mail).len(), 2);
-        assert_eq!(dir.views_of(AccountKind::CalDav).len(), 1);
-        assert_eq!(dir.views_of(AccountKind::WebDav).len(), 0);
-        assert_eq!(dir.views_of(AccountKind::Nextcloud).len(), 1);
-    }
-
-    #[test]
-    fn mail_view_summary_includes_host() {
-        let dir = sample_directory();
-        let v = &dir.views_of(AccountKind::Mail)[0];
-        assert!(v.summary.contains("imap.fastmail.com"));
-    }
-
-    #[test]
-    fn nextcloud_view_lists_enabled_services() {
-        let dir = sample_directory();
-        let v = &dir.views_of(AccountKind::Nextcloud)[0];
-        // mail disabled in the sample.
-        assert!(v.summary.contains("Calendar"));
-        assert!(v.summary.contains("Files"));
-        assert!(!v.summary.contains("Mail"));
-    }
-
-    #[test]
-    fn autofill_recognises_gmail_and_falls_back() {
-        let mut c = AccountConfig {
-            email: "x@gmail.com".into(),
-            ..Default::default()
-        };
-        assert!(c.autofill_from_email());
-        assert_eq!(c.imap_host, "imap.gmail.com");
-
-        let mut c2 = AccountConfig {
-            email: "x@acme.test".into(),
-            ..Default::default()
-        };
-        assert!(!c2.autofill_from_email());
-        assert_eq!(c2.imap_host, "imap.acme.test");
-    }
-
-    #[test]
-    fn short_url_strips_scheme_and_trailing_slash() {
-        assert_eq!(short_url("https://cloud.example.com/"), "cloud.example.com");
-        assert_eq!(
-            short_url("http://dav.example.com/calendars/ada/"),
-            "dav.example.com/calendars/ada"
-        );
-    }
-
-    #[test]
-    fn empty_directory_is_detected() {
-        assert!(AccountDirectory::default().is_empty());
-        assert!(!sample_directory().is_empty());
-    }
-
-    #[test]
-    fn legacy_webdav_and_nextcloud_import_is_idempotent_and_secret_free() {
-        let mut web = DavAccount::new("Files", "https://dav.example/files", "ada");
-        web.password = "must-not-migrate".into();
-        let mut cloud = NextcloudAccount::new("Cloud", "https://cloud.example", "ada");
-        cloud.password = "also-must-not-migrate".into();
-        let files = DavStore {
-            version: 1,
-            accounts: vec![web.clone()],
-        };
-        let clouds = NextcloudStore {
-            version: 1,
-            accounts: vec![cloud.clone()],
-        };
-        let mut shared = accounts::AccountStore::new();
-
-        assert!(import_legacy_accounts(&mut shared, &files, &clouds));
-        assert!(!import_legacy_accounts(&mut shared, &files, &clouds));
-        assert_eq!(shared.len(), 2);
-        let json = serde_json::to_string(&shared).expect("canonical store serializes");
-        assert!(!json.contains("must-not-migrate"));
-        assert!(!json.contains("also-must-not-migrate"));
-        assert_eq!(webdav_store_from_shared(&shared).accounts[0].id, web.id);
-        assert_eq!(
-            nextcloud_store_from_shared(&shared).accounts[0].id,
-            cloud.id
-        );
-    }
-
-    #[test]
-    fn completed_legacy_import_does_not_resurrect_a_removed_account() {
-        let dir = tempfile::tempdir().expect("scratch config root");
-        let root = AccountRoot::at(dir.path().join("tilo"));
-        let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
-        DavStore {
-            version: 1,
-            accounts: vec![legacy.clone()],
-        }
-        .save_to(root.legacy_path(DavStore::FILES_REL_PATH))
-        .expect("seed legacy store");
-
-        assert_eq!(AccountDirectory::load_in(&root).files.accounts.len(), 1);
-        let id = accounts::AccountId::from(legacy.id);
-        let mut canonical = root.store();
-        assert!(canonical.remove(&id));
-        root.save_store(&canonical).expect("persist removal");
-
         assert!(
-            AccountDirectory::load_in(&root).files.accounts.is_empty(),
-            "the durable one-time marker prevents legacy metadata from resurrecting a removal"
+            !store.to_json().contains("nextsecret"),
+            "nextcloud password leaked"
         );
+    }
+
+    #[test]
+    fn account_directory_views_summarise_and_autofill() {
+        let dir = sample_directory();
+        assert!(!dir.is_empty());
+        assert!(AccountDirectory::default().is_empty());
+        for (kind, want) in [
+            (AccountKind::Mail, 2),
+            (AccountKind::CalDav, 1),
+            (AccountKind::WebDav, 0),
+            (AccountKind::Nextcloud, 1),
+        ] {
+            assert_eq!(dir.views_of(kind).len(), want, "{kind:?} views");
+        }
+        let mail = &dir.views_of(AccountKind::Mail)[0];
+        assert!(mail.summary.contains("imap.fastmail.com"));
+        let cloud = &dir.views_of(AccountKind::Nextcloud)[0];
+        // mail disabled in the sample.
+        assert!(cloud.summary.contains("Calendar"));
+        assert!(cloud.summary.contains("Files"));
+        assert!(!cloud.summary.contains("Mail"));
+
+        // (email, recognised provider, resulting IMAP host)
+        for (email, known, host) in [
+            ("x@gmail.com", true, "imap.gmail.com"),
+            ("x@acme.test", false, "imap.acme.test"),
+        ] {
+            let mut c = AccountConfig {
+                email: email.into(),
+                ..Default::default()
+            };
+            assert_eq!(c.autofill_from_email(), known, "{email}");
+            assert_eq!(c.imap_host, host, "{email}");
+        }
+
+        for (url, short) in [
+            ("https://cloud.example.com/", "cloud.example.com"),
+            (
+                "http://dav.example.com/calendars/ada/",
+                "dav.example.com/calendars/ada",
+            ),
+        ] {
+            assert_eq!(short_url(url), short, "{url}");
+        }
+    }
+
+    /// Legacy `WebDAV`/Nextcloud import is idempotent, carries no secret, and never resurrects a removed account.
+    #[test]
+    fn legacy_account_import_is_one_time_and_secret_free() {
+        // Case `legacy_webdav_and_nextcloud_import_is_idempotent_and_secret_free`.
+        {
+            let mut web = DavAccount::new("Files", "https://dav.example/files", "ada");
+            web.password = "must-not-migrate".into();
+            let mut cloud = NextcloudAccount::new("Cloud", "https://cloud.example", "ada");
+            cloud.password = "also-must-not-migrate".into();
+            let files = DavStore {
+                version: 1,
+                accounts: vec![web.clone()],
+            };
+            let clouds = NextcloudStore {
+                version: 1,
+                accounts: vec![cloud.clone()],
+            };
+            let mut shared = accounts::AccountStore::new();
+
+            assert!(import_legacy_accounts(&mut shared, &files, &clouds));
+            assert!(!import_legacy_accounts(&mut shared, &files, &clouds));
+            assert_eq!(shared.len(), 2);
+            let json = serde_json::to_string(&shared).expect("canonical store serializes");
+            assert!(!json.contains("must-not-migrate"));
+            assert!(!json.contains("also-must-not-migrate"));
+            assert_eq!(webdav_store_from_shared(&shared).accounts[0].id, web.id);
+            assert_eq!(
+                nextcloud_store_from_shared(&shared).accounts[0].id,
+                cloud.id
+            );
+        }
+
+        // Case `completed_legacy_import_does_not_resurrect_a_removed_account`.
+        {
+            let dir = tempfile::tempdir().expect("scratch config root");
+            let root = AccountRoot::at(dir.path().join("tilo"));
+            let legacy = DavAccount::new("Old files", "https://dav.example/files", "ada");
+            DavStore {
+                version: 1,
+                accounts: vec![legacy.clone()],
+            }
+            .save_to(root.legacy_path(DavStore::FILES_REL_PATH))
+            .expect("seed legacy store");
+
+            assert_eq!(AccountDirectory::load_in(&root).files.accounts.len(), 1);
+            let id = accounts::AccountId::from(legacy.id);
+            let mut canonical = root.store();
+            assert!(canonical.remove(&id));
+            root.save_store(&canonical).expect("persist removal");
+
+            assert!(
+                AccountDirectory::load_in(&root).files.accounts.is_empty(),
+                "the durable one-time marker prevents legacy metadata from resurrecting a removal"
+            );
+        }
     }
 
     #[test]

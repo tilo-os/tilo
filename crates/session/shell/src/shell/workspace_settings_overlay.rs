@@ -2289,369 +2289,391 @@ mod tests {
         assert!(caret.height() >= 32.0);
     }
 
-    /// HIG §9.3's caveat: where a palette makes `base` and `raised` the same
-    /// colour, a tile filled with `base` inside a `raised` card has no lift
-    /// left to separate it. The derived hairline must therefore move
-    /// against the card on every shipped palette — measured as the
-    /// composite of the edge over the card, not asserted from its alpha.
     #[test]
-    fn stat_tiles_keep_an_edge_on_every_palette() {
-        use ui::a11y::relative_luminance;
-        let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
-            let a = top.components[3];
-            let t = top.components;
-            let b = bottom.components;
-            vello::peniko::Color::new([
-                t[0] * a + b[0] * (1.0 - a),
-                t[1] * a + b[1] * (1.0 - a),
-                t[2] * a + b[2] * (1.0 - a),
-                1.0,
-            ])
-        };
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let card = theme.tokens.colors.surfaces.raised;
-            let (_, edge) = stat_tile_face(&theme);
-            let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
-            assert!(
-                delta >= 0.008,
-                "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
-                theme.name
-            );
-        }
-    }
-
-    /// Every card class the lens paints — raised cards (identity, sharing,
-    /// summary), base-filled fields (name, invite link) and the base-filled
-    /// close chip — gets its edge from `ui::surface::edge_on(fill)`; that
-    /// edge must move against its fill on every shipped palette.
-    #[test]
-    fn lens_cards_and_fields_keep_an_edge_on_every_palette() {
-        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let colors = &theme.tokens.colors;
-            for (what, fill) in [
-                ("raised card", colors.surfaces.raised),
-                ("base field", colors.surfaces.base),
-            ] {
-                let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+    fn overlay_tiles_cards_and_fields_keep_an_edge_on_every_palette() {
+        // Phase `stat_tiles_keep_an_edge_on_every_palette`.
+        // HIG §9.3's caveat: where a palette makes `base` and `raised` the same
+        // colour, a tile filled with `base` inside a `raised` card has no lift
+        // left to separate it. The derived hairline must therefore move
+        // against the card on every shipped palette — measured as the
+        // composite of the edge over the card, not asserted from its alpha.
+        {
+            use ui::a11y::relative_luminance;
+            let over = |top: vello::peniko::Color, bottom: vello::peniko::Color| {
+                let a = top.components[3];
+                let t = top.components;
+                let b = bottom.components;
+                vello::peniko::Color::new([
+                    t[0] * a + b[0] * (1.0 - a),
+                    t[1] * a + b[1] * (1.0 - a),
+                    t[2] * a + b[2] * (1.0 - a),
+                    1.0,
+                ])
+            };
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let card = theme.tokens.colors.surfaces.raised;
+                let (_, edge) = stat_tile_face(&theme);
+                let delta = (relative_luminance(over(edge, card)) - relative_luminance(card)).abs();
                 assert!(
-                    delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
-                    "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                    delta >= 0.008,
+                    "{}: the stat tile's edge must separate it from the card (Δ luminance {delta:.4})",
                     theme.name
                 );
             }
         }
-    }
 
-    /// One rhythm across the header (HIG §7b): `s4` above the identity
-    /// card, `s4` between card and tab strip, `s4` between strip and the
-    /// first content card; the close chip is centred on the card's line.
-    #[test]
-    fn lens_header_keeps_one_rhythm_and_centres_the_close_chip() {
-        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-        let s3 = f64::from(ui::tokens::Spacing::BASE.s3);
-        for card in [
-            Rect::new(880.0, 68.0, 1580.0, 880.0),
-            Rect::new(0.0, 0.0, 540.0, 700.0),
-        ] {
-            let identity = WorkspaceSettingsOverlay::identity_rect_for(card);
-            let nav = WorkspaceSettingsOverlay::nav_rect_for(card);
-            let body = WorkspaceSettingsOverlay::body_rect_for(card);
-            assert_eq!(
-                identity.y0 - card.y0,
-                s4,
-                "panel pad above the identity card"
-            );
-            assert_eq!(nav.y0 - identity.y1, s4, "identity card → tab strip");
-            // General's first card sits `8 × text_scale` under the body top.
-            assert_eq!(body.y0 + 8.0 - nav.y1, s4, "tab strip → first content card");
-            assert_eq!(
-                nav.height() - 2.0 * WorkspaceSettingsOverlay::PILL_INSET,
-                f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
-                "a tab pill is one pointer target tall"
-            );
-            let close = WorkspaceSettingsOverlay::close_rect_for(card);
-            assert!(
-                (close.center().y - identity.center().y).abs() < f64::EPSILON,
-                "close chip is centred on the identity card"
-            );
-            assert!(close.x1 <= identity.x1 - s3 + f64::EPSILON);
-            assert!(close.y0 > identity.y0 && close.y1 < identity.y1);
-        }
-    }
-
-    /// General at 1×: the name field sits on the card pad (`s4`) inside the
-    /// body and the "At a glance" card starts a token step or more under it,
-    /// sharing the body's left edge. ux-bench cannot measure this pair at
-    /// 200 % text, where the two are never co-visible on an 800 px body, so
-    /// the production geometry helpers carry the assertion.
-    #[test]
-    fn general_name_field_sits_on_the_card_pad_and_clears_the_summary_card() {
-        let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
-        let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
-        for card in [
-            Rect::new(720.0, 68.0, 1260.0, 780.0),
-            Rect::new(0.0, 0.0, 540.0, 700.0),
-        ] {
-            let body = WorkspaceSettingsOverlay::body_rect_for(card);
-            let name = WorkspaceSettingsOverlay::name_rect_for(card);
-            let summary = WorkspaceSettingsOverlay::summary_card_rect_for(body, 1.0, 0.0);
-            assert_eq!(name.x0 - body.x0, s4, "name field sits on the card pad");
-            assert_eq!(
-                body.x1 - name.x1,
-                s4,
-                "name field keeps the card pad on the right"
-            );
-            assert!(
-                summary.y0 - name.y1 >= s1,
-                "summary card clears the name field (gap {})",
-                summary.y0 - name.y1
-            );
-            assert_eq!(
-                summary.x0, body.x0,
-                "summary card shares the body's left edge"
-            );
-            assert_eq!(summary.x1, body.x1);
-        }
-    }
-
-    #[test]
-    fn close_transition_remains_visible_until_exit_settles() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.force_settled();
-        // The lens opens and closes over the motion token's `base` (HIG §9.7).
-        let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
-        overlay
-            .transition
-            .set_open(false, Duration::from_millis(open_ms), ui::Curve::EaseOut);
-        let now = Instant::now();
-        assert!(overlay.transition.is_visible(now));
-        assert!(
-            !overlay
-                .transition
-                .is_visible(now + Duration::from_millis(open_ms + 500))
-        );
-    }
-
-    #[test]
-    fn tab_strip_plan_compacts_every_label_before_it_elides_any() {
-        let mut text = TextRenderer::new();
-        // The 540 px laptop lens at 100 %: five ~95 px pills.
-        let base = Theme::dark();
-        let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
-        assert!(plan.icons, "at 100% every pill has room for its icon");
-        // The same lens at 200 % text: no pill can hold a full label, so the
-        // whole strip drops to compact labels (and icons only if they all
-        // fit) instead of eliding the active tab alone.
-        let large = Theme::dark().with_text_scale(2.0);
-        let lsize = large.tokens.typography.scale.base;
-        // In the 540 px lens even compact labels overflow a 95.6 px pill at
-        // 28 px type, so the plan drops to compact labels without icons and
-        // every pill elides by the same rule — never the active tab alone.
-        let plan = tab_strip_plan(&mut text, lsize, 95.6);
-        assert_eq!(
-            plan,
-            TabStripPlan {
-                compact: true,
-                icons: false
+        // Phase `lens_cards_and_fields_keep_an_edge_on_every_palette`.
+        // Every card class the lens paints — raised cards (identity, sharing,
+        // summary), base-filled fields (name, invite link) and the base-filled
+        // close chip — gets its edge from `ui::surface::edge_on(fill)`; that
+        // edge must move against its fill on every shipped palette.
+        {
+            for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+                let colors = &theme.tokens.colors;
+                for (what, fill) in [
+                    ("raised card", colors.surfaces.raised),
+                    ("base field", colors.surfaces.base),
+                ] {
+                    let delta = ui::surface::edge_delta(ui::surface::edge_on(fill), fill);
+                    assert!(
+                        delta >= ui::tokens::colors::HAIRLINE_MIN_DELTA,
+                        "{}: the {what} edge must separate it from its fill (Δ luminance {delta:.4})",
+                        theme.name
+                    );
+                }
             }
-        );
-        // In the 800 px lens (145.6 px pills) compact labels fit with icons.
-        let plan = tab_strip_plan(&mut text, lsize, 145.6);
-        assert_eq!(
-            plan,
-            TabStripPlan {
-                compact: true,
-                icons: true
-            }
-        );
-        let widest = WsTab::all()
-            .iter()
-            .map(|tab| f64::from(text.measure(tab.compact_label(), lsize, None).0))
-            .fold(0.0, f64::max);
-        assert!(
-            widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
-            "the chosen plan fits its widest label ({widest}) into the pill"
-        );
-    }
-
-    #[test]
-    fn tab_pills_take_measured_widths_only_when_equal_shares_cannot_hold_the_widest_label() {
-        let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
-        assert_eq!(equal.len(), 5);
-        assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
-
-        let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
-        assert!(
-            (measured.iter().sum::<f64>() - 500.0).abs() < 1e-9,
-            "fills the strip exactly"
-        );
-        for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
-            assert!(width >= need, "every label fits its pill: {measured:?}");
         }
-        assert!(measured[0] > measured[4]);
-        assert!(tab_pill_widths(&[], 500.0).is_empty());
     }
 
     #[test]
-    fn close_button_is_one_pointer_target() {
-        let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
-        assert!(close.width() >= 32.0 && close.height() >= 32.0);
-    }
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
+    fn lens_layout_keeps_its_rhythm_bezel_and_footer_on_every_output() {
+        // Phase `lens_header_keeps_one_rhythm_and_centres_the_close_chip`.
+        // One rhythm across the header (HIG §7b): `s4` above the identity
+        // card, `s4` between card and tab strip, `s4` between strip and the
+        // first content card; the close chip is centred on the card's line.
+        {
+            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+            let s3 = f64::from(ui::tokens::Spacing::BASE.s3);
+            for card in [
+                Rect::new(880.0, 68.0, 1580.0, 880.0),
+                Rect::new(0.0, 0.0, 540.0, 700.0),
+            ] {
+                let identity = WorkspaceSettingsOverlay::identity_rect_for(card);
+                let nav = WorkspaceSettingsOverlay::nav_rect_for(card);
+                let body = WorkspaceSettingsOverlay::body_rect_for(card);
+                assert_eq!(
+                    identity.y0 - card.y0,
+                    s4,
+                    "panel pad above the identity card"
+                );
+                assert_eq!(nav.y0 - identity.y1, s4, "identity card → tab strip");
+                // General's first card sits `8 × text_scale` under the body top.
+                assert_eq!(body.y0 + 8.0 - nav.y1, s4, "tab strip → first content card");
+                assert_eq!(
+                    nav.height() - 2.0 * WorkspaceSettingsOverlay::PILL_INSET,
+                    f64::from(ui::tokens::Metrics::BASE.min_pointer_target),
+                    "a tab pill is one pointer target tall"
+                );
+                let close = WorkspaceSettingsOverlay::close_rect_for(card);
+                assert!(
+                    (close.center().y - identity.center().y).abs() < f64::EPSILON,
+                    "close chip is centred on the identity card"
+                );
+                assert!(close.x1 <= identity.x1 - s3 + f64::EPSILON);
+                assert!(close.y0 > identity.y0 && close.y1 < identity.y1);
+            }
+        }
 
-    #[test]
-    fn laptop_lens_preserves_most_of_the_workspace() {
-        let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
-        let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-        assert_eq!(lens.x0, viewport.x0 + 20.0);
-        assert!(lens.width() <= 540.0);
-        assert!(lens.x1 <= 560.0, "the workspace keeps a usable majority");
-    }
+        // Phase `general_name_field_sits_on_the_card_pad_and_clears_the_summary_card`.
+        // General at 1×: the name field sits on the card pad (`s4`) inside the
+        // body and the "At a glance" card starts a token step or more under it,
+        // sharing the body's left edge. ux-bench cannot measure this pair at
+        // 200 % text, where the two are never co-visible on an 800 px body, so
+        // the production geometry helpers carry the assertion.
+        {
+            let s1 = f64::from(ui::tokens::Spacing::BASE.s1);
+            let s4 = f64::from(ui::tokens::Spacing::BASE.s4);
+            for card in [
+                Rect::new(720.0, 68.0, 1260.0, 780.0),
+                Rect::new(0.0, 0.0, 540.0, 700.0),
+            ] {
+                let body = WorkspaceSettingsOverlay::body_rect_for(card);
+                let name = WorkspaceSettingsOverlay::name_rect_for(card);
+                let summary = WorkspaceSettingsOverlay::summary_card_rect_for(body, 1.0, 0.0);
+                assert_eq!(name.x0 - body.x0, s4, "name field sits on the card pad");
+                assert_eq!(
+                    body.x1 - name.x1,
+                    s4,
+                    "name field keeps the card pad on the right"
+                );
+                assert!(
+                    summary.y0 - name.y1 >= s1,
+                    "summary card clears the name field (gap {})",
+                    summary.y0 - name.y1
+                );
+                assert_eq!(
+                    summary.x0, body.x0,
+                    "summary card shares the body's left edge"
+                );
+                assert_eq!(summary.x1, body.x1);
+            }
+        }
 
-    #[test]
-    fn lens_keeps_a_visible_bezel_gap_on_wide_and_compact_outputs() {
-        for viewport in [
-            Rect::new(0.0, 0.0, 1600.0, 900.0),
-            Rect::new(0.0, 0.0, 960.0, 540.0),
-            Rect::new(0.0, 0.0, 600.0, 700.0),
-        ] {
+        // Phase `laptop_lens_preserves_most_of_the_workspace`.
+        {
+            let viewport = Rect::new(0.0, 0.0, 1280.0, 720.0);
             let lens = WorkspaceSettingsOverlay::rect_for(viewport);
-            if viewport.width() >= 820.0 {
-                assert_eq!(lens.x0 - viewport.x0, 20.0);
-            } else {
-                assert_eq!(viewport.x1 - lens.x1, 20.0);
+            assert_eq!(lens.x0, viewport.x0 + 20.0);
+            assert!(lens.width() <= 540.0);
+            assert!(lens.x1 <= 560.0, "the workspace keeps a usable majority");
+        }
+
+        // Phase `lens_keeps_a_visible_bezel_gap_on_wide_and_compact_outputs`.
+        {
+            for viewport in [
+                Rect::new(0.0, 0.0, 1600.0, 900.0),
+                Rect::new(0.0, 0.0, 960.0, 540.0),
+                Rect::new(0.0, 0.0, 600.0, 700.0),
+            ] {
+                let lens = WorkspaceSettingsOverlay::rect_for(viewport);
+                if viewport.width() >= 820.0 {
+                    assert_eq!(lens.x0 - viewport.x0, 20.0);
+                } else {
+                    assert_eq!(viewport.x1 - lens.x1, 20.0);
+                }
+                assert_eq!(viewport.y1 - lens.y1, 20.0);
+                assert!(lens.y0 >= viewport.y0 + 20.0);
             }
-            assert_eq!(viewport.y1 - lens.y1, 20.0);
-            assert!(lens.y0 >= viewport.y0 + 20.0);
+        }
+
+        // Phase `tab_body_reserves_a_non_overlapping_close_hint_footer`.
+        {
+            for card in [
+                Rect::new(880.0, 68.0, 1580.0, 880.0),
+                Rect::new(408.0, 68.0, 940.0, 520.0),
+            ] {
+                let body = WorkspaceSettingsOverlay::body_rect_for(card);
+                assert_eq!(card.y1 - body.y1, 44.0);
+                let close_hint_baseline = card.y1 - 24.0;
+                assert!(body.y1 <= close_hint_baseline - 20.0);
+            }
         }
     }
 
     #[test]
-    fn tab_body_reserves_a_non_overlapping_close_hint_footer() {
-        for card in [
-            Rect::new(880.0, 68.0, 1580.0, 880.0),
-            Rect::new(408.0, 68.0, 940.0, 520.0),
-        ] {
-            let body = WorkspaceSettingsOverlay::body_rect_for(card);
-            assert_eq!(card.y1 - body.y1, 44.0);
-            let close_hint_baseline = card.y1 - 24.0;
-            assert!(body.y1 <= close_hint_baseline - 20.0);
+    fn closing_is_one_pointer_target_and_stays_visible_until_exit_settles() {
+        // Phase `close_transition_remains_visible_until_exit_settles`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.force_settled();
+            // The lens opens and closes over the motion token's `base` (HIG §9.7).
+            let open_ms = u64::from(Theme::dark().tokens.motion.durations.base_ms);
+            overlay
+                .transition
+                .set_open(false, Duration::from_millis(open_ms), ui::Curve::EaseOut);
+            let now = Instant::now();
+            assert!(overlay.transition.is_visible(now));
+            assert!(
+                !overlay
+                    .transition
+                    .is_visible(now + Duration::from_millis(open_ms + 500))
+            );
+        }
+
+        // Phase `close_button_is_one_pointer_target`.
+        {
+            let close = WorkspaceSettingsOverlay::close_rect_for(Rect::new(0.0, 0.0, 540.0, 700.0));
+            assert!(close.width() >= 32.0 && close.height() >= 32.0);
         }
     }
 
     #[test]
-    fn typed_hits_prefer_policy_controls_over_tabs_and_name() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let hit_rect = Rect::new(700.0, 200.0, 760.0, 240.0);
-        overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO];
-        let Ok(resource) = desktop_policy::ResourceKind::extension("pdf") else {
-            panic!("pdf is a valid extension resource");
-        };
-        overlay
-            .default_app_rects
-            .push((resource.clone(), hit_rect, Rect::ZERO));
-        assert_eq!(
-            overlay.hit_test(hit_rect.center(), WsTab::General),
-            EventOutcome::WorkspaceDefault(resource)
-        );
+    fn tab_strip_compacts_labels_before_eliding_and_measures_only_when_needed() {
+        // Phase `tab_strip_plan_compacts_every_label_before_it_elides_any`.
+        {
+            let mut text = TextRenderer::new();
+            // The 540 px laptop lens at 100 %: five ~95 px pills.
+            let base = Theme::dark();
+            let plan = tab_strip_plan(&mut text, base.tokens.typography.scale.base, 95.6);
+            assert!(plan.icons, "at 100% every pill has room for its icon");
+            // The same lens at 200 % text: no pill can hold a full label, so the
+            // whole strip drops to compact labels (and icons only if they all
+            // fit) instead of eliding the active tab alone.
+            let large = Theme::dark().with_text_scale(2.0);
+            let lsize = large.tokens.typography.scale.base;
+            // In the 540 px lens even compact labels overflow a 95.6 px pill at
+            // 28 px type, so the plan drops to compact labels without icons and
+            // every pill elides by the same rule — never the active tab alone.
+            let plan = tab_strip_plan(&mut text, lsize, 95.6);
+            assert_eq!(
+                plan,
+                TabStripPlan {
+                    compact: true,
+                    icons: false
+                }
+            );
+            // In the 800 px lens (145.6 px pills) compact labels fit with icons.
+            let plan = tab_strip_plan(&mut text, lsize, 145.6);
+            assert_eq!(
+                plan,
+                TabStripPlan {
+                    compact: true,
+                    icons: true
+                }
+            );
+            let widest = WsTab::all()
+                .iter()
+                .map(|tab| f64::from(text.measure(tab.compact_label(), lsize, None).0))
+                .fold(0.0, f64::max);
+            assert!(
+                widest + TAB_LABEL_INSET + TAB_ICON_PX + TAB_ICON_GAP <= 145.6,
+                "the chosen plan fits its widest label ({widest}) into the pill"
+            );
+        }
+
+        // Phase `tab_pills_take_measured_widths_only_when_equal_shares_cannot_hold_the_widest_label`.
+        {
+            let equal = tab_pill_widths(&[80.0, 60.0, 70.0, 75.0, 50.0], 500.0);
+            assert_eq!(equal.len(), 5);
+            assert!(equal.iter().all(|w| (*w - 100.0).abs() < f64::EPSILON));
+
+            let measured = tab_pill_widths(&[120.0, 80.0, 80.0, 90.0, 70.0], 500.0);
+            assert!(
+                (measured.iter().sum::<f64>() - 500.0).abs() < 1e-9,
+                "fills the strip exactly"
+            );
+            for (need, width) in [120.0, 80.0, 80.0, 90.0, 70.0].iter().zip(&measured) {
+                assert!(width >= need, "every label fits its pill: {measured:?}");
+            }
+            assert!(measured[0] > measured[4]);
+            assert!(tab_pill_widths(&[], 500.0).is_empty());
+        }
     }
 
     #[test]
-    fn agent_revoke_hit_keeps_the_typed_agent_identity() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let revoke = Rect::new(900.0, 300.0, 980.0, 334.0);
-        overlay
-            .agent_control_rects
-            .push(("scribe".into(), Rect::ZERO, revoke));
-        assert_eq!(
-            overlay.hit_test(revoke.center(), WsTab::Agents),
-            EventOutcome::RemoveAgent("scribe".into()),
-        );
+    fn overlay_hits_are_typed_policy_controls_carrying_their_identity() {
+        // Phase `typed_hits_prefer_policy_controls_over_tabs_and_name`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            let hit_rect = Rect::new(700.0, 200.0, 760.0, 240.0);
+            overlay.tab_pill_rects = [hit_rect, Rect::ZERO, Rect::ZERO, Rect::ZERO, Rect::ZERO];
+            let Ok(resource) = desktop_policy::ResourceKind::extension("pdf") else {
+                panic!("pdf is a valid extension resource");
+            };
+            overlay
+                .default_app_rects
+                .push((resource.clone(), hit_rect, Rect::ZERO));
+            assert_eq!(
+                overlay.hit_test(hit_rect.center(), WsTab::General),
+                EventOutcome::WorkspaceDefault(resource)
+            );
+        }
+
+        // Phase `agent_revoke_hit_keeps_the_typed_agent_identity`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            let revoke = Rect::new(900.0, 300.0, 980.0, 334.0);
+            overlay
+                .agent_control_rects
+                .push(("scribe".into(), Rect::ZERO, revoke));
+            assert_eq!(
+                overlay.hit_test(revoke.center(), WsTab::Agents),
+                EventOutcome::RemoveAgent("scribe".into()),
+            );
+        }
+
+        // Phase `ownership_entry_point_is_a_typed_actionable_control`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            let action = Rect::new(900.0, 220.0, 1_020.0, 258.0);
+            overlay.ownership_action_rect = action;
+            assert_eq!(
+                overlay.hit_test(action.center(), WsTab::Members),
+                EventOutcome::ManageOwnership
+            );
+        }
+
+        // Phase `permission_roles_entry_point_opens_the_canonical_role_actions`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            let action = Rect::new(900.0, 220.0, 1_020.0, 244.0);
+            overlay.permission_profiles_rect = action;
+            assert_eq!(
+                overlay.hit_test(action.center(), WsTab::Permissions),
+                EventOutcome::ManagePermissionProfiles
+            );
+            assert_eq!(
+                overlay.hit_test(action.center(), WsTab::Members),
+                EventOutcome::CommitName,
+                "a retained Permissions hit cannot leak into another tab"
+            );
+        }
+
+        // Phase `agent_setup_and_review_keep_the_agent_identity_typed`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
+            let add = Rect::new(680.0, 220.0, 800.0, 254.0);
+            let review = Rect::new(810.0, 300.0, 920.0, 334.0);
+            overlay.agent_add_rect = add;
+            overlay
+                .agent_control_rects
+                .push(("scribe".into(), review, Rect::ZERO));
+            assert_eq!(
+                overlay.hit_test(add.center(), WsTab::Agents),
+                EventOutcome::AddAgent,
+            );
+            assert_eq!(
+                overlay.hit_test(review.center(), WsTab::Agents),
+                EventOutcome::ReviewAgent("scribe".into()),
+            );
+        }
     }
 
     #[test]
-    fn ownership_entry_point_is_a_typed_actionable_control() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        let action = Rect::new(900.0, 220.0, 1_020.0, 258.0);
-        overlay.ownership_action_rect = action;
-        assert_eq!(
-            overlay.hit_test(action.center(), WsTab::Members),
-            EventOutcome::ManageOwnership
-        );
-    }
+    fn role_and_destructive_sheets_need_explicit_choices() {
+        // Phase `role_sheet_keyboard_selects_an_explicit_role_without_cycling`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.open_member_role_sheet("ada".into(), CapRole::Viewer);
+            assert!(overlay.member_sheet_is_open());
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Next),
+                None,
+                "arrow navigation only moves the focused choice"
+            );
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+                Some(EventOutcome::SetMemberRole(
+                    "ada".into(),
+                    CapRole::Commenter
+                ))
+            );
+        }
 
-    #[test]
-    fn permission_roles_entry_point_opens_the_canonical_role_actions() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        let action = Rect::new(900.0, 220.0, 1_020.0, 244.0);
-        overlay.permission_profiles_rect = action;
-        assert_eq!(
-            overlay.hit_test(action.center(), WsTab::Permissions),
-            EventOutcome::ManagePermissionProfiles
-        );
-        assert_eq!(
-            overlay.hit_test(action.center(), WsTab::Members),
-            EventOutcome::CommitName,
-            "a retained Permissions hit cannot leak into another tab"
-        );
-    }
-
-    #[test]
-    fn role_sheet_keyboard_selects_an_explicit_role_without_cycling() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.open_member_role_sheet("ada".into(), CapRole::Viewer);
-        assert!(overlay.member_sheet_is_open());
-        assert_eq!(
-            overlay.handle_member_sheet_key(MemberSheetKey::Next),
-            None,
-            "arrow navigation only moves the focused choice"
-        );
-        assert_eq!(
-            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
-            Some(EventOutcome::SetMemberRole(
-                "ada".into(),
-                CapRole::Commenter
-            ))
-        );
-    }
-
-    #[test]
-    fn agent_setup_and_review_keep_the_agent_identity_typed() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.layout(Rect::new(0.0, 0.0, 1280.0, 800.0));
-        let add = Rect::new(680.0, 220.0, 800.0, 254.0);
-        let review = Rect::new(810.0, 300.0, 920.0, 334.0);
-        overlay.agent_add_rect = add;
-        overlay
-            .agent_control_rects
-            .push(("scribe".into(), review, Rect::ZERO));
-        assert_eq!(
-            overlay.hit_test(add.center(), WsTab::Agents),
-            EventOutcome::AddAgent,
-        );
-        assert_eq!(
-            overlay.hit_test(review.center(), WsTab::Agents),
-            EventOutcome::ReviewAgent("scribe".into()),
-        );
-    }
-
-    #[test]
-    fn destructive_sheet_needs_the_final_confirmation_option() {
-        let mut overlay = WorkspaceSettingsOverlay::default();
-        overlay.open_revoke_sheet("cap-camera".into());
-        assert_eq!(
-            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
-            Some(EventOutcome::DismissMemberSheet),
-            "the initial focus is the safe keep-permission action"
-        );
-        overlay.open_revoke_sheet("cap-camera".into());
-        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
-        let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
-        assert_eq!(
-            overlay.handle_member_sheet_key(MemberSheetKey::Activate),
-            Some(EventOutcome::ConfirmRevoke("cap-camera".into()))
-        );
+        // Phase `destructive_sheet_needs_the_final_confirmation_option`.
+        {
+            let mut overlay = WorkspaceSettingsOverlay::default();
+            overlay.open_revoke_sheet("cap-camera".into());
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+                Some(EventOutcome::DismissMemberSheet),
+                "the initial focus is the safe keep-permission action"
+            );
+            overlay.open_revoke_sheet("cap-camera".into());
+            let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+            let _ = overlay.handle_member_sheet_key(MemberSheetKey::Next);
+            assert_eq!(
+                overlay.handle_member_sheet_key(MemberSheetKey::Activate),
+                Some(EventOutcome::ConfirmRevoke("cap-camera".into()))
+            );
+        }
     }
 }
 

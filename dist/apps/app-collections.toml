@@ -16,7 +16,7 @@ include = ["file-explorer", "settings", "terminal"]
 
 [features]
 music = ["audio", "live"]
-video-player = ["decode", "portal"]
+video-player = ["decode"]
 camera = ["live-capture"]
 tube = ["live", "media"]
 chat = ["live-media"]

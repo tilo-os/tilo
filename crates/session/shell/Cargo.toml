@@ -47,7 +47,11 @@ private-fs = { path = "../../system/private-fs" }
 tempfile.workspace = true
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
+notify.workspace = true
 xdg-paths = { path = "../../system/xdg-paths" }
+# Remembered network secrets (802.1X, VPN, SIM PIN) are sealed here, never
+# written to settings.
+secret-vault = { path = "../../system/secret-vault" }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics" }
 desktop-policy = { path = "../../system/desktop-policy" }
 # Canonical desktop model: workspaces, strips, groups, tabs, permissions.
@@ -151,6 +155,8 @@ tilo-bluez = { path = "../../system/tilo-bluez" }
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # The shared preview decoder behind drag previews.
 thumbnail = { path = "../../media/thumbnail" }
+# Host applications ship SVG icons; rasterised at the size chrome paints them.
+resvg = { version = "0.47", default-features = false }
 # The broker validates inbound `SignedOp` envelopes against the
 # channel's role table before fan-out; the Iroh actor carries them
 # via `NeighbourMsg::AppCrdtIncrementalSigned`. The contract types and
@@ -196,6 +202,7 @@ tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, 
 # sandbox. Library-only use here — see `shell::shell::launcher` for why
 # the sandbox itself is built by the binary rather than in-process.
 launcher = { path = "../../packaging/launcher" }
+tilo-app-package = { path = "../../packaging/tilo-app-package" }
 package-store = { path = "../../packaging/package-store" }
 
 # The host's own applications: `.desktop` entries the compositor reads
@@ -262,6 +269,13 @@ tilo-test-env = { path = "../../dev/test-env" }
 # GPU path in production. Pinned to the same minor as wgpu 29 so Cargo
 # collapses to one copy in the workspace lock.
 naga = { version = "29", features = ["wgsl-in"] }
+# Client side of the wlr output-management protocols, to drive the
+# compositor the way wlr-randr and kanshi do.
+wayland-protocols-wlr = { version = "0.3.10", features = ["client"] }
+# Client side of input-method-v2 and text-input-v3, to drive the compositor
+# the way a composing input method and a text field do.
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 
 # Keep the public CLI name stable if `src/bin/` is reorganized.
 [[bin]]

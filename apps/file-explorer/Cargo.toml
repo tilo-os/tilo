@@ -27,6 +27,7 @@ tilo-clock = { path = "../../crates/system/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
+tilo-automation = { path = "../../crates/collab/automation" }
 accounts = { path = "../../crates/system/accounts" }
 # Remote account folders are named exactly as the storage daemon's cloud
 # service names its mounts (`cloud_source::tree::mount_names`).

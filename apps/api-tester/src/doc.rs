@@ -1273,7 +1273,18 @@ mod tests {
         (AutoCommit::new(), automerge::ROOT)
     }
 
+    /// Each record family written through `ApiDoc` reads back unchanged, from a
+    /// fresh document per case.
     #[test]
+    fn records_round_trip_through_the_document() {
+        collections_round_trip();
+        environments_and_active_round_trip();
+        request_snapshot_round_trips();
+        url_text_is_live_and_editable();
+        history_keeps_the_newest_first_order_while_records_stay_keyed();
+    }
+
+    /// Case of `records_round_trip_through_the_document`.
     fn collections_round_trip() {
         let (mut d, root) = doc();
         let mut c = Collection::new("Sample");
@@ -1285,7 +1296,7 @@ mod tests {
         assert_eq!(back[0].requests[0].name, "List users");
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn environments_and_active_round_trip() {
         let (mut d, root) = doc();
         let mut e = Environment::new("Production");
@@ -1297,7 +1308,7 @@ mod tests {
         assert_eq!(ApiDoc::active_env(&d, &root), Some(e.id.to_string()));
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn request_snapshot_round_trips() {
         let (mut d, root) = doc();
         let mut r = Request::new("Create user");
@@ -1309,7 +1320,7 @@ mod tests {
         assert_eq!(back.headers[0].key, "Accept");
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn url_text_is_live_and_editable() {
         let (mut d, root) = doc();
         let obj = ApiDoc::url_text(&mut d, &root);
@@ -1320,7 +1331,17 @@ mod tests {
         );
     }
 
+    /// Anti-churn: equal writes never advance the document and a one-character
+    /// edit splices one character, from a fresh document per case.
     #[test]
+    fn unchanged_writes_emit_no_ops_and_edits_are_bounded_splices() {
+        set_text_is_idempotent();
+        repeated_native_scalar_writes_are_noops();
+        appending_one_char_is_a_bounded_splice();
+        repeated_set_text_keeps_doc_bounded();
+    }
+
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn set_text_is_idempotent() {
         let (mut d, root) = doc();
         ApiDoc::set_text(&mut d, &root, "request", "{}");
@@ -1330,7 +1351,7 @@ mod tests {
         assert_eq!(heads_before, d.get_heads());
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn repeated_native_scalar_writes_are_noops() {
         let (mut d, root) = doc();
         let environment = Environment::new("Production");
@@ -1365,7 +1386,15 @@ mod tests {
         );
     }
 
+    /// Scalar and JSON `*_if_changed` writes compare against the visible
+    /// winner, not any conflicting loser.
     #[test]
+    fn if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches() {
+        scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches();
+        json_update_replaces_a_visible_conflict_winner_even_if_loser_matches();
+    }
+
+    /// Case of `if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches`.
     fn scalar_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
         let (mut base, root) = doc();
         let map = base
@@ -1403,7 +1432,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `if_changed_writes_replace_a_visible_conflict_winner_even_if_loser_matches`.
     fn json_update_replaces_a_visible_conflict_winner_even_if_loser_matches() {
         let (mut base, root) = doc();
         let map = base
@@ -1457,7 +1486,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn appending_one_char_is_a_bounded_splice() {
         // Anti-churn: growing a long Text field by one char must splice only
         // the new char, not rewrite the whole value.
@@ -1480,7 +1509,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `unchanged_writes_emit_no_ops_and_edits_are_bounded_splices`.
     fn repeated_set_text_keeps_doc_bounded() {
         // Idempotent store: re-writing the same text must emit no ops, so the
         // serialized document does not grow at all.
@@ -1498,7 +1527,17 @@ mod tests {
         );
     }
 
+    /// Peers that each write whole records (or a first native root) merge into
+    /// one deterministic, consolidatable projection.
     #[test]
+    fn concurrent_record_roots_merge_and_converge() {
+        two_docs_merge_collections();
+        concurrent_first_native_record_roots_keep_independent_records();
+        same_collection_record_conflict_is_stable_in_both_merge_directions();
+        concurrent_active_request_roots_are_read_then_consolidated();
+    }
+
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn two_docs_merge_collections() {
         let (mut a, root) = doc();
         ApiDoc::set_collections(&mut a, &root, &[Collection::new("A")]);
@@ -1510,7 +1549,15 @@ mod tests {
         assert_eq!(ApiDoc::environments(&a, &root)[0].name, "Env-B");
     }
 
+    /// Legacy whole-scalar JSON blobs, written locally or concurrently by an old
+    /// peer, are folded into the keyed record roots.
     #[test]
+    fn legacy_scalar_records_migrate_into_keyed_roots() {
+        legacy_scalars_migrate_to_keyed_records_without_reemitting_blobs();
+        concurrent_legacy_collection_write_is_projected_into_the_keyed_root();
+    }
+
+    /// Case of `legacy_scalar_records_migrate_into_keyed_roots`.
     fn legacy_scalars_migrate_to_keyed_records_without_reemitting_blobs() {
         let (mut d, root) = doc();
         let collection = Collection::new("Legacy collection");
@@ -1570,7 +1617,7 @@ mod tests {
         assert_eq!(ApiDoc::record_roots(&d, &root, HISTORY_KEY).len(), 1);
     }
 
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn concurrent_first_native_record_roots_keep_independent_records() {
         let (mut left, root) = doc();
         let (mut right, _) = doc();
@@ -1590,7 +1637,7 @@ mod tests {
         assert_eq!(consolidated.len(), 2);
     }
 
-    #[test]
+    /// Case of `legacy_scalar_records_migrate_into_keyed_roots`.
     fn concurrent_legacy_collection_write_is_projected_into_the_keyed_root() {
         let (mut base, root) = doc();
         let legacy = Collection::new("Base");
@@ -1631,7 +1678,17 @@ mod tests {
         );
     }
 
+    /// A record or row tombstone prevents a concurrent stale edit from reviving
+    /// it, for every record family.
     #[test]
+    fn deletes_win_over_concurrent_stale_edits() {
+        collection_and_environment_deletes_win_over_concurrent_stale_edits();
+        history_delete_wins_over_a_concurrent_stale_record_update();
+        saved_request_delete_wins_over_a_concurrent_stale_edit();
+        active_request_row_delete_wins_over_a_concurrent_stale_edit();
+    }
+
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn collection_and_environment_deletes_win_over_concurrent_stale_edits() {
         let (mut base, root) = doc();
         let collection = Collection::new("To remove");
@@ -1657,7 +1714,7 @@ mod tests {
         assert!(ApiDoc::environments(&delete, &root).is_empty());
     }
 
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn same_collection_record_conflict_is_stable_in_both_merge_directions() {
         let (mut base, root) = doc();
         let collection = Collection::new("Original");
@@ -1688,7 +1745,7 @@ mod tests {
         ));
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn history_delete_wins_over_a_concurrent_stale_record_update() {
         let (mut base, root) = doc();
         let entry = HistoryEntry {
@@ -1713,7 +1770,7 @@ mod tests {
         assert!(ApiDoc::history(&delete, &root).is_empty());
     }
 
-    #[test]
+    /// Case of `records_round_trip_through_the_document`.
     fn history_keeps_the_newest_first_order_while_records_stay_keyed() {
         let (mut d, root) = doc();
         let older = HistoryEntry {
@@ -1741,7 +1798,7 @@ mod tests {
         assert_eq!(ApiDoc::history_order_roots(&d, &root).len(), 1);
     }
 
-    #[test]
+    /// Case of `concurrent_record_roots_merge_and_converge`.
     fn concurrent_active_request_roots_are_read_then_consolidated() {
         let (mut left, root) = doc();
         let (mut right, _) = doc();
@@ -1764,7 +1821,19 @@ mod tests {
         assert_eq!(ApiDoc::request(&left, &root), Some(projected));
     }
 
+    /// Independent edits to different fields or rows of the same record survive
+    /// a merge, each from fresh peers forked from their own base.
     #[test]
+    fn concurrent_field_and_row_edits_merge_without_clobbering() {
+        different_saved_requests_in_one_collection_merge_without_clobbering();
+        same_saved_request_independent_fields_and_rows_merge();
+        different_variables_in_one_environment_merge_without_clobbering();
+        native_variable_rows_overlay_compatibility_records_and_tombstones_win();
+        independent_active_request_fields_and_rows_merge_without_clobbering();
+        different_active_header_rows_merge_without_clobbering();
+    }
+
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_saved_requests_in_one_collection_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1798,7 +1867,7 @@ mod tests {
         assert_eq!(requests.len(), 2, "each saved request has one keyed record");
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn same_saved_request_independent_fields_and_rows_merge() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1827,7 +1896,7 @@ mod tests {
         assert!(request.headers.iter().any(|row| row.key == "Accept"));
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn saved_request_delete_wins_over_a_concurrent_stale_edit() {
         let (mut base, root) = doc();
         let mut collection = Collection::new("Shared");
@@ -1852,7 +1921,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_variables_in_one_environment_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut environment = Environment::new("Shared");
@@ -1895,7 +1964,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn native_variable_rows_overlay_compatibility_records_and_tombstones_win() {
         let (mut base, root) = doc();
         let env = Environment::new("Production");
@@ -1960,7 +2029,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn independent_active_request_fields_and_rows_merge_without_clobbering() {
         let (mut base, root) = doc();
         let request = Request::new("Shared request");
@@ -1986,7 +2055,7 @@ mod tests {
         assert_eq!(merged.headers[0].key, "Accept");
     }
 
-    #[test]
+    /// Case of `concurrent_field_and_row_edits_merge_without_clobbering`.
     fn different_active_header_rows_merge_without_clobbering() {
         let (mut base, root) = doc();
         let mut request = Request::new("Shared request");
@@ -2032,7 +2101,7 @@ mod tests {
         );
     }
 
-    #[test]
+    /// Case of `deletes_win_over_concurrent_stale_edits`.
     fn active_request_row_delete_wins_over_a_concurrent_stale_edit() {
         let (mut base, root) = doc();
         let mut request = Request::new("Shared request");

@@ -499,100 +499,104 @@ mod tests {
     }
 
     #[test]
-    fn all_four_protocols_follow_the_real_async_controller_path() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let backend = FakeBackend {
-            devices: ProjectionProtocol::ALL.into_iter().map(device).collect(),
-            calls: calls.clone(),
-        };
-        let mut controller = ProjectionController::new(Box::new(backend));
-        controller.refresh();
-        settle(&mut controller);
-        assert_eq!(controller.devices.len(), 4);
+    fn projection_protocols_use_the_async_controller_and_honour_layout_support() {
+        fn all_four_protocols_follow_the_real_async_controller_path() {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let backend = FakeBackend {
+                devices: ProjectionProtocol::ALL.into_iter().map(device).collect(),
+                calls: calls.clone(),
+            };
+            let mut controller = ProjectionController::new(Box::new(backend));
+            controller.refresh();
+            settle(&mut controller);
+            assert_eq!(controller.devices.len(), 4);
 
-        for index in 0..controller.devices.len() {
-            controller.selected = index;
+            for index in 0..controller.devices.len() {
+                controller.selected = index;
+                controller.connect_selected();
+                settle(&mut controller);
+                assert!(matches!(
+                    controller.status,
+                    ProjectionStatus::Connected { .. }
+                ));
+                controller.disconnect();
+                settle(&mut controller);
+            }
+            // Clone out of the guard immediately rather than holding the lock
+            // for the length of the assertion loop below.
+            let log = calls.lock().unwrap().clone();
+            for protocol in ProjectionProtocol::ALL {
+                assert!(
+                    log.iter().any(|line| line.contains(protocol.label())),
+                    "{protocol:?} must cross the same production controller boundary"
+                );
+            }
+        }
+
+        fn unsupported_layout_falls_back_to_duplicate_before_connecting() {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let backend = FakeBackend {
+                devices: vec![ProjectionDevice {
+                    modes: vec![ProjectionMode::Mirror],
+                    ..device(ProjectionProtocol::AirPlay)
+                }],
+                calls: calls.clone(),
+            };
+            let mut controller = ProjectionController::new(Box::new(backend));
+            controller.refresh();
+            settle(&mut controller);
+            controller.options.mode = ProjectionMode::Extend;
             controller.connect_selected();
             settle(&mut controller);
-            assert!(matches!(
-                controller.status,
-                ProjectionStatus::Connected { .. }
-            ));
-            controller.disconnect();
-            settle(&mut controller);
-        }
-        // Clone out of the guard immediately rather than holding the lock
-        // for the length of the assertion loop below.
-        let log = calls.lock().unwrap().clone();
-        for protocol in ProjectionProtocol::ALL {
-            assert!(
-                log.iter().any(|line| line.contains(protocol.label())),
-                "{protocol:?} must cross the same production controller boundary"
-            );
-        }
-    }
-
-    #[test]
-    fn unsupported_layout_falls_back_to_duplicate_before_connecting() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let backend = FakeBackend {
-            devices: vec![ProjectionDevice {
-                modes: vec![ProjectionMode::Mirror],
-                ..device(ProjectionProtocol::AirPlay)
-            }],
-            calls: calls.clone(),
-        };
-        let mut controller = ProjectionController::new(Box::new(backend));
-        controller.refresh();
-        settle(&mut controller);
-        controller.options.mode = ProjectionMode::Extend;
-        controller.connect_selected();
-        settle(&mut controller);
-        assert_eq!(controller.options.mode, ProjectionMode::Mirror);
-        let fell_back_to_duplicate = calls
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|c| c.contains(":Duplicate:"));
-        assert!(fell_back_to_duplicate);
-    }
-
-    #[test]
-    fn airplay_pairing_secret_crosses_once_and_is_immediately_forgotten() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut controller = ProjectionController::new(Box::new(FakeBackend {
-            devices: vec![device(ProjectionProtocol::AirPlay)],
-            calls: calls.clone(),
-        }));
-        controller.refresh();
-        settle(&mut controller);
-        controller.options.credential = Some("4821".to_owned());
-        controller.connect_selected();
-        assert_eq!(controller.options.credential, None);
-        settle(&mut controller);
-        assert!(
-            calls
+            assert_eq!(controller.options.mode, ProjectionMode::Mirror);
+            let fell_back_to_duplicate = calls
                 .lock()
                 .unwrap()
                 .iter()
-                .any(|call| call.ends_with("credential=true")),
-            "the worker must receive the secret without retaining it in overlay state"
-        );
-    }
+                .any(|c| c.contains(":Duplicate:"));
+            assert!(fell_back_to_duplicate);
+        }
 
-    #[test]
-    fn unsupported_layouts_are_exposed_as_disabled_to_the_overlay() {
-        let mut controller = ProjectionController::new(Box::new(FakeBackend {
-            devices: vec![ProjectionDevice {
-                modes: vec![ProjectionMode::Mirror],
-                ..device(ProjectionProtocol::Chromecast)
-            }],
-            ..FakeBackend::default()
-        }));
-        controller.refresh();
-        settle(&mut controller);
-        assert!(controller.selected_device_supports(ProjectionMode::Mirror));
-        assert!(!controller.selected_device_supports(ProjectionMode::Extend));
-        assert!(!controller.selected_device_supports(ProjectionMode::ExternalOnly));
+        fn airplay_pairing_secret_crosses_once_and_is_immediately_forgotten() {
+            let calls = Arc::new(Mutex::new(Vec::new()));
+            let mut controller = ProjectionController::new(Box::new(FakeBackend {
+                devices: vec![device(ProjectionProtocol::AirPlay)],
+                calls: calls.clone(),
+            }));
+            controller.refresh();
+            settle(&mut controller);
+            controller.options.credential = Some("4821".to_owned());
+            controller.connect_selected();
+            assert_eq!(controller.options.credential, None);
+            settle(&mut controller);
+            assert!(
+                calls
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|call| call.ends_with("credential=true")),
+                "the worker must receive the secret without retaining it in overlay state"
+            );
+        }
+
+        fn unsupported_layouts_are_exposed_as_disabled_to_the_overlay() {
+            let mut controller = ProjectionController::new(Box::new(FakeBackend {
+                devices: vec![ProjectionDevice {
+                    modes: vec![ProjectionMode::Mirror],
+                    ..device(ProjectionProtocol::Chromecast)
+                }],
+                ..FakeBackend::default()
+            }));
+            controller.refresh();
+            settle(&mut controller);
+            assert!(controller.selected_device_supports(ProjectionMode::Mirror));
+            assert!(!controller.selected_device_supports(ProjectionMode::Extend));
+            assert!(!controller.selected_device_supports(ProjectionMode::ExternalOnly));
+        }
+
+        all_four_protocols_follow_the_real_async_controller_path();
+        unsupported_layout_falls_back_to_duplicate_before_connecting();
+        airplay_pairing_secret_crosses_once_and_is_immediately_forgotten();
+        unsupported_layouts_are_exposed_as_disabled_to_the_overlay();
     }
 }

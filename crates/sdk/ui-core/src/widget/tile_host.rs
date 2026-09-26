@@ -2386,28 +2386,254 @@ mod tests {
     }
 
     #[test]
-    fn shadow_sprite_peaks_in_interior_not_centre_or_edge() {
-        let sprite = ambient_shadow_sprite();
-        let size = sprite.width;
-        let cy = size / 2;
-        // Centre and outer edge are guaranteed zero by the `inner`/
-        // `outer` shoulder terms.
-        let a_centre = sprite_alpha_at(sprite, size / 2, cy);
-        let a_edge = sprite_alpha_at(sprite, size - 1, cy);
-        // 0.3 × diameter puts the sample on the Gaussian peak ring;
-        // 0.9 × diameter sits in the decayed tail.
-        let r_peak = px(f64::from(size) * 0.3);
-        let r_tail = px(f64::from(size) * 0.9);
-        let a_peak = sprite_alpha_at(sprite, r_peak, cy);
-        let a_tail = sprite_alpha_at(sprite, r_tail, cy);
-        assert!(
-            a_centre <= 2 && a_edge <= 2,
-            "centre and edge must be (near-)transparent; got centre={a_centre} edge={a_edge}",
-        );
-        assert!(
-            a_peak > a_tail,
-            "peak (0.3d={a_peak}) must exceed tail (0.9d={a_tail})",
-        );
+    fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
+        // Case `shadow_sprite_peaks_in_interior_not_centre_or_edge`.
+        {
+            let sprite = ambient_shadow_sprite();
+            let size = sprite.width;
+            let cy = size / 2;
+            // Centre and outer edge are guaranteed zero by the `inner`/
+            // `outer` shoulder terms.
+            let a_centre = sprite_alpha_at(sprite, size / 2, cy);
+            let a_edge = sprite_alpha_at(sprite, size - 1, cy);
+            // 0.3 × diameter puts the sample on the Gaussian peak ring;
+            // 0.9 × diameter sits in the decayed tail.
+            let r_peak = px(f64::from(size) * 0.3);
+            let r_tail = px(f64::from(size) * 0.9);
+            let a_peak = sprite_alpha_at(sprite, r_peak, cy);
+            let a_tail = sprite_alpha_at(sprite, r_tail, cy);
+            assert!(
+                a_centre <= 2 && a_edge <= 2,
+                "centre and edge must be (near-)transparent; got centre={a_centre} edge={a_edge}",
+            );
+            assert!(
+                a_peak > a_tail,
+                "peak (0.3d={a_peak}) must exceed tail (0.9d={a_tail})",
+            );
+        }
+
+        // Case `a_hosted_app_cannot_square_off_the_window_or_erase_its_border`.
+        // An app that fills its whole rect (as every hosted app does, since
+        // it can't know it's being framed) must not square off the window's
+        // rounded corners or paint over its border — both are the frame's.
+        {
+            use crate::offscreen::OffscreenRenderer;
+
+            // Tile inset far enough from the surface edge that the ambient
+            // shadow sprite has somewhere to land without wrapping.
+            let (w, h) = (200u32, 200u32);
+            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+            let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
+            host.rect = rect;
+
+            let theme = Theme::default();
+            let mut tr = TextRenderer::new();
+            let mut scene = Scene::new();
+            host.draw(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                &PresenceCtx::empty(),
+            );
+
+            let mut r = OffscreenRenderer::new(w, h);
+            // Distinct from both the flood colour and the card so a leak from
+            // any of the three is identifiable in the failure message.
+            let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+
+            let radius = f64::from(theme.tokens.radii.xl);
+            // A point inside the tile's bounding box but outside its rounded
+            // silhouette: one pixel in from the box corner, well inside the
+            // corner arc's cut.
+            let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
+            assert!(
+                radius > 8.0,
+                "test assumes a visibly rounded card; radii.xl is {radius}",
+            );
+            let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, w, cx, cy);
+            assert!(
+                cr < 128,
+                "the hosted app's fill leaked outside the card's rounded \
+             corner at ({cx},{cy}) — got ({cr},{cg},{cb}), which is the \
+             app's flood colour. The corner belongs to the frame.",
+            );
+
+            // Dead centre is the app: the clip must not have swallowed it.
+            let (mr, mg, mb, _) = OffscreenRenderer::sample(&rgba, w, 100, 100);
+            assert!(
+                mr > 200 && mg < 80 && mb < 80,
+                "the hosted app must still paint inside the card; centre is \
+             ({mr},{mg},{mb}), expected the app's flood colour",
+            );
+
+            // One pixel out from the boundary is the frame's edge: it must be
+            // neither the app (flood escaped its clip) nor bare desktop (no
+            // edge there at all).
+            let edge_x = px(rect.x0) - 1;
+            let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
+            assert!(
+                (er, eg, eb) != (0xFF, 0x00, 0x00),
+                "the hosted app's fill leaked onto the window's edge at \
+             ({edge_x},100) — got ({er},{eg},{eb}), the app's flood colour",
+            );
+            assert!(
+                (er, eg, eb) != (0x00, 0x00, 0xFF),
+                "the window has no edge at ({edge_x},100) — the pixel is bare \
+             desktop, so nothing separates the window from it",
+            );
+
+            // ...and the first pixel *inside* the boundary is the app's, whole.
+            // The frame stops at the silhouette.
+            let inside_x = px(rect.x0);
+            let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
+            assert_eq!(
+                (nr, ng, nb),
+                (0xFF, 0x00, 0x00),
+                "the frame tinted a pixel the app owns at ({inside_x},100) — got \
+             ({nr},{ng},{nb}), expected the app's flood colour",
+            );
+        }
+
+        // Case `the_window_edge_never_tints_a_pixel_the_app_owns`.
+        // The window's edge must never tint a pixel the hosted app owns —
+        // stroking a constant over unknown app content reads right on one
+        // ground and wrong on the rest of the ramp.
+        {
+            use crate::offscreen::OffscreenRenderer;
+
+            // Spanning the ramp: a dark app, two mid grounds, and the light
+            // chrome a word processor paints.
+            let grounds: [(u8, u8, u8); 4] = [
+                (0x10, 0x10, 0x12),
+                (0x40, 0x40, 0x44),
+                (0x80, 0x80, 0x84),
+                (0xC0, 0xC0, 0xC4),
+            ];
+            let (w, h) = (200u32, 200u32);
+            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+            let theme = Theme::default();
+
+            for (r8, g8, b8) in grounds {
+                let color = vello::peniko::Color::from_rgb8(r8, g8, b8);
+                let mut host = TileHost::new(TileContent::App(Box::new(Flood { rect, color })));
+                host.rect = rect;
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                host.draw(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut tr,
+                    &theme,
+                    &PresenceCtx::empty(),
+                );
+                let mut renderer = OffscreenRenderer::new(w, h);
+                let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+
+                // Both vertical edges at mid-height, and the horizontal edges at
+                // mid-width: the first pixel inside the silhouette on every side.
+                let probes = [
+                    ("left", px(rect.x0), 100u32),
+                    ("right", px(rect.x1) - 1, 100u32),
+                    ("top", 100u32, px(rect.y0)),
+                    ("bottom", 100u32, px(rect.y1) - 1),
+                ];
+                for (side, px, py) in probes {
+                    let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
+                    assert_eq!(
+                        (sr, sg, sb),
+                        (r8, g8, b8),
+                        "the frame tinted the app's own pixel on the {side} edge \
+                     at ({px},{py}): app painted ({r8},{g8},{b8}), the render \
+                     shows ({sr},{sg},{sb}). The window's edge belongs outside \
+                     the card, on ground the shell knows — over app content it \
+                     is a constant on an unknown surface",
+                    );
+                }
+            }
+        }
+
+        // Case `focus_lights_the_card_s_edge_and_never_squares_off_its_corner`.
+        // Focus is a change to the window's own edge, staying inside the
+        // card's silhouette — not a square fence around the bounding box,
+        // which would double-line the rounded corner and paint on desktop
+        // diagonally outside it. Checked at the edge's flat and diagonally
+        // outside the corner, across every theme preset.
+        {
+            use crate::offscreen::OffscreenRenderer;
+
+            let (width, height) = (200u32, 200u32);
+            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+            // Desktop stand-in. Deliberately a colour no palette contains, so
+            // "still desktop" cannot be confused with "some theme token".
+            let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
+
+            for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
+                let name = theme.name.clone();
+                let focus = theme.tokens.colors.border_focus;
+                let (fr, fg, fb) = {
+                    let rgba = focus.to_rgba8();
+                    (rgba.r, rgba.g, rgba.b)
+                };
+
+                let shot = |focused: bool| {
+                    let mut host = TileHost::new(TileContent::Stub {
+                        kind: AppKind::Editor,
+                        label: String::new(),
+                    });
+                    host.rect = rect;
+                    host.set_focused(focused);
+                    let mut tr = TextRenderer::new();
+                    let mut scene = Scene::new();
+                    host.draw(
+                        &mut scene,
+                        Affine::IDENTITY,
+                        &mut tr,
+                        &theme,
+                        &PresenceCtx::empty(),
+                    );
+                    let mut renderer = OffscreenRenderer::new(width, height);
+                    renderer.render(&scene, ground)
+                };
+
+                let lit = shot(true);
+                let dark = shot(false);
+
+                // Mid-span of the top edge: the band the stroke occupies sits
+                // just outside the card boundary.
+                let (sample_x, sample_y) = (100u32, px(rect.y0) - 1);
+                let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
+                assert_eq!(
+                    (lr, lg, lb),
+                    (fr, fg, fb),
+                    "{name}: the focused window's edge is not the theme's focus                  colour at ({sample_x},{sample_y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
+                );
+                let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, width, sample_x, sample_y);
+                assert_ne!(
+                    (ur, ug, ub),
+                    (fr, fg, fb),
+                    "{name}: an unfocused window paints the focus colour on its                  edge at ({sample_x},{sample_y}), so focus distinguishes nothing",
+                );
+
+                // Well outside the rounded arc, where a square fence would
+                // have painted. The ambient shadow legitimately darkens this
+                // pixel, so the claim is only that focus colour isn't there,
+                // not that it's untouched.
+                let (corner_x, corner_y) = (px(rect.x0) - 2, px(rect.y0) - 2);
+                for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
+                    let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
+                    assert_ne!(
+                        (sr, sg, sb),
+                        (fr, fg, fb),
+                        "{name}: the {label} window painted the focus colour at ({corner_x},{corner_y}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
+                    );
+                    assert!(
+                        sg > sr && sg > sb,
+                        "{name}: the {label} window covered the desktop at ({corner_x},{corner_y}) with ({sr},{sg},{sb}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
+                    );
+                }
+            }
+        }
     }
 
     /// Writes one string into whatever document it is handed, and
@@ -2591,34 +2817,60 @@ mod tests {
     }
 
     #[test]
-    fn tile_host_forwards_the_complete_floating_surface_lifecycle() {
-        let acknowledged = std::rc::Rc::new(std::cell::Cell::new(false));
-        let source = Rect::new(20.0, 30.0, 420.0, 255.0);
-        let mut host = TileHost::new(TileContent::App(Box::new(FloatingProbe {
-            acknowledged: acknowledged.clone(),
-            update: Some(source),
-        })));
+    fn tile_host_forwards_surfaces_and_only_unhandled_events() {
+        // Case `tile_host_forwards_the_complete_floating_surface_lifecycle`.
+        {
+            let acknowledged = std::rc::Rc::new(std::cell::Cell::new(false));
+            let source = Rect::new(20.0, 30.0, 420.0, 255.0);
+            let mut host = TileHost::new(TileContent::App(Box::new(FloatingProbe {
+                acknowledged: acknowledged.clone(),
+                update: Some(source),
+            })));
 
-        assert_eq!(
-            FloatingSurfaceWidgetExt::active_floating_surface_ids(&host),
-            vec!["probe-pip"]
-        );
-        assert_eq!(
-            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host),
-            vec![("probe-pip".into(), source)]
-        );
-        assert!(
-            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host).is_empty()
-        );
+            assert_eq!(
+                FloatingSurfaceWidgetExt::active_floating_surface_ids(&host),
+                vec!["probe-pip"]
+            );
+            assert_eq!(
+                FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host),
+                vec![("probe-pip".into(), source)]
+            );
+            assert!(
+                FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host)
+                    .is_empty()
+            );
 
-        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
-            &mut host,
-            &crate::floating_surface::FloatingSurfaceHostMessage::Adopted {
-                id: "probe-pip".into(),
-                rect: [100.0, 80.0, 500.0, 305.0],
-            },
-        );
-        assert!(acknowledged.get());
+            FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+                &mut host,
+                &crate::floating_surface::FloatingSurfaceHostMessage::Adopted {
+                    id: "probe-pip".into(),
+                    rect: [100.0, 80.0, 500.0, 305.0],
+                },
+            );
+            assert!(acknowledged.get());
+        }
+
+        // Case `a_prehandled_event_never_reaches_the_hosted_app`.
+        {
+            let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+            let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
+            let mut taffy = TaffyTree::new();
+            let mut node_map = std::collections::HashMap::new();
+            let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
+            let mut handled = true;
+            host.handle_event(
+                &WindowEvent::Focused(true),
+                1.0,
+                &winit::event::Modifiers::default(),
+                &mut AutoCommit::new(),
+                &ROOT,
+                &mut handled,
+                &mut None,
+                node,
+                &taffy,
+            );
+            assert_eq!(calls.get(), 0);
+        }
     }
 
     fn body_of(store: &RecordStore, id: &RecordId) -> Option<String> {
@@ -2656,62 +2908,227 @@ mod tests {
     }
 
     #[test]
-    fn history_checked_canonical_tail_refusal_preserves_bytes_without_a_live_owner() {
-        use automerge::transaction::Transactable;
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("records");
-        let checkout = tab_checkout(3903);
+    fn outgoing_records_settle_once_and_keep_failed_owners() {
+        // Case `history_checked_canonical_tail_refusal_preserves_bytes_without_a_live_owner`.
         {
+            use automerge::transaction::Transactable;
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("records");
+            let checkout = tab_checkout(3903);
+            {
+                let store = canonical_store(&root);
+                store.create_record(&checkout).unwrap();
+                store.with(&checkout.id, |doc| {
+                    doc.put(ROOT, "body", "valid original history").unwrap();
+                });
+                store.try_flush().unwrap();
+            }
+            let record_dir = app_state::DocStore::room_record_dir_at(
+                &root,
+                "so.tilo.tile-host-test",
+                "room",
+                &checkout.id.storage_key(),
+            )
+            .unwrap();
+            let path =
+                app_state::DocStore::open_canonical_at("so.tilo.tile-host-test", &record_dir)
+                    .unwrap()
+                    .document_path()
+                    .to_path_buf();
+            let mut doc = AutoCommit::load(&std::fs::read(&path).unwrap()).unwrap();
+            let mut bytes = doc.save();
+            doc.put(ROOT, "body", "later truncated history").unwrap();
+            let increment = doc.save_incremental();
+            assert!(increment.len() > 8);
+            bytes.extend_from_slice(&increment[..increment.len() - 3]);
+            std::fs::write(&path, &bytes).unwrap();
             let store = canonical_store(&root);
-            store.create_record(&checkout).unwrap();
-            store.with(&checkout.id, |doc| {
-                doc.put(ROOT, "body", "valid original history").unwrap();
-            });
-            store.try_flush().unwrap();
-        }
-        let record_dir = app_state::DocStore::room_record_dir_at(
-            &root,
-            "so.tilo.tile-host-test",
-            "room",
-            &checkout.id.storage_key(),
-        )
-        .unwrap();
-        let path = app_state::DocStore::open_canonical_at("so.tilo.tile-host-test", &record_dir)
-            .unwrap()
-            .document_path()
-            .to_path_buf();
-        let mut doc = AutoCommit::load(&std::fs::read(&path).unwrap()).unwrap();
-        let mut bytes = doc.save();
-        doc.put(ROOT, "body", "later truncated history").unwrap();
-        let increment = doc.save_incremental();
-        assert!(increment.len() > 8);
-        bytes.extend_from_slice(&increment[..increment.len() - 3]);
-        std::fs::write(&path, &bytes).unwrap();
-        let store = canonical_store(&root);
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "must never seed rejected history".into(),
-            opens: None,
-        })));
-        host.bind_record(store.clone(), checkout.clone());
-        for _ in 0..2 {
-            host.sync(&mut AutoCommit::new(), &ROOT);
-            store.tick();
-            store.flush();
-            assert!(
-                host.history_owner().is_none(),
-                "checked canonical admission must not repair and publish a partial graph"
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "must never seed rejected history".into(),
+                opens: None,
+            })));
+            host.bind_record(store.clone(), checkout.clone());
+            for _ in 0..2 {
+                host.sync(&mut AutoCommit::new(), &ROOT);
+                store.tick();
+                store.flush();
+                assert!(
+                    host.history_owner().is_none(),
+                    "checked canonical admission must not repair and publish a partial graph"
+                );
+                assert!(!store.is_ready(&checkout.id));
+                assert!(
+                    store.save_status(&checkout.id).is_err(),
+                    "no writer may be admitted"
+                );
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+            assert_eq!(
+                host.accessibility().and_then(|node| node.name),
+                Some("Document unavailable".into())
             );
-            assert!(!store.is_ready(&checkout.id));
-            assert!(
-                store.save_status(&checkout.id).is_err(),
-                "no writer may be admitted"
-            );
-            assert_eq!(std::fs::read(&path).unwrap(), bytes);
         }
-        assert_eq!(
-            host.accessibility().and_then(|node| node.name),
-            Some("Document unavailable".into())
-        );
+
+        // Case `outgoing_record_intent_keeps_failed_owner_and_unrelated_pending_record`.
+        {
+            use automerge::{ReadDoc, transaction::Transactable};
+            for reject in [false, true] {
+                let temp = tempfile::tempdir().unwrap();
+                let root = temp.path().join("records");
+                let store = canonical_store(&root);
+                let a = tab_checkout(3980);
+                let sibling = tab_checkout(3981);
+                let file = temp.path().join("next.txt");
+                let b = RecordCheckout::new(
+                    RecordId::for_file(&file),
+                    crate::record::RecordKind::new("file"),
+                );
+                for checkout in [&a, &sibling] {
+                    store
+                        .reserve_record(checkout)
+                        .unwrap()
+                        .initialize(|_| Ok(()))
+                        .unwrap();
+                }
+                if !reject {
+                    store
+                        .reserve_record(&b)
+                        .unwrap()
+                        .initialize(|_| Ok(()))
+                        .unwrap();
+                }
+                store
+                    .with(&a.id, |doc| {
+                        doc.put(ROOT, "body", "durable baseline").unwrap();
+                    })
+                    .unwrap();
+                store.try_flush_record(&a.id).unwrap();
+                store
+                    .with(&sibling.id, |doc| {
+                        doc.put(ROOT, "pending", "sibling").unwrap();
+                    })
+                    .unwrap();
+                let pending = store
+                    .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                    .unwrap();
+                let path = app_state::DocStore::room_record_dir_at(
+                    &root,
+                    "so.tilo.tile-host-test",
+                    "room",
+                    &a.id.storage_key(),
+                )
+                .unwrap()
+                .join(app_state::DOCUMENT_FILE);
+                std::fs::remove_file(&path).unwrap();
+                std::fs::create_dir(&path).unwrap();
+                let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                    text: "unused".into(),
+                    opens: Some(file),
+                })));
+                host.bind_record(store.clone(), a.clone());
+                let old = host.history_owner().unwrap();
+                store
+                    .with(&a.id, |doc| {
+                        doc.put(ROOT, "body", "unflushed A").unwrap();
+                    })
+                    .unwrap();
+                assert_eq!(host.resolve_record().is_err(), reject);
+                assert!(old.validate().is_err());
+                drop(old);
+                let mut reports = host.take_component_close_reports();
+                assert_eq!(
+                    reports.len(),
+                    1,
+                    "intent change must settle the outgoing owner"
+                );
+                let mut report = reports.pop().unwrap();
+                assert!(report.record_error.is_some());
+                assert!(report.record_retry.as_ref().unwrap().same_owner(&store));
+                assert_eq!(report.record_retry_target.as_ref(), Some(&a.id));
+                let _ = host.resolve_record();
+                assert!(host.take_component_close_reports().is_empty());
+                drop(host);
+                drop(store);
+                std::fs::remove_dir(&path).unwrap();
+                let retained = report.record_retry.as_ref().unwrap().clone();
+                report.retry_record().unwrap();
+                assert_eq!(
+                    retained
+                        .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                        .unwrap(),
+                    pending
+                );
+                drop(retained);
+                let reopened = canonical_store(&root);
+                reopened.try_open_record(&a).unwrap();
+                assert_eq!(
+                    reopened
+                        .read(&a.id, |doc| doc
+                            .get(ROOT, "body")
+                            .unwrap()
+                            .unwrap()
+                            .0
+                            .as_str()
+                            .unwrap()
+                            .to_owned())
+                        .unwrap(),
+                    "unflushed A"
+                );
+            }
+        }
+
+        // Case `outgoing_settlement_is_idempotent_but_new_edits_require_another_close`.
+        {
+            use automerge::transaction::Transactable;
+            let temp = tempfile::tempdir().unwrap();
+            let store = canonical_store(temp.path());
+            let checkout = tab_checkout(3982);
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|_| Ok(()))
+                .unwrap();
+            let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+            host.bind_record(store.clone(), checkout.clone());
+            store
+                .with(&checkout.id, |doc| {
+                    doc.put(ROOT, "body", "first").unwrap();
+                })
+                .unwrap();
+            host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+            let reports = host.take_component_close_reports();
+            assert_eq!(reports.len(), 1);
+            assert!(reports[0].record_error.is_none());
+            let settled = store
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap();
+            assert_eq!(settled.1, 0);
+            host.bind_record(store.clone(), checkout.clone());
+            assert!(host.close_components().is_empty());
+            assert!(host.close_components().is_empty());
+            assert_eq!(
+                store
+                    .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                    .unwrap(),
+                settled
+            );
+            host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+            store
+                .with(&checkout.id, |doc| {
+                    doc.put(ROOT, "body", "later accepted edit").unwrap();
+                })
+                .unwrap();
+            assert!(store.read(&checkout.id, |doc| doc.pending_ops()).unwrap() > 0);
+            let reports = host.close_components();
+            assert_eq!(reports.len(), 1);
+            assert!(reports[0].record_error.is_none());
+            let later = store
+                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
+                .unwrap();
+            assert_ne!(later.0, settled.0);
+            assert_eq!(later.1, 0);
+            assert!(host.close_components().is_empty());
+        }
     }
 
     struct DeclaredHistoryProbe {
@@ -2851,456 +3268,324 @@ mod tests {
             focused: true,
         }))
     }
+
     #[test]
-    fn outgoing_record_intent_keeps_failed_owner_and_unrelated_pending_record() {
-        use automerge::{ReadDoc, transaction::Transactable};
-        for reject in [false, true] {
+    fn declared_history_binds_to_one_owner_for_its_lifetime() {
+        // Case `declared_history_binds_once_and_replaces_its_actual_owner`.
+        {
             let temp = tempfile::tempdir().unwrap();
-            let root = temp.path().join("records");
-            let store = canonical_store(&root);
-            let a = tab_checkout(3980);
-            let sibling = tab_checkout(3981);
-            let file = temp.path().join("next.txt");
-            let b = RecordCheckout::new(
-                RecordId::for_file(&file),
-                crate::record::RecordKind::new("file"),
-            );
-            for checkout in [&a, &sibling] {
+            let first = canonical_store(&temp.path().join("first"));
+            let second = canonical_store(&temp.path().join("second"));
+            let checkout = tab_checkout(3910);
+            for store in [&first, &second] {
                 store
-                    .reserve_record(checkout)
+                    .reserve_record(&checkout)
                     .unwrap()
                     .initialize(|_| Ok(()))
                     .unwrap();
             }
-            if !reject {
-                store
-                    .reserve_record(&b)
-                    .unwrap()
-                    .initialize(|_| Ok(()))
-                    .unwrap();
-            }
-            store
-                .with(&a.id, |doc| {
-                    doc.put(ROOT, "body", "durable baseline").unwrap();
-                })
-                .unwrap();
-            store.try_flush_record(&a.id).unwrap();
-            store
-                .with(&sibling.id, |doc| {
-                    doc.put(ROOT, "pending", "sibling").unwrap();
-                })
-                .unwrap();
-            let pending = store
-                .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
-                .unwrap();
-            let path = app_state::DocStore::room_record_dir_at(
-                &root,
-                "so.tilo.tile-host-test",
-                "room",
-                &a.id.storage_key(),
-            )
-            .unwrap()
-            .join(app_state::DOCUMENT_FILE);
-            std::fs::remove_file(&path).unwrap();
-            std::fs::create_dir(&path).unwrap();
-            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-                text: "unused".into(),
-                opens: Some(file),
-            })));
-            host.bind_record(store.clone(), a.clone());
-            let old = host.history_owner().unwrap();
-            store
-                .with(&a.id, |doc| {
-                    doc.put(ROOT, "body", "unflushed A").unwrap();
-                })
-                .unwrap();
-            assert_eq!(host.resolve_record().is_err(), reject);
-            assert!(old.validate().is_err());
-            drop(old);
-            let mut reports = host.take_component_close_reports();
-            assert_eq!(
-                reports.len(),
-                1,
-                "intent change must settle the outgoing owner"
+            let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+            assert!(host.history.is_none());
+            host.bind_record(first.clone(), checkout.clone());
+            let initial = host.history_owner().unwrap();
+            assert!(host.automatic_history);
+            host.bind_record(first, checkout.clone());
+            assert!(initial.same_owner(&host.history_owner().unwrap()));
+            host.replace_content(declared_probe(&DECLARED_HISTORY, false));
+            assert!(initial.validate().is_err());
+            assert!(
+                host.history.is_some(),
+                "replacement must consume the new root declaration"
             );
-            let mut report = reports.pop().unwrap();
-            assert!(report.record_error.is_some());
-            assert!(report.record_retry.as_ref().unwrap().same_owner(&store));
-            assert_eq!(report.record_retry_target.as_ref(), Some(&a.id));
-            let _ = host.resolve_record();
-            assert!(host.take_component_close_reports().is_empty());
-            drop(host);
-            drop(store);
-            std::fs::remove_dir(&path).unwrap();
-            let retained = report.record_retry.as_ref().unwrap().clone();
-            report.retry_record().unwrap();
-            assert_eq!(
-                retained
-                    .read(&sibling.id, |doc| (doc.base_heads(), doc.pending_ops()))
-                    .unwrap(),
-                pending
-            );
-            drop(retained);
-            let reopened = canonical_store(&root);
-            reopened.try_open_record(&a).unwrap();
-            assert_eq!(
-                reopened
-                    .read(&a.id, |doc| doc
-                        .get(ROOT, "body")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .as_str()
-                        .unwrap()
-                        .to_owned())
-                    .unwrap(),
-                "unflushed A"
-            );
+            let replaced = host.history_owner().unwrap();
+            host.bind_record(second, checkout);
+            assert!(replaced.validate().is_err());
+            assert!(host.history.as_ref().unwrap().validate().is_ok());
+            let mut count = 0;
+            host.visit_framework_history(&mut |_, _| count += 1);
+            assert_eq!(count, 1);
         }
-    }
 
-    #[test]
-    fn outgoing_settlement_is_idempotent_but_new_edits_require_another_close() {
-        use automerge::transaction::Transactable;
-        let temp = tempfile::tempdir().unwrap();
-        let store = canonical_store(temp.path());
-        let checkout = tab_checkout(3982);
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|_| Ok(()))
-            .unwrap();
-        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
-        host.bind_record(store.clone(), checkout.clone());
-        store
-            .with(&checkout.id, |doc| {
-                doc.put(ROOT, "body", "first").unwrap();
-            })
-            .unwrap();
-        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
-        let reports = host.take_component_close_reports();
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].record_error.is_none());
-        let settled = store
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap();
-        assert_eq!(settled.1, 0);
-        host.bind_record(store.clone(), checkout.clone());
-        assert!(host.close_components().is_empty());
-        assert!(host.close_components().is_empty());
-        assert_eq!(
-            store
-                .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-                .unwrap(),
-            settled
-        );
-        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
-        store
-            .with(&checkout.id, |doc| {
-                doc.put(ROOT, "body", "later accepted edit").unwrap();
-            })
-            .unwrap();
-        assert!(store.read(&checkout.id, |doc| doc.pending_ops()).unwrap() > 0);
-        let reports = host.close_components();
-        assert_eq!(reports.len(), 1);
-        assert!(reports[0].record_error.is_none());
-        let later = store
-            .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
-            .unwrap();
-        assert_ne!(later.0, settled.0);
-        assert_eq!(later.1, 0);
-        assert!(host.close_components().is_empty());
-    }
-
-    #[test]
-    fn declared_history_binds_once_and_replaces_its_actual_owner() {
-        let temp = tempfile::tempdir().unwrap();
-        let first = canonical_store(&temp.path().join("first"));
-        let second = canonical_store(&temp.path().join("second"));
-        let checkout = tab_checkout(3910);
-        for store in [&first, &second] {
-            store
-                .reserve_record(&checkout)
-                .unwrap()
-                .initialize(|_| Ok(()))
-                .unwrap();
-        }
-        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
-        assert!(host.history.is_none());
-        host.bind_record(first.clone(), checkout.clone());
-        let initial = host.history_owner().unwrap();
-        assert!(host.automatic_history);
-        host.bind_record(first, checkout.clone());
-        assert!(initial.same_owner(&host.history_owner().unwrap()));
-        host.replace_content(declared_probe(&DECLARED_HISTORY, false));
-        assert!(initial.validate().is_err());
-        assert!(
-            host.history.is_some(),
-            "replacement must consume the new root declaration"
-        );
-        let replaced = host.history_owner().unwrap();
-        host.bind_record(second, checkout);
-        assert!(replaced.validate().is_err());
-        assert!(host.history.as_ref().unwrap().validate().is_ok());
-        let mut count = 0;
-        host.visit_framework_history(&mut |_, _| count += 1);
-        assert_eq!(count, 1);
-    }
-    #[test]
-    fn declared_history_waits_for_deferred_record_admission() {
-        let temp = tempfile::tempdir().unwrap();
-        let store = canonical_store(&temp.path().join("records"));
-        let checkout = tab_checkout(3913);
-        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
-        host.bind_record(store.clone(), checkout.clone());
-        assert!(host.history.is_none());
-        assert!(host.history_owner().is_none());
-        store
-            .reserve_record(&checkout)
-            .unwrap()
-            .initialize(|_| Ok(()))
-            .unwrap();
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        assert!(host.record_error.is_none());
-        assert!(host.automatic_history);
-        let owner = host.history_owner().unwrap();
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        assert!(owner.same_owner(&host.history_owner().unwrap()));
-        let mut count = 0;
-        host.visit_framework_history(&mut |_, _| count += 1);
-        assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn declared_history_rebind_cannot_restore_focus_into_same_named_new_owner() {
-        use crate::widget::layout::CompositionFocus;
-        let temp = tempfile::tempdir().unwrap();
-        let first = canonical_store(&temp.path().join("first"));
-        let second = canonical_store(&temp.path().join("second"));
-        let checkout = tab_checkout(3912);
-        for store in [&first, &second] {
-            store
-                .reserve_record(&checkout)
-                .unwrap()
-                .initialize(|_| Ok(()))
-                .unwrap();
-        }
-        let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
-        host.bind_record(first, checkout.clone());
-        let mut tree = TaffyTree::new();
-        let mut nodes = std::collections::HashMap::new();
-        let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
-        unsafe {
-            bindings.rebuild(&host, &tree, root, &nodes);
-        }
-        let target = nodes
-            .iter()
-            .find_map(|(node, pointer)| {
-                (unsafe { &**pointer }.test_id() == Some("declared-probe")).then_some(*node)
-            })
-            .unwrap();
-        let focus = unsafe { CompositionFocus::capture(Some(target), &nodes, &bindings) }.unwrap();
-        assert_eq!(
-            unsafe { focus.restore(&nodes, &bindings, None) },
-            Some(target)
-        );
-        nodes.clear();
-        bindings.clear();
-        host.bind_record(second, checkout);
-        tree = TaffyTree::new();
-        let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-        unsafe {
-            bindings.rebuild(&host, &tree, root, &nodes);
-        }
-        assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
-    }
-
-    #[test]
-    fn declared_history_refuses_foreign_custody_and_conflicting_root_provider() {
-        for (definition, existing) in [(&FOREIGN_HISTORY, false), (&DECLARED_HISTORY, true)] {
+        // Case `declared_history_waits_for_deferred_record_admission`.
+        {
             let temp = tempfile::tempdir().unwrap();
             let store = canonical_store(&temp.path().join("records"));
-            let checkout = tab_checkout(3911);
-            store
-                .reserve_record(&checkout)
-                .unwrap()
-                .initialize(|_| Ok(()))
-                .unwrap();
-            let mut host = TileHost::new(declared_probe(definition, existing));
-            host.bind_record(store, checkout);
-            assert!(host.record_error.is_some());
+            let checkout = tab_checkout(3913);
+            let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+            host.bind_record(store.clone(), checkout.clone());
+            assert!(host.history.is_none());
             assert!(host.history_owner().is_none());
-            assert!(!host.automatic_history);
-            for _ in 0..2 {
-                host.sync(&mut AutoCommit::new(), &ROOT);
-                host.update(&mut AutoCommit::new(), &ROOT);
-                assert!(
-                    host.record_error.is_some(),
-                    "refusal must survive ordinary frames"
-                );
+            store
+                .reserve_record(&checkout)
+                .unwrap()
+                .initialize(|_| Ok(()))
+                .unwrap();
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            assert!(host.record_error.is_none());
+            assert!(host.automatic_history);
+            let owner = host.history_owner().unwrap();
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            assert!(owner.same_owner(&host.history_owner().unwrap()));
+            let mut count = 0;
+            host.visit_framework_history(&mut |_, _| count += 1);
+            assert_eq!(count, 1);
+        }
+
+        // Case `declared_history_rebind_cannot_restore_focus_into_same_named_new_owner`.
+        {
+            use crate::widget::layout::CompositionFocus;
+            let temp = tempfile::tempdir().unwrap();
+            let first = canonical_store(&temp.path().join("first"));
+            let second = canonical_store(&temp.path().join("second"));
+            let checkout = tab_checkout(3912);
+            for store in [&first, &second] {
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(|_| Ok(()))
+                    .unwrap();
+            }
+            let mut host = TileHost::new(declared_probe(&DECLARED_HISTORY, false));
+            host.bind_record(first, checkout.clone());
+            let mut tree = TaffyTree::new();
+            let mut nodes = std::collections::HashMap::new();
+            let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+            unsafe {
+                bindings.rebuild(&host, &tree, root, &nodes);
+            }
+            let target = nodes
+                .iter()
+                .find_map(|(node, pointer)| {
+                    (unsafe { &**pointer }.test_id() == Some("declared-probe")).then_some(*node)
+                })
+                .unwrap();
+            let focus =
+                unsafe { CompositionFocus::capture(Some(target), &nodes, &bindings) }.unwrap();
+            assert_eq!(
+                unsafe { focus.restore(&nodes, &bindings, None) },
+                Some(target)
+            );
+            nodes.clear();
+            bindings.clear();
+            host.bind_record(second, checkout);
+            tree = TaffyTree::new();
+            let root = host.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+            unsafe {
+                bindings.rebuild(&host, &tree, root, &nodes);
+            }
+            assert!(unsafe { focus.restore(&nodes, &bindings, None) }.is_none());
+        }
+
+        // Case `declared_history_refuses_foreign_custody_and_conflicting_root_provider`.
+        {
+            for (definition, existing) in [(&FOREIGN_HISTORY, false), (&DECLARED_HISTORY, true)] {
+                let temp = tempfile::tempdir().unwrap();
+                let store = canonical_store(&temp.path().join("records"));
+                let checkout = tab_checkout(3911);
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(|_| Ok(()))
+                    .unwrap();
+                let mut host = TileHost::new(declared_probe(definition, existing));
+                host.bind_record(store, checkout);
+                assert!(host.record_error.is_some());
                 assert!(host.history_owner().is_none());
+                assert!(!host.automatic_history);
+                for _ in 0..2 {
+                    host.sync(&mut AutoCommit::new(), &ROOT);
+                    host.update(&mut AutoCommit::new(), &ROOT);
+                    assert!(
+                        host.record_error.is_some(),
+                        "refusal must survive ordinary frames"
+                    );
+                    assert!(host.history_owner().is_none());
+                }
+                if existing {
+                    assert!(host.record_error.as_ref().unwrap().contains("Conflicting"));
+                }
             }
-            if existing {
-                assert!(host.record_error.as_ref().unwrap().contains("Conflicting"));
+        }
+
+        // Case `history_owner_lifetime_expires_on_replacement_close_and_store_rebind`.
+        {
+            let first_dir = tempfile::tempdir().unwrap();
+            let second_dir = tempfile::tempdir().unwrap();
+            let first = canonical_store(&first_dir.path().join("records"));
+            let second = canonical_store(&second_dir.path().join("records"));
+            let checkout = tab_checkout(3902);
+            for store in [&first, &second] {
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(|_| Ok(()))
+                    .unwrap();
             }
+            let content = || {
+                TileContent::App(Box::new(Scribe {
+                    text: "live".into(),
+                    opens: None,
+                }))
+            };
+            let mut host = TileHost::new(content());
+            host.bind_record(first.clone(), checkout.clone());
+            let original = host.history_owner().unwrap();
+            host.bind_record(first, checkout.clone());
+            assert!(original.same_owner(&host.history_owner().unwrap()));
+            assert!(original.validate().is_ok());
+            host.bind_record(second.clone(), checkout.clone());
+            assert!(original.validate().is_err());
+            let rebound = host.history_owner().unwrap();
+            host.replace_content(content());
+            assert!(rebound.validate().is_err());
+            let replacement = host.history_owner().unwrap();
+            let _ = host.close_components();
+            assert!(replacement.validate().is_err());
+            assert!(host.history_owner().is_none());
+            host.replace_content(content());
+            let before_missing = host.history_owner().unwrap();
+            host.bind_record(second, tab_checkout(999999));
+            assert!(before_missing.validate().is_err());
+            assert!(host.history_owner().is_none());
+            let mut dropped = TileHost::new(content());
+            let store = canonical_store(&first_dir.path().join("third"));
+            dropped.bind_or_create_record(store, checkout);
+            let witness = dropped.history_owner().unwrap();
+            drop(dropped);
+            assert!(witness.validate().is_err());
         }
     }
 
     #[test]
-    fn history_owner_lifetime_expires_on_replacement_close_and_store_rebind() {
-        let first_dir = tempfile::tempdir().unwrap();
-        let second_dir = tempfile::tempdir().unwrap();
-        let first = canonical_store(&first_dir.path().join("records"));
-        let second = canonical_store(&second_dir.path().join("records"));
-        let checkout = tab_checkout(3902);
-        for store in [&first, &second] {
-            store
-                .reserve_record(&checkout)
-                .unwrap()
-                .initialize(|_| Ok(()))
-                .unwrap();
-        }
-        let content = || {
-            TileContent::App(Box::new(Scribe {
-                text: "live".into(),
+    fn record_rebinding_revalidates_store_and_kind() {
+        // Case `same_record_id_rebinding_revalidates_store_and_checkout`.
+        {
+            let first_dir = tempfile::tempdir().unwrap();
+            let second_dir = tempfile::tempdir().unwrap();
+            let first = canonical_store(&first_dir.path().join("records"));
+            let second = canonical_store(&second_dir.path().join("records"));
+            let checkout = tab_checkout(3901);
+            for store in [&first, &second] {
+                store
+                    .reserve_record(&checkout)
+                    .unwrap()
+                    .initialize(|_| Ok(()))
+                    .unwrap();
+            }
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "first owner".into(),
                 opens: None,
-            }))
-        };
-        let mut host = TileHost::new(content());
-        host.bind_record(first.clone(), checkout.clone());
-        let original = host.history_owner().unwrap();
-        host.bind_record(first, checkout.clone());
-        assert!(original.same_owner(&host.history_owner().unwrap()));
-        assert!(original.validate().is_ok());
-        host.bind_record(second.clone(), checkout.clone());
-        assert!(original.validate().is_err());
-        let rebound = host.history_owner().unwrap();
-        host.replace_content(content());
-        assert!(rebound.validate().is_err());
-        let replacement = host.history_owner().unwrap();
-        let _ = host.close_components();
-        assert!(replacement.validate().is_err());
-        assert!(host.history_owner().is_none());
-        host.replace_content(content());
-        let before_missing = host.history_owner().unwrap();
-        host.bind_record(second, tab_checkout(999999));
-        assert!(before_missing.validate().is_err());
-        assert!(host.history_owner().is_none());
-        let mut dropped = TileHost::new(content());
-        let store = canonical_store(&first_dir.path().join("third"));
-        dropped.bind_or_create_record(store, checkout);
-        let witness = dropped.history_owner().unwrap();
-        drop(dropped);
-        assert!(witness.validate().is_err());
-    }
+            })));
+            host.bind_record(first.clone(), checkout.clone());
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            host.bind_record(second.clone(), checkout.clone());
+            assert!(
+                host.binding.as_ref().unwrap().store.same_owner(&second),
+                "same spelling in a new store must replace actual custody"
+            );
+            let wrong =
+                RecordCheckout::new(checkout.id.clone(), crate::record::RecordKind::new("wrong"));
+            host.bind_record(second, wrong);
+            assert!(
+                host.binding.is_none(),
+                "same ID must not bypass kind validation"
+            );
+            assert!(host.record_error.is_some());
+        }
 
-    #[test]
-    fn same_record_id_rebinding_revalidates_store_and_checkout() {
-        let first_dir = tempfile::tempdir().unwrap();
-        let second_dir = tempfile::tempdir().unwrap();
-        let first = canonical_store(&first_dir.path().join("records"));
-        let second = canonical_store(&second_dir.path().join("records"));
-        let checkout = tab_checkout(3901);
-        for store in [&first, &second] {
+        // Case `incompatible_canonical_kind_keeps_the_scratch_binding_and_surfaces_error`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let store = canonical_store(&directory.path().join("records"));
+            let file = std::path::PathBuf::from("/work/report.txt");
+            let file_id = RecordId::for_file(&file);
+            let wrong = RecordCheckout::new(
+                file_id.clone(),
+                crate::record::RecordKind::new("different-kind"),
+            );
             store
-                .reserve_record(&checkout)
+                .reserve_record(&wrong)
                 .unwrap()
                 .initialize(|_| Ok(()))
                 .unwrap();
+            let scratch = tab_checkout(91);
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "must not write".into(),
+                opens: Some(file),
+            })));
+            host.bind_or_create_record(store.clone(), scratch.clone());
+            host.sync(&mut AutoCommit::new(), &ROOT);
+
+            assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
+            assert!(
+                host.record_error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("identity does not match"))
+            );
+            assert_eq!(
+                host.accessibility().and_then(|node| node.name),
+                Some("Document unavailable".into())
+            );
+            assert_eq!(body_of(&store, &file_id), None);
+            let driver =
+                crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
+            let inspection = driver.inspection();
+            assert!(inspection_has_semantic(
+                &inspection.root,
+                "Document unavailable"
+            ));
+            assert!(
+                !inspection_has_semantic(&inspection.root, "Seeded hidden document"),
+                "the complete projected tree must omit the app hidden by the error card"
+            );
         }
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "first owner".into(),
-            opens: None,
-        })));
-        host.bind_record(first.clone(), checkout.clone());
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        host.bind_record(second.clone(), checkout.clone());
-        assert!(
-            host.binding.as_ref().unwrap().store.same_owner(&second),
-            "same spelling in a new store must replace actual custody"
-        );
-        let wrong =
-            RecordCheckout::new(checkout.id.clone(), crate::record::RecordKind::new("wrong"));
-        host.bind_record(second, wrong);
-        assert!(
-            host.binding.is_none(),
-            "same ID must not bypass kind validation"
-        );
-        assert!(host.record_error.is_some());
-    }
 
-    #[test]
-    fn incompatible_canonical_kind_keeps_the_scratch_binding_and_surfaces_error() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = canonical_store(&directory.path().join("records"));
-        let file = std::path::PathBuf::from("/work/report.txt");
-        let file_id = RecordId::for_file(&file);
-        let wrong = RecordCheckout::new(
-            file_id.clone(),
-            crate::record::RecordKind::new("different-kind"),
-        );
-        store
-            .reserve_record(&wrong)
-            .unwrap()
-            .initialize(|_| Ok(()))
-            .unwrap();
-        let scratch = tab_checkout(91);
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "must not write".into(),
-            opens: Some(file),
-        })));
-        host.bind_or_create_record(store.clone(), scratch.clone());
-        host.sync(&mut AutoCommit::new(), &ROOT);
+        // Case `unavailable_canonical_store_keeps_pending_binding_and_recovers_on_retry`.
+        {
+            let directory = tempfile::tempdir().unwrap();
+            let root = directory.path().join("records");
+            let store = canonical_store(&root);
+            std::fs::write(&root, "temporarily not a directory").unwrap();
+            let scratch = tab_checkout(92);
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "recovered".into(),
+                opens: None,
+            })));
+            host.bind_or_create_record(store.clone(), scratch.clone());
+            assert!(host.binding.is_none());
+            assert!(host.pending_binding.is_some());
+            assert!(host.record_error.is_some());
+            assert_eq!(
+                host.accessibility().and_then(|node| node.name),
+                Some("Document unavailable".into())
+            );
 
-        assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
-        assert!(
-            host.record_error
-                .as_deref()
-                .is_some_and(|error| error.contains("identity does not match"))
-        );
-        assert_eq!(
-            host.accessibility().and_then(|node| node.name),
-            Some("Document unavailable".into())
-        );
-        assert_eq!(body_of(&store, &file_id), None);
-        let driver = crate::headless::Driver::new(crate::State::new(), Box::new(host), (400, 240));
-        let inspection = driver.inspection();
-        assert!(inspection_has_semantic(
-            &inspection.root,
-            "Document unavailable"
-        ));
-        assert!(
-            !inspection_has_semantic(&inspection.root, "Seeded hidden document"),
-            "the complete projected tree must omit the app hidden by the error card"
-        );
-    }
+            std::fs::remove_file(&root).unwrap();
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            assert!(host.pending_binding.is_none());
+            assert!(host.record_error.is_none());
+            assert_eq!(body_of(&store, &scratch.id).as_deref(), Some("recovered"));
+        }
 
-    #[test]
-    fn unavailable_canonical_store_keeps_pending_binding_and_recovers_on_retry() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("records");
-        let store = canonical_store(&root);
-        std::fs::write(&root, "temporarily not a directory").unwrap();
-        let scratch = tab_checkout(92);
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "recovered".into(),
-            opens: None,
-        })));
-        host.bind_or_create_record(store.clone(), scratch.clone());
-        assert!(host.binding.is_none());
-        assert!(host.pending_binding.is_some());
-        assert!(host.record_error.is_some());
-        assert_eq!(
-            host.accessibility().and_then(|node| node.name),
-            Some("Document unavailable".into())
-        );
-
-        std::fs::remove_file(&root).unwrap();
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        assert!(host.pending_binding.is_none());
-        assert!(host.record_error.is_none());
-        assert_eq!(body_of(&store, &scratch.id).as_deref(), Some("recovered"));
+        // Case `existing_follow_validates_kind_even_when_record_id_does_not_change`.
+        {
+            let store = RecordStore::in_memory();
+            let file = std::path::PathBuf::from("/work/kind-conflict");
+            let checkout = RecordCheckout::new(
+                RecordId::for_file(&file),
+                crate::record::RecordKind::new("note"),
+            );
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "must not write".into(),
+                opens: Some(file),
+            })));
+            host.bind_or_create_record(store.clone(), checkout.clone());
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            assert!(host.record_error.is_some());
+            assert_eq!(host.binding.as_ref().unwrap().live, checkout.id);
+            assert_eq!(body_of(&store, &checkout.id), None);
+        }
     }
 
     struct EventProbe(std::rc::Rc<std::cell::Cell<usize>>);
@@ -3365,146 +3650,108 @@ mod tests {
     }
 
     #[test]
-    fn a_prehandled_event_never_reaches_the_hosted_app() {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
-        let mut taffy = TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-        let mut handled = true;
-        host.handle_event(
-            &WindowEvent::Focused(true),
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut AutoCommit::new(),
-            &ROOT,
-            &mut handled,
-            &mut None,
-            node,
-            &taffy,
-        );
-        assert_eq!(calls.get(), 0);
-    }
+    fn tiles_follow_the_record_their_app_names() {
+        // Case `a_tile_follows_the_record_its_app_names`.
+        // A tab with no file is its own record; a tab whose app has a file
+        // open is that file's.
+        {
+            let store = RecordStore::in_memory();
+            let mut parent = AutoCommit::new();
 
-    /// A tab with no file is its own record; a tab whose app has a file
-    /// open is that file's.
-    #[test]
-    fn a_tile_follows_the_record_its_app_names() {
-        let store = RecordStore::in_memory();
-        let mut parent = AutoCommit::new();
+            let mut scratch = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "unsaved".into(),
+                opens: None,
+            })));
+            scratch.bind_or_create_record(store.clone(), tab_checkout(1));
+            scratch.sync(&mut parent, &ROOT);
+            assert_eq!(
+                body_of(&store, &RecordId::for_tab(1)).as_deref(),
+                Some("unsaved"),
+                "a tab with no file writes into the record the tab is",
+            );
 
-        let mut scratch = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "unsaved".into(),
-            opens: None,
-        })));
-        scratch.bind_or_create_record(store.clone(), tab_checkout(1));
-        scratch.sync(&mut parent, &ROOT);
-        assert_eq!(
-            body_of(&store, &RecordId::for_tab(1)).as_deref(),
-            Some("unsaved"),
-            "a tab with no file writes into the record the tab is",
-        );
-
-        let file = std::path::PathBuf::from("/work/report.odt");
-        store.open_record(&RecordCheckout::new(
-            RecordId::for_file(&file),
-            crate::record::RecordKind::new("file"),
-        ));
-        let mut opened = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "the report".into(),
-            opens: Some(file.clone()),
-        })));
-        opened.bind_or_create_record(store.clone(), tab_checkout(2));
-        opened.sync(&mut parent, &ROOT);
-        assert_eq!(
-            body_of(&store, &RecordId::for_file(&file)).as_deref(),
-            Some("the report"),
-            "an app that has a file open edits that file's record",
-        );
-        assert_eq!(
-            body_of(&store, &RecordId::for_tab(2)),
-            None,
-            "and not the scratch record its tab started on",
-        );
-        assert_eq!(
-            body_of(&store, &RecordId::for_tab(1)).as_deref(),
-            Some("unsaved"),
-            "the other tab is untouched by any of it",
-        );
-    }
-
-    #[test]
-    fn explicit_scratch_creation_does_not_authorize_missing_file_follow() {
-        let store = RecordStore::in_memory();
-        let file = std::path::PathBuf::from("/work/missing.txt");
-        let file_id = RecordId::for_file(&file);
-        let scratch = tab_checkout(94);
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "must not create".into(),
-            opens: Some(file),
-        })));
-        host.bind_or_create_record(store.clone(), scratch.clone());
-        assert!(store.open_existing_record_checked(&scratch).is_ok());
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
-        assert!(host.record_error.is_some());
-        assert!(
-            !store
-                .open_records()
-                .iter()
-                .any(|checkout| checkout.id == file_id)
-        );
-        assert_eq!(body_of(&store, &scratch.id), None);
-    }
-
-    /// Two tabs opened on one file are one document — a copy would
-    /// diverge, and no amount of merging makes two copies one file again.
-    #[test]
-    fn two_tabs_on_one_file_are_one_document() {
-        let store = RecordStore::in_memory();
-        let mut parent = AutoCommit::new();
-        let file = std::path::PathBuf::from("/work/shared.odt");
-        store.open_record(&RecordCheckout::new(
-            RecordId::for_file(&file),
-            crate::record::RecordKind::new("file"),
-        ));
-        for (tab, text) in [(3u64, "first"), (4u64, "second")] {
-            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-                text: text.into(),
+            let file = std::path::PathBuf::from("/work/report.odt");
+            store.open_record(&RecordCheckout::new(
+                RecordId::for_file(&file),
+                crate::record::RecordKind::new("file"),
+            ));
+            let mut opened = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "the report".into(),
                 opens: Some(file.clone()),
             })));
-            host.bind_or_create_record(store.clone(), tab_checkout(tab));
-            host.sync(&mut parent, &ROOT);
+            opened.bind_or_create_record(store.clone(), tab_checkout(2));
+            opened.sync(&mut parent, &ROOT);
+            assert_eq!(
+                body_of(&store, &RecordId::for_file(&file)).as_deref(),
+                Some("the report"),
+                "an app that has a file open edits that file's record",
+            );
+            assert_eq!(
+                body_of(&store, &RecordId::for_tab(2)),
+                None,
+                "and not the scratch record its tab started on",
+            );
+            assert_eq!(
+                body_of(&store, &RecordId::for_tab(1)).as_deref(),
+                Some("unsaved"),
+                "the other tab is untouched by any of it",
+            );
         }
-        assert_eq!(
-            store.open_records().len(),
-            3,
-            "two scratch records and the one file both tabs opened",
-        );
-        assert_eq!(
-            body_of(&store, &RecordId::for_file(&file)).as_deref(),
-            Some("second"),
-            "the second tab edited the same document as the first",
-        );
-    }
 
-    #[test]
-    fn existing_follow_validates_kind_even_when_record_id_does_not_change() {
-        let store = RecordStore::in_memory();
-        let file = std::path::PathBuf::from("/work/kind-conflict");
-        let checkout = RecordCheckout::new(
-            RecordId::for_file(&file),
-            crate::record::RecordKind::new("note"),
-        );
-        let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
-            text: "must not write".into(),
-            opens: Some(file),
-        })));
-        host.bind_or_create_record(store.clone(), checkout.clone());
-        host.sync(&mut AutoCommit::new(), &ROOT);
-        assert!(host.record_error.is_some());
-        assert_eq!(host.binding.as_ref().unwrap().live, checkout.id);
-        assert_eq!(body_of(&store, &checkout.id), None);
+        // Case `explicit_scratch_creation_does_not_authorize_missing_file_follow`.
+        {
+            let store = RecordStore::in_memory();
+            let file = std::path::PathBuf::from("/work/missing.txt");
+            let file_id = RecordId::for_file(&file);
+            let scratch = tab_checkout(94);
+            let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                text: "must not create".into(),
+                opens: Some(file),
+            })));
+            host.bind_or_create_record(store.clone(), scratch.clone());
+            assert!(store.open_existing_record_checked(&scratch).is_ok());
+            host.sync(&mut AutoCommit::new(), &ROOT);
+            assert_eq!(host.binding.as_ref().unwrap().live, scratch.id);
+            assert!(host.record_error.is_some());
+            assert!(
+                !store
+                    .open_records()
+                    .iter()
+                    .any(|checkout| checkout.id == file_id)
+            );
+            assert_eq!(body_of(&store, &scratch.id), None);
+        }
+
+        // Case `two_tabs_on_one_file_are_one_document`.
+        // Two tabs opened on one file are one document — a copy would
+        // diverge, and no amount of merging makes two copies one file again.
+        {
+            let store = RecordStore::in_memory();
+            let mut parent = AutoCommit::new();
+            let file = std::path::PathBuf::from("/work/shared.odt");
+            store.open_record(&RecordCheckout::new(
+                RecordId::for_file(&file),
+                crate::record::RecordKind::new("file"),
+            ));
+            for (tab, text) in [(3u64, "first"), (4u64, "second")] {
+                let mut host = TileHost::new(TileContent::App(Box::new(Scribe {
+                    text: text.into(),
+                    opens: Some(file.clone()),
+                })));
+                host.bind_or_create_record(store.clone(), tab_checkout(tab));
+                host.sync(&mut parent, &ROOT);
+            }
+            assert_eq!(
+                store.open_records().len(),
+                3,
+                "two scratch records and the one file both tabs opened",
+            );
+            assert_eq!(
+                body_of(&store, &RecordId::for_file(&file)).as_deref(),
+                Some("second"),
+                "the second tab edited the same document as the first",
+            );
+        }
     }
 
     /// Backdate the spawn so its fade window has already elapsed.
@@ -3521,58 +3768,80 @@ mod tests {
     }
 
     #[test]
-    fn start_spawn_animation_records_timestamp() {
-        let mut h = stub_host();
-        assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
-        h.start_spawn_animation();
-        assert!(
-            h.spawned_at.is_some(),
-            "start_spawn_animation must record an Instant",
-        );
-    }
+    fn spawn_animation_is_in_flight_only_for_its_duration() {
+        // Case `start_spawn_animation_records_timestamp`.
+        {
+            let mut h = stub_host();
+            assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
+            h.start_spawn_animation();
+            assert!(
+                h.spawned_at.is_some(),
+                "start_spawn_animation must record an Instant",
+            );
+        }
 
-    #[test]
-    fn spawn_in_flight_returns_true_within_duration() {
-        let mut h = stub_host();
-        h.start_spawn_animation();
-        assert!(
-            h.spawn_in_flight(),
-            "spawn_in_flight must be true within SPAWN_FADE_MS",
-        );
-        let alpha = h.spawn_alpha().expect("alpha in flight");
-        assert!(
-            (0.0..1.0).contains(&alpha),
-            "eased alpha mid-flight must be in [0, 1); got {alpha}",
-        );
-    }
+        // Case `spawn_in_flight_returns_true_within_duration`.
+        {
+            let mut h = stub_host();
+            h.start_spawn_animation();
+            assert!(
+                h.spawn_in_flight(),
+                "spawn_in_flight must be true within SPAWN_FADE_MS",
+            );
+            let alpha = h.spawn_alpha().expect("alpha in flight");
+            assert!(
+                (0.0..1.0).contains(&alpha),
+                "eased alpha mid-flight must be in [0, 1); got {alpha}",
+            );
+        }
 
-    #[test]
-    fn spawn_in_flight_returns_false_after_duration() {
-        let mut h = stub_host();
-        h.start_spawn_animation();
-        expire_spawn_animation(&mut h);
-        assert!(
-            !h.spawn_in_flight(),
-            "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
-        );
-        assert!(
-            h.spawn_alpha().is_none(),
-            "expired spawn must report no alpha",
-        );
-    }
+        // Case `spawn_in_flight_returns_false_after_duration`.
+        {
+            let mut h = stub_host();
+            h.start_spawn_animation();
+            expire_spawn_animation(&mut h);
+            assert!(
+                !h.spawn_in_flight(),
+                "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
+            );
+            assert!(
+                h.spawn_alpha().is_none(),
+                "expired spawn must report no alpha",
+            );
+        }
 
-    #[test]
-    fn draw_without_spawn_animation_does_not_push_extra_layer() {
-        // Indirect: no direct hook to check the draw path skips the
-        // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
-        // — guards against the wrapper becoming always-on and costing an
-        // extra layer + affine compose every frame.
-        let h = stub_host();
-        assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
-        assert!(
-            h.spawn_alpha().is_none(),
-            "fresh host must report no spawn alpha",
-        );
+        // Case `draw_without_spawn_animation_does_not_push_extra_layer`.
+        {
+            // Indirect: no direct hook to check the draw path skips the
+            // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
+            // — guards against the wrapper becoming always-on and costing an
+            // extra layer + affine compose every frame.
+            let h = stub_host();
+            assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
+            assert!(
+                h.spawn_alpha().is_none(),
+                "fresh host must report no spawn alpha",
+            );
+        }
+
+        // Case `needs_animation_frame_reflects_spawn_anim_state`.
+        {
+            let mut h = stub_host();
+            assert!(
+                !h.needs_animation_frame(),
+                "static host must not demand animation frames",
+            );
+            h.start_spawn_animation();
+            assert!(
+                h.needs_animation_frame(),
+                "in-flight spawn must pump the App run loop",
+            );
+            expire_spawn_animation(&mut h);
+            assert!(
+                !h.needs_animation_frame(),
+                "after the spawn window elapses, no more frames are needed",
+            );
+        }
     }
 
     /// Fills its entire rect with one flat opaque colour, exactly as
@@ -3647,89 +3916,6 @@ mod tests {
         }
     }
 
-    /// An app that fills its whole rect (as every hosted app does, since
-    /// it can't know it's being framed) must not square off the window's
-    /// rounded corners or paint over its border — both are the frame's.
-    #[test]
-    fn a_hosted_app_cannot_square_off_the_window_or_erase_its_border() {
-        use crate::offscreen::OffscreenRenderer;
-
-        // Tile inset far enough from the surface edge that the ambient
-        // shadow sprite has somewhere to land without wrapping.
-        let (w, h) = (200u32, 200u32);
-        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-        let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
-        host.rect = rect;
-
-        let theme = Theme::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        host.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::empty(),
-        );
-
-        let mut r = OffscreenRenderer::new(w, h);
-        // Distinct from both the flood colour and the card so a leak from
-        // any of the three is identifiable in the failure message.
-        let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
-
-        let radius = f64::from(theme.tokens.radii.xl);
-        // A point inside the tile's bounding box but outside its rounded
-        // silhouette: one pixel in from the box corner, well inside the
-        // corner arc's cut.
-        let (cx, cy) = (px(rect.x0) + 2, px(rect.y0) + 2);
-        assert!(
-            radius > 8.0,
-            "test assumes a visibly rounded card; radii.xl is {radius}",
-        );
-        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, w, cx, cy);
-        assert!(
-            cr < 128,
-            "the hosted app's fill leaked outside the card's rounded \
-             corner at ({cx},{cy}) — got ({cr},{cg},{cb}), which is the \
-             app's flood colour. The corner belongs to the frame.",
-        );
-
-        // Dead centre is the app: the clip must not have swallowed it.
-        let (mr, mg, mb, _) = OffscreenRenderer::sample(&rgba, w, 100, 100);
-        assert!(
-            mr > 200 && mg < 80 && mb < 80,
-            "the hosted app must still paint inside the card; centre is \
-             ({mr},{mg},{mb}), expected the app's flood colour",
-        );
-
-        // One pixel out from the boundary is the frame's edge: it must be
-        // neither the app (flood escaped its clip) nor bare desktop (no
-        // edge there at all).
-        let edge_x = px(rect.x0) - 1;
-        let (er, eg, eb, _) = OffscreenRenderer::sample(&rgba, w, edge_x, 100);
-        assert!(
-            (er, eg, eb) != (0xFF, 0x00, 0x00),
-            "the hosted app's fill leaked onto the window's edge at \
-             ({edge_x},100) — got ({er},{eg},{eb}), the app's flood colour",
-        );
-        assert!(
-            (er, eg, eb) != (0x00, 0x00, 0xFF),
-            "the window has no edge at ({edge_x},100) — the pixel is bare \
-             desktop, so nothing separates the window from it",
-        );
-
-        // ...and the first pixel *inside* the boundary is the app's, whole.
-        // The frame stops at the silhouette.
-        let inside_x = px(rect.x0);
-        let (nr, ng, nb, _) = OffscreenRenderer::sample(&rgba, w, inside_x, 100);
-        assert_eq!(
-            (nr, ng, nb),
-            (0xFF, 0x00, 0x00),
-            "the frame tinted a pixel the app owns at ({inside_x},100) — got \
-             ({nr},{ng},{nb}), expected the app's flood colour",
-        );
-    }
-
     /// Module-scoped alongside [`FloodFill`] purely to keep its one test's
     /// line count sane.
     struct Flood {
@@ -3797,146 +3983,6 @@ mod tests {
         }
         fn permission_hint(&self) -> Option<AppKind> {
             None
-        }
-    }
-
-    /// The window's edge must never tint a pixel the hosted app owns —
-    /// stroking a constant over unknown app content reads right on one
-    /// ground and wrong on the rest of the ramp.
-    #[test]
-    fn the_window_edge_never_tints_a_pixel_the_app_owns() {
-        use crate::offscreen::OffscreenRenderer;
-
-        // Spanning the ramp: a dark app, two mid grounds, and the light
-        // chrome a word processor paints.
-        let grounds: [(u8, u8, u8); 4] = [
-            (0x10, 0x10, 0x12),
-            (0x40, 0x40, 0x44),
-            (0x80, 0x80, 0x84),
-            (0xC0, 0xC0, 0xC4),
-        ];
-        let (w, h) = (200u32, 200u32);
-        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-        let theme = Theme::default();
-
-        for (r8, g8, b8) in grounds {
-            let color = vello::peniko::Color::from_rgb8(r8, g8, b8);
-            let mut host = TileHost::new(TileContent::App(Box::new(Flood { rect, color })));
-            host.rect = rect;
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            host.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
-            );
-            let mut renderer = OffscreenRenderer::new(w, h);
-            let rgba = renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
-
-            // Both vertical edges at mid-height, and the horizontal edges at
-            // mid-width: the first pixel inside the silhouette on every side.
-            let probes = [
-                ("left", px(rect.x0), 100u32),
-                ("right", px(rect.x1) - 1, 100u32),
-                ("top", 100u32, px(rect.y0)),
-                ("bottom", 100u32, px(rect.y1) - 1),
-            ];
-            for (side, px, py) in probes {
-                let (sr, sg, sb, _) = OffscreenRenderer::sample(&rgba, w, px, py);
-                assert_eq!(
-                    (sr, sg, sb),
-                    (r8, g8, b8),
-                    "the frame tinted the app's own pixel on the {side} edge \
-                     at ({px},{py}): app painted ({r8},{g8},{b8}), the render \
-                     shows ({sr},{sg},{sb}). The window's edge belongs outside \
-                     the card, on ground the shell knows — over app content it \
-                     is a constant on an unknown surface",
-                );
-            }
-        }
-    }
-
-    /// Focus is a change to the window's own edge, staying inside the
-    /// card's silhouette — not a square fence around the bounding box,
-    /// which would double-line the rounded corner and paint on desktop
-    /// diagonally outside it. Checked at the edge's flat and diagonally
-    /// outside the corner, across every theme preset.
-    #[test]
-    fn focus_lights_the_card_s_edge_and_never_squares_off_its_corner() {
-        use crate::offscreen::OffscreenRenderer;
-
-        let (width, height) = (200u32, 200u32);
-        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-        // Desktop stand-in. Deliberately a colour no palette contains, so
-        // "still desktop" cannot be confused with "some theme token".
-        let ground = vello::peniko::Color::from_rgb8(0x00, 0xFF, 0x00);
-
-        for theme in crate::theme::ALL_PRESETS_FOR_TEST.iter().map(|f| f()) {
-            let name = theme.name.clone();
-            let focus = theme.tokens.colors.border_focus;
-            let (fr, fg, fb) = {
-                let rgba = focus.to_rgba8();
-                (rgba.r, rgba.g, rgba.b)
-            };
-
-            let shot = |focused: bool| {
-                let mut host = TileHost::new(TileContent::Stub {
-                    kind: AppKind::Editor,
-                    label: String::new(),
-                });
-                host.rect = rect;
-                host.set_focused(focused);
-                let mut tr = TextRenderer::new();
-                let mut scene = Scene::new();
-                host.draw(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    &PresenceCtx::empty(),
-                );
-                let mut renderer = OffscreenRenderer::new(width, height);
-                renderer.render(&scene, ground)
-            };
-
-            let lit = shot(true);
-            let dark = shot(false);
-
-            // Mid-span of the top edge: the band the stroke occupies sits
-            // just outside the card boundary.
-            let (sample_x, sample_y) = (100u32, px(rect.y0) - 1);
-            let (lr, lg, lb, _) = OffscreenRenderer::sample(&lit, width, sample_x, sample_y);
-            assert_eq!(
-                (lr, lg, lb),
-                (fr, fg, fb),
-                "{name}: the focused window's edge is not the theme's focus                  colour at ({sample_x},{sample_y}) — got ({lr},{lg},{lb}), expected                  ({fr},{fg},{fb}). Focus has to come from the theme: a baked                  constant is right on one palette and meaningless on the rest",
-            );
-            let (ur, ug, ub, _) = OffscreenRenderer::sample(&dark, width, sample_x, sample_y);
-            assert_ne!(
-                (ur, ug, ub),
-                (fr, fg, fb),
-                "{name}: an unfocused window paints the focus colour on its                  edge at ({sample_x},{sample_y}), so focus distinguishes nothing",
-            );
-
-            // Well outside the rounded arc, where a square fence would
-            // have painted. The ambient shadow legitimately darkens this
-            // pixel, so the claim is only that focus colour isn't there,
-            // not that it's untouched.
-            let (corner_x, corner_y) = (px(rect.x0) - 2, px(rect.y0) - 2);
-            for (label, buf) in [("focused", &lit), ("unfocused", &dark)] {
-                let (sr, sg, sb, _) = OffscreenRenderer::sample(buf, width, corner_x, corner_y);
-                assert_ne!(
-                    (sr, sg, sb),
-                    (fr, fg, fb),
-                    "{name}: the {label} window painted the focus colour at ({corner_x},{corner_y}), outside its own rounded corner on bare desktop. Only a sharp-cornered rectangle drawn around the window reaches that pixel, which is the artefact this replaced",
-                );
-                assert!(
-                    sg > sr && sg > sb,
-                    "{name}: the {label} window covered the desktop at ({corner_x},{corner_y}) with ({sr},{sg},{sb}). Outside its rounded corner the desktop must still read as the desktop, shadowed at most, never stroked over",
-                );
-            }
         }
     }
 
@@ -4057,175 +4103,159 @@ mod tests {
     }
 
     #[test]
-    fn visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile() {
-        let theme = Theme::default();
-        let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-        let mut host = TileHost::new(TileContent::Notice {
-            title: "Calculator".into(),
-            detail: "Restoring this window…".into(),
-        });
-        host.rect = rect;
-        assert!(Widget::presented(&host));
-        let _ = paint(&mut host, &theme);
-        let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
-        host.replace_content(TileContent::App(Box::new(Starting {
-            rect,
-            drawn: std::rc::Rc::clone(&drawn),
-            presented: false,
-            opening: false,
-        })));
+    fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
+        // Case `visible_notice_replacement_tracks_new_content_readiness_without_hiding_the_tile`.
+        {
+            let theme = Theme::default();
+            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
+            let mut host = TileHost::new(TileContent::Notice {
+                title: "Calculator".into(),
+                detail: "Restoring this window…".into(),
+            });
+            host.rect = rect;
+            assert!(Widget::presented(&host));
+            let _ = paint(&mut host, &theme);
+            let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
+            host.replace_content(TileContent::App(Box::new(Starting {
+                rect,
+                drawn: std::rc::Rc::clone(&drawn),
+                presented: false,
+                opening: false,
+            })));
 
-        assert!(
-            Widget::presented(&host),
-            "an already visible tab must not disappear"
-        );
-        assert!(
-            Widget::opening(&host),
-            "pending replacement content must use the opening card immediately"
-        );
-        let _ = paint(&mut host, &theme);
-        assert!(
-            !drawn.get(),
-            "unready replacement must not draw behind the opening card"
-        );
-        let TileContent::App(app) = &mut host.content else {
-            panic!("replacement app");
-        };
-        app.as_any_mut()
-            .and_then(|app| app.downcast_mut::<Starting>())
-            .expect("controlled replacement")
-            .presented = true;
-        assert!(
-            !Widget::opening(&host),
-            "opening must observe new content readiness without a parent presentation poll"
-        );
-        assert!(Widget::presented(&host));
-        let _ = paint(&mut host, &theme);
-        assert!(drawn.get(), "ready replacement must become visible");
+            assert!(
+                Widget::presented(&host),
+                "an already visible tab must not disappear"
+            );
+            assert!(
+                Widget::opening(&host),
+                "pending replacement content must use the opening card immediately"
+            );
+            let _ = paint(&mut host, &theme);
+            assert!(
+                !drawn.get(),
+                "unready replacement must not draw behind the opening card"
+            );
+            let TileContent::App(app) = &mut host.content else {
+                panic!("replacement app");
+            };
+            app.as_any_mut()
+                .and_then(|app| app.downcast_mut::<Starting>())
+                .expect("controlled replacement")
+                .presented = true;
+            assert!(
+                !Widget::opening(&host),
+                "opening must observe new content readiness without a parent presentation poll"
+            );
+            assert!(Widget::presented(&host));
+            let _ = paint(&mut host, &theme);
+            assert!(drawn.get(), "ready replacement must become visible");
 
-        let TileContent::App(app) = &mut host.content else {
-            panic!("replacement app");
-        };
-        let app = app
-            .as_any_mut()
-            .and_then(|app| app.downcast_mut::<Starting>())
-            .expect("controlled replacement");
-        app.presented = false;
-        app.opening = true;
-        assert!(Widget::presented(&host));
-        assert!(
-            !Widget::opening(&host),
-            "the same content resizing must not reopen its card"
-        );
-    }
+            let TileContent::App(app) = &mut host.content else {
+                panic!("replacement app");
+            };
+            let app = app
+                .as_any_mut()
+                .and_then(|app| app.downcast_mut::<Starting>())
+                .expect("controlled replacement");
+            app.presented = false;
+            app.opening = true;
+            assert!(Widget::presented(&host));
+            assert!(
+                !Widget::opening(&host),
+                "the same content resizing must not reopen its card"
+            );
+        }
 
-    /// An unpresented app has only its own early buffer size, so painting
-    /// it is the window appearing magnified then snapping down. The frame
-    /// holds the place instead, since it's the one thing that knows the
-    /// tab's size.
-    #[test]
-    fn a_tile_holding_a_place_does_not_paint_the_app_behind_it() {
-        let theme = Theme::default();
-        let (mut host, drawn) = starting_host(false, true);
-        let _ = paint(&mut host, &theme);
-        assert!(
-            !drawn.get(),
-            "the app painted into a tile that is still holding its place; \
+        // Case `a_tile_holding_a_place_does_not_paint_the_app_behind_it`.
+        // An unpresented app has only its own early buffer size, so painting
+        // it is the window appearing magnified then snapping down. The frame
+        // holds the place instead, since it's the one thing that knows the
+        // tab's size.
+        {
+            let theme = Theme::default();
+            let (mut host, drawn) = starting_host(false, true);
+            let _ = paint(&mut host, &theme);
+            assert!(
+                !drawn.get(),
+                "the app painted into a tile that is still holding its place; \
              its buffer is not the size of the tab yet, and putting it on \
              screen is the resize-after-open this gate exists to prevent",
-        );
-    }
+            );
+        }
 
-    /// And the moment it has something to show, it is what is shown.
-    #[test]
-    fn a_tile_paints_the_app_as_soon_as_it_has_something_to_show() {
-        let theme = Theme::default();
-        let (mut host, drawn) = starting_host(true, false);
-        let _ = paint(&mut host, &theme);
-        assert!(
-            drawn.get(),
-            "an app with a frame that fits its tab must be what the tile \
+        // Case `a_tile_paints_the_app_as_soon_as_it_has_something_to_show`.
+        // And the moment it has something to show, it is what is shown.
+        {
+            let theme = Theme::default();
+            let (mut host, drawn) = starting_host(true, false);
+            let _ = paint(&mut host, &theme);
+            assert!(
+                drawn.get(),
+                "an app with a frame that fits its tab must be what the tile \
              paints; anything else is a placeholder standing in front of a \
              window that is already there",
-        );
-    }
+            );
+        }
 
-    /// Holding a place is not itself an animation. The hosted opening widget
-    /// (or the spinner painted by the host) must explicitly request motion;
-    /// otherwise a static reduced-motion card would keep the desktop awake
-    /// until the app presented its first frame.
-    #[test]
-    fn a_static_tile_holding_a_place_does_not_pump_frames_forever() {
-        let (mut host, _) = starting_host(false, true);
-        let theme = Theme::default().with_reduce_motion(true);
-        let _ = paint(&mut host, &theme);
-        assert!(
-            !host.needs_animation_frame(),
-            "opening state alone must not turn a slow app into a full-rate compositor loop",
-        );
-    }
+        // Case `a_static_tile_holding_a_place_does_not_pump_frames_forever`.
+        // Holding a place is not itself an animation. The hosted opening widget
+        // (or the spinner painted by the host) must explicitly request motion;
+        // otherwise a static reduced-motion card would keep the desktop awake
+        // until the app presented its first frame.
+        {
+            let (mut host, _) = starting_host(false, true);
+            let theme = Theme::default().with_reduce_motion(true);
+            let _ = paint(&mut host, &theme);
+            assert!(
+                !host.needs_animation_frame(),
+                "opening state alone must not turn a slow app into a full-rate compositor loop",
+            );
+        }
 
-    /// A tile that has ever had a window in it never goes back to holding
-    /// a place for one — without the latch, a drag on a group edge would
-    /// flash the opening card over a window the person is using.
-    #[test]
-    fn a_tile_that_has_shown_a_window_never_holds_a_place_again() {
-        let (host, _) = starting_host(true, false);
-        assert!(Widget::presented(&host), "precondition: it presented");
-        // The app now claims both, as a client whose buffer stopped
-        // matching its tab mid-resize would.
-        let (host_again, _) = starting_host(true, true);
-        assert!(Widget::presented(&host_again));
-        assert!(
-            !Widget::opening(&host_again),
-            "a tile that has presented must never answer `opening` again — \
+        // Case `a_tile_that_has_shown_a_window_never_holds_a_place_again`.
+        // A tile that has ever had a window in it never goes back to holding
+        // a place for one — without the latch, a drag on a group edge would
+        // flash the opening card over a window the person is using.
+        {
+            let (host, _) = starting_host(true, false);
+            assert!(Widget::presented(&host), "precondition: it presented");
+            // The app now claims both, as a client whose buffer stopped
+            // matching its tab mid-resize would.
+            let (host_again, _) = starting_host(true, true);
+            assert!(Widget::presented(&host_again));
+            assert!(
+                !Widget::opening(&host_again),
+                "a tile that has presented must never answer `opening` again — \
              a window the person is looking at would be replaced by a card \
              saying it is on its way",
-        );
-    }
+            );
+        }
 
-    /// What is in the tile while the place is held is the frame's own
-    /// card, not the desktop showing through.
-    #[test]
-    fn the_card_that_holds_a_place_is_opaque() {
-        use crate::offscreen::OffscreenRenderer;
-        let theme = Theme::default();
-        let (mut host, _) = starting_host(false, true);
-        let scene = paint(&mut host, &theme);
-        let mut r = OffscreenRenderer::new(200, 200);
-        // A ground colour that appears nowhere else, so a pixel of it in
-        // the middle of the tile means the card did not cover it.
-        let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
-        let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, 100, 100);
-        assert!(
-            !(cr < 40 && cg < 40 && cb > 200),
-            "the desktop showed through the middle of a window's own place \
+        // Case `the_card_that_holds_a_place_is_opaque`.
+        // What is in the tile while the place is held is the frame's own
+        // card, not the desktop showing through.
+        {
+            use crate::offscreen::OffscreenRenderer;
+            let theme = Theme::default();
+            let (mut host, _) = starting_host(false, true);
+            let scene = paint(&mut host, &theme);
+            let mut r = OffscreenRenderer::new(200, 200);
+            // A ground colour that appears nowhere else, so a pixel of it in
+            // the middle of the tile means the card did not cover it.
+            let rgba = r.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 0xFF));
+            let (cr, cg, cb, _) = OffscreenRenderer::sample(&rgba, 200, 100, 100);
+            assert!(
+                !(cr < 40 && cg < 40 && cb > 200),
+                "the desktop showed through the middle of a window's own place \
              at (100,100) — got ({cr},{cg},{cb}), the backdrop colour. The \
              card has to hold the space, or the window is a hole until it \
              arrives",
-        );
-        assert!(
-            !(cr > 200 && cg < 80 && cb < 80),
-            "the app painted after all; got ({cr},{cg},{cb})",
-        );
-    }
-
-    #[test]
-    fn needs_animation_frame_reflects_spawn_anim_state() {
-        let mut h = stub_host();
-        assert!(
-            !h.needs_animation_frame(),
-            "static host must not demand animation frames",
-        );
-        h.start_spawn_animation();
-        assert!(
-            h.needs_animation_frame(),
-            "in-flight spawn must pump the App run loop",
-        );
-        expire_spawn_animation(&mut h);
-        assert!(
-            !h.needs_animation_frame(),
-            "after the spawn window elapses, no more frames are needed",
-        );
+            );
+            assert!(
+                !(cr > 200 && cg < 80 && cb < 80),
+                "the app painted after all; got ({cr},{cg},{cb})",
+            );
+        }
     }
 }

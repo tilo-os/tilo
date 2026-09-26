@@ -392,7 +392,16 @@ mod tests {
         }
     }
 
+    /// Versioned grid interactions round-trip, additive fields are ignored but unknown versions are
+    /// refused, and the broker replaces claimed attribution and sequence.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn the_interaction_wire_is_versioned_and_broker_normalised() {
+        versioned_grid_interaction_round_trips();
+        additive_fields_are_ignored_but_unknown_versions_are_refused();
+        broker_normalization_replaces_claimed_attribution_and_sequence();
+    }
+
     fn versioned_grid_interaction_round_trips() {
         let interaction = example(InteractionAnchor::Grid {
             sheet: "sheet:budget".into(),
@@ -411,7 +420,6 @@ mod tests {
         assert!(!json.contains("x\""));
     }
 
-    #[test]
     fn additive_fields_are_ignored_but_unknown_versions_are_refused() {
         let interaction = example(InteractionAnchor::Resource);
         let mut value = serde_json::to_value(&interaction).expect("encode");
@@ -427,7 +435,6 @@ mod tests {
         assert_eq!(future.validate().unwrap_err().field, "version");
     }
 
-    #[test]
     fn broker_normalization_replaces_claimed_attribution_and_sequence() {
         let claimed = example(InteractionAnchor::Resource);
         let normalized = claimed.normalized_by_broker(
@@ -441,7 +448,17 @@ mod tests {
         assert_eq!(normalized.sequence, 17);
     }
 
+    /// Anchors are non-empty, ordered and bounded; labels and terminal details are bounded; terminal
+    /// phases are explicit; progress is labelled and in range.
+    /// Runs each phase below in order; every phase builds its own fixture.
     #[test]
+    fn interaction_fields_are_explicit_and_bounded() {
+        anchors_are_nonempty_ordered_and_bounded();
+        labels_and_terminal_details_are_bounded();
+        terminal_phases_are_explicit();
+        progress_is_labelled_and_in_range();
+    }
+
     fn anchors_are_nonempty_ordered_and_bounded() {
         let backwards = example(InteractionAnchor::Text {
             region: "body".into(),
@@ -464,7 +481,6 @@ mod tests {
         assert_eq!(empty.validate().unwrap_err().field, "anchor.ids");
     }
 
-    #[test]
     fn labels_and_terminal_details_are_bounded() {
         let mut oversized = example(InteractionAnchor::Resource);
         oversized.phase = InteractionPhase::Failed {
@@ -478,7 +494,6 @@ mod tests {
         assert_eq!(oversized.validate().unwrap_err().field, "resource.label");
     }
 
-    #[test]
     fn terminal_phases_are_explicit() {
         assert!(!InteractionPhase::Locating.is_terminal());
         assert!(!InteractionPhase::Applying.is_terminal());
@@ -501,7 +516,6 @@ mod tests {
         assert!(InteractionPhase::Cancelled { message: None }.is_terminal());
     }
 
-    #[test]
     fn progress_is_labelled_and_in_range() {
         let mut interaction = example(InteractionAnchor::Resource);
         interaction.phase = InteractionPhase::Progress {

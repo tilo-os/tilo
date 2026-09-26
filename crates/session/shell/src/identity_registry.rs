@@ -539,68 +539,108 @@ mod tests {
     }
 
     #[test]
-    fn migrates_legacy_primary_and_selects_it_by_default() {
-        let dir = temp_dir("legacy");
-        write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
-        let store = IdentityRegistryStore::at(&dir);
-        let registry = store.migrate_legacy_primary().expect("migrate");
-        let selected = registry.selected_for_workspace("room-a").expect("default");
-        assert_eq!(selected.display_name, "Alice");
-        assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
-        assert!(store.registry_path().exists());
-        fs::remove_dir_all(dir).expect("cleanup");
-    }
+    fn identity_registry_migrates_selects_and_bounds_legacy_imports() {
+        // Phase `migrates_legacy_primary_and_selects_it_by_default`.
+        {
+            let dir = temp_dir("legacy");
+            write_record(&dir.join(LEGACY_PRIMARY_FILE), &record("Alice", 7));
+            let store = IdentityRegistryStore::at(&dir);
+            let registry = store.migrate_legacy_primary().expect("migrate");
+            let selected = registry.selected_for_workspace("room-a").expect("default");
+            assert_eq!(selected.display_name, "Alice");
+            assert_eq!(selected.record_path, dir.join(LEGACY_PRIMARY_FILE));
+            assert!(store.registry_path().exists());
+            fs::remove_dir_all(dir).expect("cleanup");
+        }
+        // Phase `one_identity_can_be_selected_per_workspace`.
+        {
+            let dir = temp_dir("binding");
+            let alice_path = dir.join("alice-source.json");
+            let bob_path = dir.join("bob-source.json");
+            write_record(&alice_path, &record("Alice", 11));
+            write_record(&bob_path, &record("Bob", 12));
+            let store = IdentityRegistryStore::at(&dir);
+            let alice = store.import(&alice_path).expect("import alice");
+            let bob = store.import(&bob_path).expect("import bob");
+            store
+                .bind_workspace("room-a", &alice.id)
+                .expect("bind alice");
+            store.bind_workspace("room-b", &bob.id).expect("bind bob");
+            let registry = store.load().expect("load");
+            assert_eq!(
+                registry
+                    .selected_for_workspace("room-a")
+                    .map(|profile| profile.id.as_str()),
+                Some(alice.id.as_str())
+            );
+            assert_eq!(
+                registry
+                    .selected_for_workspace("room-b")
+                    .map(|profile| profile.id.as_str()),
+                Some(bob.id.as_str())
+            );
+            fs::remove_dir_all(dir).expect("cleanup");
+        }
+        // Phase `unknown_identity_cannot_be_bound`.
+        {
+            let mut registry = IdentityRegistry::default();
+            let error = registry
+                .bind_workspace("room-a", "missing")
+                .expect_err("must reject unknown identity");
+            assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        }
+        // Phase `workspace_selector_cycles_registered_identities`.
+        {
+            let dir = temp_dir("cycle");
+            let alice_path = dir.join("alice-source.json");
+            let bob_path = dir.join("bob-source.json");
+            write_record(&alice_path, &record("Alice", 21));
+            write_record(&bob_path, &record("Bob", 22));
+            let store = IdentityRegistryStore::at(&dir);
+            let alice = store.import(&alice_path).expect("alice");
+            let bob = store.import(&bob_path).expect("bob");
+            store
+                .bind_workspace("room-cycle", &alice.id)
+                .expect("bind alice");
 
-    #[test]
-    fn one_identity_can_be_selected_per_workspace() {
-        let dir = temp_dir("binding");
-        let alice_path = dir.join("alice-source.json");
-        let bob_path = dir.join("bob-source.json");
-        write_record(&alice_path, &record("Alice", 11));
-        write_record(&bob_path, &record("Bob", 12));
-        let store = IdentityRegistryStore::at(&dir);
-        let alice = store.import(&alice_path).expect("import alice");
-        let bob = store.import(&bob_path).expect("import bob");
-        store
-            .bind_workspace("room-a", &alice.id)
-            .expect("bind alice");
-        store.bind_workspace("room-b", &bob.id).expect("bind bob");
-        let registry = store.load().expect("load");
-        assert_eq!(
+            let mut registry = store.load().expect("load");
+            let ids: Vec<_> = registry.identities.keys().cloned().collect();
+            let current = registry
+                .selected_for_workspace("room-cycle")
+                .expect("current")
+                .id
+                .clone();
+            let next = ids
+                .iter()
+                .cycle()
+                .skip_while(|id| **id != current)
+                .nth(1)
+                .expect("next")
+                .clone();
             registry
-                .selected_for_workspace("room-a")
-                .map(|profile| profile.id.as_str()),
-            Some(alice.id.as_str())
-        );
-        assert_eq!(
-            registry
-                .selected_for_workspace("room-b")
-                .map(|profile| profile.id.as_str()),
-            Some(bob.id.as_str())
-        );
-        fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn unknown_identity_cannot_be_bound() {
-        let mut registry = IdentityRegistry::default();
-        let error = registry
-            .bind_workspace("room-a", "missing")
-            .expect_err("must reject unknown identity");
-        assert_eq!(error.kind(), io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn legacy_import_rejects_oversized_records_before_parsing() {
-        let dir = temp_dir("oversized-import");
-        let source = dir.join("oversized.json");
-        let file = fs::File::create(&source).expect("source");
-        file.set_len(MAX_IMPORTED_IDENTITY_BYTES + 1)
-            .expect("sparse oversized record");
-        let store = IdentityRegistryStore::at(dir.join("managed"));
-        let error = store.import(&source).expect_err("oversized import");
-        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        fs::remove_dir_all(dir).expect("cleanup");
+                .bind_workspace("room-cycle", &next)
+                .expect("cycle bind");
+            assert_eq!(
+                registry
+                    .selected_for_workspace("room-cycle")
+                    .map(|profile| profile.id.as_str()),
+                Some(next.as_str())
+            );
+            assert!(next == alice.id || next == bob.id);
+            fs::remove_dir_all(dir).expect("cleanup");
+        }
+        // Phase `legacy_import_rejects_oversized_records_before_parsing`.
+        {
+            let dir = temp_dir("oversized-import");
+            let source = dir.join("oversized.json");
+            let file = fs::File::create(&source).expect("source");
+            file.set_len(MAX_IMPORTED_IDENTITY_BYTES + 1)
+                .expect("sparse oversized record");
+            let store = IdentityRegistryStore::at(dir.join("managed"));
+            let error = store.import(&source).expect_err("oversized import");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            fs::remove_dir_all(dir).expect("cleanup");
+        }
     }
 
     #[cfg(unix)]
@@ -615,47 +655,6 @@ mod tests {
         symlink(&source, &link).expect("source symlink");
         let store = IdentityRegistryStore::at(dir.join("managed"));
         assert!(store.import(&link).is_err());
-        fs::remove_dir_all(dir).expect("cleanup");
-    }
-
-    #[test]
-    fn workspace_selector_cycles_registered_identities() {
-        let dir = temp_dir("cycle");
-        let alice_path = dir.join("alice-source.json");
-        let bob_path = dir.join("bob-source.json");
-        write_record(&alice_path, &record("Alice", 21));
-        write_record(&bob_path, &record("Bob", 22));
-        let store = IdentityRegistryStore::at(&dir);
-        let alice = store.import(&alice_path).expect("alice");
-        let bob = store.import(&bob_path).expect("bob");
-        store
-            .bind_workspace("room-cycle", &alice.id)
-            .expect("bind alice");
-
-        let mut registry = store.load().expect("load");
-        let ids: Vec<_> = registry.identities.keys().cloned().collect();
-        let current = registry
-            .selected_for_workspace("room-cycle")
-            .expect("current")
-            .id
-            .clone();
-        let next = ids
-            .iter()
-            .cycle()
-            .skip_while(|id| **id != current)
-            .nth(1)
-            .expect("next")
-            .clone();
-        registry
-            .bind_workspace("room-cycle", &next)
-            .expect("cycle bind");
-        assert_eq!(
-            registry
-                .selected_for_workspace("room-cycle")
-                .map(|profile| profile.id.as_str()),
-            Some(next.as_str())
-        );
-        assert!(next == alice.id || next == bob.id);
         fs::remove_dir_all(dir).expect("cleanup");
     }
 }

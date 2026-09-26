@@ -529,9 +529,8 @@ COPY --from=builder-sources /build/ /build/
 # `mail/html-webview` is deliberately NOT here: it pulls ui/webview-wpe, and the
 # engine behind it is the browser's, which TILO_WITH_BROWSER=0 does not build.
 #
-# `video-editor` takes decode and gst but no `portal`, because it has no such
-# feature to take: it depends on `ui` with features = ["portal"] unconditionally,
-# so its file chooser is compiled in on every build including --shots. Asking for
+# No app takes a `portal` feature, because none has one: `ui` compiles the host
+# file chooser into every app on every build, including --shots. Asking for
 # `video-editor/portal` is not a no-op — cargo refuses the whole invocation with
 # "none of the selected packages contains these features", which fails the image
 # build after the package install and the cold Rust compile have already run.
@@ -635,7 +634,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
          THIN_EXCLUDES=""; THIN_BROWSER_FEATURE=",browser/wpe"; \
        fi \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,video-player/portal,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -942,7 +941,7 @@ COPY --from=fluxcast-builder /src/src /usr/libexec/tilo-fluxcast-src
 FROM scratch AS remote-capture-files
 COPY os/etc/tilo/desktop.toml /etc/tilo/desktop.toml
 COPY os/etc/modprobe.d/tilo-remote-camera.conf /etc/modprobe.d/tilo-remote-camera.conf
-COPY os/etc/modules-load.d/tilo-remote-camera.conf /etc/modules-load.d/tilo-remote-camera.conf
+COPY os/etc/modules-load.d/tilo-remote-camera.conf os/etc/modules-load.d/tilo-ddc.conf /etc/modules-load.d/
 
 FROM scratch AS rollback-files
 COPY --from=component-files /image/rollback-files/ /
@@ -1272,13 +1271,25 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
 # tilo-mimeapps.list the compositor publishes; `xdg-user-dirs` names the
 # Documents/Downloads/… folders host apps expect. `geoclue2` is the service
 # xdg-desktop-portal's Location portal asks; without it every request fails.
+# Fcitx5 is the composing input method the compositor starts when a Pinyin,
+# Mozc or Hangul input source is active; it reaches apps through
+# input-method-v2 on a private display, so neither its toolkit IM modules nor
+# its Qt configuration tool (the session writes its configuration) are wanted.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setopt=reposdir=/repo \
+    --exclude=fcitx5-configtool \
+    --exclude=fcitx5-gtk \
+    --exclude=fcitx5-qt \
+    --exclude=fcitx5-qt-module \
     xdg-desktop-portal \
     dconf \
     gsettings-desktop-schemas \
     xdg-utils \
     xdg-user-dirs \
     geoclue2 \
+    fcitx5 \
+    fcitx5-chinese-addons \
+    fcitx5-mozc \
+    fcitx5-hangul \
     && dnf clean all && ${FINALIZE_RPMDB}
 
 # ---------------------------------------------------------------------------
@@ -1896,7 +1907,26 @@ COPY --chmod=0755 \
     os/usr/libexec/tilo-session \
     os/usr/libexec/tilo-security-audit \
     /usr/libexec/
-COPY os/usr/lib/systemd/user/tilo-graphical-session.target /usr/lib/systemd/user/tilo-graphical-session.target
+# User units: the graphical-session target; the user unit that read-only
+# verifies the identity after tilo-session's first-login ceremony, `--global`
+# enabled further down (`systemctl --global enable` resolves the unit file at
+# build time, so a unit that was never copied in fails the build outright with
+# "does not exist" — which is what a unit whose ExecStart is wrong looks like
+# too); and the opt-in peer-sync user service. Peer sync is NOT enabled by
+# default — users opt in via `systemctl --user enable shell-peer-sync` or by
+# picking the "Tilo (peer-sync)" session entry at the greetd prompt. See
+# /usr/share/doc/tilo/peer-sync.md for the privacy / discovery trade-off.
+COPY \
+    os/usr/lib/systemd/user/tilo-graphical-session.target \
+    os/usr/lib/systemd/user/tilo-identity.service \
+    os/usr/lib/systemd/user/shell-peer-sync.service \
+    /usr/lib/systemd/user/
+
+# The echo-cancelled microphone for calls: a PipeWire client config the
+# desktop session runs (`pipewire -c tilo-echo-cancel.conf`) while Settings →
+# Sound → "Reduce echo in calls" is on. It lives in PipeWire's own config
+# directory so /etc/pipewire/ and ~/.config/pipewire/ can override it.
+COPY os/usr/share/pipewire/tilo-echo-cancel.conf /usr/share/pipewire/tilo-echo-cancel.conf
 
 # Default compositor config plus one fixed, signed loopback camera for
 # consented personal-device capture. The shell recognizes only this exact card
@@ -1932,7 +1962,12 @@ COPY \
 # 70-tilo-console.rules hands a VM's console port (org.tilo.console.0, which
 # only a hypervisor can attach) to the greetd user, whose greeter answers the
 # tilo-control action protocol there (crates/session/console-control).
-COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules /usr/lib/udev/rules.d/
+#
+# 70-tilo-ddc.rules hands the display controllers' I²C buses to the active
+# session so external monitors' brightness can be set over DDC/CI; the
+# tilo-ddc.conf modules-load snippet (copied with the remote-camera one)
+# makes i2c-dev expose them as /dev/i2c-N.
+COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-tilo-io-scheduler.rules os/usr/lib/udev/rules.d/70-tilo-console.rules os/usr/lib/udev/rules.d/70-tilo-ddc.rules /usr/lib/udev/rules.d/
 
 # Grow the block-backed filesystem at /sysroot. The stock systemd-growfs-root.service
 # targets `/`, which is a composefs overlay here and cannot be grown; the
@@ -1955,14 +1990,6 @@ COPY \
 RUN systemd-sysusers /usr/lib/sysusers.d/tilo-identity.conf \
  && systemd-sysusers /usr/lib/sysusers.d/tilo-local-model.conf
 
-# The user unit that read-only verifies the identity after tilo-session's
-# first-login ceremony, `--global` enabled further down.
-# It has to be installed here and not only exist in the source tree:
-# `systemctl --global enable` resolves the unit file at build time, so a unit
-# that was never copied in fails the build outright with "does not exist" —
-# which is what a unit whose ExecStart is wrong looks like too.
-COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-identity.service
-
 # xdg-desktop-portal backend registration.
 #
 # One file now: tilo.portal, which tells xdg-desktop-portal which
@@ -1979,13 +2006,6 @@ COPY os/usr/lib/systemd/user/tilo-identity.service /usr/lib/systemd/user/tilo-id
 # answered nothing while looking healthy.
 COPY os/usr/share/xdg-desktop-portal/portals/tilo.portal /usr/share/xdg-desktop-portal/portals/tilo.portal
 COPY os/usr/share/xdg-desktop-portal/tilo-portals.conf /usr/share/xdg-desktop-portal/tilo-portals.conf
-
-# Opt-in peer-sync user service. NOT enabled by default — users opt
-# in via `systemctl --user enable shell-peer-sync` or by
-# picking the "Tilo (peer-sync)" session entry at the greetd
-# prompt. See /usr/share/doc/tilo/peer-sync.md for the
-# privacy / discovery trade-off.
-COPY os/usr/lib/systemd/user/shell-peer-sync.service /usr/lib/systemd/user/shell-peer-sync.service
 
 # OS infra config (C3 zram swap, C4 locale) and the suspend policy that
 # freezes user sessions before the kernel freezer reaches processes blocked

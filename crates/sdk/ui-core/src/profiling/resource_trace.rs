@@ -57,8 +57,9 @@ pub(crate) struct Span {
 impl Span {
     pub(crate) fn start(stage: Stage, generation: u64, permission_generation: u64) -> Self {
         static ENABLED: OnceLock<bool> = OnceLock::new();
-        let enabled = *ENABLED
-            .get_or_init(|| std::env::var("TILO_PROFILE_RESOURCES").is_ok_and(|value| value == "1"));
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var("TILO_PROFILE_RESOURCES").is_ok_and(|value| value == "1")
+        });
         Self::with_enabled(stage, generation, permission_generation, enabled)
     }
 
@@ -100,44 +101,46 @@ mod tests {
     use super::*;
 
     #[test]
-    fn disabled_spans_have_no_clock_or_record() {
-        let span = Span::with_enabled(Stage::ResourceCache, 9, 3, false);
-        assert!(span.start.is_none());
-        assert!(span.into_row(CacheResult::Hit).is_none());
-    }
-
-    #[test]
-    fn cache_results_and_generations_survive_serialization() {
-        for (stage, stage_name, result, result_name) in [
-            (
-                Stage::ResourceCache,
-                "resource_cache",
-                CacheResult::Hit,
-                "hit",
-            ),
-            (Stage::LocalCache, "local_cache", CacheResult::Miss, "miss"),
-            (
-                Stage::ControlRefresh,
-                "control_refresh",
-                CacheResult::NotApplicable,
-                "not_applicable",
-            ),
-            (
-                Stage::BoundDiscovery,
-                "bound_discovery",
-                CacheResult::NotObserved,
-                "not_observed",
-            ),
-        ] {
-            let row = Span::with_enabled(stage, 9, 3, true)
-                .into_row(result)
-                .expect("enabled row");
-            let json = serde_json::to_value(row).expect("serialize row");
-            assert_eq!(json["stage"], stage_name);
-            assert_eq!(json["cache_result"], result_name);
-            assert_eq!(json["generation"], 9);
-            assert_eq!(json["permission_generation"], 3);
-            assert!(json["duration_us"].as_u64().is_some());
+    fn resource_traces_are_free_when_disabled_and_survive_serialisation() {
+        // phase: disabled_spans_have_no_clock_or_record
+        {
+            let span = Span::with_enabled(Stage::ResourceCache, 9, 3, false);
+            assert!(span.start.is_none());
+            assert!(span.into_row(CacheResult::Hit).is_none());
+        }
+        // phase: cache_results_and_generations_survive_serialization
+        {
+            for (stage, stage_name, result, result_name) in [
+                (
+                    Stage::ResourceCache,
+                    "resource_cache",
+                    CacheResult::Hit,
+                    "hit",
+                ),
+                (Stage::LocalCache, "local_cache", CacheResult::Miss, "miss"),
+                (
+                    Stage::ControlRefresh,
+                    "control_refresh",
+                    CacheResult::NotApplicable,
+                    "not_applicable",
+                ),
+                (
+                    Stage::BoundDiscovery,
+                    "bound_discovery",
+                    CacheResult::NotObserved,
+                    "not_observed",
+                ),
+            ] {
+                let row = Span::with_enabled(stage, 9, 3, true)
+                    .into_row(result)
+                    .expect("enabled row");
+                let json = serde_json::to_value(row).expect("serialize row");
+                assert_eq!(json["stage"], stage_name);
+                assert_eq!(json["cache_result"], result_name);
+                assert_eq!(json["generation"], 9);
+                assert_eq!(json["permission_generation"], 3);
+                assert!(json["duration_us"].as_u64().is_some());
+            }
         }
     }
 }

@@ -591,26 +591,30 @@ fn render_shot(
 mod actor_tests {
     use super::distinct_actor;
 
-    /// Two ids minted inside one process must differ, even though anything
-    /// derived from the process alone (a pid, which is 2 in every sandbox here)
-    /// produces the same string twice — which is exactly what made Automerge
-    /// refuse a second replica's frames as duplicate sequence numbers.
+    /// Two replicas in one process do not share an actor, and the actor still names the application.
     #[test]
-    fn two_replicas_in_one_process_do_not_share_an_actor() {
-        let a = automerge::AutoCommit::new();
-        let b = automerge::AutoCommit::new();
-        assert_ne!(
-            distinct_actor("wp", a.get_actor()),
-            distinct_actor("wp", b.get_actor()),
-            "two replicas were given the same actor id, which is the failure \
-             that silently drops one of them's changes",
-        );
-    }
+    fn each_replica_gets_its_own_actor_that_names_the_application() {
+        // Phase: two_replicas_in_one_process_do_not_share_an_actor.
+        // Two ids minted inside one process must differ, even though anything
+        // derived from the process alone (a pid, which is 2 in every sandbox here)
+        // produces the same string twice — which is exactly what made Automerge
+        // refuse a second replica's frames as duplicate sequence numbers.
+        {
+            let a = automerge::AutoCommit::new();
+            let b = automerge::AutoCommit::new();
+            assert_ne!(
+                distinct_actor("wp", a.get_actor()),
+                distinct_actor("wp", b.get_actor()),
+                "two replicas were given the same actor id, which is the failure \
+                 that silently drops one of them's changes",
+            );
+        }
 
-    /// And it still says what it is, so a history can be read.
-    #[test]
-    fn the_actor_still_names_the_application() {
-        let doc = automerge::AutoCommit::new();
-        assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        // Phase: the_actor_still_names_the_application.
+        // And it still says what it is, so a history can be read.
+        {
+            let doc = automerge::AutoCommit::new();
+            assert!(distinct_actor("wp", doc.get_actor()).starts_with("wp-"));
+        }
     }
 }

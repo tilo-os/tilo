@@ -229,7 +229,7 @@ jobs:
     runs-on: runner-quality
     timeout-minutes: 15
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
     outputs:
       builder_image: ${{ steps.builder.outputs.image }}
       apps: ${{ steps.plan.outputs.apps }}

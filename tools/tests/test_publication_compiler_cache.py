@@ -77,81 +77,76 @@ class ImagePublicationTests(unittest.TestCase):
         self.steps = steps(self.workflow)
         self.bind = self.steps["Bind the runner compiler cache"]
 
-    def test_publication_binds_no_cache_even_when_the_runner_offers_one(self):
-        values, text = run_script(self.bind, {"PUBLISH": "true", **runner_cache()})
-        self.assertEqual(values["mode"], "off")
-        self.assertEqual(values["required"], "0")
-        self.assertEqual(values["secret-envs"], "")
-        self.assertEqual(values["bucket"], "")
-        self.assertEqual(values["endpoint"], "")
-        self.assertNotIn("runner-", text)
-
-    def test_publication_uses_only_its_own_role_scoped_cache(self):
-        fake = ('#!/bin/sh\n[ "$1" = arn:aws:iam::123456789012:role/pub ] || exit 9\n'
-                'echo \'{"AccessKeyId":"ASIAPUB","SecretAccessKey":"s3cr3t","SessionToken":"tok"}\'\n')
-        values, text = run_script(self.bind, {
-            "PUBLISH": "true", **runner_cache(),
-            "PUBLICATION_CACHE_ROLE_ARN": "arn:aws:iam::123456789012:role/pub",
-            "PUBLICATION_CACHE_BUCKET": "tilo-publication-sccache-123456789012-us-west-2",
-        }, files={"os/dev/publication-cache-credentials.sh": fake})
-        self.assertEqual(values["mode"], "publication")
-        self.assertEqual(values["bucket"], "tilo-publication-sccache-123456789012-us-west-2")
-        self.assertEqual(values["region"], "us-west-2")
-        self.assertEqual(values["endpoint"], "https://s3.us-west-2.amazonaws.com")
-        self.assertEqual(values["prefix"], "tilo/publication/v1")
-        self.assertEqual(values["secret-envs"].splitlines(), [
-            "aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID",
-            "aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY",
-            "aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN",
-        ])
-        self.assertEqual(values["TILO_PUBLICATION_AWS_ACCESS_KEY_ID"], "ASIAPUB")
-        # Nothing of the runner's shared cache reaches a publication.
-        self.assertNotIn("runner-", text)
-
-    def test_publication_credentials_come_from_the_oidc_role_alone(self):
-        script = (ROOT / "os/dev/publication-cache-credentials.sh").read_text()
-        self.assertIn("audience=tilo-publication-cache", script)
-        self.assertIn("Action=AssumeRoleWithWebIdentity", script)
-        self.assertNotIn("AWS_ACCESS_KEY_ID", script)
-        self.assertNotIn("SCCACHE_", script)
-
-    def test_integration_builds_keep_the_required_shared_cache(self):
-        values, _ = run_script(self.bind, {"PUBLISH": "false", **runner_cache()})
-        self.assertEqual(values["mode"], "shared")
-        self.assertEqual(values["required"], "1")
-        self.assertEqual(values["bucket"], "runner-sccache_bucket")
-        self.assertEqual(values["secret-envs"].splitlines(), [
-            "aws_access_key_id=AWS_ACCESS_KEY_ID",
-            "aws_secret_access_key=AWS_SECRET_ACCESS_KEY",
-        ])
-
-    def test_the_bind_follows_the_publication_decision(self):
-        self.assertIn("PUBLISH: ${{ steps.release-mode.outputs.publish }}", self.bind)
-        order = list(self.steps)
-        self.assertLess(order.index("Select build, validation, or publication mode"),
-                        order.index("Bind the runner compiler cache"))
-
-    def test_every_image_build_takes_its_cache_mode_and_credentials_from_the_bind(self):
-        builds = {name: step for name, step in self.steps.items()
-                  if "docker/build-push-action@" in step}
-        self.assertGreaterEqual(len(builds), 5)
-        for name, step in builds.items():
-            with self.subTest(name):
-                self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", step)
-                self.assertNotIn("aws_access_key_id=AWS_ACCESS_KEY_ID", step)
-                if name == "Independently rebuild the release candidate":
-                    continue
-                self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
-                self.assertIn("secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}", step)
-
-    def test_the_independent_rebuild_never_sees_the_cache(self):
-        repro = self.steps["Independently rebuild the release candidate"]
-        self.assertIn("if: matrix.role == 'reproduce'", repro)
-        self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
-        self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
-        self.assertIn("no-cache: true", repro)
-        for forbidden in ("SCCACHE_", "secret-envs", "AWS_", "aws_", "compiler-cache"):
-            self.assertNotIn(forbidden, repro)
+    def test_image_publication_binds_no_cache_while_integration_builds_keep_it(self):
+        with self.subTest(phase='publication binds no cache even when the runner offers one'):
+            values, text = run_script(self.bind, {"PUBLISH": "true", **runner_cache()})
+            self.assertEqual(values["mode"], "off")
+            self.assertEqual(values["required"], "0")
+            self.assertEqual(values["secret-envs"], "")
+            self.assertEqual(values["bucket"], "")
+            self.assertEqual(values["endpoint"], "")
+            self.assertNotIn("runner-", text)
+        with self.subTest(phase='publication uses only its own role scoped cache'):
+            fake = ('#!/bin/sh\n[ "$1" = arn:aws:iam::123456789012:role/pub ] || exit 9\n'
+                    'echo \'{"AccessKeyId":"ASIAPUB","SecretAccessKey":"s3cr3t","SessionToken":"tok"}\'\n')
+            values, text = run_script(self.bind, {
+                "PUBLISH": "true", **runner_cache(),
+                "PUBLICATION_CACHE_ROLE_ARN": "arn:aws:iam::123456789012:role/pub",
+                "PUBLICATION_CACHE_BUCKET": "tilo-publication-sccache-123456789012-us-west-2",
+            }, files={"os/dev/publication-cache-credentials.sh": fake})
+            self.assertEqual(values["mode"], "publication")
+            self.assertEqual(values["bucket"], "tilo-publication-sccache-123456789012-us-west-2")
+            self.assertEqual(values["region"], "us-west-2")
+            self.assertEqual(values["endpoint"], "https://s3.us-west-2.amazonaws.com")
+            self.assertEqual(values["prefix"], "tilo/publication/v1")
+            self.assertEqual(values["secret-envs"].splitlines(), [
+                "aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID",
+                "aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY",
+                "aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN",
+            ])
+            self.assertEqual(values["TILO_PUBLICATION_AWS_ACCESS_KEY_ID"], "ASIAPUB")
+            # Nothing of the runner's shared cache reaches a publication.
+            self.assertNotIn("runner-", text)
+        with self.subTest(phase='publication credentials come from the oidc role alone'):
+            script = (ROOT / "os/dev/publication-cache-credentials.sh").read_text()
+            self.assertIn("audience=tilo-publication-cache", script)
+            self.assertIn("Action=AssumeRoleWithWebIdentity", script)
+            self.assertNotIn("AWS_ACCESS_KEY_ID", script)
+            self.assertNotIn("SCCACHE_", script)
+        with self.subTest(phase='integration builds keep the required shared cache'):
+            values, _ = run_script(self.bind, {"PUBLISH": "false", **runner_cache()})
+            self.assertEqual(values["mode"], "shared")
+            self.assertEqual(values["required"], "1")
+            self.assertEqual(values["bucket"], "runner-sccache_bucket")
+            self.assertEqual(values["secret-envs"].splitlines(), [
+                "aws_access_key_id=AWS_ACCESS_KEY_ID",
+                "aws_secret_access_key=AWS_SECRET_ACCESS_KEY",
+            ])
+        with self.subTest(phase='the bind follows the publication decision'):
+            self.assertIn("PUBLISH: ${{ steps.release-mode.outputs.publish }}", self.bind)
+            order = list(self.steps)
+            self.assertLess(order.index("Select build, validation, or publication mode"),
+                            order.index("Bind the runner compiler cache"))
+        with self.subTest(phase='every image build takes its cache mode and credentials from the bind'):
+            builds = {name: step for name, step in self.steps.items()
+                      if "docker/build-push-action@" in step}
+            self.assertGreaterEqual(len(builds), 5)
+            for name, step in builds.items():
+                with self.subTest(name):
+                    self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", step)
+                    self.assertNotIn("aws_access_key_id=AWS_ACCESS_KEY_ID", step)
+                    if name == "Independently rebuild the release candidate":
+                        continue
+                    self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
+                    self.assertIn("secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}", step)
+        with self.subTest(phase='the independent rebuild never sees the cache'):
+            repro = self.steps["Independently rebuild the release candidate"]
+            self.assertIn("if: matrix.role == 'reproduce'", repro)
+            self.assertIn("TILO_COMPILER_CACHE=off\n", repro)
+            self.assertIn("TILO_REQUIRE_COMPILER_CACHE=0\n", repro)
+            self.assertIn("no-cache: true", repro)
+            for forbidden in ("SCCACHE_", "secret-envs", "AWS_", "aws_", "compiler-cache"):
+                self.assertNotIn(forbidden, repro)
 
 
 class KernelPublicationTests(unittest.TestCase):
@@ -160,59 +155,58 @@ class KernelPublicationTests(unittest.TestCase):
         self.steps = steps(self.workflow)
         self.bind = self.steps["Bind the runner compiler cache"]
 
-    def test_only_pull_requests_bind_the_shared_cache(self):
-        self.assertIn("PULL_REQUEST: ${{ github.event_name == 'pull_request' }}", self.bind)
-        values, text = run_script(self.bind, {"PULL_REQUEST": "false", **runner_cache()})
-        self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
-        self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
-        self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"], "")
-        self.assertNotIn("runner-", text)
-        values, _ = run_script(self.bind, {"PULL_REQUEST": "true", **runner_cache()})
-        self.assertEqual(values["KERNEL_COMPILER_CACHE"], "shared")
-        self.assertEqual(len(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines()), 2)
-
-    def test_kernel_builds_pass_credentials_only_through_the_bind(self):
-        self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", self.workflow)
-        build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
-        self.assertIn("TILO_COMPILER_CACHE=${{ env.KERNEL_COMPILER_CACHE }}", build)
-        self.assertIn("secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}", build)
-        probe = self.steps["Prove firmware rejects unsigned EFI and executes the signed image"]
-        self.assertIn('"TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE"', probe)
-        self.assertIn("if [[ $KERNEL_COMPILER_CACHE == shared ]]; then", probe)
-        outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
-        self.assertNotIn("--secret id=aws_access_key_id", outside)
-
-    def test_a_published_kernel_imports_no_layer_cache(self):
-        build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
-        self.assertIn(
-            "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
-            "ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
-            " || '' }}", build)
-        self.assertEqual(self.workflow.count("cache-from:"), 1)
+    def test_kernel_builds_use_the_cache_only_for_pull_requests_through_the_bind(self):
+        with self.subTest(phase='only pull requests bind the shared cache'):
+            self.assertIn("PULL_REQUEST: ${{ github.event_name == 'pull_request' }}", self.bind)
+            values, text = run_script(self.bind, {"PULL_REQUEST": "false", **runner_cache()})
+            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
+            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
+            self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"], "")
+            self.assertNotIn("runner-", text)
+            values, _ = run_script(self.bind, {"PULL_REQUEST": "true", **runner_cache()})
+            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "shared")
+            self.assertEqual(len(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines()), 2)
+        with self.subTest(phase='kernel builds pass credentials only through the bind'):
+            self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", self.workflow)
+            build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
+            self.assertIn("TILO_COMPILER_CACHE=${{ env.KERNEL_COMPILER_CACHE }}", build)
+            self.assertIn("secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}", build)
+            probe = self.steps["Prove firmware rejects unsigned EFI and executes the signed image"]
+            self.assertIn('"TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE"', probe)
+            self.assertIn("if [[ $KERNEL_COMPILER_CACHE == shared ]]; then", probe)
+            outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
+            self.assertNotIn("--secret id=aws_access_key_id", outside)
+        with self.subTest(phase='a published kernel imports no layer cache'):
+            build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
+            self.assertIn(
+                "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
+                "ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
+                " || '' }}", build)
+            self.assertEqual(self.workflow.count("cache-from:"), 1)
 
 
 class AppCollectionPublicationTests(unittest.TestCase):
     def setUp(self):
         self.steps = steps(APPS_WORKFLOW.read_text())
 
-    def test_only_unpublished_runs_prepare_the_shared_cache(self):
-        prepare = self.steps["Prepare compiler cache"]
-        self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
-        self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
-
-    def test_a_publication_compiles_without_cache_credentials_or_wrapper(self):
-        build = self.steps["Build and verify selected tapps once for this architecture"]
-        script = textwrap.dedent(build.split("        run: |\n", 1)[1])
-        guard = script.split("if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then", 1)[0]
-        probe = guard.replace("${{ needs.plan.outputs.publish }}", "true") + (
-            'env | grep -E "^(AWS_|SCCACHE_)" && exit 1\n'
-            '[[ -z ${RUSTC_WRAPPER:-} ]] || exit 1\n')
-        env = {"PATH": os.environ["PATH"], "RUSTC_WRAPPER": "/usr/local/bin/sccache",
-               "SCCACHE_S3_KEY_PREFIX": "tilo/apps", **runner_cache()}
-        result = subprocess.run(["bash", "-c", probe], env=env, text=True,
-                                capture_output=True, check=False)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertLess(script.index(guard), script.index("dist/apps/package-apps.sh"))
+    def test_app_collection_publication_compiles_without_the_shared_cache(self):
+        with self.subTest(phase='only unpublished runs prepare the shared cache'):
+            prepare = self.steps["Prepare compiler cache"]
+            self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
+            self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
+        with self.subTest(phase='a publication compiles without cache credentials or wrapper'):
+            build = self.steps["Build and verify selected tapps once for this architecture"]
+            script = textwrap.dedent(build.split("        run: |\n", 1)[1])
+            guard = script.split("if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then", 1)[0]
+            probe = guard.replace("${{ needs.plan.outputs.publish }}", "true") + (
+                'env | grep -E "^(AWS_|SCCACHE_)" && exit 1\n'
+                '[[ -z ${RUSTC_WRAPPER:-} ]] || exit 1\n')
+            env = {"PATH": os.environ["PATH"], "RUSTC_WRAPPER": "/usr/local/bin/sccache",
+                   "SCCACHE_S3_KEY_PREFIX": "tilo/apps", **runner_cache()}
+            result = subprocess.run(["bash", "-c", probe], env=env, text=True,
+                                    capture_output=True, check=False)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertLess(script.index(guard), script.index("dist/apps/package-apps.sh"))
 
 
 class DesktopPayloadPublicationTests(unittest.TestCase):

@@ -485,249 +485,279 @@ mod tests {
     }
 
     #[test]
-    fn mat3_inverse_round_trips_to_identity() {
-        let m = bt709_to_bt2020_matrix();
-        let inv = m.inverse().expect("invertible");
-        let prod = m.mul(&inv);
-        assert!(
-            prod.max_abs_diff(&Mat3::IDENTITY) < 1e-4,
-            "M·M⁻¹ should be identity, got {prod:?}"
-        );
-    }
-
-    #[test]
-    fn gamut_matrices_are_mutual_inverses() {
-        let fwd = bt709_to_bt2020_matrix();
-        let back = bt2020_to_bt709_matrix();
-        let prod = fwd.mul(&back);
-        assert!(
-            prod.max_abs_diff(&Mat3::IDENTITY) < 1e-4,
-            "709→2020→709 should round-trip, got {prod:?}"
-        );
-    }
-
-    #[test]
-    fn white_maps_to_white_across_gamuts() {
-        // Both spaces share the D65 white point, so equal-energy RGB white
-        // must stay (1,1,1) (to rounding) across the gamut matrix.
-        let w = bt709_to_bt2020_matrix().mul_vec([1.0, 1.0, 1.0]);
-        for (i, c) in w.iter().enumerate() {
+    fn gamut_matrices_invert_preserve_white_and_match_itu_references() {
+        fn mat3_inverse_round_trips_to_identity() {
+            let m = bt709_to_bt2020_matrix();
+            let inv = m.inverse().expect("invertible");
+            let prod = m.mul(&inv);
             assert!(
-                approx(*c, 1.0, 2e-3),
-                "white channel {i} = {c}, expected 1.0"
+                prod.max_abs_diff(&Mat3::IDENTITY) < 1e-4,
+                "M·M⁻¹ should be identity, got {prod:?}"
             );
         }
-    }
 
-    #[test]
-    fn bt2020_to_bt709_matches_itu_reference() {
-        // ITU-R BT.2087's published matrix, rounded to 4dp.
-        let reference = Mat3 {
-            m: [
-                [1.660_491, -0.587_641, -0.072_850],
-                [-0.124_550, 1.132_9, -0.008_349],
-                [-0.018_151, -0.100_579, 1.118_73],
-            ],
-        };
-        let derived = bt2020_to_bt709_matrix();
-        assert!(
-            derived.max_abs_diff(&reference) < 5e-3,
-            "derived BT.2020→709 {derived:?} diverges from reference {reference:?}"
-        );
-    }
-
-    #[test]
-    fn bt709_to_bt2020_matches_itu_reference() {
-        // Published forward matrix (Y'CbCr colour conversion notes).
-        let reference = Mat3 {
-            m: [
-                [0.627_404, 0.329_283, 0.043_313],
-                [0.069_097, 0.919_540, 0.011_362],
-                [0.016_391, 0.088_013, 0.895_595],
-            ],
-        };
-        let derived = bt709_to_bt2020_matrix();
-        assert!(
-            derived.max_abs_diff(&reference) < 5e-3,
-            "derived BT.709→2020 {derived:?} diverges from reference {reference:?}"
-        );
-    }
-
-    #[test]
-    fn rgb_to_xyz_rows_of_bt709_give_known_luminance() {
-        // Middle (Y) row is the luma-coefficient vector (0.2126, 0.7152, 0.0722).
-        let m = rgb_to_xyz(&BT709_PRIMARIES);
-        assert!(approx(m.m[1][0], 0.2126, 2e-3), "Yr = {}", m.m[1][0]);
-        assert!(approx(m.m[1][1], 0.7152, 2e-3), "Yg = {}", m.m[1][1]);
-        assert!(approx(m.m[1][2], 0.0722, 2e-3), "Yb = {}", m.m[1][2]);
-    }
-
-    #[test]
-    fn pq_eotf_reference_points() {
-        assert!(pq_eotf(0.0) < 0.01, "PQ(0) ≈ 0");
-        assert!(
-            approx(pq_eotf(1.0), 10_000.0, 1.0),
-            "PQ(1) = {}",
-            pq_eotf(1.0)
-        );
-        // The canonical PQ mid-code: 0.5 electrical ≈ 92 cd/m².
-        assert!(
-            approx(pq_eotf(0.5), 92.0, 8.0),
-            "PQ(0.5) = {}",
-            pq_eotf(0.5)
-        );
-    }
-
-    #[test]
-    fn pq_forward_inverse_round_trip() {
-        for &nits in &[
-            0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0,
-        ] {
-            let e = pq_inverse_eotf(nits);
+        fn gamut_matrices_are_mutual_inverses() {
+            let fwd = bt709_to_bt2020_matrix();
+            let back = bt2020_to_bt709_matrix();
+            let prod = fwd.mul(&back);
             assert!(
-                (0.0..=1.0).contains(&e),
-                "PQ signal out of range for {nits}: {e}"
-            );
-            let back = pq_eotf(e);
-            // Relative tolerance: PQ is perceptual, error grows with luminance.
-            let tol = (nits * 0.01).max(0.5);
-            assert!(
-                approx(back, nits, tol),
-                "PQ round-trip {nits} → {e} → {back}"
+                prod.max_abs_diff(&Mat3::IDENTITY) < 1e-4,
+                "709→2020→709 should round-trip, got {prod:?}"
             );
         }
-    }
 
-    #[test]
-    fn pq_inverse_is_monotonic() {
-        let mut prev = -1.0;
-        // Integer-stepped so the loop bound and each sample are computed
-        // exactly, rather than accumulating float error over 200 additions.
-        for step in 0u16..=200 {
-            let n = f32::from(step) * 50.0;
-            let e = pq_inverse_eotf(n);
-            assert!(e >= prev, "PQ inverse not monotonic at {n}: {e} < {prev}");
-            prev = e;
+        fn white_maps_to_white_across_gamuts() {
+            // Both spaces share the D65 white point, so equal-energy RGB white
+            // must stay (1,1,1) (to rounding) across the gamut matrix.
+            let w = bt709_to_bt2020_matrix().mul_vec([1.0, 1.0, 1.0]);
+            for (i, c) in w.iter().enumerate() {
+                assert!(
+                    approx(*c, 1.0, 2e-3),
+                    "white channel {i} = {c}, expected 1.0"
+                );
+            }
         }
-    }
 
-    #[test]
-    fn hlg_oetf_inverse_round_trip() {
-        for i in 0u8..=100 {
-            let scene = f32::from(i) / 100.0;
-            let signal = hlg_oetf(scene);
-            assert!((0.0..=1.001).contains(&signal), "HLG signal range {signal}");
-            let back = hlg_inverse_oetf(signal);
+        fn bt2020_to_bt709_matches_itu_reference() {
+            // ITU-R BT.2087's published matrix, rounded to 4dp.
+            let reference = Mat3 {
+                m: [
+                    [1.660_491, -0.587_641, -0.072_850],
+                    [-0.124_550, 1.132_9, -0.008_349],
+                    [-0.018_151, -0.100_579, 1.118_73],
+                ],
+            };
+            let derived = bt2020_to_bt709_matrix();
             assert!(
-                approx(back, scene, 2e-3),
-                "HLG round-trip {scene} → {signal} → {back}"
+                derived.max_abs_diff(&reference) < 5e-3,
+                "derived BT.2020→709 {derived:?} diverges from reference {reference:?}"
             );
         }
-    }
 
-    #[test]
-    fn hlg_oetf_reference_points() {
-        assert!(approx(hlg_oetf(0.0), 0.0, 1e-4));
-        assert!(approx(hlg_oetf(1.0), 1.0, 1e-4));
-        // The knee is at scene 1/12 → signal 0.5.
-        assert!(approx(hlg_oetf(1.0 / 12.0), 0.5, 1e-3), "HLG knee");
-    }
-
-    #[test]
-    fn srgb_transfer_round_trips() {
-        for i in 0u8..=255 {
-            let v = f32::from(i) / 255.0;
-            let linear = srgb_eotf(v);
-            let back = srgb_oetf(linear);
+        fn bt709_to_bt2020_matches_itu_reference() {
+            // Published forward matrix (Y'CbCr colour conversion notes).
+            let reference = Mat3 {
+                m: [
+                    [0.627_404, 0.329_283, 0.043_313],
+                    [0.069_097, 0.919_540, 0.011_362],
+                    [0.016_391, 0.088_013, 0.895_595],
+                ],
+            };
+            let derived = bt709_to_bt2020_matrix();
             assert!(
-                approx(back, v, 1e-3),
-                "sRGB round-trip {v} → {linear} → {back}"
+                derived.max_abs_diff(&reference) < 5e-3,
+                "derived BT.709→2020 {derived:?} diverges from reference {reference:?}"
             );
         }
+
+        fn rgb_to_xyz_rows_of_bt709_give_known_luminance() {
+            // Middle (Y) row is the luma-coefficient vector (0.2126, 0.7152, 0.0722).
+            let m = rgb_to_xyz(&BT709_PRIMARIES);
+            assert!(approx(m.m[1][0], 0.2126, 2e-3), "Yr = {}", m.m[1][0]);
+            assert!(approx(m.m[1][1], 0.7152, 2e-3), "Yg = {}", m.m[1][1]);
+            assert!(approx(m.m[1][2], 0.0722, 2e-3), "Yb = {}", m.m[1][2]);
+        }
+
+        mat3_inverse_round_trips_to_identity();
+        gamut_matrices_are_mutual_inverses();
+        white_maps_to_white_across_gamuts();
+        bt2020_to_bt709_matches_itu_reference();
+        bt709_to_bt2020_matches_itu_reference();
+        rgb_to_xyz_rows_of_bt709_give_known_luminance();
     }
 
     #[test]
-    fn sdr_white_maps_to_reference_white_nits() {
-        let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 1.0, 1.0]);
-        for (i, c) in nits.iter().enumerate() {
+    fn transfer_functions_hit_reference_points_round_trip_and_stay_monotonic() {
+        fn pq_eotf_reference_points() {
+            assert!(pq_eotf(0.0) < 0.01, "PQ(0) ≈ 0");
             assert!(
-                approx(*c, SDR_REFERENCE_WHITE_NITS, 1.0),
-                "SDR white channel {i} = {c} nits, expected {SDR_REFERENCE_WHITE_NITS}"
+                approx(pq_eotf(1.0), 10_000.0, 1.0),
+                "PQ(1) = {}",
+                pq_eotf(1.0)
+            );
+            // The canonical PQ mid-code: 0.5 electrical ≈ 92 cd/m².
+            assert!(
+                approx(pq_eotf(0.5), 92.0, 8.0),
+                "PQ(0.5) = {}",
+                pq_eotf(0.5)
             );
         }
+
+        fn pq_forward_inverse_round_trip() {
+            for &nits in &[
+                0.0, 0.1, 1.0, 10.0, 100.0, 203.0, 500.0, 1000.0, 4000.0, 10_000.0,
+            ] {
+                let e = pq_inverse_eotf(nits);
+                assert!(
+                    (0.0..=1.0).contains(&e),
+                    "PQ signal out of range for {nits}: {e}"
+                );
+                let back = pq_eotf(e);
+                // Relative tolerance: PQ is perceptual, error grows with luminance.
+                let tol = (nits * 0.01).max(0.5);
+                assert!(
+                    approx(back, nits, tol),
+                    "PQ round-trip {nits} → {e} → {back}"
+                );
+            }
+        }
+
+        fn pq_inverse_is_monotonic() {
+            let mut prev = -1.0;
+            // Integer-stepped so the loop bound and each sample are computed
+            // exactly, rather than accumulating float error over 200 additions.
+            for step in 0u16..=200 {
+                let n = f32::from(step) * 50.0;
+                let e = pq_inverse_eotf(n);
+                assert!(e >= prev, "PQ inverse not monotonic at {n}: {e} < {prev}");
+                prev = e;
+            }
+        }
+
+        fn hlg_oetf_inverse_round_trip() {
+            for i in 0u8..=100 {
+                let scene = f32::from(i) / 100.0;
+                let signal = hlg_oetf(scene);
+                assert!((0.0..=1.001).contains(&signal), "HLG signal range {signal}");
+                let back = hlg_inverse_oetf(signal);
+                assert!(
+                    approx(back, scene, 2e-3),
+                    "HLG round-trip {scene} → {signal} → {back}"
+                );
+            }
+        }
+
+        fn hlg_oetf_reference_points() {
+            assert!(approx(hlg_oetf(0.0), 0.0, 1e-4));
+            assert!(approx(hlg_oetf(1.0), 1.0, 1e-4));
+            // The knee is at scene 1/12 → signal 0.5.
+            assert!(approx(hlg_oetf(1.0 / 12.0), 0.5, 1e-3), "HLG knee");
+        }
+
+        fn srgb_transfer_round_trips() {
+            for i in 0u8..=255 {
+                let v = f32::from(i) / 255.0;
+                let linear = srgb_eotf(v);
+                let back = srgb_oetf(linear);
+                assert!(
+                    approx(back, v, 1e-3),
+                    "sRGB round-trip {v} → {linear} → {back}"
+                );
+            }
+        }
+
+        pq_eotf_reference_points();
+        pq_forward_inverse_round_trip();
+        pq_inverse_is_monotonic();
+        hlg_oetf_inverse_round_trip();
+        hlg_oetf_reference_points();
+        srgb_transfer_round_trips();
     }
 
     #[test]
-    fn sdr_white_pq_code_round_trips_to_203_nits() {
-        let code = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
-        let nits: Vec<f32> = code
-            .iter()
-            .map(|c| pq_eotf(f32::from(*c) / 1023.0))
-            .collect();
-        for (i, n) in nits.iter().enumerate() {
+    fn sdr_content_maps_to_reference_white_black_and_expanded_gamut() {
+        fn sdr_white_maps_to_reference_white_nits() {
+            let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 1.0, 1.0]);
+            for (i, c) in nits.iter().enumerate() {
+                assert!(
+                    approx(*c, SDR_REFERENCE_WHITE_NITS, 1.0),
+                    "SDR white channel {i} = {c} nits, expected {SDR_REFERENCE_WHITE_NITS}"
+                );
+            }
+        }
+
+        fn sdr_white_pq_code_round_trips_to_203_nits() {
+            let code = map_sdr_pixel_to_pq_bt2020([255, 255, 255]);
+            let nits: Vec<f32> = code
+                .iter()
+                .map(|c| pq_eotf(f32::from(*c) / 1023.0))
+                .collect();
+            for (i, n) in nits.iter().enumerate() {
+                assert!(
+                    approx(*n, SDR_REFERENCE_WHITE_NITS, 6.0),
+                    "white channel {i} decodes to {n} nits, expected ~203"
+                );
+            }
+            let max_delta = i32::from(code.iter().copied().max().unwrap())
+                - i32::from(code.iter().copied().min().unwrap());
             assert!(
-                approx(*n, SDR_REFERENCE_WHITE_NITS, 6.0),
-                "white channel {i} decodes to {n} nits, expected ~203"
+                max_delta <= 3,
+                "SDR white PQ codes should be neutral, got {code:?}"
             );
         }
-        let max_delta = i32::from(code.iter().copied().max().unwrap())
-            - i32::from(code.iter().copied().min().unwrap());
-        assert!(
-            max_delta <= 3,
-            "SDR white PQ codes should be neutral, got {code:?}"
-        );
-    }
 
-    #[test]
-    fn sdr_black_maps_to_zero_pq() {
-        let code = map_sdr_pixel_to_pq_bt2020([0, 0, 0]);
-        assert_eq!(code, [0, 0, 0], "SDR black must encode to PQ 0");
-    }
-
-    #[test]
-    fn sdr_map_expands_gamut_not_clips() {
-        let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 0.0, 0.0]);
-        assert!(nits[0] > 0.0, "red channel should be positive: {nits:?}");
-        // Small non-negative green/blue leakage is expected; negative
-        // would mean clipping rather than mapping.
-        for c in nits {
-            assert!(c >= -1e-3, "no channel should go negative (clip): {nits:?}");
+        fn sdr_black_maps_to_zero_pq() {
+            let code = map_sdr_pixel_to_pq_bt2020([0, 0, 0]);
+            assert_eq!(code, [0, 0, 0], "SDR black must encode to PQ 0");
         }
+
+        fn sdr_map_expands_gamut_not_clips() {
+            let nits = map_sdr_linear_to_hdr_bt2020_nits([1.0, 0.0, 0.0]);
+            assert!(nits[0] > 0.0, "red channel should be positive: {nits:?}");
+            // Small non-negative green/blue leakage is expected; negative
+            // would mean clipping rather than mapping.
+            for c in nits {
+                assert!(c >= -1e-3, "no channel should go negative (clip): {nits:?}");
+            }
+        }
+
+        sdr_white_maps_to_reference_white_nits();
+        sdr_white_pq_code_round_trips_to_203_nits();
+        sdr_black_maps_to_zero_pq();
+        sdr_map_expands_gamut_not_clips();
     }
 
     #[test]
-    fn sdr_display_resolves_to_sdr_state() {
-        let state = OutputColorState::from_display(&DisplayCapabilities::sdr_default());
-        assert_eq!(state.space, OutputColorSpace::SdrSrgb);
-        assert!(state.preferred_swapchain_format().is_none());
-    }
+    fn display_capabilities_resolve_to_output_state_and_cicp() {
+        fn sdr_display_resolves_to_sdr_state() {
+            let state = OutputColorState::from_display(&DisplayCapabilities::sdr_default());
+            assert_eq!(state.space, OutputColorSpace::SdrSrgb);
+            assert!(state.preferred_swapchain_format().is_none());
+        }
 
-    #[test]
-    fn hdr10_display_resolves_to_pq_state_with_hdr_format() {
-        let state = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(state.space, OutputColorSpace::HdrPq);
-        assert!(state.max_luminance_nits >= 1000.0);
-        assert!(
-            state.preferred_swapchain_format().is_some(),
-            "HDR output must select an HDR swapchain format"
-        );
-    }
+        fn hdr10_display_resolves_to_pq_state_with_hdr_format() {
+            let state = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
+            assert_eq!(state.space, OutputColorSpace::HdrPq);
+            assert!(state.max_luminance_nits >= 1000.0);
+            assert!(
+                state.preferred_swapchain_format().is_some(),
+                "HDR output must select an HDR swapchain format"
+            );
+        }
 
-    #[test]
-    fn hlg_only_display_resolves_to_hlg() {
-        let caps = DisplayCapabilities {
-            max_luminance_nits: 600.0,
-            supports_pq_output: false,
-            supports_hlg_output: true,
-            bt2020_gamut: true,
-        };
-        let state = OutputColorState::from_display(&caps);
-        assert_eq!(state.space, OutputColorSpace::HdrHlg);
-        assert_eq!(
-            state.preferred_swapchain_format(),
-            Some(vello::wgpu::TextureFormat::Rgb10a2Unorm),
-            "600-nit HDR stays on 10-bit unorm, not float"
-        );
+        fn hlg_only_display_resolves_to_hlg() {
+            let caps = DisplayCapabilities {
+                max_luminance_nits: 600.0,
+                supports_pq_output: false,
+                supports_hlg_output: true,
+                bt2020_gamut: true,
+            };
+            let state = OutputColorState::from_display(&caps);
+            assert_eq!(state.space, OutputColorSpace::HdrHlg);
+            assert_eq!(
+                state.preferred_swapchain_format(),
+                Some(vello::wgpu::TextureFormat::Rgb10a2Unorm),
+                "600-nit HDR stays on 10-bit unorm, not float"
+            );
+        }
+
+        fn output_color_space_advertises_expected_cicp() {
+            assert_eq!(
+                OutputColorSpace::HdrPq.transfer(),
+                TransferCharacteristics::SmpteSt2084
+            );
+            assert_eq!(OutputColorSpace::HdrPq.primaries(), ColorPrimaries::Bt2020);
+            assert_eq!(
+                OutputColorSpace::SdrSrgb.transfer(),
+                TransferCharacteristics::Bt709
+            );
+            assert_eq!(OutputColorSpace::SdrSrgb.primaries(), ColorPrimaries::Bt709);
+        }
+
+        sdr_display_resolves_to_sdr_state();
+        hdr10_display_resolves_to_pq_state_with_hdr_format();
+        hlg_only_display_resolves_to_hlg();
+        output_color_space_advertises_expected_cicp();
     }
 
     fn sdr() -> Colorimetry {
@@ -741,92 +771,82 @@ mod tests {
     }
 
     #[test]
-    fn sdr_surface_on_sdr_output_is_passthrough() {
-        let out = OutputColorState::sdr_default();
-        assert_eq!(
-            plan_surface_op(sdr(), &out, None),
-            SurfaceColorOp::Passthrough
-        );
-    }
-
-    #[test]
-    fn hdr_surface_on_sdr_output_tonemaps_with_peak() {
-        let out = OutputColorState::sdr_default();
-        match plan_surface_op(hdr_pq(), &out, Some(4000.0)) {
-            SurfaceColorOp::TonemapHdrToSdr { config } => {
-                assert!(approx(config.source_peak_nits, 4000.0, 0.1));
-                assert!(approx(config.target_peak_nits, 100.0, 0.1));
-            }
-            other => panic!("expected tone-map, got {other:?}"),
+    fn surface_ops_pass_through_tonemap_or_transcode_by_output() {
+        fn sdr_surface_on_sdr_output_is_passthrough() {
+            let out = OutputColorState::sdr_default();
+            assert_eq!(
+                plan_surface_op(sdr(), &out, None),
+                SurfaceColorOp::Passthrough
+            );
         }
-    }
 
-    #[test]
-    fn sdr_surface_on_hdr_output_maps_into_hdr() {
-        let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(
-            plan_surface_op(sdr(), &out, None),
-            SurfaceColorOp::MapSdrToHdr
-        );
-    }
+        fn hdr_surface_on_sdr_output_tonemaps_with_peak() {
+            let out = OutputColorState::sdr_default();
+            match plan_surface_op(hdr_pq(), &out, Some(4000.0)) {
+                SurfaceColorOp::TonemapHdrToSdr { config } => {
+                    assert!(approx(config.source_peak_nits, 4000.0, 0.1));
+                    assert!(approx(config.target_peak_nits, 100.0, 0.1));
+                }
+                other => panic!("expected tone-map, got {other:?}"),
+            }
+        }
 
-    #[test]
-    fn hdr_pq_surface_on_hdr_pq_output_is_passthrough() {
-        let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(
-            plan_surface_op(hdr_pq(), &out, None),
-            SurfaceColorOp::Passthrough
-        );
-    }
+        fn sdr_surface_on_hdr_output_maps_into_hdr() {
+            let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
+            assert_eq!(
+                plan_surface_op(sdr(), &out, None),
+                SurfaceColorOp::MapSdrToHdr
+            );
+        }
 
-    #[test]
-    fn hlg_surface_on_pq_output_transcodes() {
-        let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
-        assert_eq!(
-            plan_surface_op(hdr_hlg(), &out, None),
-            SurfaceColorOp::TranscodeHdrTransfer
-        );
-    }
+        fn hdr_pq_surface_on_hdr_pq_output_is_passthrough() {
+            let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
+            assert_eq!(
+                plan_surface_op(hdr_pq(), &out, None),
+                SurfaceColorOp::Passthrough
+            );
+        }
 
-    #[test]
-    fn pq_surface_on_hlg_output_transcodes() {
-        let out = OutputColorState {
-            space: OutputColorSpace::HdrHlg,
-            max_luminance_nits: 1000.0,
-        };
-        assert_eq!(
-            plan_surface_op(hdr_pq(), &out, None),
-            SurfaceColorOp::TranscodeHdrTransfer
-        );
-    }
+        fn hlg_surface_on_pq_output_transcodes() {
+            let out = OutputColorState::from_display(&DisplayCapabilities::hdr10_baseline());
+            assert_eq!(
+                plan_surface_op(hdr_hlg(), &out, None),
+                SurfaceColorOp::TranscodeHdrTransfer
+            );
+        }
 
-    #[test]
-    fn output_color_space_advertises_expected_cicp() {
-        assert_eq!(
-            OutputColorSpace::HdrPq.transfer(),
-            TransferCharacteristics::SmpteSt2084
-        );
-        assert_eq!(OutputColorSpace::HdrPq.primaries(), ColorPrimaries::Bt2020);
-        assert_eq!(
-            OutputColorSpace::SdrSrgb.transfer(),
-            TransferCharacteristics::Bt709
-        );
-        assert_eq!(OutputColorSpace::SdrSrgb.primaries(), ColorPrimaries::Bt709);
-    }
+        fn pq_surface_on_hlg_output_transcodes() {
+            let out = OutputColorState {
+                space: OutputColorSpace::HdrHlg,
+                max_luminance_nits: 1000.0,
+            };
+            assert_eq!(
+                plan_surface_op(hdr_pq(), &out, None),
+                SurfaceColorOp::TranscodeHdrTransfer
+            );
+        }
 
-    #[test]
-    fn surface_op_ignores_matrix_and_range_fields() {
-        // Keys on transfer only; a full-range HDR surface still tone-maps.
-        let full_range_hdr = Colorimetry {
-            primaries: ColorPrimaries::Bt2020,
-            transfer: TransferCharacteristics::SmpteSt2084,
-            matrix: MatrixCoefficients::Bt2020NonConstant,
-            range: ColorRange::Full,
-        };
-        let out = OutputColorState::sdr_default();
-        assert!(matches!(
-            plan_surface_op(full_range_hdr, &out, None),
-            SurfaceColorOp::TonemapHdrToSdr { .. }
-        ));
+        fn surface_op_ignores_matrix_and_range_fields() {
+            // Keys on transfer only; a full-range HDR surface still tone-maps.
+            let full_range_hdr = Colorimetry {
+                primaries: ColorPrimaries::Bt2020,
+                transfer: TransferCharacteristics::SmpteSt2084,
+                matrix: MatrixCoefficients::Bt2020NonConstant,
+                range: ColorRange::Full,
+            };
+            let out = OutputColorState::sdr_default();
+            assert!(matches!(
+                plan_surface_op(full_range_hdr, &out, None),
+                SurfaceColorOp::TonemapHdrToSdr { .. }
+            ));
+        }
+
+        sdr_surface_on_sdr_output_is_passthrough();
+        hdr_surface_on_sdr_output_tonemaps_with_peak();
+        sdr_surface_on_hdr_output_maps_into_hdr();
+        hdr_pq_surface_on_hdr_pq_output_is_passthrough();
+        hlg_surface_on_pq_output_transcodes();
+        pq_surface_on_hlg_output_transcodes();
+        surface_op_ignores_matrix_and_range_fields();
     }
 }

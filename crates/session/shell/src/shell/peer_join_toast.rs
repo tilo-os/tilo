@@ -181,101 +181,105 @@ mod tests {
     use super::*;
 
     #[test]
-    fn single_peer_joined_produces_named_toast() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "quinten", t0);
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].kind, PeerEventKind::Joined);
-        assert_eq!(ready[0].title, "quinten joined");
-    }
-
-    #[test]
-    fn three_joins_within_window_are_one_toast() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "alice", t0);
-        q.push(
-            PeerEventKind::Joined,
-            "bob",
-            t0 + Duration::from_millis(100),
-        );
-        q.push(
-            PeerEventKind::Joined,
-            "charlie",
-            t0 + Duration::from_millis(300),
-        );
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].title, "3 peers joined");
-        assert_eq!(ready[0].body, "alice, bob, charlie");
-    }
-
-    #[test]
-    fn join_and_leave_split_into_two_toasts() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "alice", t0);
-        q.push(PeerEventKind::Left, "bob", t0 + Duration::from_millis(100));
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
-        assert_eq!(ready.len(), 2);
-        assert!(ready.iter().any(|r| r.title == "alice joined"));
-        assert!(ready.iter().any(|r| r.title == "bob left"));
-    }
-
-    #[test]
-    fn events_arriving_after_batch_close_stay_pending() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "alice", t0);
-        // A second batch begins after the first window ends.
-        q.push(
-            PeerEventKind::Joined,
-            "bob",
-            t0 + BATCH_WINDOW + Duration::from_millis(500),
-        );
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(10));
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].title, "alice joined");
-        assert_eq!(q.pending(), 1);
-    }
-
-    #[test]
-    fn deduplicates_flapping_peer_within_window() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "alice", t0);
-        q.push(
-            PeerEventKind::Joined,
-            "alice",
-            t0 + Duration::from_millis(500),
-        );
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].title, "alice joined");
-    }
-
-    #[test]
-    fn more_than_three_shows_overflow() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        for name in ["a", "b", "c", "d", "e"] {
-            q.push(PeerEventKind::Joined, name, t0);
+    fn peer_join_toasts_batch_dedupe_split_and_overflow_within_the_window() {
+        fn single_peer_joined_produces_named_toast() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "quinten", t0);
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].kind, PeerEventKind::Joined);
+            assert_eq!(ready[0].title, "quinten joined");
         }
-        let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
-        assert_eq!(ready.len(), 1);
-        assert_eq!(ready[0].title, "5 peers joined");
-        assert!(ready[0].body.ends_with("+2 more"));
-    }
 
-    #[test]
-    fn flush_forces_pending_out_immediately() {
-        let mut q = PeerToastQueue::new();
-        let t0 = Instant::now();
-        q.push(PeerEventKind::Joined, "alice", t0);
-        assert!(q.drain_ready(t0).is_empty());
-        let flushed = q.flush();
-        assert_eq!(flushed.len(), 1);
+        fn three_joins_within_window_are_one_toast() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "alice", t0);
+            q.push(
+                PeerEventKind::Joined,
+                "bob",
+                t0 + Duration::from_millis(100),
+            );
+            q.push(
+                PeerEventKind::Joined,
+                "charlie",
+                t0 + Duration::from_millis(300),
+            );
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].title, "3 peers joined");
+            assert_eq!(ready[0].body, "alice, bob, charlie");
+        }
+
+        fn join_and_leave_split_into_two_toasts() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "alice", t0);
+            q.push(PeerEventKind::Left, "bob", t0 + Duration::from_millis(100));
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
+            assert_eq!(ready.len(), 2);
+            assert!(ready.iter().any(|r| r.title == "alice joined"));
+            assert!(ready.iter().any(|r| r.title == "bob left"));
+        }
+
+        fn events_arriving_after_batch_close_stay_pending() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "alice", t0);
+            // A second batch begins after the first window ends.
+            q.push(
+                PeerEventKind::Joined,
+                "bob",
+                t0 + BATCH_WINDOW + Duration::from_millis(500),
+            );
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(10));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].title, "alice joined");
+            assert_eq!(q.pending(), 1);
+        }
+
+        fn deduplicates_flapping_peer_within_window() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "alice", t0);
+            q.push(
+                PeerEventKind::Joined,
+                "alice",
+                t0 + Duration::from_millis(500),
+            );
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].title, "alice joined");
+        }
+
+        fn more_than_three_shows_overflow() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            for name in ["a", "b", "c", "d", "e"] {
+                q.push(PeerEventKind::Joined, name, t0);
+            }
+            let ready = q.drain_ready(t0 + BATCH_WINDOW + Duration::from_millis(1));
+            assert_eq!(ready.len(), 1);
+            assert_eq!(ready[0].title, "5 peers joined");
+            assert!(ready[0].body.ends_with("+2 more"));
+        }
+
+        fn flush_forces_pending_out_immediately() {
+            let mut q = PeerToastQueue::new();
+            let t0 = Instant::now();
+            q.push(PeerEventKind::Joined, "alice", t0);
+            assert!(q.drain_ready(t0).is_empty());
+            let flushed = q.flush();
+            assert_eq!(flushed.len(), 1);
+        }
+
+        single_peer_joined_produces_named_toast();
+        three_joins_within_window_are_one_toast();
+        join_and_leave_split_into_two_toasts();
+        events_arriving_after_batch_close_stay_pending();
+        deduplicates_flapping_peer_within_window();
+        more_than_three_shows_overflow();
+        flush_forces_pending_out_immediately();
     }
 }
