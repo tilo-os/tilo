@@ -410,7 +410,7 @@ pub fn lock_suppressed_label(count: usize) -> String {
 }
 
 /// Top-right notification stack widget — a thin renderer over
-/// [`ChromeState::notifications`]; the chrome owns the data, the widget
+/// `ChromeState::notifications`; the chrome owns the data, the widget
 /// only paints + routes clicks.
 pub struct NotificationStack {
     chrome: Chrome,

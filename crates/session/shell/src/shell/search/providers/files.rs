@@ -770,7 +770,7 @@ impl SearchProvider for FilesProvider {
     fn resource_kinds(&self) -> &[ResourceKind] {
         &[ResourceKind::File, ResourceKind::Folder]
     }
-    /// See [`MAX_SCORE`].
+    /// See `MAX_SCORE`.
     fn max_score(&self) -> i32 {
         MAX_SCORE
     }

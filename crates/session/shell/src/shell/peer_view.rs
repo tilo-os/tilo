@@ -290,7 +290,7 @@ impl PeerView {
 
     /// `latency_ns` is the caller-computed motion-to-photon delta; `None`
     /// still records a zero-latency sample. Drop-oldest: at
-    /// [`PENDING_CEILING`] the previous latest is dropped but the new
+    /// `PENDING_CEILING` the previous latest is dropped but the new
     /// frame still becomes `latest` — the drop is on the paint side.
     #[tracing::instrument(level = "trace", skip(self, nalus), fields(nalu_bytes = nalus.len()))]
     pub fn push_encoded_with_latency(

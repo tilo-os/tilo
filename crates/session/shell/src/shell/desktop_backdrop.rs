@@ -1,6 +1,6 @@
 //! Desktop backdrop widget — paints the desktop background behind all
 //! shell content: a diagonal gradient across the theme's ground surface
-//! ([`ground_stops`]), a 24×24 px grid of faint lines, and a tiled
+//! (`ground_stops`), a 24×24 px grid of faint lines, and a tiled
 //! 64×64 procedural noise overlay that breaks banding on the gradient.
 //!
 //! Structurally a thin `Container`-style wrapper around one optional

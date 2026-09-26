@@ -10,7 +10,7 @@
 //! a read-only, session-scoped capability for it before launching.
 //!
 //! Activating an already-open document must not start a second copy:
-//! [`OPEN_DOCUMENTS`] tracks a file's identity
+//! `OPEN_DOCUMENTS` tracks a file's identity
 //! ([`ui::record::RecordId::for_file`]) against the window each launch
 //! produced, and a record whose window has since closed is not "open".
 
@@ -184,7 +184,7 @@ pub fn open_at(path: &Path, chrome: &Chrome, placement: Placement) -> Result<Ope
 
 /// [`open_in_workspace`] for a caller that already knows the target
 /// group — a drop target is the user's own instruction rather than a
-/// placement rule. Every other open asks [`placement_for_document_open`].
+/// placement rule. Every other open asks `placement_for_document_open`.
 ///
 /// # Errors
 ///

@@ -1,5 +1,5 @@
 //! Native compositor mode: `--mode native` wires a real smithay event loop
-//! over [`state::State`], with an auto-named listening socket (`wayland-1`,
+//! over `state::State`, with an auto-named listening socket (`wayland-1`,
 //! `wayland-2`, …) handed to `DisplayHandle::insert_client`. Doesn't open a
 //! TTY, talk to DRM/KMS, render, or forward input — those live elsewhere.
 

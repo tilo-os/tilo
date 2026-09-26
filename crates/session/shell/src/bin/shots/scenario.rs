@@ -1307,7 +1307,7 @@ fn apply_window_and_workspace_actions(driver: &mut ShellDriver, action: &Action)
     }
 }
 
-/// The [`AppKind`] behind an app name written the way a tab pill spells
+/// The [`AppKind`](shell::shell::state::AppKind) behind an app name written the way a tab pill spells
 /// it. Inverse of `AppKind::as_str`, so a scenario names apps the way the
 /// screen does rather than the way the enum does.
 ///

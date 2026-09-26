@@ -125,7 +125,7 @@ impl PortalLifecycle {
     }
 
     /// Finish a session from the compositor/backend (for example, output
-    /// loss). The caller should use [`close_session_object`] to also emit the
+    /// loss). The caller should use `close_session_object` to also emit the
     /// mandated `Session.Closed` signal.
     pub fn finish_session(&self, path: &str) -> Option<LifecycleEntry> {
         close(&self.sessions, path, None)

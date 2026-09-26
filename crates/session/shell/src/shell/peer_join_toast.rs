@@ -7,7 +7,7 @@
 //! emits at most one combined toast per event kind.
 //!
 //! The batcher is time-source-injectable and pure — the caller pulls
-//! ready messages via [`drain_ready`] on a timer and pushes them into
+//! ready messages via `drain_ready` on a timer and pushes them into
 //! whatever notification surface the shell prefers.
 
 use std::collections::VecDeque;

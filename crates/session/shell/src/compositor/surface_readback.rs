@@ -4,7 +4,7 @@
 //! latest `wl_buffer` and stages it as a flat RGBA vector the streaming task drains per encode tick.
 //!
 //! [`buffer_to_rgba`] reads a `wl_shm` buffer and swizzles `Argb8888`/`Xrgb8888` (the only two
-//! formats smithay's [`ShmState`] advertises by default) into RGBA; the dmabuf path isn't
+//! formats smithay's `ShmState` advertises by default) into RGBA; the dmabuf path isn't
 //! handled here ([`ReadbackError::DmaBufUnsupported`]). [`SurfaceTracker`] reuses one `Vec<u8>`
 //! per surface so steady-state readback is allocation-free after the second commit.
 
