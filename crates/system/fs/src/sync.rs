@@ -28,6 +28,7 @@ use iroh_gossip::proto::TopicId;
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::RevocationList;
 use tokio::sync::mpsc;
+use wire_frame::{FrameError, Framing};
 
 use crate::acl::{AclHandle, IdentityKey};
 use crate::authenticated_transport::{AuthenticatedTransportConfig, authenticate_fs_peer_parts_at};
@@ -219,36 +220,10 @@ const MAX_FRAME: usize = 64 * 1024 * 1024;
 /// allocation without bound.
 const MAX_CONCURRENT_SYNC_CONNECTIONS: usize = 4;
 
-async fn write_frame(send: &mut SendStream, data: &[u8]) -> std::io::Result<()> {
-    let len = u32::try_from(data.len())
-        .map_err(|_| std::io::Error::other("sync frame too large to length-prefix"))?;
-    send.write_all(&len.to_le_bytes())
-        .await
-        .map_err(std::io::Error::other)?;
-    if !data.is_empty() {
-        send.write_all(data).await.map_err(std::io::Error::other)?;
-    }
-    Ok(())
-}
-
-async fn read_frame(recv: &mut RecvStream) -> std::io::Result<Vec<u8>> {
-    let mut len = [0u8; 4];
-    recv.read_exact(&mut len)
-        .await
-        .map_err(std::io::Error::other)?;
-    let n = u32::from_le_bytes(len) as usize;
-    if n == 0 {
-        return Ok(Vec::new());
-    }
-    if n > MAX_FRAME {
-        return Err(std::io::Error::other(format!("sync frame too large: {n}")));
-    }
-    let mut buf = vec![0u8; n];
-    recv.read_exact(&mut buf)
-        .await
-        .map_err(std::io::Error::other)?;
-    Ok(buf)
-}
+/// Each round of the sync-mode exchange, in both directions: a
+/// little-endian `u32` length, then the Automerge sync message, which is
+/// empty when that side has nothing to send.
+const SYNC_FRAMING: Framing = Framing::little_endian(MAX_FRAME);
 
 /// A shareable invitation to join a workspace: how to reach a peer + which
 /// gossip topic the workspace uses.
@@ -427,8 +402,13 @@ async fn sync_with_peer_at_boundaries(
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .sync_generate(&mut state)
             };
-            write_frame(&mut send, msg.as_deref().unwrap_or(&[])).await?;
-            let peer_msg = read_frame(&mut recv).await?;
+            SYNC_FRAMING
+                .write_async(&mut send, msg.as_deref().unwrap_or(&[]))
+                .await?;
+            let peer_msg = SYNC_FRAMING
+                .read_async(&mut recv)
+                .await?
+                .ok_or(FrameError::Closed)?;
             if !peer_msg.is_empty() {
                 received_change = true;
                 let _ = namespace
@@ -686,8 +666,11 @@ impl ProtocolHandler for SyncProtocol {
                             let _ = send.finish();
                             break;
                         }
-                        let peer_msg =
-                            read_frame(&mut recv).await.map_err(AcceptError::from_err)?;
+                        let peer_msg = SYNC_FRAMING
+                            .read_async(&mut recv)
+                            .await
+                            .and_then(|frame| frame.ok_or(FrameError::Closed))
+                            .map_err(AcceptError::from_err)?;
                         if !peer_msg.is_empty() {
                             let _ = self
                                 .namespace
@@ -702,7 +685,8 @@ impl ProtocolHandler for SyncProtocol {
                                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                                 .sync_generate(&mut state)
                         };
-                        write_frame(&mut send, msg.as_deref().unwrap_or(&[]))
+                        SYNC_FRAMING
+                            .write_async(&mut send, msg.as_deref().unwrap_or(&[]))
                             .await
                             .map_err(AcceptError::from_err)?;
                         if peer_msg.is_empty() && msg.is_none() {
