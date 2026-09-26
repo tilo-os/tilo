@@ -83,3 +83,240 @@ chat-notice-failed = That didn't work: { $reason }
 # A participant's card.
 chat-person-message = Message
 chat-person-invite = Invite to workspace
+
+# How the app names the local participant and someone not yet named.
+chat-you = You
+chat-someone = Someone ({ $tag })
+# A workspace whose name has not arrived yet.
+chat-workspace-fallback = Tilo workspace
+chat-workspace-current-fallback = Current workspace
+
+# A member's presence under their name in the roster.
+chat-presence-online = Online
+chat-presence-idle = Idle
+chat-presence-dnd = Do not disturb
+chat-presence-offline = Offline
+chat-member-you = { $name } (you)
+chat-member-agent = { $name } (agent)
+chat-member-in-voice = 🔊 In voice · { $channel }
+
+# The roster's heading: "Collaborators" once an agent is present.
+chat-roster-people = People
+chat-roster-collaborators = Collaborators
+chat-roster-subtitle = { $agents ->
+    [yes] { $count ->
+        [one] { $count } collaborator · { $workspace }
+       *[other] { $count } collaborators · { $workspace }
+    }
+   *[no] { $count ->
+        [one] { $count } person · { $workspace }
+       *[other] { $count } people · { $workspace }
+    }
+}
+
+# Context-menu rows.
+chat-menu-rename = Rename
+chat-menu-delete = Delete
+chat-menu-move-up = Move up
+chat-menu-move-down = Move down
+chat-menu-new-text-channel = New text channel
+chat-menu-new-voice-channel = New voice channel
+chat-menu-new-category = New category
+chat-menu-toggle-collapse = Collapse / expand
+chat-menu-archive = Archive / unarchive
+chat-menu-edit-message = Edit message
+chat-menu-pin-message = Pin / unpin
+chat-menu-delete-message = Delete message
+
+# Names of structure the app creates before somebody renames it.
+chat-default-category = New Category
+chat-default-voice-channel = Voice
+chat-default-new-voice-channel = New Voice
+
+# The inbox and the channel list header.
+chat-inbox-title = Inbox
+chat-inbox-subtitle = Conversations across Tilo workspaces
+chat-sidebar-title = { $workspace } channels
+chat-online-count = { $agents ->
+    [yes] { $count ->
+        [one] { $count } collaborator online
+       *[other] { $count } collaborators online
+    }
+   *[no] { $count ->
+        [one] { $count } person online
+       *[other] { $count } people online
+    }
+}
+
+# The conversation header.
+chat-header-from = From { $source }
+chat-header-source-topic = { $source } · { $topic }
+chat-header-in-call = ● In call
+chat-header-call = 📹 Call
+
+# The timeline.
+chat-jump-latest = ↓ Jump to latest
+chat-channel-start = This is the start of #{ $channel }. Write the first message to begin.
+chat-channel-empty = There are no messages in #{ $channel } yet.
+chat-day-today = Today
+chat-day-yesterday = Yesterday
+chat-day-ago = { $days ->
+    [one] { $days } day ago
+   *[other] { $days } days ago
+}
+chat-edited-view-history = (edited) · view history
+chat-replies = { $count ->
+    [one] { $count } reply
+   *[other] { $count } replies
+}
+chat-last-reply = last reply { $time }
+chat-image-loading = Loading image…
+chat-image-pending = Loading shared image…
+chat-image-unavailable = Shared image unavailable
+chat-image-decoding = Decoding image…
+chat-video-meta = video · { $size }
+chat-access-not-granted = Access not granted
+chat-view-only = 🔒 View-only access to this workspace
+
+# The inline message editor.
+chat-edit-placeholder = Edit message…
+chat-edit-hint = Enter to save · Esc to cancel
+chat-edit-save = Save
+chat-edit-cancel = Cancel
+
+# The composers.
+chat-composer-placeholder = Message #{ $channel }
+chat-thread-composer-placeholder = Reply…
+
+# The thread panel.
+chat-thread-title = Thread
+chat-thread-back = ← Back
+
+# The attachment picker and what became of an attachment.
+chat-attach-title = Share a file
+chat-attach-empty = No attachments in { $dir }
+chat-attach-more = +{ $count } more in the workspace
+chat-attach-loading = Loading attachments…
+chat-attach-preparing = Preparing attachment…
+chat-attach-shared = Attachment shared
+chat-attach-picker-exhausted = Attachment picker unavailable: request counter exhausted
+chat-attach-picker-cancelled = Attachment picker cancelled
+chat-attach-picker-failed = Attachment picker failed: { $reason }
+chat-attach-import-exhausted = Attachment import unavailable: request counter exhausted
+chat-attach-import-stale = Attachment import discarded: stale result
+chat-attach-import-failed = Attachment import failed: { $reason }
+chat-attach-import-permission = Attachment import cancelled: permission changed
+chat-attach-reason-workspace-unavailable = workspace is unavailable
+chat-attach-reason-file-unavailable = file is unavailable
+chat-attach-reason-not-shareable = file is not shareable or exceeds 32 MiB
+chat-attach-reason-unreadable = could not read file
+chat-attach-reason-empty = file is empty
+chat-attach-reason-too-large = file exceeds 32 MiB
+chat-attach-reason-store-refused = shared content store refused the attachment
+chat-attach-reason-verification = shared byte verification failed
+chat-attach-default-name = file
+
+# The call: tiles, the floating panel and the stage.
+chat-call-title-fallback = Call
+chat-call-active = Active call
+chat-call-expand = Expand
+chat-call-camera-off = Camera off
+chat-call-no-video = No video
+chat-call-you = You
+chat-call-you-host = You (host)
+chat-call-session-peer = peer-to-peer
+chat-call-session-host = host relay
+chat-call-panel-strip = { $caret } { $count } in call · { $session }
+chat-call-headcount = { $count } in the call
+chat-call-headcount-sharing = { $me ->
+    [yes] { $count } in the call · You are sharing a screen
+   *[no] { $count } in the call · { $name } is sharing a screen
+}
+chat-call-sharing-you = You're sharing your screen
+chat-call-sharing-other = { $name } is sharing a screen
+chat-call-sharing-you-sub = Everyone in the call sees your screen
+chat-call-sharing-other-sub = Connecting to the shared screen…
+chat-call-live = { $me ->
+    [yes] Live · Your screen
+   *[no] Live · { $name }'s screen
+}
+chat-call-action-join = Join call
+chat-call-action-leave = Leave call
+chat-call-action-speak = Use microphone
+chat-call-action-camera = Use camera
+chat-call-action-share = Share screen
+
+# Live media stopping on its own.
+chat-media-microphone = Microphone
+chat-media-camera = Camera
+chat-media-screen = Screen sharing
+chat-media-frame-too-large = { $track } stopped: encoded frame ({ $bytes } bytes) exceeds Chat's { $limit } byte media limit
+chat-media-screen-stopped = Screen sharing stopped: { $error }
+chat-media-sequence-exhausted = Media stopped: stream sequence limit reached. Leave and rejoin to restart it.
+
+# The emoji picker and a message's edit history.
+chat-emoji-add-reaction = Add reaction
+chat-emoji-title = Emoji
+chat-emoji-frequent = Frequent
+chat-history-title = Edit history
+chat-history-now = Now · { $time }
+chat-history-edited = Edited · { $time }
+
+# The app's accessibility tree: the window, its conversation and messages.
+chat-a11y-app = Chat
+chat-a11y-app-inbox = Inbox: conversations across Tilo workspaces
+chat-a11y-app-channels = Channels in the current Tilo workspace
+chat-a11y-messages = Messages
+chat-a11y-message = { $author }: { $text }
+chat-a11y-unknown-person = Unknown person
+
+# Accessible names of the app's controls.
+chat-a11y-inbox = { $unread ->
+    [0] Inbox
+   *[other] Inbox, { $unread } unread
+}
+chat-a11y-current-context = { $workspace } channels, current workspace
+chat-a11y-channel = { $glyph } { $name }{ $inbox ->
+        [yes] , from { $source }
+       *[no] {""}
+    }{ $unread ->
+        [0] {""}
+       *[other] , { $unread } unread
+    }
+chat-a11y-category = { $collapsed ->
+    [yes] Expand { $name }
+   *[no] Collapse { $name }
+}
+chat-a11y-category-fallback = category
+chat-a11y-add-channel = Add channel
+chat-a11y-add-category = Add category
+chat-a11y-rename-field = Rename field
+chat-a11y-edit-message = Edit message
+chat-a11y-composer = Message composer
+chat-a11y-thread-composer = Thread reply composer
+chat-a11y-send = Send message
+chat-a11y-jump-latest = Jump to latest message
+chat-a11y-insert-emoji = Insert emoji
+chat-a11y-attach = Attach a workspace file
+chat-a11y-attach-pick = Attach { $name }
+chat-a11y-start-call = Start or open call
+chat-a11y-show-navigation = Show conversation navigation
+chat-a11y-show-detail = Show people or thread
+chat-a11y-open-thread = Open message thread
+chat-a11y-close-thread = Close thread
+chat-a11y-reaction = { $mine ->
+    [yes] Remove { $emoji } reaction
+   *[no] Add { $emoji } reaction
+}
+chat-a11y-add-reaction = Add reaction
+chat-a11y-choose-emoji = Choose { $emoji }
+chat-a11y-edit-history = Show edit history
+chat-a11y-edit-save = Save message edit
+chat-a11y-edit-cancel = Cancel message edit
+chat-a11y-call-mute = Mute microphone
+chat-a11y-call-deafen = Deafen call audio
+chat-a11y-call-camera = Turn camera off
+chat-a11y-call-share = Share screen
+chat-a11y-call-participants = Show call participants
+chat-a11y-call-expand = Expand or restore call
+chat-a11y-call-leave = Leave call

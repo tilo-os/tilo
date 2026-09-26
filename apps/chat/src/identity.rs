@@ -160,7 +160,7 @@ fn user_display() -> String {
         .ok()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
+        .unwrap_or_else(|| crate::i18n::t("chat-you"));
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
@@ -168,7 +168,7 @@ fn user_display() -> String {
         .collect::<Vec<_>>()
         .join(" ");
     if display.is_empty() {
-        "You".to_string()
+        crate::i18n::t("chat-you")
     } else {
         display
     }

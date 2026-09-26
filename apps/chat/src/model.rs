@@ -204,11 +204,11 @@ impl CallSession {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            CallSession::Peer => "peer-to-peer",
-            CallSession::Host => "host relay",
-        }
+    pub fn label(self) -> String {
+        crate::i18n::t(match self {
+            CallSession::Peer => "chat-call-session-peer",
+            CallSession::Host => "chat-call-session-host",
+        })
     }
 }
 
@@ -745,9 +745,15 @@ pub fn day_label(ts: i64, now: i64) -> String {
     let day = ts.div_euclid(86_400);
     let today = now.div_euclid(86_400);
     match today - day {
-        d if d <= 0 => "Today".to_string(),
-        1 => "Yesterday".to_string(),
-        d => format!("{d} days ago"),
+        d if d <= 0 => crate::i18n::t("chat-day-today"),
+        1 => crate::i18n::t("chat-day-yesterday"),
+        d => crate::i18n::t_args(
+            "chat-day-ago",
+            &[(
+                "days",
+                crate::i18n::number(usize::try_from(d).unwrap_or(usize::MAX)),
+            )],
+        ),
     }
 }
 

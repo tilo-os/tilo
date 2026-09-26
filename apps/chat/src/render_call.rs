@@ -297,7 +297,7 @@ impl ChatApp {
         // Disc + caption are one block centred in the band above the name
         // plate (the same rule the member tiles follow), so the caption never
         // runs into the plate.
-        let s = "Camera off";
+        let s = &crate::i18n::t("chat-call-camera-off");
         let (sw, sh) = tr.measure(s, 12.0, None);
         let s2 = f64::from(theme.tokens.spacing.s2);
         let (cy, caption_y) = avatar_caption_block(rect, r, f64::from(sh), plate_height(theme), s2);
@@ -374,9 +374,10 @@ impl ChatApp {
 
         // Title bar doubles as the DRAG HANDLE — grab it to move the overlay.
         let title_bar = Rect::new(panel.x0, panel.y0, panel.x1, panel.y0 + 30.0);
-        let name = self
-            .channel(&self.call.channel)
-            .map_or_else(|| "Call".into(), |c| c.name.clone());
+        let name = self.channel(&self.call.channel).map_or_else(
+            || crate::i18n::t("chat-call-title-fallback"),
+            |c| c.name.clone(),
+        );
         ui::surface::floating_drag_grip(scene, tf, panel, c.text_dim);
         label(
             scene,
@@ -434,7 +435,15 @@ impl ChatApp {
                 1.0,
             );
         }
-        Self::name_plate(scene, tf, tr, theme, v, "You", self.call.muted);
+        Self::name_plate(
+            scene,
+            tf,
+            tr,
+            theme,
+            v,
+            &crate::i18n::t("chat-call-you"),
+            self.call.muted,
+        );
         if let Some(error) = &self.media_error {
             label(
                 scene,
@@ -516,10 +525,13 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            &format!(
-                "{caret} {} in call · {}",
-                parts.len(),
-                self.call_session().label()
+            &crate::i18n::t_args(
+                "chat-call-panel-strip",
+                &[
+                    ("caret", crate::i18n::text(caret)),
+                    ("count", crate::i18n::number(parts.len())),
+                    ("session", crate::i18n::text(self.call_session().label())),
+                ],
             ),
             11.0,
             c.text_dim,
@@ -616,23 +628,32 @@ impl ChatApp {
         let gap = f64::from(theme.tokens.spacing.s2);
         let muted = self.call.muted;
         let deaf = self.call.deafened;
-        let mut ctrls: Vec<(&str, &str, bool, bool, Hit)> = vec![
+        let t = crate::i18n::t;
+        let mut ctrls: Vec<(String, &str, bool, bool, Hit)> = vec![
             (
-                if muted { "Unmute" } else { "Mute" },
+                t(if muted {
+                    "chat-call-unmute"
+                } else {
+                    "chat-call-mute"
+                }),
                 if muted { "🔇" } else { "🎤" },
                 muted,
                 false,
                 Hit::CallMute,
             ),
             (
-                if deaf { "Undeafen" } else { "Deafen" },
+                t(if deaf {
+                    "chat-call-undeafen"
+                } else {
+                    "chat-call-deafen"
+                }),
                 if deaf { "🔕" } else { "🎧" },
                 deaf,
                 false,
                 Hit::CallDeafen,
             ),
-            ("Expand", "⤢", false, false, Hit::CallExpand),
-            ("Leave", "✕", false, true, Hit::CallLeave),
+            (t("chat-call-expand"), "⤢", false, false, Hit::CallExpand),
+            (t("chat-call-leave"), "✕", false, true, Hit::CallLeave),
         ];
         if panel.width() < 300.0 {
             ctrls.remove(2); // trim Expand on a cramped panel
@@ -650,7 +671,7 @@ impl ChatApp {
                 tr,
                 theme,
                 r,
-                if use_text { txt } else { icon },
+                if use_text { &txt } else { icon },
                 on,
                 danger,
                 hovered,
@@ -681,9 +702,10 @@ impl ChatApp {
         let m = &self.call_overlay_metrics;
         let title_y = self.rect.y0 + m.header_pad_top;
         let subtitle_y = title_y + m.title_h + m.header_gap;
-        let title = self
-            .channel(&self.call.channel)
-            .map_or_else(|| "Call".into(), |c| c.name.clone());
+        let title = self.channel(&self.call.channel).map_or_else(
+            || crate::i18n::t("chat-call-title-fallback"),
+            |c| c.name.clone(),
+        );
         let (tw, _) = tr.measure_weighted(&title, CALL_TITLE_TEXT, None, TextWeight::Bold);
         text(
             scene,
@@ -703,15 +725,18 @@ impl ChatApp {
         // screen is on the stage — surfaced the instant the shared voice
         // membership records a share, before any frame arrives.
         let sub = match &sharer {
-            Some(id) => {
-                let who = if *id == self.me.id {
-                    "You are".to_string()
-                } else {
-                    format!("{} is", self.user_name(id))
-                };
-                format!("{} in the call · {who} sharing a screen", parts.len())
-            }
-            None => format!("{} in the call", parts.len()),
+            Some(id) => crate::i18n::t_args(
+                "chat-call-headcount-sharing",
+                &[
+                    ("count", crate::i18n::number(parts.len())),
+                    ("me", crate::i18n::flag(*id == self.me.id)),
+                    ("name", crate::i18n::text(self.user_name(id))),
+                ],
+            ),
+            None => crate::i18n::t_args(
+                "chat-call-headcount",
+                &[("count", crate::i18n::number(parts.len()))],
+            ),
         };
         let (sw, _) = tr.measure(&sub, CALL_SUBTITLE_TEXT, None);
         label(
@@ -844,9 +869,12 @@ impl ChatApp {
 
         // Status text below the glyph.
         let head = if is_me {
-            "You're sharing your screen".to_string()
+            crate::i18n::t("chat-call-sharing-you")
         } else {
-            format!("{name} is sharing a screen")
+            crate::i18n::t_args(
+                "chat-call-sharing-other",
+                &[("name", crate::i18n::text(name.clone()))],
+            )
         };
         let (hw, _) = tr.measure(&head, 15.0, None);
         text(
@@ -864,17 +892,17 @@ impl ChatApp {
         // Honest status: the local sharer is the source; a remote tile is
         // waiting on the first decoded frame (this branch only runs with no
         // frame present, so it never claims to be showing video it lacks).
-        let sub = if is_me {
-            "Everyone in the call sees your screen"
+        let sub = crate::i18n::t(if is_me {
+            "chat-call-sharing-you-sub"
         } else {
-            "Connecting to the shared screen…"
-        };
-        let (subw, _) = tr.measure(sub, 12.0, None);
+            "chat-call-sharing-other-sub"
+        });
+        let (subw, _) = tr.measure(&sub, 12.0, None);
         label(
             scene,
             tr,
             tf,
-            sub,
+            &sub,
             12.0,
             c.text_dim,
             gcx - f64::from(subw) / 2.0,
@@ -897,12 +925,13 @@ impl ChatApp {
         is_me: bool,
     ) {
         let c = &theme.tokens.colors;
-        let who = if is_me {
-            "Your screen".to_string()
-        } else {
-            format!("{name}'s screen")
-        };
-        let txt = format!("Live · {who}");
+        let txt = crate::i18n::t_args(
+            "chat-call-live",
+            &[
+                ("me", crate::i18n::flag(is_me)),
+                ("name", crate::i18n::text(name)),
+            ],
+        );
         let (lw, _) = tr.measure(&txt, 11.5, None);
         let pill = Rect::new(
             rect.x0 + 12.0,
@@ -940,7 +969,15 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let host = self.overlay_host_rect();
-        Self::name_plate(scene, tf, tr, theme, host, "You (host)", self.call.muted);
+        Self::name_plate(
+            scene,
+            tf,
+            tr,
+            theme,
+            host,
+            &crate::i18n::t("chat-call-you-host"),
+            self.call.muted,
+        );
 
         // Controls bar: auto-sized to its buttons and wrapped onto extra rows
         // when the window is too narrow to hold them all in one line, so it
@@ -1232,7 +1269,7 @@ impl ChatApp {
             // this peer reads "No video". It never claims to show video it
             // doesn't have. Disc + caption are one block centred in the band
             // above the name plate, so the caption never touches the plate.
-            let s = member_tile_caption(p);
+            let s = &member_tile_caption(p);
             let (sw, sh) = tr.measure(s, 11.5, None);
             let s2 = f64::from(theme.tokens.spacing.s2);
             let (cy, caption_y) =
@@ -1451,16 +1488,16 @@ impl ChatApp {
             &ui::surface::edge_outline(panel, 14.0),
         );
 
-        let title = if self.emoji_target.is_some() {
-            "Add reaction"
+        let title = crate::i18n::t(if self.emoji_target.is_some() {
+            "chat-emoji-add-reaction"
         } else {
-            "Emoji"
-        };
+            "chat-emoji-title"
+        });
         label(
             scene,
             tr,
             tf,
-            title,
+            &title,
             13.0,
             c.text_primary,
             panel.x0 + 14.0,
@@ -1473,7 +1510,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Frequent",
+            &crate::i18n::t("chat-emoji-frequent"),
             10.5,
             c.text_dim,
             panel.x0 + 14.0,
@@ -1581,11 +1618,19 @@ impl ChatApp {
         // measure — each row's rendered body height is carried alongside its
         // text so the draw loop never has to re-index back into a parallel
         // heights vector.
-        let mut entries: Vec<(String, String)> =
-            vec![(format!("Now · {}", model::clock(m.ts)), m.text.clone())];
+        let mut entries: Vec<(String, String)> = vec![(
+            crate::i18n::t_args(
+                "chat-history-now",
+                &[("time", crate::i18n::text(model::clock(m.ts)))],
+            ),
+            m.text.clone(),
+        )];
         for rec in m.history.iter().rev() {
             entries.push((
-                format!("Edited · {}", model::clock(rec.ts)),
+                crate::i18n::t_args(
+                    "chat-history-edited",
+                    &[("time", crate::i18n::text(model::clock(rec.ts)))],
+                ),
                 rec.text.clone(),
             ));
         }
@@ -1624,7 +1669,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Edit history",
+            &crate::i18n::t("chat-history-title"),
             13.0,
             c.text_primary,
             panel.x0 + 14.0,
@@ -1714,12 +1759,12 @@ fn avatar_caption_block(
     (top + radius, top + 2.0 * radius + gap)
 }
 
-fn member_tile_caption(p: &Participant) -> &'static str {
-    if p.audio_only {
-        "Camera off"
+fn member_tile_caption(p: &Participant) -> String {
+    crate::i18n::t(if p.audio_only {
+        "chat-call-camera-off"
     } else {
-        "No video"
-    }
+        "chat-call-no-video"
+    })
 }
 
 /// A measurement-free width for an expanded-overlay control button: the fixed

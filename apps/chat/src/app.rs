@@ -247,25 +247,25 @@ impl MenuAction {
             MenuAction::StatusDuplicate => return crate::i18n::t("chat-report-set-duplicate"),
             other => other,
         };
-        match fixed {
-            MenuAction::Rename => "Rename",
-            MenuAction::Delete => "Delete",
-            MenuAction::MoveUp => "Move up",
-            MenuAction::MoveDown => "Move down",
-            MenuAction::NewChannelHere => "New text channel",
-            MenuAction::NewVoiceChannelHere => "New voice channel",
-            MenuAction::NewCategory => "New category",
-            MenuAction::ToggleCollapse => "Collapse / expand",
-            MenuAction::Archive => "Archive / unarchive",
-            MenuAction::EditMessage => "Edit message",
-            MenuAction::PinMessage => "Pin / unpin",
-            MenuAction::DeleteMessage => "Delete message",
+        let key = match fixed {
+            MenuAction::Rename => "chat-menu-rename",
+            MenuAction::Delete => "chat-menu-delete",
+            MenuAction::MoveUp => "chat-menu-move-up",
+            MenuAction::MoveDown => "chat-menu-move-down",
+            MenuAction::NewChannelHere => "chat-menu-new-text-channel",
+            MenuAction::NewVoiceChannelHere => "chat-menu-new-voice-channel",
+            MenuAction::NewCategory => "chat-menu-new-category",
+            MenuAction::ToggleCollapse => "chat-menu-toggle-collapse",
+            MenuAction::Archive => "chat-menu-archive",
+            MenuAction::EditMessage => "chat-menu-edit-message",
+            MenuAction::PinMessage => "chat-menu-pin-message",
+            MenuAction::DeleteMessage => "chat-menu-delete-message",
             MenuAction::ToggleFeedback
             | MenuAction::Status(_)
             | MenuAction::StatusFixed
-            | MenuAction::StatusDuplicate => "",
-        }
-        .to_string()
+            | MenuAction::StatusDuplicate => return String::new(),
+        };
+        crate::i18n::t(key)
     }
     pub fn is_destructive(self) -> bool {
         matches!(self, MenuAction::Delete | MenuAction::DeleteMessage)
@@ -341,7 +341,8 @@ pub(crate) enum AttachmentImportResult {
     },
     Failed {
         token: u64,
-        reason: String,
+        /// Catalogue key of why it failed, resolved on the UI thread.
+        reason: &'static str,
     },
 }
 
@@ -354,7 +355,8 @@ pub(crate) enum AttachmentPickerResult {
     },
     Failed {
         generation: u64,
-        reason: String,
+        /// Catalogue key of why it failed, resolved on the UI thread.
+        reason: &'static str,
     },
 }
 
@@ -363,6 +365,27 @@ pub(crate) struct AttachmentImportPending {
     pub token: u64,
     pub channel: Id,
     pub author: Id,
+}
+
+/// The attachment picker's status line: what it says, and whether that is a
+/// failure the reader should notice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AttachmentStatus {
+    pub text: String,
+    pub failed: bool,
+}
+
+impl AttachmentStatus {
+    pub fn info(text: String) -> Self {
+        Self {
+            text,
+            failed: false,
+        }
+    }
+
+    pub fn failure(text: String) -> Self {
+        Self { text, failed: true }
+    }
 }
 
 impl RowSwipe {
@@ -728,7 +751,7 @@ pub struct ChatApp {
     pub(crate) attachment_result_tx: SyncSender<AttachmentImportResult>,
     pub(crate) attachment_result_rx: Receiver<AttachmentImportResult>,
     /// A settled import outcome for the picker/status UI and accessibility.
-    pub(crate) attachment_status: Option<String>,
+    pub(crate) attachment_status: Option<AttachmentStatus>,
     pub(crate) attachment_picker_pending: Option<u64>,
     pub(crate) attachment_picker_generation: u64,
     pub(crate) attachment_picker_result_tx: SyncSender<AttachmentPickerResult>,
@@ -1570,12 +1593,19 @@ impl ChatApp {
                 // until the worker's generation-checked reply settles.
                 self.attach_entries.clear();
                 self.attachment_picker_pending = Some(0);
-                self.attachment_status = Some("Loading attachments…".into());
+                self.attachment_status = Some(AttachmentStatus::info(crate::i18n::t(
+                    "chat-attach-loading",
+                )));
             }
             "attach-error" => {
                 self.seed_shot_scenario("attach");
-                self.attachment_status =
-                    Some("Attachment import failed: file is unavailable".into());
+                self.attachment_status = Some(AttachmentStatus::failure(crate::i18n::t_args(
+                    "chat-attach-import-failed",
+                    &[(
+                        "reason",
+                        crate::i18n::text(crate::i18n::t("chat-attach-reason-file-unavailable")),
+                    )],
+                )));
             }
             "edit" => {
                 // The inline message editor open on your own last message,
@@ -1999,14 +2029,23 @@ impl ChatApp {
 
     #[cfg(feature = "live-media")]
     fn stop_unrepresentable_media_track(&mut self, kind: crate::media::TrackKind, bytes: usize) {
-        let label = match kind {
-            crate::media::TrackKind::Audio => "Microphone",
-            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => "Camera",
-            crate::media::TrackKind::Screen => "Screen sharing",
-        };
-        self.media_error = Some(format!(
-            "{label} stopped: encoded frame ({bytes} bytes) exceeds Chat's {} byte media limit",
-            crate::media::MAX_MEDIA_PAYLOAD
+        let track = crate::i18n::t(match kind {
+            crate::media::TrackKind::Audio => "chat-media-microphone",
+            crate::media::TrackKind::Video | crate::media::TrackKind::CameraFramed => {
+                "chat-media-camera"
+            }
+            crate::media::TrackKind::Screen => "chat-media-screen",
+        });
+        self.media_error = Some(crate::i18n::t_args(
+            "chat-media-frame-too-large",
+            &[
+                ("track", crate::i18n::text(track)),
+                ("bytes", crate::i18n::number(bytes)),
+                (
+                    "limit",
+                    crate::i18n::number(crate::media::MAX_MEDIA_PAYLOAD),
+                ),
+            ],
         ));
         self.media.transport_mut().unpublish(kind);
         match kind {
@@ -2025,7 +2064,10 @@ impl ChatApp {
 
     #[cfg(feature = "live-media")]
     fn stop_screen_for_error(&mut self, error: &tilo_callstream::FrameError) {
-        self.media_error = Some(format!("Screen sharing stopped: {error}"));
+        self.media_error = Some(crate::i18n::t_args(
+            "chat-media-screen-stopped",
+            &[("error", crate::i18n::text(error.to_string()))],
+        ));
         self.call.sharing = false;
         self.release_screen();
         self.screen_share_needs_sync = true;
@@ -2114,10 +2156,7 @@ impl ChatApp {
     fn next_media_seq(&mut self) -> Option<u64> {
         let s = self.media_seq;
         let Some(next) = self.media_seq.checked_add(1) else {
-            self.media_error = Some(
-                "Media stopped: stream sequence limit reached. Leave and rejoin to restart it."
-                    .into(),
-            );
+            self.media_error = Some(crate::i18n::t("chat-media-sequence-exhausted"));
             for kind in [
                 crate::media::TrackKind::Audio,
                 crate::media::TrackKind::Video,
@@ -2419,13 +2458,16 @@ impl ChatApp {
         // room's address for itself still wrote its earlier lines under the
         // id it resolved at startup, and those are still its own.
         if self.is_me(id) {
-            return "You".to_string();
+            return crate::i18n::t("chat-you");
         }
         let named = self.display_name(id);
         if named != id && !named.trim().is_empty() {
             return named;
         }
-        format!("Someone ({})", Self::unnamed_tag(id))
+        crate::i18n::t_args(
+            "chat-someone",
+            &[("tag", crate::i18n::text(Self::unnamed_tag(id)))],
+        )
     }
 
     /// Enough of an unresolved id to tell two unnamed people apart.
@@ -2712,8 +2754,10 @@ impl ChatApp {
             .channel(&self.active_channel)
             .map(|c| c.name.clone())
             .unwrap_or_default();
-        self.composer_main
-            .set_placeholder(&format!("Message #{ch_name}"));
+        self.composer_main.set_placeholder(&crate::i18n::t_args(
+            "chat-composer-placeholder",
+            &[("channel", crate::i18n::text(ch_name))],
+        ));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         self.draft_thread = match self.thread_draft_key() {
@@ -2721,7 +2765,8 @@ impl ChatApp {
             None => String::new(),
         };
         self.composer_thread.set_text(&self.draft_thread);
-        self.composer_thread.set_placeholder("Reply…");
+        self.composer_thread
+            .set_placeholder(&crate::i18n::t("chat-thread-composer-placeholder"));
         self.composer_thread
             .set_local_author(Some(self.me.id.clone()));
         // `--shots` only: stage a mid-compose draft into the main composer so a
@@ -2915,12 +2960,12 @@ impl ChatApp {
     /// The roster's public destination name. `People` is precise when every
     /// entry is human; once an agent is present, `Collaborators` accurately
     /// covers both and the row itself keeps the agent visibly typed.
-    pub(crate) fn roster_label(&self) -> &'static str {
-        if self.users.iter().any(|u| u.is_agent) {
-            "Collaborators"
+    pub(crate) fn roster_label(&self) -> String {
+        crate::i18n::t(if self.users.iter().any(|u| u.is_agent) {
+            "chat-roster-collaborators"
         } else {
-            "People"
-        }
+            "chat-roster-people"
+        })
     }
 
     // --- responsive flap geometry ----------------------------------------
@@ -3167,28 +3212,35 @@ impl ChatApp {
         &self,
         hits: &[(Rect, Hit)],
     ) -> Vec<(Rect, Hit, String, ui::a11y::Role, bool)> {
+        use crate::i18n::{flag, number, t, t_args, text};
         use ui::a11y::Role;
 
         hits.iter()
             .filter_map(|(rect, hit)| {
                 let (name, role, selected) = match hit {
                     Hit::Inbox => {
-                        let unread: u32 = self.channels.iter().map(|channel| channel.unread).sum();
-                        let suffix = if unread == 0 {
-                            String::new()
-                        } else {
-                            format!(", {unread} unread")
-                        };
-                        (format!("Inbox{suffix}"), Role::Tab, self.inbox_open)
+                        let unread: usize = self
+                            .channels
+                            .iter()
+                            .map(|channel| channel.unread as usize)
+                            .sum();
+                        (
+                            t_args("chat-a11y-inbox", &[("unread", number(unread))]),
+                            Role::Tab,
+                            self.inbox_open,
+                        )
                     }
                     Hit::CurrentContext => {
                         let name = self
                             .workspaces
                             .iter()
                             .find(|workspace| workspace.id == self.context_ws)
-                            .map_or("Current workspace", |workspace| workspace.name.as_str());
+                            .map_or_else(
+                                || t("chat-workspace-current-fallback"),
+                                |workspace| workspace.name.clone(),
+                            );
                         (
-                            format!("{name} channels, current workspace"),
+                            t_args("chat-a11y-current-context", &[("workspace", text(name))]),
                             Role::Tab,
                             !self.inbox_open,
                         )
@@ -3199,65 +3251,78 @@ impl ChatApp {
                             .workspaces
                             .iter()
                             .find(|workspace| workspace.id == channel.workspace)
-                            .map_or("Tilo workspace", |workspace| workspace.name.as_str());
-                        let unread = if channel.unread == 0 {
-                            String::new()
-                        } else {
-                            format!(", {} unread", channel.unread)
-                        };
-                        let context = if self.inbox_open {
-                            format!(", from {source}")
-                        } else {
-                            String::new()
-                        };
+                            .map_or_else(
+                                || t("chat-workspace-fallback"),
+                                |workspace| workspace.name.clone(),
+                            );
                         (
-                            format!("{} {}{context}{unread}", channel.kind.glyph(), channel.name),
+                            t_args(
+                                "chat-a11y-channel",
+                                &[
+                                    ("glyph", text(channel.kind.glyph())),
+                                    ("name", text(channel.name.clone())),
+                                    ("inbox", flag(self.inbox_open)),
+                                    ("source", text(source)),
+                                    ("unread", number(channel.unread as usize)),
+                                ],
+                            ),
                             Role::ListItem,
                             channel.id == self.active_channel,
                         )
                     }
                     Hit::CategoryToggle(id) => {
                         let category = self.categories.iter().find(|category| category.id == *id);
-                        let name = category.map_or("category", |category| category.name.as_str());
+                        let name = category.map_or_else(
+                            || t("chat-a11y-category-fallback"),
+                            |category| category.name.clone(),
+                        );
                         let collapsed = category.is_some_and(|category| category.collapsed);
                         (
-                            format!("{} {name}", if collapsed { "Expand" } else { "Collapse" }),
+                            t_args(
+                                "chat-a11y-category",
+                                &[("collapsed", flag(collapsed)), ("name", text(name))],
+                            ),
                             Role::ToggleButton,
                             !collapsed,
                         )
                     }
-                    Hit::AddChannel { .. } => ("Add channel".into(), Role::Button, false),
-                    Hit::AddCategory(_) => ("Add category".into(), Role::Button, false),
-                    Hit::FocusRename => ("Rename field".into(), Role::TextInput, false),
-                    Hit::FocusEdit => ("Edit message".into(), Role::MultilineTextInput, false),
-                    Hit::FocusMain => ("Message composer".into(), Role::MultilineTextInput, false),
+                    Hit::AddChannel { .. } => (t("chat-a11y-add-channel"), Role::Button, false),
+                    Hit::AddCategory(_) => (t("chat-a11y-add-category"), Role::Button, false),
+                    Hit::FocusRename => (t("chat-a11y-rename-field"), Role::TextInput, false),
+                    Hit::FocusEdit => {
+                        (t("chat-a11y-edit-message"), Role::MultilineTextInput, false)
+                    }
+                    Hit::FocusMain => (t("chat-a11y-composer"), Role::MultilineTextInput, false),
                     Hit::FocusThread => (
-                        "Thread reply composer".into(),
+                        t("chat-a11y-thread-composer"),
                         Role::MultilineTextInput,
                         false,
                     ),
-                    Hit::Send => ("Send message".into(), Role::Button, false),
-                    Hit::JumpToLatest => ("Jump to latest message".into(), Role::Button, false),
-                    Hit::ComposerEmoji(_) => ("Insert emoji".into(), Role::Button, false),
-                    Hit::Attach => ("Attach a workspace file".into(), Role::Button, false),
+                    Hit::Send => (t("chat-a11y-send"), Role::Button, false),
+                    Hit::JumpToLatest => (t("chat-a11y-jump-latest"), Role::Button, false),
+                    Hit::ComposerEmoji(_) => (t("chat-a11y-insert-emoji"), Role::Button, false),
+                    Hit::Attach => (t("chat-a11y-attach"), Role::Button, false),
                     Hit::AttachPick(path) => (
-                        format!(
-                            "Attach {}",
-                            std::path::Path::new(path)
-                                .file_name()
-                                .and_then(std::ffi::OsStr::to_str)
-                                .unwrap_or(path)
+                        t_args(
+                            "chat-a11y-attach-pick",
+                            &[(
+                                "name",
+                                text(
+                                    std::path::Path::new(path)
+                                        .file_name()
+                                        .and_then(std::ffi::OsStr::to_str)
+                                        .unwrap_or(path),
+                                ),
+                            )],
                         ),
                         Role::Button,
                         false,
                     ),
-                    Hit::StartCall => ("Start or open call".into(), Role::Button, false),
-                    Hit::ToggleLeftFlap => {
-                        ("Show conversation navigation".into(), Role::Button, false)
-                    }
-                    Hit::ToggleRightFlap => ("Show people or thread".into(), Role::Button, false),
-                    Hit::OpenThread(_) => ("Open message thread".into(), Role::Button, false),
-                    Hit::CloseThread => ("Close thread".into(), Role::Button, false),
+                    Hit::StartCall => (t("chat-a11y-start-call"), Role::Button, false),
+                    Hit::ToggleLeftFlap => (t("chat-a11y-show-navigation"), Role::Button, false),
+                    Hit::ToggleRightFlap => (t("chat-a11y-show-detail"), Role::Button, false),
+                    Hit::OpenThread(_) => (t("chat-a11y-open-thread"), Role::Button, false),
+                    Hit::CloseThread => (t("chat-a11y-close-thread"), Role::Button, false),
                     Hit::Reaction { msg, emoji } => {
                         let mine = self
                             .message(msg)
@@ -3269,45 +3334,52 @@ impl ChatApp {
                             })
                             .is_some_and(|reaction| reaction.reacted_by(&self.me.id));
                         (
-                            format!("{} {} reaction", if mine { "Remove" } else { "Add" }, emoji),
+                            t_args(
+                                "chat-a11y-reaction",
+                                &[("mine", flag(mine)), ("emoji", text(emoji.clone()))],
+                            ),
                             Role::ToggleButton,
                             mine,
                         )
                     }
-                    Hit::AddReaction { .. } => ("Add reaction".into(), Role::Button, false),
-                    Hit::EmojiChoice(emoji) => (format!("Choose {emoji}"), Role::Button, false),
-                    Hit::EditHistory { .. } => ("Show edit history".into(), Role::Button, false),
-                    Hit::EditSave => ("Save message edit".into(), Role::Button, false),
-                    Hit::EditCancel => ("Cancel message edit".into(), Role::Button, false),
+                    Hit::AddReaction { .. } => (t("chat-a11y-add-reaction"), Role::Button, false),
+                    Hit::EmojiChoice(emoji) => (
+                        t_args("chat-a11y-choose-emoji", &[("emoji", text(emoji.clone()))]),
+                        Role::Button,
+                        false,
+                    ),
+                    Hit::EditHistory { .. } => (t("chat-a11y-edit-history"), Role::Button, false),
+                    Hit::EditSave => (t("chat-a11y-edit-save"), Role::Button, false),
+                    Hit::EditCancel => (t("chat-a11y-edit-cancel"), Role::Button, false),
                     Hit::CallMute => (
-                        "Mute microphone".into(),
+                        t("chat-a11y-call-mute"),
                         Role::ToggleButton,
                         self.call.muted,
                     ),
                     Hit::CallDeafen => (
-                        "Deafen call audio".into(),
+                        t("chat-a11y-call-deafen"),
                         Role::ToggleButton,
                         self.call.deafened,
                     ),
                     Hit::CallAudioOnly => (
-                        "Turn camera off".into(),
+                        t("chat-a11y-call-camera"),
                         Role::ToggleButton,
                         self.call.audio_only,
                     ),
-                    Hit::CallShareScreen => {
-                        ("Share screen".into(), Role::ToggleButton, self.call.sharing)
-                    }
+                    Hit::CallShareScreen => (
+                        t("chat-a11y-call-share"),
+                        Role::ToggleButton,
+                        self.call.sharing,
+                    ),
                     Hit::CallParticipantsToggle => (
-                        "Show call participants".into(),
+                        t("chat-a11y-call-participants"),
                         Role::ToggleButton,
                         self.call.participants_expanded,
                     ),
-                    Hit::CallExpand => (
-                        "Expand or restore call".into(),
-                        Role::Button,
-                        self.call.expanded,
-                    ),
-                    Hit::CallLeave => ("Leave call".into(), Role::Button, false),
+                    Hit::CallExpand => {
+                        (t("chat-a11y-call-expand"), Role::Button, self.call.expanded)
+                    }
+                    Hit::CallLeave => (t("chat-a11y-call-leave"), Role::Button, false),
                     Hit::OpenReference(msg, index) => {
                         let reference = self.message(msg)?.references().nth(*index)?;
                         (
@@ -4245,16 +4317,23 @@ impl Widget for ChatApp {
             .iter()
             .filter(|message| message.parent.is_none())
             .map(|message| {
-                let author = self
-                    .user(&message.author)
-                    .map_or("Unknown person", |user| user.name.as_str());
+                let author = self.user(&message.author).map_or_else(
+                    || crate::i18n::t("chat-a11y-unknown-person"),
+                    |user| user.name.clone(),
+                );
                 AccessNode::new(Role::ListItem)
-                    .with_name(format!("{author}: {}", message.text))
+                    .with_name(crate::i18n::t_args(
+                        "chat-a11y-message",
+                        &[
+                            ("author", crate::i18n::text(author)),
+                            ("text", crate::i18n::text(&message.text)),
+                        ],
+                    ))
                     .with_hashed_key((&message.id, "message"))
             })
             .collect();
         let conversation = AccessNode::new(Role::List)
-            .with_name("Messages")
+            .with_name(crate::i18n::t("chat-a11y-messages"))
             .with_children(conversation)
             .with_hashed_key("message-list");
 
@@ -4280,12 +4359,12 @@ impl Widget for ChatApp {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Chat")
-                .with_description(if self.inbox_open {
-                    "Inbox: conversations across Tilo workspaces"
+                .with_name(crate::i18n::t("chat-a11y-app"))
+                .with_description(crate::i18n::t(if self.inbox_open {
+                    "chat-a11y-app-inbox"
                 } else {
-                    "Channels in the current Tilo workspace"
-                })
+                    "chat-a11y-app-channels"
+                }))
                 .with_children(children),
         )
     }

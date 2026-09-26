@@ -341,13 +341,13 @@ pub(crate) fn draw_avatar(
 }
 
 /// Human label for a presence state, shown under a member in the roster.
-fn presence_label(p: Presence) -> &'static str {
-    match p {
-        Presence::Online => "Online",
-        Presence::Idle => "Idle",
-        Presence::Dnd => "Do not disturb",
-        Presence::Offline => "Offline",
-    }
+fn presence_label(p: Presence) -> String {
+    crate::i18n::t(match p {
+        Presence::Online => "chat-presence-online",
+        Presence::Idle => "chat-presence-idle",
+        Presence::Dnd => "chat-presence-dnd",
+        Presence::Offline => "chat-presence-offline",
+    })
 }
 
 impl ChatApp {
@@ -525,7 +525,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Inbox",
+            &crate::i18n::t("chat-inbox-title"),
             17.0,
             c.text_primary,
             side.x0 + 16.0,
@@ -535,7 +535,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Conversations across Tilo workspaces",
+            &crate::i18n::t("chat-inbox-subtitle"),
             10.5,
             c.text_dim,
             side.x0 + 16.0,
@@ -707,7 +707,10 @@ impl ChatApp {
             .unwrap_or_default();
         let sp = &theme.tokens.spacing;
         let title_size = theme.tokens.typography.scale.lg;
-        let title_full = format!("{ws_name} channels");
+        let title_full = crate::i18n::t_args(
+            "chat-sidebar-title",
+            &[("workspace", crate::i18n::text(ws_name))],
+        );
         let title_h = f64::from(tr.measure(&title_full, title_size, None).1);
         // Presence is meaningful only when this workspace has another person
         // in it. Do not surface "1 person online" as a pseudo-status in a
@@ -718,18 +721,16 @@ impl ChatApp {
                 .iter()
                 .filter(|u| u.status == Presence::Online)
                 .count();
-            let noun = if self.users.iter().any(|u| u.is_agent) {
-                if online == 1 {
-                    "collaborator"
-                } else {
-                    "collaborators"
-                }
-            } else if online == 1 {
-                "person"
-            } else {
-                "people"
-            };
-            format!("{online} {noun} online")
+            crate::i18n::t_args(
+                "chat-online-count",
+                &[
+                    (
+                        "agents",
+                        crate::i18n::flag(self.users.iter().any(|u| u.is_agent)),
+                    ),
+                    ("count", crate::i18n::number(online)),
+                ],
+            )
         });
         // The pill is measured first and reserved in full — dot, its gap, the
         // text and the capsule's two side pads — and only then is the title
@@ -1573,11 +1574,23 @@ impl ChatApp {
                         .workspaces
                         .iter()
                         .find(|workspace| workspace.id == ch.workspace)
-                        .map_or("Tilo workspace", |workspace| workspace.name.as_str());
+                        .map_or_else(
+                            || crate::i18n::t("chat-workspace-fallback"),
+                            |workspace| workspace.name.clone(),
+                        );
                     if ch.topic.is_empty() {
-                        format!("From {source}")
+                        crate::i18n::t_args(
+                            "chat-header-from",
+                            &[("source", crate::i18n::text(source))],
+                        )
                     } else {
-                        format!("{source} · {}", ch.topic)
+                        crate::i18n::t_args(
+                            "chat-header-source-topic",
+                            &[
+                                ("source", crate::i18n::text(source)),
+                                ("topic", crate::i18n::text(&ch.topic)),
+                            ],
+                        )
                     }
                 } else {
                     ch.topic.clone()
@@ -1629,11 +1642,12 @@ impl ChatApp {
         let cy = h.center().y;
         // Both pills size themselves from their measured labels, so a larger
         // text scale widens the pill instead of pushing the caption past it.
-        let call_label = if self.call.active {
-            "● In call"
+        let call_label = crate::i18n::t(if self.call.active {
+            "chat-header-in-call"
         } else {
-            "📹 Call"
-        };
+            "chat-header-call"
+        });
+        let call_label = call_label.as_str();
         let (call_label_width, call_label_height) = tr.measure(call_label, label_size, None);
         let call_pad = f64::from(sp.s3);
         let call_w = f64::from(call_label_width) + 2.0 * call_pad;
@@ -1932,7 +1946,7 @@ impl ChatApp {
     ) {
         let c = &theme.tokens.colors;
         let scale = f64::from(theme.text_scale).min(1.35);
-        let label_text = "↓ Jump to latest";
+        let label_text = &crate::i18n::t("chat-jump-latest");
         let (lw, _) = tr.measure(label_text, 12.5, None);
         let w = (f64::from(lw) + 28.0 * scale).max(152.0);
         let h = 36.0 * scale;
@@ -2023,9 +2037,15 @@ impl ChatApp {
             None,
         );
         let sub = if self.can_participate() {
-            format!("This is the start of {title}. Write the first message to begin.")
+            crate::i18n::t_args(
+                "chat-channel-start",
+                &[("channel", crate::i18n::text(ch_name))],
+            )
         } else {
-            format!("There are no messages in {title} yet.")
+            crate::i18n::t_args(
+                "chat-channel-empty",
+                &[("channel", crate::i18n::text(ch_name))],
+            )
         };
         let (sw, _) = tr.measure(&sub, 13.0, None);
         label(
@@ -2083,7 +2103,7 @@ impl ChatApp {
         } = paint;
         let c = &theme.tokens.colors;
         let dl = self.messages.first().map_or_else(
-            || "Today".into(),
+            || crate::i18n::t("chat-day-today"),
             |m| model::day_label(m.ts, crate::doc::NOW),
         );
         let (dw, _) = tr.measure(&dl, 11.5, None);
@@ -2446,7 +2466,7 @@ impl ChatApp {
         } = column;
         let c = &theme.tokens.colors;
         if m.edited && !rm.editing {
-            let edited_label = "(edited) · view history";
+            let edited_label = &crate::i18n::t("chat-edited-view-history");
             let (ew, eh) = tr.measure(edited_label, TIME_SIZE, None);
             let edited_hit = Rect::new(
                 text_x,
@@ -2560,7 +2580,8 @@ impl ChatApp {
         );
         fill_round(scene, tf, er, 10.0, c.neutral[2]);
         stroke_round(scene, tf, er, 10.0, c.border_focus, 1.6);
-        self.edit_input.set_placeholder("Edit message…");
+        self.edit_input
+            .set_placeholder(&crate::i18n::t("chat-edit-placeholder"));
         self.edit_input.apply_layout_external(Rect::new(
             text_x - 10.0,
             *y,
@@ -2578,7 +2599,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Enter to save · Esc to cancel",
+            &crate::i18n::t("chat-edit-hint"),
             11.0,
             c.text_dim,
             text_x,
@@ -2586,12 +2607,17 @@ impl ChatApp {
         );
         let save = Rect::new(er.x1 - 56.0, cy, er.x1, cy + 24.0);
         fill_round(scene, tf, save, 7.0, c.accent[5]);
-        let (sw, sh) = tr.measure_weighted("Save", 12.5, None, TextWeight::Semibold);
+        let (sw, sh) = tr.measure_weighted(
+            &crate::i18n::t("chat-edit-save"),
+            12.5,
+            None,
+            TextWeight::Semibold,
+        );
         text(
             scene,
             tr,
             tf,
-            "Save",
+            &crate::i18n::t("chat-edit-save"),
             12.5,
             Color::WHITE,
             save.center().x - f64::from(sw) / 2.0,
@@ -2607,7 +2633,7 @@ impl ChatApp {
             tf,
             tr,
             theme,
-            &ButtonFace::new(cancel, "Cancel")
+            &ButtonFace::new(cancel, &crate::i18n::t("chat-edit-cancel"))
                 .text_size(12.5)
                 .weight(TextWeight::Regular)
                 .radius(7.0),
@@ -2761,7 +2787,7 @@ impl ChatApp {
             }
             ax += 17.0;
         }
-        let txt = format!("{count} {}", if count == 1 { "reply" } else { "replies" });
+        let txt = crate::feedback::counted("chat-replies", count);
         let (_, lh) = tr.measure(&txt, THREAD_LABEL_SIZE, None);
         label(
             scene,
@@ -2780,7 +2806,10 @@ impl ChatApp {
             .map(|r| r.ts)
             .max();
         if let Some(ts) = last_ts {
-            let s = format!("last reply {}", model::clock(ts));
+            let s = crate::i18n::t_args(
+                "chat-last-reply",
+                &[("time", crate::i18n::text(model::clock(ts)))],
+            );
             let sx = bar.x1 - f64::from(tr.measure(&s, 11.0, None).0) - 14.0;
             label(
                 scene,
@@ -2877,15 +2906,15 @@ impl ChatApp {
                 TextWeight::Regular,
                 None,
             );
-            let status = if blob.starts_with(crate::images::DEMO_SCHEME) {
-                "Loading image…"
+            let status = &crate::i18n::t(if blob.starts_with(crate::images::DEMO_SCHEME) {
+                "chat-image-loading"
             } else {
                 match self.content.state(blob) {
-                    tilo_content::ContentState::Pending => "Loading shared image…",
-                    tilo_content::ContentState::Unavailable => "Shared image unavailable",
-                    tilo_content::ContentState::Resolved => "Decoding image…",
+                    tilo_content::ContentState::Pending => "chat-image-pending",
+                    tilo_content::ContentState::Unavailable => "chat-image-unavailable",
+                    tilo_content::ContentState::Resolved => "chat-image-decoding",
                 }
-            };
+            });
             let (sw, _) = tr.measure(status, 11.0, None);
             label(
                 scene,
@@ -3024,7 +3053,10 @@ impl ChatApp {
         let meta = if vid_w > 0 && vid_h > 0 {
             format!("{vid_w}×{vid_h} · {}", format_bytes(size))
         } else {
-            format!("video · {}", format_bytes(size))
+            crate::i18n::t_args(
+                "chat-video-meta",
+                &[("size", crate::i18n::text(format_bytes(size)))],
+            )
         };
         label(
             scene,
@@ -3139,7 +3171,7 @@ impl ChatApp {
             TextWeight::Regular,
             None,
         );
-        let msg = "Access not granted";
+        let msg = &crate::i18n::t("chat-access-not-granted");
         let (mw, _) = tr.measure(msg, 12.0, None);
         label(
             scene,
@@ -3217,7 +3249,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "🔒 View-only access to this workspace",
+            &crate::i18n::t("chat-view-only"),
             14.0,
             c.text_dim,
             rect.x0 + 16.0,
@@ -3438,7 +3470,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Thread",
+            &crate::i18n::t("chat-thread-title"),
             15.0,
             c.text_primary,
             title_x,
@@ -3474,14 +3506,18 @@ impl ChatApp {
                 panel.y0 + 8.0 * scale + side,
             )
         };
-        let close_label = if narrow_detail { "← Back" } else { "✕" };
+        let close_label = if narrow_detail {
+            crate::i18n::t("chat-thread-back")
+        } else {
+            "✕".to_owned()
+        };
         // The shared Neutral button face (HIG §8).
         Button::paint(
             scene,
             tf,
             tr,
             theme,
-            &ButtonFace::new(close, close_label)
+            &ButtonFace::new(close, &close_label)
                 .text_size(13.0)
                 .weight(TextWeight::Regular)
                 .radius(8.0),
@@ -3546,7 +3582,7 @@ impl ChatApp {
             );
             // replies divider
             let n = model::reply_count(&self.messages, parent_id);
-            let s = format!("{n} {}", if n == 1 { "reply" } else { "replies" });
+            let s = crate::feedback::counted("chat-replies", n);
             let (sw, _) = tr.measure(&s, 11.5, None);
             let dcy = y + 14.0;
             let rule = ui::surface::edge_on(c.surfaces.raised);
@@ -3765,7 +3801,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            self.roster_label(),
+            &self.roster_label(),
             15.0,
             c.text_primary,
             panel.x0 + 16.0,
@@ -3777,18 +3813,17 @@ impl ChatApp {
             .find(|w| w.id == self.active_ws)
             .map(|w| w.name.clone())
             .unwrap_or_default();
-        let noun = if self.users.iter().any(|u| u.is_agent) {
-            if people_count == 1 {
-                "collaborator"
-            } else {
-                "collaborators"
-            }
-        } else if people_count == 1 {
-            "person"
-        } else {
-            "people"
-        };
-        let sub = format!("{people_count} {noun} · {ws_name}");
+        let sub = crate::i18n::t_args(
+            "chat-roster-subtitle",
+            &[
+                (
+                    "agents",
+                    crate::i18n::flag(self.users.iter().any(|u| u.is_agent)),
+                ),
+                ("count", crate::i18n::number(people_count)),
+                ("workspace", crate::i18n::text(ws_name)),
+            ],
+        );
         let sub = truncate_to(tr, &sub, 11.5, panel.width() - 70.0);
         label(
             scene,
@@ -3888,9 +3923,9 @@ impl ChatApp {
             );
             let nx = avc.x + 16.0 + 12.0;
             let display = if self.is_me(&u.id) {
-                format!("{} (you)", u.name)
+                crate::i18n::t_args("chat-member-you", &[("name", crate::i18n::text(&u.name))])
             } else if u.is_agent {
-                format!("{} (agent)", u.name)
+                crate::i18n::t_args("chat-member-agent", &[("name", crate::i18n::text(&u.name))])
             } else {
                 u.name.clone()
             };
@@ -3908,8 +3943,14 @@ impl ChatApp {
                 None,
             );
             let (status_txt, col) = match voice {
-                Some(ch) => (format!("🔊 In voice · {ch}"), c.semantic.success),
-                None => (presence_label(u.status).to_string(), c.text_dim),
+                Some(ch) => (
+                    crate::i18n::t_args(
+                        "chat-member-in-voice",
+                        &[("channel", crate::i18n::text(ch))],
+                    ),
+                    c.semantic.success,
+                ),
+                None => (presence_label(u.status), c.text_dim),
             };
             let status_txt = truncate_to(tr, &status_txt, 11.5, panel.x1 - nx - 14.0);
             label(scene, tr, tf, &status_txt, 11.5, col, nx, avc.y + 2.0);
@@ -4032,7 +4073,7 @@ impl ChatApp {
             scene,
             tr,
             tf,
-            "Share a file",
+            &crate::i18n::t("chat-attach-title"),
             13.5,
             c.text_primary,
             panel.x0 + 14.0 * scale.min(1.2),
@@ -4051,14 +4092,15 @@ impl ChatApp {
             panel.y0 + 14.0 * scale,
         );
         if let Some(status) = &self.attachment_status
-            && !(self.attachment_picker_pending.is_some() && status == "Loading attachments…")
+            && !(self.attachment_picker_pending.is_some()
+                && status.text == crate::i18n::t("chat-attach-loading"))
         {
-            let color = if status.contains("failed") || status.contains("cancelled") {
+            let color = if status.failed {
                 c.semantic.danger
             } else {
                 c.text_dim
             };
-            let status = truncate_to(tr, status, 10.5, panel.width() - 28.0);
+            let status = truncate_to(tr, &status.text, 10.5, panel.width() - 28.0);
             label(
                 scene,
                 tr,
@@ -4095,10 +4137,13 @@ impl ChatApp {
         let c = &theme.tokens.colors;
         let scale = f64::from(self.layout_text_scale);
         let s = if self.attachment_picker_pending.is_some() {
-            "Loading attachments…".to_owned()
+            crate::i18n::t("chat-attach-loading")
         } else {
             let dir = crate::picker::attach_dir();
-            format!("No attachments in {}", dir.display())
+            crate::i18n::t_args(
+                "chat-attach-empty",
+                &[("dir", crate::i18n::text(dir.display().to_string()))],
+            )
         };
         let s = truncate_to(tr, &s, 12.5, panel.width() - 28.0);
         label(
@@ -4234,9 +4279,12 @@ impl ChatApp {
             y += row_h;
         }
         if self.attach_entries.len() > max_rows {
-            let more = format!(
-                "+{} more in the workspace",
-                self.attach_entries.len() - max_rows
+            let more = crate::i18n::t_args(
+                "chat-attach-more",
+                &[(
+                    "count",
+                    crate::i18n::number(self.attach_entries.len() - max_rows),
+                )],
             );
             label(
                 scene,

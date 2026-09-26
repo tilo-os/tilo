@@ -37,14 +37,14 @@ pub enum CallAction {
 }
 
 impl CallAction {
-    pub fn label(self) -> &'static str {
-        match self {
-            CallAction::Join => "Join call",
-            CallAction::Leave => "Leave call",
-            CallAction::Speak => "Use microphone",
-            CallAction::Camera => "Use camera",
-            CallAction::ShareScreen => "Share screen",
-        }
+    pub fn label(self) -> String {
+        crate::i18n::t(match self {
+            CallAction::Join => "chat-call-action-join",
+            CallAction::Leave => "chat-call-action-leave",
+            CallAction::Speak => "chat-call-action-speak",
+            CallAction::Camera => "chat-call-action-camera",
+            CallAction::ShareScreen => "chat-call-action-share",
+        })
     }
 }
 
@@ -175,7 +175,7 @@ impl CallState {
         self.active
             .then(|| ui::floating_surface::FloatingSurfaceRequest {
                 id: format!("chat-call:{}", self.channel),
-                title: "Active call".into(),
+                title: crate::i18n::t("chat-call-active"),
                 role: ui::floating_surface::FloatingRole::ActiveCall,
                 source: ui::floating_surface::FloatingSource::AppElement {
                     app_id: "so.tilo.chat".into(),
